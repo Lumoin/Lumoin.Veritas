@@ -1,0 +1,88 @@
+﻿<Project Sdk="MSTest.Sdk">
+
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>false</EnableAotAnalyzer>
+    <!--
+      Displays error on console in addition to the log file. Note that this feature comes with a performance impact.
+      For more information, visit https://learn.microsoft.com/dotnet/core/testing/unit-testing-platform-integration-dotnet-test#show-failure-per-test
+      -->
+    <TestingPlatformShowTestsFailure>true</TestingPlatformShowTestsFailure>
+    <RunSettingsFilePath>$(MSBuildProjectDirectory)\config.runsettings</RunSettingsFilePath>
+    <TestingExtensionsProfile>AllMicrosoft</TestingExtensionsProfile>
+    <IsTestApplication>true</IsTestApplication>
+    <MSTestAnalysisMode>Recommended</MSTestAnalysisMode>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CsCheck" />
+    <PackageReference Include="LiquidTestReports.Markdown" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
+    <PackageReference Update="Microsoft.Testing.Extensions.CodeCoverage">
+      <VersionOverride>18.6.2</VersionOverride>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Canonicalization\Lumoin.Veritas.Canonicalization.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.JsonLd\Lumoin.Veritas.JsonLd.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Json\Lumoin.Veritas.Json.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.NQuads\Lumoin.Veritas.NQuads.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Owl\Lumoin.Veritas.Owl.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Rdf\Lumoin.Veritas.Rdf.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Shacl\Lumoin.Veritas.Shacl.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Skos\Lumoin.Veritas.Skos.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="Microsoft.Testing.Extensions.AzureDevOpsReport">
+      <VersionOverride>2.2.1</VersionOverride>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="Microsoft.Testing.Extensions.CrashDump">
+      <VersionOverride>2.2.1</VersionOverride>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="Microsoft.Testing.Extensions.HangDump">
+      <VersionOverride>2.2.1</VersionOverride>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="Microsoft.Testing.Extensions.HotReload">
+      <VersionOverride>2.2.1</VersionOverride>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="Microsoft.Testing.Extensions.Retry">
+      <VersionOverride>2.2.1</VersionOverride>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="Microsoft.Testing.Extensions.TrxReport">
+      <VersionOverride>2.2.1</VersionOverride>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="MSTest.TestAdapter">
+      <VersionOverride>4.2.1</VersionOverride>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="MSTest.TestFramework">
+      <VersionOverride>4.2.1</VersionOverride>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,210 @@
+using Lumoin.Veritas.Core;
+
+namespace Lumoin.Veritas.Shacl;
+
+/// <summary>
+/// UTF-8 IRI constants for the parameters of SHACL constraint components.
+/// </summary>
+/// <remarks>
+/// Covers every constraint-component parameter defined by SHACL 1.2 Core
+/// §6, including SHACL 1.2 additions (reification, lists, root class).
+/// Each value is a <see cref="Utf8String"/> backed by a static byte array.
+/// </remarks>
+public static class ShaclConstraintVocabulary
+{
+    //Cardinality
+    private static readonly byte[] MinCountBytes = "http://www.w3.org/ns/shacl#minCount"u8.ToArray();
+    private static readonly byte[] MaxCountBytes = "http://www.w3.org/ns/shacl#maxCount"u8.ToArray();
+
+    //Value range
+    private static readonly byte[] MinExclusiveBytes = "http://www.w3.org/ns/shacl#minExclusive"u8.ToArray();
+    private static readonly byte[] MaxExclusiveBytes = "http://www.w3.org/ns/shacl#maxExclusive"u8.ToArray();
+    private static readonly byte[] MinInclusiveBytes = "http://www.w3.org/ns/shacl#minInclusive"u8.ToArray();
+    private static readonly byte[] MaxInclusiveBytes = "http://www.w3.org/ns/shacl#maxInclusive"u8.ToArray();
+
+    //String / literal
+    private static readonly byte[] MinLengthBytes = "http://www.w3.org/ns/shacl#minLength"u8.ToArray();
+    private static readonly byte[] MaxLengthBytes = "http://www.w3.org/ns/shacl#maxLength"u8.ToArray();
+    private static readonly byte[] PatternBytes = "http://www.w3.org/ns/shacl#pattern"u8.ToArray();
+    private static readonly byte[] FlagsBytes = "http://www.w3.org/ns/shacl#flags"u8.ToArray();
+    private static readonly byte[] SingleLineBytes = "http://www.w3.org/ns/shacl#singleLine"u8.ToArray();
+    private static readonly byte[] LanguageInBytes = "http://www.w3.org/ns/shacl#languageIn"u8.ToArray();
+    private static readonly byte[] UniqueLangBytes = "http://www.w3.org/ns/shacl#uniqueLang"u8.ToArray();
+
+    //Term inspection
+    private static readonly byte[] ClassBytes = "http://www.w3.org/ns/shacl#class"u8.ToArray();
+    private static readonly byte[] DatatypeBytes = "http://www.w3.org/ns/shacl#datatype"u8.ToArray();
+    private static readonly byte[] NodeKindBytes = "http://www.w3.org/ns/shacl#nodeKind"u8.ToArray();
+    private static readonly byte[] RootClassBytes = "http://www.w3.org/ns/shacl#rootClass"u8.ToArray();
+
+    //Value set
+    private static readonly byte[] HasValueBytes = "http://www.w3.org/ns/shacl#hasValue"u8.ToArray();
+    private static readonly byte[] InBytes = "http://www.w3.org/ns/shacl#in"u8.ToArray();
+
+    //Pair comparison
+    private static readonly byte[] EqualsToBytes = "http://www.w3.org/ns/shacl#equals"u8.ToArray();
+    private static readonly byte[] DisjointBytes = "http://www.w3.org/ns/shacl#disjoint"u8.ToArray();
+    private static readonly byte[] LessThanBytes = "http://www.w3.org/ns/shacl#lessThan"u8.ToArray();
+    private static readonly byte[] LessThanOrEqualsBytes = "http://www.w3.org/ns/shacl#lessThanOrEquals"u8.ToArray();
+
+    //Boolean combinators
+    private static readonly byte[] NotBytes = "http://www.w3.org/ns/shacl#not"u8.ToArray();
+    private static readonly byte[] AndBytes = "http://www.w3.org/ns/shacl#and"u8.ToArray();
+    private static readonly byte[] OrBytes = "http://www.w3.org/ns/shacl#or"u8.ToArray();
+    private static readonly byte[] XoneBytes = "http://www.w3.org/ns/shacl#xone"u8.ToArray();
+
+    //Shape references
+    private static readonly byte[] NodeBytes = "http://www.w3.org/ns/shacl#node"u8.ToArray();
+    private static readonly byte[] PropertyBytes = "http://www.w3.org/ns/shacl#property"u8.ToArray();
+    private static readonly byte[] QualifiedValueShapeBytes = "http://www.w3.org/ns/shacl#qualifiedValueShape"u8.ToArray();
+    private static readonly byte[] QualifiedMinCountBytes = "http://www.w3.org/ns/shacl#qualifiedMinCount"u8.ToArray();
+    private static readonly byte[] QualifiedMaxCountBytes = "http://www.w3.org/ns/shacl#qualifiedMaxCount"u8.ToArray();
+    private static readonly byte[] QualifiedValueShapesDisjointBytes = "http://www.w3.org/ns/shacl#qualifiedValueShapesDisjoint"u8.ToArray();
+    private static readonly byte[] SubsetOfBytes = "http://www.w3.org/ns/shacl#subsetOf"u8.ToArray();
+
+    //Closed world
+    private static readonly byte[] ClosedBytes = "http://www.w3.org/ns/shacl#closed"u8.ToArray();
+    private static readonly byte[] IgnoredPropertiesBytes = "http://www.w3.org/ns/shacl#ignoredProperties"u8.ToArray();
+
+    //Uniqueness
+    private static readonly byte[] UniqueValuesForBytes = "http://www.w3.org/ns/shacl#uniqueValuesFor"u8.ToArray();
+
+    //Reification (SHACL 1.2)
+    private static readonly byte[] ReifierShapeBytes = "http://www.w3.org/ns/shacl#reifierShape"u8.ToArray();
+    private static readonly byte[] ReificationRequiredBytes = "http://www.w3.org/ns/shacl#reificationRequired"u8.ToArray();
+
+    //Lists (SHACL 1.2)
+    private static readonly byte[] MemberShapeBytes = "http://www.w3.org/ns/shacl#memberShape"u8.ToArray();
+    private static readonly byte[] MinListLengthBytes = "http://www.w3.org/ns/shacl#minListLength"u8.ToArray();
+    private static readonly byte[] MaxListLengthBytes = "http://www.w3.org/ns/shacl#maxListLength"u8.ToArray();
+    private static readonly byte[] UniqueMembersBytes = "http://www.w3.org/ns/shacl#uniqueMembers"u8.ToArray();
+
+    /// <summary><c>sh:minCount</c></summary>
+    public static Utf8String MinCount { get; } = new(MinCountBytes);
+
+    /// <summary><c>sh:maxCount</c></summary>
+    public static Utf8String MaxCount { get; } = new(MaxCountBytes);
+
+    /// <summary><c>sh:minExclusive</c></summary>
+    public static Utf8String MinExclusive { get; } = new(MinExclusiveBytes);
+
+    /// <summary><c>sh:maxExclusive</c></summary>
+    public static Utf8String MaxExclusive { get; } = new(MaxExclusiveBytes);
+
+    /// <summary><c>sh:minInclusive</c></summary>
+    public static Utf8String MinInclusive { get; } = new(MinInclusiveBytes);
+
+    /// <summary><c>sh:maxInclusive</c></summary>
+    public static Utf8String MaxInclusive { get; } = new(MaxInclusiveBytes);
+
+    /// <summary><c>sh:minLength</c></summary>
+    public static Utf8String MinLength { get; } = new(MinLengthBytes);
+
+    /// <summary><c>sh:maxLength</c></summary>
+    public static Utf8String MaxLength { get; } = new(MaxLengthBytes);
+
+    /// <summary><c>sh:pattern</c></summary>
+    public static Utf8String Pattern { get; } = new(PatternBytes);
+
+    /// <summary><c>sh:flags</c></summary>
+    public static Utf8String Flags { get; } = new(FlagsBytes);
+
+    /// <summary><c>sh:singleLine</c></summary>
+    public static Utf8String SingleLine { get; } = new(SingleLineBytes);
+
+    /// <summary><c>sh:languageIn</c></summary>
+    public static Utf8String LanguageIn { get; } = new(LanguageInBytes);
+
+    /// <summary><c>sh:uniqueLang</c></summary>
+    public static Utf8String UniqueLang { get; } = new(UniqueLangBytes);
+
+    /// <summary><c>sh:class</c></summary>
+    public static Utf8String Class { get; } = new(ClassBytes);
+
+    /// <summary><c>sh:datatype</c></summary>
+    public static Utf8String Datatype { get; } = new(DatatypeBytes);
+
+    /// <summary><c>sh:nodeKind</c></summary>
+    public static Utf8String NodeKind { get; } = new(NodeKindBytes);
+
+    /// <summary><c>sh:rootClass</c></summary>
+    public static Utf8String RootClass { get; } = new(RootClassBytes);
+
+    /// <summary><c>sh:hasValue</c></summary>
+    public static Utf8String HasValue { get; } = new(HasValueBytes);
+
+    /// <summary><c>sh:in</c></summary>
+    public static Utf8String In { get; } = new(InBytes);
+
+    /// <summary><c>sh:equals</c></summary>
+    public static Utf8String EqualsTo { get; } = new(EqualsToBytes);
+
+    /// <summary><c>sh:disjoint</c></summary>
+    public static Utf8String Disjoint { get; } = new(DisjointBytes);
+
+    /// <summary><c>sh:lessThan</c></summary>
+    public static Utf8String LessThan { get; } = new(LessThanBytes);
+
+    /// <summary><c>sh:lessThanOrEquals</c></summary>
+    public static Utf8String LessThanOrEquals { get; } = new(LessThanOrEqualsBytes);
+
+    /// <summary><c>sh:not</c></summary>
+    public static Utf8String Not { get; } = new(NotBytes);
+
+    /// <summary><c>sh:and</c></summary>
+    public static Utf8String And { get; } = new(AndBytes);
+
+    /// <summary><c>sh:or</c></summary>
+    public static Utf8String Or { get; } = new(OrBytes);
+
+    /// <summary><c>sh:xone</c></summary>
+    public static Utf8String Xone { get; } = new(XoneBytes);
+
+    /// <summary><c>sh:node</c></summary>
+    public static Utf8String Node { get; } = new(NodeBytes);
+
+    /// <summary><c>sh:property</c></summary>
+    public static Utf8String Property { get; } = new(PropertyBytes);
+
+    /// <summary><c>sh:qualifiedValueShape</c></summary>
+    public static Utf8String QualifiedValueShape { get; } = new(QualifiedValueShapeBytes);
+
+    /// <summary><c>sh:qualifiedMinCount</c></summary>
+    public static Utf8String QualifiedMinCount { get; } = new(QualifiedMinCountBytes);
+
+    /// <summary><c>sh:qualifiedMaxCount</c></summary>
+    public static Utf8String QualifiedMaxCount { get; } = new(QualifiedMaxCountBytes);
+
+    /// <summary><c>sh:qualifiedValueShapesDisjoint</c></summary>
+    public static Utf8String QualifiedValueShapesDisjoint { get; } = new(QualifiedValueShapesDisjointBytes);
+
+    /// <summary><c>sh:subsetOf</c></summary>
+    public static Utf8String SubsetOf { get; } = new(SubsetOfBytes);
+
+    /// <summary><c>sh:closed</c></summary>
+    public static Utf8String Closed { get; } = new(ClosedBytes);
+
+    /// <summary><c>sh:ignoredProperties</c></summary>
+    public static Utf8String IgnoredProperties { get; } = new(IgnoredPropertiesBytes);
+
+    /// <summary><c>sh:uniqueValuesFor</c></summary>
+    public static Utf8String UniqueValuesFor { get; } = new(UniqueValuesForBytes);
+
+    /// <summary><c>sh:reifierShape</c> (SHACL 1.2).</summary>
+    public static Utf8String ReifierShape { get; } = new(ReifierShapeBytes);
+
+    /// <summary><c>sh:reificationRequired</c> (SHACL 1.2).</summary>
+    public static Utf8String ReificationRequired { get; } = new(ReificationRequiredBytes);
+
+    /// <summary><c>sh:memberShape</c> (SHACL 1.2).</summary>
+    public static Utf8String MemberShape { get; } = new(MemberShapeBytes);
+
+    /// <summary><c>sh:minListLength</c> (SHACL 1.2).</summary>
+    public static Utf8String MinListLength { get; } = new(MinListLengthBytes);
+
+    /// <summary><c>sh:maxListLength</c> (SHACL 1.2).</summary>
+    public static Utf8String MaxListLength { get; } = new(MaxListLengthBytes);
+
+    /// <summary><c>sh:uniqueMembers</c> (SHACL 1.2).</summary>
+    public static Utf8String UniqueMembers { get; } = new(UniqueMembersBytes);
+}

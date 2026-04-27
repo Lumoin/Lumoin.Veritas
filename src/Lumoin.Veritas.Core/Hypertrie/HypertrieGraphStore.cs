@@ -1,0 +1,327 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Threading.Tasks;
+using Lumoin.Veritas.Core.Diagnostics;
+using Lumoin.Veritas.Core.Encoding;
+using Lumoin.Veritas.Core.Hypertrie.AccessControl;
+using Lumoin.Veritas.Core.Hypertrie.Editing;
+using Lumoin.Veritas.Core.Hypertrie.Execution;
+using Lumoin.Veritas.Core.Hypertrie.Planning;
+using Lumoin.Veritas.Core.Hypertrie.Query;
+using Lumoin.Veritas.Core.Hypertrie.Storage;
+using Lumoin.Veritas.Core.Hypertrie.Tracing;
+using Lumoin.Veritas.Core.Threading;
+
+namespace Lumoin.Veritas.Core.Hypertrie;
+
+/// <summary>
+/// An in-memory graph store backed by a depth-3 hypertrie with
+/// content-addressed node deduplication. Each node carries one
+/// <see cref="EdgeMap"/> per remaining position, so any
+/// combination of bound and unbound subject, predicate, and
+/// object positions is answered through a single descent without
+/// permutation duplication; structurally-identical subtrees
+/// collapse to a single canonical instance via the
+/// <see cref="NodeStore"/>.
+/// </summary>
+/// <remarks>
+/// <para>
+/// This is a peer of <see cref="InMemoryGraphStore"/> and exposes
+/// the same surface for single-pattern matching:
+/// <see cref="BuildAsync(IEnumerable{EncodedTriple}, CancellationToken)"/>,
+/// <see cref="Count"/>, <see cref="Match"/>,
+/// <see cref="AsMatchDelegate"/>,
+/// <see cref="AsCountDelegate"/>. Multi-pattern queries are
+/// answered by <see cref="Query"/>, which dispatches to a
+/// worst-case-optimal join engine in
+/// <see cref="BasicGraphPatternEvaluator"/>.
+/// </para>
+/// <para>
+/// <b>Snapshot lifecycle.</b> Building a store creates a single
+/// <see cref="HypertrieSnapshot"/> pinning the constructed root
+/// and registering itself with the underlying
+/// <see cref="NodeStore"/>. The store holds this snapshot for
+/// its lifetime; consumers needing their own independently-held
+/// reference can call
+/// <see cref="HypertrieSnapshot.Acquire"/> on
+/// <see cref="Snapshot"/> and dispose when finished.
+/// </para>
+/// <para>
+/// The store is built once from a sequence of triples and is
+/// immutable after construction. Mutability arrives in a future
+/// batch through edit sessions, where new edits produce new
+/// snapshots without touching nodes referenced by existing
+/// snapshots.
+/// </para>
+/// <para>
+/// <b>Build vs sweep.</b> A build runs under the
+/// <see cref="NodeStore"/>'s mutation gate in shared mode, so
+/// multiple concurrent builds on the same store run together
+/// (structural sharing in the intern table makes them naturally
+/// compatible). Sweeps take the gate exclusively and wait for
+/// every active shared holder to leave. The shared scope is held
+/// only over the work that mutates the intern table; triple
+/// deduplication runs outside the scope so a long-running sweep
+/// does not block on enumeration. Reads against existing
+/// snapshots are unaffected.
+/// </para>
+/// <para>
+/// <b>Journal.</b> When the underlying <see cref="NodeStore"/>
+/// was constructed with a journal, every successful build writes
+/// a <see cref="JournalEntry"/> recording the transition from
+/// <see cref="NodeIdentifier.Empty"/> to the new root identifier.
+/// A build against a store whose journal head is non-empty fails
+/// with <see cref="EditSessionConcurrencyException"/> — initial
+/// builds are first-entry-only, and subsequent state changes go
+/// through edit sessions in a future batch. Stores constructed
+/// without a journal write no entries and are unaffected.
+/// </para>
+/// <para>
+/// <b>Async surface.</b> Building requires entering the
+/// <see cref="NodeStore"/>'s shared mutation scope, which is
+/// async-only. Both build overloads are therefore async. In the
+/// uncontended case the gate completes synchronously and the
+/// returned <see cref="ValueTask"/> carries its result without
+/// allocation.
+/// </para>
+/// </remarks>
+[DebuggerDisplay("HypertrieGraphStore Count={Count} Nodes={Snapshot.Store.Count}")]
+public sealed class HypertrieGraphStore
+{
+    /// <summary>
+    /// The snapshot pinning the root and the
+    /// <see cref="NodeStore"/> behind it. Held for the lifetime
+    /// of this graph store.
+    /// </summary>
+    public HypertrieSnapshot Snapshot { get; }
+
+    /// <summary>Gets the number of distinct triples in the store.</summary>
+    public int Count { get; }
+
+    private HypertrieGraphStore(HypertrieSnapshot snapshot, int count)
+    {
+        Snapshot = snapshot;
+        Count = count;
+    }
+
+    /// <summary>
+    /// Builds a new <see cref="HypertrieGraphStore"/> from the
+    /// given triples using a fresh <see cref="NodeStore"/> built
+    /// with <paramref name="hash"/> and no journal. Convenience
+    /// for tests and one-shot loads where the caller does not
+    /// need to share or configure the store.
+    /// </summary>
+    /// <param name="triples">The triples to index.</param>
+    /// <param name="hash">The hash function. Pass <see cref="VeritasHashing.Default"/> for the canonical xxHash64 implementation.</param>
+    /// <param name="cancellationToken">A token that aborts the build at any per-step check.</param>
+    /// <returns>A new immutable graph store.</returns>
+    /// <exception cref="ArgumentNullException">A required argument is <c>null</c>.</exception>
+    public static async ValueTask<HypertrieGraphStore> BuildAsync(
+        IEnumerable<EncodedTriple> triples,
+        VeritasHash hash,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(triples);
+        ArgumentNullException.ThrowIfNull(hash);
+
+        //Ownership-transfer pattern (CA2000). The freshly allocated
+        //store is owned by this method until the inner build
+        //completes successfully, at which point ownership passes to
+        //the returned graph store via its snapshot. If the inner
+        //build throws, the store is orphaned and the finally block
+        //disposes it. Setting the local to null on the success path
+        //is the explicit signal that ownership has been transferred.
+        NodeStore? store = null;
+
+        try
+        {
+            store = new NodeStore(hash);
+            HypertrieGraphStore result = await BuildAsync(triples, store, cancellationToken).ConfigureAwait(false);
+            store = null;
+
+            return result;
+        }
+        finally
+        {
+            store?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Builds a new <see cref="HypertrieGraphStore"/> from the
+    /// given triples, interning every node it produces through
+    /// <paramref name="store"/>. The same store may be reused
+    /// across multiple builds to share canonical instances
+    /// between graphs.
+    /// </summary>
+    /// <param name="triples">The triples to index.</param>
+    /// <param name="store">The intern table to use.</param>
+    /// <param name="cancellationToken">A token that aborts the build at any per-step check.</param>
+    /// <returns>A new immutable graph store.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="triples"/> or <paramref name="store"/> is <c>null</c>.</exception>
+    /// <exception cref="EditSessionConcurrencyException"><paramref name="store"/> has a journal whose head is not <see cref="NodeIdentifier.Empty"/>; subsequent state changes go through edit sessions, not <see cref="BuildAsync(IEnumerable{EncodedTriple}, NodeStore, CancellationToken)"/>.</exception>
+    public static async ValueTask<HypertrieGraphStore> BuildAsync(
+        IEnumerable<EncodedTriple> triples,
+        NodeStore store,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(triples);
+        ArgumentNullException.ThrowIfNull(store);
+
+        //Triple deduplication does not touch the store, so it runs
+        //outside the mutation scope. Holding the scope only over
+        //the work that mutates the intern table keeps a long-running
+        //sweep from blocking on triple enumeration.
+        EncodedTriple[] distinct = triples.Distinct().ToArray();
+
+        //The mutation scope serialises this build against any
+        //concurrent sweep on the same store. Shared mode means
+        //multiple concurrent builds run together. The scope
+        //extends through snapshot construction so that the new
+        //snapshot is registered before the gate is released —
+        //otherwise a sweep that wins the race for the gate would
+        //evict freshly-built nodes that no snapshot yet pins.
+        //Acquire and dispose explicitly so the disposal await can
+        //carry ConfigureAwait(false); C# does not yet have syntax
+        //for that on `await using` declarations.
+        SharedScope scope = await store.EnterSharedScopeAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            (HypertrieNode root, NodeIdentifier rootId) = HypertrieOps.BuildBottomUpWithIdentifier(distinct, store);
+
+            //Journal append (when the store has a journal). The OCC
+            //contract requires a parent of NodeIdentifier.Empty; a
+            //store whose journal already has entries is past the
+            //initial-build window and the append throws.
+            //The journal stamps Timestamp and SequenceNumber on
+            //append; the factory leaves both as placeholders.
+            if(store.JournalAppend is not null)
+            {
+                JournalEntry entry = JournalEntry.Initial(store.Hash, rootId, [.. distinct]);
+
+                await store.JournalAppend(entry, NodeIdentifier.Empty, cancellationToken).ConfigureAwait(false);
+            }
+
+            HypertrieSnapshot snapshot = new(store, root, rootId);
+
+            return new HypertrieGraphStore(snapshot, distinct.Length);
+        }
+        finally
+        {
+            await scope.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Opens an <see cref="EditSession"/> against this store's
+    /// current <see cref="Snapshot"/>. The session holds a fresh
+    /// reference to the snapshot for its lifetime; the caller
+    /// continues to read this store unchanged. Convenience shim
+    /// over <see cref="NodeStore.OpenEditSessionAsync"/>.
+    /// </summary>
+    /// <param name="cancellationToken">A token that aborts the open.</param>
+    /// <returns>An opened session ready to receive edits.</returns>
+    /// <exception cref="EditSessionConcurrencyException">The journal head no longer corresponds to <see cref="Snapshot"/>; another session committed first.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was triggered.</exception>
+    public ValueTask<EditSession> OpenEditSessionAsync(CancellationToken cancellationToken = default)
+    {
+        return Snapshot.Store.OpenEditSessionAsync(Snapshot, cancellationToken);
+    }
+
+    /// <summary>
+    /// Returns all triples matching the given pattern. Each
+    /// position is either a bound <see cref="TermId"/> or
+    /// <c>null</c> for "any."
+    /// </summary>
+    /// <param name="subject">The subject to match, or <c>null</c> for any.</param>
+    /// <param name="predicate">The predicate to match, or <c>null</c> for any.</param>
+    /// <param name="object">The object to match, or <c>null</c> for any.</param>
+    /// <returns>All matching triples.</returns>
+    public IEnumerable<EncodedTriple> Match(TermId? subject, TermId? predicate, TermId? @object)
+    {
+        return HypertrieOps.Match(
+            Snapshot.Root,
+            subject?.Encoded,
+            predicate?.Encoded,
+            @object?.Encoded);
+    }
+
+    /// <summary>
+    /// Evaluates a basic graph pattern against this store using
+    /// worst-case-optimal joins.
+    /// </summary>
+    /// <param name="query">The basic graph pattern.</param>
+    /// <param name="timeProvider">Clock used to stamp Ticks on emitted trace events. Pass <see cref="TimeProvider.System"/> in production; tests pinning trace timing pass a <c>FakeTimeProvider</c>.</param>
+    /// <param name="planner">The planner to use, or <c>null</c> to use <see cref="Planners.FirstOccurrence"/>.</param>
+    /// <param name="accessControl">Optional access-control policy. <c>null</c> treats every candidate as allowed.</param>
+    /// <param name="accessContext">Caller-supplied access context. Required when <paramref name="accessControl"/> is non-<c>null</c>.</param>
+    /// <param name="traceHandler">Optional trace handler for query-execution events.</param>
+    /// <param name="correlationId">Correlation id stamped on emitted trace events. Pass <see cref="Guid.Empty"/> to generate a fresh one.</param>
+    /// <param name="cancellationToken">Cancellation token threaded into iterator operations and the access-control consultation.</param>
+    /// <returns>An async sequence of solutions.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="query"/> or <paramref name="timeProvider"/> is <c>null</c>.</exception>
+    public IAsyncEnumerable<Solution> Query(
+        BasicGraphPattern query,
+        TimeProvider timeProvider,
+        Planner? planner = null,
+        AccessControlDelegate? accessControl = null,
+        AccessContext? accessContext = null,
+        TraceHandler<QueryTraceEvent>? traceHandler = null,
+        Guid correlationId = default,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+
+        Planner effectivePlanner = planner ?? Planners.FirstOccurrence(query);
+        Guid effectiveCorrelationId = correlationId == Guid.Empty ? Guid.NewGuid() : correlationId;
+
+        BasicGraphPatternEvaluator evaluator = new(
+            Snapshot,
+            query,
+            effectivePlanner,
+            timeProvider,
+            accessControl,
+            accessContext,
+            traceHandler,
+            effectiveCorrelationId);
+
+        return evaluator.EvaluateAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Creates a <see cref="StorageDelegates.MatchTriplesAsync"/>
+    /// delegate backed by this store.
+    /// </summary>
+    public StorageDelegates.MatchTriplesAsync AsMatchDelegate()
+    {
+        return (s, p, o, ct) => ToAsyncEnumerable(Match(s, p, o), ct);
+    }
+
+    /// <summary>
+    /// Creates a <see cref="StorageDelegates.CountTriplesAsync"/>
+    /// delegate backed by this store.
+    /// </summary>
+    public StorageDelegates.CountTriplesAsync AsCountDelegate()
+    {
+        return _ => ValueTask.FromResult((long)Count);
+    }
+
+    private static async IAsyncEnumerable<EncodedTriple> ToAsyncEnumerable(
+        IEnumerable<EncodedTriple> source,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        foreach(EncodedTriple triple in source)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            yield return triple;
+        }
+
+        await Task.CompletedTask.ConfigureAwait(false);
+    }
+}

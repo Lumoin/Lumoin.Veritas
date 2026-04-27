@@ -1,0 +1,12 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Veritas.Rdf</RootNamespace>
+    <Description>Graph computation layer for Lumoin.Veritas. Provides property path evaluation, transitive closure, RDFS inference (rdfs:subClassOf, rdfs:subPropertyOf, rdfs:domain, rdfs:range), RDF collection traversal, and graph fold/unfold primitives over the encoded triple store. Shared substrate for SHACL, OWL, SPARQL, and SKOS.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+  </ItemGroup>
+
+</Project>

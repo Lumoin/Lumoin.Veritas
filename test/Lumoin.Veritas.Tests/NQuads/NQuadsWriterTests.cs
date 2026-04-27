@@ -1,0 +1,183 @@
+using Lumoin.Veritas.Core;
+using Lumoin.Veritas.NQuads;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+using System.Text;
+
+namespace Lumoin.Veritas.Tests.NQuads;
+
+[TestClass]
+internal sealed class NQuadsWriterTests
+{
+    public TestContext TestContext { get; set; } = null!;
+
+    [TestMethod]
+    public async Task WriteTripleProducesCorrectLine()
+    {
+        using Utf8StringPool pool = new();
+        Quad quad = new(
+            new NamedNode(pool.Intern("http://example.org/subject")),
+            new NamedNode(pool.Intern("http://example.org/predicate")),
+            new NamedNode(pool.Intern("http://example.org/object")));
+
+        string output = await SerializeAsync([quad], TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(
+            "<http://example.org/subject> <http://example.org/predicate> <http://example.org/object> .\n",
+            output);
+    }
+
+    [TestMethod]
+    public async Task WriteQuadWithGraphProducesCorrectLine()
+    {
+        using Utf8StringPool pool = new();
+        Quad quad = new(
+            new NamedNode(pool.Intern("http://example.org/s")),
+            new NamedNode(pool.Intern("http://example.org/p")),
+            new NamedNode(pool.Intern("http://example.org/o")),
+            new NamedNode(pool.Intern("http://example.org/g")));
+
+        string output = await SerializeAsync([quad], TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(
+            "<http://example.org/s> <http://example.org/p> <http://example.org/o> <http://example.org/g> .\n",
+            output);
+    }
+
+    [TestMethod]
+    public async Task WriteBlankNodeSubjectProducesCorrectLine()
+    {
+        using Utf8StringPool pool = new();
+        Quad quad = new(
+            new BlankNode(pool.Intern("b0")),
+            new NamedNode(pool.Intern("http://example.org/p")),
+            new NamedNode(pool.Intern("http://example.org/o")));
+
+        string output = await SerializeAsync([quad], TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(
+            "_:b0 <http://example.org/p> <http://example.org/o> .\n",
+            output);
+    }
+
+    [TestMethod]
+    public async Task WriteStringLiteralWithXsdDatatypeProducesCorrectLine()
+    {
+        using Utf8StringPool pool = new();
+        Quad quad = new(
+            new NamedNode(pool.Intern("http://example.org/s")),
+            new NamedNode(pool.Intern("http://example.org/p")),
+            new Literal(
+                pool.Intern("hello"),
+                new NamedNode(pool.Intern("http://www.w3.org/2001/XMLSchema#string"))));
+
+        string output = await SerializeAsync([quad], TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(
+            "<http://example.org/s> <http://example.org/p> \"hello\"^^<http://www.w3.org/2001/XMLSchema#string> .\n",
+            output);
+    }
+
+    [TestMethod]
+    public async Task WriteLanguageTaggedLiteralProducesCorrectLine()
+    {
+        using Utf8StringPool pool = new();
+        Quad quad = new(
+            new NamedNode(pool.Intern("http://example.org/s")),
+            new NamedNode(pool.Intern("http://example.org/p")),
+            new Literal(
+                pool.Intern("Bonjour"),
+                new NamedNode(pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#langString")),
+                pool.Intern("fr")));
+
+        string output = await SerializeAsync([quad], TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(
+            "<http://example.org/s> <http://example.org/p> \"Bonjour\"@fr .\n",
+            output);
+    }
+
+    [TestMethod]
+    public async Task WriteMultipleQuadsProducesMultipleLines()
+    {
+        using Utf8StringPool pool = new();
+        Quad[] quads =
+        [
+            new(
+                new NamedNode(pool.Intern("http://example.org/s1")),
+                new NamedNode(pool.Intern("http://example.org/p")),
+                new NamedNode(pool.Intern("http://example.org/o1"))),
+            new(
+                new NamedNode(pool.Intern("http://example.org/s2")),
+                new NamedNode(pool.Intern("http://example.org/p")),
+                new NamedNode(pool.Intern("http://example.org/o2")))
+        ];
+
+        string output = await SerializeAsync(quads, TestContext.CancellationToken).ConfigureAwait(false);
+
+        string[] lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.HasCount(2, lines);
+    }
+
+    [TestMethod]
+    public async Task WriteEmptySequenceProducesEmptyOutput()
+    {
+        string output = await SerializeAsync([], TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(string.Empty, output);
+    }
+
+    [TestMethod]
+    public async Task WriteLiteralEscapesNewline()
+    {
+        using Utf8StringPool pool = new();
+        Quad quad = new(
+            new NamedNode(pool.Intern("http://example.org/s")),
+            new NamedNode(pool.Intern("http://example.org/p")),
+            new Literal(
+                pool.Intern("line1\nline2"),
+                new NamedNode(pool.Intern("http://www.w3.org/2001/XMLSchema#string"))));
+
+        string output = await SerializeAsync([quad], TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.Contains("\\n", output, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task WriteLiteralEscapesQuote()
+    {
+        using Utf8StringPool pool = new();
+        Quad quad = new(
+            new NamedNode(pool.Intern("http://example.org/s")),
+            new NamedNode(pool.Intern("http://example.org/p")),
+            new Literal(
+                pool.Intern("say \"hello\""),
+                new NamedNode(pool.Intern("http://www.w3.org/2001/XMLSchema#string"))));
+
+        string output = await SerializeAsync([quad], TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.Contains("\\\"", output, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task WriteLiteralEscapesBackslash()
+    {
+        using Utf8StringPool pool = new();
+        Quad quad = new(
+            new NamedNode(pool.Intern("http://example.org/s")),
+            new NamedNode(pool.Intern("http://example.org/p")),
+            new Literal(
+                pool.Intern("path\\to\\file"),
+                new NamedNode(pool.Intern("http://www.w3.org/2001/XMLSchema#string"))));
+
+        string output = await SerializeAsync([quad], TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.Contains("\\\\", output, StringComparison.Ordinal);
+    }
+
+    private static async Task<string> SerializeAsync(IEnumerable<Quad> quads, CancellationToken cancellationToken)
+    {
+        using MemoryStream stream = new();
+        await NQuadsWriter.WriteAsync(quads, stream, cancellationToken).ConfigureAwait(false);
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
+}

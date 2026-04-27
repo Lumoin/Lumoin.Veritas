@@ -1,0 +1,94 @@
+using System.Collections.Generic;
+using System.Linq;
+
+namespace Lumoin.Veritas.Canonicalization;
+
+/// <summary>
+/// Issues sequential blank node identifiers during the RDFC-1.0 canonicalization algorithm.
+/// </summary>
+/// <remarks>
+/// The RDFC-1.0 algorithm maintains multiple issuer instances simultaneously:
+/// one canonical issuer (prefix <c>c14n</c>) for final assignments, and temporary
+/// issuers (prefix <c>b</c>) used during the n-degree hash computation. This type
+/// tracks which original blank node identifiers have been mapped to issued identifiers
+/// and supports cloning for the temporary issuer pattern.
+/// </remarks>
+internal sealed class IdentifierIssuer
+{
+    private readonly string prefix;
+    private int counter;
+    private readonly Dictionary<string, string> issuedMap = [];
+
+    /// <summary>
+    /// Initializes a new <see cref="IdentifierIssuer"/> with the given prefix and starting counter.
+    /// </summary>
+    /// <param name="prefix">The prefix for issued identifiers (e.g., <c>"c14n"</c> or <c>"b"</c>).</param>
+    /// <param name="startAt">The initial counter value. Defaults to zero.</param>
+    internal IdentifierIssuer(string prefix, int startAt = 0)
+    {
+        this.prefix = prefix;
+        counter = startAt;
+    }
+
+    /// <summary>
+    /// Issues a new identifier for the given original blank node label.
+    /// If an identifier has already been issued for this label, returns the existing one.
+    /// </summary>
+    /// <param name="original">The original blank node label to issue an identifier for.</param>
+    /// <returns>The issued identifier (without the <c>_:</c> prefix).</returns>
+    internal string Issue(string original)
+    {
+        if (issuedMap.TryGetValue(original, out string? existing))
+        {
+            return existing;
+        }
+
+        string issued = $"{prefix}{counter}";
+        counter++;
+        issuedMap[original] = issued;
+        return issued;
+    }
+
+    /// <summary>
+    /// Determines whether an identifier has already been issued for the given label.
+    /// </summary>
+    internal bool HasIssued(string original)
+    {
+        return issuedMap.ContainsKey(original);
+    }
+
+    /// <summary>
+    /// Returns all issued pairs as (original, issued) tuples.
+    /// Used to merge a temporary issuer's assignments into the main issuer.
+    /// </summary>
+    internal IEnumerable<(string Original, string Issued)> IssuedPairs()
+    {
+        return issuedMap.Select(kvp => (kvp.Key, kvp.Value));
+    }
+
+    /// <summary>
+    /// Adopts an externally-produced (original → issued) mapping without incrementing
+    /// the counter. Used when merging a chosen temporary issuer path into the main issuer.
+    /// </summary>
+    /// <param name="original">The original blank node label.</param>
+    /// <param name="issued">The issued identifier to record.</param>
+    internal void Adopt(string original, string issued)
+    {
+        issuedMap.TryAdd(original, issued);
+    }
+
+    /// <summary>
+    /// Creates an independent copy of this issuer with the same state.
+    /// Used to branch during n-degree hash computation without affecting the original.
+    /// </summary>
+    internal IdentifierIssuer Clone()
+    {
+        IdentifierIssuer clone = new(prefix, counter);
+        foreach ((string original, string issued) in issuedMap)
+        {
+            clone.issuedMap[original] = issued;
+        }
+
+        return clone;
+    }
+}
