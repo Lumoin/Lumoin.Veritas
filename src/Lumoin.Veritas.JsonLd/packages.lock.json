@@ -123,6 +123,12 @@
           "System.IO.Hashing": "[10.0.7, )"
         }
       },
+      "lumoin.veritas.linkeddata": {
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Veritas.Core": "[0.0.0, )"
+        }
+      },
       "System.IO.Hashing": {
         "type": "CentralTransitive",
         "requested": "[10.0.7, )",

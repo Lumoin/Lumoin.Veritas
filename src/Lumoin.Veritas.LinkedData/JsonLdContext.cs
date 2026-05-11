@@ -1,17 +1,21 @@
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 
-namespace Lumoin.Veritas.JsonLd;
+namespace Lumoin.Veritas.LinkedData;
 
 /// <summary>
-/// The active JSON-LD context for a point in document processing.
+/// The active Linked Data context for a point in document processing. The
+/// type is named <c>JsonLdContext</c> for naming continuity with the
+/// JSON-LD specification, but the structure is format-neutral and is
+/// reused by CBOR-LD and other Linked Data formats that adopt JSON-LD's
+/// active-context concept.
 /// </summary>
 /// <remarks>
 /// <para>
-/// An active context accumulates term definitions, vocabulary mapping, base IRI,
-/// language mapping, and direction as it processes <c>@context</c> entries.
-/// Contexts are immutable: every operation that modifies context state returns
-/// a new instance, leaving the original unchanged.
+/// An active context accumulates term definitions, vocabulary mapping,
+/// base IRI, language mapping, and direction as it processes context
+/// entries. Contexts are immutable: every operation that modifies context
+/// state returns a new instance, leaving the original unchanged.
 /// </para>
 /// <para>
 /// This corresponds to the "active context" concept defined in the
@@ -208,10 +212,104 @@ public sealed class JsonLdContext
     /// <summary>
     /// Returns a shallow copy of this context.
     /// </summary>
-    internal JsonLdContext Clone()
+    public JsonLdContext Clone()
     {
         return new JsonLdContext(new Dictionary<string, TermDefinition>(terms),
             BaseIri, OriginalBaseUrl, VocabularyMapping,
             DefaultLanguage, DefaultBaseDirection, Propagate, PreviousContext);
+    }
+
+    /// <summary>
+    /// Expands a compact IRI, keyword, or term against this active context.
+    /// </summary>
+    /// <param name="value">The value to expand.</param>
+    /// <param name="vocab">
+    /// When <c>true</c>, expansion uses <see cref="VocabularyMapping"/> for
+    /// unknown terms.
+    /// </param>
+    /// <param name="documentRelative">
+    /// When <c>true</c>, relative IRIs are resolved against
+    /// <see cref="BaseIri"/>.
+    /// </param>
+    /// <returns>The expanded IRI or keyword, or <c>null</c> if the value cannot be expanded.</returns>
+    public string? ExpandIri(string? value, bool vocab = false, bool documentRelative = false)
+    {
+        if(value is null || IriUtils.IsKeyword(value))
+        {
+            return value;
+        }
+
+        //If a keyword-like value appears that is not a known keyword, return null.
+        if(IriUtils.IsKeywordLike(value))
+        {
+            return null;
+        }
+
+        //If the value is in the term definitions, resolve it.
+        if(TryGetTerm(value, out TermDefinition? definition))
+        {
+            if(definition?.IriMapping is { } iriMapping && IriUtils.IsKeyword(iriMapping))
+            {
+                return iriMapping;
+            }
+
+            if(definition?.IriMapping is not null)
+            {
+                //Only return the mapping directly if it is already an absolute IRI or a keyword.
+                //If it is still a compact IRI (e.g. "foaf:name" stored before foaf was defined),
+                //fall through to the compact IRI expansion below.
+                if(IriUtils.IsAbsoluteIri(definition.IriMapping) || IriUtils.IsKeyword(definition.IriMapping))
+                {
+                    return definition.IriMapping;
+                }
+            }
+        }
+
+        //Handle compact IRIs of the form prefix:suffix.
+        int colonIndex = value.IndexOf(':', System.StringComparison.Ordinal);
+        if(colonIndex > 0)
+        {
+            string prefix = value[..colonIndex];
+            string suffix = value[(colonIndex + 1)..];
+
+            //_: is the blank node prefix — do not expand.
+            if(prefix == "_")
+            {
+                return value;
+            }
+
+            //A double-slash indicates an absolute IRI.
+            if(suffix.StartsWith("//", System.StringComparison.Ordinal))
+            {
+                return value;
+            }
+
+            if(TryGetTerm(prefix, out TermDefinition? prefixDefinition)
+                && prefixDefinition?.IriMapping is not null
+                && !IriUtils.IsKeyword(prefixDefinition.IriMapping))
+            {
+                return prefixDefinition.IriMapping + suffix;
+            }
+
+            //If the prefix is not a mapped term, check if the whole value is an absolute IRI.
+            if(IriUtils.IsAbsoluteIri(value))
+            {
+                return value;
+            }
+        }
+
+        //Vocabulary-relative expansion.
+        if(vocab && VocabularyMapping is not null)
+        {
+            return VocabularyMapping + value;
+        }
+
+        //Document-relative expansion.
+        if(documentRelative && BaseIri is not null)
+        {
+            return IriUtils.ResolveIri(BaseIri, value);
+        }
+
+        return value;
     }
 }

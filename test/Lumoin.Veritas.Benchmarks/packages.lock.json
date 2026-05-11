@@ -270,6 +270,19 @@
         "resolved": "9.0.0",
         "contentHash": "CJW+x/F6fmRQ7N6K8paasTw9PDZp4t7G76UjGNlSDgoHPF0h08vTzLYbLZpOLEJSg35d5wy2jCXGo84EN05DpQ=="
       },
+      "lumoin.veritas.cbor": {
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Veritas.Cid": "[0.0.0, )",
+          "Lumoin.Veritas.Core": "[0.0.0, )"
+        }
+      },
+      "lumoin.veritas.cid": {
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Veritas.Core": "[0.0.0, )"
+        }
+      },
       "lumoin.veritas.core": {
         "type": "Project",
         "dependencies": {

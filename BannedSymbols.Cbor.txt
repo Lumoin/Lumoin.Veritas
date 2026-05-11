@@ -1,0 +1,1 @@
+N:System.Formats.Cbor;Don't use BCL CBOR serialization in this project. The Lumoin.Veritas.Cbor project owns the CBOR codec; consume that. Test projects are exempt so that differential property tests against the BCL codec can run.

@@ -1,6 +1,7 @@
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Json;
 using Lumoin.Veritas.JsonLd;
+using Lumoin.Veritas.LinkedData;
 using System.Text;
 
 namespace Lumoin.Veritas.Tests.JsonLd;

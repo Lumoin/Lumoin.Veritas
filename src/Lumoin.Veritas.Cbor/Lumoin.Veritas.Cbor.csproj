@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Veritas.Cbor</RootNamespace>
+    <Description>General-purpose CBOR codec for Veritas. Implements RFC 8949 encoding and decoding with conformance-mode support, pool-aware buffer management, and pipeline-friendly IBufferWriter and ReadOnlySequence integration. Includes DRISL and dCBOR profile wrappers as sub-namespaces.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Cid\Lumoin.Veritas.Cid.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+  </ItemGroup>
+
+</Project>

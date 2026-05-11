@@ -23,6 +23,7 @@
     System.Formats.Cbor) into a library project violates that contract.
   -->
   <ItemGroup Label="Serialization">
+    <PackageVersion Include="System.Formats.Cbor" Version="10.0.7" />
     <PackageVersion Include="System.Text.Json" Version="10.0.5" />
   </ItemGroup>
   <!--
@@ -81,15 +82,18 @@
   </Target>
   <!--
     Validates that the serialization projects are referenced only by test and benchmark
-    projects. Library projects and the serialization projects themselves cannot take a
-    project reference to any project listed in RestrictedSerializationProjects. Runs
-    after project references are resolved.
+    projects, plus the explicitly whitelisted Lumoin.Veritas.CborLd library, which is
+    designed to layer CBOR-LD semantics on top of Lumoin.Veritas.Cbor and intentionally
+    takes that dependency. Every other library project and the serialization projects
+    themselves cannot take a project reference to any project listed in
+    RestrictedSerializationProjects. Runs after project references are resolved.
   -->
   <Target Name="ValidateProjectReferences" AfterTargets="ResolveProjectReferences" Condition="'$(DesignTimeBuild)' != 'true'">
     <PropertyGroup>
       <_IsTestProject Condition="$(MSBuildProjectName.EndsWith('.Tests'))">true</_IsTestProject>
       <_IsBenchmarkProject Condition="$(MSBuildProjectName.EndsWith('.Benchmarks'))">true</_IsBenchmarkProject>
-      <_IsAllowedToReferenceSerializationProjects Condition="'$(_IsTestProject)' == 'true' OR '$(_IsBenchmarkProject)' == 'true'">true</_IsAllowedToReferenceSerializationProjects>
+      <_IsCborLdProject Condition="'$(MSBuildProjectName)' == 'Lumoin.Veritas.CborLd'">true</_IsCborLdProject>
+      <_IsAllowedToReferenceSerializationProjects Condition="'$(_IsTestProject)' == 'true' OR '$(_IsBenchmarkProject)' == 'true' OR '$(_IsCborLdProject)' == 'true'">true</_IsAllowedToReferenceSerializationProjects>
     </PropertyGroup>
     <ValidateSerializationProjectReferences Condition="'$(_IsAllowedToReferenceSerializationProjects)' != 'true' AND '@(ProjectReference)' != ''" ProjectName="$(MSBuildProjectName)" ProjectReferences="@(ProjectReference)" RestrictedProjects="$(RestrictedSerializationProjects)" />
   </Target>

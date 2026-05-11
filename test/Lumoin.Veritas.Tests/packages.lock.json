@@ -150,6 +150,12 @@
           "Microsoft.Build.Tasks.Core": "17.14.28"
         }
       },
+      "System.Formats.Cbor": {
+        "type": "Direct",
+        "requested": "[10.0.7, )",
+        "resolved": "10.0.7",
+        "contentHash": "lqHPyoYhmrP7D0r8jLuBWUC0UaE+qmoZqm85OF8Q/YNH/gYDAR1ax6quqHPPgFFJV4P9qmqrMYOSwF2imqcsxQ=="
+      },
       "DotLiquid": {
         "type": "Transitive",
         "resolved": "2.1.405",
@@ -363,6 +369,27 @@
           "Lumoin.Veritas.Core": "[0.0.0, )"
         }
       },
+      "lumoin.veritas.cbor": {
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Veritas.Cid": "[0.0.0, )",
+          "Lumoin.Veritas.Core": "[0.0.0, )"
+        }
+      },
+      "lumoin.veritas.cborld": {
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Veritas.Cbor": "[0.0.0, )",
+          "Lumoin.Veritas.Core": "[0.0.0, )",
+          "Lumoin.Veritas.LinkedData": "[0.0.0, )"
+        }
+      },
+      "lumoin.veritas.cid": {
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Veritas.Core": "[0.0.0, )"
+        }
+      },
       "lumoin.veritas.core": {
         "type": "Project",
         "dependencies": {
@@ -380,6 +407,13 @@
         }
       },
       "lumoin.veritas.jsonld": {
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Veritas.Core": "[0.0.0, )",
+          "Lumoin.Veritas.LinkedData": "[0.0.0, )"
+        }
+      },
+      "lumoin.veritas.linkeddata": {
         "type": "Project",
         "dependencies": {
           "Lumoin.Veritas.Core": "[0.0.0, )"

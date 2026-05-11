@@ -24,6 +24,14 @@ namespace Lumoin.Veritas.Core;
 /// The graph can be a <see cref="NamedNode"/>, <see cref="BlankNode"/>, or <c>null</c>
 /// for the default graph.
 /// </para>
+/// <para>
+/// For source-tracked emission — where each quad carries a reference
+/// to the producer-assigned position it came from — see
+/// <see cref="Lumoin.Veritas.Core.Sourcing.EmittedQuad"/>. Producers
+/// that participate in provenance, witness-chain construction, or
+/// cross-replica synchronisation emit <c>EmittedQuad</c> wrappers
+/// alongside the bare <see cref="Quad"/> stream.
+/// </para>
 /// </remarks>
 /// <param name="Subject">The subject of the statement. Must be a named node, blank node, or triple term.</param>
 /// <param name="Predicate">The predicate of the statement. Must be a named node.</param>

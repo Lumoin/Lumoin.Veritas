@@ -6,6 +6,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Sourcing;
 
 namespace Lumoin.Veritas.NQuads;
 
@@ -80,6 +81,86 @@ public static class NQuadsReader
         return ParseAsync(stream, pool, cancellationToken);
     }
 
+    /// <summary>
+    /// Parses N-Quads from a stream, yielding one
+    /// <see cref="EmittedQuad"/> per statement with provenance back to the
+    /// source document.
+    /// </summary>
+    /// <remarks>
+    /// Each emitted quad carries a <see cref="DocumentNodeRef"/> in its
+    /// <see cref="EmittedQuad.Source"/> field. The reference's
+    /// <see cref="DocumentNodeRef.DocumentId"/> is the
+    /// <paramref name="documentId"/> the caller supplies; its
+    /// <see cref="DocumentNodeRef.Index"/> is the zero-based position of
+    /// the quad in document order. Comments and blank lines do not
+    /// consume an index, so indexes are dense across the parsed quads.
+    /// Span population is deferred to a future surface-syntax loader; the
+    /// reference is the document-node ordinal alone.
+    /// </remarks>
+    /// <param name="stream">The UTF-8 encoded N-Quads input stream.</param>
+    /// <param name="documentId">
+    /// The identity of the document being parsed. The caller mints this
+    /// once — typically by applying the application's chosen
+    /// <c>VeritasHash</c> to the document's canonical bytes — and passes
+    /// it in.
+    /// </param>
+    /// <param name="pool">
+    /// The pool used for interning term strings. If <c>null</c>, a temporary pool
+    /// is created and disposed when enumeration ends.
+    /// </param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    /// <returns>An async sequence of parsed quads paired with document-node references.</returns>
+    /// <exception cref="NQuadsParseException">
+    /// A line was encountered that could not be parsed as a valid N-Quads statement.
+    /// </exception>
+    public static IAsyncEnumerable<EmittedQuad> ReadWithSourceAsync(
+        Stream stream,
+        DocumentId documentId,
+        Utf8StringPool? pool = null,
+        CancellationToken cancellationToken = default)
+    {
+        return ParseWithSourceAsync(stream, documentId, pool, cancellationToken);
+    }
+
+    /// <summary>
+    /// Parses N-Quads from a <see cref="ReadOnlyMemory{T}"/> buffer, yielding
+    /// one <see cref="EmittedQuad"/> per statement with provenance back to
+    /// the source document.
+    /// </summary>
+    /// <remarks>
+    /// Each emitted quad carries a <see cref="DocumentNodeRef"/> in its
+    /// <see cref="EmittedQuad.Source"/> field. The reference's
+    /// <see cref="DocumentNodeRef.DocumentId"/> is the
+    /// <paramref name="documentId"/> the caller supplies; its
+    /// <see cref="DocumentNodeRef.Index"/> is the zero-based position of
+    /// the quad in document order. Comments and blank lines do not
+    /// consume an index, so indexes are dense across the parsed quads.
+    /// Span population is deferred to a future surface-syntax loader; the
+    /// reference is the document-node ordinal alone.
+    /// </remarks>
+    /// <param name="nquads">The UTF-8 encoded N-Quads data.</param>
+    /// <param name="documentId">
+    /// The identity of the document being parsed. The caller mints this
+    /// once — typically by applying the application's chosen
+    /// <c>VeritasHash</c> to the document's canonical bytes — and passes
+    /// it in.
+    /// </param>
+    /// <param name="pool">
+    /// The pool used for interning term strings. If <c>null</c>, a temporary pool
+    /// is created and disposed when enumeration ends.
+    /// </param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    /// <returns>An async sequence of parsed quads paired with document-node references.</returns>
+    public static IAsyncEnumerable<EmittedQuad> ReadWithSourceAsync(
+        ReadOnlyMemory<byte> nquads,
+        DocumentId documentId,
+        Utf8StringPool? pool = null,
+        CancellationToken cancellationToken = default)
+    {
+        MemoryStream stream = new(nquads.ToArray(), writable: false);
+        return ParseWithSourceAsync(stream, documentId, pool, cancellationToken);
+    }
+
     private static async IAsyncEnumerable<Quad> ParseAsync(
         Stream stream,
         Utf8StringPool? externalPool,
@@ -115,6 +196,55 @@ public static class NQuadsReader
 
                 Quad quad = ParseLine(trimmed, pool, lineNumber);
                 yield return quad;
+            }
+        }
+        finally
+        {
+            ownedPool?.Dispose();
+        }
+    }
+
+    private static async IAsyncEnumerable<EmittedQuad> ParseWithSourceAsync(
+        Stream stream,
+        DocumentId documentId,
+        Utf8StringPool? externalPool,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        //Declare before try so the finally block can always reach it.
+        Utf8StringPool? ownedPool = null;
+
+        try
+        {
+            //If the caller supplied a pool, use it directly and leave ownedPool null
+            //so the finally block does not dispose what we do not own.
+            Utf8StringPool pool = externalPool ?? (ownedPool = new Utf8StringPool());
+
+            using StreamReader reader = new(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
+
+            int lineNumber = 0;
+            int nodeIndex = 0;
+            string? line;
+
+            while((line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)) is not null)
+            {
+                lineNumber++;
+                cancellationToken.ThrowIfCancellationRequested();
+
+                ReadOnlySpan<byte> lineBytes = Encoding.UTF8.GetBytes(line);
+                ReadOnlySpan<byte> trimmed = lineBytes.Trim((byte)' ').Trim((byte)'\t');
+
+                //Skip empty lines and comments. These do not consume a node index,
+                //so indexes are dense across the parsed quads.
+                if(trimmed.IsEmpty || trimmed[0] == Hash)
+                {
+                    continue;
+                }
+
+                Quad quad = ParseLine(trimmed, pool, lineNumber);
+                DocumentNodeRef nodeRef = new(documentId, nodeIndex);
+                EmittedQuad emitted = new(quad, nodeRef);
+                nodeIndex++;
+                yield return emitted;
             }
         }
         finally

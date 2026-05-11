@@ -1,4 +1,5 @@
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.LinkedData;
 
 namespace Lumoin.Veritas.JsonLd;
 

@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.JsonLd.Document;
+using Lumoin.Veritas.LinkedData;
 
 namespace Lumoin.Veritas.JsonLd;
 
@@ -349,7 +350,7 @@ public static class ContextProcessor
                 else
                 {
                     //Relative vocab is expanded against the current vocabulary or base.
-                    string? expanded = IriUtils.ExpandIri(vocabValue, result, vocab: true);
+                    string? expanded = result.ExpandIri(vocabValue, vocab: true);
                     result = result.WithVocabularyMapping(expanded ?? vocabValue);
                 }
             }
@@ -481,7 +482,7 @@ public static class ContextProcessor
                     && !IriUtils.IsAbsoluteIri(existingDef.IriMapping)
                     && !IriUtils.IsKeyword(existingDef.IriMapping))
                 {
-                    string? reExpanded = IriUtils.ExpandIri(existingDef.IriMapping, activeContext, vocab: true);
+                    string? reExpanded = activeContext.ExpandIri(existingDef.IriMapping, vocab: true);
                     if(reExpanded is not null && reExpanded != existingDef.IriMapping)
                     {
                         TermDefinition updated = new()
@@ -575,7 +576,7 @@ public static class ContextProcessor
                 }
             }
 
-            string? expanded = IriUtils.ExpandIri(iriMapping, activeContext, vocab: true);
+            string? expanded = activeContext.ExpandIri(iriMapping, vocab: true);
 
             TermDefinition definition = new()
             {
@@ -609,7 +610,7 @@ public static class ContextProcessor
         string? reverseProperty = null;
         string? nestValue = null;
         string? indexMapping = null;
-        JsonLdNode? localContextValue = null;
+        ILinkedDataDocumentNode? localContextValue = null;
 
         //Handle @protected override.
         if(value.TryGetProperty("@protected", out JsonLdNode termProtected))
@@ -637,7 +638,7 @@ public static class ContextProcessor
             string typeValue = typeElement.GetString();
             string? expandedType = typeValue is "@id" or "@vocab" or "@json" or "@none"
                 ? typeValue
-                : IriUtils.ExpandIri(typeValue, activeContext, vocab: true);
+                : activeContext.ExpandIri(typeValue, vocab: true);
 
             if(expandedType is null || (!IriUtils.IsAbsoluteIri(expandedType) && !IriUtils.IsKeyword(expandedType)))
             {
@@ -667,7 +668,7 @@ public static class ContextProcessor
             }
 
             string reverseValue = reverseElement.GetString();
-            string? expandedReverse = IriUtils.ExpandIri(reverseValue, activeContext, vocab: true);
+            string? expandedReverse = activeContext.ExpandIri(reverseValue, vocab: true);
 
             if(!IriUtils.IsAbsoluteIri(expandedReverse ?? ""))
             {
@@ -715,7 +716,7 @@ public static class ContextProcessor
 
                     if(!IriUtils.IsKeyword(idValue) || idValue != term)
                     {
-                        string? expanded = IriUtils.ExpandIri(idValue, activeContext, vocab: true);
+                        string? expanded = activeContext.ExpandIri(idValue, vocab: true);
                         termIriMapping = expanded;
 
                         if(termIriMapping is not null && !IriUtils.IsAbsoluteIri(termIriMapping) && !IriUtils.IsKeyword(termIriMapping))
@@ -771,7 +772,7 @@ public static class ContextProcessor
             else
             {
                 //No @id: expand the term against vocabulary.
-                termIriMapping = IriUtils.ExpandIri(term, activeContext, vocab: true);
+                termIriMapping = activeContext.ExpandIri(term, vocab: true);
             }
         }
 

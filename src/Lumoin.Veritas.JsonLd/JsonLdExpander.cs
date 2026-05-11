@@ -1,5 +1,6 @@
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.JsonLd.Document;
+using Lumoin.Veritas.LinkedData;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
@@ -190,7 +191,7 @@ public static class JsonLdExpander
         Utf8StringPool pool,
         CancellationToken cancellationToken)
     {
-        string? expandedProperty = IriUtils.ExpandIri(propertyName, activeContext, vocab: true);
+        string? expandedProperty = activeContext.ExpandIri(propertyName, vocab: true);
 
         if(expandedProperty is null || (!expandedProperty.Contains(':', StringComparison.Ordinal) && !IriUtils.IsKeyword(expandedProperty)))
         {
@@ -209,7 +210,7 @@ public static class JsonLdExpander
         //to the underlying JsonLdNode struct.
         JsonLdContext propertyContext = activeContext;
         if(activeContext.TryGetTerm(propertyName, out TermDefinition? termDef)
-            && termDef?.LocalContext is { } scopedContext)
+            && termDef?.LocalContext is JsonLdNode scopedContext)
         {
             propertyContext = await ContextProcessor.ProcessAsync(
                 activeContext, scopedContext, baseUrl, resolver, parser, cancellationToken)
@@ -273,7 +274,7 @@ public static class JsonLdExpander
         if(value.Kind == JsonLdNodeKind.Object && value.TryGetProperty("@id", out JsonLdNode refId))
         {
             string idStr = refId.Kind == JsonLdNodeKind.String ? refId.GetString() : "";
-            string? expandedId = IriUtils.ExpandIri(idStr, activeContext, documentRelative: true);
+            string? expandedId = activeContext.ExpandIri(idStr, documentRelative: true);
 
             RdfTerm objectNode = expandedId is not null
                 ? expandedId.StartsWith("_:", StringComparison.Ordinal)
@@ -391,7 +392,7 @@ public static class JsonLdExpander
             && idElement.Kind == JsonLdNodeKind.String)
         {
             string idValue = idElement.GetString();
-            string? expanded = IriUtils.ExpandIri(idValue, activeContext, documentRelative: true);
+            string? expanded = activeContext.ExpandIri(idValue, documentRelative: true);
 
             if(expanded is not null)
             {
@@ -419,7 +420,7 @@ public static class JsonLdExpander
 
         void EmitType(string typeValue)
         {
-            string? expanded = IriUtils.ExpandIri(typeValue, activeContext, vocab: true);
+            string? expanded = activeContext.ExpandIri(typeValue, vocab: true);
             if(expanded is null)
             {
                 return;
@@ -524,7 +525,7 @@ public static class JsonLdExpander
                 if(termDef?.TypeMapping is "@id" or "@vocab")
                 {
                     bool useVocab = termDef.TypeMapping == "@vocab";
-                    string? expanded = IriUtils.ExpandIri(str, activeContext, vocab: useVocab, documentRelative: !useVocab);
+                    string? expanded = activeContext.ExpandIri(str, vocab: useVocab, documentRelative: !useVocab);
                     if(expanded is null)
                     {
                         return null;

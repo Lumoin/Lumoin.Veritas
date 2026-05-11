@@ -1,19 +1,28 @@
 using System.Collections.Generic;
 
-namespace Lumoin.Veritas.JsonLd;
+namespace Lumoin.Veritas.LinkedData;
 
 /// <summary>
-/// The resolved definition of a single term within a JSON-LD context.
+/// The resolved definition of a single term within an active Linked Data
+/// context. Maps a compact term to its expanded IRI and controls how
+/// values at that term are interpreted: their datatype, language,
+/// container type, and so on.
 /// </summary>
 /// <remarks>
 /// <para>
-/// A term definition maps a compact term to its expanded IRI and controls
-/// how values at that term are interpreted: their datatype, language,
-/// container type, and so on.
+/// Term definitions are produced by the format-specific context-processing
+/// algorithm (currently the JSON-LD <c>ContextProcessor</c>) and consumed
+/// by the matching expansion and compaction algorithms. The shape of the
+/// definition is identical for JSON-LD and CBOR-LD, which is why the type
+/// lives in the format-neutral LinkedData project.
 /// </para>
 /// <para>
-/// Term definitions are produced by the context processing algorithm and
-/// consumed by the expansion and compaction algorithms.
+/// <see cref="LocalContext"/> carries the embedded context value associated
+/// with this term for type-scoped or property-scoped context processing.
+/// Typed as <see cref="ILinkedDataDocumentNode"/> so the slot is
+/// format-neutral; the format-specific node type (e.g. JSON-LD's
+/// <c>JsonLdNode</c>) implements that interface and is cast back at the
+/// format boundary.
 /// </para>
 /// </remarks>
 public sealed class TermDefinition
@@ -98,14 +107,18 @@ public sealed class TermDefinition
     public string? IndexMapping { get; init; }
 
     /// <summary>
-    /// Gets the context associated with this term for type-scoped context processing.
+    /// Gets the document-tree node carrying the embedded context associated
+    /// with this term for type-scoped or property-scoped context processing.
     /// </summary>
     /// <remarks>
-    /// Stored as a detached <see cref="JsonLdNode"/> whose lifetime is independent
-    /// of any document the term definition was extracted from. The node was produced
-    /// via the navigator's clone delegate at the time the term definition was created.
+    /// Stored as a detached node whose lifetime is independent of any
+    /// document the term definition was extracted from. Format adapters
+    /// produce the node via their parser's clone operation at the time the
+    /// term definition is created. The format-specific node type (e.g.
+    /// <c>JsonLdNode</c>) implements <see cref="ILinkedDataDocumentNode"/>
+    /// and is cast back at the format boundary.
     /// </remarks>
-    public JsonLdNode? LocalContext { get; init; }
+    public ILinkedDataDocumentNode? LocalContext { get; init; }
 
     /// <summary>
     /// Gets the base IRI associated with this term definition, if set.

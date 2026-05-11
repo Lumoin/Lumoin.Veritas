@@ -32,8 +32,14 @@
       CA1849: Call async methods when in an async method. The benchmark
               host code synchronously waits on async paths to obtain wall
               time over the whole operation.
+      CA1515: Types could be internal. Benchmark classes are by
+              convention public; the analyzer cannot see that BDN
+              reflects on them.
+      CA5394: System.Random is insecure. Benchmarks use deterministic
+              non-secure randomness to build reproducible corpora; no
+              security boundary applies.
     -->
-    <NoWarn>$(NoWarn);CA1707;CA1812;CA1822;CA1849</NoWarn>
+    <NoWarn>$(NoWarn);CA1707;CA1812;CA1822;CA1849;CA1515;CA5394</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -41,6 +47,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Cbor\Lumoin.Veritas.Cbor.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Cid\Lumoin.Veritas.Cid.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
   </ItemGroup>
 

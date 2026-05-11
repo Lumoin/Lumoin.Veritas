@@ -1,4 +1,5 @@
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.NQuads;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System.Text;
@@ -140,6 +141,47 @@ internal sealed class NQuadsRoundTripTests
         List<Quad> roundTripped = await RoundTripAsync(original, TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.HasCount(100, roundTripped);
+    }
+
+    [TestMethod]
+    public async Task RoundTripThroughSourceAwareOverloadPreservesQuads()
+    {
+        using Utf8StringPool pool = new();
+        Quad[] original =
+        [
+            new(
+                new NamedNode(pool.Intern("http://example.org/s1")),
+                new NamedNode(pool.Intern("http://example.org/p")),
+                new NamedNode(pool.Intern("http://example.org/o1"))),
+            new(
+                new NamedNode(pool.Intern("http://example.org/s2")),
+                new NamedNode(pool.Intern("http://example.org/p")),
+                new Literal(
+                    pool.Intern("hello"),
+                    new NamedNode(pool.Intern("http://www.w3.org/2001/XMLSchema#string"))))
+        ];
+
+        using MemoryStream output = new();
+        await NQuadsWriter.WriteAsync(original, output, TestContext.CancellationToken).ConfigureAwait(false);
+
+        DocumentId documentId = new(0xCAFEBABE);
+        using Utf8StringPool readPool = new();
+
+        List<EmittedQuad> roundTripped = [];
+        await foreach(EmittedQuad emitted in NQuadsReader.ReadWithSourceAsync(
+            new ReadOnlyMemory<byte>(output.ToArray()),
+            documentId, readPool, TestContext.CancellationToken).ConfigureAwait(false))
+        {
+            roundTripped.Add(emitted);
+        }
+
+        Assert.HasCount(original.Length, roundTripped);
+        for(int i = 0; i < original.Length; i++)
+        {
+            AssertQuadsEqual(original[i], roundTripped[i].Quad);
+            Assert.AreEqual(documentId, roundTripped[i].Source!.Value.DocumentId);
+            Assert.AreEqual(i, roundTripped[i].Source!.Value.Index);
+        }
     }
 
     private static async Task<List<Quad>> RoundTripAsync(IEnumerable<Quad> quads, CancellationToken cancellationToken)
