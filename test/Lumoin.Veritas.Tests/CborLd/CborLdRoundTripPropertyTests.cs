@@ -29,7 +29,7 @@ internal sealed class CborLdRoundTripPropertyTests
             CborLdDecodeResult result = CborLdDecoder.DecodeAsync(
                 buffer.WrittenMemory,
                 CborLdRegistry.Empty.AsDelegate(),
-                TestContext.CancellationToken)
+                cancellationToken: TestContext.CancellationToken)
                 .AsTask().GetAwaiter().GetResult();
 
             Assert.AreEqual(0, result.RegistryEntryId);

@@ -13,28 +13,28 @@ internal sealed class RdfsInferenceTests
     //RDFS vocabulary terms (rdf:type, rdfs:subClassOf, etc.) are IRIs by definition, so the
     //narrowed IriId wrapper is used. Class IRIs and property IRIs are likewise IriId. Instance
     //identifiers could be IRIs or blank nodes in general, so they remain the wider TermId.
-    private static readonly IriId RdfType = IriId.FromUnchecked(TermId.FromEncoded(1));
-    private static readonly IriId RdfsSubClassOf = IriId.FromUnchecked(TermId.FromEncoded(2));
-    private static readonly IriId RdfsSubPropertyOf = IriId.FromUnchecked(TermId.FromEncoded(3));
-    private static readonly IriId RdfsDomain = IriId.FromUnchecked(TermId.FromEncoded(4));
-    private static readonly IriId RdfsRange = IriId.FromUnchecked(TermId.FromEncoded(5));
+    private static IriId RdfType { get; } = IriId.FromUnchecked(TermId.FromEncoded(1));
+    private static IriId RdfsSubClassOf { get; } = IriId.FromUnchecked(TermId.FromEncoded(2));
+    private static IriId RdfsSubPropertyOf { get; } = IriId.FromUnchecked(TermId.FromEncoded(3));
+    private static IriId RdfsDomain { get; } = IriId.FromUnchecked(TermId.FromEncoded(4));
+    private static IriId RdfsRange { get; } = IriId.FromUnchecked(TermId.FromEncoded(5));
 
     //Class identifiers begin at 100.
-    private static readonly IriId Animal = IriId.FromUnchecked(TermId.FromEncoded(100));
-    private static readonly IriId Mammal = IriId.FromUnchecked(TermId.FromEncoded(101));
-    private static readonly IriId Dog = IriId.FromUnchecked(TermId.FromEncoded(102));
-    private static readonly IriId Person = IriId.FromUnchecked(TermId.FromEncoded(103));
+    private static IriId Animal { get; } = IriId.FromUnchecked(TermId.FromEncoded(100));
+    private static IriId Mammal { get; } = IriId.FromUnchecked(TermId.FromEncoded(101));
+    private static IriId Dog { get; } = IriId.FromUnchecked(TermId.FromEncoded(102));
+    private static IriId Person { get; } = IriId.FromUnchecked(TermId.FromEncoded(103));
 
     //Property identifiers begin at 200.
-    private static readonly IriId HasParent = IriId.FromUnchecked(TermId.FromEncoded(200));
-    private static readonly IriId HasMother = IriId.FromUnchecked(TermId.FromEncoded(201));
-    private static readonly IriId OwnsPet = IriId.FromUnchecked(TermId.FromEncoded(202));
+    private static IriId HasParent { get; } = IriId.FromUnchecked(TermId.FromEncoded(200));
+    private static IriId HasMother { get; } = IriId.FromUnchecked(TermId.FromEncoded(201));
+    private static IriId OwnsPet { get; } = IriId.FromUnchecked(TermId.FromEncoded(202));
 
     //Instance identifiers begin at 1000. Kept as TermId since instances can be
     //either IRIs or blank nodes in general RDF data.
-    private static readonly TermId Fido = TermId.FromEncoded(1000);
-    private static readonly TermId Alice = TermId.FromEncoded(1001);
-    private static readonly TermId Bob = TermId.FromEncoded(1002);
+    private static TermId Fido { get; } = TermId.FromEncoded(1000);
+    private static TermId Alice { get; } = TermId.FromEncoded(1001);
+    private static TermId Bob { get; } = TermId.FromEncoded(1002);
 
     private static RdfsVocabularyIds Vocab =>
         new(RdfType, RdfsSubClassOf, RdfsSubPropertyOf, RdfsDomain, RdfsRange);

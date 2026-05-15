@@ -19,7 +19,6 @@ public static class CidFormatter
     private const byte HashTypeSha256 = 0x12;
     private const byte HashLength32 = 0x20;
     private const int BinaryLength = 36;
-    private const int DigestLength = 32;
     private const char StringPrefix = 'b';
 
     //RFC 4648 Section 6 base32 alphabet, lowercase.
@@ -44,7 +43,7 @@ public static class CidFormatter
         output[1] = (byte)cid.Codec;
         output[2] = HashTypeSha256;
         output[3] = HashLength32;
-        cid.Digest.AsSpan(0, DigestLength).CopyTo(output.AsSpan(4));
+        cid.Digest.CopyTo(output.AsSpan(4));
         return output;
     }
 
@@ -69,7 +68,7 @@ public static class CidFormatter
         binary[1] = (byte)cid.Codec;
         binary[2] = HashTypeSha256;
         binary[3] = HashLength32;
-        cid.Digest.AsSpan(0, DigestLength).CopyTo(binary[4..]);
+        cid.Digest.CopyTo(binary[4..]);
 
         //Encoded length: ceil(36 * 8 / 5) = 58 characters; one byte for the 'b' prefix.
         Span<char> chars = stackalloc char[1 + 58];
@@ -112,18 +111,8 @@ public static class CidFormatter
 
     private static void ValidateForFormat(Cid cid)
     {
-        if(cid.Digest is null)
-        {
-            throw new ArgumentException("CID digest must not be null.", nameof(cid));
-        }
-
-        if(cid.Digest.Length != DigestLength)
-        {
-            throw new ArgumentException(
-                $"CID digest must be exactly {DigestLength} bytes; got {cid.Digest.Length}.",
-                nameof(cid));
-        }
-
+        //Digest length is fixed by Digest32's inline-array shape; no length
+        //check needed. Codec is the only remaining wire-form invariant.
         if(!Enum.IsDefined(cid.Codec))
         {
             throw new ArgumentException(

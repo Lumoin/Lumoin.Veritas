@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 
 namespace Lumoin.Veritas.LinkedData;
@@ -18,16 +19,48 @@ namespace Lumoin.Veritas.LinkedData;
 /// state returns a new instance, leaving the original unchanged.
 /// </para>
 /// <para>
+/// The term store is a persistent Hash Array Mapped Trie
+/// (<see cref="ImmutableDictionary{TKey,TValue}"/>) so the
+/// <c>With*</c> mutators share structure with their source: a single-term
+/// addition costs O(log N) instead of copying the whole term map, and a
+/// mutator that changes only a scalar field (e.g. <see cref="WithBaseIri"/>)
+/// passes the term reference through unchanged. This makes deeply-nested
+/// scoped-context stacks cheap to push and pop.
+/// </para>
+/// <para>
+/// An inverted index keyed on namespace-IRI maintains the reverse mapping
+/// from each prefix term's <see cref="TermDefinition.IriMapping"/> back to
+/// the term name. Populated automatically on <see cref="WithTerm"/> when a
+/// definition is registered with <see cref="TermDefinition.Prefix"/> set to
+/// <c>true</c>; consulted by compaction algorithms to convert absolute IRIs
+/// to their compact <c>prefix:suffix</c> form. The index shares structure
+/// with its source through the same persistent-map mechanism as the term
+/// store, so push/pop of context frames remains O(1).
+/// </para>
+/// <para>
 /// This corresponds to the "active context" concept defined in the
 /// JSON-LD 1.1 Processing Algorithms specification.
 /// </para>
 /// </remarks>
 public sealed class JsonLdContext
 {
-    private readonly Dictionary<string, TermDefinition> terms;
+    private readonly ImmutableDictionary<string, TermDefinition> terms;
+
+    /// <summary>
+    /// Inverted index keyed on namespace IRI. Each entry is the set of
+    /// prefix-term names that have the keyed IRI as their
+    /// <see cref="TermDefinition.IriMapping"/>. Sorted by
+    /// <see cref="ShortestThenOrdinalComparer"/> so <see cref="ImmutableSortedSet{T}.Min"/>
+    /// returns the JSON-LD-spec-correct best candidate for compaction
+    /// (shortest term, then ordinal-least). Entries are removed when their
+    /// set becomes empty so absence-of-key cleanly means "no prefix term
+    /// exists for this IRI" without empty-set sentinels.
+    /// </summary>
+    private readonly ImmutableDictionary<string, ImmutableSortedSet<string>> prefixIndex;
 
     private JsonLdContext(
-        Dictionary<string, TermDefinition> terms,
+        ImmutableDictionary<string, TermDefinition> terms,
+        ImmutableDictionary<string, ImmutableSortedSet<string>> prefixIndex,
         string? baseIri,
         string? originalBaseUrl,
         string? vocabularyMapping,
@@ -37,6 +70,7 @@ public sealed class JsonLdContext
         JsonLdContext? previousContext)
     {
         this.terms = terms;
+        this.prefixIndex = prefixIndex;
         BaseIri = baseIri;
         OriginalBaseUrl = originalBaseUrl;
         VocabularyMapping = vocabularyMapping;
@@ -50,7 +84,8 @@ public sealed class JsonLdContext
     /// Gets an empty context with no mappings.
     /// </summary>
     public static JsonLdContext Empty { get; } = new(
-        terms: [],
+        terms: ImmutableDictionary<string, TermDefinition>.Empty,
+        prefixIndex: ImmutableDictionary<string, ImmutableSortedSet<string>>.Empty,
         baseIri: null,
         originalBaseUrl: null,
         vocabularyMapping: null,
@@ -99,7 +134,7 @@ public sealed class JsonLdContext
     /// <summary>
     /// Gets all term names defined in this context.
     /// </summary>
-    public IReadOnlyCollection<string> Terms => terms.Keys;
+    public IEnumerable<string> Terms => terms.Keys;
 
     /// <summary>
     /// Attempts to retrieve the term definition for the given term name.
@@ -113,6 +148,37 @@ public sealed class JsonLdContext
     }
 
     /// <summary>
+    /// Attempts to find a registered prefix term whose
+    /// <see cref="TermDefinition.IriMapping"/> equals
+    /// <paramref name="namespaceIri"/>. When multiple prefix terms share
+    /// the same IRI mapping, the JSON-LD-spec-correct candidate is
+    /// returned (shortest term first, then ordinal-least).
+    /// </summary>
+    /// <param name="namespaceIri">The namespace IRI to look up, typically a
+    /// boundary-delimited prefix of an absolute IRI being compacted.</param>
+    /// <param name="prefixTerm">The selected prefix term name, when found.</param>
+    /// <returns><c>true</c> if a prefix term is registered for the IRI; otherwise, <c>false</c>.</returns>
+    /// <remarks>
+    /// Designed for the JSON-LD compaction algorithm's boundary-hash walk:
+    /// given an absolute IRI, split it at each viable namespace boundary
+    /// (<c>/</c>, <c>#</c>, <c>:</c>), call this method with the prefix
+    /// portion, and on the first hit emit <c>prefixTerm:suffix</c>. The
+    /// query is O(1) amortised on the underlying hash trie.
+    /// </remarks>
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings", Justification = "String URIs follow the JSON-LD specification convention throughout the processing algorithm.")]
+    public bool TryGetPrefixTerm(string namespaceIri, [NotNullWhen(true)] out string? prefixTerm)
+    {
+        if(prefixIndex.TryGetValue(namespaceIri, out ImmutableSortedSet<string>? candidates) && candidates.Count > 0)
+        {
+            prefixTerm = candidates.Min!;
+            return true;
+        }
+
+        prefixTerm = null;
+        return false;
+    }
+
+    /// <summary>
     /// Returns a new context with the given term definition added or replaced.
     /// </summary>
     /// <param name="term">The term name.</param>
@@ -120,8 +186,24 @@ public sealed class JsonLdContext
     /// <returns>A new context containing the updated definition.</returns>
     public JsonLdContext WithTerm(string term, TermDefinition definition)
     {
-        Dictionary<string, TermDefinition> updated = new(terms) { [term] = definition };
-        return new JsonLdContext(updated, BaseIri, OriginalBaseUrl, VocabularyMapping,
+        ImmutableDictionary<string, ImmutableSortedSet<string>> updatedIndex = prefixIndex;
+
+        //If the previous definition at this term was a prefix definition,
+        //remove its inverted-index entry before adding the new one.
+        if(terms.TryGetValue(term, out TermDefinition? existing)
+            && existing is { Prefix: true, IriMapping: { } existingIri })
+        {
+            updatedIndex = RemoveFromPrefixIndex(updatedIndex, existingIri, term);
+        }
+
+        //Add the new definition's inverted-index entry when it is a prefix term.
+        if(definition is { Prefix: true, IriMapping: { } newIri })
+        {
+            updatedIndex = AddToPrefixIndex(updatedIndex, newIri, term);
+        }
+
+        return new JsonLdContext(terms.SetItem(term, definition), updatedIndex,
+            BaseIri, OriginalBaseUrl, VocabularyMapping,
             DefaultLanguage, DefaultBaseDirection, Propagate, PreviousContext);
     }
 
@@ -132,9 +214,15 @@ public sealed class JsonLdContext
     /// <returns>A new context without the term.</returns>
     public JsonLdContext WithoutTerm(string term)
     {
-        Dictionary<string, TermDefinition> updated = new(terms);
-        updated.Remove(term);
-        return new JsonLdContext(updated, BaseIri, OriginalBaseUrl, VocabularyMapping,
+        ImmutableDictionary<string, ImmutableSortedSet<string>> updatedIndex = prefixIndex;
+        if(terms.TryGetValue(term, out TermDefinition? existing)
+            && existing is { Prefix: true, IriMapping: { } existingIri })
+        {
+            updatedIndex = RemoveFromPrefixIndex(updatedIndex, existingIri, term);
+        }
+
+        return new JsonLdContext(terms.Remove(term), updatedIndex,
+            BaseIri, OriginalBaseUrl, VocabularyMapping,
             DefaultLanguage, DefaultBaseDirection, Propagate, PreviousContext);
     }
 
@@ -143,7 +231,7 @@ public sealed class JsonLdContext
     /// </summary>
     public JsonLdContext WithBaseIri(string? baseIri)
     {
-        return new JsonLdContext(new Dictionary<string, TermDefinition>(terms),
+        return new JsonLdContext(terms, prefixIndex,
             baseIri, OriginalBaseUrl, VocabularyMapping,
             DefaultLanguage, DefaultBaseDirection, Propagate, PreviousContext);
     }
@@ -153,7 +241,7 @@ public sealed class JsonLdContext
     /// </summary>
     public JsonLdContext WithVocabularyMapping(string? vocab)
     {
-        return new JsonLdContext(new Dictionary<string, TermDefinition>(terms),
+        return new JsonLdContext(terms, prefixIndex,
             BaseIri, OriginalBaseUrl, vocab,
             DefaultLanguage, DefaultBaseDirection, Propagate, PreviousContext);
     }
@@ -163,7 +251,7 @@ public sealed class JsonLdContext
     /// </summary>
     public JsonLdContext WithDefaultLanguage(string? language)
     {
-        return new JsonLdContext(new Dictionary<string, TermDefinition>(terms),
+        return new JsonLdContext(terms, prefixIndex,
             BaseIri, OriginalBaseUrl, VocabularyMapping,
             language, DefaultBaseDirection, Propagate, PreviousContext);
     }
@@ -173,7 +261,7 @@ public sealed class JsonLdContext
     /// </summary>
     public JsonLdContext WithDefaultBaseDirection(string? direction)
     {
-        return new JsonLdContext(new Dictionary<string, TermDefinition>(terms),
+        return new JsonLdContext(terms, prefixIndex,
             BaseIri, OriginalBaseUrl, VocabularyMapping,
             DefaultLanguage, direction, Propagate, PreviousContext);
     }
@@ -183,7 +271,7 @@ public sealed class JsonLdContext
     /// </summary>
     public JsonLdContext WithPropagate(bool propagate)
     {
-        return new JsonLdContext(new Dictionary<string, TermDefinition>(terms),
+        return new JsonLdContext(terms, prefixIndex,
             BaseIri, OriginalBaseUrl, VocabularyMapping,
             DefaultLanguage, DefaultBaseDirection, propagate, PreviousContext);
     }
@@ -193,7 +281,7 @@ public sealed class JsonLdContext
     /// </summary>
     public JsonLdContext WithPreviousContext(JsonLdContext? previous)
     {
-        return new JsonLdContext(new Dictionary<string, TermDefinition>(terms),
+        return new JsonLdContext(terms, prefixIndex,
             BaseIri, OriginalBaseUrl, VocabularyMapping,
             DefaultLanguage, DefaultBaseDirection, Propagate, previous);
     }
@@ -204,17 +292,22 @@ public sealed class JsonLdContext
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings", Justification = "String URIs follow the JSON-LD specification convention throughout the processing algorithm.")]
     public JsonLdContext WithOriginalBaseUrl(string? originalBaseUrl)
     {
-        return new JsonLdContext(new Dictionary<string, TermDefinition>(terms),
+        return new JsonLdContext(terms, prefixIndex,
             BaseIri, originalBaseUrl, VocabularyMapping,
             DefaultLanguage, DefaultBaseDirection, Propagate, PreviousContext);
     }
 
     /// <summary>
-    /// Returns a shallow copy of this context.
+    /// Returns a new wrapper instance over the same persistent term store.
     /// </summary>
+    /// <remarks>
+    /// With the persistent-map term store, a clone shares structure with
+    /// its source rather than copying; the returned instance differs in
+    /// reference identity but is observationally equivalent to the source.
+    /// </remarks>
     public JsonLdContext Clone()
     {
-        return new JsonLdContext(new Dictionary<string, TermDefinition>(terms),
+        return new JsonLdContext(terms, prefixIndex,
             BaseIri, OriginalBaseUrl, VocabularyMapping,
             DefaultLanguage, DefaultBaseDirection, Propagate, PreviousContext);
     }
@@ -311,5 +404,52 @@ public sealed class JsonLdContext
         }
 
         return value;
+    }
+
+    private static ImmutableDictionary<string, ImmutableSortedSet<string>> AddToPrefixIndex(
+        ImmutableDictionary<string, ImmutableSortedSet<string>> index, string iri, string term)
+    {
+        ImmutableSortedSet<string> existing = index.TryGetValue(iri, out ImmutableSortedSet<string>? set)
+            ? set
+            : ImmutableSortedSet.Create<string>(ShortestThenOrdinalComparer.Instance);
+        return index.SetItem(iri, existing.Add(term));
+    }
+
+    private static ImmutableDictionary<string, ImmutableSortedSet<string>> RemoveFromPrefixIndex(
+        ImmutableDictionary<string, ImmutableSortedSet<string>> index, string iri, string term)
+    {
+        if(!index.TryGetValue(iri, out ImmutableSortedSet<string>? existing))
+        {
+            return index;
+        }
+
+        ImmutableSortedSet<string> updated = existing.Remove(term);
+        return updated.IsEmpty ? index.Remove(iri) : index.SetItem(iri, updated);
+    }
+
+    /// <summary>
+    /// Total order over term names used to rank prefix-term candidates: a
+    /// shorter term wins; ties break by ordinal comparison. Matches the
+    /// JSON-LD 1.1 compaction algorithm's preferred-term selection rule.
+    /// </summary>
+    private sealed class ShortestThenOrdinalComparer: IComparer<string>
+    {
+        public static ShortestThenOrdinalComparer Instance { get; } = new();
+
+        public int Compare(string? x, string? y)
+        {
+            if(x is null)
+            {
+                return y is null ? 0 : -1;
+            }
+
+            if(y is null)
+            {
+                return 1;
+            }
+
+            int lengthCompare = x.Length.CompareTo(y.Length);
+            return lengthCompare != 0 ? lengthCompare : string.CompareOrdinal(x, y);
+        }
     }
 }

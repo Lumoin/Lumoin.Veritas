@@ -15,7 +15,7 @@ internal sealed class TriejoinIteratorTests
     //A small graph with deliberate sharing across positions, used
     //by most tests so the iterator's descent is exercised on
     //real-shaped data.
-    private static readonly EncodedTriple[] SampleTriples =
+    private static EncodedTriple[] SampleTriples { get; } =
     [
         EncodedTriple.FromEncoded(1, 10, 100),
         EncodedTriple.FromEncoded(1, 10, 101),

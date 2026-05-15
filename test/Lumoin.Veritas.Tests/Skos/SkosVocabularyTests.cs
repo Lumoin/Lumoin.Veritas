@@ -95,7 +95,7 @@ internal sealed class SkosVocabularyTests
             SkosVocabulary.Core.ExactMatch.ToString(),
         ];
 
-        Assert.AreEqual(iris.Length, iris.Distinct().Count());
+        Assert.HasCount(iris.Length, iris.Distinct());
     }
 
     [TestMethod]

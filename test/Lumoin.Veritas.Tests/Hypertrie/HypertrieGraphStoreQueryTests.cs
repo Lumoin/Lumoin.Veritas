@@ -19,7 +19,7 @@ internal sealed class HypertrieGraphStoreQueryTests
     //Predicate 100 = "knows", 200 = "livesIn".
     //(1 knows 2), (2 knows 3), (1 livesIn 10), (2 livesIn 10),
     //(3 livesIn 20).
-    private static readonly EncodedTriple[] SocialTriples =
+    private static EncodedTriple[] SocialTriples { get; } =
     [
         EncodedTriple.FromEncoded(1, 100, 2),
         EncodedTriple.FromEncoded(2, 100, 3),

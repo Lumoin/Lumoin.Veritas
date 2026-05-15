@@ -11,7 +11,7 @@ internal sealed class JsonLdExpanderTests
 {
     public TestContext TestContext { get; set; } = null!;
 
-    private static readonly ContextResolverDelegate NullResolver =
+    private static ContextResolverDelegate NullResolver { get; } =
         (_, _) => ValueTask.FromResult<Utf8String?>(null);
 
     [TestMethod]

@@ -65,7 +65,7 @@ internal static class ValueSpaceClassifier
     //Keying on Utf8String avoids materialising strings for the
     //comparison; the existing Utf8String equality / hash machinery
     //handles the byte-level match.
-    private static readonly Dictionary<Utf8String, ValueSpace> Map = BuildMap();
+    private static Dictionary<Utf8String, ValueSpace> Map { get; } = BuildMap();
 
     /// <summary>
     /// Classifies the given datatype IRI. Returns

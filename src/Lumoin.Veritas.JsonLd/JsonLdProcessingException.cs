@@ -1,73 +1,89 @@
 using System;
+using Lumoin.Veritas.LinkedData;
 
 namespace Lumoin.Veritas.JsonLd;
 
 /// <summary>
-/// Indicates an error during JSON-LD document processing.
+/// Indicates an error during JSON-LD document processing. Derives from
+/// <see cref="LinkedDataProcessingException"/> so format-agnostic
+/// active-context algorithms in <c>Lumoin.Veritas.LinkedData</c> can
+/// surface errors through a common base type; the JsonLd-typed enum
+/// view is preserved via <see cref="ErrorCode"/>.
 /// </summary>
 /// <remarks>
-/// Error codes correspond to those defined in the JSON-LD 1.1 Processing Algorithms
-/// and API specification. The <see cref="ErrorCode"/> property carries the machine-readable
-/// identifier; the exception message provides a human-readable description.
+/// Error codes correspond to those defined in the W3C JSON-LD 1.1
+/// Processing Algorithms and API specification. The <see cref="ErrorCode"/>
+/// property carries the machine-readable enum identifier; the inherited
+/// <see cref="LinkedDataProcessingException.ErrorCode"/> property
+/// (string-typed) carries the spec-defined error name.
 /// </remarks>
-public sealed class JsonLdProcessingException: Exception
+public sealed class JsonLdProcessingException: LinkedDataProcessingException
 {
-    /// <summary>
-    /// Initializes a new <see cref="JsonLdProcessingException"/> with a default message.
-    /// </summary>
+    /// <summary>Initialises a new instance with a default message.</summary>
     public JsonLdProcessingException()
         : base("A JSON-LD processing error occurred.")
     {
+        ErrorCode = JsonLdErrorCode.InvalidTermDefinition;
     }
 
-    /// <summary>
-    /// Initializes a new <see cref="JsonLdProcessingException"/> with the given message.
-    /// </summary>
+    /// <summary>Initialises a new instance with the given message.</summary>
     /// <param name="message">A human-readable description of the error.</param>
     public JsonLdProcessingException(string message)
         : base(message)
     {
+        ErrorCode = JsonLdErrorCode.InvalidTermDefinition;
     }
 
-    /// <summary>
-    /// Initializes a new <see cref="JsonLdProcessingException"/> with the given message
-    /// and inner exception.
-    /// </summary>
+    /// <summary>Initialises a new instance with the given message and inner exception.</summary>
     /// <param name="message">A human-readable description of the error.</param>
     /// <param name="innerException">The exception that caused this error.</param>
     public JsonLdProcessingException(string message, Exception innerException)
         : base(message, innerException)
     {
+        ErrorCode = JsonLdErrorCode.InvalidTermDefinition;
     }
 
-    /// <summary>
-    /// Initializes a new <see cref="JsonLdProcessingException"/> with an error code and message.
-    /// </summary>
+    /// <summary>Initialises a new instance with an error code and message.</summary>
     /// <param name="errorCode">The JSON-LD error code from the W3C specification.</param>
     /// <param name="message">A human-readable description of the error.</param>
     public JsonLdProcessingException(JsonLdErrorCode errorCode, string message)
-        : base(message)
+        : base(JsonLdErrorCodeMapping.ToErrorString(errorCode), message)
     {
         ErrorCode = errorCode;
     }
 
-    /// <summary>
-    /// Initializes a new <see cref="JsonLdProcessingException"/> with an error code, message,
-    /// and inner exception.
-    /// </summary>
+    /// <summary>Initialises a new instance with an error code, message, and inner exception.</summary>
     /// <param name="errorCode">The JSON-LD error code from the W3C specification.</param>
     /// <param name="message">A human-readable description of the error.</param>
     /// <param name="innerException">The exception that caused this error.</param>
     public JsonLdProcessingException(JsonLdErrorCode errorCode, string message, Exception innerException)
-        : base(message, innerException)
+        : base(JsonLdErrorCodeMapping.ToErrorString(errorCode), message, innerException)
     {
         ErrorCode = errorCode;
     }
 
     /// <summary>
-    /// Gets the W3C JSON-LD error code identifying the type of processing failure.
+    /// Wraps a base <see cref="LinkedDataProcessingException"/> as a
+    /// JSON-LD-specific exception. Used by the JsonLd shell to translate
+    /// the format-agnostic exception type into the typed-enum surface the
+    /// JsonLd public API uses.
     /// </summary>
-    public JsonLdErrorCode ErrorCode { get; }
+    /// <param name="inner">The underlying exception to wrap.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="inner"/> is <see langword="null"/>.</exception>
+    public JsonLdProcessingException(LinkedDataProcessingException inner)
+        : base(inner is null ? string.Empty : inner.ErrorCode, inner is null ? string.Empty : inner.Message, inner!)
+    {
+        ArgumentNullException.ThrowIfNull(inner);
+        ErrorCode = JsonLdErrorCodeMapping.FromErrorString(inner.ErrorCode);
+    }
+
+    /// <summary>
+    /// Gets the W3C JSON-LD error code identifying the type of
+    /// processing failure. The inherited
+    /// <see cref="LinkedDataProcessingException.ErrorCode"/> property
+    /// gives the same code as a spec-defined error name string.
+    /// </summary>
+    public new JsonLdErrorCode ErrorCode { get; }
 }
 
 /// <summary>

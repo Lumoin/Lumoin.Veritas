@@ -23,7 +23,7 @@ internal sealed class HypertrieGraphStoreParityTests
     //objects, with deliberate sharing across positions so that the
     //hypertrie's multi-position branching and InMemoryGraphStore's
     //three permutation indexes can disagree if either is wrong.
-    private static readonly EncodedTriple[] SampleTriples =
+    private static EncodedTriple[] SampleTriples { get; } =
     [
         EncodedTriple.FromEncoded(1, 10, 100),
         EncodedTriple.FromEncoded(1, 10, 101),

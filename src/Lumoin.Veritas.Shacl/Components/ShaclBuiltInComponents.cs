@@ -376,7 +376,7 @@ public static class ShaclBuiltInComponents
 
     //Aggregate enumeration
 
-    private static readonly ImmutableArray<ConstraintComponentInfo> AllBuiltIns = ImmutableArray.Create(
+    private static ImmutableArray<ConstraintComponentInfo> AllBuiltIns { get; } = ImmutableArray.Create(
         //Cardinality
         MinCount, MaxCount,
         //Value range

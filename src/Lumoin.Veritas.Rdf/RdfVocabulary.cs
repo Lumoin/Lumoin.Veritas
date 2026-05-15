@@ -45,20 +45,20 @@ public static class RdfVocabulary
         public const string Namespace = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 
         //Class and property terms.
-        private static readonly byte[] PropertyBytes = "http://www.w3.org/1999/02/22-rdf-syntax-ns#Property"u8.ToArray();
-        private static readonly byte[] ValueBytes = "http://www.w3.org/1999/02/22-rdf-syntax-ns#value"u8.ToArray();
+        private static byte[] PropertyBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#Property"u8.ToArray();
+        private static byte[] ValueBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#value"u8.ToArray();
 
         //Classic reification.
-        private static readonly byte[] StatementBytes = "http://www.w3.org/1999/02/22-rdf-syntax-ns#Statement"u8.ToArray();
-        private static readonly byte[] SubjectPropBytes = "http://www.w3.org/1999/02/22-rdf-syntax-ns#subject"u8.ToArray();
-        private static readonly byte[] PredicatePropBytes = "http://www.w3.org/1999/02/22-rdf-syntax-ns#predicate"u8.ToArray();
-        private static readonly byte[] ObjectPropBytes = "http://www.w3.org/1999/02/22-rdf-syntax-ns#object"u8.ToArray();
+        private static byte[] StatementBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#Statement"u8.ToArray();
+        private static byte[] SubjectPropBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#subject"u8.ToArray();
+        private static byte[] PredicatePropBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#predicate"u8.ToArray();
+        private static byte[] ObjectPropBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#object"u8.ToArray();
 
         //List vocabulary.
-        private static readonly byte[] FirstBytes = "http://www.w3.org/1999/02/22-rdf-syntax-ns#first"u8.ToArray();
-        private static readonly byte[] RestBytes = "http://www.w3.org/1999/02/22-rdf-syntax-ns#rest"u8.ToArray();
-        private static readonly byte[] NilBytes = "http://www.w3.org/1999/02/22-rdf-syntax-ns#nil"u8.ToArray();
-        private static readonly byte[] ListBytes = "http://www.w3.org/1999/02/22-rdf-syntax-ns#List"u8.ToArray();
+        private static byte[] FirstBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#first"u8.ToArray();
+        private static byte[] RestBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#rest"u8.ToArray();
+        private static byte[] NilBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#nil"u8.ToArray();
+        private static byte[] ListBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#List"u8.ToArray();
 
         /// <summary>The <c>rdf:Property</c> class IRI.</summary>
         public static Utf8String Property { get; } = new(PropertyBytes);
@@ -111,23 +111,23 @@ public static class RdfVocabulary
         public const string Namespace = "http://www.w3.org/2000/01/rdf-schema#";
 
         //Classes.
-        private static readonly byte[] ResourceBytes = "http://www.w3.org/2000/01/rdf-schema#Resource"u8.ToArray();
-        private static readonly byte[] ClassBytes = "http://www.w3.org/2000/01/rdf-schema#Class"u8.ToArray();
-        private static readonly byte[] LiteralClassBytes = "http://www.w3.org/2000/01/rdf-schema#Literal"u8.ToArray();
-        private static readonly byte[] DatatypeBytes = "http://www.w3.org/2000/01/rdf-schema#Datatype"u8.ToArray();
-        private static readonly byte[] ContainerBytes = "http://www.w3.org/2000/01/rdf-schema#Container"u8.ToArray();
-        private static readonly byte[] ContainerMembershipPropertyBytes = "http://www.w3.org/2000/01/rdf-schema#ContainerMembershipProperty"u8.ToArray();
+        private static byte[] ResourceBytes { get; } = "http://www.w3.org/2000/01/rdf-schema#Resource"u8.ToArray();
+        private static byte[] ClassBytes { get; } = "http://www.w3.org/2000/01/rdf-schema#Class"u8.ToArray();
+        private static byte[] LiteralClassBytes { get; } = "http://www.w3.org/2000/01/rdf-schema#Literal"u8.ToArray();
+        private static byte[] DatatypeBytes { get; } = "http://www.w3.org/2000/01/rdf-schema#Datatype"u8.ToArray();
+        private static byte[] ContainerBytes { get; } = "http://www.w3.org/2000/01/rdf-schema#Container"u8.ToArray();
+        private static byte[] ContainerMembershipPropertyBytes { get; } = "http://www.w3.org/2000/01/rdf-schema#ContainerMembershipProperty"u8.ToArray();
 
         //Properties.
-        private static readonly byte[] SubClassOfBytes = "http://www.w3.org/2000/01/rdf-schema#subClassOf"u8.ToArray();
-        private static readonly byte[] SubPropertyOfBytes = "http://www.w3.org/2000/01/rdf-schema#subPropertyOf"u8.ToArray();
-        private static readonly byte[] DomainBytes = "http://www.w3.org/2000/01/rdf-schema#domain"u8.ToArray();
-        private static readonly byte[] RangeBytes = "http://www.w3.org/2000/01/rdf-schema#range"u8.ToArray();
-        private static readonly byte[] LabelBytes = "http://www.w3.org/2000/01/rdf-schema#label"u8.ToArray();
-        private static readonly byte[] CommentBytes = "http://www.w3.org/2000/01/rdf-schema#comment"u8.ToArray();
-        private static readonly byte[] SeeAlsoBytes = "http://www.w3.org/2000/01/rdf-schema#seeAlso"u8.ToArray();
-        private static readonly byte[] IsDefinedByBytes = "http://www.w3.org/2000/01/rdf-schema#isDefinedBy"u8.ToArray();
-        private static readonly byte[] MemberBytes = "http://www.w3.org/2000/01/rdf-schema#member"u8.ToArray();
+        private static byte[] SubClassOfBytes { get; } = "http://www.w3.org/2000/01/rdf-schema#subClassOf"u8.ToArray();
+        private static byte[] SubPropertyOfBytes { get; } = "http://www.w3.org/2000/01/rdf-schema#subPropertyOf"u8.ToArray();
+        private static byte[] DomainBytes { get; } = "http://www.w3.org/2000/01/rdf-schema#domain"u8.ToArray();
+        private static byte[] RangeBytes { get; } = "http://www.w3.org/2000/01/rdf-schema#range"u8.ToArray();
+        private static byte[] LabelBytes { get; } = "http://www.w3.org/2000/01/rdf-schema#label"u8.ToArray();
+        private static byte[] CommentBytes { get; } = "http://www.w3.org/2000/01/rdf-schema#comment"u8.ToArray();
+        private static byte[] SeeAlsoBytes { get; } = "http://www.w3.org/2000/01/rdf-schema#seeAlso"u8.ToArray();
+        private static byte[] IsDefinedByBytes { get; } = "http://www.w3.org/2000/01/rdf-schema#isDefinedBy"u8.ToArray();
+        private static byte[] MemberBytes { get; } = "http://www.w3.org/2000/01/rdf-schema#member"u8.ToArray();
 
         /// <summary>The <c>rdfs:Resource</c> class — the class of everything.</summary>
         public static Utf8String Resource { get; } = new(ResourceBytes);

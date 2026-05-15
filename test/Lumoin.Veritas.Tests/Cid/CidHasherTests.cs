@@ -18,7 +18,7 @@ internal sealed class CidHasherTests
         Veritas.Cid.Cid cid = CidHasher.ComputeFromBytes("hello"u8, CidCodec.Raw, sha256);
 
         Assert.AreEqual(CidCodec.Raw, cid.Codec);
-        Assert.HasCount(32, cid.Digest);
+        Assert.AreEqual(32, cid.Digest.AsSpan().Length);
     }
 
     [TestMethod]
@@ -31,7 +31,7 @@ internal sealed class CidHasherTests
 
         Assert.AreEqual(
             "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
-            Convert.ToHexString(cid.Digest));
+            Convert.ToHexString(cid.Digest.ToArray()));
     }
 
     [TestMethod]
@@ -84,6 +84,6 @@ internal sealed class CidHasherTests
         Veritas.Cid.Cid roundTripped = CidParser.Parse(text);
 
         Assert.AreEqual(original.Codec, roundTripped.Codec);
-        CollectionAssert.AreEqual(original.Digest, roundTripped.Digest);
+        Assert.AreEqual(original.Digest, roundTripped.Digest);
     }
 }

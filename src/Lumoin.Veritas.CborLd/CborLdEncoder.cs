@@ -1,8 +1,12 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.Threading;
+using Lumoin.Veritas.Cbor.CborLd.Internal;
+using Lumoin.Veritas.LinkedData;
 
 namespace Lumoin.Veritas.Cbor.CborLd;
+
 
 /// <summary>
 /// Encodes a CBOR-LD document. The wire form per the W3C CBOR-LD 1.0
@@ -38,23 +42,24 @@ public static class CborLdEncoder
     /// <param name="registryEntry">The registry entry whose id is emitted in the wire form. Passthrough uses <see cref="CborLdRegistryEntry.Passthrough"/>.</param>
     /// <param name="profile">The encoding profile.</param>
     /// <param name="destination">The output buffer writer.</param>
-    /// <exception cref="ArgumentNullException">Any argument is <c>null</c>.</exception>
-    /// <exception cref="CborLdProcessingException">A registry entry other than passthrough is used; semantic compression is not yet implemented.</exception>
+    /// <param name="pool">Optional pool used by typed-value codecs to rent
+    /// transient wire buffers. Falls back to <see cref="MemoryPool{T}.Shared"/>
+    /// when <c>null</c>.</param>
+    /// <exception cref="ArgumentNullException">Any required argument is <c>null</c>.</exception>
+    /// <exception cref="CborLdProcessingException">An embedded inline <c>@context</c> failed validation against the active-context spec rules. Remote-context resolution is not performed in this overload; use
+    /// <see cref="EncodeWithRemoteContexts(CborLdInputNode, CborLdRegistryEntry, CborLdProfile, IBufferWriter{byte}, FetchRemoteResourceDelegate, ParseRemoteContextDelegate, ProbeContextCacheDelegate, MemoryPool{byte}, CancellationToken)"/>
+    /// when remote contexts must be resolved.</exception>
     public static void Encode(
         CborLdInputNode root,
         CborLdRegistryEntry registryEntry,
         CborLdProfile profile,
-        IBufferWriter<byte> destination)
+        IBufferWriter<byte> destination,
+        CborLdCallerProvidedTypeTables? callerTables = null,
+        MemoryPool<byte>? pool = null)
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(registryEntry);
         ArgumentNullException.ThrowIfNull(destination);
-
-        if(registryEntry.Keywords.Count > 0 || registryEntry.Terms.Count > 0)
-        {
-            throw new CborLdProcessingException(
-                "Semantic compression registry entries are not yet implemented; only passthrough entries (empty keyword/term codec tables) are supported. Use CborLdRegistryEntry.Passthrough.");
-        }
 
         CborConformanceMode mode = profile == CborLdProfile.Deterministic
             ? CborConformanceMode.Cde
@@ -65,7 +70,88 @@ public static class CborLdEncoder
         writer.WriteTag(CborLdOuterTag);
         writer.WriteStartArray(2);
         writer.WriteInt32(registryEntry.RegistryEntryId);
-        WritePayload(writer, root);
+
+        bool isCompressed = registryEntry.Keywords.Count > 0 || registryEntry.Terms.Count > 0;
+        if(isCompressed)
+        {
+            //E3 wires active-context state through the compression walk,
+            //which is the canonical validation path: spec violations in any
+            //embedded @context surface through ContextProcessing as
+            //CborLdProcessingException during encoding. Passthrough mode
+            //emits the document as opaque CBOR primitives per W3C CBOR-LD
+            //1.0 registry-entry 0 semantics; no validation is performed.
+            CborLdCompressionEncoder.WritePayload(
+                writer, root, registryEntry, profile, pool ?? MemoryPool<byte>.Shared,
+                fetcher: null, parser: null, cache: null, callerTables: callerTables);
+        }
+        else
+        {
+            WritePayload(writer, root);
+        }
+
+        writer.WriteEndArray();
+    }
+
+    /// <summary>
+    /// Encodes <paramref name="root"/> with active-context validation
+    /// that may resolve remote <c>@context</c> URLs via the supplied
+    /// delegate trio. The delegates follow the same contract as the
+    /// JsonLd shell: <paramref name="fetcher"/> retrieves raw bytes,
+    /// <paramref name="parser"/> converts to the format-neutral dict
+    /// shape, <paramref name="cache"/> (optional) short-circuits the
+    /// fetcher.
+    /// </summary>
+    /// <param name="root">The input tree.</param>
+    /// <param name="registryEntry">The registry entry whose id is emitted in the wire form.</param>
+    /// <param name="profile">The encoding profile.</param>
+    /// <param name="destination">The output buffer writer.</param>
+    /// <param name="fetcher">Delegate that fetches remote-context resources.</param>
+    /// <param name="parser">Delegate that parses fetched remote-context bytes.</param>
+    /// <param name="cache">Optional cache probe consulted before <paramref name="fetcher"/>.</param>
+    /// <param name="callerTables">Caller-provided type tables; required only when <paramref name="registryEntry"/> declares one or more type tables as <c>"callerProvidedTable"</c>.</param>
+    /// <param name="pool">Optional pool used by typed-value codecs.</param>
+    /// <param name="cancellationToken">A token to cancel remote-context I/O.</param>
+    /// <exception cref="ArgumentNullException">Any required argument is <c>null</c>.</exception>
+    /// <exception cref="CborLdProcessingException">An embedded <c>@context</c> failed validation, remote-context resolution failed, or the registry entry declares a caller-provided type table for which no table was supplied.</exception>
+    public static void EncodeWithRemoteContexts(
+        CborLdInputNode root,
+        CborLdRegistryEntry registryEntry,
+        CborLdProfile profile,
+        IBufferWriter<byte> destination,
+        FetchRemoteResourceDelegate fetcher,
+        ParseRemoteContextDelegate parser,
+        ProbeContextCacheDelegate? cache,
+        CborLdCallerProvidedTypeTables? callerTables,
+        MemoryPool<byte>? pool,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        ArgumentNullException.ThrowIfNull(registryEntry);
+        ArgumentNullException.ThrowIfNull(destination);
+        ArgumentNullException.ThrowIfNull(fetcher);
+        ArgumentNullException.ThrowIfNull(parser);
+
+        CborConformanceMode mode = profile == CborLdProfile.Deterministic
+            ? CborConformanceMode.Cde
+            : CborConformanceMode.Lax;
+        CborWriter writer = new(destination, CborSerializerOptions.Default(mode));
+
+        writer.WriteTag(CborLdOuterTag);
+        writer.WriteStartArray(2);
+        writer.WriteInt32(registryEntry.RegistryEntryId);
+
+        bool isCompressed = registryEntry.Keywords.Count > 0 || registryEntry.Terms.Count > 0;
+        if(isCompressed)
+        {
+            CborLdCompressionEncoder.WritePayload(
+                writer, root, registryEntry, profile, pool ?? MemoryPool<byte>.Shared,
+                fetcher, parser, cache, callerTables, cancellationToken);
+        }
+        else
+        {
+            WritePayload(writer, root);
+        }
+
         writer.WriteEndArray();
     }
 
@@ -106,6 +192,12 @@ public static class CborLdEncoder
                 case CborLdInputString s:
                 {
                     writer.WriteTextString(s.Value);
+                    stack.Pop();
+                    break;
+                }
+                case CborLdInputBytes b:
+                {
+                    writer.WriteByteString(b.Value.Span);
                     stack.Pop();
                     break;
                 }

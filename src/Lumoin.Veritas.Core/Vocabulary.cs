@@ -35,36 +35,36 @@ public static class Vocabulary
         /// <summary>The XSD namespace IRI.</summary>
         public const string Namespace = "http://www.w3.org/2001/XMLSchema#";
 
-        private static readonly byte[] StringBytes = "http://www.w3.org/2001/XMLSchema#string"u8.ToArray();
-        private static readonly byte[] BooleanBytes = "http://www.w3.org/2001/XMLSchema#boolean"u8.ToArray();
-        private static readonly byte[] IntegerBytes = "http://www.w3.org/2001/XMLSchema#integer"u8.ToArray();
-        private static readonly byte[] DoubleBytes = "http://www.w3.org/2001/XMLSchema#double"u8.ToArray();
-        private static readonly byte[] DecimalBytes = "http://www.w3.org/2001/XMLSchema#decimal"u8.ToArray();
-        private static readonly byte[] DateTimeBytes = "http://www.w3.org/2001/XMLSchema#dateTime"u8.ToArray();
-        private static readonly byte[] DateTimeStampBytes = "http://www.w3.org/2001/XMLSchema#dateTimeStamp"u8.ToArray();
-        private static readonly byte[] DateBytes = "http://www.w3.org/2001/XMLSchema#date"u8.ToArray();
-        private static readonly byte[] TimeBytes = "http://www.w3.org/2001/XMLSchema#time"u8.ToArray();
-        private static readonly byte[] FloatBytes = "http://www.w3.org/2001/XMLSchema#float"u8.ToArray();
-        private static readonly byte[] LongBytes = "http://www.w3.org/2001/XMLSchema#long"u8.ToArray();
-        private static readonly byte[] IntBytes = "http://www.w3.org/2001/XMLSchema#int"u8.ToArray();
-        private static readonly byte[] ShortBytes = "http://www.w3.org/2001/XMLSchema#short"u8.ToArray();
-        private static readonly byte[] ByteValueBytes = "http://www.w3.org/2001/XMLSchema#byte"u8.ToArray();
-        private static readonly byte[] NonNegativeIntegerBytes = "http://www.w3.org/2001/XMLSchema#nonNegativeInteger"u8.ToArray();
-        private static readonly byte[] NonPositiveIntegerBytes = "http://www.w3.org/2001/XMLSchema#nonPositiveInteger"u8.ToArray();
-        private static readonly byte[] PositiveIntegerBytes = "http://www.w3.org/2001/XMLSchema#positiveInteger"u8.ToArray();
-        private static readonly byte[] NegativeIntegerBytes = "http://www.w3.org/2001/XMLSchema#negativeInteger"u8.ToArray();
-        private static readonly byte[] UnsignedLongBytes = "http://www.w3.org/2001/XMLSchema#unsignedLong"u8.ToArray();
-        private static readonly byte[] UnsignedIntBytes = "http://www.w3.org/2001/XMLSchema#unsignedInt"u8.ToArray();
-        private static readonly byte[] UnsignedShortBytes = "http://www.w3.org/2001/XMLSchema#unsignedShort"u8.ToArray();
-        private static readonly byte[] UnsignedByteBytes = "http://www.w3.org/2001/XMLSchema#unsignedByte"u8.ToArray();
-        private static readonly byte[] DurationBytes = "http://www.w3.org/2001/XMLSchema#duration"u8.ToArray();
-        private static readonly byte[] YearMonthDurationBytes = "http://www.w3.org/2001/XMLSchema#yearMonthDuration"u8.ToArray();
-        private static readonly byte[] DayTimeDurationBytes = "http://www.w3.org/2001/XMLSchema#dayTimeDuration"u8.ToArray();
-        private static readonly byte[] AnyUriBytes = "http://www.w3.org/2001/XMLSchema#anyURI"u8.ToArray();
-        private static readonly byte[] Base64BinaryBytes = "http://www.w3.org/2001/XMLSchema#base64Binary"u8.ToArray();
-        private static readonly byte[] HexBinaryBytes = "http://www.w3.org/2001/XMLSchema#hexBinary"u8.ToArray();
-        private static readonly byte[] NormalizedStringBytes = "http://www.w3.org/2001/XMLSchema#normalizedString"u8.ToArray();
-        private static readonly byte[] TokenBytes = "http://www.w3.org/2001/XMLSchema#token"u8.ToArray();
+        private static byte[] StringBytes { get; } = "http://www.w3.org/2001/XMLSchema#string"u8.ToArray();
+        private static byte[] BooleanBytes { get; } = "http://www.w3.org/2001/XMLSchema#boolean"u8.ToArray();
+        private static byte[] IntegerBytes { get; } = "http://www.w3.org/2001/XMLSchema#integer"u8.ToArray();
+        private static byte[] DoubleBytes { get; } = "http://www.w3.org/2001/XMLSchema#double"u8.ToArray();
+        private static byte[] DecimalBytes { get; } = "http://www.w3.org/2001/XMLSchema#decimal"u8.ToArray();
+        private static byte[] DateTimeBytes { get; } = "http://www.w3.org/2001/XMLSchema#dateTime"u8.ToArray();
+        private static byte[] DateTimeStampBytes { get; } = "http://www.w3.org/2001/XMLSchema#dateTimeStamp"u8.ToArray();
+        private static byte[] DateBytes { get; } = "http://www.w3.org/2001/XMLSchema#date"u8.ToArray();
+        private static byte[] TimeBytes { get; } = "http://www.w3.org/2001/XMLSchema#time"u8.ToArray();
+        private static byte[] FloatBytes { get; } = "http://www.w3.org/2001/XMLSchema#float"u8.ToArray();
+        private static byte[] LongBytes { get; } = "http://www.w3.org/2001/XMLSchema#long"u8.ToArray();
+        private static byte[] IntBytes { get; } = "http://www.w3.org/2001/XMLSchema#int"u8.ToArray();
+        private static byte[] ShortBytes { get; } = "http://www.w3.org/2001/XMLSchema#short"u8.ToArray();
+        private static byte[] ByteValueBytes { get; } = "http://www.w3.org/2001/XMLSchema#byte"u8.ToArray();
+        private static byte[] NonNegativeIntegerBytes { get; } = "http://www.w3.org/2001/XMLSchema#nonNegativeInteger"u8.ToArray();
+        private static byte[] NonPositiveIntegerBytes { get; } = "http://www.w3.org/2001/XMLSchema#nonPositiveInteger"u8.ToArray();
+        private static byte[] PositiveIntegerBytes { get; } = "http://www.w3.org/2001/XMLSchema#positiveInteger"u8.ToArray();
+        private static byte[] NegativeIntegerBytes { get; } = "http://www.w3.org/2001/XMLSchema#negativeInteger"u8.ToArray();
+        private static byte[] UnsignedLongBytes { get; } = "http://www.w3.org/2001/XMLSchema#unsignedLong"u8.ToArray();
+        private static byte[] UnsignedIntBytes { get; } = "http://www.w3.org/2001/XMLSchema#unsignedInt"u8.ToArray();
+        private static byte[] UnsignedShortBytes { get; } = "http://www.w3.org/2001/XMLSchema#unsignedShort"u8.ToArray();
+        private static byte[] UnsignedByteBytes { get; } = "http://www.w3.org/2001/XMLSchema#unsignedByte"u8.ToArray();
+        private static byte[] DurationBytes { get; } = "http://www.w3.org/2001/XMLSchema#duration"u8.ToArray();
+        private static byte[] YearMonthDurationBytes { get; } = "http://www.w3.org/2001/XMLSchema#yearMonthDuration"u8.ToArray();
+        private static byte[] DayTimeDurationBytes { get; } = "http://www.w3.org/2001/XMLSchema#dayTimeDuration"u8.ToArray();
+        private static byte[] AnyUriBytes { get; } = "http://www.w3.org/2001/XMLSchema#anyURI"u8.ToArray();
+        private static byte[] Base64BinaryBytes { get; } = "http://www.w3.org/2001/XMLSchema#base64Binary"u8.ToArray();
+        private static byte[] HexBinaryBytes { get; } = "http://www.w3.org/2001/XMLSchema#hexBinary"u8.ToArray();
+        private static byte[] NormalizedStringBytes { get; } = "http://www.w3.org/2001/XMLSchema#normalizedString"u8.ToArray();
+        private static byte[] TokenBytes { get; } = "http://www.w3.org/2001/XMLSchema#token"u8.ToArray();
 
         /// <summary>The <c>xsd:string</c> datatype IRI.</summary>
         public static Utf8String String { get; } = new(StringBytes);
@@ -183,13 +183,13 @@ public static class Vocabulary
         /// <summary>The RDF namespace IRI.</summary>
         public const string Namespace = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 
-        private static readonly byte[] TypeBytes = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"u8.ToArray();
-        private static readonly byte[] LangStringBytes = "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString"u8.ToArray();
-        private static readonly byte[] DirLangStringBytes = "http://www.w3.org/1999/02/22-rdf-syntax-ns#dirLangString"u8.ToArray();
-        private static readonly byte[] JsonBytes = "http://www.w3.org/1999/02/22-rdf-syntax-ns#JSON"u8.ToArray();
-        private static readonly byte[] HtmlBytes = "http://www.w3.org/1999/02/22-rdf-syntax-ns#HTML"u8.ToArray();
-        private static readonly byte[] XmlLiteralBytes = "http://www.w3.org/1999/02/22-rdf-syntax-ns#XMLLiteral"u8.ToArray();
-        private static readonly byte[] ReifiesBytes = "http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies"u8.ToArray();
+        private static byte[] TypeBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"u8.ToArray();
+        private static byte[] LangStringBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString"u8.ToArray();
+        private static byte[] DirLangStringBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#dirLangString"u8.ToArray();
+        private static byte[] JsonBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#JSON"u8.ToArray();
+        private static byte[] HtmlBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#HTML"u8.ToArray();
+        private static byte[] XmlLiteralBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#XMLLiteral"u8.ToArray();
+        private static byte[] ReifiesBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies"u8.ToArray();
 
         /// <summary>The <c>rdf:type</c> predicate IRI.</summary>
         public static Utf8String Type { get; } = new(TypeBytes);

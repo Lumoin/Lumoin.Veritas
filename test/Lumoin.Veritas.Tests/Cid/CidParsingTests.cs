@@ -19,7 +19,7 @@ internal sealed class CidParsingTests
         Veritas.Cid.Cid parsed = CidParser.Parse(text);
 
         Assert.AreEqual(original.Codec, parsed.Codec);
-        CollectionAssert.AreEqual(original.Digest, parsed.Digest);
+        Assert.AreEqual(original.Digest, parsed.Digest);
     }
 
     [TestMethod]
@@ -31,7 +31,7 @@ internal sealed class CidParsingTests
         Veritas.Cid.Cid parsed = CidParser.Parse(text);
 
         Assert.AreEqual(CidCodec.Drisl, parsed.Codec);
-        CollectionAssert.AreEqual(original.Digest, parsed.Digest);
+        Assert.AreEqual(original.Digest, parsed.Digest);
     }
 
     [TestMethod]
@@ -162,8 +162,8 @@ internal sealed class CidParsingTests
         Veritas.Cid.Cid parsed = CidParser.Parse(bytes);
 
         Assert.AreEqual(CidCodec.Drisl, parsed.Codec);
-        Assert.HasCount(32, parsed.Digest);
-        CollectionAssert.AreEqual(original.Digest, parsed.Digest);
+        Assert.AreEqual(32, parsed.Digest.AsSpan().Length);
+        Assert.AreEqual(original.Digest, parsed.Digest);
     }
 
     [TestMethod]

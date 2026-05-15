@@ -11,7 +11,7 @@ namespace Lumoin.Veritas.LinkedData;
 /// </summary>
 public static class IriUtils
 {
-    private static readonly HashSet<string> Keywords =
+    private static HashSet<string> Keywords { get; } =
     [
         "@base", "@container", "@context", "@direction", "@graph", "@id",
         "@import", "@included", "@index", "@json", "@language", "@list",

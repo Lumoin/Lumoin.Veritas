@@ -13,12 +13,12 @@ namespace Lumoin.Veritas.Tests.Core.Algebra;
 internal sealed class IterativeTraversalTests
 {
     //Expected union of the two disjoint components in the multi-seed
-    //BFS test. Extracted to a static readonly field to satisfy CA1861
-    //at the CollectionAssert call site.
-    private static readonly int[] ExpectedMultiSeedReach = [1, 2, 10, 11];
+    //BFS test. Extracted to a static get-only property to satisfy
+    //CA1861 at the CollectionAssert call site.
+    private static int[] ExpectedMultiSeedReach { get; } = [1, 2, 10, 11];
 
     //Expected set of keys discovered by the key-based dedup BFS.
-    private static readonly int[] ExpectedPairGraphKeys = [1, 2, 3];
+    private static int[] ExpectedPairGraphKeys { get; } = [1, 2, 3];
 
     public TestContext TestContext { get; set; } = null!;
 
@@ -44,7 +44,7 @@ internal sealed class IterativeTraversalTests
         }
 
         Assert.HasCount(5, visited);
-        Assert.AreEqual(5, visited.Distinct().Count());
+        Assert.HasCount(5, visited.Distinct());
         Assert.Contains(1, visited);
         Assert.Contains(5, visited);
     }
@@ -204,7 +204,7 @@ internal sealed class IterativeTraversalTests
 
         //Five reachable nodes, each yielded exactly once.
         Assert.HasCount(5, visited);
-        Assert.AreEqual(5, visited.Distinct().Count());
+        Assert.HasCount(5, visited.Distinct());
 
         //Parent-after-descendants check: for each parent → child
         //edge, the child's position in `visited` must be earlier
@@ -260,7 +260,7 @@ internal sealed class IterativeTraversalTests
             adjacency: graph.Adjacency)];
 
         Assert.HasCount(3, visited);
-        Assert.AreEqual(3, visited.Distinct().Count());
+        Assert.HasCount(3, visited.Distinct());
     }
 
     [TestMethod]
@@ -286,7 +286,7 @@ internal sealed class IterativeTraversalTests
         }
 
         Assert.HasCount(5, visited);
-        Assert.AreEqual(5, visited.Distinct().Count());
+        Assert.HasCount(5, visited.Distinct());
         AssertChildBeforeParent(visited, parent: 1, child: 2);
         AssertChildBeforeParent(visited, parent: 1, child: 3);
         AssertChildBeforeParent(visited, parent: 2, child: 4);

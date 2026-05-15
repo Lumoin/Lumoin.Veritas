@@ -13,71 +13,71 @@ namespace Lumoin.Veritas.Shacl;
 public static class ShaclConstraintVocabulary
 {
     //Cardinality
-    private static readonly byte[] MinCountBytes = "http://www.w3.org/ns/shacl#minCount"u8.ToArray();
-    private static readonly byte[] MaxCountBytes = "http://www.w3.org/ns/shacl#maxCount"u8.ToArray();
+    private static byte[] MinCountBytes { get; } = "http://www.w3.org/ns/shacl#minCount"u8.ToArray();
+    private static byte[] MaxCountBytes { get; } = "http://www.w3.org/ns/shacl#maxCount"u8.ToArray();
 
     //Value range
-    private static readonly byte[] MinExclusiveBytes = "http://www.w3.org/ns/shacl#minExclusive"u8.ToArray();
-    private static readonly byte[] MaxExclusiveBytes = "http://www.w3.org/ns/shacl#maxExclusive"u8.ToArray();
-    private static readonly byte[] MinInclusiveBytes = "http://www.w3.org/ns/shacl#minInclusive"u8.ToArray();
-    private static readonly byte[] MaxInclusiveBytes = "http://www.w3.org/ns/shacl#maxInclusive"u8.ToArray();
+    private static byte[] MinExclusiveBytes { get; } = "http://www.w3.org/ns/shacl#minExclusive"u8.ToArray();
+    private static byte[] MaxExclusiveBytes { get; } = "http://www.w3.org/ns/shacl#maxExclusive"u8.ToArray();
+    private static byte[] MinInclusiveBytes { get; } = "http://www.w3.org/ns/shacl#minInclusive"u8.ToArray();
+    private static byte[] MaxInclusiveBytes { get; } = "http://www.w3.org/ns/shacl#maxInclusive"u8.ToArray();
 
     //String / literal
-    private static readonly byte[] MinLengthBytes = "http://www.w3.org/ns/shacl#minLength"u8.ToArray();
-    private static readonly byte[] MaxLengthBytes = "http://www.w3.org/ns/shacl#maxLength"u8.ToArray();
-    private static readonly byte[] PatternBytes = "http://www.w3.org/ns/shacl#pattern"u8.ToArray();
-    private static readonly byte[] FlagsBytes = "http://www.w3.org/ns/shacl#flags"u8.ToArray();
-    private static readonly byte[] SingleLineBytes = "http://www.w3.org/ns/shacl#singleLine"u8.ToArray();
-    private static readonly byte[] LanguageInBytes = "http://www.w3.org/ns/shacl#languageIn"u8.ToArray();
-    private static readonly byte[] UniqueLangBytes = "http://www.w3.org/ns/shacl#uniqueLang"u8.ToArray();
+    private static byte[] MinLengthBytes { get; } = "http://www.w3.org/ns/shacl#minLength"u8.ToArray();
+    private static byte[] MaxLengthBytes { get; } = "http://www.w3.org/ns/shacl#maxLength"u8.ToArray();
+    private static byte[] PatternBytes { get; } = "http://www.w3.org/ns/shacl#pattern"u8.ToArray();
+    private static byte[] FlagsBytes { get; } = "http://www.w3.org/ns/shacl#flags"u8.ToArray();
+    private static byte[] SingleLineBytes { get; } = "http://www.w3.org/ns/shacl#singleLine"u8.ToArray();
+    private static byte[] LanguageInBytes { get; } = "http://www.w3.org/ns/shacl#languageIn"u8.ToArray();
+    private static byte[] UniqueLangBytes { get; } = "http://www.w3.org/ns/shacl#uniqueLang"u8.ToArray();
 
     //Term inspection
-    private static readonly byte[] ClassBytes = "http://www.w3.org/ns/shacl#class"u8.ToArray();
-    private static readonly byte[] DatatypeBytes = "http://www.w3.org/ns/shacl#datatype"u8.ToArray();
-    private static readonly byte[] NodeKindBytes = "http://www.w3.org/ns/shacl#nodeKind"u8.ToArray();
-    private static readonly byte[] RootClassBytes = "http://www.w3.org/ns/shacl#rootClass"u8.ToArray();
+    private static byte[] ClassBytes { get; } = "http://www.w3.org/ns/shacl#class"u8.ToArray();
+    private static byte[] DatatypeBytes { get; } = "http://www.w3.org/ns/shacl#datatype"u8.ToArray();
+    private static byte[] NodeKindBytes { get; } = "http://www.w3.org/ns/shacl#nodeKind"u8.ToArray();
+    private static byte[] RootClassBytes { get; } = "http://www.w3.org/ns/shacl#rootClass"u8.ToArray();
 
     //Value set
-    private static readonly byte[] HasValueBytes = "http://www.w3.org/ns/shacl#hasValue"u8.ToArray();
-    private static readonly byte[] InBytes = "http://www.w3.org/ns/shacl#in"u8.ToArray();
+    private static byte[] HasValueBytes { get; } = "http://www.w3.org/ns/shacl#hasValue"u8.ToArray();
+    private static byte[] InBytes { get; } = "http://www.w3.org/ns/shacl#in"u8.ToArray();
 
     //Pair comparison
-    private static readonly byte[] EqualsToBytes = "http://www.w3.org/ns/shacl#equals"u8.ToArray();
-    private static readonly byte[] DisjointBytes = "http://www.w3.org/ns/shacl#disjoint"u8.ToArray();
-    private static readonly byte[] LessThanBytes = "http://www.w3.org/ns/shacl#lessThan"u8.ToArray();
-    private static readonly byte[] LessThanOrEqualsBytes = "http://www.w3.org/ns/shacl#lessThanOrEquals"u8.ToArray();
+    private static byte[] EqualsToBytes { get; } = "http://www.w3.org/ns/shacl#equals"u8.ToArray();
+    private static byte[] DisjointBytes { get; } = "http://www.w3.org/ns/shacl#disjoint"u8.ToArray();
+    private static byte[] LessThanBytes { get; } = "http://www.w3.org/ns/shacl#lessThan"u8.ToArray();
+    private static byte[] LessThanOrEqualsBytes { get; } = "http://www.w3.org/ns/shacl#lessThanOrEquals"u8.ToArray();
 
     //Boolean combinators
-    private static readonly byte[] NotBytes = "http://www.w3.org/ns/shacl#not"u8.ToArray();
-    private static readonly byte[] AndBytes = "http://www.w3.org/ns/shacl#and"u8.ToArray();
-    private static readonly byte[] OrBytes = "http://www.w3.org/ns/shacl#or"u8.ToArray();
-    private static readonly byte[] XoneBytes = "http://www.w3.org/ns/shacl#xone"u8.ToArray();
+    private static byte[] NotBytes { get; } = "http://www.w3.org/ns/shacl#not"u8.ToArray();
+    private static byte[] AndBytes { get; } = "http://www.w3.org/ns/shacl#and"u8.ToArray();
+    private static byte[] OrBytes { get; } = "http://www.w3.org/ns/shacl#or"u8.ToArray();
+    private static byte[] XoneBytes { get; } = "http://www.w3.org/ns/shacl#xone"u8.ToArray();
 
     //Shape references
-    private static readonly byte[] NodeBytes = "http://www.w3.org/ns/shacl#node"u8.ToArray();
-    private static readonly byte[] PropertyBytes = "http://www.w3.org/ns/shacl#property"u8.ToArray();
-    private static readonly byte[] QualifiedValueShapeBytes = "http://www.w3.org/ns/shacl#qualifiedValueShape"u8.ToArray();
-    private static readonly byte[] QualifiedMinCountBytes = "http://www.w3.org/ns/shacl#qualifiedMinCount"u8.ToArray();
-    private static readonly byte[] QualifiedMaxCountBytes = "http://www.w3.org/ns/shacl#qualifiedMaxCount"u8.ToArray();
-    private static readonly byte[] QualifiedValueShapesDisjointBytes = "http://www.w3.org/ns/shacl#qualifiedValueShapesDisjoint"u8.ToArray();
-    private static readonly byte[] SubsetOfBytes = "http://www.w3.org/ns/shacl#subsetOf"u8.ToArray();
+    private static byte[] NodeBytes { get; } = "http://www.w3.org/ns/shacl#node"u8.ToArray();
+    private static byte[] PropertyBytes { get; } = "http://www.w3.org/ns/shacl#property"u8.ToArray();
+    private static byte[] QualifiedValueShapeBytes { get; } = "http://www.w3.org/ns/shacl#qualifiedValueShape"u8.ToArray();
+    private static byte[] QualifiedMinCountBytes { get; } = "http://www.w3.org/ns/shacl#qualifiedMinCount"u8.ToArray();
+    private static byte[] QualifiedMaxCountBytes { get; } = "http://www.w3.org/ns/shacl#qualifiedMaxCount"u8.ToArray();
+    private static byte[] QualifiedValueShapesDisjointBytes { get; } = "http://www.w3.org/ns/shacl#qualifiedValueShapesDisjoint"u8.ToArray();
+    private static byte[] SubsetOfBytes { get; } = "http://www.w3.org/ns/shacl#subsetOf"u8.ToArray();
 
     //Closed world
-    private static readonly byte[] ClosedBytes = "http://www.w3.org/ns/shacl#closed"u8.ToArray();
-    private static readonly byte[] IgnoredPropertiesBytes = "http://www.w3.org/ns/shacl#ignoredProperties"u8.ToArray();
+    private static byte[] ClosedBytes { get; } = "http://www.w3.org/ns/shacl#closed"u8.ToArray();
+    private static byte[] IgnoredPropertiesBytes { get; } = "http://www.w3.org/ns/shacl#ignoredProperties"u8.ToArray();
 
     //Uniqueness
-    private static readonly byte[] UniqueValuesForBytes = "http://www.w3.org/ns/shacl#uniqueValuesFor"u8.ToArray();
+    private static byte[] UniqueValuesForBytes { get; } = "http://www.w3.org/ns/shacl#uniqueValuesFor"u8.ToArray();
 
     //Reification (SHACL 1.2)
-    private static readonly byte[] ReifierShapeBytes = "http://www.w3.org/ns/shacl#reifierShape"u8.ToArray();
-    private static readonly byte[] ReificationRequiredBytes = "http://www.w3.org/ns/shacl#reificationRequired"u8.ToArray();
+    private static byte[] ReifierShapeBytes { get; } = "http://www.w3.org/ns/shacl#reifierShape"u8.ToArray();
+    private static byte[] ReificationRequiredBytes { get; } = "http://www.w3.org/ns/shacl#reificationRequired"u8.ToArray();
 
     //Lists (SHACL 1.2)
-    private static readonly byte[] MemberShapeBytes = "http://www.w3.org/ns/shacl#memberShape"u8.ToArray();
-    private static readonly byte[] MinListLengthBytes = "http://www.w3.org/ns/shacl#minListLength"u8.ToArray();
-    private static readonly byte[] MaxListLengthBytes = "http://www.w3.org/ns/shacl#maxListLength"u8.ToArray();
-    private static readonly byte[] UniqueMembersBytes = "http://www.w3.org/ns/shacl#uniqueMembers"u8.ToArray();
+    private static byte[] MemberShapeBytes { get; } = "http://www.w3.org/ns/shacl#memberShape"u8.ToArray();
+    private static byte[] MinListLengthBytes { get; } = "http://www.w3.org/ns/shacl#minListLength"u8.ToArray();
+    private static byte[] MaxListLengthBytes { get; } = "http://www.w3.org/ns/shacl#maxListLength"u8.ToArray();
+    private static byte[] UniqueMembersBytes { get; } = "http://www.w3.org/ns/shacl#uniqueMembers"u8.ToArray();
 
     /// <summary><c>sh:minCount</c></summary>
     public static Utf8String MinCount { get; } = new(MinCountBytes);

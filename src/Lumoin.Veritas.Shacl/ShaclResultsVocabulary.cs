@@ -12,17 +12,17 @@ namespace Lumoin.Veritas.Shacl;
 /// </remarks>
 public static class ShaclResultsVocabulary
 {
-    private static readonly byte[] ValidationReportBytes = "http://www.w3.org/ns/shacl#ValidationReport"u8.ToArray();
-    private static readonly byte[] ValidationResultBytes = "http://www.w3.org/ns/shacl#ValidationResult"u8.ToArray();
-    private static readonly byte[] ConformsBytes = "http://www.w3.org/ns/shacl#conforms"u8.ToArray();
-    private static readonly byte[] ResultBytes = "http://www.w3.org/ns/shacl#result"u8.ToArray();
-    private static readonly byte[] FocusNodeBytes = "http://www.w3.org/ns/shacl#focusNode"u8.ToArray();
-    private static readonly byte[] ValueBytes = "http://www.w3.org/ns/shacl#value"u8.ToArray();
-    private static readonly byte[] ResultPathBytes = "http://www.w3.org/ns/shacl#resultPath"u8.ToArray();
-    private static readonly byte[] SourceShapeBytes = "http://www.w3.org/ns/shacl#sourceShape"u8.ToArray();
-    private static readonly byte[] SourceConstraintComponentBytes = "http://www.w3.org/ns/shacl#sourceConstraintComponent"u8.ToArray();
-    private static readonly byte[] ResultSeverityBytes = "http://www.w3.org/ns/shacl#resultSeverity"u8.ToArray();
-    private static readonly byte[] ResultMessageBytes = "http://www.w3.org/ns/shacl#resultMessage"u8.ToArray();
+    private static byte[] ValidationReportBytes { get; } = "http://www.w3.org/ns/shacl#ValidationReport"u8.ToArray();
+    private static byte[] ValidationResultBytes { get; } = "http://www.w3.org/ns/shacl#ValidationResult"u8.ToArray();
+    private static byte[] ConformsBytes { get; } = "http://www.w3.org/ns/shacl#conforms"u8.ToArray();
+    private static byte[] ResultBytes { get; } = "http://www.w3.org/ns/shacl#result"u8.ToArray();
+    private static byte[] FocusNodeBytes { get; } = "http://www.w3.org/ns/shacl#focusNode"u8.ToArray();
+    private static byte[] ValueBytes { get; } = "http://www.w3.org/ns/shacl#value"u8.ToArray();
+    private static byte[] ResultPathBytes { get; } = "http://www.w3.org/ns/shacl#resultPath"u8.ToArray();
+    private static byte[] SourceShapeBytes { get; } = "http://www.w3.org/ns/shacl#sourceShape"u8.ToArray();
+    private static byte[] SourceConstraintComponentBytes { get; } = "http://www.w3.org/ns/shacl#sourceConstraintComponent"u8.ToArray();
+    private static byte[] ResultSeverityBytes { get; } = "http://www.w3.org/ns/shacl#resultSeverity"u8.ToArray();
+    private static byte[] ResultMessageBytes { get; } = "http://www.w3.org/ns/shacl#resultMessage"u8.ToArray();
 
     /// <summary><c>sh:ValidationReport</c></summary>
     public static Utf8String ValidationReport { get; } = new(ValidationReportBytes);

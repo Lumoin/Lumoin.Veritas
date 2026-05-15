@@ -277,7 +277,7 @@ internal readonly partial struct DateTimeValue
         };
 
     //Maximum timezone offset is 14 hours per XSD §3.2.7.3.
-    private static readonly TimeSpan MaxTimezoneOffset = TimeSpan.FromHours(14);
+    private static TimeSpan MaxTimezoneOffset { get; } = TimeSpan.FromHours(14);
 
     //Lexical patterns. Each captures the body (date/time portion) and
     //the optional timezone separately so we can decide aware vs naive

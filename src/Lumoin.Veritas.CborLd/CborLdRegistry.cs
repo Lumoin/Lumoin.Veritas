@@ -41,7 +41,7 @@ public sealed class CborLdRegistry
     /// <summary>
     /// Gets a registry containing only the passthrough entry.
     /// </summary>
-    public static CborLdRegistry Empty { get; } = new(System.Linq.Enumerable.Empty<CborLdRegistryEntry>());
+    public static CborLdRegistry Empty { get; } = new([]);
 
     /// <summary>Gets the registered entries by id.</summary>
     public IReadOnlyDictionary<int, CborLdRegistryEntry> Entries => entries;

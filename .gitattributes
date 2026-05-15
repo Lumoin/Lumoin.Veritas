@@ -29,6 +29,8 @@
 *.docx binary
 *.pptx binary
 *.bin binary
+*.car binary
+*.nettrace binary
 *.gz filter=lfs diff=lfs merge=lfs -text
 *.jffs2 filter=lfs diff=lfs merge=lfs -text
 *.zip filter=lfs diff=lfs merge=lfs -text

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace Lumoin.Veritas.Cbor.CborLd;
@@ -105,6 +106,23 @@ public sealed class CborLdInputArray: CborLdInputNode
 
     /// <summary>Gets the array items.</summary>
     public IReadOnlyList<CborLdInputNode> Items { get; }
+}
+
+/// <summary>A byte-string leaf. The bytes are held as
+/// <see cref="ReadOnlyMemory{T}"/> so that decoded values can alias the
+/// source memory without copying; callers that need to retain bytes past
+/// the decoder's lifetime must copy explicitly.</summary>
+public sealed class CborLdInputBytes: CborLdInputNode
+{
+    /// <summary>Initialises a new byte-string leaf.</summary>
+    /// <param name="value">The byte content. <see cref="ReadOnlyMemory{T}.Empty"/> represents an empty byte string.</param>
+    public CborLdInputBytes(ReadOnlyMemory<byte> value)
+    {
+        Value = value;
+    }
+
+    /// <summary>Gets the byte content.</summary>
+    public ReadOnlyMemory<byte> Value { get; }
 }
 
 /// <summary>A string-keyed object with ordered entries.</summary>

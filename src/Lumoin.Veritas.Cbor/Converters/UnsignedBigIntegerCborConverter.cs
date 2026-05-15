@@ -34,7 +34,7 @@ public sealed class UnsignedBigIntegerCborConverter: CborConverter<BigInteger>
             throw new FormatException(
                 string.Create(CultureInfo.InvariantCulture, $"Expected CBOR Tag 2 (UnsignedBigInteger); got tag {tag.Value}."));
         }
-        byte[] bytes = reader.ReadByteString();
+        ReadOnlySpan<byte> bytes = reader.ReadByteStringSpan();
         return new BigInteger(bytes, isUnsigned: true, isBigEndian: true);
     }
 }

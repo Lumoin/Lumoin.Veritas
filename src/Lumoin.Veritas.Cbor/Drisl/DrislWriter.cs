@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using CidValue = Lumoin.Veritas.Cid.Cid;
 
 namespace Lumoin.Veritas.Cbor.Drisl;
 
@@ -23,6 +24,8 @@ public sealed class DrislWriter
 {
     private readonly CborWriter inner;
     private readonly Stack<FrameKind> frameStack = new();
+
+    private static CidCborConverter SharedCidConverter { get; } = new();
 
     /// <summary>
     /// Initialises a new <see cref="DrislWriter"/> writing into
@@ -184,11 +187,11 @@ public sealed class DrislWriter
     /// <summary>Writes a CID as a CBOR Tag 42 data item.</summary>
     /// <param name="value">The CID to write.</param>
     /// <exception cref="ArgumentNullException"><paramref name="value"/> is <c>null</c>.</exception>
-    public void WriteCid(global::Lumoin.Veritas.Cid.Cid value)
+    public void WriteCid(CidValue value)
     {
         ArgumentNullException.ThrowIfNull(value);
         EnsureNotInMapKeyPosition();
-        new CidCborConverter().Write(inner, value);
+        SharedCidConverter.Write(inner, value);
         OnNonKeyValueWritten();
     }
 

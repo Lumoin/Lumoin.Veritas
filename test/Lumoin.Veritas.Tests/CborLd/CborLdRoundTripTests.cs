@@ -174,7 +174,7 @@ internal sealed class CborLdRoundTripTests
             async () => await CborLdDecoder.DecodeAsync(
                 bytes,
                 CborLdRegistry.Empty.AsDelegate(),
-                TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+                cancellationToken: TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -200,14 +200,15 @@ internal sealed class CborLdRoundTripTests
             async () => await CborLdDecoder.DecodeAsync(
                 bytes,
                 NullLoader,
-                TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+                cancellationToken: TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
     }
 
     [TestMethod]
-    public async Task EncodeRejectsCompressionRegistryEntry()
+    public async Task EncodeAcceptsCompressionRegistryEntry()
     {
-        //An entry with non-empty codec tables triggers the
-        //not-yet-implemented compression path.
+        //An entry with non-empty codec tables now routes through the
+        //compression path. Encoding a primitive succeeds; the wire form
+        //carries the entry's registry id rather than 0.
         CborLdRegistryEntry compressionEntry = new(
             registryEntryId: 1,
             keywords: new Dictionary<string, CborLdKeywordCodec>
@@ -217,11 +218,14 @@ internal sealed class CborLdRoundTripTests
             terms: new Dictionary<string, CborLdTermCodec>());
         ArrayBufferWriter<byte> buffer = new();
 
-        Assert.Throws<CborLdProcessingException>(() => CborLdEncoder.Encode(
+        CborLdEncoder.Encode(
             new CborLdInputInt(1),
             compressionEntry,
             CborLdProfile.Default,
-            buffer));
+            buffer);
+
+        Assert.IsGreaterThan(0, buffer.WrittenCount);
+        await Task.CompletedTask.ConfigureAwait(false);
     }
 
     private async ValueTask<CborLdDecodeResult> EncodeThenDecodeAsync(CborLdInputNode root)
@@ -231,7 +235,7 @@ internal sealed class CborLdRoundTripTests
         return await CborLdDecoder.DecodeAsync(
             buffer.WrittenMemory,
             CborLdRegistry.Empty.AsDelegate(),
-            TestContext.CancellationToken).ConfigureAwait(false);
+            cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
     }
 
     private static byte[] Encode(CborLdInputNode root, CborLdProfile profile)

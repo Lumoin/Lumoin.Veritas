@@ -10,7 +10,7 @@ internal sealed class RdfCanonicalizerTests
     public TestContext TestContext { get; set; } = null!;
 
     //SHA-256 is the hash function required by RDFC-1.0.
-    private static readonly HashDelegate Sha256 = SHA256.HashData;
+    private static HashDelegate Sha256 { get; } = SHA256.HashData;
 
     [TestMethod]
     public void CanonicalizationOfEmptyDatasetProducesEmptyString()

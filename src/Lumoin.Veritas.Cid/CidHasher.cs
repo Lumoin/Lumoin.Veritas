@@ -53,7 +53,7 @@ public static class CidHasher
         return new Cid
         {
             Codec = codec,
-            Digest = digest
+            Digest = Digest32.FromSpan(digest)
         };
     }
 }

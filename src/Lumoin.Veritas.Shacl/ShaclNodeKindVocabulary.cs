@@ -14,12 +14,12 @@ namespace Lumoin.Veritas.Shacl;
 /// </remarks>
 public static class ShaclNodeKindVocabulary
 {
-    private static readonly byte[] BlankNodeBytes = "http://www.w3.org/ns/shacl#BlankNode"u8.ToArray();
-    private static readonly byte[] IRIBytes = "http://www.w3.org/ns/shacl#IRI"u8.ToArray();
-    private static readonly byte[] LiteralBytes = "http://www.w3.org/ns/shacl#Literal"u8.ToArray();
-    private static readonly byte[] BlankNodeOrIRIBytes = "http://www.w3.org/ns/shacl#BlankNodeOrIRI"u8.ToArray();
-    private static readonly byte[] BlankNodeOrLiteralBytes = "http://www.w3.org/ns/shacl#BlankNodeOrLiteral"u8.ToArray();
-    private static readonly byte[] IRIOrLiteralBytes = "http://www.w3.org/ns/shacl#IRIOrLiteral"u8.ToArray();
+    private static byte[] BlankNodeBytes { get; } = "http://www.w3.org/ns/shacl#BlankNode"u8.ToArray();
+    private static byte[] IRIBytes { get; } = "http://www.w3.org/ns/shacl#IRI"u8.ToArray();
+    private static byte[] LiteralBytes { get; } = "http://www.w3.org/ns/shacl#Literal"u8.ToArray();
+    private static byte[] BlankNodeOrIRIBytes { get; } = "http://www.w3.org/ns/shacl#BlankNodeOrIRI"u8.ToArray();
+    private static byte[] BlankNodeOrLiteralBytes { get; } = "http://www.w3.org/ns/shacl#BlankNodeOrLiteral"u8.ToArray();
+    private static byte[] IRIOrLiteralBytes { get; } = "http://www.w3.org/ns/shacl#IRIOrLiteral"u8.ToArray();
 
     /// <summary><c>sh:BlankNode</c></summary>
     public static Utf8String BlankNode { get; } = new(BlankNodeBytes);

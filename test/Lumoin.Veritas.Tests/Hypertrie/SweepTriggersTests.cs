@@ -12,7 +12,7 @@ internal sealed class SweepTriggersTests
 {
     public TestContext TestContext { get; set; } = null!;
 
-    private static readonly EncodedTriple[] SampleTriples =
+    private static EncodedTriple[] SampleTriples { get; } =
     [
         EncodedTriple.FromEncoded(1, 10, 100),
         EncodedTriple.FromEncoded(1, 11, 200),

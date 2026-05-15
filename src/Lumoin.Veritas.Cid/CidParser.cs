@@ -29,7 +29,6 @@ public static class CidParser
     private const byte HashTypeSha256 = 0x12;
     private const byte HashLength32 = 0x20;
     private const int BinaryLength = 36;
-    private const int DigestLength = 32;
     private const int StringLengthAfterPrefix = 58;
     private const char StringPrefix = 'b';
 
@@ -110,13 +109,10 @@ public static class CidParser
                 $"CID hash-length byte must be 0x{HashLength32:X2} (32 bytes); got 0x{input[3]:X2}.");
         }
 
-        byte[] digest = new byte[DigestLength];
-        input[4..].CopyTo(digest);
-
         return new Cid
         {
             Codec = (CidCodec)input[1],
-            Digest = digest
+            Digest = Digest32.FromSpan(input[4..])
         };
     }
 

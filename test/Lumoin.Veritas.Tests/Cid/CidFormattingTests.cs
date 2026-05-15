@@ -38,7 +38,7 @@ internal sealed class CidFormattingTests
         Veritas.Cid.Cid cid = BuildKnownCid(CidCodec.Raw);
         byte[] bytes = CidFormatter.ToBytes(cid);
 
-        CollectionAssert.AreEqual(cid.Digest, bytes[4..]);
+        CollectionAssert.AreEqual(cid.Digest.ToArray(), bytes[4..]);
     }
 
     [TestMethod]
@@ -77,7 +77,7 @@ internal sealed class CidFormattingTests
         Veritas.Cid.Cid roundTripped = CidParser.Parse(text);
 
         Assert.AreEqual(original.Codec, roundTripped.Codec);
-        CollectionAssert.AreEqual(original.Digest, roundTripped.Digest);
+        Assert.AreEqual(original.Digest, roundTripped.Digest);
     }
 
     [TestMethod]
@@ -88,7 +88,7 @@ internal sealed class CidFormattingTests
         Veritas.Cid.Cid roundTripped = CidParser.Parse(bytes);
 
         Assert.AreEqual(original.Codec, roundTripped.Codec);
-        CollectionAssert.AreEqual(original.Digest, roundTripped.Digest);
+        Assert.AreEqual(original.Digest, roundTripped.Digest);
     }
 
     [TestMethod]
@@ -99,18 +99,18 @@ internal sealed class CidFormattingTests
     }
 
     [TestMethod]
-    public void FormatRejectsDigestOfWrongLength()
+    public void Digest32RejectsWrongLengthBytes()
     {
-        Veritas.Cid.Cid cid = new() { Codec = CidCodec.Raw, Digest = new byte[31] };
-
-        Assert.Throws<ArgumentException>(() => CidFormatter.ToBytes(cid));
-        Assert.Throws<ArgumentException>(() => CidFormatter.ToCanonicalString(cid));
+        //Digest length is now a wire-form invariant carried by the
+        //Digest32 struct itself; the constructor enforces 32 bytes.
+        Assert.Throws<ArgumentException>(() => Digest32.FromSpan(new byte[31]));
+        Assert.Throws<ArgumentException>(() => Digest32.FromSpan(new byte[33]));
     }
 
     [TestMethod]
     public void FormatRejectsUnknownCodecValue()
     {
-        Veritas.Cid.Cid cid = new() { Codec = (CidCodec)0x00, Digest = new byte[32] };
+        Veritas.Cid.Cid cid = new() { Codec = (CidCodec)0x00, Digest = Digest32.FromSpan(new byte[32]) };
 
         Assert.Throws<ArgumentException>(() => CidFormatter.ToBytes(cid));
         Assert.Throws<ArgumentException>(() => CidFormatter.ToCanonicalString(cid));

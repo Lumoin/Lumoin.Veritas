@@ -13,7 +13,7 @@ internal sealed class NodeStoreSweepTests
     //A small graph spanning multiple subjects, predicates, and
     //objects so that sweep walks a non-trivial node tree under
     //the registered snapshot.
-    private static readonly EncodedTriple[] SampleTriples =
+    private static EncodedTriple[] SampleTriples { get; } =
     [
         EncodedTriple.FromEncoded(1, 10, 100),
         EncodedTriple.FromEncoded(1, 11, 200),

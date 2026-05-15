@@ -7,6 +7,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Lumoin.Veritas.Canonicalization\Lumoin.Veritas.Canonicalization.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.CborLd\Lumoin.Veritas.CborLd.csproj" />
     <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
     <ProjectReference Include="..\Lumoin.Veritas.JsonLd\Lumoin.Veritas.JsonLd.csproj" />
     <ProjectReference Include="..\Lumoin.Veritas.NQuads\Lumoin.Veritas.NQuads.csproj" />

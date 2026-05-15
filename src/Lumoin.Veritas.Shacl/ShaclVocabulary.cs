@@ -30,7 +30,7 @@ public static class ShaclVocabulary
     /// <summary>The SHACL namespace IRI, <c>http://www.w3.org/ns/shacl#</c>.</summary>
     public const string Namespace = "http://www.w3.org/ns/shacl#";
 
-    private static readonly byte[] NamespaceBytes = "http://www.w3.org/ns/shacl#"u8.ToArray();
+    private static byte[] NamespaceBytes { get; } = "http://www.w3.org/ns/shacl#"u8.ToArray();
 
     /// <summary>
     /// The SHACL namespace IRI as a <see cref="Utf8String"/>. Equivalent in

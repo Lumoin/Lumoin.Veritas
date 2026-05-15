@@ -232,7 +232,7 @@ internal readonly partial struct XsdDuration
     //The four reference instants from XSD §3.2.6.2. Chosen so the
     //month-length variation across them covers all the cases that
     //can flip a duration ordering.
-    private static readonly DateTime[] ReferenceInstants =
+    private static DateTime[] ReferenceInstants { get; } =
     [
         new DateTime(1696, 9, 1, 0, 0, 0, DateTimeKind.Utc),
         new DateTime(1697, 2, 1, 0, 0, 0, DateTimeKind.Utc),

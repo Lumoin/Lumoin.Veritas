@@ -18,13 +18,13 @@ namespace Lumoin.Veritas.Tests.Core.Algebra;
 internal sealed class TraversalPrimitivesTests
 {
     //Expected reachable-node set for the canonical 1-2-3-4 fan-out
-    //graph. Kept as a static readonly field to satisfy CA1861 at call
-    //sites that pass the array to CollectionAssert.
-    private static readonly int[] ExpectedFrom1Via234 = [2, 3, 4];
+    //graph. Kept as a static get-only property to satisfy CA1861 at
+    //call sites that pass the array to CollectionAssert.
+    private static int[] ExpectedFrom1Via234 { get; } = [2, 3, 4];
 
     //Expected reachable-node set for the cross-label reachability
     //test.
-    private static readonly int[] ExpectedCrossLabel234 = [2, 3, 4];
+    private static int[] ExpectedCrossLabel234 { get; } = [2, 3, 4];
 
     public TestContext TestContext { get; set; } = null!;
 

@@ -15,9 +15,9 @@ internal sealed class RdfCollectionTests
     //Typing them as IriId satisfies the RdfCollection API which takes IriId for
     //all three. For rdf:nil the head overload also accepts a TermId, so it
     //converts implicitly from IriId → TermId where needed.
-    private static readonly IriId FirstId = IriId.FromUnchecked(TermId.FromEncoded(1));
-    private static readonly IriId RestId = IriId.FromUnchecked(TermId.FromEncoded(2));
-    private static readonly IriId NilId = IriId.FromUnchecked(TermId.FromEncoded(3));
+    private static IriId FirstId { get; } = IriId.FromUnchecked(TermId.FromEncoded(1));
+    private static IriId RestId { get; } = IriId.FromUnchecked(TermId.FromEncoded(2));
+    private static IriId NilId { get; } = IriId.FromUnchecked(TermId.FromEncoded(3));
 
     [TestMethod]
     public async Task EnumerateReturnsEmptyForNilHead()

@@ -15,9 +15,9 @@ namespace Lumoin.Veritas.Shacl;
 /// </remarks>
 public static class ShaclSeverityVocabulary
 {
-    private static readonly byte[] InfoBytes = "http://www.w3.org/ns/shacl#Info"u8.ToArray();
-    private static readonly byte[] WarningBytes = "http://www.w3.org/ns/shacl#Warning"u8.ToArray();
-    private static readonly byte[] ViolationBytes = "http://www.w3.org/ns/shacl#Violation"u8.ToArray();
+    private static byte[] InfoBytes { get; } = "http://www.w3.org/ns/shacl#Info"u8.ToArray();
+    private static byte[] WarningBytes { get; } = "http://www.w3.org/ns/shacl#Warning"u8.ToArray();
+    private static byte[] ViolationBytes { get; } = "http://www.w3.org/ns/shacl#Violation"u8.ToArray();
 
     /// <summary><c>sh:Info</c> — informational finding.</summary>
     public static Utf8String Info { get; } = new(InfoBytes);

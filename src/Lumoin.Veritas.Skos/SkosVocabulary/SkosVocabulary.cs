@@ -34,52 +34,52 @@ public static class SkosVocabulary
         public const string Namespace = "http://www.w3.org/2004/02/skos/core#";
 
         //Classes.
-        private static readonly byte[] ConceptBytes = "http://www.w3.org/2004/02/skos/core#Concept"u8.ToArray();
-        private static readonly byte[] ConceptSchemeBytes = "http://www.w3.org/2004/02/skos/core#ConceptScheme"u8.ToArray();
-        private static readonly byte[] CollectionBytes = "http://www.w3.org/2004/02/skos/core#Collection"u8.ToArray();
-        private static readonly byte[] OrderedCollectionBytes = "http://www.w3.org/2004/02/skos/core#OrderedCollection"u8.ToArray();
+        private static byte[] ConceptBytes { get; } = "http://www.w3.org/2004/02/skos/core#Concept"u8.ToArray();
+        private static byte[] ConceptSchemeBytes { get; } = "http://www.w3.org/2004/02/skos/core#ConceptScheme"u8.ToArray();
+        private static byte[] CollectionBytes { get; } = "http://www.w3.org/2004/02/skos/core#Collection"u8.ToArray();
+        private static byte[] OrderedCollectionBytes { get; } = "http://www.w3.org/2004/02/skos/core#OrderedCollection"u8.ToArray();
 
         //Labeling properties.
-        private static readonly byte[] PrefLabelBytes = "http://www.w3.org/2004/02/skos/core#prefLabel"u8.ToArray();
-        private static readonly byte[] AltLabelBytes = "http://www.w3.org/2004/02/skos/core#altLabel"u8.ToArray();
-        private static readonly byte[] HiddenLabelBytes = "http://www.w3.org/2004/02/skos/core#hiddenLabel"u8.ToArray();
+        private static byte[] PrefLabelBytes { get; } = "http://www.w3.org/2004/02/skos/core#prefLabel"u8.ToArray();
+        private static byte[] AltLabelBytes { get; } = "http://www.w3.org/2004/02/skos/core#altLabel"u8.ToArray();
+        private static byte[] HiddenLabelBytes { get; } = "http://www.w3.org/2004/02/skos/core#hiddenLabel"u8.ToArray();
 
         //Documentation properties.
-        private static readonly byte[] NoteBytes = "http://www.w3.org/2004/02/skos/core#note"u8.ToArray();
-        private static readonly byte[] ChangeNoteBytes = "http://www.w3.org/2004/02/skos/core#changeNote"u8.ToArray();
-        private static readonly byte[] DefinitionBytes = "http://www.w3.org/2004/02/skos/core#definition"u8.ToArray();
-        private static readonly byte[] EditorialNoteBytes = "http://www.w3.org/2004/02/skos/core#editorialNote"u8.ToArray();
-        private static readonly byte[] ExampleBytes = "http://www.w3.org/2004/02/skos/core#example"u8.ToArray();
-        private static readonly byte[] HistoryNoteBytes = "http://www.w3.org/2004/02/skos/core#historyNote"u8.ToArray();
-        private static readonly byte[] ScopeNoteBytes = "http://www.w3.org/2004/02/skos/core#scopeNote"u8.ToArray();
+        private static byte[] NoteBytes { get; } = "http://www.w3.org/2004/02/skos/core#note"u8.ToArray();
+        private static byte[] ChangeNoteBytes { get; } = "http://www.w3.org/2004/02/skos/core#changeNote"u8.ToArray();
+        private static byte[] DefinitionBytes { get; } = "http://www.w3.org/2004/02/skos/core#definition"u8.ToArray();
+        private static byte[] EditorialNoteBytes { get; } = "http://www.w3.org/2004/02/skos/core#editorialNote"u8.ToArray();
+        private static byte[] ExampleBytes { get; } = "http://www.w3.org/2004/02/skos/core#example"u8.ToArray();
+        private static byte[] HistoryNoteBytes { get; } = "http://www.w3.org/2004/02/skos/core#historyNote"u8.ToArray();
+        private static byte[] ScopeNoteBytes { get; } = "http://www.w3.org/2004/02/skos/core#scopeNote"u8.ToArray();
 
         //Semantic relation properties.
-        private static readonly byte[] SemanticRelationBytes = "http://www.w3.org/2004/02/skos/core#semanticRelation"u8.ToArray();
-        private static readonly byte[] BroaderBytes = "http://www.w3.org/2004/02/skos/core#broader"u8.ToArray();
-        private static readonly byte[] NarrowerBytes = "http://www.w3.org/2004/02/skos/core#narrower"u8.ToArray();
-        private static readonly byte[] RelatedBytes = "http://www.w3.org/2004/02/skos/core#related"u8.ToArray();
-        private static readonly byte[] BroaderTransitiveBytes = "http://www.w3.org/2004/02/skos/core#broaderTransitive"u8.ToArray();
-        private static readonly byte[] NarrowerTransitiveBytes = "http://www.w3.org/2004/02/skos/core#narrowerTransitive"u8.ToArray();
+        private static byte[] SemanticRelationBytes { get; } = "http://www.w3.org/2004/02/skos/core#semanticRelation"u8.ToArray();
+        private static byte[] BroaderBytes { get; } = "http://www.w3.org/2004/02/skos/core#broader"u8.ToArray();
+        private static byte[] NarrowerBytes { get; } = "http://www.w3.org/2004/02/skos/core#narrower"u8.ToArray();
+        private static byte[] RelatedBytes { get; } = "http://www.w3.org/2004/02/skos/core#related"u8.ToArray();
+        private static byte[] BroaderTransitiveBytes { get; } = "http://www.w3.org/2004/02/skos/core#broaderTransitive"u8.ToArray();
+        private static byte[] NarrowerTransitiveBytes { get; } = "http://www.w3.org/2004/02/skos/core#narrowerTransitive"u8.ToArray();
 
         //Scheme membership.
-        private static readonly byte[] InSchemeBytes = "http://www.w3.org/2004/02/skos/core#inScheme"u8.ToArray();
-        private static readonly byte[] HasTopConceptBytes = "http://www.w3.org/2004/02/skos/core#hasTopConcept"u8.ToArray();
-        private static readonly byte[] TopConceptOfBytes = "http://www.w3.org/2004/02/skos/core#topConceptOf"u8.ToArray();
+        private static byte[] InSchemeBytes { get; } = "http://www.w3.org/2004/02/skos/core#inScheme"u8.ToArray();
+        private static byte[] HasTopConceptBytes { get; } = "http://www.w3.org/2004/02/skos/core#hasTopConcept"u8.ToArray();
+        private static byte[] TopConceptOfBytes { get; } = "http://www.w3.org/2004/02/skos/core#topConceptOf"u8.ToArray();
 
         //Collection membership.
-        private static readonly byte[] MemberBytes = "http://www.w3.org/2004/02/skos/core#member"u8.ToArray();
-        private static readonly byte[] MemberListBytes = "http://www.w3.org/2004/02/skos/core#memberList"u8.ToArray();
+        private static byte[] MemberBytes { get; } = "http://www.w3.org/2004/02/skos/core#member"u8.ToArray();
+        private static byte[] MemberListBytes { get; } = "http://www.w3.org/2004/02/skos/core#memberList"u8.ToArray();
 
         //Mapping properties.
-        private static readonly byte[] MappingRelationBytes = "http://www.w3.org/2004/02/skos/core#mappingRelation"u8.ToArray();
-        private static readonly byte[] CloseMatchBytes = "http://www.w3.org/2004/02/skos/core#closeMatch"u8.ToArray();
-        private static readonly byte[] ExactMatchBytes = "http://www.w3.org/2004/02/skos/core#exactMatch"u8.ToArray();
-        private static readonly byte[] BroadMatchBytes = "http://www.w3.org/2004/02/skos/core#broadMatch"u8.ToArray();
-        private static readonly byte[] NarrowMatchBytes = "http://www.w3.org/2004/02/skos/core#narrowMatch"u8.ToArray();
-        private static readonly byte[] RelatedMatchBytes = "http://www.w3.org/2004/02/skos/core#relatedMatch"u8.ToArray();
+        private static byte[] MappingRelationBytes { get; } = "http://www.w3.org/2004/02/skos/core#mappingRelation"u8.ToArray();
+        private static byte[] CloseMatchBytes { get; } = "http://www.w3.org/2004/02/skos/core#closeMatch"u8.ToArray();
+        private static byte[] ExactMatchBytes { get; } = "http://www.w3.org/2004/02/skos/core#exactMatch"u8.ToArray();
+        private static byte[] BroadMatchBytes { get; } = "http://www.w3.org/2004/02/skos/core#broadMatch"u8.ToArray();
+        private static byte[] NarrowMatchBytes { get; } = "http://www.w3.org/2004/02/skos/core#narrowMatch"u8.ToArray();
+        private static byte[] RelatedMatchBytes { get; } = "http://www.w3.org/2004/02/skos/core#relatedMatch"u8.ToArray();
 
         //Notation.
-        private static readonly byte[] NotationBytes = "http://www.w3.org/2004/02/skos/core#notation"u8.ToArray();
+        private static byte[] NotationBytes { get; } = "http://www.w3.org/2004/02/skos/core#notation"u8.ToArray();
 
         /// <summary>The <c>skos:Concept</c> class IRI.</summary>
         public static Utf8String Concept { get; } = new(ConceptBytes);
@@ -187,12 +187,12 @@ public static class SkosVocabulary
         /// <summary>The SKOS-XL namespace IRI.</summary>
         public const string Namespace = "http://www.w3.org/2008/05/skos-xl#";
 
-        private static readonly byte[] LabelBytes = "http://www.w3.org/2008/05/skos-xl#Label"u8.ToArray();
-        private static readonly byte[] PrefLabelBytes = "http://www.w3.org/2008/05/skos-xl#prefLabel"u8.ToArray();
-        private static readonly byte[] AltLabelBytes = "http://www.w3.org/2008/05/skos-xl#altLabel"u8.ToArray();
-        private static readonly byte[] HiddenLabelBytes = "http://www.w3.org/2008/05/skos-xl#hiddenLabel"u8.ToArray();
-        private static readonly byte[] LiteralFormBytes = "http://www.w3.org/2008/05/skos-xl#literalForm"u8.ToArray();
-        private static readonly byte[] LabelRelationBytes = "http://www.w3.org/2008/05/skos-xl#labelRelation"u8.ToArray();
+        private static byte[] LabelBytes { get; } = "http://www.w3.org/2008/05/skos-xl#Label"u8.ToArray();
+        private static byte[] PrefLabelBytes { get; } = "http://www.w3.org/2008/05/skos-xl#prefLabel"u8.ToArray();
+        private static byte[] AltLabelBytes { get; } = "http://www.w3.org/2008/05/skos-xl#altLabel"u8.ToArray();
+        private static byte[] HiddenLabelBytes { get; } = "http://www.w3.org/2008/05/skos-xl#hiddenLabel"u8.ToArray();
+        private static byte[] LiteralFormBytes { get; } = "http://www.w3.org/2008/05/skos-xl#literalForm"u8.ToArray();
+        private static byte[] LabelRelationBytes { get; } = "http://www.w3.org/2008/05/skos-xl#labelRelation"u8.ToArray();
 
         /// <summary>The <c>skosxl:Label</c> class — a reified label resource.</summary>
         public static Utf8String Label { get; } = new(LabelBytes);

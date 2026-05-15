@@ -11,7 +11,7 @@ internal sealed class HypertrieSnapshotTests
     //A non-empty synthetic identifier used wherever the test does
     //not care about the specific content addressing — it just
     //needs an id to thread through the constructor.
-    private static readonly NodeIdentifier SyntheticId = new(0x123456789ABCDEFUL);
+    private static NodeIdentifier SyntheticId { get; } = new(0x123456789ABCDEFUL);
 
     [TestMethod]
     public void NewSnapshotHasReferenceCountOne()

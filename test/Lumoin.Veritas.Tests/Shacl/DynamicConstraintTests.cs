@@ -189,9 +189,9 @@ internal sealed class DynamicConstraintTests
         Assert.Contains(shapeB, refs);
     }
 
-    private static readonly Dictionary<IriId, IReadOnlyList<TermId>> EmptyCompanions = new();
+    private static Dictionary<IriId, IReadOnlyList<TermId>> EmptyCompanions { get; } = new();
 
-    private static readonly Dictionary<TermId, ImmutableArray<TermId>> EmptyResolvedLists = new();
+    private static Dictionary<TermId, ImmutableArray<TermId>> EmptyResolvedLists { get; } = new();
 
     private static ParameterBag CreateBag(
         IriId primaryParameter,

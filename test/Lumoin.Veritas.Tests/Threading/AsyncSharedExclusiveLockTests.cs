@@ -14,7 +14,7 @@ internal sealed class AsyncSharedExclusiveLockTests
     //default runner timeout so the cancellation arrives first
     //and the failure message attributes the deadlock to the
     //specific operation.
-    private static readonly TimeSpan DeadlockBudget = TimeSpan.FromSeconds(2);
+    private static TimeSpan DeadlockBudget { get; } = TimeSpan.FromSeconds(2);
 
     public TestContext TestContext { get; set; } = null!;
 

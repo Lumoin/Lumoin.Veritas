@@ -16,43 +16,43 @@ namespace Lumoin.Veritas.Shacl;
 public static class ShaclCoreVocabulary
 {
     //sh:Shape
-    private static readonly byte[] ShapeBytes = "http://www.w3.org/ns/shacl#Shape"u8.ToArray();
+    private static byte[] ShapeBytes { get; } = "http://www.w3.org/ns/shacl#Shape"u8.ToArray();
 
     //sh:NodeShape
-    private static readonly byte[] NodeShapeBytes = "http://www.w3.org/ns/shacl#NodeShape"u8.ToArray();
+    private static byte[] NodeShapeBytes { get; } = "http://www.w3.org/ns/shacl#NodeShape"u8.ToArray();
 
     //sh:PropertyShape
-    private static readonly byte[] PropertyShapeBytes = "http://www.w3.org/ns/shacl#PropertyShape"u8.ToArray();
+    private static byte[] PropertyShapeBytes { get; } = "http://www.w3.org/ns/shacl#PropertyShape"u8.ToArray();
 
     //sh:ShapeClass (SHACL 1.2)
-    private static readonly byte[] ShapeClassBytes = "http://www.w3.org/ns/shacl#ShapeClass"u8.ToArray();
+    private static byte[] ShapeClassBytes { get; } = "http://www.w3.org/ns/shacl#ShapeClass"u8.ToArray();
 
     //sh:targetClass
-    private static readonly byte[] TargetClassBytes = "http://www.w3.org/ns/shacl#targetClass"u8.ToArray();
+    private static byte[] TargetClassBytes { get; } = "http://www.w3.org/ns/shacl#targetClass"u8.ToArray();
 
     //sh:targetNode
-    private static readonly byte[] TargetNodeBytes = "http://www.w3.org/ns/shacl#targetNode"u8.ToArray();
+    private static byte[] TargetNodeBytes { get; } = "http://www.w3.org/ns/shacl#targetNode"u8.ToArray();
 
     //sh:targetSubjectsOf
-    private static readonly byte[] TargetSubjectsOfBytes = "http://www.w3.org/ns/shacl#targetSubjectsOf"u8.ToArray();
+    private static byte[] TargetSubjectsOfBytes { get; } = "http://www.w3.org/ns/shacl#targetSubjectsOf"u8.ToArray();
 
     //sh:targetObjectsOf
-    private static readonly byte[] TargetObjectsOfBytes = "http://www.w3.org/ns/shacl#targetObjectsOf"u8.ToArray();
+    private static byte[] TargetObjectsOfBytes { get; } = "http://www.w3.org/ns/shacl#targetObjectsOf"u8.ToArray();
 
     //sh:targetWhere (SHACL 1.2)
-    private static readonly byte[] TargetWhereBytes = "http://www.w3.org/ns/shacl#targetWhere"u8.ToArray();
+    private static byte[] TargetWhereBytes { get; } = "http://www.w3.org/ns/shacl#targetWhere"u8.ToArray();
 
     //sh:severity
-    private static readonly byte[] SeverityBytes = "http://www.w3.org/ns/shacl#severity"u8.ToArray();
+    private static byte[] SeverityBytes { get; } = "http://www.w3.org/ns/shacl#severity"u8.ToArray();
 
     //sh:deactivated
-    private static readonly byte[] DeactivatedBytes = "http://www.w3.org/ns/shacl#deactivated"u8.ToArray();
+    private static byte[] DeactivatedBytes { get; } = "http://www.w3.org/ns/shacl#deactivated"u8.ToArray();
 
     //sh:message
-    private static readonly byte[] MessageBytes = "http://www.w3.org/ns/shacl#message"u8.ToArray();
+    private static byte[] MessageBytes { get; } = "http://www.w3.org/ns/shacl#message"u8.ToArray();
 
     //sh:path
-    private static readonly byte[] PathBytes = "http://www.w3.org/ns/shacl#path"u8.ToArray();
+    private static byte[] PathBytes { get; } = "http://www.w3.org/ns/shacl#path"u8.ToArray();
 
     /// <summary><c>sh:Shape</c> — the root class for all shapes.</summary>
     public static Utf8String Shape { get; } = new(ShapeBytes);

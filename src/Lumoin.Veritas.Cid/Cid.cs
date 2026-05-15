@@ -42,25 +42,23 @@ public sealed class Cid
 
     /// <summary>
     /// Gets or sets the 32-byte SHA-256 digest of the referenced content.
-    /// Must be exactly 32 bytes when this <see cref="Cid"/> is passed to
-    /// the formatter, parser, or hasher; the property setter does not
-    /// enforce the length so that deserialisers can fill the value
-    /// incrementally.
+    /// Stored inline as a <see cref="Digest32"/>, so each <see cref="Cid"/>
+    /// avoids a per-instance heap allocation for its digest. The default
+    /// value is all-zero, which is the conventional "unset" sentinel for
+    /// deserialisers that fill the value incrementally.
     /// </summary>
-    public byte[] Digest { get; set; } = [];
+    public Digest32 Digest { get; set; }
 
     /// <summary>
     /// Gets a short hexadecimal preview of <see cref="Digest"/> for the
-    /// debugger display. The preview shows up to the first eight bytes
-    /// followed by an ellipsis when the digest is longer.
+    /// debugger display. The preview shows the first eight bytes.
     /// </summary>
     private string DigestHex
     {
         get
         {
-            int previewLength = Digest.Length < 8 ? Digest.Length : 8;
-            string preview = System.Convert.ToHexString(Digest, 0, previewLength);
-            return Digest.Length > previewLength ? preview + "..." : preview;
+            System.ReadOnlySpan<byte> span = Digest.AsSpan();
+            return System.Convert.ToHexString(span[..8]) + "...";
         }
     }
 }

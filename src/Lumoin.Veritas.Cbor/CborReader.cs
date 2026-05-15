@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using Lumoin.Veritas.Cbor.Internal;
+using Lumoin.Veritas.Core.Memory;
 
 namespace Lumoin.Veritas.Cbor;
 
@@ -17,11 +18,11 @@ namespace Lumoin.Veritas.Cbor;
 /// <para>
 /// <b>Source.</b> The reader accepts either a contiguous
 /// <see cref="ReadOnlyMemory{T}"/> or a possibly-discontiguous
-/// <see cref="ReadOnlySequence{T}"/>. Single-segment sequences are
-/// dispatched into the contiguous fast path; multi-segment sequences are
-/// materialised into a contiguous buffer once at construction. Streaming
-/// over genuinely discontiguous input without materialisation is a future
-/// optimisation.
+/// <see cref="ReadOnlySequence{T}"/>. Multi-segment sequences are walked
+/// in place via <see cref="SequenceReader{T}"/>; the reader does not
+/// materialise multi-segment input into a contiguous buffer at
+/// construction. Construction allocates a small bounded amount
+/// regardless of the input sequence's total size.
 /// </para>
 /// <para>
 /// <b>State.</b> Use <see cref="PeekState"/> to look at the next data
@@ -34,10 +35,12 @@ namespace Lumoin.Veritas.Cbor;
 /// </remarks>
 public sealed class CborReader
 {
-    private readonly ReadOnlyMemory<byte> source;
+    private ReadOnlySequence<byte> source;
     private readonly CborSerializerOptions options;
+    private readonly VeritasMemoryPool<byte>? pool;
+    private readonly CborStringInternPool? stringInternPool;
     private readonly Stack<ContainerFrame> stack = new();
-    private int position;
+    private long consumed;
     private int pendingTagDepth;
 
     /// <summary>
@@ -46,33 +49,98 @@ public sealed class CborReader
     /// </summary>
     /// <param name="source">The bytes to read.</param>
     /// <param name="options">The conformance options.</param>
+    /// <param name="pool">An optional pool used by
+    /// <see cref="ReadByteStringPooled"/> for the indefinite-length and
+    /// cross-segment cases; when <c>null</c> the reader falls back to
+    /// <see cref="MemoryPool{T}.Shared"/>.</param>
+    /// <param name="stringInternPool">An optional intern pool consulted by
+    /// <see cref="ReadTextString"/>; repeated reads of the same UTF-8 bytes
+    /// return the same <see cref="string"/> instance, skipping both the
+    /// UTF-8 → UTF-16 decode and the allocation. Useful for workloads that
+    /// decode many similar documents (CAR / firehose, JSON-LD contexts).</param>
     /// <exception cref="ArgumentNullException"><paramref name="options"/> is <c>null</c>.</exception>
-    public CborReader(ReadOnlyMemory<byte> source, CborSerializerOptions options)
+    public CborReader(ReadOnlyMemory<byte> source, CborSerializerOptions options, VeritasMemoryPool<byte>? pool = null, CborStringInternPool? stringInternPool = null)
+        : this(new ReadOnlySequence<byte>(source), options, pool, stringInternPool)
     {
-        ArgumentNullException.ThrowIfNull(options);
-        this.source = source;
-        this.options = options;
     }
 
     /// <summary>
     /// Initialises a new reader over the byte sequence
-    /// <paramref name="source"/>. Single-segment sequences are kept as-is;
-    /// multi-segment sequences are concatenated once into a contiguous
-    /// buffer.
+    /// <paramref name="source"/>. Multi-segment sequences are walked in
+    /// place via <see cref="SequenceReader{T}"/>; construction does not
+    /// materialise the sequence into a contiguous buffer.
     /// </summary>
     /// <param name="source">The bytes to read.</param>
     /// <param name="options">The conformance options.</param>
+    /// <param name="pool">An optional pool used by
+    /// <see cref="ReadByteStringPooled"/> for the indefinite-length and
+    /// cross-segment cases; when <c>null</c> the reader falls back to
+    /// <see cref="MemoryPool{T}.Shared"/>.</param>
+    /// <param name="stringInternPool">An optional intern pool consulted by
+    /// <see cref="ReadTextString"/>; repeated reads of the same UTF-8 bytes
+    /// return the same <see cref="string"/> instance, skipping both the
+    /// UTF-8 → UTF-16 decode and the allocation. Useful for workloads that
+    /// decode many similar documents (CAR / firehose, JSON-LD contexts).</param>
     /// <exception cref="ArgumentNullException"><paramref name="options"/> is <c>null</c>.</exception>
-    public CborReader(ReadOnlySequence<byte> source, CborSerializerOptions options)
-        : this(source.IsSingleSegment ? source.First : source.ToArray(), options)
+    public CborReader(ReadOnlySequence<byte> source, CborSerializerOptions options, VeritasMemoryPool<byte>? pool = null, CborStringInternPool? stringInternPool = null)
     {
+        ArgumentNullException.ThrowIfNull(options);
+        this.source = source;
+        this.options = options;
+        this.pool = pool;
+        this.stringInternPool = stringInternPool;
+    }
+
+    /// <summary>
+    /// Re-targets this reader at <paramref name="newSource"/> without
+    /// allocating a new <see cref="CborReader"/>. Clears the container
+    /// stack and resets consumed-byte and pending-tag counters. Options,
+    /// pool, and intern-pool references are preserved.
+    /// </summary>
+    /// <remarks>
+    /// Designed for hot paths that decode many independent CBOR blocks
+    /// in sequence (CARv1 sections, AT Protocol firehose frames). Each
+    /// reset is O(1) plus stack-clear, vs allocating a fresh reader
+    /// (~architecture-dependent but measurable at firehose rates).
+    /// Callers must ensure no in-flight read against the previous source
+    /// is observing zero-copy spans (e.g. <see cref="ReadByteStringSpan"/>),
+    /// since <see cref="Reset(ReadOnlyMemory{byte})"/> invalidates them.
+    /// </remarks>
+    /// <param name="newSource">The new contiguous byte source.</param>
+    public void Reset(ReadOnlyMemory<byte> newSource)
+    {
+        Reset(new ReadOnlySequence<byte>(newSource));
+    }
+
+    /// <summary>
+    /// Re-targets this reader at <paramref name="newSource"/>; see
+    /// <see cref="Reset(ReadOnlyMemory{byte})"/>.
+    /// </summary>
+    /// <param name="newSource">The new byte sequence.</param>
+    public void Reset(ReadOnlySequence<byte> newSource)
+    {
+        source = newSource;
+        stack.Clear();
+        consumed = 0;
+        pendingTagDepth = 0;
     }
 
     /// <summary>Gets the active conformance options.</summary>
     public CborSerializerOptions Options => options;
 
-    /// <summary>Gets the number of bytes consumed so far from the source.</summary>
-    public int BytesConsumed => position;
+    /// <summary>
+    /// Gets the number of bytes consumed so far from the source. Saturates
+    /// at <see cref="int.MaxValue"/> for sources larger than 2 GiB; callers
+    /// who need exact byte counts past that boundary should use
+    /// <see cref="GetBytesConsumedLong"/>.
+    /// </summary>
+    public int BytesConsumed => consumed > int.MaxValue ? int.MaxValue : (int)consumed;
+
+    /// <summary>
+    /// Gets the number of bytes consumed so far from the source, as a
+    /// 64-bit integer. Use when the source may exceed 2 GiB.
+    /// </summary>
+    public long BytesConsumedLong => consumed;
 
     /// <summary>Gets the number of currently-open containers (arrays and maps).</summary>
     public int CurrentDepth => stack.Count;
@@ -96,7 +164,8 @@ public sealed class CborReader
             }
         }
 
-        if(position >= source.Length)
+        SequenceReader<byte> reader = CreateReader();
+        if(!reader.TryPeek(out byte initial))
         {
             if(stack.Count != 0)
             {
@@ -105,7 +174,6 @@ public sealed class CborReader
             return CborReaderState.Finished;
         }
 
-        byte initial = source.Span[position];
         CborMajorType major = (CborMajorType)(initial >> 5);
         byte ai = (byte)(initial & 0x1F);
 
@@ -155,18 +223,42 @@ public sealed class CborReader
             default:
             {
                 throw new FormatException(
-                    string.Create(CultureInfo.InvariantCulture, $"Unrecognised CBOR major type {(byte)major} at position {position}."));
+                    string.Create(CultureInfo.InvariantCulture, $"Unrecognised CBOR major type {(byte)major} at position {consumed}."));
             }
         }
+    }
+
+    /// <summary>
+    /// Reads a negative integer (major type 1) and returns its raw
+    /// encoded argument. The actual mathematical value is
+    /// <c>-(1 + result)</c>; the raw form is preserved so callers can
+    /// round-trip values below <see cref="long.MinValue"/> that
+    /// <see cref="ReadInt64"/> rejects with <see cref="OverflowException"/>.
+    /// </summary>
+    /// <returns>The raw <c>ulong</c> argument; the numeric value is <c>-(1 + result)</c>.</returns>
+    /// <exception cref="FormatException">The next data item is not a negative integer.</exception>
+    public ulong ReadCborNegativeIntegerRepresentation()
+    {
+        SequenceReader<byte> reader = CreateReader();
+        ExpectMajor(ref reader, CborMajorType.NegativeInteger);
+        reader.TryRead(out byte initial);
+        byte ai = (byte)(initial & 0x1F);
+        ulong value = ReadArgument(ref reader, ai);
+        SaveReaderState(ref reader);
+        OnDataItemCompleted();
+
+        return value;
     }
 
     /// <summary>Reads an unsigned 64-bit integer (major type 0).</summary>
     public ulong ReadUInt64()
     {
-        ExpectMajor(CborMajorType.UnsignedInteger);
-        byte ai = (byte)(source.Span[position] & 0x1F);
-        position++;
-        ulong value = ReadArgument(ai);
+        SequenceReader<byte> reader = CreateReader();
+        ExpectMajor(ref reader, CborMajorType.UnsignedInteger);
+        reader.TryRead(out byte initial);
+        byte ai = (byte)(initial & 0x1F);
+        ulong value = ReadArgument(ref reader, ai);
+        SaveReaderState(ref reader);
         OnDataItemCompleted();
         return value;
     }
@@ -178,15 +270,19 @@ public sealed class CborReader
     /// <exception cref="OverflowException">A negative value is below <see cref="long.MinValue"/>.</exception>
     public long ReadInt64()
     {
-        byte initial = source.Span[position];
+        SequenceReader<byte> reader = CreateReader();
+        if(!reader.TryPeek(out byte initial))
+        {
+            throw new FormatException("CBOR source is exhausted.");
+        }
         CborMajorType major = (CborMajorType)(initial >> 5);
         if(major != CborMajorType.UnsignedInteger && major != CborMajorType.NegativeInteger)
         {
             ThrowMajorMismatch("integer", major);
         }
+        reader.Advance(1);
         byte ai = (byte)(initial & 0x1F);
-        position++;
-        ulong argument = ReadArgument(ai);
+        ulong argument = ReadArgument(ref reader, ai);
         long value;
         if(major == CborMajorType.UnsignedInteger)
         {
@@ -204,85 +300,271 @@ public sealed class CborReader
             }
             value = -1L - (long)argument;
         }
+        SaveReaderState(ref reader);
         OnDataItemCompleted();
         return value;
     }
 
     /// <summary>
-    /// Reads a byte string and returns its content as a freshly allocated
-    /// array. Definite-length byte strings are read directly. Indefinite-
-    /// length byte strings are consumed chunk-by-chunk and concatenated;
-    /// the break byte terminates the data item.
+    /// Reads a definite-length byte string and returns its content as a
+    /// zero-copy <see cref="ReadOnlySpan{T}"/> slice of the underlying
+    /// source memory. The span is valid until the next read call; callers
+    /// that need to retain the bytes past that point must copy explicitly
+    /// (e.g. <c>span.ToArray()</c>) or use <see cref="ReadByteStringPooled"/>.
+    /// Indefinite-length byte strings throw — use
+    /// <see cref="ReadByteStringPooled"/> for those. Byte strings that span
+    /// multiple sequence segments also throw — use
+    /// <see cref="ReadByteStringPooled"/> or <see cref="ReadByteStringMemory"/>
+    /// for those.
     /// </summary>
-    public byte[] ReadByteString()
+    /// <exception cref="InvalidOperationException">The byte string is indefinite-length or spans segments.</exception>
+    public ReadOnlySpan<byte> ReadByteStringSpan()
     {
-        ExpectMajor(CborMajorType.ByteString);
-        byte ai = (byte)(source.Span[position] & 0x1F);
+        SequenceReader<byte> reader = CreateReader();
+        int len = ReadDefiniteByteStringHeader(ref reader, out _);
+
+        if(reader.UnreadSpan.Length < len)
+        {
+            throw new InvalidOperationException(
+                string.Create(CultureInfo.InvariantCulture,
+                    $"CBOR byte string of length {len} spans multiple sequence segments. Use ReadByteStringPooled or ReadByteStringMemory."));
+        }
+
+        ReadOnlySpan<byte> result = reader.UnreadSpan[..len];
+        reader.Advance(len);
+        SaveReaderState(ref reader);
+        OnDataItemCompleted();
+        return result;
+    }
+
+    /// <summary>
+    /// Reads a definite-length byte string and returns its content as a
+    /// <see cref="ReadOnlyMemory{T}"/>. Single-segment data is returned as
+    /// a zero-copy slice of the underlying source; cross-segment data is
+    /// copied into a fresh <see cref="T:byte[]"/> (allocated; the caller
+    /// retains it without explicit disposal). Indefinite-length byte
+    /// strings throw — use <see cref="ReadByteStringPooled"/>.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The byte string is indefinite-length.</exception>
+    public ReadOnlyMemory<byte> ReadByteStringMemory()
+    {
+        SequenceReader<byte> reader = CreateReader();
+        int len = ReadDefiniteByteStringHeader(ref reader, out long headerConsumed);
+
+        if(reader.UnreadSpan.Length >= len)
+        {
+            //Single-segment zero-copy. Recover the memory slice for this
+            //segment by walking the source sequence to the current position.
+            ReadOnlyMemory<byte> slice = SliceCurrentSegmentMemory(headerConsumed, len);
+            reader.Advance(len);
+            SaveReaderState(ref reader);
+            OnDataItemCompleted();
+            return slice;
+        }
+
+        //Cross-segment: allocate and copy. The caller retains the
+        //ReadOnlyMemory<byte> independent of the pool; GC handles cleanup.
+        byte[] buffer = new byte[len];
+        if(!reader.TryCopyTo(buffer))
+        {
+            throw new FormatException(
+                string.Create(CultureInfo.InvariantCulture,
+                    $"CBOR byte-string length {len} exceeds remaining source bytes."));
+        }
+        reader.Advance(len);
+        SaveReaderState(ref reader);
+        OnDataItemCompleted();
+        return buffer;
+    }
+
+    private int ReadDefiniteByteStringHeader(ref SequenceReader<byte> reader, out long headerEndOffset)
+    {
+        ExpectMajor(ref reader, CborMajorType.ByteString);
+        reader.TryPeek(out byte initial);
+        byte ai = (byte)(initial & 0x1F);
         if(ai == CborHeader.AdditionalInfoIndefinite)
         {
-            EnsureIndefiniteAllowed();
-            position++;
-            return ReadIndefiniteByteStringChunks();
+            throw new InvalidOperationException(
+                "CBOR byte string is indefinite-length and cannot be returned as a zero-copy slice. Use ReadByteStringPooled.");
         }
-        position++;
-        ulong length = ReadArgument(ai);
+        reader.Advance(1);
+        ulong length = ReadArgument(ref reader, ai);
         if(length > int.MaxValue)
         {
             CborThrowHelper.ThrowLengthExceedsInt32(nameof(length));
         }
         int len = (int)length;
-        byte[] result = new byte[len];
-        source.Span.Slice(position, len).CopyTo(result);
-        position += len;
-        OnDataItemCompleted();
-        return result;
+        if(len > options.MaxByteStringLength)
+        {
+            throw new CborSizeLimitExceededException(nameof(CborSerializerOptions.MaxByteStringLength), len, options.MaxByteStringLength);
+        }
+        if(len > reader.Remaining)
+        {
+            throw new FormatException(
+                string.Create(CultureInfo.InvariantCulture, $"CBOR byte-string length {len} exceeds remaining source bytes {reader.Remaining}."));
+        }
+        //SequenceReader.Consumed is absolute from the start of the sequence
+        //the reader was created over (which is the full source); no addition
+        //of the saved 'consumed' field needed here.
+        headerEndOffset = reader.Consumed;
+        return len;
     }
 
-    private byte[] ReadIndefiniteByteStringChunks()
+    /// <summary>
+    /// Reads a byte string and returns its content as an owned pool-rented
+    /// buffer. Works for both definite- and indefinite-length byte strings;
+    /// for indefinite-length, chunks are assembled into a single rented slab
+    /// without per-chunk intermediate allocations. The caller is responsible
+    /// for disposing the returned <see cref="IMemoryOwner{T}"/>.
+    /// </summary>
+    public IMemoryOwner<byte> ReadByteStringPooled()
     {
-        List<byte[]> chunks = [];
-        int totalLength = 0;
-        while(position < source.Length && source.Span[position] != CborHeader.BreakStop)
+        SequenceReader<byte> reader = CreateReader();
+        ExpectMajor(ref reader, CborMajorType.ByteString);
+        reader.TryPeek(out byte initial);
+        byte ai = (byte)(initial & 0x1F);
+        if(ai == CborHeader.AdditionalInfoIndefinite)
         {
-            byte chunkInitial = source.Span[position];
+            EnsureIndefiniteAllowed();
+            reader.Advance(1);
+            return ReadIndefiniteByteStringChunksPooled(ref reader);
+        }
+        reader.Advance(1);
+        ulong length = ReadArgument(ref reader, ai);
+        if(length > int.MaxValue)
+        {
+            CborThrowHelper.ThrowLengthExceedsInt32(nameof(length));
+        }
+        int len = (int)length;
+        if(len > options.MaxByteStringLength)
+        {
+            throw new CborSizeLimitExceededException(nameof(CborSerializerOptions.MaxByteStringLength), len, options.MaxByteStringLength);
+        }
+        if(len > reader.Remaining)
+        {
+            throw new FormatException(
+                string.Create(CultureInfo.InvariantCulture, $"CBOR byte-string length {len} exceeds remaining source bytes {reader.Remaining}."));
+        }
+        IMemoryOwner<byte> owner = RentExact(len);
+        if(!reader.TryCopyTo(owner.Memory.Span))
+        {
+            owner.Dispose();
+            throw new FormatException("CBOR byte-string read failed: source exhausted.");
+        }
+        reader.Advance(len);
+        SaveReaderState(ref reader);
+        OnDataItemCompleted();
+        return owner;
+    }
+
+    /// <summary>
+    /// Reads a byte string and returns its content as a freshly allocated
+    /// array. This is a convenience wrapper over
+    /// <see cref="ReadByteStringMemory"/> (definite) or
+    /// <see cref="ReadByteStringPooled"/> (indefinite). Use the span /
+    /// memory / pooled methods directly when allocation matters.
+    /// </summary>
+    public byte[] ReadByteString()
+    {
+        SequenceReader<byte> peekReader = CreateReader();
+        if(!peekReader.TryPeek(out byte initial))
+        {
+            throw new FormatException("CBOR source is exhausted.");
+        }
+        byte ai = (byte)(initial & 0x1F);
+        if(ai == CborHeader.AdditionalInfoIndefinite)
+        {
+            using IMemoryOwner<byte> owner = ReadByteStringPooled();
+            return owner.Memory.ToArray();
+        }
+        return ReadByteStringMemory().ToArray();
+    }
+
+    private IMemoryOwner<byte> RentExact(int size)
+    {
+        if(size == 0)
+        {
+            return new EmptyMemoryOwner();
+        }
+        if(pool is not null)
+        {
+            return pool.Rent(size);
+        }
+        IMemoryOwner<byte> owner = MemoryPool<byte>.Shared.Rent(size);
+        return owner.Memory.Length == size ? owner : new TrimmedMemoryOwner(owner, size);
+    }
+
+    private IMemoryOwner<byte> ReadIndefiniteByteStringChunksPooled(ref SequenceReader<byte> reader)
+    {
+        //Two-pass approach: first pass walks chunk positions to compute
+        //the assembled length; second pass copies into a single rented slab.
+        //Reader state after this method points past the closing break byte.
+        long startConsumed = reader.Consumed;
+        int totalLength = 0;
+        int chunkCount = 0;
+        while(reader.TryPeek(out byte chunkInitial) && chunkInitial != CborHeader.BreakStop)
+        {
             if((CborMajorType)(chunkInitial >> 5) != CborMajorType.ByteString)
             {
                 throw new FormatException(
-                    string.Create(CultureInfo.InvariantCulture, $"Indefinite byte string chunk at position {position} is not a byte string (major type {chunkInitial >> 5})."));
+                    string.Create(CultureInfo.InvariantCulture, $"Indefinite byte string chunk is not a byte string (major type {chunkInitial >> 5})."));
             }
             byte chunkAi = (byte)(chunkInitial & 0x1F);
             if(chunkAi == CborHeader.AdditionalInfoIndefinite)
             {
                 throw new FormatException("Indefinite byte string chunks must each be definite length; nested indefinite strings are forbidden by RFC 8949 §3.2.3.");
             }
-            position++;
-            ulong chunkLength = ReadArgument(chunkAi);
+            reader.Advance(1);
+            ulong chunkLength = ReadArgument(ref reader, chunkAi);
             if(chunkLength > int.MaxValue)
             {
                 CborThrowHelper.ThrowLengthExceedsInt32(nameof(chunkLength));
             }
             int len = (int)chunkLength;
-            byte[] chunk = new byte[len];
-            source.Span.Slice(position, len).CopyTo(chunk);
-            position += len;
-            chunks.Add(chunk);
+            if(len > reader.Remaining)
+            {
+                throw new FormatException(
+                    string.Create(CultureInfo.InvariantCulture, $"CBOR indefinite chunk length {len} exceeds remaining source bytes {reader.Remaining}."));
+            }
+            reader.Advance(len);
             totalLength += len;
+            chunkCount++;
+            if(chunkCount > options.MaxIndefiniteStringChunks)
+            {
+                throw new CborSizeLimitExceededException(nameof(CborSerializerOptions.MaxIndefiniteStringChunks), chunkCount, options.MaxIndefiniteStringChunks);
+            }
         }
-        if(position >= source.Length)
+        if(reader.End)
         {
             throw new FormatException("Indefinite-length byte string is missing its break byte.");
         }
-        position++;
 
-        byte[] assembled = new byte[totalLength];
-        int offset = 0;
-        foreach(byte[] chunk in chunks)
+        //Rewind for the second pass.
+        long endConsumed = reader.Consumed;
+        long rewindBy = endConsumed - startConsumed;
+        reader.Rewind(rewindBy);
+
+        IMemoryOwner<byte> owner = RentExact(totalLength);
+        Span<byte> dest = owner.Memory.Span;
+        int destOffset = 0;
+        while(reader.TryPeek(out byte chunkInitial) && chunkInitial != CborHeader.BreakStop)
         {
-            chunk.CopyTo(assembled, offset);
-            offset += chunk.Length;
+            byte chunkAi = (byte)(chunkInitial & 0x1F);
+            reader.Advance(1);
+            ulong chunkLength = ReadArgument(ref reader, chunkAi);
+            int len = (int)chunkLength;
+            if(!reader.TryCopyTo(dest.Slice(destOffset, len)))
+            {
+                owner.Dispose();
+                throw new FormatException("CBOR indefinite-chunk copy failed.");
+            }
+            reader.Advance(len);
+            destOffset += len;
         }
+        reader.Advance(1);   //consume break byte
+        SaveReaderState(ref reader);
         OnDataItemCompleted();
-        return assembled;
+        return owner;
     }
 
     /// <summary>
@@ -294,72 +576,149 @@ public sealed class CborReader
     /// </summary>
     public string ReadTextString()
     {
-        ExpectMajor(CborMajorType.TextString);
-        byte ai = (byte)(source.Span[position] & 0x1F);
+        SequenceReader<byte> reader = CreateReader();
+        ExpectMajor(ref reader, CborMajorType.TextString);
+        reader.TryPeek(out byte initial);
+        byte ai = (byte)(initial & 0x1F);
         if(ai == CborHeader.AdditionalInfoIndefinite)
         {
             EnsureIndefiniteAllowed();
-            position++;
-            return ReadIndefiniteTextStringChunks();
+            reader.Advance(1);
+            return ReadIndefiniteTextStringChunks(ref reader);
         }
-        position++;
-        ulong length = ReadArgument(ai);
+        reader.Advance(1);
+        ulong length = ReadArgument(ref reader, ai);
         if(length > int.MaxValue)
         {
             CborThrowHelper.ThrowLengthExceedsInt32(nameof(length));
         }
         int len = (int)length;
-        ReadOnlySpan<byte> bytes = source.Span.Slice(position, len);
-        string value = DecodeUtf8(bytes);
-        position += len;
+        if(len > options.MaxTextStringLength)
+        {
+            throw new CborSizeLimitExceededException(nameof(CborSerializerOptions.MaxTextStringLength), len, options.MaxTextStringLength);
+        }
+        if(len > reader.Remaining)
+        {
+            throw new FormatException(
+                string.Create(CultureInfo.InvariantCulture, $"CBOR text-string length {len} exceeds remaining source bytes {reader.Remaining}."));
+        }
+        string value;
+        if(reader.UnreadSpan.Length >= len)
+        {
+            //Single-segment fast path: decode directly from the segment.
+            ReadOnlySpan<byte> bytes = reader.UnreadSpan[..len];
+            value = stringInternPool is not null
+                ? InternOrDecode(bytes)
+                : DecodeUtf8(bytes);
+        }
+        else
+        {
+            //Cross-segment: assemble into a small stack/heap buffer first.
+            byte[] assembled = new byte[len];
+            reader.TryCopyTo(assembled);
+            value = stringInternPool is not null
+                ? InternOrDecode(assembled)
+                : DecodeUtf8(assembled);
+        }
+        reader.Advance(len);
+        SaveReaderState(ref reader);
         OnDataItemCompleted();
         return value;
     }
 
-    private string ReadIndefiniteTextStringChunks()
+    private string InternOrDecode(ReadOnlySpan<byte> bytes)
     {
-        List<byte[]> chunks = [];
-        int totalLength = 0;
-        while(position < source.Length && source.Span[position] != CborHeader.BreakStop)
+        //Length-based bypass: strings the pool will never store (post
+        //text, URIs, base64 payloads) skip the hash + dictionary lookup
+        //entirely. Without this, long unique content adds a hash cost
+        //per read that the pool can't amortise.
+        if(bytes.Length > stringInternPool!.MaxByteLength)
         {
-            byte chunkInitial = source.Span[position];
+            return DecodeUtf8(bytes);
+        }
+
+        //Fast path: lookup. The alternate lookup avoids any allocation
+        //when the string is already cached. This is the steady-state
+        //path for repeated map keys / repeated content addresses.
+        string? hit = stringInternPool.TryGet(bytes);
+        if(hit is not null)
+        {
+            return hit;
+        }
+
+        //First sighting: decode (validating if configured) once, then
+        //insert the result. The pool quietly rejects when the total-
+        //entry cap is reached.
+        string decoded = DecodeUtf8(bytes);
+        _ = stringInternPool.AddDecoded(bytes, decoded);
+
+        return decoded;
+    }
+
+    private string ReadIndefiniteTextStringChunks(ref SequenceReader<byte> reader)
+    {
+        //Reuse the byte-string assembly machinery: collect all chunk bytes
+        //into a pool-rented buffer, then UTF-8 decode the assembled bytes.
+        long startConsumed = reader.Consumed;
+        int totalLength = 0;
+        int chunkCount = 0;
+        while(reader.TryPeek(out byte chunkInitial) && chunkInitial != CborHeader.BreakStop)
+        {
             if((CborMajorType)(chunkInitial >> 5) != CborMajorType.TextString)
             {
                 throw new FormatException(
-                    string.Create(CultureInfo.InvariantCulture, $"Indefinite text string chunk at position {position} is not a text string (major type {chunkInitial >> 5})."));
+                    string.Create(CultureInfo.InvariantCulture, $"Indefinite text string chunk is not a text string (major type {chunkInitial >> 5})."));
             }
             byte chunkAi = (byte)(chunkInitial & 0x1F);
             if(chunkAi == CborHeader.AdditionalInfoIndefinite)
             {
                 throw new FormatException("Indefinite text string chunks must each be definite length; nested indefinite strings are forbidden by RFC 8949 §3.2.3.");
             }
-            position++;
-            ulong chunkLength = ReadArgument(chunkAi);
+            reader.Advance(1);
+            ulong chunkLength = ReadArgument(ref reader, chunkAi);
             if(chunkLength > int.MaxValue)
             {
                 CborThrowHelper.ThrowLengthExceedsInt32(nameof(chunkLength));
             }
             int len = (int)chunkLength;
-            byte[] chunk = new byte[len];
-            source.Span.Slice(position, len).CopyTo(chunk);
-            position += len;
-            chunks.Add(chunk);
+            if(len > reader.Remaining)
+            {
+                throw new FormatException(
+                    string.Create(CultureInfo.InvariantCulture, $"CBOR indefinite chunk length {len} exceeds remaining source bytes {reader.Remaining}."));
+            }
+            reader.Advance(len);
             totalLength += len;
+            chunkCount++;
+            if(chunkCount > options.MaxIndefiniteStringChunks)
+            {
+                throw new CborSizeLimitExceededException(nameof(CborSerializerOptions.MaxIndefiniteStringChunks), chunkCount, options.MaxIndefiniteStringChunks);
+            }
         }
-        if(position >= source.Length)
+        if(reader.End)
         {
             throw new FormatException("Indefinite-length text string is missing its break byte.");
         }
-        position++;
+
+        long endConsumed = reader.Consumed;
+        reader.Rewind(endConsumed - startConsumed);
 
         byte[] assembled = new byte[totalLength];
         int offset = 0;
-        foreach(byte[] chunk in chunks)
+        while(reader.TryPeek(out byte chunkInitial) && chunkInitial != CborHeader.BreakStop)
         {
-            chunk.CopyTo(assembled, offset);
-            offset += chunk.Length;
+            byte chunkAi = (byte)(chunkInitial & 0x1F);
+            reader.Advance(1);
+            ulong chunkLength = ReadArgument(ref reader, chunkAi);
+            int len = (int)chunkLength;
+            reader.TryCopyTo(assembled.AsSpan(offset, len));
+            reader.Advance(len);
+            offset += len;
         }
-        string value = DecodeUtf8(assembled);
+        reader.Advance(1);   //break byte
+        string value = stringInternPool is not null
+            ? InternOrDecode(assembled)
+            : DecodeUtf8(assembled);
+        SaveReaderState(ref reader);
         OnDataItemCompleted();
         return value;
     }
@@ -387,22 +746,32 @@ public sealed class CborReader
     /// </summary>
     public int? ReadStartArray()
     {
-        ExpectMajor(CborMajorType.Array);
-        byte ai = (byte)(source.Span[position] & 0x1F);
-        position++;
+        SequenceReader<byte> reader = CreateReader();
+        ExpectMajor(ref reader, CborMajorType.Array);
+        reader.TryPeek(out byte initial);
+        byte ai = (byte)(initial & 0x1F);
+        reader.Advance(1);
         if(ai == CborHeader.AdditionalInfoIndefinite)
         {
             EnsureIndefiniteAllowed();
+            EnsureDepthAvailable();
             stack.Push(new ContainerFrame(CborMajorType.Array, isDefinite: false, expectedCount: -1));
+            SaveReaderState(ref reader);
             return null;
         }
-        ulong count = ReadArgument(ai);
+        ulong count = ReadArgument(ref reader, ai);
         if(count > int.MaxValue)
         {
             CborThrowHelper.ThrowLengthExceedsInt32(nameof(count));
         }
         int countInt = (int)count;
+        if(countInt > options.MaxArrayLength)
+        {
+            throw new CborSizeLimitExceededException(nameof(CborSerializerOptions.MaxArrayLength), countInt, options.MaxArrayLength);
+        }
+        EnsureDepthAvailable();
         stack.Push(new ContainerFrame(CborMajorType.Array, isDefinite: true, expectedCount: countInt));
+        SaveReaderState(ref reader);
         return countInt;
     }
 
@@ -415,7 +784,7 @@ public sealed class CborReader
     {
         if(stack.Count == 0 || stack.Peek().Major != CborMajorType.Array)
         {
-            CborThrowHelper.ThrowInvalidWriterState("ReadEndArray", DescribeTopState());
+            CborThrowHelper.ThrowInvalidState("ReadEndArray", DescribeTopState());
         }
         ContainerFrame frame = stack.Pop();
         if(frame.IsDefinite)
@@ -438,22 +807,32 @@ public sealed class CborReader
     /// </summary>
     public int? ReadStartMap()
     {
-        ExpectMajor(CborMajorType.Map);
-        byte ai = (byte)(source.Span[position] & 0x1F);
-        position++;
+        SequenceReader<byte> reader = CreateReader();
+        ExpectMajor(ref reader, CborMajorType.Map);
+        reader.TryPeek(out byte initial);
+        byte ai = (byte)(initial & 0x1F);
+        reader.Advance(1);
         if(ai == CborHeader.AdditionalInfoIndefinite)
         {
             EnsureIndefiniteAllowed();
+            EnsureDepthAvailable();
             stack.Push(new ContainerFrame(CborMajorType.Map, isDefinite: false, expectedCount: -1));
+            SaveReaderState(ref reader);
             return null;
         }
-        ulong count = ReadArgument(ai);
+        ulong count = ReadArgument(ref reader, ai);
         if(count > int.MaxValue)
         {
             CborThrowHelper.ThrowLengthExceedsInt32(nameof(count));
         }
         int countInt = (int)count;
+        if(countInt > options.MaxMapEntryCount)
+        {
+            throw new CborSizeLimitExceededException(nameof(CborSerializerOptions.MaxMapEntryCount), countInt, options.MaxMapEntryCount);
+        }
+        EnsureDepthAvailable();
         stack.Push(new ContainerFrame(CborMajorType.Map, isDefinite: true, expectedCount: countInt));
+        SaveReaderState(ref reader);
         return countInt;
     }
 
@@ -466,7 +845,7 @@ public sealed class CborReader
     {
         if(stack.Count == 0 || stack.Peek().Major != CborMajorType.Map)
         {
-            CborThrowHelper.ThrowInvalidWriterState("ReadEndMap", DescribeTopState());
+            CborThrowHelper.ThrowInvalidState("ReadEndMap", DescribeTopState());
         }
         ContainerFrame frame = stack.Pop();
         if(frame.ExpectingMapValue)
@@ -490,7 +869,11 @@ public sealed class CborReader
     /// <summary>Reads a Boolean simple value.</summary>
     public bool ReadBoolean()
     {
-        byte initial = source.Span[position];
+        SequenceReader<byte> reader = CreateReader();
+        if(!reader.TryPeek(out byte initial))
+        {
+            throw new FormatException("CBOR source is exhausted.");
+        }
         if((CborMajorType)(initial >> 5) != CborMajorType.SimpleAndFloat)
         {
             ThrowMajorMismatch("boolean", (CborMajorType)(initial >> 5));
@@ -499,10 +882,11 @@ public sealed class CborReader
         if(ai != 20 && ai != 21)
         {
             throw new FormatException(
-                string.Create(CultureInfo.InvariantCulture, $"Expected CBOR boolean (simple value 20 or 21) at position {position}; got {ai}."));
+                string.Create(CultureInfo.InvariantCulture, $"Expected CBOR boolean (simple value 20 or 21) at position {consumed}; got {ai}."));
         }
-        position++;
+        reader.Advance(1);
         bool value = ai == 21;
+        SaveReaderState(ref reader);
         OnDataItemCompleted();
         return value;
     }
@@ -510,29 +894,37 @@ public sealed class CborReader
     /// <summary>Reads the CBOR null simple value.</summary>
     public void ReadNull()
     {
-        ExpectInitialByte((byte)(((byte)CborMajorType.SimpleAndFloat << 5) | (byte)CborSimpleValue.Null), "null");
-        position++;
+        SequenceReader<byte> reader = CreateReader();
+        ExpectInitialByte(ref reader, (byte)(((byte)CborMajorType.SimpleAndFloat << 5) | (byte)CborSimpleValue.Null), "null");
+        reader.Advance(1);
+        SaveReaderState(ref reader);
         OnDataItemCompleted();
     }
 
     /// <summary>Reads the CBOR undefined simple value.</summary>
     public void ReadUndefined()
     {
-        ExpectInitialByte((byte)(((byte)CborMajorType.SimpleAndFloat << 5) | (byte)CborSimpleValue.Undefined), "undefined");
-        position++;
+        SequenceReader<byte> reader = CreateReader();
+        ExpectInitialByte(ref reader, (byte)(((byte)CborMajorType.SimpleAndFloat << 5) | (byte)CborSimpleValue.Undefined), "undefined");
+        reader.Advance(1);
+        SaveReaderState(ref reader);
         OnDataItemCompleted();
     }
 
     /// <summary>Reads a non-standardised simple value identifier.</summary>
     public byte ReadSimpleValue()
     {
-        byte initial = source.Span[position];
+        SequenceReader<byte> reader = CreateReader();
+        if(!reader.TryPeek(out byte initial))
+        {
+            throw new FormatException("CBOR source is exhausted.");
+        }
         if((CborMajorType)(initial >> 5) != CborMajorType.SimpleAndFloat)
         {
             ThrowMajorMismatch("simple value", (CborMajorType)(initial >> 5));
         }
         byte ai = (byte)(initial & 0x1F);
-        position++;
+        reader.Advance(1);
         byte value;
         if(ai <= CborHeader.ImmediateMax)
         {
@@ -540,14 +932,17 @@ public sealed class CborReader
         }
         else if(ai == CborHeader.AdditionalInfoOneByte)
         {
-            value = source.Span[position];
-            position++;
+            if(!reader.TryRead(out value))
+            {
+                throw new FormatException("CBOR source exhausted reading simple value byte.");
+            }
         }
         else
         {
             throw new FormatException(
-                string.Create(CultureInfo.InvariantCulture, $"Expected a CBOR simple value at position {position}; got additional info {ai}."));
+                string.Create(CultureInfo.InvariantCulture, $"Expected a CBOR simple value at position {consumed}; got additional info {ai}."));
         }
+        SaveReaderState(ref reader);
         OnDataItemCompleted();
         return value;
     }
@@ -555,22 +950,33 @@ public sealed class CborReader
     /// <summary>Reads a CBOR tag. The next data item is the tagged content.</summary>
     public CborTag ReadTag()
     {
-        ExpectMajor(CborMajorType.Tag);
-        byte ai = (byte)(source.Span[position] & 0x1F);
-        position++;
-        ulong tag = ReadArgument(ai);
+        SequenceReader<byte> reader = CreateReader();
+        ExpectMajor(ref reader, CborMajorType.Tag);
+        reader.TryPeek(out byte initial);
+        byte ai = (byte)(initial & 0x1F);
+        reader.Advance(1);
+        ulong tag = ReadArgument(ref reader, ai);
         pendingTagDepth++;
+        if(pendingTagDepth > options.MaxTagDepth)
+        {
+            throw new CborSizeLimitExceededException(nameof(CborSerializerOptions.MaxTagDepth), pendingTagDepth, options.MaxTagDepth);
+        }
+        SaveReaderState(ref reader);
         return new CborTag(tag);
     }
 
     /// <summary>Reads a half-precision (binary16) floating-point value.</summary>
     public Half ReadHalf()
     {
-        ExpectInitialByte((byte)(((byte)CborMajorType.SimpleAndFloat << 5) | CborHeader.AdditionalInfoTwoByte), "half-precision float");
-        position++;
-        ushort bits = BinaryPrimitives.ReadUInt16BigEndian(source.Span.Slice(position, 2));
-        position += 2;
-        Half value = BitConverter.UInt16BitsToHalf(bits);
+        SequenceReader<byte> reader = CreateReader();
+        ExpectInitialByte(ref reader, (byte)(((byte)CborMajorType.SimpleAndFloat << 5) | CborHeader.AdditionalInfoTwoByte), "half-precision float");
+        reader.Advance(1);
+        if(!reader.TryReadBigEndian(out short signedBits))
+        {
+            throw new FormatException("CBOR source exhausted reading half-precision float bits.");
+        }
+        Half value = BitConverter.UInt16BitsToHalf((ushort)signedBits);
+        SaveReaderState(ref reader);
         OnDataItemCompleted();
         return value;
     }
@@ -578,10 +984,17 @@ public sealed class CborReader
     /// <summary>Reads a single-precision (binary32) floating-point value.</summary>
     public float ReadSingle()
     {
-        ExpectInitialByte((byte)(((byte)CborMajorType.SimpleAndFloat << 5) | CborHeader.AdditionalInfoFourByte), "single-precision float");
-        position++;
-        float value = CborFloatConversions.ReadBinary32(source.Span.Slice(position, 4));
-        position += 4;
+        SequenceReader<byte> reader = CreateReader();
+        ExpectInitialByte(ref reader, (byte)(((byte)CborMajorType.SimpleAndFloat << 5) | CborHeader.AdditionalInfoFourByte), "single-precision float");
+        reader.Advance(1);
+        Span<byte> bytes = stackalloc byte[4];
+        if(!reader.TryCopyTo(bytes))
+        {
+            throw new FormatException("CBOR source exhausted reading single-precision float bits.");
+        }
+        reader.Advance(4);
+        float value = CborFloatConversions.ReadBinary32(bytes);
+        SaveReaderState(ref reader);
         OnDataItemCompleted();
         return value;
     }
@@ -589,17 +1002,39 @@ public sealed class CborReader
     /// <summary>Reads a double-precision (binary64) floating-point value.</summary>
     public double ReadDouble()
     {
-        ExpectInitialByte((byte)(((byte)CborMajorType.SimpleAndFloat << 5) | CborHeader.AdditionalInfoEightByte), "double-precision float");
-        position++;
-        double value = CborFloatConversions.ReadBinary64(source.Span.Slice(position, 8));
-        position += 8;
+        SequenceReader<byte> reader = CreateReader();
+        ExpectInitialByte(ref reader, (byte)(((byte)CborMajorType.SimpleAndFloat << 5) | CborHeader.AdditionalInfoEightByte), "double-precision float");
+        reader.Advance(1);
+        Span<byte> bytes = stackalloc byte[8];
+        if(!reader.TryCopyTo(bytes))
+        {
+            throw new FormatException("CBOR source exhausted reading double-precision float bits.");
+        }
+        reader.Advance(8);
+        double value = CborFloatConversions.ReadBinary64(bytes);
+        SaveReaderState(ref reader);
         OnDataItemCompleted();
         return value;
     }
 
-    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+    private static UTF8Encoding StrictUtf8 { get; } = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
-    private ulong ReadArgument(byte additionalInfo)
+    private SequenceReader<byte> CreateReader()
+    {
+        SequenceReader<byte> reader = new(source);
+        if(consumed > 0)
+        {
+            reader.Advance(consumed);
+        }
+        return reader;
+    }
+
+    private void SaveReaderState(ref SequenceReader<byte> reader)
+    {
+        consumed = reader.Consumed;
+    }
+
+    private static ulong ReadArgument(ref SequenceReader<byte> reader, byte additionalInfo)
     {
         if(additionalInfo <= CborHeader.ImmediateMax)
         {
@@ -609,80 +1044,91 @@ public sealed class CborReader
         {
             case CborHeader.AdditionalInfoOneByte:
             {
-                ulong v = source.Span[position];
-                position += 1;
-                return v;
+                if(!reader.TryRead(out byte b))
+                {
+                    throw new FormatException("CBOR source exhausted reading one-byte argument.");
+                }
+                return b;
             }
             case CborHeader.AdditionalInfoTwoByte:
             {
-                ulong v = BinaryPrimitives.ReadUInt16BigEndian(source.Span.Slice(position, 2));
-                position += 2;
-                return v;
+                if(!reader.TryReadBigEndian(out short signed))
+                {
+                    throw new FormatException("CBOR source exhausted reading two-byte argument.");
+                }
+                return (ushort)signed;
             }
             case CborHeader.AdditionalInfoFourByte:
             {
-                ulong v = BinaryPrimitives.ReadUInt32BigEndian(source.Span.Slice(position, 4));
-                position += 4;
-                return v;
+                if(!reader.TryReadBigEndian(out int signed))
+                {
+                    throw new FormatException("CBOR source exhausted reading four-byte argument.");
+                }
+                return (uint)signed;
             }
             case CborHeader.AdditionalInfoEightByte:
             {
-                ulong v = BinaryPrimitives.ReadUInt64BigEndian(source.Span.Slice(position, 8));
-                position += 8;
-                return v;
+                if(!reader.TryReadBigEndian(out long signed))
+                {
+                    throw new FormatException("CBOR source exhausted reading eight-byte argument.");
+                }
+                return (ulong)signed;
             }
             default:
             {
                 throw new FormatException(
-                    string.Create(CultureInfo.InvariantCulture, $"Invalid CBOR additional information value {additionalInfo} at position {position - 1}."));
+                    string.Create(CultureInfo.InvariantCulture, $"Invalid CBOR additional information value {additionalInfo}."));
             }
         }
     }
 
-    private void ExpectMajor(CborMajorType expected)
+    private void ExpectMajor(ref SequenceReader<byte> reader, CborMajorType expected)
     {
-        if(position >= source.Length)
+        if(!reader.TryPeek(out byte initial))
         {
             throw new FormatException("CBOR source is exhausted.");
         }
-        CborMajorType actual = (CborMajorType)(source.Span[position] >> 5);
+        CborMajorType actual = (CborMajorType)(initial >> 5);
         if(actual != expected)
         {
             ThrowMajorMismatch(expected.ToString(), actual);
         }
     }
 
-    private void ExpectInitialByte(byte expected, string label)
+    private void ExpectInitialByte(ref SequenceReader<byte> reader, byte expected, string label)
     {
-        if(position >= source.Length)
+        if(!reader.TryPeek(out byte actual))
         {
             throw new FormatException("CBOR source is exhausted.");
         }
-        if(source.Span[position] != expected)
+        if(actual != expected)
         {
             throw new FormatException(
-                string.Create(CultureInfo.InvariantCulture, $"Expected CBOR {label} initial byte 0x{expected:X2} at position {position}; got 0x{source.Span[position]:X2}."));
+                string.Create(CultureInfo.InvariantCulture, $"Expected CBOR {label} initial byte 0x{expected:X2} at position {consumed}; got 0x{actual:X2}."));
         }
     }
 
     private void ThrowMajorMismatch(string expected, CborMajorType actual)
     {
         throw new FormatException(
-            string.Create(CultureInfo.InvariantCulture, $"Expected CBOR {expected} at position {position}; got major type {(byte)actual}."));
+            string.Create(CultureInfo.InvariantCulture, $"Expected CBOR {expected} at position {consumed}; got major type {(byte)actual}."));
     }
 
     private bool PositionAtBreak()
     {
-        return position < source.Length && source.Span[position] == CborHeader.BreakStop;
+        SequenceReader<byte> reader = CreateReader();
+        return reader.TryPeek(out byte b) && b == CborHeader.BreakStop;
     }
 
     private void ConsumeBreakByte()
     {
-        if(!PositionAtBreak())
+        SequenceReader<byte> reader = CreateReader();
+        if(!reader.TryPeek(out byte b) || b != CborHeader.BreakStop)
         {
             throw new FormatException("CBOR indefinite container missing break byte.");
         }
-        position++;
+        reader.Advance(1);
+        SaveReaderState(ref reader);
     }
 
     private void EnsureIndefiniteAllowed()
@@ -690,6 +1136,14 @@ public sealed class CborReader
         if(!options.AllowIndefiniteLength)
         {
             CborThrowHelper.ThrowFeatureDisabledByConformanceMode("indefinite-length", options.ConformanceMode);
+        }
+    }
+
+    private void EnsureDepthAvailable()
+    {
+        if(stack.Count >= options.MaxDepth)
+        {
+            throw new CborSizeLimitExceededException(nameof(CborSerializerOptions.MaxDepth), stack.Count + 1, options.MaxDepth);
         }
     }
 
@@ -732,6 +1186,23 @@ public sealed class CborReader
         return top.Major == CborMajorType.Array ? "Array" : "Map";
     }
 
+    private ReadOnlyMemory<byte> SliceCurrentSegmentMemory(long startOffset, int length)
+    {
+        //Walk the source sequence to find the SequencePosition for
+        //startOffset, then slice length bytes. This is the closest
+        //zero-copy memory recovery available on ReadOnlySequence<byte>;
+        //the caller has already verified the data fits in one segment
+        //via SequenceReader.UnreadSpan length.
+        ReadOnlySequence<byte> sliced = source.Slice(startOffset, length);
+        if(sliced.IsSingleSegment)
+        {
+            return sliced.First;
+        }
+        //Fallback: should not happen in callers (they pre-check), but
+        //a copy is safe.
+        return sliced.ToArray();
+    }
+
     private sealed class ContainerFrame
     {
         public ContainerFrame(CborMajorType major, bool isDefinite, int expectedCount)
@@ -750,5 +1221,30 @@ public sealed class CborReader
         public int ItemsRead { get; set; }
 
         public bool ExpectingMapValue { get; set; }
+    }
+
+    private sealed class TrimmedMemoryOwner: IMemoryOwner<byte>
+    {
+        private readonly IMemoryOwner<byte> inner;
+        private readonly int length;
+
+        public TrimmedMemoryOwner(IMemoryOwner<byte> inner, int length)
+        {
+            this.inner = inner;
+            this.length = length;
+        }
+
+        public Memory<byte> Memory => inner.Memory[..length];
+
+        public void Dispose() => inner.Dispose();
+    }
+
+    private sealed class EmptyMemoryOwner: IMemoryOwner<byte>
+    {
+        public Memory<byte> Memory => Memory<byte>.Empty;
+
+        public void Dispose()
+        {
+        }
     }
 }

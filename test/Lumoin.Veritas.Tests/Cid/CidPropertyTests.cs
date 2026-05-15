@@ -22,7 +22,7 @@ internal sealed class CidPropertyTests
             Veritas.Cid.Cid parsed = CidParser.Parse(text);
 
             Assert.AreEqual(cid.Codec, parsed.Codec);
-            CollectionAssert.AreEqual(cid.Digest, parsed.Digest);
+            Assert.AreEqual(cid.Digest, parsed.Digest);
         });
     }
 
@@ -35,7 +35,7 @@ internal sealed class CidPropertyTests
             Veritas.Cid.Cid parsed = CidParser.Parse(bytes);
 
             Assert.AreEqual(cid.Codec, parsed.Codec);
-            CollectionAssert.AreEqual(cid.Digest, parsed.Digest);
+            Assert.AreEqual(cid.Digest, parsed.Digest);
         });
     }
 
@@ -47,6 +47,6 @@ internal sealed class CidPropertyTests
         return
             from c in codec
             from d in digest
-            select new Veritas.Cid.Cid { Codec = c, Digest = d };
+            select new Veritas.Cid.Cid { Codec = c, Digest = Digest32.FromSpan(d) };
     }
 }

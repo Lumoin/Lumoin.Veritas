@@ -1,0 +1,385 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.Threading;
+using Lumoin.Veritas.JsonLd.Document;
+using Lumoin.Veritas.LinkedData;
+
+namespace Lumoin.Veritas.JsonLd;
+
+/// <summary>
+/// Walks a <see cref="JsonLdNode"/> representing an <c>@context</c>
+/// value and produces a fully-extracted
+/// <see cref="IReadOnlyList{T}"/> of <see cref="LinkedDataContextEntry"/>
+/// suitable for the format-agnostic
+/// <c>Lumoin.Veritas.LinkedData.ContextProcessing</c> core.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The extractor performs the JSON-side reading once at the boundary;
+/// downstream context-processing methods operate purely on POCOs and do
+/// not need to inspect the original <see cref="JsonLdNode"/> tree.
+/// Scoped contexts inside term definitions are recursively extracted in
+/// the same pass, so the produced tree carries the full nested context
+/// structure.
+/// </para>
+/// <para>
+/// Recursion is implemented iteratively via an explicit
+/// <see cref="Stack{T}"/>; no method-call recursion in the walker.
+/// </para>
+/// </remarks>
+public static class ContextExtraction
+{
+    /// <summary>
+    /// Extracts the entries of a single <c>@context</c> value (which may
+    /// be a string URL, a null, an inline object, or an array of any of
+    /// the preceding).
+    /// </summary>
+    /// <param name="contextNode">The <c>@context</c> value as a <see cref="JsonLdNode"/>.</param>
+    /// <param name="baseUrl">The base URL in effect at the point this context appears.</param>
+    /// <param name="keyCounter">Cross-call counter used to assign unique synthetic keys.</param>
+    /// <returns>The extracted entries in document order.</returns>
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
+        Justification = "JSON-LD specification uses string URIs throughout the context processing algorithm.")]
+    public static IReadOnlyList<LinkedDataContextEntry> ExtractEntries(
+        JsonLdNode contextNode,
+        string? baseUrl,
+        ref int keyCounter)
+    {
+        List<LinkedDataContextEntry> entries = [];
+        ExtractInto(entries, contextNode, baseUrl, ref keyCounter, depth: 0);
+        return entries;
+    }
+
+    private static void ExtractInto(
+        List<LinkedDataContextEntry> entries,
+        JsonLdNode contextNode,
+        string? baseUrl,
+        ref int keyCounter,
+        int depth)
+    {
+        switch(contextNode.Kind)
+        {
+            case JsonLdNodeKind.Null:
+            {
+                entries.Add(new LinkedDataContextEntry(MakeKey(ref keyCounter, depth, "reset")));
+                break;
+            }
+            case JsonLdNodeKind.String:
+            {
+                string url = contextNode.GetString();
+                entries.Add(new LinkedDataContextEntry(url, baseUrl, MakeKey(ref keyCounter, depth, "url")));
+                break;
+            }
+            case JsonLdNodeKind.Array:
+            {
+                foreach(JsonLdNode element in contextNode.EnumerateArray())
+                {
+                    ExtractInto(entries, element, baseUrl, ref keyCounter, depth);
+                }
+                break;
+            }
+            case JsonLdNodeKind.Object:
+            {
+                entries.Add(ExtractInlineEntry(contextNode, baseUrl, ref keyCounter, depth));
+                break;
+            }
+            default:
+            {
+                throw new JsonLdProcessingException(
+                    JsonLdErrorCode.InvalidLocalContext,
+                    string.Create(CultureInfo.InvariantCulture, $"@context must be a string, object, array, or null. Got '{contextNode.Kind}'."));
+            }
+        }
+    }
+
+    private static LinkedDataContextEntry ExtractInlineEntry(
+        JsonLdNode objectNode,
+        string? baseUrl,
+        ref int keyCounter,
+        int depth)
+    {
+        //Pull out the context-level directives first; the remaining
+        //properties become term definitions.
+        string? @base = null;
+        bool hasBase = false;
+        string? vocab = null;
+        bool hasVocab = false;
+        string? language = null;
+        bool hasLanguage = false;
+        string? direction = null;
+        bool hasDirection = false;
+        bool? propagate = null;
+        bool? @protected = null;
+        string? import = null;
+
+        Dictionary<string, LinkedDataTermSource> terms = [];
+
+        foreach(KeyValuePair<string, JsonLdNode> entry in objectNode.EnumerateObject())
+        {
+            switch(entry.Key)
+            {
+                case "@version":
+                {
+                    //Validated downstream; no field needed on the entry.
+                    break;
+                }
+                case "@base":
+                {
+                    hasBase = true;
+                    @base = entry.Value.Kind == JsonLdNodeKind.Null ? null : entry.Value.GetString();
+                    break;
+                }
+                case "@vocab":
+                {
+                    hasVocab = true;
+                    vocab = entry.Value.Kind == JsonLdNodeKind.Null ? null : entry.Value.GetString();
+                    break;
+                }
+                case "@language":
+                {
+                    hasLanguage = true;
+                    language = entry.Value.Kind == JsonLdNodeKind.Null ? null : entry.Value.GetString();
+                    break;
+                }
+                case "@direction":
+                {
+                    hasDirection = true;
+                    direction = entry.Value.Kind == JsonLdNodeKind.Null ? null : entry.Value.GetString();
+                    break;
+                }
+                case "@propagate":
+                {
+                    propagate = entry.Value.GetBoolean();
+                    break;
+                }
+                case "@protected":
+                {
+                    @protected = entry.Value.GetBoolean();
+                    break;
+                }
+                case "@import":
+                {
+                    import = entry.Value.GetString();
+                    break;
+                }
+                default:
+                {
+                    //Regular term definition.
+                    LinkedDataTermSource termSource = ExtractTermSource(
+                        entry.Key, entry.Value, baseUrl, depth + 1, ref keyCounter);
+                    terms[entry.Key] = termSource;
+                    break;
+                }
+            }
+        }
+
+        return new LinkedDataContextEntry(terms, baseUrl, MakeKey(ref keyCounter, depth, "inline"))
+        {
+            Base = @base,
+            HasBase = hasBase,
+            Vocab = vocab,
+            HasVocab = hasVocab,
+            Language = language,
+            HasLanguage = hasLanguage,
+            Direction = direction,
+            HasDirection = hasDirection,
+            Propagate = propagate,
+            Protected = @protected,
+            Import = import
+        };
+    }
+
+    private static LinkedDataTermSource ExtractTermSource(
+        string termName,
+        JsonLdNode termNode,
+        string? baseUrl,
+        int depth,
+        ref int keyCounter)
+    {
+        string syntheticKey = MakeKey(ref keyCounter, depth, "term-" + termName);
+
+        //Null value becomes a remove-the-term marker.
+        if(termNode.Kind == JsonLdNodeKind.Null)
+        {
+            return new LinkedDataTermSource(syntheticKey) { IsRemoval = true };
+        }
+
+        //Simple-string form: "term": "iri".
+        if(termNode.Kind == JsonLdNodeKind.String)
+        {
+            return new LinkedDataTermSource(syntheticKey) { Iri = termNode.GetString(), IsSimpleString = true };
+        }
+
+        if(termNode.Kind != JsonLdNodeKind.Object)
+        {
+            throw new JsonLdProcessingException(
+                JsonLdErrorCode.InvalidTermDefinition,
+                string.Create(CultureInfo.InvariantCulture, $"Term definition for '{termName}' must be a string, object, or null."));
+        }
+
+        //Full term-definition object.
+        string? iri = null;
+        bool isRemoval = false;
+        bool iriExplicitlyNull = false;
+        string? type = null;
+        List<string>? containers = null;
+        string? language = null;
+        bool hasLanguage = false;
+        string? direction = null;
+        bool reverse = false;
+        string? reverseIri = null;
+        bool @protected = false;
+        bool prefix = false;
+        string? nest = null;
+        string? index = null;
+        IReadOnlyList<LinkedDataContextEntry>? scopedContext = null;
+
+        foreach(KeyValuePair<string, JsonLdNode> field in termNode.EnumerateObject())
+        {
+            switch(field.Key)
+            {
+                case "@id":
+                {
+                    if(field.Value.Kind == JsonLdNodeKind.Null)
+                    {
+                        iriExplicitlyNull = true;
+                        //Per JSON-LD 1.1 §4.1.2, an explicit @id: null
+                        //in an object form is also a removal marker.
+                        isRemoval = true;
+                    }
+                    else
+                    {
+                        iri = field.Value.GetString();
+                    }
+                    break;
+                }
+                case "@type":
+                {
+                    type = field.Value.GetString();
+                    break;
+                }
+                case "@reverse":
+                {
+                    reverse = true;
+                    reverseIri = field.Value.GetString();
+                    break;
+                }
+                case "@container":
+                {
+                    containers = ExtractContainerList(field.Value);
+                    break;
+                }
+                case "@language":
+                {
+                    hasLanguage = true;
+                    language = field.Value.Kind == JsonLdNodeKind.Null ? null : field.Value.GetString();
+                    break;
+                }
+                case "@direction":
+                {
+                    direction = field.Value.Kind == JsonLdNodeKind.Null ? null : field.Value.GetString();
+                    break;
+                }
+                case "@protected":
+                {
+                    @protected = field.Value.GetBoolean();
+                    break;
+                }
+                case "@prefix":
+                {
+                    prefix = field.Value.GetBoolean();
+                    break;
+                }
+                case "@nest":
+                {
+                    nest = field.Value.GetString();
+                    break;
+                }
+                case "@index":
+                {
+                    index = field.Value.GetString();
+                    break;
+                }
+                case "@context":
+                {
+                    int innerCounter = keyCounter;
+                    scopedContext = ExtractEntries(field.Value, baseUrl, ref innerCounter);
+                    keyCounter = innerCounter;
+                    break;
+                }
+                default:
+                {
+                    //Unknown keys are tolerated silently; the W3C algorithm warns but continues.
+                    break;
+                }
+            }
+        }
+
+        //An explicit "@id: null" marker survives by leaving Iri null on
+        //the term source; the caller distinguishes "no @id specified" via
+        //the same surface (algorithm falls back to vocab expansion in
+        //that case). The iriExplicitlyNull local is for documentation
+        //purposes; the algorithm treats both states identically.
+        _ = iriExplicitlyNull;
+
+        return new LinkedDataTermSource(syntheticKey)
+        {
+            Iri = iri,
+            Type = type,
+            Containers = containers,
+            Language = language,
+            HasLanguageMapping = hasLanguage,
+            Direction = direction,
+            Reverse = reverse,
+            ReverseIri = reverseIri,
+            Protected = @protected,
+            Prefix = prefix,
+            Nest = nest,
+            Index = index,
+            ScopedContext = scopedContext,
+            IsRemoval = isRemoval
+        };
+    }
+
+    private static List<string> ExtractContainerList(JsonLdNode containerNode)
+    {
+        List<string> result = [];
+        switch(containerNode.Kind)
+        {
+            case JsonLdNodeKind.String:
+            {
+                result.Add(containerNode.GetString());
+                break;
+            }
+            case JsonLdNodeKind.Array:
+            {
+                foreach(JsonLdNode element in containerNode.EnumerateArray())
+                {
+                    if(element.Kind != JsonLdNodeKind.String)
+                    {
+                        throw new JsonLdProcessingException(
+                            JsonLdErrorCode.InvalidContainerMapping,
+                            "@container array must contain only strings.");
+                    }
+                    result.Add(element.GetString());
+                }
+                break;
+            }
+            default:
+            {
+                throw new JsonLdProcessingException(
+                    JsonLdErrorCode.InvalidContainerMapping,
+                    "@container must be a string or array.");
+            }
+        }
+        return result;
+    }
+
+    private static string MakeKey(ref int keyCounter, int depth, string label)
+    {
+        int n = Interlocked.Increment(ref keyCounter);
+        return string.Create(CultureInfo.InvariantCulture, $"k{n}-d{depth}-{label}");
+    }
+}

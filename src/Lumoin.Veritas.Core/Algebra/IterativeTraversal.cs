@@ -77,7 +77,7 @@ public static class IterativeTraversal
     /// <exception cref="ArgumentNullException">Any required parameter is <c>null</c>.</exception>
     public static IAsyncEnumerable<TNode> DepthFirstAsync<TNode, TKey>(
         IEnumerable<TNode> seeds,
-        Func<TNode, TKey> keyOf,
+        KeyOfDelegate<TNode, TKey> keyOf,
         AdjacencyAsync<TNode> adjacency,
         CancellationToken cancellationToken = default)
         where TKey : notnull
@@ -130,7 +130,7 @@ public static class IterativeTraversal
     /// <exception cref="ArgumentNullException">Any required parameter is <c>null</c>.</exception>
     public static IAsyncEnumerable<TNode> BreadthFirstAsync<TNode, TKey>(
         IEnumerable<TNode> seeds,
-        Func<TNode, TKey> keyOf,
+        KeyOfDelegate<TNode, TKey> keyOf,
         AdjacencyAsync<TNode> adjacency,
         CancellationToken cancellationToken = default)
         where TKey : notnull
@@ -192,7 +192,7 @@ public static class IterativeTraversal
     /// <exception cref="ArgumentNullException">Any required parameter is <c>null</c>.</exception>
     public static IAsyncEnumerable<TNode> PostOrderAsync<TNode, TKey>(
         IEnumerable<TNode> seeds,
-        Func<TNode, TKey> keyOf,
+        KeyOfDelegate<TNode, TKey> keyOf,
         AdjacencyAsync<TNode> adjacency,
         CancellationToken cancellationToken = default)
         where TKey : notnull
@@ -249,7 +249,7 @@ public static class IterativeTraversal
     /// <exception cref="ArgumentNullException">Any required parameter is <c>null</c>.</exception>
     public static IEnumerable<TNode> PostOrder<TNode, TKey>(
         IEnumerable<TNode> seeds,
-        Func<TNode, TKey> keyOf,
+        KeyOfDelegate<TNode, TKey> keyOf,
         Adjacency<TNode> adjacency)
         where TKey : notnull
     {
@@ -290,7 +290,7 @@ public static class IterativeTraversal
     //last-pushed child is popped and expanded first.
     private static async IAsyncEnumerable<TNode> DepthFirstCore<TNode, TKey>(
         IEnumerable<TNode> seeds,
-        Func<TNode, TKey> keyOf,
+        KeyOfDelegate<TNode, TKey> keyOf,
         AdjacencyAsync<TNode> adjacency,
         [EnumeratorCancellation] CancellationToken cancellationToken)
         where TKey : notnull
@@ -327,7 +327,7 @@ public static class IterativeTraversal
     //FIFO queue.
     private static async IAsyncEnumerable<TNode> BreadthFirstCore<TNode, TKey>(
         IEnumerable<TNode> seeds,
-        Func<TNode, TKey> keyOf,
+        KeyOfDelegate<TNode, TKey> keyOf,
         AdjacencyAsync<TNode> adjacency,
         [EnumeratorCancellation] CancellationToken cancellationToken)
         where TKey : notnull
@@ -378,7 +378,7 @@ public static class IterativeTraversal
     //demonstrably processed (their post-markers have all popped).
     private static async IAsyncEnumerable<TNode> PostOrderAsyncCore<TNode, TKey>(
         IEnumerable<TNode> seeds,
-        Func<TNode, TKey> keyOf,
+        KeyOfDelegate<TNode, TKey> keyOf,
         AdjacencyAsync<TNode> adjacency,
         [EnumeratorCancellation] CancellationToken cancellationToken)
         where TKey : notnull
@@ -427,7 +427,7 @@ public static class IterativeTraversal
     //correctness argument.
     private static IEnumerable<TNode> PostOrderCore<TNode, TKey>(
         IEnumerable<TNode> seeds,
-        Func<TNode, TKey> keyOf,
+        KeyOfDelegate<TNode, TKey> keyOf,
         Adjacency<TNode> adjacency)
         where TKey : notnull
     {

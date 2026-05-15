@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using CidValue = Lumoin.Veritas.Cid.Cid;
 
 namespace Lumoin.Veritas.Cbor.Drisl;
 
@@ -16,6 +17,8 @@ public sealed class DrislReader
 {
     private readonly CborReader inner;
     private readonly Stack<FrameKind> frameStack = new();
+
+    private static CidCborConverter SharedCidConverter { get; } = new();
 
     /// <summary>Initialises a new <see cref="DrislReader"/> reading from <paramref name="source"/>.</summary>
     /// <param name="source">The contiguous bytes to read.</param>
@@ -183,10 +186,10 @@ public sealed class DrislReader
     }
 
     /// <summary>Reads a CID from a CBOR Tag 42 data item.</summary>
-    public global::Lumoin.Veritas.Cid.Cid ReadCid()
+    public CidValue ReadCid()
     {
         EnsureNotInMapKeyPosition();
-        global::Lumoin.Veritas.Cid.Cid value = new CidCborConverter().Read(inner);
+        CidValue value = SharedCidConverter.Read(inner);
         OnNonKeyValueRead();
         return value;
     }

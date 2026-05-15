@@ -142,6 +142,22 @@ public sealed class CborWriter
     public void WriteInt32(int value) => WriteInt64(value);
 
     /// <summary>
+    /// Writes a negative integer using its raw CBOR major-type 1
+    /// representation argument. The actual mathematical value emitted is
+    /// <c>-(1 + rawArgument)</c> per RFC 8949 §3.1, so the full CBOR
+    /// negative range (<c>-1</c> down to <c>-(2^64)</c>) is reachable —
+    /// including values below <see cref="long.MinValue"/> that
+    /// <see cref="WriteInt64"/> cannot express.
+    /// </summary>
+    /// <param name="rawArgument">The encoded argument; the emitted
+    /// numeric value is <c>-(1 + rawArgument)</c>.</param>
+    public void WriteCborNegativeIntegerRepresentation(ulong rawArgument)
+    {
+        WriteHeader(CborMajorType.NegativeInteger, rawArgument);
+        OnDataItemCompleted();
+    }
+
+    /// <summary>
     /// Writes a byte string as a CBOR major-type 2 data item. When called
     /// while an indefinite-length byte string frame is open (after
     /// <see cref="WriteStartIndefiniteByteString"/>) the bytes become the
@@ -185,7 +201,7 @@ public sealed class CborWriter
     {
         if(stack.Count == 0 || stack.Peek().Major != CborMajorType.ByteString || stack.Peek().IsDefinite)
         {
-            CborThrowHelper.ThrowInvalidWriterState("WriteEndIndefiniteByteString", DescribeTopState());
+            CborThrowHelper.ThrowInvalidState("WriteEndIndefiniteByteString", DescribeTopState());
         }
         stack.Pop();
         WriteBreakStop();
@@ -250,7 +266,7 @@ public sealed class CborWriter
     {
         if(stack.Count == 0 || stack.Peek().Major != CborMajorType.TextString || stack.Peek().IsDefinite)
         {
-            CborThrowHelper.ThrowInvalidWriterState("WriteEndIndefiniteTextString", DescribeTopState());
+            CborThrowHelper.ThrowInvalidState("WriteEndIndefiniteTextString", DescribeTopState());
         }
         stack.Pop();
         WriteBreakStop();
@@ -301,7 +317,7 @@ public sealed class CborWriter
     {
         if(stack.Count == 0 || stack.Peek().Major != CborMajorType.Array)
         {
-            CborThrowHelper.ThrowInvalidWriterState("WriteEndArray", DescribeTopState());
+            CborThrowHelper.ThrowInvalidState("WriteEndArray", DescribeTopState());
         }
 
         ContainerFrame frame = stack.Pop();
@@ -371,7 +387,7 @@ public sealed class CborWriter
     {
         if(stack.Count == 0 || stack.Peek().Major != CborMajorType.Map)
         {
-            CborThrowHelper.ThrowInvalidWriterState("WriteEndMap", DescribeTopState());
+            CborThrowHelper.ThrowInvalidState("WriteEndMap", DescribeTopState());
         }
 
         ContainerFrame frame = stack.Pop();
@@ -530,7 +546,7 @@ public sealed class CborWriter
         //applies its own float reduction discipline; see
         //CborCanonicalFloatDivergenceTests for a regression pin on the
         //specific values where the two diverge.
-        if(IsSortRequired)
+        if(IsSortRequired && !options.SuppressFloatReduction)
         {
             WriteCanonicalFloat(value);
         }

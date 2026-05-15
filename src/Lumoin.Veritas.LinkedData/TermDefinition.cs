@@ -124,4 +124,26 @@ public sealed class TermDefinition
     /// Gets the base IRI associated with this term definition, if set.
     /// </summary>
     public string? BaseIri { get; init; }
+
+    /// <summary>
+    /// Gets the pre-extracted entries of the scoped context attached to
+    /// this term, when present. <see langword="null"/> when the term has no
+    /// scoped context.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Populated by <c>ContextProcessing</c> from
+    /// <see cref="LinkedDataTermSource.ScopedContext"/> at term-definition
+    /// time. Carrying the pre-extracted POCO entries here lets runtime
+    /// consumers (notably the CBOR-LD encoder's active-context state
+    /// machine) re-apply the scoped context against a different parent
+    /// context without re-walking the format-specific document tree.
+    /// </para>
+    /// <para>
+    /// Distinct from <see cref="LocalContext"/>, which carries the raw
+    /// document-tree node for consumers (e.g. JSON-LD expander) that
+    /// re-extract per-call. New consumers should prefer this field.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<LinkedDataContextEntry>? ScopedContextEntries { get; init; }
 }

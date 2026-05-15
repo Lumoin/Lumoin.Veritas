@@ -27,6 +27,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Bluesky fixtures (real CAR files from public AT Protocol PDS endpoints).
+         Files are populated manually per Cbor/Fixtures/Bluesky/README.md; the
+         glob is non-erroring when no .car files are present. -->
+    <None Include="Cbor\Fixtures\Bluesky\*.car" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Canonicalization\Lumoin.Veritas.Canonicalization.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Cbor\Lumoin.Veritas.Cbor.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.CborLd\Lumoin.Veritas.CborLd.csproj" />

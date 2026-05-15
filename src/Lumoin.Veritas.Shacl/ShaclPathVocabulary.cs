@@ -12,11 +12,11 @@ namespace Lumoin.Veritas.Shacl;
 /// </remarks>
 public static class ShaclPathVocabulary
 {
-    private static readonly byte[] InversePathBytes = "http://www.w3.org/ns/shacl#inversePath"u8.ToArray();
-    private static readonly byte[] AlternativePathBytes ="http://www.w3.org/ns/shacl#alternativePath"u8.ToArray();
-    private static readonly byte[] ZeroOrMorePathBytes = "http://www.w3.org/ns/shacl#zeroOrMorePath"u8.ToArray();
-    private static readonly byte[] OneOrMorePathBytes = "http://www.w3.org/ns/shacl#oneOrMorePath"u8.ToArray();
-    private static readonly byte[] ZeroOrOnePathBytes = "http://www.w3.org/ns/shacl#zeroOrOnePath"u8.ToArray();
+    private static byte[] InversePathBytes { get; } = "http://www.w3.org/ns/shacl#inversePath"u8.ToArray();
+    private static byte[] AlternativePathBytes { get; } ="http://www.w3.org/ns/shacl#alternativePath"u8.ToArray();
+    private static byte[] ZeroOrMorePathBytes { get; } = "http://www.w3.org/ns/shacl#zeroOrMorePath"u8.ToArray();
+    private static byte[] OneOrMorePathBytes { get; } = "http://www.w3.org/ns/shacl#oneOrMorePath"u8.ToArray();
+    private static byte[] ZeroOrOnePathBytes { get; } = "http://www.w3.org/ns/shacl#zeroOrOnePath"u8.ToArray();
 
     /// <summary><c>sh:inversePath</c></summary>
     public static Utf8String InversePath { get; } = new(InversePathBytes);

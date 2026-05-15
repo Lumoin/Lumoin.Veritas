@@ -21,7 +21,7 @@ internal sealed class HypertrieGraphStoreQueryParityTests
 {
     public TestContext TestContext { get; set; } = null!;
 
-    private static readonly EncodedTriple[] SampleTriples =
+    private static EncodedTriple[] SampleTriples { get; } =
     [
         EncodedTriple.FromEncoded(1, 100, 2),
         EncodedTriple.FromEncoded(2, 100, 3),

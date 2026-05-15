@@ -13,7 +13,7 @@ namespace Lumoin.Veritas.Tests.Cbor;
 /// booleans, null, arrays, and string-keyed maps. Doubles are excluded
 /// because BCL canonical mode's float reduction follows rules subtly
 /// different from this writer's; that gap is tracked separately in
-/// PROGRESS.md.
+/// the working log under <c>tempdocs/</c>.
 /// </summary>
 internal abstract record DifferentialCborValue;
 

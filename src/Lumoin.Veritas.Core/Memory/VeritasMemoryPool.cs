@@ -133,7 +133,7 @@ public class VeritasMemoryPool<T>: MemoryPool<T>
     /// <summary>
     /// Lazy singleton backing the <see cref="Shared"/> property.
     /// </summary>
-    private static readonly Lazy<VeritasMemoryPool<T>> SharedInstance =
+    private static Lazy<VeritasMemoryPool<T>> SharedInstance { get; } =
         new(() => new VeritasMemoryPool<T>());
 
     /// <summary>

@@ -399,6 +399,6 @@ internal static class ShapePopulation
         return builder.ToImmutable();
     }
 
-    private static readonly IReadOnlyDictionary<IriId, IReadOnlyList<TermId>> EmptyCompanions
+    private static IReadOnlyDictionary<IriId, IReadOnlyList<TermId>> EmptyCompanions { get; }
         = new Dictionary<IriId, IReadOnlyList<TermId>>();
 }

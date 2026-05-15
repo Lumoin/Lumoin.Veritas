@@ -144,8 +144,8 @@ See full changelog at https://github.com/lumoin/Veritas/blob/main/CHANGELOG.md.]
   </ItemGroup>
 
   <ItemGroup>
-    <InternalsVisibleTo Include="Veritas.Tests" />
-    <InternalsVisibleTo Include="Veritas.Benchmarks" />
+    <InternalsVisibleTo Include="Lumoin.Veritas.Tests" />
+    <InternalsVisibleTo Include="Lumoin.Veritas.Benchmarks" />
   </ItemGroup>
 
 </Project>

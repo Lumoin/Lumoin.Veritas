@@ -11,12 +11,12 @@ namespace Lumoin.Veritas.Cbor;
 /// </summary>
 public static class CborThrowHelper
 {
-    /// <summary>Throws an <see cref="InvalidOperationException"/> indicating the requested operation is not valid in the writer's current state.</summary>
+    /// <summary>Throws an <see cref="InvalidOperationException"/> indicating the requested operation is not valid in the codec's current state.</summary>
     [DoesNotReturn]
-    public static void ThrowInvalidWriterState(string operation, string state)
+    public static void ThrowInvalidState(string operation, string state)
     {
         throw new InvalidOperationException(
-            string.Create(CultureInfo.InvariantCulture, $"Cannot perform '{operation}' while the CBOR writer is in state '{state}'."));
+            string.Create(CultureInfo.InvariantCulture, $"Cannot perform '{operation}' with the CBOR codec in state '{state}'."));
     }
 
     /// <summary>Throws an <see cref="InvalidOperationException"/> indicating an open container has the wrong number of items written.</summary>

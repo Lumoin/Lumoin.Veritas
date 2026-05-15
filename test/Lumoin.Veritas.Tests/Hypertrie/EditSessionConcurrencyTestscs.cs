@@ -20,7 +20,7 @@ internal sealed class EditSessionConcurrencyTests
     //AsyncSharedExclusiveLock tests use: any operation taking
     //longer than this has hit a deadlock and the budget fires
     //the failure rather than the runner-level timeout.
-    private static readonly TimeSpan DeadlockBudget = TimeSpan.FromSeconds(2);
+    private static TimeSpan DeadlockBudget { get; } = TimeSpan.FromSeconds(2);
 
     public TestContext TestContext { get; set; } = null!;
 

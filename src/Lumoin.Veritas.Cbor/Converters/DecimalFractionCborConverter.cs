@@ -87,7 +87,7 @@ public sealed class DecimalFractionCborConverter: CborConverter<CborDecimalFract
     private static BigInteger ReadTaggedBigMantissa(CborReader reader)
     {
         CborTag tag = reader.ReadTag();
-        byte[] bytes = reader.ReadByteString();
+        ReadOnlySpan<byte> bytes = reader.ReadByteStringSpan();
         if(tag == CborTag.UnsignedBigInteger)
         {
             return new BigInteger(bytes, isUnsigned: true, isBigEndian: true);

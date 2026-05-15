@@ -36,7 +36,7 @@ public sealed class NegativeBigIntegerCborConverter: CborConverter<BigInteger>
             throw new FormatException(
                 string.Create(CultureInfo.InvariantCulture, $"Expected CBOR Tag 3 (NegativeBigInteger); got tag {tag.Value}."));
         }
-        byte[] bytes = reader.ReadByteString();
+        ReadOnlySpan<byte> bytes = reader.ReadByteStringSpan();
         BigInteger encoded = new(bytes, isUnsigned: true, isBigEndian: true);
         return -BigInteger.One - encoded;
     }

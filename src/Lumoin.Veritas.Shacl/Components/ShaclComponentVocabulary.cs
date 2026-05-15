@@ -21,66 +21,66 @@ namespace Lumoin.Veritas.Shacl.Components;
 public static class ShaclComponentVocabulary
 {
     //Cardinality
-    private static readonly byte[] MinCountComponentBytes = "http://www.w3.org/ns/shacl#MinCountConstraintComponent"u8.ToArray();
-    private static readonly byte[] MaxCountComponentBytes = "http://www.w3.org/ns/shacl#MaxCountConstraintComponent"u8.ToArray();
+    private static byte[] MinCountComponentBytes { get; } = "http://www.w3.org/ns/shacl#MinCountConstraintComponent"u8.ToArray();
+    private static byte[] MaxCountComponentBytes { get; } = "http://www.w3.org/ns/shacl#MaxCountConstraintComponent"u8.ToArray();
 
     //Value range
-    private static readonly byte[] MinExclusiveComponentBytes = "http://www.w3.org/ns/shacl#MinExclusiveConstraintComponent"u8.ToArray();
-    private static readonly byte[] MaxExclusiveComponentBytes = "http://www.w3.org/ns/shacl#MaxExclusiveConstraintComponent"u8.ToArray();
-    private static readonly byte[] MinInclusiveComponentBytes = "http://www.w3.org/ns/shacl#MinInclusiveConstraintComponent"u8.ToArray();
-    private static readonly byte[] MaxInclusiveComponentBytes = "http://www.w3.org/ns/shacl#MaxInclusiveConstraintComponent"u8.ToArray();
+    private static byte[] MinExclusiveComponentBytes { get; } = "http://www.w3.org/ns/shacl#MinExclusiveConstraintComponent"u8.ToArray();
+    private static byte[] MaxExclusiveComponentBytes { get; } = "http://www.w3.org/ns/shacl#MaxExclusiveConstraintComponent"u8.ToArray();
+    private static byte[] MinInclusiveComponentBytes { get; } = "http://www.w3.org/ns/shacl#MinInclusiveConstraintComponent"u8.ToArray();
+    private static byte[] MaxInclusiveComponentBytes { get; } = "http://www.w3.org/ns/shacl#MaxInclusiveConstraintComponent"u8.ToArray();
 
     //String / literal
-    private static readonly byte[] MinLengthComponentBytes = "http://www.w3.org/ns/shacl#MinLengthConstraintComponent"u8.ToArray();
-    private static readonly byte[] MaxLengthComponentBytes = "http://www.w3.org/ns/shacl#MaxLengthConstraintComponent"u8.ToArray();
-    private static readonly byte[] PatternComponentBytes = "http://www.w3.org/ns/shacl#PatternConstraintComponent"u8.ToArray();
-    private static readonly byte[] SingleLineComponentBytes = "http://www.w3.org/ns/shacl#SingleLineConstraintComponent"u8.ToArray();
-    private static readonly byte[] LanguageInComponentBytes = "http://www.w3.org/ns/shacl#LanguageInConstraintComponent"u8.ToArray();
-    private static readonly byte[] UniqueLangComponentBytes = "http://www.w3.org/ns/shacl#UniqueLangConstraintComponent"u8.ToArray();
+    private static byte[] MinLengthComponentBytes { get; } = "http://www.w3.org/ns/shacl#MinLengthConstraintComponent"u8.ToArray();
+    private static byte[] MaxLengthComponentBytes { get; } = "http://www.w3.org/ns/shacl#MaxLengthConstraintComponent"u8.ToArray();
+    private static byte[] PatternComponentBytes { get; } = "http://www.w3.org/ns/shacl#PatternConstraintComponent"u8.ToArray();
+    private static byte[] SingleLineComponentBytes { get; } = "http://www.w3.org/ns/shacl#SingleLineConstraintComponent"u8.ToArray();
+    private static byte[] LanguageInComponentBytes { get; } = "http://www.w3.org/ns/shacl#LanguageInConstraintComponent"u8.ToArray();
+    private static byte[] UniqueLangComponentBytes { get; } = "http://www.w3.org/ns/shacl#UniqueLangConstraintComponent"u8.ToArray();
 
     //Term inspection
-    private static readonly byte[] ClassComponentBytes = "http://www.w3.org/ns/shacl#ClassConstraintComponent"u8.ToArray();
-    private static readonly byte[] DatatypeComponentBytes = "http://www.w3.org/ns/shacl#DatatypeConstraintComponent"u8.ToArray();
-    private static readonly byte[] NodeKindComponentBytes = "http://www.w3.org/ns/shacl#NodeKindConstraintComponent"u8.ToArray();
-    private static readonly byte[] RootClassComponentBytes = "http://www.w3.org/ns/shacl#RootClassConstraintComponent"u8.ToArray();
+    private static byte[] ClassComponentBytes { get; } = "http://www.w3.org/ns/shacl#ClassConstraintComponent"u8.ToArray();
+    private static byte[] DatatypeComponentBytes { get; } = "http://www.w3.org/ns/shacl#DatatypeConstraintComponent"u8.ToArray();
+    private static byte[] NodeKindComponentBytes { get; } = "http://www.w3.org/ns/shacl#NodeKindConstraintComponent"u8.ToArray();
+    private static byte[] RootClassComponentBytes { get; } = "http://www.w3.org/ns/shacl#RootClassConstraintComponent"u8.ToArray();
 
     //Value set
-    private static readonly byte[] HasValueComponentBytes = "http://www.w3.org/ns/shacl#HasValueConstraintComponent"u8.ToArray();
-    private static readonly byte[] InComponentBytes = "http://www.w3.org/ns/shacl#InConstraintComponent"u8.ToArray();
+    private static byte[] HasValueComponentBytes { get; } = "http://www.w3.org/ns/shacl#HasValueConstraintComponent"u8.ToArray();
+    private static byte[] InComponentBytes { get; } = "http://www.w3.org/ns/shacl#InConstraintComponent"u8.ToArray();
 
     //Pair comparison
-    private static readonly byte[] EqualsComponentBytes = "http://www.w3.org/ns/shacl#EqualsConstraintComponent"u8.ToArray();
-    private static readonly byte[] DisjointComponentBytes = "http://www.w3.org/ns/shacl#DisjointConstraintComponent"u8.ToArray();
-    private static readonly byte[] LessThanComponentBytes = "http://www.w3.org/ns/shacl#LessThanConstraintComponent"u8.ToArray();
-    private static readonly byte[] LessThanOrEqualsComponentBytes = "http://www.w3.org/ns/shacl#LessThanOrEqualsConstraintComponent"u8.ToArray();
+    private static byte[] EqualsComponentBytes { get; } = "http://www.w3.org/ns/shacl#EqualsConstraintComponent"u8.ToArray();
+    private static byte[] DisjointComponentBytes { get; } = "http://www.w3.org/ns/shacl#DisjointConstraintComponent"u8.ToArray();
+    private static byte[] LessThanComponentBytes { get; } = "http://www.w3.org/ns/shacl#LessThanConstraintComponent"u8.ToArray();
+    private static byte[] LessThanOrEqualsComponentBytes { get; } = "http://www.w3.org/ns/shacl#LessThanOrEqualsConstraintComponent"u8.ToArray();
 
     //Boolean combinators
-    private static readonly byte[] NotComponentBytes = "http://www.w3.org/ns/shacl#NotConstraintComponent"u8.ToArray();
-    private static readonly byte[] AndComponentBytes = "http://www.w3.org/ns/shacl#AndConstraintComponent"u8.ToArray();
-    private static readonly byte[] OrComponentBytes = "http://www.w3.org/ns/shacl#OrConstraintComponent"u8.ToArray();
-    private static readonly byte[] XoneComponentBytes = "http://www.w3.org/ns/shacl#XoneConstraintComponent"u8.ToArray();
+    private static byte[] NotComponentBytes { get; } = "http://www.w3.org/ns/shacl#NotConstraintComponent"u8.ToArray();
+    private static byte[] AndComponentBytes { get; } = "http://www.w3.org/ns/shacl#AndConstraintComponent"u8.ToArray();
+    private static byte[] OrComponentBytes { get; } = "http://www.w3.org/ns/shacl#OrConstraintComponent"u8.ToArray();
+    private static byte[] XoneComponentBytes { get; } = "http://www.w3.org/ns/shacl#XoneConstraintComponent"u8.ToArray();
 
     //Shape references
-    private static readonly byte[] NodeComponentBytes = "http://www.w3.org/ns/shacl#NodeConstraintComponent"u8.ToArray();
-    private static readonly byte[] PropertyComponentBytes = "http://www.w3.org/ns/shacl#PropertyConstraintComponent"u8.ToArray();
-    private static readonly byte[] QualifiedMinCountComponentBytes = "http://www.w3.org/ns/shacl#QualifiedMinCountConstraintComponent"u8.ToArray();
-    private static readonly byte[] QualifiedMaxCountComponentBytes = "http://www.w3.org/ns/shacl#QualifiedMaxCountConstraintComponent"u8.ToArray();
+    private static byte[] NodeComponentBytes { get; } = "http://www.w3.org/ns/shacl#NodeConstraintComponent"u8.ToArray();
+    private static byte[] PropertyComponentBytes { get; } = "http://www.w3.org/ns/shacl#PropertyConstraintComponent"u8.ToArray();
+    private static byte[] QualifiedMinCountComponentBytes { get; } = "http://www.w3.org/ns/shacl#QualifiedMinCountConstraintComponent"u8.ToArray();
+    private static byte[] QualifiedMaxCountComponentBytes { get; } = "http://www.w3.org/ns/shacl#QualifiedMaxCountConstraintComponent"u8.ToArray();
 
     //Closed world
-    private static readonly byte[] ClosedComponentBytes = "http://www.w3.org/ns/shacl#ClosedConstraintComponent"u8.ToArray();
+    private static byte[] ClosedComponentBytes { get; } = "http://www.w3.org/ns/shacl#ClosedConstraintComponent"u8.ToArray();
 
     //Uniqueness / other
-    private static readonly byte[] UniqueValuesForComponentBytes = "http://www.w3.org/ns/shacl#UniqueValuesForConstraintComponent"u8.ToArray();
-    private static readonly byte[] SubsetOfComponentBytes = "http://www.w3.org/ns/shacl#SubsetOfConstraintComponent"u8.ToArray();
+    private static byte[] UniqueValuesForComponentBytes { get; } = "http://www.w3.org/ns/shacl#UniqueValuesForConstraintComponent"u8.ToArray();
+    private static byte[] SubsetOfComponentBytes { get; } = "http://www.w3.org/ns/shacl#SubsetOfConstraintComponent"u8.ToArray();
 
     //Reification (SHACL 1.2)
-    private static readonly byte[] ReifierShapeComponentBytes = "http://www.w3.org/ns/shacl#ReifierShapeConstraintComponent"u8.ToArray();
+    private static byte[] ReifierShapeComponentBytes { get; } = "http://www.w3.org/ns/shacl#ReifierShapeConstraintComponent"u8.ToArray();
 
     //Lists (SHACL 1.2)
-    private static readonly byte[] MemberShapeComponentBytes = "http://www.w3.org/ns/shacl#MemberShapeConstraintComponent"u8.ToArray();
-    private static readonly byte[] MinListLengthComponentBytes = "http://www.w3.org/ns/shacl#MinListLengthConstraintComponent"u8.ToArray();
-    private static readonly byte[] MaxListLengthComponentBytes = "http://www.w3.org/ns/shacl#MaxListLengthConstraintComponent"u8.ToArray();
-    private static readonly byte[] UniqueMembersComponentBytes = "http://www.w3.org/ns/shacl#UniqueMembersConstraintComponent"u8.ToArray();
+    private static byte[] MemberShapeComponentBytes { get; } = "http://www.w3.org/ns/shacl#MemberShapeConstraintComponent"u8.ToArray();
+    private static byte[] MinListLengthComponentBytes { get; } = "http://www.w3.org/ns/shacl#MinListLengthConstraintComponent"u8.ToArray();
+    private static byte[] MaxListLengthComponentBytes { get; } = "http://www.w3.org/ns/shacl#MaxListLengthConstraintComponent"u8.ToArray();
+    private static byte[] UniqueMembersComponentBytes { get; } = "http://www.w3.org/ns/shacl#UniqueMembersConstraintComponent"u8.ToArray();
 
     /// <summary><c>sh:MinCountConstraintComponent</c></summary>
     public static Utf8String MinCount { get; } = new(MinCountComponentBytes);
