@@ -1,4 +1,5 @@
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.JsonLd.Document;
 using Lumoin.Veritas.LinkedData;
 using System;
@@ -96,6 +97,105 @@ public static class JsonLdExpander
         {
             cancellationToken.ThrowIfCancellationRequested();
             yield return quad;
+        }
+    }
+
+    /// <summary>
+    /// Expands a JSON-LD document and extracts all RDF quads, attaching
+    /// per-quad provenance via <see cref="EmittedQuad"/>.
+    /// </summary>
+    /// <param name="document">
+    /// The root <see cref="JsonLdNode"/> of the JSON-LD document. Callers obtain
+    /// this by parsing UTF-8 JSON bytes with the parser provided by their chosen
+    /// JSON adapter (e.g. <c>StjJsonLdAdapter.Parse</c> in the bundled adapter).
+    /// </param>
+    /// <param name="documentId">
+    /// Identity of the parsed document. By convention this is the application's
+    /// chosen <c>VeritasHash</c> applied to the document's canonical bytes,
+    /// minted by the caller (the expander does not have the hash delegate in
+    /// scope). The same <paramref name="documentId"/> is carried on every
+    /// emitted quad's <see cref="EmittedQuad.Source"/>.
+    /// </param>
+    /// <param name="baseUrl">The base URL of the document.</param>
+    /// <param name="resolver">The delegate for resolving remote contexts.</param>
+    /// <param name="parser">
+    /// The delegate for parsing remote-context bodies. The same adapter that
+    /// produced <paramref name="document"/> typically supplies this.
+    /// </param>
+    /// <param name="pool">Pool for interning UTF-8 term strings.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    /// <returns>An async enumerable of emitted quads, each paired with a
+    /// <see cref="DocumentNodeRef"/> identifying its document and ordinal
+    /// position in expansion order.</returns>
+    /// <remarks>
+    /// <para>
+    /// Each emitted quad's <see cref="EmittedQuad.Source"/> carries a
+    /// <see cref="DocumentNodeRef"/> whose
+    /// <see cref="DocumentNodeRef.DocumentId"/> equals
+    /// <paramref name="documentId"/> and whose
+    /// <see cref="DocumentNodeRef.Index"/> is the zero-based position of the
+    /// quad in expansion order. Indexes are assigned sequentially after the
+    /// full expansion completes; the relative order matches the order in
+    /// which the existing <see cref="ExtractQuadsAsync"/> overload would
+    /// yield the same quads.
+    /// </para>
+    /// <para>
+    /// <b>No <c>SourceSpan</c> at this layer.</b> The underlying
+    /// <see cref="JsonLdNode"/> abstraction is parser-neutral and the
+    /// bundled <c>StjJsonLdAdapter</c> uses
+    /// <c>System.Text.Json.JsonElement</c>, which does not expose byte
+    /// offsets, line numbers, or column numbers. Source attribution at the
+    /// JSON-LD layer is therefore document-level only. A future span-aware
+    /// JSON parser would let each emit site carry a populated
+    /// <c>SourceSpan</c>; that is out of scope for this overload.
+    /// </para>
+    /// </remarks>
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
+        Justification = "baseUrl follows JSON-LD spec which uses string URIs throughout the processing algorithm.")]
+    public static async IAsyncEnumerable<EmittedQuad> ExtractQuadsWithSourceAsync(
+        JsonLdNode document,
+        DocumentId documentId,
+        string? baseUrl,
+        ContextResolverDelegate resolver,
+        JsonLdParserDelegate parser,
+        Utf8StringPool pool,
+        [EnumeratorCancellation]
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(resolver);
+        ArgumentNullException.ThrowIfNull(parser);
+        ArgumentNullException.ThrowIfNull(pool);
+
+        LinkedDataContext activeContext = LinkedDataContext.Empty;
+
+        if(baseUrl is not null)
+        {
+            activeContext = activeContext.WithBaseIri(baseUrl);
+        }
+
+        //Process document-level @context if present.
+        if(document.Kind == JsonLdNodeKind.Object
+            && document.TryGetProperty("@context", out JsonLdNode contextElement))
+        {
+            activeContext = await ContextProcessor.ProcessAsync(
+                activeContext, contextElement, baseUrl, resolver, parser, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        List<Quad> quads = [];
+        await ExpandNodeAsync(document, activeContext, baseUrl, resolver, parser,
+            graphName: null, quads, pool, cancellationToken).ConfigureAwait(false);
+
+        int index = 0;
+        foreach(Quad quad in quads)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            DocumentNodeRef nodeRef = new(documentId, index);
+            EmittedQuad emitted = new(quad, nodeRef);
+            index++;
+
+            yield return emitted;
         }
     }
 
