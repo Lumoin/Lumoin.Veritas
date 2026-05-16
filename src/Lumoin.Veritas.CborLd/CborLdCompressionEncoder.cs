@@ -50,8 +50,8 @@ internal static class CborLdCompressionEncoder
         stack.Push(new EncodeFrame(
             root,
             parentTermType: null,
-            activeContext: JsonLdContext.Empty,
-            preEmbedded: JsonLdContext.Empty));
+            activeContext: LinkedDataContext.Empty,
+            preEmbedded: LinkedDataContext.Empty));
 
         while(stack.Count > 0)
         {
@@ -170,11 +170,11 @@ internal static class CborLdCompressionEncoder
                         // - @context value: encode in pre-embedded (clarification 5)
                         // - other values: descendant context (gated by Propagate, clarification 2)
                         //   plus property-scoped overlay when the term carries ScopedContextEntries
-                        JsonLdContext childActiveContext = SelectChildContext(
+                        LinkedDataContext childActiveContext = SelectChildContext(
                             entry.Key, entry.Value, frame, scope, state, cancellationToken);
 
                         //Typed-value propagation: registry term codec wins,
-                        //then the active context's TermDefinition.TypeMapping
+                        //then the active context's TermDefinition&lt;TNode&gt;.TypeMapping
                         //covers dynamically-defined typed terms (e.g.
                         //{"birthDate": {"@id": "...", "@type": "xsd:date"}}).
                         string? typeName = ResolveTypeName(entry.Key, frame.ActiveContext, registryEntry);
@@ -207,14 +207,14 @@ internal static class CborLdCompressionEncoder
     /// in spec order. Returns the post-application context. Dynamic ids
     /// are eagerly assigned inside the scope helper.
     /// </summary>
-    private static JsonLdContext ApplyMapScopes(
+    private static LinkedDataContext ApplyMapScopes(
         CborLdInputMap map,
-        JsonLdContext current,
+        LinkedDataContext current,
         CborLdActiveContextScope scope,
         CborLdConversionState state,
         CancellationToken cancellationToken)
     {
-        JsonLdContext running = current;
+        LinkedDataContext running = current;
 
         //Step 1: embedded @context.
         CborLdInputNode? contextNode = TryFindEntry(map, "@context");
@@ -251,7 +251,7 @@ internal static class CborLdCompressionEncoder
     /// and the propagate gating (clarification 2). Property-scoped
     /// overlay applies on top.
     /// </summary>
-    private static JsonLdContext SelectChildContext(
+    private static LinkedDataContext SelectChildContext(
         string key,
         CborLdInputNode value,
         EncodeFrame parent,
@@ -269,7 +269,7 @@ internal static class CborLdCompressionEncoder
 
         //Descendants of this map see the post-embedded context when it
         //propagates; otherwise they see the pre-embedded context.
-        JsonLdContext descendant = parent.ActiveContext.Propagate
+        LinkedDataContext descendant = parent.ActiveContext.Propagate
             ? parent.ActiveContext
             : parent.PreEmbedded;
 
@@ -307,7 +307,7 @@ internal static class CborLdCompressionEncoder
     /// dispatch. Returns <c>null</c> when the term is untyped (or not
     /// registered) so the caller emits the value as a plain CBOR primitive.
     /// </summary>
-    private static string? ResolveTypeName(string key, JsonLdContext active, CborLdRegistryEntry registry)
+    private static string? ResolveTypeName(string key, LinkedDataContext active, CborLdRegistryEntry registry)
     {
         if(registry.Terms.TryGetValue(key, out CborLdTermCodec codec))
         {
@@ -610,7 +610,7 @@ internal static class CborLdCompressionEncoder
         string key,
         CborLdInputNode value,
         Dictionary<string, int> nameToId,
-        JsonLdContext activeContext,
+        LinkedDataContext activeContext,
         Dictionary<string, int> dynamicToId)
     {
         int id;
@@ -640,8 +640,8 @@ internal static class CborLdCompressionEncoder
         public EncodeFrame(
             CborLdInputNode node,
             string? parentTermType,
-            JsonLdContext activeContext,
-            JsonLdContext preEmbedded)
+            LinkedDataContext activeContext,
+            LinkedDataContext preEmbedded)
         {
             Node = node;
             ParentTermType = parentTermType;
@@ -658,10 +658,10 @@ internal static class CborLdCompressionEncoder
         public int NextIndex { get; set; }
 
         /// <summary>The context active for this frame's value emission.</summary>
-        public JsonLdContext ActiveContext { get; set; }
+        public LinkedDataContext ActiveContext { get; set; }
 
         /// <summary>The context active before this frame's own @context (if any) applied.</summary>
-        public JsonLdContext PreEmbedded { get; set; }
+        public LinkedDataContext PreEmbedded { get; set; }
 
         /// <summary>
         /// Map-emission index permutation: <c>@context</c> first when present,

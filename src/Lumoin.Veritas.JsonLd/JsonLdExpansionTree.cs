@@ -32,7 +32,7 @@ namespace Lumoin.Veritas.JsonLd;
 /// </list>
 /// <para>
 /// Deferred: <c>@reverse</c> properties, type-scoped and property-scoped
-/// contexts (term <see cref="TermDefinition.LocalContext"/>), the
+/// contexts (term <see cref="TermDefinition.ScopedContextEntries"/>), the
 /// <c>@language</c>/<c>@index</c>/<c>@id</c>/<c>@type</c>/<c>@graph</c>
 /// containers, <c>@nest</c>, protected-term enforcement, and the
 /// <c>ordered</c> flag. The minimal scope covers the common documents
@@ -74,7 +74,7 @@ public static class JsonLdExpansionTree
         ArgumentNullException.ThrowIfNull(resolver);
         ArgumentNullException.ThrowIfNull(parser);
 
-        JsonLdContext activeContext = JsonLdContext.Empty;
+        LinkedDataContext activeContext = LinkedDataContext.Empty;
         if(baseUrl is not null)
         {
             activeContext = activeContext.WithBaseIri(baseUrl);
@@ -107,7 +107,7 @@ public static class JsonLdExpansionTree
         Justification = "baseUrl follows the JSON-LD specification convention of string URIs.")]
     private static async ValueTask<object?> ExpandElementAsync(
         JsonLdNode element,
-        JsonLdContext activeContext,
+        LinkedDataContext activeContext,
         string? baseUrl,
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
@@ -166,7 +166,7 @@ public static class JsonLdExpansionTree
         Justification = "baseUrl follows the JSON-LD specification convention of string URIs.")]
     private static async ValueTask<object?> ExpandObjectAsync(
         JsonLdNode obj,
-        JsonLdContext activeContext,
+        LinkedDataContext activeContext,
         string? baseUrl,
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
@@ -298,7 +298,7 @@ public static class JsonLdExpansionTree
                     //into the value subtree. The context update is local
                     //to this property; siblings see the unchanged
                     //activeContext.
-                    JsonLdContext propertyContext = activeContext;
+                    LinkedDataContext propertyContext = activeContext;
                     if(termDef is { ScopedContextEntries: { } scopedEntries })
                     {
                         propertyContext = await ApplyScopedEntriesAsync(
@@ -328,7 +328,7 @@ public static class JsonLdExpansionTree
         Justification = "baseUrl follows the JSON-LD specification convention of string URIs.")]
     private static async ValueTask<object?> ExpandPropertyValueAsync(
         JsonLdNode value,
-        JsonLdContext activeContext,
+        LinkedDataContext activeContext,
         string? baseUrl,
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
@@ -403,7 +403,7 @@ public static class JsonLdExpansionTree
         Justification = "baseUrl follows the JSON-LD specification convention of string URIs.")]
     private static async ValueTask<object?> ExpandPropertyItemAsync(
         JsonLdNode item,
-        JsonLdContext activeContext,
+        LinkedDataContext activeContext,
         string? baseUrl,
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
@@ -434,7 +434,7 @@ public static class JsonLdExpansionTree
         Justification = "baseUrl follows the JSON-LD specification convention of string URIs.")]
     private static async ValueTask<Dictionary<string, object?>> ExpandReverseAsync(
         JsonLdNode reverseObj,
-        JsonLdContext activeContext,
+        LinkedDataContext activeContext,
         string? baseUrl,
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
@@ -482,7 +482,7 @@ public static class JsonLdExpansionTree
         Justification = "baseUrl follows the JSON-LD specification convention of string URIs.")]
     private static async ValueTask<object?> ExpandMapContainerAsync(
         JsonLdNode value,
-        JsonLdContext activeContext,
+        LinkedDataContext activeContext,
         string? baseUrl,
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
@@ -536,7 +536,7 @@ public static class JsonLdExpansionTree
     private static async ValueTask<object?> ExpandMapItemAsync(
         JsonLdNode item,
         string mapKey,
-        JsonLdContext activeContext,
+        LinkedDataContext activeContext,
         string? baseUrl,
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
@@ -653,7 +653,7 @@ public static class JsonLdExpansionTree
         return nodeObject;
     }
 
-    private static object? ExpandTypeValue(JsonLdNode value, JsonLdContext activeContext)
+    private static object? ExpandTypeValue(JsonLdNode value, LinkedDataContext activeContext)
     {
         if(value.Kind == JsonLdNodeKind.String)
         {
@@ -720,7 +720,7 @@ public static class JsonLdExpansionTree
     /// Expands an already-shaped value object, applying IRI expansion to
     /// the <c>@type</c> field while leaving the rest of the object as-is.
     /// </summary>
-    private static Dictionary<string, object?> ExpandValueObject(JsonLdNode value, JsonLdContext activeContext)
+    private static Dictionary<string, object?> ExpandValueObject(JsonLdNode value, LinkedDataContext activeContext)
     {
         Dictionary<string, object?> result = new(StringComparer.Ordinal);
         foreach(KeyValuePair<string, JsonLdNode> entry in value.EnumerateObject())
@@ -806,7 +806,7 @@ public static class JsonLdExpansionTree
     /// <summary>
     /// Applies the type-scoped contexts triggered by an <c>@type</c>
     /// entry on the current node. Each type IRI is expanded via
-    /// <see cref="JsonLdContext.ExpandIri"/> (vocab-relative), the
+    /// <see cref="LinkedDataContext.ExpandIri"/> (vocab-relative), the
     /// resulting IRIs are sorted alphabetically per W3C JSON-LD 1.1
     /// §4.1.4 step 8, and each matching term's
     /// <see cref="TermDefinition.ScopedContextEntries"/> is applied in
@@ -814,8 +814,8 @@ public static class JsonLdExpansionTree
     /// </summary>
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
         Justification = "baseUrl follows the JSON-LD specification convention of string URIs.")]
-    private static async ValueTask<JsonLdContext> ApplyTypeScopedAsync(
-        JsonLdContext activeContext,
+    private static async ValueTask<LinkedDataContext> ApplyTypeScopedAsync(
+        LinkedDataContext activeContext,
         JsonLdNode typeNode,
         string? baseUrl,
         ContextResolverDelegate resolver,
@@ -852,7 +852,7 @@ public static class JsonLdExpansionTree
         }
         expandedTypes.Sort(StringComparer.Ordinal);
 
-        JsonLdContext running = activeContext;
+        LinkedDataContext running = activeContext;
         foreach(string typeIri in expandedTypes)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -871,11 +871,11 @@ public static class JsonLdExpansionTree
         return running;
     }
 
-    private static IReadOnlyList<LinkedDataContextEntry>? FindScopedEntriesForType(JsonLdContext context, string typeIri)
+    private static IReadOnlyList<LinkedDataContextEntry>? FindScopedEntriesForType(LinkedDataContext context, string typeIri)
     {
         //O(N) scan for the term whose IriMapping matches the type IRI
         //and that carries scoped entries. Could be replaced with an
-        //inverted IriMapping → term index on JsonLdContext if profiling
+        //inverted IriMapping → term index on LinkedDataContext if profiling
         //motivates.
         foreach(string termName in context.Terms)
         {
@@ -893,36 +893,22 @@ public static class JsonLdExpansionTree
     /// <summary>
     /// Applies pre-extracted <see cref="LinkedDataContextEntry"/> entries
     /// (e.g. from a term's <see cref="TermDefinition.ScopedContextEntries"/>)
-    /// to the active context. Wraps the JsonLd-side
-    /// <see cref="ContextResolverDelegate"/> and
-    /// <see cref="JsonLdParserDelegate"/> as the format-agnostic fetcher/
-    /// parser pair that <c>ContextProcessing.ApplyEmbeddedContextsAsync</c>
-    /// expects.
+    /// to the active context. Forwards to
+    /// <see cref="JsonLdScopedContextHelper.ApplyAsync"/> which is shared
+    /// with <see cref="JsonLdExpander"/>'s quad-extraction path.
     /// </summary>
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
         Justification = "baseUrl follows the JSON-LD specification convention of string URIs.")]
-    private static async ValueTask<JsonLdContext> ApplyScopedEntriesAsync(
-        JsonLdContext activeContext,
+    private static async ValueTask<LinkedDataContext> ApplyScopedEntriesAsync(
+        LinkedDataContext activeContext,
         IReadOnlyList<LinkedDataContextEntry> entries,
         string? baseUrl,
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
         CancellationToken cancellationToken)
     {
-        FetchRemoteResourceDelegate fetcher = JsonLdRemoteContextParsing.AdaptResolverToFetcher(resolver);
-        ParseRemoteContextDelegate remoteParser = JsonLdRemoteContextParsing.Create(parser);
-
-        try
-        {
-            return await ContextProcessing.ApplyEmbeddedContextsAsync(
-                activeContext, entries, baseUrl, fetcher, remoteParser, cache: null, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch(LinkedDataProcessingException ex) when(ex is not JsonLdProcessingException)
-        {
-            //Normalise spec-violation exceptions at the JsonLd boundary
-            //so the public API consistently throws JsonLdProcessingException.
-            throw new JsonLdProcessingException(ex);
-        }
+        return await JsonLdScopedContextHelper.ApplyAsync(
+            activeContext, entries, baseUrl, resolver, parser, cancellationToken)
+            .ConfigureAwait(false);
     }
 }

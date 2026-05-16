@@ -207,15 +207,15 @@ internal static class CborLdCompressionDecoder
             frames.Push(new DecodeFrame(
                 isMap: isMap,
                 expectedCount: expectedCount,
-                activeContext: JsonLdContext.Empty,
-                preEmbedded: JsonLdContext.Empty,
+                activeContext: LinkedDataContext.Empty,
+                preEmbedded: LinkedDataContext.Empty,
                 isContextData: false));
             return;
         }
 
         DecodeFrame parent = frames.Peek();
         bool inheritedContextData = parent.IsContextData || parent.PendingKey == "@context";
-        JsonLdContext childContext = SelectChildActiveContext(parent, scope, state, cancellationToken);
+        LinkedDataContext childContext = SelectChildActiveContext(parent, scope, state, cancellationToken);
         frames.Push(new DecodeFrame(
             isMap: isMap,
             expectedCount: expectedCount,
@@ -232,7 +232,7 @@ internal static class CborLdCompressionDecoder
     /// <item><description>Otherwise: descendant context (propagate-gated) with property-scoped overlay where applicable.</description></item>
     /// </list>
     /// </summary>
-    private static JsonLdContext SelectChildActiveContext(
+    private static LinkedDataContext SelectChildActiveContext(
         DecodeFrame parent,
         CborLdActiveContextScope scope,
         CborLdConversionState state,
@@ -252,7 +252,7 @@ internal static class CborLdCompressionDecoder
             return parent.PreEmbedded;
         }
 
-        JsonLdContext descendant = parent.ActiveContext.Propagate
+        LinkedDataContext descendant = parent.ActiveContext.Propagate
             ? parent.ActiveContext
             : parent.PreEmbedded;
 
@@ -271,7 +271,7 @@ internal static class CborLdCompressionDecoder
     private static string ResolveIntegerKey(
         long intValue,
         Dictionary<int, string> idToName,
-        JsonLdContext activeContext,
+        LinkedDataContext activeContext,
         Dictionary<int, string> dynamicIdToTerm)
     {
         if(intValue < int.MinValue || intValue > int.MaxValue)
@@ -393,7 +393,7 @@ internal static class CborLdCompressionDecoder
         }
 
         //Resolve type name: registry term codec wins, falling back to the
-        //active context's TermDefinition.TypeMapping (mirror of the
+        //active context's TermDefinition&lt;TNode&gt;.TypeMapping (mirror of the
         //encoder's ResolveTypeName). Returns null for untyped terms.
         string? typeName = ResolveTypeName(top.PendingKey, top.ActiveContext, registryEntry);
         if(typeName is null)
@@ -505,7 +505,7 @@ internal static class CborLdCompressionDecoder
     /// <see cref="TermDefinition.TypeMapping"/> (filtering out the
     /// type-coercion keywords <c>@id</c> and <c>@vocab</c>).
     /// </summary>
-    private static string? ResolveTypeName(string key, JsonLdContext active, CborLdRegistryEntry registry)
+    private static string? ResolveTypeName(string key, LinkedDataContext active, CborLdRegistryEntry registry)
     {
         if(registry.Terms.TryGetValue(key, out CborLdTermCodec codec))
         {
@@ -644,8 +644,8 @@ internal static class CborLdCompressionDecoder
         public DecodeFrame(
             bool isMap,
             int expectedCount,
-            JsonLdContext activeContext,
-            JsonLdContext preEmbedded,
+            LinkedDataContext activeContext,
+            LinkedDataContext preEmbedded,
             bool isContextData)
         {
             IsMap = isMap;
@@ -668,9 +668,9 @@ internal static class CborLdCompressionDecoder
 
         public string? PendingKey { get; set; }
 
-        public JsonLdContext ActiveContext { get; set; }
+        public LinkedDataContext ActiveContext { get; set; }
 
-        public JsonLdContext PreEmbedded { get; set; }
+        public LinkedDataContext PreEmbedded { get; set; }
 
         /// <summary>
         /// True when this frame and all descendants are decoding a subtree

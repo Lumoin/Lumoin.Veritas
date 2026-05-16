@@ -12,7 +12,7 @@ namespace Lumoin.Veritas.Cbor.CborLd;
 internal sealed class CborLdRegistryContextEntry
 {
     /// <summary>Gets or sets the resolved active context.</summary>
-    public JsonLdContext Context { get; set; } = JsonLdContext.Empty;
+    public LinkedDataContext Context { get; set; } = LinkedDataContext.Empty;
 
     /// <summary>Gets the term-name -> term-definition map.</summary>
     public Dictionary<string, TermDefinition> TermMap { get; init; } = [];

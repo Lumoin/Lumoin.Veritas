@@ -11,18 +11,17 @@ namespace Lumoin.Veritas.LinkedData;
 /// <remarks>
 /// <para>
 /// Term definitions are produced by the format-specific context-processing
-/// algorithm (currently the JSON-LD <c>ContextProcessor</c>) and consumed
-/// by the matching expansion and compaction algorithms. The shape of the
-/// definition is identical for JSON-LD and CBOR-LD, which is why the type
-/// lives in the format-neutral LinkedData project.
+/// shells (JSON-LD <c>ContextProcessor</c>, CBOR-LD
+/// <c>CborLdActiveContextScope</c>) and consumed by the matching
+/// expansion and compaction algorithms. The shape of the definition is
+/// identical for JSON-LD and CBOR-LD, which is why the type lives in
+/// the format-neutral LinkedData project.
 /// </para>
 /// <para>
-/// <see cref="LocalContext"/> carries the embedded context value associated
-/// with this term for type-scoped or property-scoped context processing.
-/// Typed as <see cref="ILinkedDataDocumentNode"/> so the slot is
-/// format-neutral; the format-specific node type (e.g. JSON-LD's
-/// <c>JsonLdNode</c>) implements that interface and is cast back at the
-/// format boundary.
+/// Scoped contexts attached to a term ride on
+/// <see cref="ScopedContextEntries"/> as a format-neutral POCO list,
+/// pre-extracted at term-definition time. There is no format-specific
+/// document-tree slot on this type.
 /// </para>
 /// </remarks>
 public sealed class TermDefinition
@@ -107,20 +106,6 @@ public sealed class TermDefinition
     public string? IndexMapping { get; init; }
 
     /// <summary>
-    /// Gets the document-tree node carrying the embedded context associated
-    /// with this term for type-scoped or property-scoped context processing.
-    /// </summary>
-    /// <remarks>
-    /// Stored as a detached node whose lifetime is independent of any
-    /// document the term definition was extracted from. Format adapters
-    /// produce the node via their parser's clone operation at the time the
-    /// term definition is created. The format-specific node type (e.g.
-    /// <c>JsonLdNode</c>) implements <see cref="ILinkedDataDocumentNode"/>
-    /// and is cast back at the format boundary.
-    /// </remarks>
-    public ILinkedDataDocumentNode? LocalContext { get; init; }
-
-    /// <summary>
     /// Gets the base IRI associated with this term definition, if set.
     /// </summary>
     public string? BaseIri { get; init; }
@@ -131,19 +116,11 @@ public sealed class TermDefinition
     /// scoped context.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// Populated by <c>ContextProcessing</c> from
     /// <see cref="LinkedDataTermSource.ScopedContext"/> at term-definition
     /// time. Carrying the pre-extracted POCO entries here lets runtime
-    /// consumers (notably the CBOR-LD encoder's active-context state
-    /// machine) re-apply the scoped context against a different parent
+    /// consumers re-apply the scoped context against a different parent
     /// context without re-walking the format-specific document tree.
-    /// </para>
-    /// <para>
-    /// Distinct from <see cref="LocalContext"/>, which carries the raw
-    /// document-tree node for consumers (e.g. JSON-LD expander) that
-    /// re-extract per-call. New consumers should prefer this field.
-    /// </para>
     /// </remarks>
     public IReadOnlyList<LinkedDataContextEntry>? ScopedContextEntries { get; init; }
 }

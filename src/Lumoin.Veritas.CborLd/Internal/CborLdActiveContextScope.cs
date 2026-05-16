@@ -13,9 +13,9 @@ namespace Lumoin.Veritas.Cbor.CborLd.Internal;
 /// Computes successor active contexts for the three CBOR-LD scoped-context
 /// triggers — embedded <c>@context</c>, type-scoped, and property-scoped —
 /// during an encoder/decoder walk. Stateless apart from the remote-context
-/// delegates: the walker threads the resulting <see cref="JsonLdContext"/>
+/// delegates: the walker threads the resulting <see cref="LinkedDataContext"/>
 /// through its own recursion, and the persistent-map semantics of
-/// <see cref="JsonLdContext"/> make push/pop free (the call stack IS the
+/// <see cref="LinkedDataContext"/> make push/pop free (the call stack IS the
 /// frame stack).
 /// </summary>
 /// <remarks>
@@ -64,8 +64,8 @@ internal readonly struct CborLdActiveContextScope
     /// <returns>The successor active context after applying the embedded entry.</returns>
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
         Justification = "JSON-LD specification uses string URIs throughout the context processing algorithm.")]
-    public async ValueTask<JsonLdContext> WithEmbeddedContextAsync(
-        JsonLdContext current,
+    public async ValueTask<LinkedDataContext> WithEmbeddedContextAsync(
+        LinkedDataContext current,
         CborLdInputNode contextNode,
         string? baseUrl,
         CborLdConversionState state,
@@ -79,7 +79,7 @@ internal readonly struct CborLdActiveContextScope
         IReadOnlyList<LinkedDataContextEntry> entries =
             CborLdContextExtraction.ExtractEntries(contextNode, baseUrl, ref keyCounter);
 
-        JsonLdContext next = await ApplyEntriesAsync(current, entries, baseUrl, cancellationToken).ConfigureAwait(false);
+        LinkedDataContext next = await ApplyEntriesAsync(current, entries, baseUrl, cancellationToken).ConfigureAwait(false);
         AssignNewTermIds(current, next, state);
         return next;
     }
@@ -99,15 +99,15 @@ internal readonly struct CborLdActiveContextScope
     /// <returns>The successor active context after all matching type-scoped contexts are applied.</returns>
     /// <remarks>
     /// The type-to-term lookup is currently an O(N) scan over the
-    /// <see cref="JsonLdContext"/>'s terms. For documents with many types
+    /// <see cref="LinkedDataContext"/>'s terms. For documents with many types
     /// per map and many terms in the active context, an inverted
-    /// <c>IriMapping → term</c> index on <see cref="JsonLdContext"/> would
+    /// <c>IriMapping → term</c> index on <see cref="LinkedDataContext"/> would
     /// reduce this to O(1) per type. Deferred until profiling motivates.
     /// </remarks>
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
         Justification = "JSON-LD specification uses string URIs throughout the context processing algorithm.")]
-    public async ValueTask<JsonLdContext> WithTypeScopedAsync(
-        JsonLdContext current,
+    public async ValueTask<LinkedDataContext> WithTypeScopedAsync(
+        LinkedDataContext current,
         IReadOnlyList<string> typeIris,
         string? baseUrl,
         CborLdConversionState state,
@@ -126,7 +126,7 @@ internal readonly struct CborLdActiveContextScope
         //order is observable when two types define conflicting term mappings.
         string[] sortedTypeIris = typeIris.OrderBy(iri => iri, StringComparer.Ordinal).ToArray();
 
-        JsonLdContext running = current;
+        LinkedDataContext running = current;
         foreach(string typeIri in sortedTypeIris)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -138,7 +138,7 @@ internal readonly struct CborLdActiveContextScope
                 continue;
             }
 
-            JsonLdContext before = running;
+            LinkedDataContext before = running;
             running = await ApplyEntriesAsync(running, scopedEntries, baseUrl, cancellationToken).ConfigureAwait(false);
             AssignNewTermIds(before, running, state);
         }
@@ -158,8 +158,8 @@ internal readonly struct CborLdActiveContextScope
     /// <returns>The active context for the value subtree, or <paramref name="current"/> when no scoped context is attached.</returns>
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
         Justification = "JSON-LD specification uses string URIs throughout the context processing algorithm.")]
-    public async ValueTask<JsonLdContext> WithPropertyScopedAsync(
-        JsonLdContext current,
+    public async ValueTask<LinkedDataContext> WithPropertyScopedAsync(
+        LinkedDataContext current,
         TermDefinition propertyTerm,
         string? baseUrl,
         CborLdConversionState state,
@@ -174,14 +174,14 @@ internal readonly struct CborLdActiveContextScope
             return current;
         }
 
-        JsonLdContext next = await ApplyEntriesAsync(
+        LinkedDataContext next = await ApplyEntriesAsync(
             current, propertyTerm.ScopedContextEntries, baseUrl, cancellationToken).ConfigureAwait(false);
         AssignNewTermIds(current, next, state);
         return next;
     }
 
-    private async ValueTask<JsonLdContext> ApplyEntriesAsync(
-        JsonLdContext current,
+    private async ValueTask<LinkedDataContext> ApplyEntriesAsync(
+        LinkedDataContext current,
         IReadOnlyList<LinkedDataContextEntry> entries,
         string? baseUrl,
         CancellationToken cancellationToken)
@@ -206,11 +206,11 @@ internal readonly struct CborLdActiveContextScope
     }
 
     private static IReadOnlyList<LinkedDataContextEntry>? FindScopedEntriesForType(
-        JsonLdContext context,
+        LinkedDataContext context,
         string typeIri)
     {
         //O(N) scan. Could be replaced by an inverted IriMapping → term
-        //index on JsonLdContext if profiling motivates.
+        //index on LinkedDataContext if profiling motivates.
         foreach(string termName in context.Terms)
         {
             if(context.TryGetTerm(termName, out TermDefinition? def)
@@ -225,8 +225,8 @@ internal readonly struct CborLdActiveContextScope
     }
 
     private static void AssignNewTermIds(
-        JsonLdContext before,
-        JsonLdContext after,
+        LinkedDataContext before,
+        LinkedDataContext after,
         CborLdConversionState state)
     {
         foreach(string termName in after.Terms)

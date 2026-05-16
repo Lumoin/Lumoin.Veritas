@@ -1,0 +1,68 @@
+using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
+using System.Threading;
+using System.Threading.Tasks;
+using Lumoin.Veritas.LinkedData;
+
+namespace Lumoin.Veritas.JsonLd;
+
+/// <summary>
+/// Shared helper for applying scoped context entries to an active
+/// context within the JSON-LD pipeline. Bridges the JSON-LD
+/// pipeline's delegate types
+/// (<see cref="ContextResolverDelegate"/>,
+/// <see cref="JsonLdParserDelegate"/>) into the format-agnostic
+/// shapes the <c>LinkedData</c> layer's
+/// <c>ContextProcessing.ApplyEmbeddedContextsAsync</c> accepts.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Consumed by both <see cref="JsonLdExpander"/> (quad-extraction
+/// path) and <see cref="JsonLdExpansionTree"/> (in-memory tree
+/// path) for property-scoped context handling. Both produce a new
+/// <see cref="LinkedDataContext"/> with the scoped entries merged
+/// on top of the input active context, respecting W3C JSON-LD §9.6
+/// lazy-merge semantics. Type-scoped context handling is currently
+/// implemented in <see cref="JsonLdExpansionTree"/> only.
+/// </para>
+/// </remarks>
+internal static class JsonLdScopedContextHelper
+{
+    /// <summary>
+    /// Applies a property-scoped context's entries to the supplied
+    /// active context and returns the merged result.
+    /// </summary>
+    /// <param name="activeContext">The active context at the property descent point.</param>
+    /// <param name="scopedEntries">The pre-extracted scoped context entries.</param>
+    /// <param name="baseUrl">The base URL for relative-IRI resolution.</param>
+    /// <param name="resolver">The JSON-LD remote-context resolver.</param>
+    /// <param name="parser">The JSON-LD context-body parser.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <returns>A new <see cref="LinkedDataContext"/> with the scoped entries merged.</returns>
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
+        Justification = "baseUrl follows the JSON-LD specification convention of string URIs.")]
+    public static async ValueTask<LinkedDataContext> ApplyAsync(
+        LinkedDataContext activeContext,
+        IReadOnlyList<LinkedDataContextEntry> scopedEntries,
+        string? baseUrl,
+        ContextResolverDelegate resolver,
+        JsonLdParserDelegate parser,
+        CancellationToken cancellationToken)
+    {
+        FetchRemoteResourceDelegate fetcher = JsonLdRemoteContextParsing.AdaptResolverToFetcher(resolver);
+        ParseRemoteContextDelegate remoteParser = JsonLdRemoteContextParsing.Create(parser);
+
+        try
+        {
+            return await ContextProcessing.ApplyEmbeddedContextsAsync(
+                activeContext, scopedEntries, baseUrl, fetcher, remoteParser, cache: null, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch(LinkedDataProcessingException ex) when(ex is not JsonLdProcessingException)
+        {
+            //Normalise spec-violation exceptions at the JsonLd boundary
+            //so the public API consistently throws JsonLdProcessingException.
+            throw new JsonLdProcessingException(ex);
+        }
+    }
+}

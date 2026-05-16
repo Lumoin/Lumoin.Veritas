@@ -11,7 +11,7 @@ namespace Lumoin.Veritas.Benchmarks;
 /// Measures the cost of the format-agnostic active-context processing
 /// core (<see cref="ContextProcessing"/>). Used to establish a baseline
 /// before deciding whether to invest in structural-sharing optimisations
-/// (persistent map / HAMT for <see cref="JsonLdContext"/>) or prefix-trie
+/// (persistent map / HAMT for <see cref="LinkedDataContext"/>) or prefix-trie
 /// indexing of term IRI mappings.
 /// </summary>
 /// <remarks>
@@ -52,10 +52,10 @@ public class ContextProcessingBenchmarks
     }
 
     [Benchmark]
-    public JsonLdContext SmallInlineContext()
+    public LinkedDataContext SmallInlineContext()
     {
         return ContextProcessing.ApplyEmbeddedContextsAsync(
-            JsonLdContext.Empty,
+            LinkedDataContext.Empty,
             smallContext,
             baseUrl: null,
             ContextBenchmarkSupport.ThrowingFetcher,
@@ -65,10 +65,10 @@ public class ContextProcessingBenchmarks
     }
 
     [Benchmark]
-    public JsonLdContext ManyTermsContext()
+    public LinkedDataContext ManyTermsContext()
     {
         return ContextProcessing.ApplyEmbeddedContextsAsync(
-            JsonLdContext.Empty,
+            LinkedDataContext.Empty,
             manyTermsContext,
             baseUrl: null,
             ContextBenchmarkSupport.ThrowingFetcher,
@@ -78,10 +78,10 @@ public class ContextProcessingBenchmarks
     }
 
     [Benchmark]
-    public JsonLdContext NestedScopedContexts()
+    public LinkedDataContext NestedScopedContexts()
     {
         return ContextProcessing.ApplyEmbeddedContextsAsync(
-            JsonLdContext.Empty,
+            LinkedDataContext.Empty,
             nestedContext,
             baseUrl: null,
             ContextBenchmarkSupport.ThrowingFetcher,

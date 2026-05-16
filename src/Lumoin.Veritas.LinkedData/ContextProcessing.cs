@@ -8,10 +8,10 @@ namespace Lumoin.Veritas.LinkedData;
 /// <summary>
 /// Static implementations of the format-agnostic active-context processing
 /// algorithm steps from W3C JSON-LD 1.1 §4.1 and W3C CBOR-LD 1.0 §5.3.
-/// Methods here are pure transforms over <see cref="JsonLdContext"/> and
-/// primitive inputs; they do not see any format-specific document-tree
-/// type. Format-specific shells extract the inputs from their tree and
-/// call these methods; the shells own format-specific error reporting and
+/// Methods here are pure transforms over
+/// <see cref="LinkedDataContext"/> and primitive inputs.
+/// Format-specific shells extract the inputs from their tree and call
+/// these methods; the shells own format-specific error reporting and
 /// exception wrapping.
 /// </summary>
 /// <seealso href="https://www.w3.org/TR/json-ld11-api/#context-processing-algorithm"/>
@@ -73,8 +73,8 @@ public static partial class ContextProcessing
     /// <returns>The reset context on success, or <see langword="null"/>
     /// when a protected term would be overridden.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="activeContext"/> is <see langword="null"/>.</exception>
-    public static JsonLdContext? TryResetToNull(
-        JsonLdContext activeContext,
+    public static LinkedDataContext? TryResetToNull(
+        LinkedDataContext activeContext,
         bool overrideProtected,
         out string? protectedTermName)
     {
@@ -93,7 +93,7 @@ public static partial class ContextProcessing
         }
 
         protectedTermName = null;
-        JsonLdContext empty = JsonLdContext.Empty;
+        LinkedDataContext empty = LinkedDataContext.Empty;
         if(!activeContext.Propagate)
         {
             empty = empty.WithPreviousContext(activeContext);
@@ -122,8 +122,8 @@ public static partial class ContextProcessing
     /// <returns>The updated context on success, or <see langword="null"/>
     /// when a protected term would be redefined with a different IRI.</returns>
     /// <exception cref="ArgumentNullException">Any required argument is <see langword="null"/>.</exception>
-    public static JsonLdContext? TrySetTermDefinition(
-        JsonLdContext activeContext,
+    public static LinkedDataContext? TrySetTermDefinition(
+        LinkedDataContext activeContext,
         string term,
         TermDefinition definition,
         bool overrideProtected,
@@ -167,8 +167,8 @@ public static partial class ContextProcessing
     /// <param name="unresolvableRelative">On failure, receives the relative value that has no base to resolve against; <see langword="null"/> on success.</param>
     /// <returns>The updated context on success, or <see langword="null"/> on failure.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="activeContext"/> is <see langword="null"/>.</exception>
-    public static JsonLdContext? TryApplyBase(
-        JsonLdContext activeContext,
+    public static LinkedDataContext? TryApplyBase(
+        LinkedDataContext activeContext,
         string? baseValue,
         out string? unresolvableRelative)
     {
@@ -203,8 +203,8 @@ public static partial class ContextProcessing
     /// <param name="vocabValue">The extracted vocab value; <see langword="null"/> clears the mapping.</param>
     /// <returns>The updated context.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="activeContext"/> is <see langword="null"/>.</exception>
-    public static JsonLdContext ApplyVocab(
-        JsonLdContext activeContext,
+    public static LinkedDataContext ApplyVocab(
+        LinkedDataContext activeContext,
         string? vocabValue)
     {
         ArgumentNullException.ThrowIfNull(activeContext);
@@ -233,8 +233,8 @@ public static partial class ContextProcessing
     /// <exception cref="ArgumentNullException"><paramref name="activeContext"/> is <see langword="null"/>.</exception>
     [SuppressMessage("Globalization", "CA1308:Normalize strings to uppercase",
         Justification = "BCP47 language tags are canonically lowercase per the JSON-LD 1.1 specification.")]
-    public static JsonLdContext ApplyLanguage(
-        JsonLdContext activeContext,
+    public static LinkedDataContext ApplyLanguage(
+        LinkedDataContext activeContext,
         string? languageValue)
     {
         ArgumentNullException.ThrowIfNull(activeContext);
@@ -255,8 +255,8 @@ public static partial class ContextProcessing
     /// <param name="directionValue">The extracted direction value.</param>
     /// <returns>The updated context on success, or <see langword="null"/> when the value is invalid.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="activeContext"/> is <see langword="null"/>.</exception>
-    public static JsonLdContext? TryApplyDirection(
-        JsonLdContext activeContext,
+    public static LinkedDataContext? TryApplyDirection(
+        LinkedDataContext activeContext,
         string? directionValue)
     {
         ArgumentNullException.ThrowIfNull(activeContext);
@@ -285,7 +285,7 @@ public static partial class ContextProcessing
     /// <param name="typeValue">The raw <c>@type</c> string from the term definition.</param>
     /// <returns>The expanded type IRI, or <see langword="null"/> on validation failure.</returns>
     /// <exception cref="ArgumentNullException">Any required argument is <see langword="null"/>.</exception>
-    public static string? TryExpandTermType(JsonLdContext activeContext, string typeValue)
+    public static string? TryExpandTermType(LinkedDataContext activeContext, string typeValue)
     {
         ArgumentNullException.ThrowIfNull(activeContext);
         ArgumentNullException.ThrowIfNull(typeValue);
@@ -316,7 +316,7 @@ public static partial class ContextProcessing
     /// <param name="reverseValue">The raw <c>@reverse</c> string from the term definition.</param>
     /// <returns>The expanded reverse IRI, or <see langword="null"/> on validation failure.</returns>
     /// <exception cref="ArgumentNullException">Any required argument is <see langword="null"/>.</exception>
-    public static string? TryExpandReverseProperty(JsonLdContext activeContext, string reverseValue)
+    public static string? TryExpandReverseProperty(LinkedDataContext activeContext, string reverseValue)
     {
         ArgumentNullException.ThrowIfNull(activeContext);
         ArgumentNullException.ThrowIfNull(reverseValue);
@@ -386,7 +386,7 @@ public static partial class ContextProcessing
     /// <param name="idValue">The raw <c>@id</c> value from the term definition.</param>
     /// <returns>The expanded IRI mapping, or <see langword="null"/> when expansion fails to produce an absolute IRI or keyword.</returns>
     /// <exception cref="ArgumentNullException">Any required argument is <see langword="null"/>.</exception>
-    public static string? ExpandTermIdMapping(JsonLdContext activeContext, string term, string idValue)
+    public static string? ExpandTermIdMapping(LinkedDataContext activeContext, string term, string idValue)
     {
         ArgumentNullException.ThrowIfNull(activeContext);
         ArgumentNullException.ThrowIfNull(term);
@@ -437,7 +437,7 @@ public static partial class ContextProcessing
     /// <returns>The expanded IRI when the prefix is defined; otherwise the term unchanged.</returns>
     /// <exception cref="ArgumentNullException">Any required argument is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException"><paramref name="term"/> does not contain a colon.</exception>
-    public static string ExpandCompactIriTerm(JsonLdContext activeContext, string term)
+    public static string ExpandCompactIriTerm(LinkedDataContext activeContext, string term)
     {
         ArgumentNullException.ThrowIfNull(activeContext);
         ArgumentNullException.ThrowIfNull(term);
@@ -489,9 +489,9 @@ public static partial class ContextProcessing
     }
 
     /// <summary>
-    /// Builds a <see cref="TermDefinition"/> for the JSON-LD 1.1 §4.1.2
-    /// simple-string form (<c>"term": "iriMapping"</c>): the IRI mapping
-    /// is the active context's vocabulary expansion of
+    /// Builds a <see cref="TermDefinition"/> for the JSON-LD 1.1
+    /// §4.1.2 simple-string form (<c>"term": "iriMapping"</c>): the IRI
+    /// mapping is the active context's vocabulary expansion of
     /// <paramref name="iriMapping"/>; the term is implicitly a prefix
     /// when the original raw value ends with <c>':'</c> and does not
     /// expand to a keyword; protected-state inherits from the surrounding
@@ -503,7 +503,7 @@ public static partial class ContextProcessing
     /// <returns>The resulting term definition.</returns>
     /// <exception cref="ArgumentNullException">Any required argument is <see langword="null"/>.</exception>
     public static TermDefinition BuildSimpleStringTermDefinition(
-        JsonLdContext activeContext,
+        LinkedDataContext activeContext,
         string iriMapping,
         bool contextProtected)
     {
@@ -535,8 +535,8 @@ public static partial class ContextProcessing
     /// <param name="wasProtectedConflict">On failure, set to <see langword="true"/>.</param>
     /// <returns>The context without the term on success, or <see langword="null"/> on protected conflict.</returns>
     /// <exception cref="ArgumentNullException">Any required argument is <see langword="null"/>.</exception>
-    public static JsonLdContext? TryRemoveTerm(
-        JsonLdContext activeContext,
+    public static LinkedDataContext? TryRemoveTerm(
+        LinkedDataContext activeContext,
         string term,
         bool overrideProtected,
         out bool wasProtectedConflict)
@@ -568,7 +568,7 @@ public static partial class ContextProcessing
     /// <param name="term">The term whose mapping to consider re-expanding.</param>
     /// <returns>The updated (or unchanged) context.</returns>
     /// <exception cref="ArgumentNullException">Any required argument is <see langword="null"/>.</exception>
-    public static JsonLdContext TryReexpandCompactIriTerm(JsonLdContext activeContext, string term)
+    public static LinkedDataContext TryReexpandCompactIriTerm(LinkedDataContext activeContext, string term)
     {
         ArgumentNullException.ThrowIfNull(activeContext);
         ArgumentNullException.ThrowIfNull(term);
@@ -599,7 +599,6 @@ public static partial class ContextProcessing
             ReverseProperty = existing.ReverseProperty,
             NestValue = existing.NestValue,
             IndexMapping = existing.IndexMapping,
-            LocalContext = existing.LocalContext,
             ScopedContextEntries = existing.ScopedContextEntries
         };
         return activeContext.WithTerm(term, updated);

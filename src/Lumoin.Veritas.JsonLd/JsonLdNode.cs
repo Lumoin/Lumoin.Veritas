@@ -2,7 +2,6 @@ using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Lumoin.Veritas.JsonLd.Document;
-using Lumoin.Veritas.LinkedData;
 
 namespace Lumoin.Veritas.JsonLd;
 
@@ -44,7 +43,7 @@ namespace Lumoin.Veritas.JsonLd;
 /// </para>
 /// </remarks>
 [DebuggerDisplay("{DebuggerLabel,nq}")]
-public readonly struct JsonLdNode: IEquatable<JsonLdNode>, ILinkedDataDocumentNode
+public readonly struct JsonLdNode: IEquatable<JsonLdNode>
 {
     /// <summary>
     /// Initialises a new node bound to the given handle and navigator.

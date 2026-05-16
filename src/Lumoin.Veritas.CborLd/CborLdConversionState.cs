@@ -17,10 +17,10 @@ internal sealed class CborLdConversionState
     public CborLdStrategy Strategy { get; set; }
 
     /// <summary>Gets or sets the active context at the current walk point.</summary>
-    public JsonLdContext ActiveContext { get; set; } = JsonLdContext.Empty;
+    public LinkedDataContext ActiveContext { get; set; } = LinkedDataContext.Empty;
 
     /// <summary>Gets or sets the initial active context for the document.</summary>
-    public JsonLdContext InitialActiveContext { get; set; } = JsonLdContext.Empty;
+    public LinkedDataContext InitialActiveContext { get; set; } = LinkedDataContext.Empty;
 
     /// <summary>Gets the mapping from compact term to integer id.</summary>
     public Dictionary<string, int> TermToId { get; init; } = [];
@@ -62,7 +62,7 @@ internal sealed class CborLdConversionState
     /// <remarks>
     /// Called eagerly by <c>CborLdActiveContextScope</c> when an active
     /// context is applied: the scope helper walks the resulting
-    /// <see cref="JsonLdContext"/>'s newly-added term names and calls this
+    /// <see cref="LinkedDataContext"/>'s newly-added term names and calls this
     /// method for each. Eager assignment is what keeps encoder and decoder
     /// id tables aligned — both apply contexts at the same walk points,
     /// so both allocate ids in the same order.

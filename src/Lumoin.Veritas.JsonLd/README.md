@@ -7,9 +7,9 @@ CBOR-LD.
 ## Public surface
 
 - `JsonLdNode` — opaque-handle wrapper around a parsed JSON node plus
-  a `JsonLdNodeNavigator` dispatch table. Implements
-  `ILinkedDataDocumentNode` so format-agnostic LinkedData code can
-  consume it without depending on a specific JSON library.
+  a `JsonLdNodeNavigator` dispatch table. Lets format-agnostic
+  LinkedData code carry JSON-LD subtrees without depending on a
+  specific JSON library.
 - `JsonLdNodeNavigator` and the `Document/` delegates
   (`GetNodeKindDelegate`, `GetStringValueDelegate`,
   `GetBooleanValueDelegate`, `GetRawNumberDelegate`,
@@ -17,9 +17,12 @@ CBOR-LD.
   `EnumerateObjectDelegate`, `CloneNodeDelegate`) — the adapter
   surface that decouples JSON-LD from any single JSON parser.
 - `JsonLdParserDelegate` — UTF-8 bytes to `JsonLdNode`.
-- `ContextProcessor` — the W3C JSON-LD 1.1 §4.1 context-processing
-  algorithm. Consumes `JsonLdNode` for `@context` extraction; produces
-  `JsonLdContext` (defined in `Lumoin.Veritas.LinkedData`).
+- `ContextProcessor` — the JSON-LD-specific shell over the W3C JSON-LD
+  1.1 §4.1 active-context algorithm. Extracts `@context` entries from
+  a `JsonLdNode` subtree, calls the format-agnostic
+  `Lumoin.Veritas.LinkedData.ContextProcessing` core, and wraps any
+  `LinkedDataProcessingException` as a `JsonLdProcessingException`.
+  Returns `LinkedDataContext`.
 - `JsonLdExpander` — expansion to RDF quads.
 - `JsonLdProcessingException` — surfaces processing failures.
 - `Adapters/CborLdInputNodeAdapter.FromJsonLd` — converts a
@@ -35,14 +38,13 @@ for cross-format encoding.
 
 ## Active-context algorithm
 
-The JSON-LD 1.1 §4.1 algorithm currently lives in this project's
-`ContextProcessor.cs` and is coupled to `JsonLdNode`. The
-format-agnostic POCO inputs needed for a future extraction
-(`LinkedDataContextEntry`, `LinkedDataTermSource`) are in place in
-`Lumoin.Veritas.LinkedData`. Extraction of the algorithm to a
-shared `LinkedData/ContextProcessing.cs` is planned; the migration
-will keep `ContextProcessor`'s public surface stable as a thin
-shell.
+The W3C JSON-LD 1.1 §4.1 algorithm lives in the format-agnostic
+`Lumoin.Veritas.LinkedData.ContextProcessing` core (generic over
+`TNode`). This project's `ContextProcessor.cs` is a thin shell that
+walks the `JsonLdNode` document tree, extracts the format-agnostic
+POCO inputs (`LinkedDataContextEntry`, `LinkedDataTermSource`), and
+delegates to the core. CBOR-LD uses the same core under a different
+`TNode`.
 
 ## References
 

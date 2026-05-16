@@ -72,7 +72,7 @@ public static class JsonLdExpander
         ArgumentNullException.ThrowIfNull(parser);
         ArgumentNullException.ThrowIfNull(pool);
 
-        JsonLdContext activeContext = JsonLdContext.Empty;
+        LinkedDataContext activeContext = LinkedDataContext.Empty;
 
         if(baseUrl is not null)
         {
@@ -101,7 +101,7 @@ public static class JsonLdExpander
 
     private static async Task ExpandNodeAsync(
         JsonLdNode element,
-        JsonLdContext activeContext,
+        LinkedDataContext activeContext,
         string? baseUrl,
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
@@ -129,7 +129,7 @@ public static class JsonLdExpander
 
     private static async Task ExpandObjectAsync(
         JsonLdNode obj,
-        JsonLdContext activeContext,
+        LinkedDataContext activeContext,
         string? baseUrl,
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
@@ -182,7 +182,7 @@ public static class JsonLdExpander
         string propertyName,
         JsonLdNode value,
         RdfTerm subject,
-        JsonLdContext activeContext,
+        LinkedDataContext activeContext,
         string? baseUrl,
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
@@ -206,14 +206,16 @@ public static class JsonLdExpander
 
         NamedNode predicate = new(pool.Intern(expandedProperty));
 
-        //Check for type-scoped context. The is-pattern unwraps Nullable<JsonLdNode>
-        //to the underlying JsonLdNode struct.
-        JsonLdContext propertyContext = activeContext;
+        //Property-scoped context: when the term carries pre-extracted
+        //ScopedContextEntries, apply them on top of the active context
+        //for the duration of this property's value subtree. Siblings see
+        //the unchanged activeContext.
+        LinkedDataContext propertyContext = activeContext;
         if(activeContext.TryGetTerm(propertyName, out TermDefinition? termDef)
-            && termDef?.LocalContext is JsonLdNode scopedContext)
+            && termDef is { ScopedContextEntries: { } scopedEntries })
         {
-            propertyContext = await ContextProcessor.ProcessAsync(
-                activeContext, scopedContext, baseUrl, resolver, parser, cancellationToken)
+            propertyContext = await JsonLdScopedContextHelper.ApplyAsync(
+                activeContext, scopedEntries, baseUrl, resolver, parser, cancellationToken)
                 .ConfigureAwait(false);
         }
 
@@ -226,7 +228,7 @@ public static class JsonLdExpander
         JsonLdNode value,
         RdfTerm subject,
         NamedNode predicate,
-        JsonLdContext activeContext,
+        LinkedDataContext activeContext,
         string? baseUrl,
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
@@ -314,7 +316,7 @@ public static class JsonLdExpander
         JsonLdNode array,
         RdfTerm subject,
         NamedNode predicate,
-        JsonLdContext activeContext,
+        LinkedDataContext activeContext,
         string? baseUrl,
         ContextResolverDelegate resolver,
         TermDefinition? termDef,
@@ -386,7 +388,7 @@ public static class JsonLdExpander
         await Task.CompletedTask.ConfigureAwait(false);
     }
 
-    private static RdfTerm DetermineSubject(JsonLdNode obj, JsonLdContext activeContext, Utf8StringPool pool)
+    private static RdfTerm DetermineSubject(JsonLdNode obj, LinkedDataContext activeContext, Utf8StringPool pool)
     {
         if(obj.TryGetProperty("@id", out JsonLdNode idElement)
             && idElement.Kind == JsonLdNodeKind.String)
@@ -411,7 +413,7 @@ public static class JsonLdExpander
     private static void ProcessTypeValues(
         JsonLdNode typeElement,
         RdfTerm subject,
-        JsonLdContext activeContext,
+        LinkedDataContext activeContext,
         RdfTerm? graphName,
         List<Quad> quads,
         Utf8StringPool pool)
@@ -448,7 +450,7 @@ public static class JsonLdExpander
 
     private static Literal? ProcessValueObject(
         JsonLdNode valueObject,
-        JsonLdContext activeContext,
+        LinkedDataContext activeContext,
         TermDefinition? termDef,
         Utf8StringPool pool)
     {
@@ -511,7 +513,7 @@ public static class JsonLdExpander
 
     private static RdfTerm? ExpandScalarValue(
         JsonLdNode value,
-        JsonLdContext activeContext,
+        LinkedDataContext activeContext,
         TermDefinition? termDef,
         Utf8StringPool pool)
     {

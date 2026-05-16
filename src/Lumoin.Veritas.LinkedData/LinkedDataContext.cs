@@ -5,11 +5,10 @@ using System.Diagnostics.CodeAnalysis;
 namespace Lumoin.Veritas.LinkedData;
 
 /// <summary>
-/// The active Linked Data context for a point in document processing. The
-/// type is named <c>JsonLdContext</c> for naming continuity with the
-/// JSON-LD specification, but the structure is format-neutral and is
-/// reused by CBOR-LD and other Linked Data formats that adopt JSON-LD's
-/// active-context concept.
+/// The active Linked Data context for a point in document processing.
+/// The structure is format-neutral and is shared by JSON-LD and CBOR-LD
+/// (and any other Linked Data format that adopts JSON-LD's
+/// active-context concept).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -29,20 +28,21 @@ namespace Lumoin.Veritas.LinkedData;
 /// </para>
 /// <para>
 /// An inverted index keyed on namespace-IRI maintains the reverse mapping
-/// from each prefix term's <see cref="TermDefinition.IriMapping"/> back to
-/// the term name. Populated automatically on <see cref="WithTerm"/> when a
-/// definition is registered with <see cref="TermDefinition.Prefix"/> set to
-/// <c>true</c>; consulted by compaction algorithms to convert absolute IRIs
-/// to their compact <c>prefix:suffix</c> form. The index shares structure
-/// with its source through the same persistent-map mechanism as the term
-/// store, so push/pop of context frames remains O(1).
+/// from each prefix term's <see cref="TermDefinition.IriMapping"/>
+/// back to the term name. Populated automatically on
+/// <see cref="WithTerm"/> when a definition is registered with
+/// <see cref="TermDefinition.Prefix"/> set to <c>true</c>;
+/// consulted by compaction algorithms to convert absolute IRIs to their
+/// compact <c>prefix:suffix</c> form. The index shares structure with its
+/// source through the same persistent-map mechanism as the term store,
+/// so push/pop of context frames remains O(1).
 /// </para>
 /// <para>
 /// This corresponds to the "active context" concept defined in the
 /// JSON-LD 1.1 Processing Algorithms specification.
 /// </para>
 /// </remarks>
-public sealed class JsonLdContext
+public sealed class LinkedDataContext
 {
     private readonly ImmutableDictionary<string, TermDefinition> terms;
 
@@ -58,7 +58,7 @@ public sealed class JsonLdContext
     /// </summary>
     private readonly ImmutableDictionary<string, ImmutableSortedSet<string>> prefixIndex;
 
-    private JsonLdContext(
+    private LinkedDataContext(
         ImmutableDictionary<string, TermDefinition> terms,
         ImmutableDictionary<string, ImmutableSortedSet<string>> prefixIndex,
         string? baseIri,
@@ -67,7 +67,7 @@ public sealed class JsonLdContext
         string? defaultLanguage,
         string? defaultBaseDirection,
         bool propagate,
-        JsonLdContext? previousContext)
+        LinkedDataContext? previousContext)
     {
         this.terms = terms;
         this.prefixIndex = prefixIndex;
@@ -83,7 +83,7 @@ public sealed class JsonLdContext
     /// <summary>
     /// Gets an empty context with no mappings.
     /// </summary>
-    public static JsonLdContext Empty { get; } = new(
+    public static LinkedDataContext Empty { get; } = new(
         terms: ImmutableDictionary<string, TermDefinition>.Empty,
         prefixIndex: ImmutableDictionary<string, ImmutableSortedSet<string>>.Empty,
         baseIri: null,
@@ -129,7 +129,7 @@ public sealed class JsonLdContext
     /// Gets the context that was active before a non-propagating context was applied.
     /// Used to restore the context when leaving a node that had a non-propagating context.
     /// </summary>
-    public JsonLdContext? PreviousContext { get; }
+    public LinkedDataContext? PreviousContext { get; }
 
     /// <summary>
     /// Gets all term names defined in this context.
@@ -184,7 +184,7 @@ public sealed class JsonLdContext
     /// <param name="term">The term name.</param>
     /// <param name="definition">The resolved term definition.</param>
     /// <returns>A new context containing the updated definition.</returns>
-    public JsonLdContext WithTerm(string term, TermDefinition definition)
+    public LinkedDataContext WithTerm(string term, TermDefinition definition)
     {
         ImmutableDictionary<string, ImmutableSortedSet<string>> updatedIndex = prefixIndex;
 
@@ -202,7 +202,7 @@ public sealed class JsonLdContext
             updatedIndex = AddToPrefixIndex(updatedIndex, newIri, term);
         }
 
-        return new JsonLdContext(terms.SetItem(term, definition), updatedIndex,
+        return new LinkedDataContext(terms.SetItem(term, definition), updatedIndex,
             BaseIri, OriginalBaseUrl, VocabularyMapping,
             DefaultLanguage, DefaultBaseDirection, Propagate, PreviousContext);
     }
@@ -212,7 +212,7 @@ public sealed class JsonLdContext
     /// </summary>
     /// <param name="term">The term name to remove.</param>
     /// <returns>A new context without the term.</returns>
-    public JsonLdContext WithoutTerm(string term)
+    public LinkedDataContext WithoutTerm(string term)
     {
         ImmutableDictionary<string, ImmutableSortedSet<string>> updatedIndex = prefixIndex;
         if(terms.TryGetValue(term, out TermDefinition? existing)
@@ -221,7 +221,7 @@ public sealed class JsonLdContext
             updatedIndex = RemoveFromPrefixIndex(updatedIndex, existingIri, term);
         }
 
-        return new JsonLdContext(terms.Remove(term), updatedIndex,
+        return new LinkedDataContext(terms.Remove(term), updatedIndex,
             BaseIri, OriginalBaseUrl, VocabularyMapping,
             DefaultLanguage, DefaultBaseDirection, Propagate, PreviousContext);
     }
@@ -229,9 +229,9 @@ public sealed class JsonLdContext
     /// <summary>
     /// Returns a new context with an updated base IRI.
     /// </summary>
-    public JsonLdContext WithBaseIri(string? baseIri)
+    public LinkedDataContext WithBaseIri(string? baseIri)
     {
-        return new JsonLdContext(terms, prefixIndex,
+        return new LinkedDataContext(terms, prefixIndex,
             baseIri, OriginalBaseUrl, VocabularyMapping,
             DefaultLanguage, DefaultBaseDirection, Propagate, PreviousContext);
     }
@@ -239,9 +239,9 @@ public sealed class JsonLdContext
     /// <summary>
     /// Returns a new context with an updated vocabulary mapping.
     /// </summary>
-    public JsonLdContext WithVocabularyMapping(string? vocab)
+    public LinkedDataContext WithVocabularyMapping(string? vocab)
     {
-        return new JsonLdContext(terms, prefixIndex,
+        return new LinkedDataContext(terms, prefixIndex,
             BaseIri, OriginalBaseUrl, vocab,
             DefaultLanguage, DefaultBaseDirection, Propagate, PreviousContext);
     }
@@ -249,9 +249,9 @@ public sealed class JsonLdContext
     /// <summary>
     /// Returns a new context with an updated default language.
     /// </summary>
-    public JsonLdContext WithDefaultLanguage(string? language)
+    public LinkedDataContext WithDefaultLanguage(string? language)
     {
-        return new JsonLdContext(terms, prefixIndex,
+        return new LinkedDataContext(terms, prefixIndex,
             BaseIri, OriginalBaseUrl, VocabularyMapping,
             language, DefaultBaseDirection, Propagate, PreviousContext);
     }
@@ -259,9 +259,9 @@ public sealed class JsonLdContext
     /// <summary>
     /// Returns a new context with an updated default base direction.
     /// </summary>
-    public JsonLdContext WithDefaultBaseDirection(string? direction)
+    public LinkedDataContext WithDefaultBaseDirection(string? direction)
     {
-        return new JsonLdContext(terms, prefixIndex,
+        return new LinkedDataContext(terms, prefixIndex,
             BaseIri, OriginalBaseUrl, VocabularyMapping,
             DefaultLanguage, direction, Propagate, PreviousContext);
     }
@@ -269,9 +269,9 @@ public sealed class JsonLdContext
     /// <summary>
     /// Returns a new context with the propagate flag set.
     /// </summary>
-    public JsonLdContext WithPropagate(bool propagate)
+    public LinkedDataContext WithPropagate(bool propagate)
     {
-        return new JsonLdContext(terms, prefixIndex,
+        return new LinkedDataContext(terms, prefixIndex,
             BaseIri, OriginalBaseUrl, VocabularyMapping,
             DefaultLanguage, DefaultBaseDirection, propagate, PreviousContext);
     }
@@ -279,9 +279,9 @@ public sealed class JsonLdContext
     /// <summary>
     /// Returns a new context with the previous context set.
     /// </summary>
-    public JsonLdContext WithPreviousContext(JsonLdContext? previous)
+    public LinkedDataContext WithPreviousContext(LinkedDataContext? previous)
     {
-        return new JsonLdContext(terms, prefixIndex,
+        return new LinkedDataContext(terms, prefixIndex,
             BaseIri, OriginalBaseUrl, VocabularyMapping,
             DefaultLanguage, DefaultBaseDirection, Propagate, previous);
     }
@@ -290,9 +290,9 @@ public sealed class JsonLdContext
     /// Returns a new context initialised from this one but with the original base URL recorded.
     /// </summary>
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings", Justification = "String URIs follow the JSON-LD specification convention throughout the processing algorithm.")]
-    public JsonLdContext WithOriginalBaseUrl(string? originalBaseUrl)
+    public LinkedDataContext WithOriginalBaseUrl(string? originalBaseUrl)
     {
-        return new JsonLdContext(terms, prefixIndex,
+        return new LinkedDataContext(terms, prefixIndex,
             BaseIri, originalBaseUrl, VocabularyMapping,
             DefaultLanguage, DefaultBaseDirection, Propagate, PreviousContext);
     }
@@ -305,9 +305,9 @@ public sealed class JsonLdContext
     /// its source rather than copying; the returned instance differs in
     /// reference identity but is observationally equivalent to the source.
     /// </remarks>
-    public JsonLdContext Clone()
+    public LinkedDataContext Clone()
     {
-        return new JsonLdContext(terms, prefixIndex,
+        return new LinkedDataContext(terms, prefixIndex,
             BaseIri, OriginalBaseUrl, VocabularyMapping,
             DefaultLanguage, DefaultBaseDirection, Propagate, PreviousContext);
     }

@@ -1,21 +1,24 @@
+using Lumoin.Veritas.JsonLd;
 using Lumoin.Veritas.LinkedData;
 
 namespace Lumoin.Veritas.Tests.LinkedData;
 
 /// <summary>
 /// Exercises the inverted namespace-IRI → prefix-term index on
-/// <see cref="JsonLdContext"/>. The index is maintained by
-/// <see cref="JsonLdContext.WithTerm"/> and
-/// <see cref="JsonLdContext.WithoutTerm"/> and consulted by
-/// <see cref="JsonLdContext.TryGetPrefixTerm"/>.
+/// <see cref="LinkedDataContext{TNode}"/>. The index is maintained by
+/// <see cref="LinkedDataContext{TNode}.WithTerm"/> and
+/// <see cref="LinkedDataContext{TNode}.WithoutTerm"/> and consulted by
+/// <see cref="LinkedDataContext{TNode}.TryGetPrefixTerm"/>. The
+/// behaviour is independent of <c>TNode</c>; the tests pick
+/// <see cref="JsonLdNode"/> for the parameter.
 /// </summary>
 [TestClass]
-internal sealed class JsonLdContextPrefixIndexTests
+internal sealed class LinkedDataContextPrefixIndexTests
 {
     [TestMethod]
     public void EmptyContextHasNoPrefixTerms()
     {
-        bool found = JsonLdContext.Empty.TryGetPrefixTerm("http://example.org/", out string? term);
+        bool found = LinkedDataContext.Empty.TryGetPrefixTerm("http://example.org/", out string? term);
 
         Assert.IsFalse(found);
         Assert.IsNull(term);
@@ -24,7 +27,7 @@ internal sealed class JsonLdContextPrefixIndexTests
     [TestMethod]
     public void PrefixTermIsIndexedOnWithTerm()
     {
-        JsonLdContext context = JsonLdContext.Empty.WithTerm(
+        LinkedDataContext context = LinkedDataContext.Empty.WithTerm(
             "foaf",
             new TermDefinition { IriMapping = "http://xmlns.com/foaf/0.1/", Prefix = true });
 
@@ -37,7 +40,7 @@ internal sealed class JsonLdContextPrefixIndexTests
     [TestMethod]
     public void NonPrefixTermIsNotIndexed()
     {
-        JsonLdContext context = JsonLdContext.Empty.WithTerm(
+        LinkedDataContext context = LinkedDataContext.Empty.WithTerm(
             "name",
             new TermDefinition { IriMapping = "http://schema.org/name", Prefix = false });
 
@@ -50,11 +53,11 @@ internal sealed class JsonLdContextPrefixIndexTests
     [TestMethod]
     public void ReplacingPrefixWithNonPrefixRemovesFromIndex()
     {
-        JsonLdContext withPrefix = JsonLdContext.Empty.WithTerm(
+        LinkedDataContext withPrefix = LinkedDataContext.Empty.WithTerm(
             "foaf",
             new TermDefinition { IriMapping = "http://xmlns.com/foaf/0.1/", Prefix = true });
 
-        JsonLdContext replaced = withPrefix.WithTerm(
+        LinkedDataContext replaced = withPrefix.WithTerm(
             "foaf",
             new TermDefinition { IriMapping = "http://xmlns.com/foaf/0.1/", Prefix = false });
 
@@ -66,11 +69,11 @@ internal sealed class JsonLdContextPrefixIndexTests
     [TestMethod]
     public void ReplacingPrefixIriMovesIndexEntry()
     {
-        JsonLdContext initial = JsonLdContext.Empty.WithTerm(
+        LinkedDataContext initial = LinkedDataContext.Empty.WithTerm(
             "ns",
             new TermDefinition { IriMapping = "http://old.example.org/", Prefix = true });
 
-        JsonLdContext moved = initial.WithTerm(
+        LinkedDataContext moved = initial.WithTerm(
             "ns",
             new TermDefinition { IriMapping = "http://new.example.org/", Prefix = true });
 
@@ -82,11 +85,11 @@ internal sealed class JsonLdContextPrefixIndexTests
     [TestMethod]
     public void WithoutTermRemovesPrefixIndexEntry()
     {
-        JsonLdContext context = JsonLdContext.Empty.WithTerm(
+        LinkedDataContext context = LinkedDataContext.Empty.WithTerm(
             "foaf",
             new TermDefinition { IriMapping = "http://xmlns.com/foaf/0.1/", Prefix = true });
 
-        JsonLdContext removed = context.WithoutTerm("foaf");
+        LinkedDataContext removed = context.WithoutTerm("foaf");
 
         Assert.IsFalse(removed.TryGetPrefixTerm("http://xmlns.com/foaf/0.1/", out string? _));
     }
@@ -97,7 +100,7 @@ internal sealed class JsonLdContextPrefixIndexTests
         //All three terms point to the same IRI; spec compaction prefers
         //shortest, then ordinal-least. "f" < "fo" < "foaf" by length;
         //within length 2, "fo" < "fz" by ordinal.
-        JsonLdContext context = JsonLdContext.Empty
+        LinkedDataContext context = LinkedDataContext.Empty
             .WithTerm("foaf", new TermDefinition { IriMapping = "http://example.org/v/", Prefix = true })
             .WithTerm("fz", new TermDefinition { IriMapping = "http://example.org/v/", Prefix = true })
             .WithTerm("fo", new TermDefinition { IriMapping = "http://example.org/v/", Prefix = true })
@@ -107,12 +110,12 @@ internal sealed class JsonLdContextPrefixIndexTests
         Assert.AreEqual("f", term);
 
         //After removing "f", the next-best candidate is "fo" (length-2, ordinal-less than "fz").
-        JsonLdContext withoutF = context.WithoutTerm("f");
+        LinkedDataContext withoutF = context.WithoutTerm("f");
         Assert.IsTrue(withoutF.TryGetPrefixTerm("http://example.org/v/", out string? next));
         Assert.AreEqual("fo", next);
 
         //After removing "fo", "fz" becomes the best.
-        JsonLdContext withoutFo = withoutF.WithoutTerm("fo");
+        LinkedDataContext withoutFo = withoutF.WithoutTerm("fo");
         Assert.IsTrue(withoutFo.TryGetPrefixTerm("http://example.org/v/", out string? finalTerm));
         Assert.AreEqual("fz", finalTerm);
     }
@@ -120,11 +123,11 @@ internal sealed class JsonLdContextPrefixIndexTests
     [TestMethod]
     public void ScalarMutatorsPreservePrefixIndex()
     {
-        JsonLdContext withPrefix = JsonLdContext.Empty.WithTerm(
+        LinkedDataContext withPrefix = LinkedDataContext.Empty.WithTerm(
             "foaf",
             new TermDefinition { IriMapping = "http://xmlns.com/foaf/0.1/", Prefix = true });
 
-        JsonLdContext walked = withPrefix
+        LinkedDataContext walked = withPrefix
             .WithBaseIri("http://doc.example/")
             .WithVocabularyMapping("http://vocab.example/")
             .WithDefaultLanguage("en")
@@ -140,7 +143,7 @@ internal sealed class JsonLdContextPrefixIndexTests
         //Persistent semantics: extending a context must not mutate the
         //prior snapshot's index. This is the property that makes a
         //frame-stack push/pop cheap and correct.
-        JsonLdContext snapshot = JsonLdContext.Empty.WithTerm(
+        LinkedDataContext snapshot = LinkedDataContext.Empty.WithTerm(
             "foaf",
             new TermDefinition { IriMapping = "http://xmlns.com/foaf/0.1/", Prefix = true });
 

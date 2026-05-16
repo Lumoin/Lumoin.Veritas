@@ -20,7 +20,7 @@ namespace Lumoin.Veritas.JsonLd;
 /// <list type="bullet">
 /// <item><description>IRI compaction — direct term match (shortest-then-ordinal),
 /// compact IRI via the inverted prefix-term index on
-/// <see cref="JsonLdContext"/>, and <c>@vocab</c>-relative compaction.</description></item>
+/// <see cref="LinkedDataContext"/>, and <c>@vocab</c>-relative compaction.</description></item>
 /// <item><description>Value-object compaction — <c>{"@value": ...}</c> objects
 /// are unwrapped to their idiomatic compact form when the surrounding term's
 /// type or language mapping permits.</description></item>
@@ -54,10 +54,10 @@ public static class JsonLdCompactor
     /// (1) direct term match — find a term whose
     /// <see cref="TermDefinition.IriMapping"/> equals the IRI, preferring the
     /// shortest term, then the ordinal-least; (2) compact IRI — find a prefix
-    /// term via <see cref="JsonLdContext.TryGetPrefixTerm"/> using a right-to-
+    /// term via <see cref="LinkedDataContext.TryGetPrefixTerm"/> using a right-to-
     /// left boundary walk (<c>/</c>, <c>#</c>, <c>:</c>); (3) <c>@vocab</c>-
     /// relative — when <paramref name="vocab"/> is <see langword="true"/> and
-    /// the IRI begins with the active <see cref="JsonLdContext.VocabularyMapping"/>,
+    /// the IRI begins with the active <see cref="LinkedDataContext.VocabularyMapping"/>,
     /// strip the prefix; (4) fall through and return the IRI unchanged.
     /// </summary>
     /// <param name="activeContext">The active context against which to compact.</param>
@@ -67,7 +67,7 @@ public static class JsonLdCompactor
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
         Justification = "JSON-LD specification uses string URIs throughout the compaction algorithm.")]
     [return: NotNullIfNotNull(nameof(iri))]
-    public static string? CompactIri(JsonLdContext activeContext, string? iri, bool vocab = false)
+    public static string? CompactIri(LinkedDataContext activeContext, string? iri, bool vocab = false)
     {
         ArgumentNullException.ThrowIfNull(activeContext);
         if(iri is null)
@@ -153,7 +153,7 @@ public static class JsonLdCompactor
     /// <param name="expanded">The expanded JSON-LD element.</param>
     /// <param name="activeContext">The context against which to compact.</param>
     /// <returns>The compacted element as an object graph.</returns>
-    public static object? Compact(JsonLdNode expanded, JsonLdContext activeContext)
+    public static object? Compact(JsonLdNode expanded, LinkedDataContext activeContext)
     {
         ArgumentNullException.ThrowIfNull(activeContext);
 
@@ -267,7 +267,7 @@ public static class JsonLdCompactor
         return compactedObject;
     }
 
-    private static object? CompactElement(JsonLdNode element, JsonLdContext activeContext)
+    private static object? CompactElement(JsonLdNode element, LinkedDataContext activeContext)
     {
         return element.Kind switch
         {
@@ -277,7 +277,7 @@ public static class JsonLdCompactor
         };
     }
 
-    private static List<object?> CompactArray(JsonLdNode array, JsonLdContext activeContext)
+    private static List<object?> CompactArray(JsonLdNode array, LinkedDataContext activeContext)
     {
         List<object?> items = new();
         foreach(JsonLdNode item in array.EnumerateArray())
@@ -287,7 +287,7 @@ public static class JsonLdCompactor
         return items;
     }
 
-    private static object? CompactNodeObject(JsonLdNode obj, JsonLdContext activeContext)
+    private static object? CompactNodeObject(JsonLdNode obj, LinkedDataContext activeContext)
     {
         //Value object detection: a JSON-LD value object has @value as an
         //own property. Route through CompactValue.
@@ -389,7 +389,7 @@ public static class JsonLdCompactor
         return result;
     }
 
-    private static object? CompactValueOrElement(JsonLdNode element, JsonLdContext activeContext, TermDefinition? termDef)
+    private static object? CompactValueOrElement(JsonLdNode element, LinkedDataContext activeContext, TermDefinition? termDef)
     {
         bool isSet = termDef is not null && HasContainer(termDef, "@set");
         bool isList = termDef is not null && HasContainer(termDef, "@list");
@@ -472,7 +472,7 @@ public static class JsonLdCompactor
     /// compact form is the bare array. RDF round-trip projects the bare
     /// array back to an <c>rdf:List</c> chain on re-expansion.
     /// </summary>
-    private static object? CompactListContainer(JsonLdNode element, JsonLdContext activeContext, TermDefinition? termDef)
+    private static object? CompactListContainer(JsonLdNode element, LinkedDataContext activeContext, TermDefinition? termDef)
     {
         if(element.Kind == JsonLdNodeKind.Array)
         {
@@ -497,7 +497,7 @@ public static class JsonLdCompactor
         return CompactItem(element, activeContext, termDef);
     }
 
-    private static List<object?> MaterialiseListItems(JsonLdNode listArray, JsonLdContext activeContext, TermDefinition? termDef)
+    private static List<object?> MaterialiseListItems(JsonLdNode listArray, LinkedDataContext activeContext, TermDefinition? termDef)
     {
         List<object?> compacted = new();
         foreach(JsonLdNode listItem in listArray.EnumerateArray())
@@ -515,7 +515,7 @@ public static class JsonLdCompactor
     /// Items lacking <c>@language</c> are excluded from the map; if no
     /// items match, falls back to standard value compaction.
     /// </summary>
-    private static object? CompactLanguageContainer(JsonLdNode element, JsonLdContext activeContext, TermDefinition? termDef)
+    private static object? CompactLanguageContainer(JsonLdNode element, LinkedDataContext activeContext, TermDefinition? termDef)
     {
         Dictionary<string, List<object?>> bucketed = new(StringComparer.Ordinal);
 
@@ -587,7 +587,7 @@ public static class JsonLdCompactor
     /// </remarks>
     private static object? CompactMapContainer(
         JsonLdNode element,
-        JsonLdContext activeContext,
+        LinkedDataContext activeContext,
         TermDefinition? termDef,
         bool useIndex,
         bool useId,
@@ -625,7 +625,7 @@ public static class JsonLdCompactor
 
     private static void CollectMapValue(
         JsonLdNode item,
-        JsonLdContext activeContext,
+        LinkedDataContext activeContext,
         TermDefinition? termDef,
         bool useIndex,
         bool useId,
@@ -729,7 +729,7 @@ public static class JsonLdCompactor
     /// object; single-item arrays unwrap unless the term also carries
     /// <c>@set</c> semantics elsewhere.
     /// </summary>
-    private static object? CompactGraphContainerAlone(JsonLdNode element, JsonLdContext activeContext, TermDefinition? termDef)
+    private static object? CompactGraphContainerAlone(JsonLdNode element, LinkedDataContext activeContext, TermDefinition? termDef)
     {
         _ = termDef;
         if(element.Kind == JsonLdNodeKind.Array)
@@ -744,7 +744,7 @@ public static class JsonLdCompactor
         return WrapAsGraph(element, activeContext);
     }
 
-    private static object WrapAsGraph(JsonLdNode item, JsonLdContext activeContext)
+    private static object WrapAsGraph(JsonLdNode item, LinkedDataContext activeContext)
     {
         //If the item is already a graph object, compact it. Otherwise
         //wrap its compact form in {"@graph": [...]}.
@@ -761,7 +761,7 @@ public static class JsonLdCompactor
         };
     }
 
-    private static object? CompactItem(JsonLdNode item, JsonLdContext activeContext, TermDefinition? termDef)
+    private static object? CompactItem(JsonLdNode item, LinkedDataContext activeContext, TermDefinition? termDef)
     {
         if(item.Kind == JsonLdNodeKind.Object)
         {
@@ -778,7 +778,7 @@ public static class JsonLdCompactor
         return ToObjectGraph(item);
     }
 
-    private static object? CompactTypeValue(JsonLdNode typeValue, JsonLdContext activeContext)
+    private static object? CompactTypeValue(JsonLdNode typeValue, LinkedDataContext activeContext)
     {
         if(typeValue.Kind == JsonLdNodeKind.String)
         {
@@ -803,7 +803,7 @@ public static class JsonLdCompactor
         return ToObjectGraph(typeValue);
     }
 
-    private static Dictionary<string, object?>? EmitContextObject(JsonLdContext activeContext)
+    private static Dictionary<string, object?>? EmitContextObject(LinkedDataContext activeContext)
     {
         Dictionary<string, object?> result = new(StringComparer.Ordinal);
         if(activeContext.VocabularyMapping is { } vocabMapping)

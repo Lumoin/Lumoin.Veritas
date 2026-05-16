@@ -38,8 +38,8 @@ public static partial class ContextProcessing
     /// <exception cref="ArgumentNullException">Any required argument is <see langword="null"/>.</exception>
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
         Justification = "JSON-LD specification uses string URIs throughout the context processing algorithm.")]
-    public static ValueTask<JsonLdContext> ApplyEmbeddedContextsAsync(
-        JsonLdContext activeContext,
+    public static ValueTask<LinkedDataContext> ApplyEmbeddedContextsAsync(
+        LinkedDataContext activeContext,
         IReadOnlyList<LinkedDataContextEntry> entries,
         string? baseUrl,
         FetchRemoteResourceDelegate fetcher,
@@ -58,8 +58,8 @@ public static partial class ContextProcessing
             remoteContexts: [], depth: 0, cancellationToken);
     }
 
-    private static async ValueTask<JsonLdContext> ApplyEmbeddedContextsCoreAsync(
-        JsonLdContext activeContext,
+    private static async ValueTask<LinkedDataContext> ApplyEmbeddedContextsCoreAsync(
+        LinkedDataContext activeContext,
         IReadOnlyList<LinkedDataContextEntry> entries,
         string? baseUrl,
         FetchRemoteResourceDelegate fetcher,
@@ -78,7 +78,7 @@ public static partial class ContextProcessing
                 "Maximum context processing depth exceeded. A context may contain a recursive reference.");
         }
 
-        JsonLdContext result = activeContext.Clone();
+        LinkedDataContext result = activeContext.Clone();
 
         foreach(LinkedDataContextEntry entry in entries)
         {
@@ -86,7 +86,7 @@ public static partial class ContextProcessing
 
             if(entry.IsReset)
             {
-                JsonLdContext? reset = TryResetToNull(result, overrideProtected, out _);
+                LinkedDataContext? reset = TryResetToNull(result, overrideProtected, out _);
                 result = reset ?? throw new LinkedDataProcessingException(
                     "invalid context nullification",
                     "Cannot reset context: protected terms would be overridden.");
@@ -134,17 +134,17 @@ public static partial class ContextProcessing
         return result;
     }
 
-    private static JsonLdContext ApplyContextDirectives(
-        JsonLdContext activeContext,
+    private static LinkedDataContext ApplyContextDirectives(
+        LinkedDataContext activeContext,
         LinkedDataContextEntry entry,
         bool overrideProtected)
     {
         _ = overrideProtected;
-        JsonLdContext result = activeContext;
+        LinkedDataContext result = activeContext;
 
         if(entry.HasBase)
         {
-            JsonLdContext? updated = TryApplyBase(result, entry.Base, out string? unresolvable);
+            LinkedDataContext? updated = TryApplyBase(result, entry.Base, out string? unresolvable);
             if(updated is null)
             {
                 throw new LinkedDataProcessingException(
@@ -166,7 +166,7 @@ public static partial class ContextProcessing
 
         if(entry.HasDirection)
         {
-            JsonLdContext? updated = TryApplyDirection(result, entry.Direction);
+            LinkedDataContext? updated = TryApplyDirection(result, entry.Direction);
             if(updated is null)
             {
                 throw new LinkedDataProcessingException(
@@ -200,8 +200,8 @@ public static partial class ContextProcessing
     /// <exception cref="ArgumentNullException">Any required argument is <see langword="null"/>.</exception>
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
         Justification = "JSON-LD specification uses string URIs throughout the context processing algorithm.")]
-    public static ValueTask<JsonLdContext> ProcessRemoteContextAsync(
-        JsonLdContext activeContext,
+    public static ValueTask<LinkedDataContext> ProcessRemoteContextAsync(
+        LinkedDataContext activeContext,
         string contextUrl,
         string? baseUrl,
         FetchRemoteResourceDelegate fetcher,
@@ -220,8 +220,8 @@ public static partial class ContextProcessing
             depth: 0, cancellationToken);
     }
 
-    private static async ValueTask<JsonLdContext> ProcessRemoteContextCoreAsync(
-        JsonLdContext activeContext,
+    private static async ValueTask<LinkedDataContext> ProcessRemoteContextCoreAsync(
+        LinkedDataContext activeContext,
         string contextUrl,
         string? baseUrl,
         FetchRemoteResourceDelegate fetcher,
@@ -387,8 +387,8 @@ public static partial class ContextProcessing
     /// <exception cref="ArgumentNullException">Any required argument is <see langword="null"/>.</exception>
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
         Justification = "JSON-LD specification uses string URIs throughout the context processing algorithm.")]
-    public static ValueTask<JsonLdContext> CreateTermDefinitionAsync(
-        JsonLdContext activeContext,
+    public static ValueTask<LinkedDataContext> CreateTermDefinitionAsync(
+        LinkedDataContext activeContext,
         IReadOnlyDictionary<string, LinkedDataTermSource> localContext,
         string termName,
         string? baseUrl,
@@ -413,8 +413,8 @@ public static partial class ContextProcessing
             cancellationToken);
     }
 
-    private static async ValueTask<JsonLdContext> CreateTermDefinitionCoreAsync(
-        JsonLdContext activeContext,
+    private static async ValueTask<LinkedDataContext> CreateTermDefinitionCoreAsync(
+        LinkedDataContext activeContext,
         IReadOnlyDictionary<string, LinkedDataTermSource> localContext,
         string termName,
         string? baseUrl,
@@ -461,7 +461,7 @@ public static partial class ContextProcessing
         //Removal marker.
         if(value.IsRemoval)
         {
-            JsonLdContext? cleared = TryRemoveTerm(
+            LinkedDataContext? cleared = TryRemoveTerm(
                 activeContext, termName, overrideProtected, out _);
             if(cleared is null)
             {
@@ -631,14 +631,12 @@ public static partial class ContextProcessing
                 string.Create(CultureInfo.InvariantCulture, $"@nest value '{nestValue}' in term definition for '{termName}' must be '@nest' or a non-keyword term."));
         }
 
-        //Scoped @context: recursively process. The result is applied to
-        //the active context, but term definitions stored on the term
-        //carry only a reference; we store the scoped-context POCOs in
-        //the term definition's LocalContext field. The TermDefinition
-        //type uses ILinkedDataDocumentNode; for the format-agnostic
-        //core we leave LocalContext null when the scoped-context POCOs
-        //are the only carrier — the consumer of the term definition
-        //(e.g. CBOR-LD expander) reads ScopedContext via its own path.
+        //Scoped @context: recursively pre-validate so spec errors fire
+        //at term-definition time. The scoped-context POCOs themselves
+        //ride on the resulting TermDefinition.ScopedContextEntries
+        //(set below). Consumers (JSON-LD expander, CBOR-LD scope helper)
+        //re-apply the entries at use-site against the then-current
+        //active context.
         if(value.ScopedContext is not null)
         {
             //Pre-validate scoped context by attempting to apply it
@@ -662,7 +660,6 @@ public static partial class ContextProcessing
             ReverseProperty = isReverse ? reverseProperty : null,
             NestValue = nestValue,
             IndexMapping = indexMapping,
-            LocalContext = null,
             ScopedContextEntries = value.ScopedContext
         };
 
@@ -671,13 +668,13 @@ public static partial class ContextProcessing
         return activeContext;
     }
 
-    private static JsonLdContext SetTermDefinitionInternal(
-        JsonLdContext activeContext,
+    private static LinkedDataContext SetTermDefinitionInternal(
+        LinkedDataContext activeContext,
         string term,
         TermDefinition definition,
         bool overrideProtected)
     {
-        JsonLdContext? updated = TrySetTermDefinition(
+        LinkedDataContext? updated = TrySetTermDefinition(
             activeContext, term, definition, overrideProtected, out _);
         return updated ?? throw new LinkedDataProcessingException(
             "protected term redefinition",

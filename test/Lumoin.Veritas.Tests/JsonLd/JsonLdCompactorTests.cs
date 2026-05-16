@@ -33,7 +33,7 @@ internal sealed class JsonLdCompactorTests
     [TestMethod]
     public void CompactIriReturnsTermForDirectMatch()
     {
-        JsonLdContext ctx = JsonLdContext.Empty.WithTerm(
+        LinkedDataContext ctx = LinkedDataContext.Empty.WithTerm(
             "name", new TermDefinition { IriMapping = "http://schema.org/name" });
 
         Assert.AreEqual("name", JsonLdCompactor.CompactIri(ctx, "http://schema.org/name"));
@@ -44,7 +44,7 @@ internal sealed class JsonLdCompactorTests
     {
         //All three terms point to the same IRI; shortest wins, ties broken
         //by ordinal compare.
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("longerName", new TermDefinition { IriMapping = "http://schema.org/name" })
             .WithTerm("zz", new TermDefinition { IriMapping = "http://schema.org/name" })
             .WithTerm("aa", new TermDefinition { IriMapping = "http://schema.org/name" });
@@ -55,7 +55,7 @@ internal sealed class JsonLdCompactorTests
     [TestMethod]
     public void CompactIriReturnsKeywordsUnchanged()
     {
-        JsonLdContext ctx = JsonLdContext.Empty;
+        LinkedDataContext ctx = LinkedDataContext.Empty;
         Assert.AreEqual("@id", JsonLdCompactor.CompactIri(ctx, "@id"));
         Assert.AreEqual("@type", JsonLdCompactor.CompactIri(ctx, "@type"));
         Assert.AreEqual("@value", JsonLdCompactor.CompactIri(ctx, "@value"));
@@ -68,7 +68,7 @@ internal sealed class JsonLdCompactorTests
     [TestMethod]
     public void CompactIriBuildsCompactIriFromPrefixTerm()
     {
-        JsonLdContext ctx = JsonLdContext.Empty.WithTerm(
+        LinkedDataContext ctx = LinkedDataContext.Empty.WithTerm(
             "schema", new TermDefinition { IriMapping = "http://schema.org/", Prefix = true });
 
         Assert.AreEqual("schema:name", JsonLdCompactor.CompactIri(ctx, "http://schema.org/name"));
@@ -80,7 +80,7 @@ internal sealed class JsonLdCompactorTests
         //Two prefix terms; the more-specific one should win because the
         //boundary walk visits boundaries right-to-left, finding the longest
         //matching namespace first.
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("schema", new TermDefinition { IriMapping = "http://schema.org/", Prefix = true })
             .WithTerm("ext", new TermDefinition { IriMapping = "http://schema.org/Person/", Prefix = true });
 
@@ -94,7 +94,7 @@ internal sealed class JsonLdCompactorTests
         //"ex:taken". But "ex:taken" is itself defined as a term with a
         //different IRI — the compactor must avoid the ambiguity and fall
         //through.
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("ex", new TermDefinition { IriMapping = "http://example.org/", Prefix = true })
             .WithTerm("ex:taken", new TermDefinition { IriMapping = "http://other.example/something-else" });
 
@@ -110,7 +110,7 @@ internal sealed class JsonLdCompactorTests
     [TestMethod]
     public void CompactIriVocabRelativeStripsVocabPrefix()
     {
-        JsonLdContext ctx = JsonLdContext.Empty.WithVocabularyMapping("http://schema.org/");
+        LinkedDataContext ctx = LinkedDataContext.Empty.WithVocabularyMapping("http://schema.org/");
 
         Assert.AreEqual("name", JsonLdCompactor.CompactIri(ctx, "http://schema.org/name", vocab: true));
     }
@@ -118,7 +118,7 @@ internal sealed class JsonLdCompactorTests
     [TestMethod]
     public void CompactIriVocabRelativeIgnoredWhenVocabFalse()
     {
-        JsonLdContext ctx = JsonLdContext.Empty.WithVocabularyMapping("http://schema.org/");
+        LinkedDataContext ctx = LinkedDataContext.Empty.WithVocabularyMapping("http://schema.org/");
 
         Assert.AreEqual(
             "http://schema.org/name",
@@ -128,7 +128,7 @@ internal sealed class JsonLdCompactorTests
     [TestMethod]
     public void CompactIriFallsThroughWhenNoMatch()
     {
-        JsonLdContext ctx = JsonLdContext.Empty;
+        LinkedDataContext ctx = LinkedDataContext.Empty;
 
         Assert.AreEqual(
             "http://schema.org/name",
@@ -140,7 +140,7 @@ internal sealed class JsonLdCompactorTests
     {
         //Both a direct term and a prefix term apply. Direct term wins
         //because Phase 1 runs before Phase 2.
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("schema", new TermDefinition { IriMapping = "http://schema.org/", Prefix = true })
             .WithTerm("name", new TermDefinition { IriMapping = "http://schema.org/name" });
 
@@ -234,7 +234,7 @@ internal sealed class JsonLdCompactorTests
             }
             """);
 
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithVocabularyMapping("http://schema.org/")
             .WithTerm("name", new TermDefinition { IriMapping = "http://schema.org/name" });
 
@@ -257,7 +257,7 @@ internal sealed class JsonLdCompactorTests
             }
             """);
 
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithVocabularyMapping("http://schema.org/");
 
         IReadOnlyDictionary<string, object?> result = (IReadOnlyDictionary<string, object?>)
@@ -278,7 +278,7 @@ internal sealed class JsonLdCompactorTests
               "http://schema.org/name": [{"@value": "Alice"}]
             }
             """);
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("name", new TermDefinition { IriMapping = "http://schema.org/name" });
 
         IReadOnlyDictionary<string, object?> result = (IReadOnlyDictionary<string, object?>)
@@ -298,7 +298,7 @@ internal sealed class JsonLdCompactorTests
               ]
             }
             """);
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("tags", new TermDefinition { IriMapping = "http://schema.org/tags" });
 
         IReadOnlyDictionary<string, object?> result = (IReadOnlyDictionary<string, object?>)
@@ -320,7 +320,7 @@ internal sealed class JsonLdCompactorTests
             {"@id": "http://example.org/x"}
             """);
 
-        object? result = JsonLdCompactor.Compact(expanded, JsonLdContext.Empty);
+        object? result = JsonLdCompactor.Compact(expanded, LinkedDataContext.Empty);
 
         Assert.IsInstanceOfType<IReadOnlyDictionary<string, object?>>(result);
         IReadOnlyDictionary<string, object?> map = (IReadOnlyDictionary<string, object?>)result;
@@ -339,7 +339,7 @@ internal sealed class JsonLdCompactorTests
               }]
             }
             """);
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("name", new TermDefinition { IriMapping = "http://schema.org/name" })
             .WithTerm("knows", new TermDefinition { IriMapping = "http://schema.org/knows" });
 
@@ -363,7 +363,7 @@ internal sealed class JsonLdCompactorTests
               "http://schema.org/unmapped": [{"@value": "x"}]
             }
             """);
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("schema", new TermDefinition { IriMapping = "http://schema.org/", Prefix = true });
 
         IReadOnlyDictionary<string, object?> result = (IReadOnlyDictionary<string, object?>)
@@ -387,7 +387,7 @@ internal sealed class JsonLdCompactorTests
               "http://schema.org/tag": [{"@value": "alpha"}]
             }
             """);
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("tag", new TermDefinition
             {
                 IriMapping = "http://schema.org/tag",
@@ -421,7 +421,7 @@ internal sealed class JsonLdCompactorTests
               }]
             }
             """);
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("steps", new TermDefinition
             {
                 IriMapping = "http://schema.org/steps",
@@ -447,7 +447,7 @@ internal sealed class JsonLdCompactorTests
               "http://schema.org/steps": [{ "@list": [] }]
             }
             """);
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("steps", new TermDefinition
             {
                 IriMapping = "http://schema.org/steps",
@@ -475,7 +475,7 @@ internal sealed class JsonLdCompactorTests
               ]
             }
             """);
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("label", new TermDefinition
             {
                 IriMapping = "http://www.w3.org/2000/01/rdf-schema#label",
@@ -505,7 +505,7 @@ internal sealed class JsonLdCompactorTests
               ]
             }
             """);
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("label", new TermDefinition
             {
                 IriMapping = "http://www.w3.org/2000/01/rdf-schema#label",
@@ -542,7 +542,7 @@ internal sealed class JsonLdCompactorTests
               ]
             }
             """);
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("items", new TermDefinition
             {
                 IriMapping = "http://example.org/items",
@@ -575,7 +575,7 @@ internal sealed class JsonLdCompactorTests
               ]
             }
             """);
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("items", new TermDefinition
             {
                 IriMapping = "http://example.org/items",
@@ -605,7 +605,7 @@ internal sealed class JsonLdCompactorTests
               ]
             }
             """);
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("people", new TermDefinition
             {
                 IriMapping = "http://example.org/people",
@@ -639,7 +639,7 @@ internal sealed class JsonLdCompactorTests
               ]
             }
             """);
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithVocabularyMapping("http://schema.org/")
             .WithTerm("members", new TermDefinition
             {
@@ -675,7 +675,7 @@ internal sealed class JsonLdCompactorTests
               ]
             }
             """);
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("snapshot", new TermDefinition
             {
                 IriMapping = "http://example.org/snapshot",
@@ -712,7 +712,7 @@ internal sealed class JsonLdCompactorTests
               ]
             }
             """);
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("versions", new TermDefinition
             {
                 IriMapping = "http://example.org/versions",
@@ -744,7 +744,7 @@ internal sealed class JsonLdCompactorTests
               ]
             }
             """);
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("chapters", new TermDefinition
             {
                 IriMapping = "http://example.org/chapters",
@@ -776,7 +776,7 @@ internal sealed class JsonLdCompactorTests
               }
             }
             """);
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("parent", new TermDefinition { IriMapping = "http://schema.org/parent" });
 
         IReadOnlyDictionary<string, object?> result = (IReadOnlyDictionary<string, object?>)
@@ -798,7 +798,7 @@ internal sealed class JsonLdCompactorTests
               "http://schema.org/tag": [{"@value": "alpha"}]
             }
             """);
-        JsonLdContext ctx = JsonLdContext.Empty
+        LinkedDataContext ctx = LinkedDataContext.Empty
             .WithTerm("tag", new TermDefinition
             {
                 IriMapping = "http://schema.org/tag",

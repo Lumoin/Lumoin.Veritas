@@ -6,7 +6,7 @@ namespace Lumoin.Veritas.LinkedData;
 /// <summary>
 /// Pure IRI utilities shared by JSON-LD, CBOR-LD, and any other Linked
 /// Data format. Operates on strings only; does not consult an active
-/// context. Context-aware IRI expansion lives on <see cref="JsonLdContext"/>
+/// context. Context-aware IRI expansion lives on <see cref="LinkedDataContext{TNode}"/>
 /// as an instance method.
 /// </summary>
 public static class IriUtils

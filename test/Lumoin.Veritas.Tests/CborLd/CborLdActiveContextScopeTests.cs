@@ -36,8 +36,8 @@ internal sealed class CborLdActiveContextScopeTests
         CborLdConversionState state = NewState();
         int idsBefore = state.TermToId.Count;
 
-        JsonLdContext next = await NewScope().WithEmbeddedContextAsync(
-            JsonLdContext.Empty,
+        LinkedDataContext next = await NewScope().WithEmbeddedContextAsync(
+            LinkedDataContext.Empty,
             contextNode,
             baseUrl: null,
             state,
@@ -69,13 +69,13 @@ internal sealed class CborLdActiveContextScopeTests
         CborLdConversionState state = NewState();
         CborLdActiveContextScope scope = NewScope();
 
-        JsonLdContext first = await scope.WithEmbeddedContextAsync(
-            JsonLdContext.Empty, contextNode, null, state, TestContext.CancellationToken).ConfigureAwait(false);
+        LinkedDataContext first = await scope.WithEmbeddedContextAsync(
+            LinkedDataContext.Empty, contextNode, null, state, TestContext.CancellationToken).ConfigureAwait(false);
         int idAfterFirst = state.TermToId["name"];
         int countAfterFirst = state.TermToId.Count;
 
         //Apply again against the post-first context — "name" is already there.
-        JsonLdContext second = await scope.WithEmbeddedContextAsync(
+        LinkedDataContext second = await scope.WithEmbeddedContextAsync(
             first, contextNode, null, state, TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.AreEqual(idAfterFirst, state.TermToId["name"]);
@@ -115,7 +115,7 @@ internal sealed class CborLdActiveContextScopeTests
             syntheticKey: "beta-scoped");
 
         //Seed context: two type terms each carrying its own ScopedContextEntries.
-        JsonLdContext seed = JsonLdContext.Empty
+        LinkedDataContext seed = LinkedDataContext.Empty
             .WithTerm("Alpha", new TermDefinition
             {
                 IriMapping = "http://example.org/types/Alpha",
@@ -135,7 +135,7 @@ internal sealed class CborLdActiveContextScopeTests
         ];
 
         CborLdConversionState state = NewState();
-        JsonLdContext after = await NewScope().WithTypeScopedAsync(
+        LinkedDataContext after = await NewScope().WithTypeScopedAsync(
             seed, typeIris, baseUrl: null, state, TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.IsTrue(after.TryGetTerm("color", out TermDefinition? colorDef));
@@ -148,13 +148,13 @@ internal sealed class CborLdActiveContextScopeTests
     public async Task WithTypeScopedSkipsTypesWithoutScopedEntries()
     {
         //Type whose term has no ScopedContextEntries → silently ignored.
-        JsonLdContext seed = JsonLdContext.Empty.WithTerm(
+        LinkedDataContext seed = LinkedDataContext.Empty.WithTerm(
             "Plain", new TermDefinition { IriMapping = "http://example.org/Plain" });
 
         CborLdConversionState state = NewState();
         int idsBefore = state.TermToId.Count;
 
-        JsonLdContext after = await NewScope().WithTypeScopedAsync(
+        LinkedDataContext after = await NewScope().WithTypeScopedAsync(
             seed, PlainTypeIris, null, state, TestContext.CancellationToken)
             .ConfigureAwait(false);
 
@@ -183,8 +183,8 @@ internal sealed class CborLdActiveContextScopeTests
         };
 
         CborLdConversionState state = NewState();
-        JsonLdContext after = await NewScope().WithPropertyScopedAsync(
-            JsonLdContext.Empty, propTerm, baseUrl: null, state, TestContext.CancellationToken)
+        LinkedDataContext after = await NewScope().WithPropertyScopedAsync(
+            LinkedDataContext.Empty, propTerm, baseUrl: null, state, TestContext.CancellationToken)
             .ConfigureAwait(false);
 
         Assert.IsTrue(after.TryGetTerm("inner", out TermDefinition? innerDef));
@@ -201,11 +201,11 @@ internal sealed class CborLdActiveContextScopeTests
         TermDefinition propTerm = new() { IriMapping = "http://example.org/outer" };
 
         CborLdConversionState state = NewState();
-        JsonLdContext after = await NewScope().WithPropertyScopedAsync(
-            JsonLdContext.Empty, propTerm, null, state, TestContext.CancellationToken)
+        LinkedDataContext after = await NewScope().WithPropertyScopedAsync(
+            LinkedDataContext.Empty, propTerm, null, state, TestContext.CancellationToken)
             .ConfigureAwait(false);
 
-        Assert.AreSame(JsonLdContext.Empty, after);
+        Assert.AreSame(LinkedDataContext.Empty, after);
         Assert.IsEmpty(state.TermToId);
     }
 
@@ -232,13 +232,13 @@ internal sealed class CborLdActiveContextScopeTests
         CborLdConversionState decoderState = NewState();
         CborLdActiveContextScope scope = NewScope();
 
-        JsonLdContext encA = await scope.WithEmbeddedContextAsync(
-            JsonLdContext.Empty, firstCtx, null, encoderState, TestContext.CancellationToken).ConfigureAwait(false);
+        LinkedDataContext encA = await scope.WithEmbeddedContextAsync(
+            LinkedDataContext.Empty, firstCtx, null, encoderState, TestContext.CancellationToken).ConfigureAwait(false);
         _ = await scope.WithEmbeddedContextAsync(
             encA, secondCtx, null, encoderState, TestContext.CancellationToken).ConfigureAwait(false);
 
-        JsonLdContext decA = await scope.WithEmbeddedContextAsync(
-            JsonLdContext.Empty, firstCtx, null, decoderState, TestContext.CancellationToken).ConfigureAwait(false);
+        LinkedDataContext decA = await scope.WithEmbeddedContextAsync(
+            LinkedDataContext.Empty, firstCtx, null, decoderState, TestContext.CancellationToken).ConfigureAwait(false);
         _ = await scope.WithEmbeddedContextAsync(
             decA, secondCtx, null, decoderState, TestContext.CancellationToken).ConfigureAwait(false);
 

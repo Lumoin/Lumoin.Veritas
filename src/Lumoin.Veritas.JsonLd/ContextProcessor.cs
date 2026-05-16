@@ -37,8 +37,8 @@ public static class ContextProcessor
     /// <exception cref="JsonLdProcessingException">The local context contained an invalid value or could not be processed.</exception>
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
         Justification = "baseUrl follows JSON-LD spec which uses string URIs throughout the processing algorithm.")]
-    public static async ValueTask<JsonLdContext> ProcessAsync(
-        JsonLdContext activeContext,
+    public static async ValueTask<LinkedDataContext> ProcessAsync(
+        LinkedDataContext activeContext,
         JsonLdNode localContext,
         string? baseUrl,
         ContextResolverDelegate resolver,
