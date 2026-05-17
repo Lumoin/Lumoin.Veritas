@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -261,6 +262,317 @@ public static class RdfsInference
         }
     }
 
+    /// <summary>
+    /// Runs RDFS inference to fixpoint over the graph exposed by
+    /// <paramref name="match"/>, yielding each derived triple at
+    /// most once together with the rule that produced it and the
+    /// two W3C-schema premises the rule matched against.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the source-aware sibling of
+    /// <see cref="InferAsync(RdfsVocabularyIds, StorageDelegates.MatchTriplesAsync, CancellationToken)"/>.
+    /// Bare callers continue to use the original; consumers that need
+    /// to trace a derived triple back through its premises to
+    /// asserted source triples use this method. The triple set
+    /// produced is identical; only the carrier shape differs.
+    /// </para>
+    /// <para>
+    /// <b>Antecedent semantics (α-decomposed).</b> Each
+    /// <see cref="InferredTriple.Antecedents"/> array holds exactly
+    /// the two premises stated by the rule in
+    /// <see cref="InferredTriple.Rule"/>. The fused derivation paths
+    /// the original implementation collapses into single emission
+    /// sites (rdfs2/rdfs3 lifted via subPropertyOf-chain and
+    /// subClassOf-chain) are decomposed here into separate
+    /// rdfs2/rdfs3 base emissions plus rdfs9 lifts, each carrying
+    /// the W3C schema for its own rule. The same applies to
+    /// transitive subClassOf and subPropertyOf closure: each
+    /// rdfs11/rdfs5 emission carries the two-hop BFS predecessor
+    /// pair as its antecedents, so the chain reconstructs
+    /// transitively by triple-equality lookup back into the stream.
+    /// </para>
+    /// </remarks>
+    /// <param name="vocabulary">The resolved vocabulary identifiers.</param>
+    /// <param name="match">The pattern match delegate over the source graph.</param>
+    /// <param name="cancellationToken">A token to cancel the enumeration.</param>
+    /// <returns>An async sequence of <see cref="InferredTriple"/> values.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="match"/> is <c>null</c>.</exception>
+    public static IAsyncEnumerable<InferredTriple> InferWithProvenanceAsync(
+        RdfsVocabularyIds vocabulary,
+        StorageDelegates.MatchTriplesAsync match,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(match);
+        return InferWithProvenanceCore(vocabulary, match, cancellationToken);
+    }
+
+    private static async IAsyncEnumerable<InferredTriple> InferWithProvenanceCore(
+        RdfsVocabularyIds vocabulary,
+        StorageDelegates.MatchTriplesAsync match,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        //Phase 1: load TBox relations. Mirror InferCore exactly.
+        HashSet<(TermId, TermId)> subClassOfDirect = await LoadRelationAsync(match, vocabulary.RdfsSubClassOf, cancellationToken).ConfigureAwait(false);
+        HashSet<(TermId, TermId)> subPropertyOfDirect = await LoadRelationAsync(match, vocabulary.RdfsSubPropertyOf, cancellationToken).ConfigureAwait(false);
+        HashSet<(TermId, TermId)> domainAssertions = await LoadRelationAsync(match, vocabulary.RdfsDomain, cancellationToken).ConfigureAwait(false);
+        HashSet<(TermId, TermId)> rangeAssertions = await LoadRelationAsync(match, vocabulary.RdfsRange, cancellationToken).ConfigureAwait(false);
+
+        //Phase 2: build closures with BFS predecessor maps. The
+        //predecessor map records, per start node, the BFS predecessor
+        //of each reached node; the edge (predecessor, predicate,
+        //reached) is asserted by BFS construction.
+        (Dictionary<TermId, HashSet<TermId>> superClasses,
+         Dictionary<TermId, Dictionary<TermId, TermId>> subClassPredecessors)
+            = BuildTransitiveClosureWithPredecessors(subClassOfDirect);
+
+        (Dictionary<TermId, HashSet<TermId>> superProperties,
+         Dictionary<TermId, Dictionary<TermId, TermId>> subPropertyPredecessors)
+            = BuildTransitiveClosureWithPredecessors(subPropertyOfDirect);
+
+        //Phase 3: index domain/range assertions by predicate. Mirror InferCore exactly.
+        Dictionary<TermId, List<TermId>> domainByPredicate = [];
+        foreach((TermId pred, TermId cls) in domainAssertions)
+        {
+            if(!domainByPredicate.TryGetValue(pred, out List<TermId>? classes))
+            {
+                classes = [];
+                domainByPredicate[pred] = classes;
+            }
+
+            classes.Add(cls);
+        }
+
+        Dictionary<TermId, List<TermId>> rangeByPredicate = [];
+        foreach((TermId pred, TermId cls) in rangeAssertions)
+        {
+            if(!rangeByPredicate.TryGetValue(pred, out List<TermId>? classes))
+            {
+                classes = [];
+                rangeByPredicate[pred] = classes;
+            }
+
+            classes.Add(cls);
+        }
+
+        //Dedup is per-call. Sharing a HashSet across calls would
+        //cross-contaminate provenance between independent inferences.
+        HashSet<EncodedTriple> emitted = [];
+
+        //rdfs11: emit closure of subClassOf beyond what was directly asserted.
+        //Antecedents = [(sub, sCO, predecessor), (predecessor, sCO, super)].
+        //The first is itself possibly derived by rdfs11 earlier in the
+        //stream (when predecessor is reached through more than one hop
+        //from sub); the second is always asserted by BFS construction.
+        foreach((TermId sub, HashSet<TermId> supers) in superClasses)
+        {
+            foreach(TermId super in supers)
+            {
+                if(sub == super)
+                {
+                    continue;
+                }
+
+                if(subClassOfDirect.Contains((sub, super)))
+                {
+                    continue;
+                }
+
+                TermId predecessor = subClassPredecessors[sub][super];
+                EncodedTriple consequent = new(sub, vocabulary.RdfsSubClassOf, super);
+                EncodedTriple firstPremise = new(sub, vocabulary.RdfsSubClassOf, predecessor);
+                EncodedTriple secondPremise = new(predecessor, vocabulary.RdfsSubClassOf, super);
+                if(emitted.Add(consequent))
+                {
+                    yield return new InferredTriple(
+                        consequent,
+                        ImmutableArray.Create(firstPremise, secondPremise),
+                        InferenceRule.Rdfs11);
+                }
+            }
+        }
+
+        //rdfs5: symmetric to rdfs11 over subPropertyOf.
+        foreach((TermId sub, HashSet<TermId> supers) in superProperties)
+        {
+            foreach(TermId super in supers)
+            {
+                if(sub == super)
+                {
+                    continue;
+                }
+
+                if(subPropertyOfDirect.Contains((sub, super)))
+                {
+                    continue;
+                }
+
+                TermId predecessor = subPropertyPredecessors[sub][super];
+                EncodedTriple consequent = new(sub, vocabulary.RdfsSubPropertyOf, super);
+                EncodedTriple firstPremise = new(sub, vocabulary.RdfsSubPropertyOf, predecessor);
+                EncodedTriple secondPremise = new(predecessor, vocabulary.RdfsSubPropertyOf, super);
+                if(emitted.Add(consequent))
+                {
+                    yield return new InferredTriple(
+                        consequent,
+                        ImmutableArray.Create(firstPremise, secondPremise),
+                        InferenceRule.Rdfs5);
+                }
+            }
+        }
+
+        //rdfs9 sweep over rdf:type triples.
+        //Antecedents = [(c1, sCO, super), typeTriple]. The first
+        //premise is asserted when (c1, sCO, super) is a direct edge,
+        //otherwise derived by the rdfs11 emission above; the consumer
+        //finds it in the stream by triple equality.
+        await foreach(EncodedTriple typeTriple in match(null, vocabulary.RdfType, null, cancellationToken).ConfigureAwait(false))
+        {
+            if(superClasses.TryGetValue(typeTriple.Object, out HashSet<TermId>? supers))
+            {
+                foreach(TermId super in supers)
+                {
+                    if(super == typeTriple.Object)
+                    {
+                        continue;
+                    }
+
+                    EncodedTriple consequent = new(typeTriple.Subject, vocabulary.RdfType, super);
+                    EncodedTriple subClassPremise = new(typeTriple.Object, vocabulary.RdfsSubClassOf, super);
+                    if(emitted.Add(consequent))
+                    {
+                        yield return new InferredTriple(
+                            consequent,
+                            ImmutableArray.Create(subClassPremise, typeTriple),
+                            InferenceRule.Rdfs9);
+                    }
+                }
+            }
+        }
+
+        //Whole-ABox sweep: rdfs7, rdfs2, rdfs3 — α-decomposed.
+        await foreach(EncodedTriple triple in match(null, null, null, cancellationToken).ConfigureAwait(false))
+        {
+            //rdfs7: (p, sPO, super) and (s, p, o) ⇒ (s, super, o).
+            //Antecedents = [(p, sPO, super), triple]. The first
+            //premise is asserted when super is a direct super of p,
+            //otherwise derived by rdfs5 above.
+            if(superProperties.TryGetValue(triple.Predicate, out HashSet<TermId>? supers))
+            {
+                foreach(TermId super in supers)
+                {
+                    if(super == triple.Predicate)
+                    {
+                        continue;
+                    }
+
+                    EncodedTriple consequent = new(triple.Subject, super, triple.Object);
+                    EncodedTriple subPropertyPremise = new(triple.Predicate, vocabulary.RdfsSubPropertyOf, super);
+                    if(emitted.Add(consequent))
+                    {
+                        yield return new InferredTriple(
+                            consequent,
+                            ImmutableArray.Create(subPropertyPremise, triple),
+                            InferenceRule.Rdfs7);
+                    }
+                }
+            }
+
+            //rdfs2 and rdfs3, α-decomposed. For each predicate in the
+            //self-and-supers chain of triple.Predicate, the (s,
+            //effectivePredicate, o) premise is either the ABox triple
+            //itself (when effective == p) or an rdfs7-derived triple
+            //emitted just above. Domain and range emit the rdfs2/rdfs3
+            //base consequent first; the rdfs9 class-hierarchy lift then
+            //emits its own consequents separately, each with the W3C
+            //two-premise rdfs9 schema.
+            foreach(TermId effectivePredicate in EnumerateSelfAndSupers(triple.Predicate, superProperties))
+            {
+                EncodedTriple aboxPremise = effectivePredicate == triple.Predicate
+                    ? triple
+                    : new EncodedTriple(triple.Subject, effectivePredicate, triple.Object);
+
+                if(domainByPredicate.TryGetValue(effectivePredicate, out List<TermId>? domainClasses))
+                {
+                    foreach(TermId c in domainClasses)
+                    {
+                        EncodedTriple domainAssertion = new(effectivePredicate, vocabulary.RdfsDomain, c);
+                        EncodedTriple rdfs2Consequent = new(triple.Subject, vocabulary.RdfType, c);
+                        if(emitted.Add(rdfs2Consequent))
+                        {
+                            yield return new InferredTriple(
+                                rdfs2Consequent,
+                                ImmutableArray.Create(domainAssertion, aboxPremise),
+                                InferenceRule.Rdfs2);
+                        }
+
+                        //rdfs9 lift via class hierarchy. Each cSuper
+                        //emission's antecedents are the W3C rdfs9
+                        //premises: the closure-or-asserted subClassOf
+                        //edge plus the rdfs2 type consequent above.
+                        if(superClasses.TryGetValue(c, out HashSet<TermId>? cSupers))
+                        {
+                            foreach(TermId cSuper in cSupers)
+                            {
+                                if(cSuper == c)
+                                {
+                                    continue;
+                                }
+
+                                EncodedTriple liftedConsequent = new(triple.Subject, vocabulary.RdfType, cSuper);
+                                EncodedTriple subClassPremise = new(c, vocabulary.RdfsSubClassOf, cSuper);
+                                if(emitted.Add(liftedConsequent))
+                                {
+                                    yield return new InferredTriple(
+                                        liftedConsequent,
+                                        ImmutableArray.Create(subClassPremise, rdfs2Consequent),
+                                        InferenceRule.Rdfs9);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if(rangeByPredicate.TryGetValue(effectivePredicate, out List<TermId>? rangeClasses))
+                {
+                    foreach(TermId c in rangeClasses)
+                    {
+                        EncodedTriple rangeAssertion = new(effectivePredicate, vocabulary.RdfsRange, c);
+                        EncodedTriple rdfs3Consequent = new(triple.Object, vocabulary.RdfType, c);
+                        if(emitted.Add(rdfs3Consequent))
+                        {
+                            yield return new InferredTriple(
+                                rdfs3Consequent,
+                                ImmutableArray.Create(rangeAssertion, aboxPremise),
+                                InferenceRule.Rdfs3);
+                        }
+
+                        if(superClasses.TryGetValue(c, out HashSet<TermId>? cSupers))
+                        {
+                            foreach(TermId cSuper in cSupers)
+                            {
+                                if(cSuper == c)
+                                {
+                                    continue;
+                                }
+
+                                EncodedTriple liftedConsequent = new(triple.Object, vocabulary.RdfType, cSuper);
+                                EncodedTriple subClassPremise = new(c, vocabulary.RdfsSubClassOf, cSuper);
+                                if(emitted.Add(liftedConsequent))
+                                {
+                                    yield return new InferredTriple(
+                                        liftedConsequent,
+                                        ImmutableArray.Create(subClassPremise, rdfs3Consequent),
+                                        InferenceRule.Rdfs9);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private static IEnumerable<TermId> EnumerateSelfAndSupers(TermId node, Dictionary<TermId, HashSet<TermId>> closure)
     {
         yield return node;
@@ -336,5 +648,64 @@ public static class RdfsInference
         }
 
         return closure;
+    }
+
+    private static (Dictionary<TermId, HashSet<TermId>> Closure,
+                    Dictionary<TermId, Dictionary<TermId, TermId>> Predecessors)
+        BuildTransitiveClosureWithPredecessors(HashSet<(TermId, TermId)> directPairs)
+    {
+        //Build adjacency list.
+        Dictionary<TermId, HashSet<TermId>> adjacency = [];
+        foreach((TermId sub, TermId super) in directPairs)
+        {
+            if(!adjacency.TryGetValue(sub, out HashSet<TermId>? supers))
+            {
+                supers = [];
+                adjacency[sub] = supers;
+            }
+
+            supers.Add(super);
+        }
+
+        //For each starting node, BFS to collect reachable supers and
+        //record the immediate predecessor of each reached node along
+        //the BFS tree path. The edge (predecessor, predicate, reached)
+        //is in directPairs by BFS construction: a node enters the
+        //frontier only by being reached from a node that has it as a
+        //direct neighbour.
+        Dictionary<TermId, HashSet<TermId>> closure = [];
+        Dictionary<TermId, Dictionary<TermId, TermId>> predecessors = [];
+        foreach(TermId start in adjacency.Keys)
+        {
+            HashSet<TermId> reachable = [];
+            Dictionary<TermId, TermId> predecessorForStart = [];
+            Queue<TermId> frontier = new();
+            frontier.Enqueue(start);
+            HashSet<TermId> visited = [start];
+
+            while(frontier.Count > 0)
+            {
+                TermId current = frontier.Dequeue();
+                if(!adjacency.TryGetValue(current, out HashSet<TermId>? neighbours))
+                {
+                    continue;
+                }
+
+                foreach(TermId neighbour in neighbours)
+                {
+                    if(visited.Add(neighbour))
+                    {
+                        reachable.Add(neighbour);
+                        predecessorForStart[neighbour] = current;
+                        frontier.Enqueue(neighbour);
+                    }
+                }
+            }
+
+            closure[start] = reachable;
+            predecessors[start] = predecessorForStart;
+        }
+
+        return (closure, predecessors);
     }
 }
