@@ -89,8 +89,8 @@ internal sealed class ValidationTrace
             ShaclTraceEvent evt = CapturedEvents[i];
             sb.Append("  #").Append(evt.SequenceNumber.ToString(CultureInfo.InvariantCulture));
             sb.Append(' ').Append(evt.Kind);
-            sb.Append(" focus=").Append(FormatTerm(evt.FocusNodeId, dictionary));
-            sb.Append(" shape=").Append(FormatTerm(evt.ShapeId, dictionary));
+            sb.Append(" focus=").Append(FormatTerm((uint)evt.FocusNodeId, dictionary));
+            sb.Append(" shape=").Append(FormatTerm((uint)evt.ShapeId, dictionary));
 
             if(evt.ConstraintIri is not null)
             {
@@ -107,7 +107,7 @@ internal sealed class ValidationTrace
                 sb.Append(" sev=").Append(evt.Severity);
                 if(evt.ValueNodeId != 0)
                 {
-                    sb.Append(" value=").Append(FormatTerm(evt.ValueNodeId, dictionary));
+                    sb.Append(" value=").Append(FormatTerm((uint)evt.ValueNodeId, dictionary));
                 }
             }
 
@@ -117,14 +117,14 @@ internal sealed class ValidationTrace
         return sb.ToString();
     }
 
-    private static string FormatTerm(long encoded, TermDictionary dictionary)
+    private static string FormatTerm(uint encoded, TermDictionary dictionary)
     {
         if(encoded == 0)
         {
             return "<unset>";
         }
 
-        if(encoded < 0 || encoded >= dictionary.Count)
+        if(encoded > dictionary.Count)
         {
             return encoded.ToString(CultureInfo.InvariantCulture);
         }

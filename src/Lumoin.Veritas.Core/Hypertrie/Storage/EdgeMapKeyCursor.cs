@@ -68,13 +68,13 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
     private EdgeMapKind Kind { get; }
 
     /// <summary>For <see cref="EdgeMapKind.Inline"/>: the inline key snapshotted at construction.</summary>
-    private long InlineKey { get; }
+    private uint InlineKey { get; }
 
     /// <summary>For <see cref="EdgeMapKind.Inline"/>: the inline child snapshotted at construction.</summary>
     private HypertrieNode? InlineChild { get; }
 
     /// <summary>For <see cref="EdgeMapKind.SortedArray"/>: the keys array reference snapshotted at construction.</summary>
-    private long[]? SortedKeys { get; }
+    private uint[]? SortedKeys { get; }
 
     /// <summary>For <see cref="EdgeMapKind.SortedArray"/>: the children array reference snapshotted at construction.</summary>
     private HypertrieNode?[]? SortedChildren { get; }
@@ -156,7 +156,7 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
     /// <c>true</c>.
     /// </summary>
     /// <exception cref="InvalidOperationException">The cursor is past the end.</exception>
-    public long CurrentKey
+    public uint CurrentKey
     {
         get
         {
@@ -234,7 +234,7 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
     /// total).
     /// </para>
     /// </remarks>
-    public void SeekTo(long target)
+    public void SeekTo(uint target)
     {
         if(AtEnd)
         {

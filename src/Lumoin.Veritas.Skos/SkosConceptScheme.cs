@@ -410,9 +410,10 @@ public sealed class SkosConceptScheme
         }
 
         //Find the predicate ID by scanning term entries that match the IRI bytes.
-        //Internal loop carries raw long for the index; we wrap into TermId once found.
-        long predicateIdRaw = -1;
-        for(long i = 0; i < dictionary.Count; i++)
+        //External term identifiers are 1-based (0 reserved for TermId.None);
+        //the scan walks the dictionary's external id range.
+        uint predicateIdRaw = 0;
+        for(uint i = 1; i <= (uint)dictionary.Count; i++)
         {
             if(dictionary.Resolve(i) is NamedNode node && node.Iri.Span.SequenceEqual(predicateIri.Span))
             {
@@ -421,7 +422,7 @@ public sealed class SkosConceptScheme
             }
         }
 
-        if(predicateIdRaw < 0)
+        if(predicateIdRaw == 0)
         {
             return [];
         }

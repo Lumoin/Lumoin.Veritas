@@ -11,8 +11,9 @@ namespace Lumoin.Veritas.Core;
 /// <remarks>
 /// <para>
 /// The graph identifier enables named graph support. A graph identifier
-/// equal to <see cref="DefaultGraph"/> (encoded value <c>-1</c>) conventionally
-/// represents the default graph.
+/// equal to <see cref="DefaultGraph"/> (the <see cref="TermId.None"/>
+/// sentinel, encoded value <c>0</c>) conventionally represents the default
+/// graph. Sixteen bytes per quad: four adjacent 32-bit unsigned integers.
 /// </para>
 /// <para>
 /// Corresponds to a quad in an RDF dataset as defined in
@@ -27,14 +28,15 @@ namespace Lumoin.Veritas.Core;
 public readonly record struct EncodedQuad(TermId Subject, TermId Predicate, TermId Object, TermId Graph)
 {
     /// <summary>
-    /// The conventional identifier for the default graph, encoded as <c>-1</c>.
+    /// The conventional identifier for the default graph: the
+    /// <see cref="TermId.None"/> sentinel (encoded value <c>0</c>).
     /// </summary>
-    public static TermId DefaultGraph { get; } = TermId.FromEncoded(-1);
+    public static TermId DefaultGraph { get; } = TermId.None;
 
     /// <summary>
     /// Creates an <see cref="EncodedQuad"/> from four raw encoded identifiers.
     /// </summary>
-    public static EncodedQuad FromEncoded(long subject, long predicate, long @object, long graph)
+    public static EncodedQuad FromEncoded(uint subject, uint predicate, uint @object, uint graph)
         => new(
             TermId.FromEncoded(subject),
             TermId.FromEncoded(predicate),

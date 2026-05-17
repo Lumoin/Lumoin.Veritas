@@ -370,7 +370,7 @@ public sealed class BasicGraphPatternEvaluator
             bindings.RemoveAt(bindings.Count - 1);
 
             //Try to find the next common key at this level.
-            if(LeapfrogIntersection.TryFindNextCommonKey(frame, out long commonKey, cancellationToken))
+            if(LeapfrogIntersection.TryFindNextCommonKey(frame, out uint commonKey, cancellationToken))
             {
                 //Re-open every participant on the new common key
                 //and push the frame back. The level was popped from
@@ -455,7 +455,7 @@ public sealed class BasicGraphPatternEvaluator
             return false;
         }
 
-        if(!LeapfrogIntersection.TryFindNextCommonKey(participants, out long commonKey, cancellationToken))
+        if(!LeapfrogIntersection.TryFindNextCommonKey(participants, out uint commonKey, cancellationToken))
         {
             return false;
         }
@@ -570,14 +570,14 @@ public sealed class BasicGraphPatternEvaluator
         IReadOnlyList<VariableBinding> bindings,
         TriejoinIterator iterator)
     {
-        long subject = ResolvePosition(pattern.Subject, bindings, iterator);
-        long predicate = ResolvePosition(pattern.Predicate, bindings, iterator);
-        long obj = ResolvePosition(pattern.Object, bindings, iterator);
+        uint subject = ResolvePosition(pattern.Subject, bindings, iterator);
+        uint predicate = ResolvePosition(pattern.Predicate, bindings, iterator);
+        uint obj = ResolvePosition(pattern.Object, bindings, iterator);
 
         return EncodedTriple.FromEncoded(subject, predicate, obj);
     }
 
-    private static long ResolvePosition(
+    private static uint ResolvePosition(
         PatternPosition position,
         IReadOnlyList<VariableBinding> bindings,
         TriejoinIterator iterator)
@@ -634,7 +634,7 @@ public sealed class BasicGraphPatternEvaluator
             Variable currentVariable = iterator.DescendedLevels < iterator.VariableOrder.Count
                 ? iterator.CurrentVariable
                 : default;
-            long key = iterator.AtEnd ? 0 : iterator.Key;
+            uint key = iterator.AtEnd ? 0 : iterator.Key;
 
             iteratorSnapshots[i] = new IteratorSnapshot(
                 PatternIndex: iterator.PatternIndex,

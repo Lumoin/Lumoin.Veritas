@@ -222,12 +222,12 @@ public static class HypertrieOpsPatching
         //a given (outer, inner1, inner2) triple is added xor removed
         //inside one ApplyDelta call (the EditBuffer layer above
         //already collapsed the two on a same-triple basis).
-        Dictionary<long, List<EditEntry>> editsByOuter = [];
+        Dictionary<uint, List<EditEntry>> editsByOuter = [];
         foreach(EncodedTriple triple in effectiveAdds)
         {
-            long outerKey = ValueAt(triple, outer);
-            long innerKey1 = ValueAt(triple, inner1);
-            long innerKey2 = ValueAt(triple, inner2);
+            uint outerKey = ValueAt(triple, outer);
+            uint innerKey1 = ValueAt(triple, inner1);
+            uint innerKey2 = ValueAt(triple, inner2);
 
             if(!editsByOuter.TryGetValue(outerKey, out List<EditEntry>? bucket))
             {
@@ -239,9 +239,9 @@ public static class HypertrieOpsPatching
 
         foreach(EncodedTriple triple in effectiveRemoves)
         {
-            long outerKey = ValueAt(triple, outer);
-            long innerKey1 = ValueAt(triple, inner1);
-            long innerKey2 = ValueAt(triple, inner2);
+            uint outerKey = ValueAt(triple, outer);
+            uint innerKey1 = ValueAt(triple, inner1);
+            uint innerKey2 = ValueAt(triple, inner2);
 
             if(!editsByOuter.TryGetValue(outerKey, out List<EditEntry>? bucket))
             {
@@ -256,9 +256,9 @@ public static class HypertrieOpsPatching
         //First pass: walk the base outer edge map. Every existing
         //outer key either has edits (rebuild its D2) or has none
         //(carry its D2 over unchanged).
-        foreach(KeyValuePair<long, HypertrieNode?> entry in EdgeMap.Enumerate(baseOuterEdgeMap))
+        foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(baseOuterEdgeMap))
         {
-            long outerKey = entry.Key;
+            uint outerKey = entry.Key;
             HypertrieNode? oldD2 = entry.Value;
 
             if(editsByOuter.TryGetValue(outerKey, out List<EditEntry>? bucket))
@@ -281,7 +281,7 @@ public static class HypertrieOpsPatching
         //the outer key, so every edit in the bucket must be an add
         //(removes against absent triples were filtered earlier).
         //Build a fresh D2 for each.
-        foreach(KeyValuePair<long, List<EditEntry>> remaining in editsByOuter)
+        foreach(KeyValuePair<uint, List<EditEntry>> remaining in editsByOuter)
         {
             HypertrieNode? newD2 = PatchD2(oldD2: null, remaining.Value, store);
             if(newD2 is not null)
@@ -306,8 +306,8 @@ public static class HypertrieOpsPatching
         //leaves) and by inner2 (drives the second edge map's
         //leaves). Same edits, two views; mirrors the symmetry the
         //build path uses.
-        Dictionary<long, List<LeafEdit>> byInner1 = [];
-        Dictionary<long, List<LeafEdit>> byInner2 = [];
+        Dictionary<uint, List<LeafEdit>> byInner1 = [];
+        Dictionary<uint, List<LeafEdit>> byInner2 = [];
 
         foreach(EditEntry edit in bucket)
         {
@@ -351,7 +351,7 @@ public static class HypertrieOpsPatching
     //leaves not present in the base.
     private static EdgeMap PatchD2EdgeMap(
         EdgeMap baseEdgeMap,
-        Dictionary<long, List<LeafEdit>> editsByLeafKey,
+        Dictionary<uint, List<LeafEdit>> editsByLeafKey,
         NodeStore store)
     {
         EdgeMap newEdgeMap = default;
@@ -360,9 +360,9 @@ public static class HypertrieOpsPatching
         //we consume them — the dictionary itself is mutated inside
         //the loop. Iteration order over the base edge map is
         //independent of dictionary mutation.
-        foreach(KeyValuePair<long, HypertrieNode?> entry in EdgeMap.Enumerate(baseEdgeMap))
+        foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(baseEdgeMap))
         {
-            long leafKey = entry.Key;
+            uint leafKey = entry.Key;
             HypertrieNode? oldLeaf = entry.Value;
 
             if(editsByLeafKey.TryGetValue(leafKey, out List<LeafEdit>? edits))
@@ -380,7 +380,7 @@ public static class HypertrieOpsPatching
             }
         }
 
-        foreach(KeyValuePair<long, List<LeafEdit>> remaining in editsByLeafKey)
+        foreach(KeyValuePair<uint, List<LeafEdit>> remaining in editsByLeafKey)
         {
             HypertrieNode? newLeaf = PatchLeaf(oldLeaf: null, remaining.Value, store);
             if(newLeaf is not null)
@@ -402,7 +402,7 @@ public static class HypertrieOpsPatching
     {
         //Materialise the removed keys for O(1) membership in the
         //old-key copy loop.
-        HashSet<long> removedKeys = [];
+        HashSet<uint> removedKeys = [];
         foreach(LeafEdit edit in edits)
         {
             if(!edit.IsAddition)
@@ -415,7 +415,7 @@ public static class HypertrieOpsPatching
 
         if(oldLeaf is not null)
         {
-            foreach(KeyValuePair<long, HypertrieNode?> entry in EdgeMap.Enumerate(oldLeaf.EdgeMaps[0]))
+            foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(oldLeaf.EdgeMaps[0]))
             {
                 if(!removedKeys.Contains(entry.Key))
                 {
@@ -455,9 +455,9 @@ public static class HypertrieOpsPatching
     //the predicate.
     private static bool IsPresent(HypertrieNode root, EncodedTriple triple)
     {
-        long s = triple.Subject.Encoded;
-        long p = triple.Predicate.Encoded;
-        long o = triple.Object.Encoded;
+        uint s = triple.Subject.Encoded;
+        uint p = triple.Predicate.Encoded;
+        uint o = triple.Object.Encoded;
 
         //Step 1: subject edge map at the root → D2 node keyed by P, O.
         if(!EdgeMap.TryGetChild(in root.EdgeMaps[PositionSubject], s, out HypertrieNode? d2) || d2 is null)
@@ -478,7 +478,7 @@ public static class HypertrieOpsPatching
     //Reads the value at `position` from `triple` (0=S, 1=P, 2=O).
     //Mirrors HypertrieOps.ValueAt; declared locally because that
     //one is private to HypertrieOps.
-    private static long ValueAt(EncodedTriple triple, int position)
+    private static uint ValueAt(EncodedTriple triple, int position)
     {
         return position switch
         {
@@ -500,7 +500,7 @@ public static class HypertrieOpsPatching
         Dictionary<HypertrieNode, NodeIdentifier> result = new(ReferenceEqualityComparer.Instance);
         for(int position = 0; position < node.Depth; position++)
         {
-            foreach(KeyValuePair<long, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
+            foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
             {
                 if(entry.Value is null)
                 {
@@ -532,11 +532,11 @@ public static class HypertrieOpsPatching
 
     //An edit affecting one (outer, inner1, inner2) cell of one
     //descent path. IsAddition is the kind flag.
-    private readonly record struct EditEntry(long Inner1, long Inner2, bool IsAddition);
+    private readonly record struct EditEntry(uint Inner1, uint Inner2, bool IsAddition);
 
     //An edit affecting one entry of one depth-1 leaf. The leaf's
     //single edge map is keyed by the original triple's third
     //position; Key carries that position's value. IsAddition is
     //the kind flag.
-    private readonly record struct LeafEdit(long Key, bool IsAddition);
+    private readonly record struct LeafEdit(uint Key, bool IsAddition);
 }

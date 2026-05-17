@@ -109,7 +109,7 @@ internal static class ShapePathParser
         //rdf:first present → this is a list head → sequence path.
         foreach(EncodedTriple triple in outgoing)
         {
-            if(triple.Predicate == rdfListIds.RdfFirst.Encoded)
+            if(triple.Predicate == rdfListIds.RdfFirst)
             {
                 return await ParseSequencePathAsync(
                     pathTerm, shapeGraphMatch, dictionary, pathVocabulary, rdfListIds, cancellationToken).ConfigureAwait(false);
@@ -119,16 +119,16 @@ internal static class ShapePathParser
         //Operator blank node: exactly one path-operator predicate.
         foreach(EncodedTriple triple in outgoing)
         {
-            TermId innerTerm = TermId.FromEncoded(triple.Object);
+            TermId innerTerm = triple.Object;
 
-            if(triple.Predicate == pathVocabulary.InversePath.Encoded)
+            if(triple.Predicate == pathVocabulary.InversePath)
             {
                 PropertyPath inner = await ParseAsync(
                     innerTerm, shapeGraphMatch, dictionary, pathVocabulary, rdfListIds, cancellationToken).ConfigureAwait(false);
                 return new InversePath(inner);
             }
 
-            if(triple.Predicate == pathVocabulary.AlternativePath.Encoded)
+            if(triple.Predicate == pathVocabulary.AlternativePath)
             {
                 //sh:alternativePath is an RDF list of alternatives.
                 ImmutableArray<PropertyPath> alternatives = await ParsePathListAsync(
@@ -142,21 +142,21 @@ internal static class ShapePathParser
                 return new AlternativePath(alternatives);
             }
 
-            if(triple.Predicate == pathVocabulary.ZeroOrMorePath.Encoded)
+            if(triple.Predicate == pathVocabulary.ZeroOrMorePath)
             {
                 PropertyPath inner = await ParseAsync(
                     innerTerm, shapeGraphMatch, dictionary, pathVocabulary, rdfListIds, cancellationToken).ConfigureAwait(false);
                 return new ZeroOrMorePath(inner);
             }
 
-            if(triple.Predicate == pathVocabulary.OneOrMorePath.Encoded)
+            if(triple.Predicate == pathVocabulary.OneOrMorePath)
             {
                 PropertyPath inner = await ParseAsync(
                     innerTerm, shapeGraphMatch, dictionary, pathVocabulary, rdfListIds, cancellationToken).ConfigureAwait(false);
                 return new OneOrMorePath(inner);
             }
 
-            if(triple.Predicate == pathVocabulary.ZeroOrOnePath.Encoded)
+            if(triple.Predicate == pathVocabulary.ZeroOrOnePath)
             {
                 PropertyPath inner = await ParseAsync(
                     innerTerm, shapeGraphMatch, dictionary, pathVocabulary, rdfListIds, cancellationToken).ConfigureAwait(false);
@@ -213,13 +213,13 @@ internal static class ShapePathParser
 
             await foreach(EncodedTriple triple in shapeGraphMatch(cursor, null, null, cancellationToken).ConfigureAwait(false))
             {
-                if(triple.Predicate == rdfListIds.RdfFirst.Encoded)
+                if(triple.Predicate == rdfListIds.RdfFirst)
                 {
-                    first = TermId.FromEncoded(triple.Object);
+                    first = triple.Object;
                 }
-                else if(triple.Predicate == rdfListIds.RdfRest.Encoded)
+                else if(triple.Predicate == rdfListIds.RdfRest)
                 {
-                    rest = TermId.FromEncoded(triple.Object);
+                    rest = triple.Object;
                 }
             }
 

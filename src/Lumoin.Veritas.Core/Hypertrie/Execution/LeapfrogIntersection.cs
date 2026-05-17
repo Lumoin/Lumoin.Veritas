@@ -79,7 +79,7 @@ public static class LeapfrogIntersection
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
     public static bool TryFindNextCommonKey(
         IReadOnlyList<TriejoinIterator> participants,
-        out long commonKey,
+        out uint commonKey,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(participants);
@@ -94,7 +94,7 @@ public static class LeapfrogIntersection
         //Initial scan: if any participant is at end, no common key
         //exists; otherwise compute the starting target as the max
         //of the participants' current keys.
-        long target = long.MinValue;
+        uint target = uint.MinValue;
 
         for(int i = 0; i < participants.Count; i++)
         {
@@ -107,7 +107,7 @@ public static class LeapfrogIntersection
                 return false;
             }
 
-            long key = iterator.Key;
+            uint key = iterator.Key;
 
             if(key > target)
             {
@@ -148,7 +148,7 @@ public static class LeapfrogIntersection
                     return false;
                 }
 
-                long newKey = iterator.Key;
+                uint newKey = iterator.Key;
 
                 if(newKey > target)
                 {

@@ -6,7 +6,7 @@ namespace Lumoin.Veritas.Core.Hypertrie.Storage;
 
 /// <summary>
 /// One edge map of a <see cref="HypertrieNode"/>. Maps an encoded
-/// term identifier (<see cref="long"/>) to a child
+/// term identifier (<see cref="uint"/>) to a child
 /// <see cref="HypertrieNode"/> for inner nodes, or to a presence
 /// marker (the child reference is <c>null</c>) for depth-1 leaves.
 /// </summary>
@@ -69,13 +69,13 @@ public struct EdgeMap: IEquatable<EdgeMap>
     public EdgeMapKind Kind { get; private set; }
 
     /// <summary>For <see cref="EdgeMapKind.Inline"/>: the single entry's key.</summary>
-    public long InlineKey { get; private set; }
+    public uint InlineKey { get; private set; }
 
     /// <summary>For <see cref="EdgeMapKind.Inline"/>: the single entry's child reference, or <c>null</c> at depth-1 leaves.</summary>
     public HypertrieNode? InlineChild { get; private set; }
 
     /// <summary>For <see cref="EdgeMapKind.SortedArray"/>: the keys, ascending. Only the prefix <c>[0..SortedCount)</c> is valid.</summary>
-    public long[]? SortedKeys { get; private set; }
+    public uint[]? SortedKeys { get; private set; }
 
     /// <summary>For <see cref="EdgeMapKind.SortedArray"/>: the parallel child references. Only the prefix <c>[0..SortedCount)</c> is valid.</summary>
     public HypertrieNode?[]? SortedChildren { get; private set; }
@@ -108,7 +108,7 @@ public struct EdgeMap: IEquatable<EdgeMap>
     /// at depth-1 leaves. On <c>false</c>: <c>null</c>.
     /// </param>
     /// <returns><c>true</c> when the key is present; otherwise <c>false</c>.</returns>
-    public static bool TryGetChild(in EdgeMap map, long key, out HypertrieNode? child)
+    public static bool TryGetChild(in EdgeMap map, uint key, out HypertrieNode? child)
     {
         switch(map.Kind)
         {
@@ -167,7 +167,7 @@ public struct EdgeMap: IEquatable<EdgeMap>
     /// depth-1 leaves (presence marker) and disallowed at higher
     /// depths.
     /// </param>
-    public static void InsertOrReplace(ref EdgeMap map, long key, HypertrieNode? child)
+    public static void InsertOrReplace(ref EdgeMap map, uint key, HypertrieNode? child)
     {
         switch(map.Kind)
         {
@@ -189,7 +189,7 @@ public struct EdgeMap: IEquatable<EdgeMap>
                 }
 
                 //Second distinct entry — promote to SortedArray.
-                long[] keys = new long[SortedArrayInitialCapacity];
+                uint[] keys = new uint[SortedArrayInitialCapacity];
                 HypertrieNode?[] children = new HypertrieNode?[SortedArrayInitialCapacity];
                 if(map.InlineKey < key)
                 {
@@ -231,7 +231,7 @@ public struct EdgeMap: IEquatable<EdgeMap>
                 {
                     //Capacity exhausted — double the parallel arrays and copy.
                     int newCapacity = map.SortedKeys.Length * 2;
-                    long[] newKeys = new long[newCapacity];
+                    uint[] newKeys = new uint[newCapacity];
                     HypertrieNode?[] newChildren = new HypertrieNode?[newCapacity];
                     Array.Copy(map.SortedKeys, newKeys, map.SortedCount);
                     Array.Copy(map.SortedChildren!, newChildren, map.SortedCount);
@@ -265,7 +265,7 @@ public struct EdgeMap: IEquatable<EdgeMap>
     /// yielded in ascending key order, which the worst-case-optimal
     /// join algorithms downstream depend on.
     /// </summary>
-    public static IEnumerable<KeyValuePair<long, HypertrieNode?>> Enumerate(EdgeMap map)
+    public static IEnumerable<KeyValuePair<uint, HypertrieNode?>> Enumerate(EdgeMap map)
     {
         switch(map.Kind)
         {
@@ -275,18 +275,18 @@ public struct EdgeMap: IEquatable<EdgeMap>
             }
             case EdgeMapKind.Inline:
             {
-                yield return new KeyValuePair<long, HypertrieNode?>(map.InlineKey, map.InlineChild);
+                yield return new KeyValuePair<uint, HypertrieNode?>(map.InlineKey, map.InlineChild);
                 yield break;
             }
             case EdgeMapKind.SortedArray:
             {
-                long[] keys = map.SortedKeys!;
+                uint[] keys = map.SortedKeys!;
                 HypertrieNode?[] children = map.SortedChildren!;
                 int count = map.SortedCount;
 
                 for(int i = 0; i < count; i++)
                 {
-                    yield return new KeyValuePair<long, HypertrieNode?>(keys[i], children[i]);
+                    yield return new KeyValuePair<uint, HypertrieNode?>(keys[i], children[i]);
                 }
 
                 yield break;

@@ -151,7 +151,7 @@ public sealed class TriejoinIterator: IDisposable
     //One per descended level; the value the iterator was opened
     //to at that level. OpenedValues[i] is meaningful only while
     //DescendedLevels > i.
-    private long[] OpenedValues { get; }
+    private uint[] OpenedValues { get; }
 
     /// <summary>
     /// The number of variable levels currently descended. 0 means
@@ -213,7 +213,7 @@ public sealed class TriejoinIterator: IDisposable
     /// <see cref="AtEnd"/>.
     /// </summary>
     /// <exception cref="InvalidOperationException">The iterator is at end.</exception>
-    public long Key
+    public uint Key
     {
         get
         {
@@ -272,7 +272,7 @@ public sealed class TriejoinIterator: IDisposable
         CorrelationId = correlationId;
         TraceHandler = traceHandler;
 
-        OpenedValues = new long[variableOrder.Count];
+        OpenedValues = new uint[variableOrder.Count];
         LevelPositions = ComputeLevelPositions(pattern, variableOrder);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -289,7 +289,7 @@ public sealed class TriejoinIterator: IDisposable
     /// level in <see cref="VariableOrder"/>.
     /// </summary>
     /// <exception cref="ArgumentException"><paramref name="variable"/> has not yet been bound, or is not in this iterator's variable order.</exception>
-    public long ValueOf(Variable variable)
+    public uint ValueOf(Variable variable)
     {
         for(int i = 0; i < DescendedLevels; i++)
         {
@@ -314,7 +314,7 @@ public sealed class TriejoinIterator: IDisposable
     /// <returns><c>true</c> when the descent succeeded.</returns>
     /// <exception cref="InvalidOperationException">All variables have already been bound.</exception>
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
-    public bool Open(long value, CancellationToken cancellationToken = default)
+    public bool Open(uint value, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -451,7 +451,7 @@ public sealed class TriejoinIterator: IDisposable
     /// <param name="target">The seek target.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
-    public void Seek(long target, CancellationToken cancellationToken = default)
+    public void Seek(uint target, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -566,7 +566,7 @@ public sealed class TriejoinIterator: IDisposable
                 throw new InvalidOperationException("Internal error: bound position not found in remaining-position list.");
             }
 
-            long boundValue = slot.BoundTerm.Encoded;
+            uint boundValue = slot.BoundTerm.Encoded;
             EdgeMap edgeMap = current.EdgeMaps[positionInRemaining];
 
             if(!EdgeMap.TryGetChild(in edgeMap, boundValue, out HypertrieNode? child))
@@ -680,7 +680,7 @@ public sealed class TriejoinIterator: IDisposable
         TraceHandler(in evt);
     }
 
-    private void EmitIteratorAdvanced(Variable variable, long value)
+    private void EmitIteratorAdvanced(Variable variable, uint value)
     {
         if(TraceHandler is null)
         {

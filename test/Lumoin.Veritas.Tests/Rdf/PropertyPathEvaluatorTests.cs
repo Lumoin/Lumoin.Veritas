@@ -11,9 +11,9 @@ internal sealed class PropertyPathEvaluatorTests
 {
     public TestContext TestContext { get; set; } = null!;
 
-    //Local helper: wraps a raw long predicate id as an IriId. SHACL/SPARQL
+    //Local helper: wraps a raw predicate id as an IriId. SHACL/SPARQL
     //predicates are always IRIs so an unchecked wrap is appropriate in tests.
-    private static IriId PredIri(long encoded) => IriId.FromUnchecked(TermId.FromEncoded(encoded));
+    private static IriId PredIri(uint encoded) => IriId.FromUnchecked(TermId.FromEncoded(encoded));
 
     [TestMethod]
     public async Task PredicatePathReachesDirectNeighbours()

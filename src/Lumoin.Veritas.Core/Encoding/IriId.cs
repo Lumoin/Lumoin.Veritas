@@ -36,9 +36,10 @@ namespace Lumoin.Veritas.Core.Encoding;
 /// </item>
 /// </list>
 /// <para>
-/// <b>Widening.</b> <see cref="IriId"/> widens implicitly to <see cref="TermId"/>
-/// and (transitively) to <see cref="long"/>. No implicit narrowing from
-/// <see cref="TermId"/>; use the factories.
+/// <b>Widening.</b> <see cref="IriId"/> widens implicitly to <see cref="TermId"/>.
+/// To obtain the raw encoded numeric value, use <see cref="Encoded"/>
+/// explicitly. No implicit narrowing from <see cref="TermId"/>; use the
+/// factories.
 /// </para>
 /// </remarks>
 /// <param name="Value">The underlying <see cref="TermId"/>.</param>
@@ -48,7 +49,7 @@ public readonly record struct IriId(TermId Value)
     /// <summary>
     /// The raw encoded identifier, forwarded from the underlying <see cref="TermId"/>.
     /// </summary>
-    public long Encoded => Value.Encoded;
+    public uint Encoded => Value.Encoded;
 
     /// <summary>
     /// Validates that <paramref name="termId"/> resolves to a
@@ -114,11 +115,6 @@ public readonly record struct IriId(TermId Value)
     /// Implicit widening from <see cref="IriId"/> to <see cref="TermId"/>.
     /// </summary>
     public static implicit operator TermId(IriId iriId) => iriId.Value;
-
-    /// <summary>
-    /// Implicit widening from <see cref="IriId"/> to <see cref="long"/>.
-    /// </summary>
-    public static implicit operator long(IriId iriId) => iriId.Value.Encoded;
 
     /// <inheritdoc/>
     public override string ToString() => $"IriId({Encoded})";

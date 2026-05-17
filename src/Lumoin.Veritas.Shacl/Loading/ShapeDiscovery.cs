@@ -103,7 +103,7 @@ internal static class ShapeDiscovery
         //---------------------------------------------------------------
         await foreach(EncodedTriple triple in shapeGraphMatch(null, shaclCoreIds.Path, null, cancellationToken).ConfigureAwait(false))
         {
-            TermId subject = TermId.FromEncoded(triple.Subject);
+            TermId subject = triple.Subject;
             if(!builders.ContainsKey(subject))
             {
                 builders.Add(subject, new ShapeBuilder(subject, isPropertyShape: true));
@@ -123,7 +123,7 @@ internal static class ShapeDiscovery
         {
             await foreach(EncodedTriple triple in shapeGraphMatch(null, rdfsVocabulary.RdfType, shapeClass, cancellationToken).ConfigureAwait(false))
             {
-                TermId subject = TermId.FromEncoded(triple.Subject);
+                TermId subject = triple.Subject;
                 //Classification: if sh:path already marked it as a property shape, keep that.
                 //If it was typed as sh:PropertyShape, it's still a property shape.
                 //Otherwise default to node shape.
@@ -148,7 +148,7 @@ internal static class ShapeDiscovery
         {
             await foreach(EncodedTriple triple in shapeGraphMatch(null, targetPredicate, null, cancellationToken).ConfigureAwait(false))
             {
-                TermId subject = TermId.FromEncoded(triple.Subject);
+                TermId subject = triple.Subject;
                 if(!builders.ContainsKey(subject))
                 {
                     builders.Add(subject, new ShapeBuilder(subject, isPropertyShape: false));
@@ -165,7 +165,7 @@ internal static class ShapeDiscovery
         {
             await foreach(EncodedTriple triple in shapeGraphMatch(null, constraintPredicate, null, cancellationToken).ConfigureAwait(false))
             {
-                TermId subject = TermId.FromEncoded(triple.Subject);
+                TermId subject = triple.Subject;
                 if(!builders.ContainsKey(subject))
                 {
                     builders.Add(subject, new ShapeBuilder(subject, isPropertyShape: false));
@@ -189,7 +189,7 @@ internal static class ShapeDiscovery
         //---------------------------------------------------------------
         await foreach(EncodedTriple triple in shapeGraphMatch(null, shaclCoreIds.PropertyPredicate, null, cancellationToken).ConfigureAwait(false))
         {
-            TermId objectTerm = TermId.FromEncoded(triple.Object);
+            TermId objectTerm = triple.Object;
             if(!builders.ContainsKey(objectTerm))
             {
                 builders.Add(objectTerm, new ShapeBuilder(objectTerm, isPropertyShape: true));
@@ -200,7 +200,7 @@ internal static class ShapeDiscovery
         {
             await foreach(EncodedTriple triple in shapeGraphMatch(null, shapeRefPredicate, null, cancellationToken).ConfigureAwait(false))
             {
-                TermId objectTerm = TermId.FromEncoded(triple.Object);
+                TermId objectTerm = triple.Object;
                 if(builders.ContainsKey(objectTerm))
                 {
                     continue;

@@ -219,24 +219,24 @@ internal sealed class NodeStoreTests
         Assert.Throws<ArgumentNullException>(() => new NodeStore(null!));
     }
 
-    private static HypertrieNode MakeDepth1Leaf(ReadOnlySpan<long> keys)
+    private static HypertrieNode MakeDepth1Leaf(ReadOnlySpan<uint> keys)
     {
         HypertrieNode leaf = new(1);
-        foreach(long key in keys)
+        foreach(uint key in keys)
         {
             EdgeMap.InsertOrReplace(ref leaf.EdgeMaps[0], key, null);
         }
         return leaf;
     }
 
-    private static HypertrieNode MakeDepth2Inner(ReadOnlySpan<(long Key, HypertrieNode Child)> entries)
+    private static HypertrieNode MakeDepth2Inner(ReadOnlySpan<(uint Key, HypertrieNode Child)> entries)
     {
         //Build a depth-2 node where every position points to the
         //same children (consistent with how multi-position branching
         //works at depth 2; tests only exercise the first position
         //and leave the second empty).
         HypertrieNode inner = new(2);
-        foreach((long key, HypertrieNode child) in entries)
+        foreach((uint key, HypertrieNode child) in entries)
         {
             EdgeMap.InsertOrReplace(ref inner.EdgeMaps[0], key, child);
         }
@@ -261,7 +261,7 @@ internal sealed class NodeStoreTests
             postOrder.Push(current);
             for(int position = 0; position < current.Depth; position++)
             {
-                foreach(KeyValuePair<long, HypertrieNode?> entry in EdgeMap.Enumerate(current.EdgeMaps[position]))
+                foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(current.EdgeMaps[position]))
                 {
                     if(entry.Value is not null)
                     {
@@ -283,7 +283,7 @@ internal sealed class NodeStoreTests
             NodeIdentifier id = NodeIdentifier.Empty;
             for(int position = 0; position < current.Depth; position++)
             {
-                foreach(KeyValuePair<long, HypertrieNode?> entry in EdgeMap.Enumerate(current.EdgeMaps[position]))
+                foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(current.EdgeMaps[position]))
                 {
                     ulong childIdentifier = entry.Value is null ? 1UL : known[entry.Value].Value;
                     ulong entryHash = NodeEntryHashing.Default(store.Hash, entry.Key, childIdentifier);

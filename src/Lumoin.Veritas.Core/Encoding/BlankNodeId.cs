@@ -19,7 +19,8 @@ namespace Lumoin.Veritas.Core.Encoding;
 /// Construction and widening semantics match <see cref="IriId"/>: validating
 /// <see cref="From(TermId, TermDictionary)"/>, unsafe
 /// <see cref="FromUnchecked(TermId)"/>, implicit widening to
-/// <see cref="TermId"/> and <see cref="long"/>.
+/// <see cref="TermId"/>. The raw <see cref="uint"/> value is reached
+/// explicitly via <see cref="Encoded"/>.
 /// </para>
 /// </remarks>
 /// <param name="Value">The underlying <see cref="TermId"/>.</param>
@@ -27,7 +28,7 @@ namespace Lumoin.Veritas.Core.Encoding;
 public readonly record struct BlankNodeId(TermId Value)
 {
     /// <summary>The raw encoded identifier.</summary>
-    public long Encoded => Value.Encoded;
+    public uint Encoded => Value.Encoded;
 
     /// <summary>
     /// Validates that <paramref name="termId"/> resolves to a
@@ -79,9 +80,6 @@ public readonly record struct BlankNodeId(TermId Value)
 
     /// <summary>Implicit widening from <see cref="BlankNodeId"/> to <see cref="TermId"/>.</summary>
     public static implicit operator TermId(BlankNodeId blankNodeId) => blankNodeId.Value;
-
-    /// <summary>Implicit widening from <see cref="BlankNodeId"/> to <see cref="long"/>.</summary>
-    public static implicit operator long(BlankNodeId blankNodeId) => blankNodeId.Value.Encoded;
 
     /// <inheritdoc/>
     public override string ToString() => $"BlankNodeId({Encoded})";

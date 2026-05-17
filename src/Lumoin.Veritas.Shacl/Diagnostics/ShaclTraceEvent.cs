@@ -59,17 +59,17 @@ public readonly record struct ShaclTraceEvent: ITraceEvent
     /// The focus node under evaluation. Populated for all event kinds
     /// except where the event is non-focus-specific.
     /// </summary>
-    public long FocusNodeId { get; init; }
+    public uint FocusNodeId { get; init; }
 
     /// <summary>The shape currently being applied. Populated for all event kinds.</summary>
-    public long ShapeId { get; init; }
+    public uint ShapeId { get; init; }
 
     /// <summary>
     /// The value node associated with the event, for variants that have
     /// one (e.g. <see cref="ShaclTraceEventKind.ValidationResultProduced"/>).
     /// Zero when the variant does not carry a value node.
     /// </summary>
-    public long ValueNodeId { get; init; }
+    public uint ValueNodeId { get; init; }
 
     /// <summary>
     /// The constraint-component IRI when the event relates to a specific
@@ -99,8 +99,8 @@ public readonly record struct ShaclTraceEvent: ITraceEvent
         long sequenceNumber,
         long timestampTicks,
         Guid correlationId,
-        long focusNodeId,
-        long shapeId)
+        uint focusNodeId,
+        uint shapeId)
         => new()
         {
             SequenceNumber = sequenceNumber,
@@ -118,8 +118,8 @@ public readonly record struct ShaclTraceEvent: ITraceEvent
         long sequenceNumber,
         long timestampTicks,
         Guid correlationId,
-        long focusNodeId,
-        long shapeId,
+        uint focusNodeId,
+        uint shapeId,
         string constraintIri)
         => new()
         {
@@ -139,8 +139,8 @@ public readonly record struct ShaclTraceEvent: ITraceEvent
         long sequenceNumber,
         long timestampTicks,
         Guid correlationId,
-        long focusNodeId,
-        long shapeId,
+        uint focusNodeId,
+        uint shapeId,
         string constraintIri,
         ConstraintEvaluationStatus status)
         => new()
@@ -162,10 +162,10 @@ public readonly record struct ShaclTraceEvent: ITraceEvent
         long sequenceNumber,
         long timestampTicks,
         Guid correlationId,
-        long focusNodeId,
-        long shapeId,
+        uint focusNodeId,
+        uint shapeId,
         string constraintIri,
-        long valueNodeId,
+        uint valueNodeId,
         Severity severity)
         => new()
         {
@@ -187,8 +187,8 @@ public readonly record struct ShaclTraceEvent: ITraceEvent
         long sequenceNumber,
         long timestampTicks,
         Guid correlationId,
-        long focusNodeId,
-        long shapeId,
+        uint focusNodeId,
+        uint shapeId,
         string constraintIri)
         => new()
         {

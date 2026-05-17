@@ -535,7 +535,7 @@ public sealed class NodeStore: IDisposable
 
             for(int position = 0; position < current.Depth; position++)
             {
-                foreach(KeyValuePair<long, HypertrieNode?> entry in EdgeMap.Enumerate(current.EdgeMaps[position]))
+                foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(current.EdgeMaps[position]))
                 {
                     //At depth-1 leaves the child reference is null;
                     //higher depths always carry a non-null child.
@@ -671,7 +671,7 @@ public sealed class NodeStore: IDisposable
             return true;
         }
 
-        foreach(KeyValuePair<long, HypertrieNode?> entry in EdgeMap.Enumerate(left))
+        foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(left))
         {
             if(!EdgeMap.TryGetChild(in right, entry.Key, out HypertrieNode? rightChild))
             {

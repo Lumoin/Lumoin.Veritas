@@ -13,7 +13,8 @@ namespace Lumoin.Veritas.Core;
 /// <para>
 /// All graph storage and query operations work with encoded triples rather than
 /// full RDF terms. This dictionary provides the encoding/decoding layer. Terms
-/// are assigned sequential identifiers starting from zero.
+/// are assigned sequential identifiers starting from <c>1</c>; identifier
+/// <c>0</c> is reserved as the <see cref="TermId.None"/> sentinel.
 /// </para>
 /// <para>
 /// <b>Typed overloads.</b> When the caller already knows the kind of term it is
@@ -34,12 +35,19 @@ namespace Lumoin.Veritas.Core;
 public sealed class TermDictionary
 {
     /// <summary>
-    /// Forward mapping from RDF terms to their encoded identifiers.
+    /// Forward mapping from RDF terms to their encoded identifiers. Stored
+    /// values are 1-based external identifiers, equal to the
+    /// <see cref="TermId.Encoded"/> handle returned to callers.
     /// </summary>
-    private Dictionary<RdfTerm, long> TermToId { get; } = [];
+    private Dictionary<RdfTerm, uint> TermToId { get; } = [];
 
     /// <summary>
-    /// Reverse mapping from encoded identifiers to RDF terms, indexed by position.
+    /// Reverse mapping from encoded identifiers to RDF terms. Indexed
+    /// internally as 0-based; the external 1-based identifier is
+    /// computed by adding one to the index. Decoupling the internal
+    /// list index from the external identifier keeps the
+    /// <see cref="TermId.None"/> sentinel reserved at external
+    /// identifier <c>0</c> without wasting a list slot.
     /// </summary>
     private List<RdfTerm> IdToTerm { get; } = [];
 
@@ -58,13 +66,13 @@ public sealed class TermDictionary
     public TermId GetOrAdd(RdfTerm term)
     {
         ArgumentNullException.ThrowIfNull(term);
-        if(TermToId.TryGetValue(term, out long existingId))
+        if(TermToId.TryGetValue(term, out uint existingId))
         {
             return TermId.FromEncoded(existingId);
         }
 
-        long newId = IdToTerm.Count;
         IdToTerm.Add(term);
+        uint newId = (uint)IdToTerm.Count;
         TermToId[term] = newId;
 
         return TermId.FromEncoded(newId);
@@ -134,7 +142,7 @@ public sealed class TermDictionary
     public TermId GetIdOrDefault(RdfTerm term)
     {
         ArgumentNullException.ThrowIfNull(term);
-        return TermToId.TryGetValue(term, out long id) ? TermId.FromEncoded(id) : TermId.None;
+        return TermToId.TryGetValue(term, out uint id) ? TermId.FromEncoded(id) : TermId.None;
     }
 
     /// <summary>
@@ -143,18 +151,12 @@ public sealed class TermDictionary
     /// <param name="id">The identifier to resolve.</param>
     /// <returns>The RDF term corresponding to <paramref name="id"/>.</returns>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// The encoded value is negative or greater than or equal to <see cref="Count"/>.
+    /// The encoded value is <c>0</c> (the <see cref="TermId.None"/> sentinel)
+    /// or greater than <see cref="Count"/>.
     /// </exception>
     public RdfTerm Resolve(TermId id)
     {
-        long encoded = id.Encoded;
-        if(encoded < 0 || encoded >= IdToTerm.Count)
-        {
-            throw new ArgumentOutOfRangeException(nameof(id), encoded,
-                $"Term identifier must be between 0 and {IdToTerm.Count - 1}.");
-        }
-
-        return IdToTerm[(int)encoded];
+        return Resolve(id.Encoded);
     }
 
     /// <summary>
@@ -163,21 +165,21 @@ public sealed class TermDictionary
     /// <param name="encoded">The raw encoded identifier to resolve.</param>
     /// <returns>The RDF term corresponding to <paramref name="encoded"/>.</returns>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// <paramref name="encoded"/> is negative or greater than or equal to <see cref="Count"/>.
+    /// <paramref name="encoded"/> is <c>0</c> or greater than <see cref="Count"/>.
     /// </exception>
     /// <remarks>
-    /// Use this overload when working against a raw-<see cref="long"/> storage layer.
-    /// Prefer <see cref="Resolve(TermId)"/> within the typed pipeline.
+    /// Use this overload when working against a raw-<see cref="uint"/> storage
+    /// layer. Prefer <see cref="Resolve(TermId)"/> within the typed pipeline.
     /// </remarks>
-    public RdfTerm Resolve(long encoded)
+    public RdfTerm Resolve(uint encoded)
     {
-        if(encoded < 0 || encoded >= IdToTerm.Count)
+        if(encoded == 0 || encoded > (uint)IdToTerm.Count)
         {
             throw new ArgumentOutOfRangeException(nameof(encoded), encoded,
-                $"Term identifier must be between 0 and {IdToTerm.Count - 1}.");
+                $"Term identifier must be between 1 and {IdToTerm.Count}; '0' is reserved for TermId.None.");
         }
 
-        return IdToTerm[(int)encoded];
+        return IdToTerm[(int)(encoded - 1)];
     }
 
     /// <summary>

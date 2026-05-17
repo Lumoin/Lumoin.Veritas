@@ -17,7 +17,7 @@ internal sealed class GraphUnfoldTests
         GraphExpansion<int> Coalgebra(int seed)
         {
             return new GraphExpansion<int>(
-                EncodedTriple.FromEncoded(seed, 100, seed + 1),
+                EncodedTriple.FromEncoded((uint)seed, 100, (uint)(seed + 1)),
                 []);
         }
 
@@ -47,7 +47,7 @@ internal sealed class GraphUnfoldTests
             }
 
             return new GraphExpansion<int>(
-                EncodedTriple.FromEncoded(seed, 100, seed + 1),
+                EncodedTriple.FromEncoded((uint)seed, 100, (uint)(seed + 1)),
                 [seed + 1]);
         }
 
@@ -81,7 +81,7 @@ internal sealed class GraphUnfoldTests
             }
 
             return new GraphExpansion<int>(
-                EncodedTriple.FromEncoded(seed, 100, seed + 1),
+                EncodedTriple.FromEncoded((uint)seed, 100, (uint)(seed + 1)),
                 []);
         }
 

@@ -16,31 +16,31 @@ internal sealed class LeapfrogIntersectionTests
     //Synthetic predicate and object the test graphs share. Using
     //fixed values keeps the iterator's first level (subject) the
     //one varying with the key sequence under test.
-    private const long SharedPredicate = 1000;
+    private const uint SharedPredicate = 1000;
 
-    private const long SharedObject = 2000;
+    private const uint SharedObject = 2000;
 
     [TestMethod]
     public async Task SingleParticipantReturnsItsCurrentKey()
     {
-        long[] keys = [10, 20, 30];
+        uint[] keys = [10, 20, 30];
 
         StoreScope scope = await StoreScope.CreateAsync(keys, TestContext.CancellationToken).ConfigureAwait(false);
         using TriejoinIterator iterator = scope.OpenSubjectIterator();
 
         bool found = LeapfrogIntersection.TryFindNextCommonKey(
             [iterator],
-            out long commonKey,
+            out uint commonKey,
             TestContext.CancellationToken);
 
         Assert.IsTrue(found);
-        Assert.AreEqual(10L, commonKey);
+        Assert.AreEqual(10U, commonKey);
     }
 
     [TestMethod]
     public async Task TwoParticipantsWithIdenticalSequencesAgreeOnFirstKey()
     {
-        long[] keys = [5, 10, 15];
+        uint[] keys = [5, 10, 15];
 
         StoreScope left = await StoreScope.CreateAsync(keys, TestContext.CancellationToken).ConfigureAwait(false);
         StoreScope right = await StoreScope.CreateAsync(keys, TestContext.CancellationToken).ConfigureAwait(false);
@@ -49,18 +49,18 @@ internal sealed class LeapfrogIntersectionTests
 
         bool found = LeapfrogIntersection.TryFindNextCommonKey(
             [a, b],
-            out long commonKey,
+            out uint commonKey,
             TestContext.CancellationToken);
 
         Assert.IsTrue(found);
-        Assert.AreEqual(5L, commonKey);
+        Assert.AreEqual(5U, commonKey);
     }
 
     [TestMethod]
     public async Task TwoParticipantsWithDisjointSequencesReturnFalse()
     {
-        long[] leftKeys = [1, 3, 5];
-        long[] rightKeys = [2, 4, 6];
+        uint[] leftKeys = [1, 3, 5];
+        uint[] rightKeys = [2, 4, 6];
 
         StoreScope left = await StoreScope.CreateAsync(leftKeys, TestContext.CancellationToken).ConfigureAwait(false);
         StoreScope right = await StoreScope.CreateAsync(rightKeys, TestContext.CancellationToken).ConfigureAwait(false);
@@ -69,18 +69,18 @@ internal sealed class LeapfrogIntersectionTests
 
         bool found = LeapfrogIntersection.TryFindNextCommonKey(
             [a, b],
-            out long commonKey,
+            out uint commonKey,
             TestContext.CancellationToken);
 
         Assert.IsFalse(found);
-        Assert.AreEqual(0L, commonKey);
+        Assert.AreEqual(0U, commonKey);
     }
 
     [TestMethod]
     public async Task TwoParticipantsAdvanceToFirstSharedKey()
     {
-        long[] leftKeys = [1, 4, 7, 10];
-        long[] rightKeys = [2, 4, 8, 10];
+        uint[] leftKeys = [1, 4, 7, 10];
+        uint[] rightKeys = [2, 4, 8, 10];
 
         StoreScope left = await StoreScope.CreateAsync(leftKeys, TestContext.CancellationToken).ConfigureAwait(false);
         StoreScope right = await StoreScope.CreateAsync(rightKeys, TestContext.CancellationToken).ConfigureAwait(false);
@@ -89,11 +89,11 @@ internal sealed class LeapfrogIntersectionTests
 
         bool found = LeapfrogIntersection.TryFindNextCommonKey(
             [a, b],
-            out long commonKey,
+            out uint commonKey,
             TestContext.CancellationToken);
 
         Assert.IsTrue(found);
-        Assert.AreEqual(4L, commonKey);
+        Assert.AreEqual(4U, commonKey);
     }
 
     [TestMethod]
@@ -102,17 +102,17 @@ internal sealed class LeapfrogIntersectionTests
         //Drive the algorithm in a loop, pulling out every common
         //key and advancing past it. This is the shape the WCOJ
         //driver will use.
-        long[] leftKeys = [1, 4, 7, 10, 13];
-        long[] rightKeys = [2, 4, 8, 10, 14];
+        uint[] leftKeys = [1, 4, 7, 10, 13];
+        uint[] rightKeys = [2, 4, 8, 10, 14];
 
         StoreScope left = await StoreScope.CreateAsync(leftKeys, TestContext.CancellationToken).ConfigureAwait(false);
         StoreScope right = await StoreScope.CreateAsync(rightKeys, TestContext.CancellationToken).ConfigureAwait(false);
         using TriejoinIterator a = left.OpenSubjectIterator();
         using TriejoinIterator b = right.OpenSubjectIterator();
 
-        List<long> intersection = [];
+        List<uint> intersection = [];
 
-        while(LeapfrogIntersection.TryFindNextCommonKey([a, b], out long commonKey, TestContext.CancellationToken))
+        while(LeapfrogIntersection.TryFindNextCommonKey([a, b], out uint commonKey, TestContext.CancellationToken))
         {
             intersection.Add(commonKey);
 
@@ -122,15 +122,15 @@ internal sealed class LeapfrogIntersectionTests
             b.Next(TestContext.CancellationToken);
         }
 
-        CollectionAssert.AreEqual(new long[] { 4, 10 }, intersection);
+        CollectionAssert.AreEqual(new uint[] { 4, 10 }, intersection);
     }
 
     [TestMethod]
     public async Task ThreeParticipantsAgreeOnlyOnCommonElement()
     {
-        long[] aKeys = [1, 5, 10, 15];
-        long[] bKeys = [3, 5, 10, 20];
-        long[] cKeys = [5, 7, 10, 25];
+        uint[] aKeys = [1, 5, 10, 15];
+        uint[] bKeys = [3, 5, 10, 20];
+        uint[] cKeys = [5, 7, 10, 25];
 
         StoreScope storeA = await StoreScope.CreateAsync(aKeys, TestContext.CancellationToken).ConfigureAwait(false);
         StoreScope storeB = await StoreScope.CreateAsync(bKeys, TestContext.CancellationToken).ConfigureAwait(false);
@@ -141,19 +141,19 @@ internal sealed class LeapfrogIntersectionTests
 
         bool found = LeapfrogIntersection.TryFindNextCommonKey(
             [iterA, iterB, iterC],
-            out long commonKey,
+            out uint commonKey,
             TestContext.CancellationToken);
 
         Assert.IsTrue(found);
-        Assert.AreEqual(5L, commonKey);
+        Assert.AreEqual(5U, commonKey);
     }
 
     [TestMethod]
     public async Task ThreeParticipantsWithEmptyIntersectionReturnFalse()
     {
-        long[] aKeys = [1, 2, 3];
-        long[] bKeys = [4, 5, 6];
-        long[] cKeys = [7, 8, 9];
+        uint[] aKeys = [1, 2, 3];
+        uint[] bKeys = [4, 5, 6];
+        uint[] cKeys = [7, 8, 9];
 
         StoreScope storeA = await StoreScope.CreateAsync(aKeys, TestContext.CancellationToken).ConfigureAwait(false);
         StoreScope storeB = await StoreScope.CreateAsync(bKeys, TestContext.CancellationToken).ConfigureAwait(false);
@@ -164,11 +164,11 @@ internal sealed class LeapfrogIntersectionTests
 
         bool found = LeapfrogIntersection.TryFindNextCommonKey(
             [iterA, iterB, iterC],
-            out long commonKey,
+            out uint commonKey,
             TestContext.CancellationToken);
 
         Assert.IsFalse(found);
-        Assert.AreEqual(0L, commonKey);
+        Assert.AreEqual(0U, commonKey);
     }
 
     [TestMethod]
@@ -180,8 +180,8 @@ internal sealed class LeapfrogIntersectionTests
         //overshoot. The algorithm promotes target to 200 and
         //rescans; B (at 100) seeks to 200 and lands exactly on
         //it (B contains 200). Common key = 200.
-        long[] aKeys = [1, 50, 200, 500];
-        long[] bKeys = [100, 200, 500];
+        uint[] aKeys = [1, 50, 200, 500];
+        uint[] bKeys = [100, 200, 500];
 
         StoreScope storeA = await StoreScope.CreateAsync(aKeys, TestContext.CancellationToken).ConfigureAwait(false);
         StoreScope storeB = await StoreScope.CreateAsync(bKeys, TestContext.CancellationToken).ConfigureAwait(false);
@@ -190,11 +190,11 @@ internal sealed class LeapfrogIntersectionTests
 
         bool found = LeapfrogIntersection.TryFindNextCommonKey(
             [iterA, iterB],
-            out long commonKey,
+            out uint commonKey,
             TestContext.CancellationToken);
 
         Assert.IsTrue(found);
-        Assert.AreEqual(200L, commonKey);
+        Assert.AreEqual(200U, commonKey);
     }
 
     [TestMethod]
@@ -209,11 +209,11 @@ internal sealed class LeapfrogIntersectionTests
 
         bool found = LeapfrogIntersection.TryFindNextCommonKey(
             [iterA],
-            out long commonKey,
+            out uint commonKey,
             TestContext.CancellationToken);
 
         Assert.IsFalse(found);
-        Assert.AreEqual(0L, commonKey);
+        Assert.AreEqual(0U, commonKey);
     }
 
     [TestMethod]
@@ -237,7 +237,7 @@ internal sealed class LeapfrogIntersectionTests
     [TestMethod]
     public async Task HonoursCancellationToken()
     {
-        long[] keys = [1, 2, 3];
+        uint[] keys = [1, 2, 3];
 
         StoreScope store = await StoreScope.CreateAsync(keys, TestContext.CancellationToken).ConfigureAwait(false);
         using TriejoinIterator iterator = store.OpenSubjectIterator();
@@ -267,7 +267,7 @@ internal sealed class LeapfrogIntersectionTests
         //Async factory because building the underlying store
         //serialises against the node store's mutation gate, which
         //is async-only.
-        public static async ValueTask<StoreScope> CreateAsync(long[] subjects, CancellationToken cancellationToken)
+        public static async ValueTask<StoreScope> CreateAsync(uint[] subjects, CancellationToken cancellationToken)
         {
             EncodedTriple[] triples = new EncodedTriple[subjects.Length];
 

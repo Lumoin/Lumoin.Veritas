@@ -108,9 +108,9 @@ public static class HypertrieOps
         //object) for the S-first path, (subject, object) for the
         //P-first path, and (subject, predicate) for the O-first
         //path.
-        Dictionary<long, HypertrieNode> sFirstDepth2 = BuildPathDepth2(spoView, store, PositionSubject);
-        Dictionary<long, HypertrieNode> pFirstDepth2 = BuildPathDepth2(psoView, store, PositionPredicate);
-        Dictionary<long, HypertrieNode> oFirstDepth2 = BuildPathDepth2(ospView, store, PositionObject);
+        Dictionary<uint, HypertrieNode> sFirstDepth2 = BuildPathDepth2(spoView, store, PositionSubject);
+        Dictionary<uint, HypertrieNode> pFirstDepth2 = BuildPathDepth2(psoView, store, PositionPredicate);
+        Dictionary<uint, HypertrieNode> oFirstDepth2 = BuildPathDepth2(ospView, store, PositionObject);
 
         //Build the depth-3 root: three edge maps, one per starting
         //position, each holding the pre-built depth-2 mapping for
@@ -140,11 +140,27 @@ public static class HypertrieOps
     /// <returns>An enumerable of matching triples; each is yielded exactly once.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="root"/> is <c>null</c>.</exception>
     /// <exception cref="ArgumentException"><paramref name="root"/> is not a depth-3 node.</exception>
+    /// <remarks>
+    /// <para>
+    /// <b>Unbound positions.</b> A position parameter of <c>null</c>
+    /// means "match any value at this position" — the pattern is
+    /// unbound at that position. A concrete <see cref="uint"/> value
+    /// means "match this exact encoded term." The
+    /// <see cref="System.Nullable{T}"/> shape preserves the
+    /// distinction explicitly; a future API revision may replace
+    /// <c>uint?</c> with <see cref="TermId"/> directly (where
+    /// <see cref="TermId.None"/> is the unbound state), saving four
+    /// bytes per parameter, but that switch is intentionally
+    /// deferred — the explicit nullable form makes the "unbound"
+    /// intent readable at call sites that would otherwise look
+    /// like they were asking to match the zero-encoded term.
+    /// </para>
+    /// </remarks>
     public static IEnumerable<EncodedTriple> Match(
         HypertrieNode root,
-        long? subject,
-        long? predicate,
-        long? @object)
+        uint? subject,
+        uint? predicate,
+        uint? @object)
     {
         ArgumentNullException.ThrowIfNull(root);
         if(root.Depth != 3)
@@ -174,7 +190,7 @@ public static class HypertrieOps
     //list to the run length, then hands the run to
     //BuildAndInternDepth2 — no dictionary, no per-bucket
     //rehashing, no list growth.
-    private static Dictionary<long, HypertrieNode> BuildPathDepth2(
+    private static Dictionary<uint, HypertrieNode> BuildPathDepth2(
         ReadOnlySpan<EncodedTriple> sortedByOuter,
         NodeStore store,
         int outerPosition)
@@ -187,12 +203,12 @@ public static class HypertrieOps
             _ => throw new UnreachableException(),
         };
 
-        Dictionary<long, HypertrieNode> result = [];
+        Dictionary<uint, HypertrieNode> result = [];
         int index = 0;
         int length = sortedByOuter.Length;
         while(index < length)
         {
-            long outerKey = ValueAt(sortedByOuter[index], outerPosition);
+            uint outerKey = ValueAt(sortedByOuter[index], outerPosition);
 
             //Slide the right edge of the run to the first triple
             //whose outer value differs.
@@ -203,7 +219,7 @@ public static class HypertrieOps
             }
 
             int runLength = runEnd - index;
-            List<(long Inner1, long Inner2)> entries = new(capacity: runLength);
+            List<(uint Inner1, uint Inner2)> entries = new(capacity: runLength);
             for(int cursor = index; cursor < runEnd; cursor++)
             {
                 EncodedTriple triple = sortedByOuter[cursor];
@@ -268,22 +284,22 @@ public static class HypertrieOps
     //node is built, so the depth-2 node's identifier sees
     //canonical child identifiers.
     private static HypertrieNode BuildAndInternDepth2(
-        List<(long Inner1, long Inner2)> entries,
+        List<(uint Inner1, uint Inner2)> entries,
         NodeStore store)
     {
         //Group by Inner1 -> set of Inner2; group by Inner2 -> set of Inner1.
-        Dictionary<long, HashSet<long>> byInner1 = [];
-        Dictionary<long, HashSet<long>> byInner2 = [];
-        foreach((long inner1, long inner2) in entries)
+        Dictionary<uint, HashSet<uint>> byInner1 = [];
+        Dictionary<uint, HashSet<uint>> byInner2 = [];
+        foreach((uint inner1, uint inner2) in entries)
         {
-            if(!byInner1.TryGetValue(inner1, out HashSet<long>? bucket1))
+            if(!byInner1.TryGetValue(inner1, out HashSet<uint>? bucket1))
             {
                 bucket1 = [];
                 byInner1[inner1] = bucket1;
             }
             bucket1.Add(inner2);
 
-            if(!byInner2.TryGetValue(inner2, out HashSet<long>? bucket2))
+            if(!byInner2.TryGetValue(inner2, out HashSet<uint>? bucket2))
             {
                 bucket2 = [];
                 byInner2[inner2] = bucket2;
@@ -294,16 +310,16 @@ public static class HypertrieOps
         //Build & intern depth-1 leaves for each grouping; reuse
         //already-interned leaves when two groupings produce the
         //same set (common when the data has symmetry).
-        Dictionary<long, HypertrieNode> leavesByInner1 = BuildAndInternLeaves(byInner1, store);
-        Dictionary<long, HypertrieNode> leavesByInner2 = BuildAndInternLeaves(byInner2, store);
+        Dictionary<uint, HypertrieNode> leavesByInner1 = BuildAndInternLeaves(byInner1, store);
+        Dictionary<uint, HypertrieNode> leavesByInner2 = BuildAndInternLeaves(byInner2, store);
 
         //Assemble the depth-2 node with both edge maps populated.
         HypertrieNode depth2 = new(2);
-        foreach(KeyValuePair<long, HypertrieNode> entry in leavesByInner1)
+        foreach(KeyValuePair<uint, HypertrieNode> entry in leavesByInner1)
         {
             EdgeMap.InsertOrReplace(ref depth2.EdgeMaps[0], entry.Key, entry.Value);
         }
-        foreach(KeyValuePair<long, HypertrieNode> entry in leavesByInner2)
+        foreach(KeyValuePair<uint, HypertrieNode> entry in leavesByInner2)
         {
             EdgeMap.InsertOrReplace(ref depth2.EdgeMaps[1], entry.Key, entry.Value);
         }
@@ -318,15 +334,15 @@ public static class HypertrieOps
     //Builds a depth-1 leaf for every distinct key set in `groups`,
     //interning each through `store` and returning a map from group
     //key to canonical leaf.
-    private static Dictionary<long, HypertrieNode> BuildAndInternLeaves(
-        Dictionary<long, HashSet<long>> groups,
+    private static Dictionary<uint, HypertrieNode> BuildAndInternLeaves(
+        Dictionary<uint, HashSet<uint>> groups,
         NodeStore store)
     {
-        Dictionary<long, HypertrieNode> result = new(groups.Count);
-        foreach(KeyValuePair<long, HashSet<long>> group in groups)
+        Dictionary<uint, HypertrieNode> result = new(groups.Count);
+        foreach(KeyValuePair<uint, HashSet<uint>> group in groups)
         {
             HypertrieNode leaf = new(1);
-            foreach(long member in group.Value)
+            foreach(uint member in group.Value)
             {
                 EdgeMap.InsertOrReplace(ref leaf.EdgeMaps[0], member, null);
             }
@@ -337,16 +353,16 @@ public static class HypertrieOps
     }
 
     //Populates one root edge map from a depth-2 mapping.
-    private static void PopulateRootEdgeMap(ref EdgeMap edgeMap, Dictionary<long, HypertrieNode> mapping)
+    private static void PopulateRootEdgeMap(ref EdgeMap edgeMap, Dictionary<uint, HypertrieNode> mapping)
     {
-        foreach(KeyValuePair<long, HypertrieNode> entry in mapping)
+        foreach(KeyValuePair<uint, HypertrieNode> entry in mapping)
         {
             EdgeMap.InsertOrReplace(ref edgeMap, entry.Key, entry.Value);
         }
     }
 
     //Reads the value at `position` from `triple` (0=S, 1=P, 2=O).
-    private static long ValueAt(EncodedTriple triple, int position)
+    private static uint ValueAt(EncodedTriple triple, int position)
     {
         return position switch
         {
@@ -369,7 +385,7 @@ public static class HypertrieOps
         Dictionary<HypertrieNode, NodeIdentifier> result = new(ReferenceEqualityComparer.Instance);
         for(int position = 0; position < node.Depth; position++)
         {
-            foreach(KeyValuePair<long, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
+            foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
             {
                 if(entry.Value is null)
                 {
@@ -413,7 +429,7 @@ public static class HypertrieOps
         if(node.Depth == 1)
         {
             NodeIdentifier id = NodeIdentifier.Empty;
-            foreach(KeyValuePair<long, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[0]))
+            foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[0]))
             {
                 ulong childIdentifier = entry.Value is null ? LeafChildMarker : LookupChildIdentifier(entry.Value, knownChildIdentifiers);
                 id = id.Add(NodeEntryHashing.Default(hash, entry.Key, childIdentifier));
@@ -447,7 +463,7 @@ public static class HypertrieOps
         NodeIdentifier id = NodeIdentifier.Empty;
         for(int position = 0; position < node.Depth; position++)
         {
-            foreach(KeyValuePair<long, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
+            foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
             {
                 ulong childIdentifier = entry.Value is null ? LeafChildMarker : childIdentifiers[entry.Value].Value;
                 id = id.Add(NodeEntryHashing.Default(hash, entry.Key, childIdentifier));
@@ -490,7 +506,7 @@ public static class HypertrieOps
             NodeIdentifier id = NodeIdentifier.Empty;
             for(int position = 0; position < node.Depth; position++)
             {
-                foreach(KeyValuePair<long, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
+                foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
                 {
                     ulong childIdentifier = entry.Value is null ? LeafChildMarker : known[entry.Value].Value;
                     id = id.Add(NodeEntryHashing.Default(hash, entry.Key, childIdentifier));
@@ -509,7 +525,7 @@ public static class HypertrieOps
     {
         for(int position = 0; position < node.Depth; position++)
         {
-            foreach(KeyValuePair<long, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
+            foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
             {
                 if(entry.Value is not null)
                 {
@@ -559,9 +575,9 @@ public static class HypertrieOps
 
     private static IEnumerable<EncodedTriple> MatchCore(
         HypertrieNode root,
-        long? subject,
-        long? predicate,
-        long? @object)
+        uint? subject,
+        uint? predicate,
+        uint? @object)
     {
         Stack<MatchFrame> stack = new();
         stack.Push(new MatchFrame
@@ -580,7 +596,7 @@ public static class HypertrieOps
 
             int chosenPosition = SelectPosition(frame.PendingPositions, subject, predicate, @object);
             int chosenEdgeMapIndex = EdgeMapIndexOf(frame.PendingPositions, chosenPosition);
-            long? chosenBound = chosenPosition switch
+            uint? chosenBound = chosenPosition switch
             {
                 PositionSubject => subject,
                 PositionPredicate => predicate,
@@ -599,7 +615,7 @@ public static class HypertrieOps
                 }
                 else
                 {
-                    foreach(KeyValuePair<long, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[chosenEdgeMapIndex]))
+                    foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[chosenEdgeMapIndex]))
                     {
                         yield return BuildTriple(frame, chosenPosition, entry.Key);
                     }
@@ -619,7 +635,7 @@ public static class HypertrieOps
             }
             else
             {
-                foreach(KeyValuePair<long, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[chosenEdgeMapIndex]))
+                foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[chosenEdgeMapIndex]))
                 {
                     if(entry.Value is not null)
                     {
@@ -641,7 +657,7 @@ public static class HypertrieOps
     //Iteration walks positions 0..2 in ascending order so the
     //fall-through case naturally returns the lowest pending bit
     //without a separate code path.
-    private static int SelectPosition(byte pending, long? subject, long? predicate, long? @object)
+    private static int SelectPosition(byte pending, uint? subject, uint? predicate, uint? @object)
     {
         int firstPending = -1;
         for(int position = 0; position < 3; position++)
@@ -678,15 +694,15 @@ public static class HypertrieOps
         return firstPending;
     }
 
-    private static EncodedTriple BuildTriple(MatchFrame frame, int newPosition, long newValue)
+    private static EncodedTriple BuildTriple(MatchFrame frame, int newPosition, uint newValue)
     {
-        long s = newPosition == PositionSubject
+        uint s = newPosition == PositionSubject
             ? newValue
             : frame.ResolvedSubject ?? throw new InvalidOperationException("Subject not resolved when constructing triple.");
-        long p = newPosition == PositionPredicate
+        uint p = newPosition == PositionPredicate
             ? newValue
             : frame.ResolvedPredicate ?? throw new InvalidOperationException("Predicate not resolved when constructing triple.");
-        long o = newPosition == PositionObject
+        uint o = newPosition == PositionObject
             ? newValue
             : frame.ResolvedObject ?? throw new InvalidOperationException("Object not resolved when constructing triple.");
         return EncodedTriple.FromEncoded(s, p, o);
@@ -695,7 +711,7 @@ public static class HypertrieOps
     private static MatchFrame NewMatchFrame(
         MatchFrame parent,
         int newPosition,
-        long newValue,
+        uint newValue,
         HypertrieNode child,
         byte childPending)
     {
@@ -718,8 +734,8 @@ public static class HypertrieOps
     {
         public required HypertrieNode Node { get; init; }
         public required byte PendingPositions { get; init; }
-        public required long? ResolvedSubject { get; init; }
-        public required long? ResolvedPredicate { get; init; }
-        public required long? ResolvedObject { get; init; }
+        public required uint? ResolvedSubject { get; init; }
+        public required uint? ResolvedPredicate { get; init; }
+        public required uint? ResolvedObject { get; init; }
     }
 }

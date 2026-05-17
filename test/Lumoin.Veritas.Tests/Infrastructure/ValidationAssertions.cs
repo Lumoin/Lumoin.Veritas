@@ -151,14 +151,14 @@ internal static class ValidationAssertions
         sb.AppendLine();
     }
 
-    private static string FormatTerm(long encoded, TermDictionary dictionary)
+    private static string FormatTerm(uint encoded, TermDictionary dictionary)
     {
         if(encoded == 0)
         {
             return "<unset>";
         }
 
-        if(encoded < 0 || encoded >= dictionary.Count)
+        if(encoded > dictionary.Count)
         {
             return encoded.ToString(CultureInfo.InvariantCulture);
         }

@@ -41,12 +41,12 @@ internal sealed class RdfCollectionTests
         //Cells are 10 -> 11 -> 12 -> nil.
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(10, FirstId, 100),
-            EncodedTriple.FromEncoded(10, RestId, 11),
-            EncodedTriple.FromEncoded(11, FirstId, 101),
-            EncodedTriple.FromEncoded(11, RestId, 12),
-            EncodedTriple.FromEncoded(12, FirstId, 102),
-            EncodedTriple.FromEncoded(12, RestId, NilId)
+            EncodedTriple.FromEncoded(10, FirstId.Encoded, 100),
+            EncodedTriple.FromEncoded(10, RestId.Encoded, 11),
+            EncodedTriple.FromEncoded(11, FirstId.Encoded, 101),
+            EncodedTriple.FromEncoded(11, RestId.Encoded, 12),
+            EncodedTriple.FromEncoded(12, FirstId.Encoded, 102),
+            EncodedTriple.FromEncoded(12, RestId.Encoded, NilId.Encoded)
         ]);
 
         IReadOnlyList<TermId> members = await RdfCollection.ToListAsync(
@@ -63,9 +63,9 @@ internal sealed class RdfCollectionTests
         //Malformed: second cell has first but no rest. We should still yield the first two.
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(10, FirstId, 100),
-            EncodedTriple.FromEncoded(10, RestId, 11),
-            EncodedTriple.FromEncoded(11, FirstId, 101)
+            EncodedTriple.FromEncoded(10, FirstId.Encoded, 100),
+            EncodedTriple.FromEncoded(10, RestId.Encoded, 11),
+            EncodedTriple.FromEncoded(11, FirstId.Encoded, 101)
         ]);
 
         IReadOnlyList<TermId> members = await RdfCollection.ToListAsync(
@@ -82,10 +82,10 @@ internal sealed class RdfCollectionTests
         //Malformed cyclic list: 10.rest -> 11, 11.rest -> 10.
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(10, FirstId, 100),
-            EncodedTriple.FromEncoded(10, RestId, 11),
-            EncodedTriple.FromEncoded(11, FirstId, 101),
-            EncodedTriple.FromEncoded(11, RestId, 10)
+            EncodedTriple.FromEncoded(10, FirstId.Encoded, 100),
+            EncodedTriple.FromEncoded(10, RestId.Encoded, 11),
+            EncodedTriple.FromEncoded(11, FirstId.Encoded, 101),
+            EncodedTriple.FromEncoded(11, RestId.Encoded, 10)
         ]);
 
         IReadOnlyList<TermId> members = await RdfCollection.ToListAsync(

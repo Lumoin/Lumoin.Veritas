@@ -13,4 +13,4 @@ namespace Lumoin.Veritas.Core.Hypertrie.Planning;
 /// are not retained across consultations.
 /// </remarks>
 [DebuggerDisplay("{Variable.Id}={Value}")]
-public readonly record struct VariableBinding(Variable Variable, long Value);
+public readonly record struct VariableBinding(Variable Variable, uint Value);

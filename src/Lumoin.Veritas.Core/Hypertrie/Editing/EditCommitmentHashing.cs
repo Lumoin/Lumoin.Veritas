@@ -37,15 +37,20 @@ namespace Lumoin.Veritas.Core.Hypertrie.Editing;
 /// consumers depend on.
 /// </para>
 /// <para>
-/// <b>Per-edit byte layout (protocol-pinned).</b> Twenty-five
-/// bytes:
+/// <b>Per-edit byte layout (protocol-pinned).</b> Fourteen bytes,
+/// prefixed by a layout-version byte so a future migration can
+/// distinguish commitments across format versions:
 /// <list type="bullet">
+///   <item><description>One byte for <see cref="CurrentLayoutVersion"/> (<c>0x01</c> for this layout).</description></item>
 ///   <item><description>One byte for <c>(byte)kind</c> — see <see cref="EditCommitmentKind"/> for the byte values.</description></item>
-///   <item><description>Eight bytes for <c>Subject.Encoded</c>, little-endian.</description></item>
-///   <item><description>Eight bytes for <c>Predicate.Encoded</c>, little-endian.</description></item>
-///   <item><description>Eight bytes for <c>Object.Encoded</c>, little-endian.</description></item>
+///   <item><description>Four bytes for <c>Subject.Encoded</c>, little-endian.</description></item>
+///   <item><description>Four bytes for <c>Predicate.Encoded</c>, little-endian.</description></item>
+///   <item><description>Four bytes for <c>Object.Encoded</c>, little-endian.</description></item>
 /// </list>
-/// The kind byte is included so
+/// The version byte being part of the hashed buffer guarantees
+/// that commitments produced under two different layouts are
+/// cryptographically distinguishable even if the rest of the
+/// bytes were identical between the two. The kind byte is included so
 /// <see cref="EditCommitmentKind.Addition"/> and
 /// <see cref="EditCommitmentKind.Removal"/> over the same
 /// triple produce different per-edit hashes; without it, an
@@ -89,9 +94,27 @@ namespace Lumoin.Veritas.Core.Hypertrie.Editing;
 /// </remarks>
 public static class EditCommitmentHashing
 {
-    //Per-edit byte buffer size: 1 kind byte + three 8-byte
-    //little-endian encoded ids. Twenty-five bytes total.
-    private const int PerEditByteCount = 25;
+    /// <summary>
+    /// The current per-edit byte-layout version written as the
+    /// first byte of every hashed edit buffer.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The version byte is a hedge against future layout changes:
+    /// pre-pending it to the hash input guarantees that
+    /// commitments produced under different layouts cannot
+    /// collide, and gives a migration tool a discriminator to
+    /// dispatch on when reading historical journals. Bump this
+    /// constant whenever the per-edit byte layout downstream of
+    /// the version byte changes.
+    /// </para>
+    /// </remarks>
+    public const byte CurrentLayoutVersion = 0x01;
+
+    //Per-edit byte buffer size: 1 layout-version byte + 1 kind
+    //byte + three 4-byte little-endian encoded ids. Fourteen
+    //bytes total.
+    private const int PerEditByteCount = 14;
 
     /// <summary>
     /// Computes the commitment for the given base and edits.
@@ -128,21 +151,22 @@ public static class EditCommitmentHashing
     }
 
     //Hashes one (kind, triple) pair into a non-zero 64-bit value.
-    //Uses a stack-allocated 25-byte buffer to avoid heap traffic;
+    //Uses a stack-allocated 14-byte buffer to avoid heap traffic;
     //the buffer's layout is fixed by the per-edit byte
     //representation in the type-level remarks.
     private static ulong HashEdit(VeritasHash hash, EditCommitmentKind kind, EncodedTriple triple)
     {
         Span<byte> buffer = stackalloc byte[PerEditByteCount];
-        buffer[0] = (byte)kind;
+        buffer[0] = CurrentLayoutVersion;
+        buffer[1] = (byte)kind;
 
-        long subject = triple.Subject.Encoded;
-        long predicate = triple.Predicate.Encoded;
-        long @object = triple.Object.Encoded;
+        uint subject = triple.Subject.Encoded;
+        uint predicate = triple.Predicate.Encoded;
+        uint @object = triple.Object.Encoded;
 
-        MemoryMarshal.Write(buffer[1..], in subject);
-        MemoryMarshal.Write(buffer[9..], in predicate);
-        MemoryMarshal.Write(buffer[17..], in @object);
+        MemoryMarshal.Write(buffer[2..], in subject);
+        MemoryMarshal.Write(buffer[6..], in predicate);
+        MemoryMarshal.Write(buffer[10..], in @object);
 
         ulong raw = hash(buffer);
 

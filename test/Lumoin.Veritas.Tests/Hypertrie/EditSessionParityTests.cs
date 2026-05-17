@@ -160,11 +160,11 @@ internal sealed class EditSessionParityTests
         List<EncodedTriple> baseTriples = [];
         List<EncodedTriple> addedTriples = [];
 
-        for(long i = 0; i < 5; i++)
+        for(uint i = 0; i < 5; i++)
         {
             baseTriples.Add(EncodedTriple.FromEncoded(1, 10, 100 + i));
         }
-        for(long i = 0; i < 10; i++)
+        for(uint i = 0; i < 10; i++)
         {
             addedTriples.Add(EncodedTriple.FromEncoded(1, 10, 200 + i));
         }

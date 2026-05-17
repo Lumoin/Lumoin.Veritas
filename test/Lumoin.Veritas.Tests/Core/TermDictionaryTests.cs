@@ -14,11 +14,12 @@ internal sealed class TermDictionaryTests
         NamedNode a = new(Utf8String.FromString("http://example.org/a"));
         NamedNode b = new(Utf8String.FromString("http://example.org/b"));
 
-        long idA = dictionary.GetOrAdd(a);
-        long idB = dictionary.GetOrAdd(b);
+        IriId idA = dictionary.GetOrAdd(a);
+        IriId idB = dictionary.GetOrAdd(b);
 
-        Assert.AreEqual(0, idA);
-        Assert.AreEqual(1, idB);
+        //External identifiers are 1-based; 0 is reserved for TermId.None.
+        Assert.AreEqual(1U, idA.Encoded);
+        Assert.AreEqual(2U, idB.Encoded);
     }
 
     [TestMethod]
@@ -27,10 +28,10 @@ internal sealed class TermDictionaryTests
         TermDictionary dictionary = new();
         NamedNode node = new(Utf8String.FromString("http://example.org/same"));
 
-        long first = dictionary.GetOrAdd(node);
-        long second = dictionary.GetOrAdd(node);
+        IriId first = dictionary.GetOrAdd(node);
+        IriId second = dictionary.GetOrAdd(node);
 
-        Assert.AreEqual(first, second);
+        Assert.AreEqual(first.Encoded, second.Encoded);
         Assert.AreEqual(1, dictionary.Count);
     }
 
@@ -40,8 +41,8 @@ internal sealed class TermDictionaryTests
         TermDictionary dictionary = new();
         BlankNode original = new(Utf8String.FromString("b0"));
 
-        long id = dictionary.GetOrAdd(original);
-        RdfTerm resolved = dictionary.Resolve(id);
+        BlankNodeId id = dictionary.GetOrAdd(original);
+        RdfTerm resolved = dictionary.Resolve(id.Value);
 
         Assert.AreEqual(original, resolved);
     }
@@ -51,12 +52,14 @@ internal sealed class TermDictionaryTests
     {
         TermDictionary dictionary = new();
 
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => dictionary.Resolve(0));
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => dictionary.Resolve(-1));
+        //Zero is the TermId.None sentinel and never resolves to a term.
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => dictionary.Resolve(0U));
+        //Counts beyond the dictionary's range also throw.
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => dictionary.Resolve(1U));
     }
 
     [TestMethod]
-    public void GetIdOrDefaultReturnsNegativeOneForMissingTerm()
+    public void GetIdOrDefaultReturnsNoneForMissingTerm()
     {
         TermDictionary dictionary = new();
         NamedNode missing = new(Utf8String.FromString("http://example.org/missing"));

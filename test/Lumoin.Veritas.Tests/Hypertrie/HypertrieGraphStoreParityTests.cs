@@ -51,80 +51,80 @@ internal sealed class HypertrieGraphStoreParityTests
     [TestMethod]
     public async Task MatchSubjectOnlyParity()
     {
-        await AssertParityAsync(SampleTriples, 1L, null, null).ConfigureAwait(false);
-        await AssertParityAsync(SampleTriples, 2L, null, null).ConfigureAwait(false);
-        await AssertParityAsync(SampleTriples, 3L, null, null).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, 1U, null, null).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, 2U, null, null).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, 3U, null, null).ConfigureAwait(false);
     }
 
     [TestMethod]
     public async Task MatchPredicateOnlyParity()
     {
-        await AssertParityAsync(SampleTriples, null, 10L, null).ConfigureAwait(false);
-        await AssertParityAsync(SampleTriples, null, 11L, null).ConfigureAwait(false);
-        await AssertParityAsync(SampleTriples, null, 12L, null).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, null, 10U, null).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, null, 11U, null).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, null, 12U, null).ConfigureAwait(false);
     }
 
     [TestMethod]
     public async Task MatchObjectOnlyParity()
     {
-        await AssertParityAsync(SampleTriples, null, null, 100L).ConfigureAwait(false);
-        await AssertParityAsync(SampleTriples, null, null, 101L).ConfigureAwait(false);
-        await AssertParityAsync(SampleTriples, null, null, 200L).ConfigureAwait(false);
-        await AssertParityAsync(SampleTriples, null, null, 300L).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, null, null, 100U).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, null, null, 101U).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, null, null, 200U).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, null, null, 300U).ConfigureAwait(false);
     }
 
     [TestMethod]
     public async Task MatchSubjectAndPredicateParity()
     {
-        await AssertParityAsync(SampleTriples, 1L, 10L, null).ConfigureAwait(false);
-        await AssertParityAsync(SampleTriples, 1L, 11L, null).ConfigureAwait(false);
-        await AssertParityAsync(SampleTriples, 2L, 10L, null).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, 1U, 10U, null).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, 1U, 11U, null).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, 2U, 10U, null).ConfigureAwait(false);
     }
 
     [TestMethod]
     public async Task MatchSubjectAndObjectParity()
     {
-        await AssertParityAsync(SampleTriples, 1L, null, 100L).ConfigureAwait(false);
-        await AssertParityAsync(SampleTriples, 2L, null, 100L).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, 1U, null, 100U).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, 2U, null, 100U).ConfigureAwait(false);
     }
 
     [TestMethod]
     public async Task MatchPredicateAndObjectParity()
     {
-        await AssertParityAsync(SampleTriples, null, 10L, 100L).ConfigureAwait(false);
-        await AssertParityAsync(SampleTriples, null, 11L, 100L).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, null, 10U, 100U).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, null, 11U, 100U).ConfigureAwait(false);
     }
 
     [TestMethod]
     public async Task MatchAllBoundParityWhenPresent()
     {
-        await AssertParityAsync(SampleTriples, 1L, 10L, 100L).ConfigureAwait(false);
-        await AssertParityAsync(SampleTriples, 1L, 10L, 101L).ConfigureAwait(false);
-        await AssertParityAsync(SampleTriples, 3L, 12L, 300L).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, 1U, 10U, 100U).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, 1U, 10U, 101U).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, 3U, 12U, 300U).ConfigureAwait(false);
     }
 
     [TestMethod]
     public async Task MatchAllBoundParityWhenAbsent()
     {
-        await AssertParityAsync(SampleTriples, 1L, 10L, 999L).ConfigureAwait(false);
-        await AssertParityAsync(SampleTriples, 999L, 10L, 100L).ConfigureAwait(false);
-        await AssertParityAsync(SampleTriples, 1L, 999L, 100L).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, 1U, 10U, 999U).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, 999U, 10U, 100U).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, 1U, 999U, 100U).ConfigureAwait(false);
     }
 
     [TestMethod]
     public async Task MatchPatternsThatYieldNothing()
     {
-        await AssertParityAsync(SampleTriples, 999L, null, null).ConfigureAwait(false);
-        await AssertParityAsync(SampleTriples, null, 999L, null).ConfigureAwait(false);
-        await AssertParityAsync(SampleTriples, null, null, 999L).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, 999U, null, null).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, null, 999U, null).ConfigureAwait(false);
+        await AssertParityAsync(SampleTriples, null, null, 999U).ConfigureAwait(false);
     }
 
     [TestMethod]
     public async Task EmptyGraphParity()
     {
         await AssertParityAsync([], null, null, null).ConfigureAwait(false);
-        await AssertParityAsync([], 1L, null, null).ConfigureAwait(false);
-        await AssertParityAsync([], 1L, 2L, 3L).ConfigureAwait(false);
+        await AssertParityAsync([], 1U, null, null).ConfigureAwait(false);
+        await AssertParityAsync([], 1U, 2U, 3U).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -147,9 +147,9 @@ internal sealed class HypertrieGraphStoreParityTests
         //bound" matches the same set on both stores at a non-trivial
         //degree.
         List<EncodedTriple> triples = [];
-        for(long p = 0; p < 25; p++)
+        for(uint p = 0; p < 25; p++)
         {
-            for(long o = 100; o < 125; o++)
+            for(uint o = 100; o < 125; o++)
             {
                 triples.Add(EncodedTriple.FromEncoded(1, p, o));
             }
@@ -157,7 +157,7 @@ internal sealed class HypertrieGraphStoreParityTests
         triples.Add(EncodedTriple.FromEncoded(2, 0, 100));
         triples.Add(EncodedTriple.FromEncoded(3, 0, 100));
 
-        await AssertParityAsync(triples, 1L, null, null).ConfigureAwait(false);
+        await AssertParityAsync(triples, 1U, null, null).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -166,9 +166,9 @@ internal sealed class HypertrieGraphStoreParityTests
         //One predicate connects many subject-object pairs; verify
         //"P only bound" parity at a non-trivial degree.
         List<EncodedTriple> triples = [];
-        for(long s = 0; s < 25; s++)
+        for(uint s = 0; s < 25; s++)
         {
-            for(long o = 0; o < 25; o++)
+            for(uint o = 0; o < 25; o++)
             {
                 triples.Add(EncodedTriple.FromEncoded(s, 99, o));
             }
@@ -176,7 +176,7 @@ internal sealed class HypertrieGraphStoreParityTests
         triples.Add(EncodedTriple.FromEncoded(0, 1, 0));
         triples.Add(EncodedTriple.FromEncoded(0, 2, 0));
 
-        await AssertParityAsync(triples, null, 99L, null).ConfigureAwait(false);
+        await AssertParityAsync(triples, null, 99U, null).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -186,17 +186,17 @@ internal sealed class HypertrieGraphStoreParityTests
         //pair. Every "subject only" query exercises the SortedArray
         //descent path on the hypertrie side at moderate cardinality.
         List<EncodedTriple> triples = [];
-        for(long s = 0; s < 20; s++)
+        for(uint s = 0; s < 20; s++)
         {
             triples.Add(EncodedTriple.FromEncoded(s, 1, s + 1000));
         }
 
         await AssertParityAsync(triples, null, null, null).ConfigureAwait(false);
-        for(long s = 0; s < 20; s++)
+        for(uint s = 0; s < 20; s++)
         {
             await AssertParityAsync(triples, s, null, null).ConfigureAwait(false);
         }
-        await AssertParityAsync(triples, null, 1L, null).ConfigureAwait(false);
+        await AssertParityAsync(triples, null, 1U, null).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -207,19 +207,19 @@ internal sealed class HypertrieGraphStoreParityTests
         //scaling without an upper bound, this exercises the "S
         //only" descent path at a degree that an earlier design
         //would have routed through a hash-table representation.
-        const int total = 4096;
+        const uint total = 4096;
         List<EncodedTriple> triples = [];
-        for(long s = 0; s < total; s++)
+        for(uint s = 0; s < total; s++)
         {
             triples.Add(EncodedTriple.FromEncoded(s, 1, 0));
         }
 
         await AssertParityAsync(triples, null, null, null).ConfigureAwait(false);
-        await AssertParityAsync(triples, 0L, null, null).ConfigureAwait(false);
-        await AssertParityAsync(triples, total - 1L, null, null).ConfigureAwait(false);
-        await AssertParityAsync(triples, total / 2L, null, null).ConfigureAwait(false);
-        await AssertParityAsync(triples, null, 1L, null).ConfigureAwait(false);
-        await AssertParityAsync(triples, null, null, 0L).ConfigureAwait(false);
+        await AssertParityAsync(triples, 0U, null, null).ConfigureAwait(false);
+        await AssertParityAsync(triples, total - 1U, null, null).ConfigureAwait(false);
+        await AssertParityAsync(triples, total / 2U, null, null).ConfigureAwait(false);
+        await AssertParityAsync(triples, null, 1U, null).ConfigureAwait(false);
+        await AssertParityAsync(triples, null, null, 0U).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -228,15 +228,15 @@ internal sealed class HypertrieGraphStoreParityTests
         //Walk a range that crosses through Empty, Inline, and
         //SortedArray at low, medium, and high cardinalities so each
         //region of the SortedArray growth path is covered.
-        long[] degrees = [0, 1, 2, 5, 16, 64, 100, 500, 2000];
-        foreach(long degree in degrees)
+        uint[] degrees = [0, 1, 2, 5, 16, 64, 100, 500, 2000];
+        foreach(uint degree in degrees)
         {
             List<EncodedTriple> triples = [];
-            for(long o = 0; o < degree; o++)
+            for(uint o = 0; o < degree; o++)
             {
                 triples.Add(EncodedTriple.FromEncoded(1, 50, o));
             }
-            await AssertParityAsync(triples, 1L, 50L, null).ConfigureAwait(false);
+            await AssertParityAsync(triples, 1U, 50U, null).ConfigureAwait(false);
         }
     }
 
@@ -257,7 +257,7 @@ internal sealed class HypertrieGraphStoreParityTests
         //{42} is shared by all subjects.
         const int subjectCount = 50;
         List<EncodedTriple> triples = [];
-        for(long s = 0; s < subjectCount; s++)
+        for(uint s = 0; s < subjectCount; s++)
         {
             triples.Add(EncodedTriple.FromEncoded(s, 1, 42));
         }
@@ -291,7 +291,7 @@ internal sealed class HypertrieGraphStoreParityTests
         Assert.AreEqual(first.Count, second.Count);
     }
 
-    private async Task AssertParityAsync(IEnumerable<EncodedTriple> triples, long? s, long? p, long? o)
+    private async Task AssertParityAsync(IEnumerable<EncodedTriple> triples, uint? s, uint? p, uint? o)
     {
         EncodedTriple[] materialized = [.. triples];
         InMemoryGraphStore inMemory = InMemoryGraphStore.Build(materialized);
@@ -314,7 +314,7 @@ internal sealed class HypertrieGraphStoreParityTests
             $"Hypertrie yielded {hypertrieSet.Count} distinct triple(s).");
     }
 
-    private static string Format(long? value)
+    private static string Format(uint? value)
     {
         return value.HasValue ? value.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) : "?";
     }

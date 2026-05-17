@@ -28,7 +28,7 @@ internal sealed class GraphHyloTests
         //not a child edge.
         HyloOutcome<int> outcome = await GraphHylo.HyloAsync<int, int>(
             seed: 5,
-            coalgebra: seed => new GraphExpansion<int>(EncodedTriple.FromEncoded(seed, 100, seed + 1), []),
+            coalgebra: seed => new GraphExpansion<int>(EncodedTriple.FromEncoded((uint)seed, 100, (uint)(seed + 1)), []),
             algebra: (_, outgoing, childResults) => outgoing.Count + childResults.Count,
             cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
@@ -52,7 +52,7 @@ internal sealed class GraphHyloTests
                     return new GraphExpansion<int>(EncodedTriple.FromEncoded(0, 100, 99), [1, 2]);
                 }
 
-                return new GraphExpansion<int>(EncodedTriple.FromEncoded(seed, 100, seed + 10), []);
+                return new GraphExpansion<int>(EncodedTriple.FromEncoded((uint)seed, 100, (uint)(seed + 10)), []);
             },
             algebra: (_, outgoing, childResults) =>
             {

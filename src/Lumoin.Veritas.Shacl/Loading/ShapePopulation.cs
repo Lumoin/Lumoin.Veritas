@@ -80,8 +80,8 @@ internal static class ShapePopulation
 
         await foreach(EncodedTriple triple in shapeGraphMatch(builder.Id, null, null, cancellationToken).ConfigureAwait(false))
         {
-            IriId predicate = IriId.FromUnchecked(TermId.FromEncoded(triple.Predicate));
-            TermId value = TermId.FromEncoded(triple.Object);
+            IriId predicate = IriId.FromUnchecked(triple.Predicate);
+            TermId value = triple.Object;
 
             if(predicate.Equals(context.ShaclIds.Path))
             {
@@ -371,7 +371,7 @@ internal static class ShapePopulation
 
             await foreach(EncodedTriple triple in shapeGraphMatch(current, rdfListIds.RdfFirst, null, cancellationToken).ConfigureAwait(false))
             {
-                first = TermId.FromEncoded(triple.Object);
+                first = triple.Object;
                 break;
             }
 
@@ -383,7 +383,7 @@ internal static class ShapePopulation
 
             await foreach(EncodedTriple triple in shapeGraphMatch(current, rdfListIds.RdfRest, null, cancellationToken).ConfigureAwait(false))
             {
-                rest = TermId.FromEncoded(triple.Object);
+                rest = triple.Object;
                 break;
             }
 

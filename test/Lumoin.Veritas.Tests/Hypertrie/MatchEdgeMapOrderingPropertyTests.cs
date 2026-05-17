@@ -7,7 +7,7 @@ using Lumoin.Veritas.Core.Hypertrie.Storage;
 namespace Lumoin.Veritas.Tests.Hypertrie;
 
 /// <summary>
-/// Pins the structural contract <see cref="HypertrieOps.Match(HypertrieNode, long?, long?, long?)"/>
+/// Pins the structural contract <see cref="HypertrieOps.Match(HypertrieNode, uint?, uint?, uint?)"/>
 /// relies on: at every depth, a node's edge maps are indexed in
 /// ascending order of the remaining original positions. The
 /// contract is established by <c>BuildPathDepth2</c>'s internal
@@ -50,7 +50,7 @@ internal sealed class MatchEdgeMapOrderingPropertyTests
         Gen.Int[0, 5].Array[3].Array[1, 30].Sample(tripleArrays =>
         {
             EncodedTriple[] triples = [.. tripleArrays
-                .Select(static a => EncodedTriple.FromEncoded(a[0], a[1], a[2]))
+                .Select(static a => EncodedTriple.FromEncoded((uint)a[0], (uint)a[1], (uint)a[2]))
                 .Distinct()];
 
             //BuildAsync is async because of the mutation gate. The
@@ -76,9 +76,9 @@ internal sealed class MatchEdgeMapOrderingPropertyTests
                 bool pBound = (patternBits & 2) != 0;
                 bool oBound = (patternBits & 4) != 0;
 
-                long? s = sBound ? binding.Subject.Encoded : null;
-                long? p = pBound ? binding.Predicate.Encoded : null;
-                long? o = oBound ? binding.Object.Encoded : null;
+                uint? s = sBound ? binding.Subject.Encoded : null;
+                uint? p = pBound ? binding.Predicate.Encoded : null;
+                uint? o = oBound ? binding.Object.Encoded : null;
 
                 HashSet<EncodedTriple> actual = [.. HypertrieOps.Match(graph.Snapshot.Root, s, p, o)];
                 HashSet<EncodedTriple> expected = [.. ground.Where(t =>

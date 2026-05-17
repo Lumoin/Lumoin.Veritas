@@ -21,31 +21,31 @@ namespace Lumoin.Veritas.Benchmarks;
 internal static class SyntheticGraph
 {
     /// <summary>Predicate id used by <see cref="GenerateSocial"/> for "knows"-shaped edges.</summary>
-    public const long KnowsPredicate = 1_000_000;
+    public const uint KnowsPredicate = 1_000_000;
 
     /// <summary>Predicate id used by <see cref="GenerateSocial"/> for "livesIn"-shaped edges.</summary>
-    public const long LivesInPredicate = 2_000_000;
+    public const uint LivesInPredicate = 2_000_000;
 
     /// <summary>Object id used by <see cref="GenerateSocial"/> for the most-populated city — picked so that <c>(?y livesIn PopularCity)</c> selects roughly half the subjects.</summary>
-    public const long PopularCity = 3_000_001;
+    public const uint PopularCity = 3_000_001;
 
     //Subject and city id ranges for GenerateSocial. Disjoint so
     //subject ids cannot collide with city ids regardless of how
     //big subjectCount grows.
-    private const long SocialSubjectStart = 1;
+    private const uint SocialSubjectStart = 1;
 
-    private const long SocialCityStart = 3_000_000;
+    private const uint SocialCityStart = 3_000_000;
 
     private const int SocialCityCount = 16;
 
     //Id ranges for Random — wide enough that the random draws
     //stay inside the configured distinct-value counts without
     //wrapping into reserved zones.
-    private const long RandomSubjectStart = 10_000_000;
+    private const uint RandomSubjectStart = 10_000_000;
 
-    private const long RandomPredicateStart = 20_000_000;
+    private const uint RandomPredicateStart = 20_000_000;
 
-    private const long RandomObjectStart = 30_000_000;
+    private const uint RandomObjectStart = 30_000_000;
 
     /// <summary>
     /// Generates an array of triples by drawing each position
@@ -106,9 +106,9 @@ internal static class SyntheticGraph
 
         for(int attempt = 0; attempt < attemptBudget && seen.Count < targetTripleCount; attempt++)
         {
-            long s = RandomSubjectStart + random.Next(distinctSubjects);
-            long p = RandomPredicateStart + random.Next(distinctPredicates);
-            long o = RandomObjectStart + random.Next(distinctObjects);
+            uint s = RandomSubjectStart + (uint)random.Next(distinctSubjects);
+            uint p = RandomPredicateStart + (uint)random.Next(distinctPredicates);
+            uint o = RandomObjectStart + (uint)random.Next(distinctObjects);
 
             seen.Add(EncodedTriple.FromEncoded(s, p, o));
         }
@@ -136,14 +136,14 @@ internal static class SyntheticGraph
         Random random = new(seed);
         List<EncodedTriple> triples = new(subjectCount * 4);
 
-        for(long s = 0; s < subjectCount; s++)
+        for(uint s = 0; s < (uint)subjectCount; s++)
         {
-            long subject = SocialSubjectStart + s;
+            uint subject = SocialSubjectStart + s;
 
             //Three "knows" edges to random subjects.
             for(int k = 0; k < 3; k++)
             {
-                long target = SocialSubjectStart + random.Next(subjectCount);
+                uint target = SocialSubjectStart + (uint)random.Next(subjectCount);
 
                 if(target == subject)
                 {
@@ -155,9 +155,9 @@ internal static class SyntheticGraph
 
             //One livesIn edge — 50% chance of the popular city,
             //50% of one of the others.
-            long city = random.Next(2) == 0
+            uint city = random.Next(2) == 0
                 ? PopularCity
-                : SocialCityStart + random.Next(SocialCityCount);
+                : SocialCityStart + (uint)random.Next(SocialCityCount);
 
             triples.Add(EncodedTriple.FromEncoded(subject, LivesInPredicate, city));
         }

@@ -23,7 +23,7 @@ namespace Lumoin.Veritas.Core.Encoding;
 public readonly record struct LiteralId(TermId Value)
 {
     /// <summary>The raw encoded identifier.</summary>
-    public long Encoded => Value.Encoded;
+    public uint Encoded => Value.Encoded;
 
     /// <summary>
     /// Validates that <paramref name="termId"/> resolves to a
@@ -68,9 +68,6 @@ public readonly record struct LiteralId(TermId Value)
 
     /// <summary>Implicit widening from <see cref="LiteralId"/> to <see cref="TermId"/>.</summary>
     public static implicit operator TermId(LiteralId literalId) => literalId.Value;
-
-    /// <summary>Implicit widening from <see cref="LiteralId"/> to <see cref="long"/>.</summary>
-    public static implicit operator long(LiteralId literalId) => literalId.Value.Encoded;
 
     /// <inheritdoc/>
     public override string ToString() => $"LiteralId({Encoded})";
