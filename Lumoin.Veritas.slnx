@@ -33,5 +33,6 @@
   <Folder Name="/test/">
     <Project Path="test/Lumoin.Veritas.Benchmarks/Lumoin.Veritas.Benchmarks.csproj" Id="376c9627-036c-400d-81d4-592ff521399f" />
     <Project Path="test/Lumoin.Veritas.Tests/Lumoin.Veritas.Tests.csproj" Id="14862f0f-6db3-40ed-9f7b-46f7452274e3" />
+    <Project Path="test/Lumoin.Veritas.Workbench/Lumoin.Veritas.Workbench.csproj" />
   </Folder>
 </Solution>

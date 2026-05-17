@@ -453,6 +453,12 @@
           "Lumoin.Veritas.Core": "[0.0.0, )"
         }
       },
+      "lumoin.veritas.workbench": {
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Veritas.Core": "[0.0.0, )"
+        }
+      },
       "System.IO.Hashing": {
         "type": "CentralTransitive",
         "requested": "[10.0.8, )",
