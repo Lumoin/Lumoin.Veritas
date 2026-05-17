@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -175,8 +174,11 @@ public sealed class HypertrieGraphStore
         //Triple deduplication does not touch the store, so it runs
         //outside the mutation scope. Holding the scope only over
         //the work that mutates the intern table keeps a long-running
-        //sweep from blocking on triple enumeration.
-        EncodedTriple[] distinct = triples.Distinct().ToArray();
+        //sweep from blocking on triple enumeration. The wrapper
+        //also sorts in canonical SPO order so the build path can
+        //skip its own re-dedup and use linear walks instead of
+        //per-position dictionary grouping.
+        DistinctSortedTriples distinctSorted = DistinctSortedTriples.Create(triples);
 
         //The mutation scope serialises this build against any
         //concurrent sweep on the same store. Shared mode means
@@ -191,7 +193,7 @@ public sealed class HypertrieGraphStore
         SharedScope scope = await store.EnterSharedScopeAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            (HypertrieNode root, NodeIdentifier rootId) = HypertrieOps.BuildBottomUpWithIdentifier(distinct, store);
+            (HypertrieNode root, NodeIdentifier rootId) = HypertrieOps.BuildBottomUpWithIdentifier(distinctSorted, store);
 
             //Journal append (when the store has a journal). The OCC
             //contract requires a parent of NodeIdentifier.Empty; a
@@ -201,14 +203,14 @@ public sealed class HypertrieGraphStore
             //append; the factory leaves both as placeholders.
             if(store.JournalAppend is not null)
             {
-                JournalEntry entry = JournalEntry.Initial(store.Hash, rootId, [.. distinct]);
+                JournalEntry entry = JournalEntry.Initial(store.Hash, rootId, [.. distinctSorted.AsSpan()]);
 
                 await store.JournalAppend(entry, NodeIdentifier.Empty, cancellationToken).ConfigureAwait(false);
             }
 
             HypertrieSnapshot snapshot = new(store, root, rootId);
 
-            return new HypertrieGraphStore(snapshot, distinct.Length);
+            return new HypertrieGraphStore(snapshot, distinctSorted.Count);
         }
         finally
         {

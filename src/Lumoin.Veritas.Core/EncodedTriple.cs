@@ -1,3 +1,4 @@
+using System;
 using System.Diagnostics;
 using Lumoin.Veritas.Core.Encoding;
 
@@ -36,7 +37,7 @@ namespace Lumoin.Veritas.Core;
 /// <param name="Predicate">The predicate term identifier.</param>
 /// <param name="Object">The object term identifier.</param>
 [DebuggerDisplay("S={Subject.Encoded} P={Predicate.Encoded} O={Object.Encoded}")]
-public readonly record struct EncodedTriple(TermId Subject, TermId Predicate, TermId Object)
+public readonly record struct EncodedTriple(TermId Subject, TermId Predicate, TermId Object): IComparable<EncodedTriple>
 {
     /// <summary>
     /// Creates an <see cref="EncodedTriple"/> from three raw encoded identifiers.
@@ -52,4 +53,40 @@ public readonly record struct EncodedTriple(TermId Subject, TermId Predicate, Te
     /// </remarks>
     public static EncodedTriple FromEncoded(long subject, long predicate, long @object)
         => new(TermId.FromEncoded(subject), TermId.FromEncoded(predicate), TermId.FromEncoded(@object));
+
+    /// <summary>
+    /// Orders triples lexicographically by <see cref="Subject"/>, then
+    /// <see cref="Predicate"/>, then <see cref="Object"/>. The ordering is
+    /// total because <see cref="TermId.CompareTo(TermId)"/> is total.
+    /// </summary>
+    /// <param name="other">The triple to compare against.</param>
+    /// <returns>A negative value when this triple precedes <paramref name="other"/>, zero on equality, positive otherwise.</returns>
+    public int CompareTo(EncodedTriple other)
+    {
+        int subjectComparison = Subject.CompareTo(other.Subject);
+        if(subjectComparison != 0)
+        {
+            return subjectComparison;
+        }
+
+        int predicateComparison = Predicate.CompareTo(other.Predicate);
+        if(predicateComparison != 0)
+        {
+            return predicateComparison;
+        }
+
+        return Object.CompareTo(other.Object);
+    }
+
+    /// <summary>Returns <c>true</c> when <paramref name="left"/> precedes <paramref name="right"/> in SPO order.</summary>
+    public static bool operator <(EncodedTriple left, EncodedTriple right) => left.CompareTo(right) < 0;
+
+    /// <summary>Returns <c>true</c> when <paramref name="left"/> precedes or equals <paramref name="right"/> in SPO order.</summary>
+    public static bool operator <=(EncodedTriple left, EncodedTriple right) => left.CompareTo(right) <= 0;
+
+    /// <summary>Returns <c>true</c> when <paramref name="left"/> follows <paramref name="right"/> in SPO order.</summary>
+    public static bool operator >(EncodedTriple left, EncodedTriple right) => left.CompareTo(right) > 0;
+
+    /// <summary>Returns <c>true</c> when <paramref name="left"/> follows or equals <paramref name="right"/> in SPO order.</summary>
+    public static bool operator >=(EncodedTriple left, EncodedTriple right) => left.CompareTo(right) >= 0;
 }

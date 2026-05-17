@@ -61,7 +61,12 @@ public static class HypertrieOps
     /// <exception cref="ArgumentNullException"><paramref name="triples"/> or <paramref name="store"/> is <c>null</c>.</exception>
     public static HypertrieNode BuildBottomUp(IEnumerable<EncodedTriple> triples, NodeStore store)
     {
-        (HypertrieNode root, NodeIdentifier _) = BuildBottomUpWithIdentifier(triples, store);
+        ArgumentNullException.ThrowIfNull(triples);
+        ArgumentNullException.ThrowIfNull(store);
+
+        DistinctSortedTriples distinct = DistinctSortedTriples.Create(triples);
+        (HypertrieNode root, NodeIdentifier _) = BuildBottomUpWithIdentifier(distinct, store);
+
         return root;
     }
 
@@ -74,16 +79,27 @@ public static class HypertrieOps
     /// construction) do not have to recompute it from a finished
     /// node tree.
     /// </summary>
-    /// <param name="triples">The triples to index. Duplicates are removed.</param>
+    /// <param name="triples">The distinct, lex-sorted triples to index.</param>
     /// <param name="store">The intern table. The same store may be reused across many calls.</param>
     /// <returns>A tuple of the canonical depth-3 root and its content-addressed identifier.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="triples"/> or <paramref name="store"/> is <c>null</c>.</exception>
-    public static (HypertrieNode Root, NodeIdentifier Id) BuildBottomUpWithIdentifier(IEnumerable<EncodedTriple> triples, NodeStore store)
+    internal static (HypertrieNode Root, NodeIdentifier Id) BuildBottomUpWithIdentifier(DistinctSortedTriples triples, NodeStore store)
     {
         ArgumentNullException.ThrowIfNull(triples);
         ArgumentNullException.ThrowIfNull(store);
 
-        EncodedTriple[] distinct = [.. new HashSet<EncodedTriple>(triples)];
+        //The wrapper hands us the canonical SPO ordering for free.
+        //Materialise the two other orderings (PSO and OSP) by
+        //copying the SPO span and re-sorting under the
+        //corresponding comparer. Per-position grouping in
+        //BuildPathDepth2 then collapses to a linear walk over a
+        //sorted span — no dictionary, no per-group List allocation
+        //beyond the outer-key bucket.
+        ReadOnlySpan<EncodedTriple> spoView = triples.AsSpan();
+        EncodedTriple[] psoView = spoView.ToArray();
+        Array.Sort(psoView, ComparePsoOrdering);
+        EncodedTriple[] ospView = spoView.ToArray();
+        Array.Sort(ospView, CompareOspOrdering);
 
         //Three descent paths off the root: one starting at S, one
         //at P, one at O. Each path's depth-2 node is keyed by that
@@ -92,9 +108,9 @@ public static class HypertrieOps
         //object) for the S-first path, (subject, object) for the
         //P-first path, and (subject, predicate) for the O-first
         //path.
-        Dictionary<long, HypertrieNode> sFirstDepth2 = BuildPathDepth2(distinct, store, PositionSubject);
-        Dictionary<long, HypertrieNode> pFirstDepth2 = BuildPathDepth2(distinct, store, PositionPredicate);
-        Dictionary<long, HypertrieNode> oFirstDepth2 = BuildPathDepth2(distinct, store, PositionObject);
+        Dictionary<long, HypertrieNode> sFirstDepth2 = BuildPathDepth2(spoView, store, PositionSubject);
+        Dictionary<long, HypertrieNode> pFirstDepth2 = BuildPathDepth2(psoView, store, PositionPredicate);
+        Dictionary<long, HypertrieNode> oFirstDepth2 = BuildPathDepth2(ospView, store, PositionObject);
 
         //Build the depth-3 root: three edge maps, one per starting
         //position, each holding the pre-built depth-2 mapping for
@@ -150,8 +166,16 @@ public static class HypertrieOps
     //formula relies on. Computing it here, not asking callers to
     //pass it, makes the contract impossible to violate by call-site
     //convention.
+    //
+    //The input span is sorted by <paramref name="outerPosition"/>
+    //first (then by the two inner positions in some order), so all
+    //triples sharing an outer key are contiguous. The walk slides a
+    //[start, end) window across each run, pre-sizes the entries
+    //list to the run length, then hands the run to
+    //BuildAndInternDepth2 — no dictionary, no per-bucket
+    //rehashing, no list growth.
     private static Dictionary<long, HypertrieNode> BuildPathDepth2(
-        EncodedTriple[] distinct,
+        ReadOnlySpan<EncodedTriple> sortedByOuter,
         NodeStore store,
         int outerPosition)
     {
@@ -163,31 +187,75 @@ public static class HypertrieOps
             _ => throw new UnreachableException(),
         };
 
-        //Group the triples by the outer key; for each group, build
-        //a depth-2 inner node that indexes the inner-1 and inner-2
-        //positions of the triples in the group.
-        Dictionary<long, List<(long Inner1, long Inner2)>> grouping = [];
-        foreach(EncodedTriple triple in distinct)
+        Dictionary<long, HypertrieNode> result = [];
+        int index = 0;
+        int length = sortedByOuter.Length;
+        while(index < length)
         {
-            long outer = ValueAt(triple, outerPosition);
-            long inner1 = ValueAt(triple, innerPosition1);
-            long inner2 = ValueAt(triple, innerPosition2);
+            long outerKey = ValueAt(sortedByOuter[index], outerPosition);
 
-            if(!grouping.TryGetValue(outer, out List<(long, long)>? bucket))
+            //Slide the right edge of the run to the first triple
+            //whose outer value differs.
+            int runEnd = index + 1;
+            while(runEnd < length && ValueAt(sortedByOuter[runEnd], outerPosition) == outerKey)
             {
-                bucket = [];
-                grouping[outer] = bucket;
+                runEnd++;
             }
-            bucket.Add((inner1, inner2));
+
+            int runLength = runEnd - index;
+            List<(long Inner1, long Inner2)> entries = new(capacity: runLength);
+            for(int cursor = index; cursor < runEnd; cursor++)
+            {
+                EncodedTriple triple = sortedByOuter[cursor];
+                entries.Add((ValueAt(triple, innerPosition1), ValueAt(triple, innerPosition2)));
+            }
+
+            HypertrieNode depth2 = BuildAndInternDepth2(entries, store);
+            result[outerKey] = depth2;
+            index = runEnd;
         }
 
-        Dictionary<long, HypertrieNode> result = new(grouping.Count);
-        foreach(KeyValuePair<long, List<(long Inner1, long Inner2)>> outerPair in grouping)
-        {
-            HypertrieNode depth2 = BuildAndInternDepth2(outerPair.Value, store);
-            result[outerPair.Key] = depth2;
-        }
         return result;
+    }
+
+    //Comparator for PSO ordering: predicate, then subject, then
+    //object. Used to materialise the predicate-first view from the
+    //canonical SPO ordering.
+    private static int ComparePsoOrdering(EncodedTriple left, EncodedTriple right)
+    {
+        int predicateComparison = left.Predicate.CompareTo(right.Predicate);
+        if(predicateComparison != 0)
+        {
+            return predicateComparison;
+        }
+
+        int subjectComparison = left.Subject.CompareTo(right.Subject);
+        if(subjectComparison != 0)
+        {
+            return subjectComparison;
+        }
+
+        return left.Object.CompareTo(right.Object);
+    }
+
+    //Comparator for OSP ordering: object, then subject, then
+    //predicate. Used to materialise the object-first view from the
+    //canonical SPO ordering.
+    private static int CompareOspOrdering(EncodedTriple left, EncodedTriple right)
+    {
+        int objectComparison = left.Object.CompareTo(right.Object);
+        if(objectComparison != 0)
+        {
+            return objectComparison;
+        }
+
+        int subjectComparison = left.Subject.CompareTo(right.Subject);
+        if(subjectComparison != 0)
+        {
+            return subjectComparison;
+        }
+
+        return left.Predicate.CompareTo(right.Predicate);
     }
 
     //Builds a depth-2 node whose first edge map is keyed by Inner1
