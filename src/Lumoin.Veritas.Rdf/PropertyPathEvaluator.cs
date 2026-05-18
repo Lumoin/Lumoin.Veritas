@@ -172,14 +172,14 @@ public static class PropertyPathEvaluator
 
             if(forward)
             {
-                await foreach(EncodedTriple triple in match(start, predicate, null, cancellationToken).ConfigureAwait(false))
+                await foreach(EncodedTriple triple in match(start, predicate, TermId.None, cancellationToken).ConfigureAwait(false))
                 {
                     next.Add(triple.Object);
                 }
             }
             else
             {
-                await foreach(EncodedTriple triple in match(null, predicate, start, cancellationToken).ConfigureAwait(false))
+                await foreach(EncodedTriple triple in match(TermId.None, predicate, start, cancellationToken).ConfigureAwait(false))
                 {
                     next.Add(triple.Subject);
                 }

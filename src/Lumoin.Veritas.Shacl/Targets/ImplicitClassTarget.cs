@@ -40,7 +40,7 @@ public sealed record ImplicitClassTarget(IriId ShapeClassId, IriId RdfTypeId, Ir
 
         foreach(TermId cls in classSet)
         {
-            await foreach(EncodedTriple triple in dataMatch(null, RdfTypeId, cls, cancellationToken).ConfigureAwait(false))
+            await foreach(EncodedTriple triple in dataMatch(TermId.None, RdfTypeId, cls, cancellationToken).ConfigureAwait(false))
             {
                 if(yielded.Add(triple.Subject))
                 {

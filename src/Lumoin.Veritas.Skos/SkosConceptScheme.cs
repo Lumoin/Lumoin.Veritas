@@ -233,7 +233,7 @@ public sealed class SkosConceptScheme
         HashSet<TermId> conceptIds = [];
         if(!inSchemeId.IsNone)
         {
-            await foreach(EncodedTriple triple in match(null, inSchemeId, schemeId, cancellationToken).ConfigureAwait(false))
+            await foreach(EncodedTriple triple in match(TermId.None, inSchemeId, schemeId, cancellationToken).ConfigureAwait(false))
             {
                 conceptIds.Add(triple.Subject);
             }
@@ -243,7 +243,7 @@ public sealed class SkosConceptScheme
         HashSet<TermId> topConceptIds = [];
         if(!hasTopConceptId.IsNone)
         {
-            await foreach(EncodedTriple triple in match(schemeId, hasTopConceptId, null, cancellationToken).ConfigureAwait(false))
+            await foreach(EncodedTriple triple in match(schemeId, hasTopConceptId, TermId.None, cancellationToken).ConfigureAwait(false))
             {
                 topConceptIds.Add(triple.Object);
                 conceptIds.Add(triple.Object);
@@ -253,7 +253,7 @@ public sealed class SkosConceptScheme
         //Collect top concepts via skos:topConceptOf on concepts.
         if(!topConceptOfId.IsNone)
         {
-            await foreach(EncodedTriple triple in match(null, topConceptOfId, schemeId, cancellationToken).ConfigureAwait(false))
+            await foreach(EncodedTriple triple in match(TermId.None, topConceptOfId, schemeId, cancellationToken).ConfigureAwait(false))
             {
                 topConceptIds.Add(triple.Subject);
                 conceptIds.Add(triple.Subject);
@@ -268,7 +268,7 @@ public sealed class SkosConceptScheme
 
         if(!broaderId.IsNone)
         {
-            await foreach(EncodedTriple triple in match(null, broaderId, null, cancellationToken).ConfigureAwait(false))
+            await foreach(EncodedTriple triple in match(TermId.None, broaderId, TermId.None, cancellationToken).ConfigureAwait(false))
             {
                 if(!conceptIds.Contains(triple.Subject))
                 {
@@ -296,7 +296,7 @@ public sealed class SkosConceptScheme
 
         if(!narrowerId.IsNone)
         {
-            await foreach(EncodedTriple triple in match(null, narrowerId, null, cancellationToken).ConfigureAwait(false))
+            await foreach(EncodedTriple triple in match(TermId.None, narrowerId, TermId.None, cancellationToken).ConfigureAwait(false))
             {
                 if(!conceptIds.Contains(triple.Subject))
                 {
@@ -324,7 +324,7 @@ public sealed class SkosConceptScheme
                 continue;
             }
 
-            await foreach(EncodedTriple triple in match(null, predicateId, null, cancellationToken).ConfigureAwait(false))
+            await foreach(EncodedTriple triple in match(TermId.None, predicateId, TermId.None, cancellationToken).ConfigureAwait(false))
             {
                 if(!conceptIds.Contains(triple.Subject))
                 {

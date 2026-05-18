@@ -497,9 +497,9 @@ public sealed class BasicGraphPatternEvaluator
             //resolves; we only need existence.
             IEnumerable<EncodedTriple> matches = HypertrieOps.Match(
                 snapshot.Root,
-                pattern.Subject.BoundTerm.Encoded,
-                pattern.Predicate.BoundTerm.Encoded,
-                pattern.Object.BoundTerm.Encoded);
+                pattern.Subject.BoundTerm,
+                pattern.Predicate.BoundTerm,
+                pattern.Object.BoundTerm);
 
             using IEnumerator<EncodedTriple> enumerator = matches.GetEnumerator();
 

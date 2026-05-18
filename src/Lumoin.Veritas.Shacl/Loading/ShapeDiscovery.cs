@@ -101,7 +101,7 @@ internal static class ShapeDiscovery
         //already known to be a property shape so the classification
         //doesn't flip.
         //---------------------------------------------------------------
-        await foreach(EncodedTriple triple in shapeGraphMatch(null, shaclCoreIds.Path, null, cancellationToken).ConfigureAwait(false))
+        await foreach(EncodedTriple triple in shapeGraphMatch(TermId.None, shaclCoreIds.Path, TermId.None, cancellationToken).ConfigureAwait(false))
         {
             TermId subject = triple.Subject;
             if(!builders.ContainsKey(subject))
@@ -121,7 +121,7 @@ internal static class ShapeDiscovery
             shaclCoreIds.ShapeClassClass,
         })
         {
-            await foreach(EncodedTriple triple in shapeGraphMatch(null, rdfsVocabulary.RdfType, shapeClass, cancellationToken).ConfigureAwait(false))
+            await foreach(EncodedTriple triple in shapeGraphMatch(TermId.None, rdfsVocabulary.RdfType, shapeClass, cancellationToken).ConfigureAwait(false))
             {
                 TermId subject = triple.Subject;
                 //Classification: if sh:path already marked it as a property shape, keep that.
@@ -146,7 +146,7 @@ internal static class ShapeDiscovery
         //---------------------------------------------------------------
         foreach(IriId targetPredicate in shaclCoreIds.TargetPredicates)
         {
-            await foreach(EncodedTriple triple in shapeGraphMatch(null, targetPredicate, null, cancellationToken).ConfigureAwait(false))
+            await foreach(EncodedTriple triple in shapeGraphMatch(TermId.None, targetPredicate, TermId.None, cancellationToken).ConfigureAwait(false))
             {
                 TermId subject = triple.Subject;
                 if(!builders.ContainsKey(subject))
@@ -163,7 +163,7 @@ internal static class ShapeDiscovery
         //---------------------------------------------------------------
         foreach(IriId constraintPredicate in shaclConstraintIds)
         {
-            await foreach(EncodedTriple triple in shapeGraphMatch(null, constraintPredicate, null, cancellationToken).ConfigureAwait(false))
+            await foreach(EncodedTriple triple in shapeGraphMatch(TermId.None, constraintPredicate, TermId.None, cancellationToken).ConfigureAwait(false))
             {
                 TermId subject = triple.Subject;
                 if(!builders.ContainsKey(subject))
@@ -187,7 +187,7 @@ internal static class ShapeDiscovery
         //dictionary when it encounters a previously-unknown shape-list
         //member.
         //---------------------------------------------------------------
-        await foreach(EncodedTriple triple in shapeGraphMatch(null, shaclCoreIds.PropertyPredicate, null, cancellationToken).ConfigureAwait(false))
+        await foreach(EncodedTriple triple in shapeGraphMatch(TermId.None, shaclCoreIds.PropertyPredicate, TermId.None, cancellationToken).ConfigureAwait(false))
         {
             TermId objectTerm = triple.Object;
             if(!builders.ContainsKey(objectTerm))
@@ -198,7 +198,7 @@ internal static class ShapeDiscovery
 
         foreach(IriId shapeRefPredicate in shaclCoreIds.ShapeReferencePredicates)
         {
-            await foreach(EncodedTriple triple in shapeGraphMatch(null, shapeRefPredicate, null, cancellationToken).ConfigureAwait(false))
+            await foreach(EncodedTriple triple in shapeGraphMatch(TermId.None, shapeRefPredicate, TermId.None, cancellationToken).ConfigureAwait(false))
             {
                 TermId objectTerm = triple.Object;
                 if(builders.ContainsKey(objectTerm))
@@ -250,7 +250,7 @@ internal static class ShapeDiscovery
         IriId rdfFirst,
         CancellationToken cancellationToken)
     {
-        await foreach(EncodedTriple _ in shapeGraphMatch(term, rdfFirst, null, cancellationToken).ConfigureAwait(false))
+        await foreach(EncodedTriple _ in shapeGraphMatch(term, rdfFirst, TermId.None, cancellationToken).ConfigureAwait(false))
         {
             return true;
         }

@@ -237,19 +237,24 @@ public sealed class HypertrieGraphStore
     /// <summary>
     /// Returns all triples matching the given pattern. Each
     /// position is either a bound <see cref="TermId"/> or
-    /// <c>null</c> for "any."
+    /// <see cref="TermId.None"/> for "any."
     /// </summary>
-    /// <param name="subject">The subject to match, or <c>null</c> for any.</param>
-    /// <param name="predicate">The predicate to match, or <c>null</c> for any.</param>
-    /// <param name="object">The object to match, or <c>null</c> for any.</param>
+    /// <param name="subject">The subject to match, or <see cref="TermId.None"/> for any.</param>
+    /// <param name="predicate">The predicate to match, or <see cref="TermId.None"/> for any.</param>
+    /// <param name="object">The object to match, or <see cref="TermId.None"/> for any.</param>
     /// <returns>All matching triples.</returns>
-    public IEnumerable<EncodedTriple> Match(TermId? subject, TermId? predicate, TermId? @object)
+    /// <remarks>
+    /// <para>
+    /// <b>Unbound positions.</b> A position parameter of
+    /// <see cref="TermId.None"/> means "match any value at this
+    /// position." Since <see cref="TermId.None"/> equals
+    /// <c>default(TermId)</c>, position parameters that default to
+    /// <c>default</c> are unbound by construction.
+    /// </para>
+    /// </remarks>
+    public IEnumerable<EncodedTriple> Match(TermId subject, TermId predicate, TermId @object)
     {
-        return HypertrieOps.Match(
-            Snapshot.Root,
-            subject?.Encoded,
-            predicate?.Encoded,
-            @object?.Encoded);
+        return HypertrieOps.Match(Snapshot.Root, subject, predicate, @object);
     }
 
     /// <summary>

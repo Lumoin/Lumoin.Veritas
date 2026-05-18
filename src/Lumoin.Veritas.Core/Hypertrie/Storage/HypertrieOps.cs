@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
 using Lumoin.Veritas.Core.Algebra;
+using Lumoin.Veritas.Core.Encoding;
 
 namespace Lumoin.Veritas.Core.Hypertrie.Storage;
 
@@ -130,37 +131,32 @@ public static class HypertrieOps
 
     /// <summary>
     /// Enumerates every triple in <paramref name="root"/> that
-    /// matches the given pattern. <c>null</c> on a position means
-    /// "any value at this position."
+    /// matches the given pattern. <see cref="TermId.None"/> on a
+    /// position means "any value at this position."
     /// </summary>
     /// <param name="root">The depth-3 root node to query.</param>
-    /// <param name="subject">The encoded subject identifier to match, or <c>null</c> for any subject.</param>
-    /// <param name="predicate">The encoded predicate identifier to match, or <c>null</c> for any predicate.</param>
-    /// <param name="object">The encoded object identifier to match, or <c>null</c> for any object.</param>
+    /// <param name="subject">The subject term identifier to match, or <see cref="TermId.None"/> for any subject.</param>
+    /// <param name="predicate">The predicate term identifier to match, or <see cref="TermId.None"/> for any predicate.</param>
+    /// <param name="object">The object term identifier to match, or <see cref="TermId.None"/> for any object.</param>
     /// <returns>An enumerable of matching triples; each is yielded exactly once.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="root"/> is <c>null</c>.</exception>
     /// <exception cref="ArgumentException"><paramref name="root"/> is not a depth-3 node.</exception>
     /// <remarks>
     /// <para>
-    /// <b>Unbound positions.</b> A position parameter of <c>null</c>
-    /// means "match any value at this position" — the pattern is
-    /// unbound at that position. A concrete <see cref="uint"/> value
-    /// means "match this exact encoded term." The
-    /// <see cref="System.Nullable{T}"/> shape preserves the
-    /// distinction explicitly; a future API revision may replace
-    /// <c>uint?</c> with <see cref="TermId"/> directly (where
-    /// <see cref="TermId.None"/> is the unbound state), saving four
-    /// bytes per parameter, but that switch is intentionally
-    /// deferred — the explicit nullable form makes the "unbound"
-    /// intent readable at call sites that would otherwise look
-    /// like they were asking to match the zero-encoded term.
+    /// <b>Unbound positions.</b> A position parameter of
+    /// <see cref="TermId.None"/> means "match any value at this
+    /// position" — the pattern is unbound at that position. A
+    /// concrete non-<see cref="TermId.None"/> value means "match
+    /// this exact encoded term." Since <see cref="TermId.None"/>
+    /// equals <c>default(TermId)</c>, position parameters that
+    /// default to <c>default</c> are unbound by construction.
     /// </para>
     /// </remarks>
     public static IEnumerable<EncodedTriple> Match(
         HypertrieNode root,
-        uint? subject,
-        uint? predicate,
-        uint? @object)
+        TermId subject,
+        TermId predicate,
+        TermId @object)
     {
         ArgumentNullException.ThrowIfNull(root);
         if(root.Depth != 3)
@@ -575,9 +571,9 @@ public static class HypertrieOps
 
     private static IEnumerable<EncodedTriple> MatchCore(
         HypertrieNode root,
-        uint? subject,
-        uint? predicate,
-        uint? @object)
+        TermId subject,
+        TermId predicate,
+        TermId @object)
     {
         Stack<MatchFrame> stack = new();
         stack.Push(new MatchFrame
@@ -596,7 +592,7 @@ public static class HypertrieOps
 
             int chosenPosition = SelectPosition(frame.PendingPositions, subject, predicate, @object);
             int chosenEdgeMapIndex = EdgeMapIndexOf(frame.PendingPositions, chosenPosition);
-            uint? chosenBound = chosenPosition switch
+            TermId chosenBound = chosenPosition switch
             {
                 PositionSubject => subject,
                 PositionPredicate => predicate,
@@ -606,11 +602,11 @@ public static class HypertrieOps
 
             if(node.Depth == 1)
             {
-                if(chosenBound.HasValue)
+                if(!chosenBound.IsNone)
                 {
-                    if(EdgeMap.TryGetChild(node.EdgeMaps[chosenEdgeMapIndex], chosenBound.Value, out _))
+                    if(EdgeMap.TryGetChild(node.EdgeMaps[chosenEdgeMapIndex], chosenBound.Encoded, out _))
                     {
-                        yield return BuildTriple(frame, chosenPosition, chosenBound.Value);
+                        yield return BuildTriple(frame, chosenPosition, chosenBound.Encoded);
                     }
                 }
                 else
@@ -625,12 +621,12 @@ public static class HypertrieOps
 
             byte childPending = WithResolved(frame.PendingPositions, chosenPosition);
 
-            if(chosenBound.HasValue)
+            if(!chosenBound.IsNone)
             {
-                if(EdgeMap.TryGetChild(node.EdgeMaps[chosenEdgeMapIndex], chosenBound.Value, out HypertrieNode? child)
+                if(EdgeMap.TryGetChild(node.EdgeMaps[chosenEdgeMapIndex], chosenBound.Encoded, out HypertrieNode? child)
                     && child is not null)
                 {
-                    stack.Push(NewMatchFrame(frame, chosenPosition, chosenBound.Value, child, childPending));
+                    stack.Push(NewMatchFrame(frame, chosenPosition, chosenBound.Encoded, child, childPending));
                 }
             }
             else
@@ -657,7 +653,7 @@ public static class HypertrieOps
     //Iteration walks positions 0..2 in ascending order so the
     //fall-through case naturally returns the lowest pending bit
     //without a separate code path.
-    private static int SelectPosition(byte pending, uint? subject, uint? predicate, uint? @object)
+    private static int SelectPosition(byte pending, TermId subject, TermId predicate, TermId @object)
     {
         int firstPending = -1;
         for(int position = 0; position < 3; position++)
@@ -674,9 +670,9 @@ public static class HypertrieOps
 
             bool isBound = position switch
             {
-                PositionSubject => subject.HasValue,
-                PositionPredicate => predicate.HasValue,
-                PositionObject => @object.HasValue,
+                PositionSubject => !subject.IsNone,
+                PositionPredicate => !predicate.IsNone,
+                PositionObject => !@object.IsNone,
                 _ => throw new UnreachableException(),
             };
 

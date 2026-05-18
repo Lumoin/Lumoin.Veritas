@@ -9,10 +9,14 @@ internal sealed class InMemoryGraphStoreTests
 {
     public TestContext TestContext { get; set; } = null!;
 
+    //Encoded values start at 10 (well clear of the TermId.None
+    //sentinel at 0) so bound-to-X queries do not alias with
+    //unbound queries.
+
     [TestMethod]
     public void BuildDeduplicatesTriples()
     {
-        EncodedTriple triple = EncodedTriple.FromEncoded(0, 1, 2);
+        EncodedTriple triple = EncodedTriple.FromEncoded(10, 11, 12);
         InMemoryGraphStore store = InMemoryGraphStore.Build([triple, triple, triple]);
 
         Assert.AreEqual(1, store.Count);
@@ -23,11 +27,11 @@ internal sealed class InMemoryGraphStoreTests
     {
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 1, 2),
-            EncodedTriple.FromEncoded(3, 4, 5)
+            EncodedTriple.FromEncoded(10, 11, 12),
+            EncodedTriple.FromEncoded(13, 14, 15)
         ]);
 
-        List<EncodedTriple> results = store.Match(null, null, null).ToList();
+        List<EncodedTriple> results = store.Match(TermId.None, TermId.None, TermId.None).ToList();
 
         Assert.HasCount(2, results);
     }
@@ -37,12 +41,12 @@ internal sealed class InMemoryGraphStoreTests
     {
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 1, 2),
-            EncodedTriple.FromEncoded(0, 3, 4),
-            EncodedTriple.FromEncoded(5, 1, 2)
+            EncodedTriple.FromEncoded(10, 11, 12),
+            EncodedTriple.FromEncoded(10, 13, 14),
+            EncodedTriple.FromEncoded(15, 11, 12)
         ]);
 
-        List<EncodedTriple> results = store.Match(TermId.FromEncoded(0), null, null).ToList();
+        List<EncodedTriple> results = store.Match(TermId.FromEncoded(10), TermId.None, TermId.None).ToList();
 
         Assert.HasCount(2, results);
     }
@@ -52,12 +56,12 @@ internal sealed class InMemoryGraphStoreTests
     {
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 1, 2),
-            EncodedTriple.FromEncoded(3, 1, 4),
-            EncodedTriple.FromEncoded(5, 6, 7)
+            EncodedTriple.FromEncoded(10, 11, 12),
+            EncodedTriple.FromEncoded(13, 11, 14),
+            EncodedTriple.FromEncoded(15, 16, 17)
         ]);
 
-        List<EncodedTriple> results = store.Match(null, TermId.FromEncoded(1), null).ToList();
+        List<EncodedTriple> results = store.Match(TermId.None, TermId.FromEncoded(11), TermId.None).ToList();
 
         Assert.HasCount(2, results);
     }
@@ -67,12 +71,12 @@ internal sealed class InMemoryGraphStoreTests
     {
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 1, 2),
-            EncodedTriple.FromEncoded(3, 4, 2),
-            EncodedTriple.FromEncoded(5, 6, 7)
+            EncodedTriple.FromEncoded(10, 11, 12),
+            EncodedTriple.FromEncoded(13, 14, 12),
+            EncodedTriple.FromEncoded(15, 16, 17)
         ]);
 
-        List<EncodedTriple> results = store.Match(null, null, TermId.FromEncoded(2)).ToList();
+        List<EncodedTriple> results = store.Match(TermId.None, TermId.None, TermId.FromEncoded(12)).ToList();
 
         Assert.HasCount(2, results);
     }
@@ -82,13 +86,13 @@ internal sealed class InMemoryGraphStoreTests
     {
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 1, 2),
-            EncodedTriple.FromEncoded(0, 1, 3),
-            EncodedTriple.FromEncoded(0, 4, 5),
-            EncodedTriple.FromEncoded(6, 1, 7)
+            EncodedTriple.FromEncoded(10, 11, 12),
+            EncodedTriple.FromEncoded(10, 11, 13),
+            EncodedTriple.FromEncoded(10, 14, 15),
+            EncodedTriple.FromEncoded(16, 11, 17)
         ]);
 
-        List<EncodedTriple> results = store.Match(TermId.FromEncoded(0), TermId.FromEncoded(1), null).ToList();
+        List<EncodedTriple> results = store.Match(TermId.FromEncoded(10), TermId.FromEncoded(11), TermId.None).ToList();
 
         Assert.HasCount(2, results);
     }
@@ -98,15 +102,15 @@ internal sealed class InMemoryGraphStoreTests
     {
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 1, 2),
-            EncodedTriple.FromEncoded(0, 1, 3),
-            EncodedTriple.FromEncoded(3, 4, 5)
+            EncodedTriple.FromEncoded(10, 11, 12),
+            EncodedTriple.FromEncoded(10, 11, 13),
+            EncodedTriple.FromEncoded(13, 14, 15)
         ]);
 
-        List<EncodedTriple> results = store.Match(TermId.FromEncoded(0), TermId.FromEncoded(1), TermId.FromEncoded(2)).ToList();
+        List<EncodedTriple> results = store.Match(TermId.FromEncoded(10), TermId.FromEncoded(11), TermId.FromEncoded(12)).ToList();
 
         Assert.HasCount(1, results);
-        Assert.AreEqual(EncodedTriple.FromEncoded(0, 1, 2), results[0]);
+        Assert.AreEqual(EncodedTriple.FromEncoded(10, 11, 12), results[0]);
     }
 
     [TestMethod]
@@ -114,10 +118,10 @@ internal sealed class InMemoryGraphStoreTests
     {
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 1, 2)
+            EncodedTriple.FromEncoded(10, 11, 12)
         ]);
 
-        List<EncodedTriple> results = store.Match(TermId.FromEncoded(99), null, null).ToList();
+        List<EncodedTriple> results = store.Match(TermId.FromEncoded(99), TermId.None, TermId.None).ToList();
 
         Assert.IsEmpty(results);
     }
@@ -127,14 +131,14 @@ internal sealed class InMemoryGraphStoreTests
     {
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 1, 2),
-            EncodedTriple.FromEncoded(3, 4, 5)
+            EncodedTriple.FromEncoded(10, 11, 12),
+            EncodedTriple.FromEncoded(13, 14, 15)
         ]);
 
         StorageDelegates.MatchTriplesAsync match = store.AsMatchDelegate();
         List<EncodedTriple> results = [];
 
-        await foreach(EncodedTriple triple in match(null, null, null, TestContext.CancellationToken).ConfigureAwait(false))
+        await foreach(EncodedTriple triple in match(TermId.None, TermId.None, TermId.None, TestContext.CancellationToken).ConfigureAwait(false))
         {
             results.Add(triple);
         }
@@ -147,9 +151,9 @@ internal sealed class InMemoryGraphStoreTests
     {
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 1, 2),
-            EncodedTriple.FromEncoded(3, 4, 5),
-            EncodedTriple.FromEncoded(6, 7, 8)
+            EncodedTriple.FromEncoded(10, 11, 12),
+            EncodedTriple.FromEncoded(13, 14, 15),
+            EncodedTriple.FromEncoded(16, 17, 18)
         ]);
 
         StorageDelegates.CountTriplesAsync count = store.AsCountDelegate();
@@ -163,18 +167,18 @@ internal sealed class InMemoryGraphStoreTests
     {
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 1, 2),
-            EncodedTriple.FromEncoded(3, 4, 5),
-            EncodedTriple.FromEncoded(6, 7, 8)
+            EncodedTriple.FromEncoded(10, 11, 12),
+            EncodedTriple.FromEncoded(13, 14, 15),
+            EncodedTriple.FromEncoded(16, 17, 18)
         ]);
 
-        //Only allow triples where the subject's encoded id is less than 5.
-        StorageDelegates.TripleVisibilityFilter filter = (s, _, _) => s.Encoded < 5;
+        //Only allow triples where the subject's encoded id is less than 15.
+        StorageDelegates.TripleVisibilityFilter filter = (s, _, _) => s.Encoded < 15;
         StorageDelegates.MatchTriplesAsync filtered = StorageDelegates.WithFilter(
             store.AsMatchDelegate(), filter);
 
         List<EncodedTriple> results = [];
-        await foreach(EncodedTriple triple in filtered(null, null, null, TestContext.CancellationToken).ConfigureAwait(false))
+        await foreach(EncodedTriple triple in filtered(TermId.None, TermId.None, TermId.None, TestContext.CancellationToken).ConfigureAwait(false))
         {
             results.Add(triple);
         }
@@ -185,7 +189,7 @@ internal sealed class InMemoryGraphStoreTests
     [TestMethod]
     public async Task NullFilterHasZeroOverhead()
     {
-        InMemoryGraphStore store = InMemoryGraphStore.Build([EncodedTriple.FromEncoded(0, 1, 2)]);
+        InMemoryGraphStore store = InMemoryGraphStore.Build([EncodedTriple.FromEncoded(10, 11, 12)]);
 
         StorageDelegates.MatchTriplesAsync original = store.AsMatchDelegate();
         StorageDelegates.MatchTriplesAsync wrapped = StorageDelegates.WithFilter(original, null);

@@ -140,7 +140,7 @@ public static class GraphFold
         CancellationToken cancellationToken)
     {
         List<EncodedTriple> triples = [];
-        await foreach(EncodedTriple triple in match(nodeId, null, null, cancellationToken).ConfigureAwait(false))
+        await foreach(EncodedTriple triple in match(nodeId, TermId.None, TermId.None, cancellationToken).ConfigureAwait(false))
         {
             triples.Add(triple);
         }

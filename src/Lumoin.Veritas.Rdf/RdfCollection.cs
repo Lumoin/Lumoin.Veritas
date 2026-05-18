@@ -177,7 +177,7 @@ public static class RdfCollection
             cancellationToken.ThrowIfCancellationRequested();
 
             TermId? member = null;
-            await foreach(EncodedTriple triple in match(cursor, firstId, null, cancellationToken).ConfigureAwait(false))
+            await foreach(EncodedTriple triple in match(cursor, firstId, TermId.None, cancellationToken).ConfigureAwait(false))
             {
                 member = triple.Object;
 
@@ -192,7 +192,7 @@ public static class RdfCollection
             yield return member.Value;
 
             TermId? next = null;
-            await foreach(EncodedTriple triple in match(cursor, restId, null, cancellationToken).ConfigureAwait(false))
+            await foreach(EncodedTriple triple in match(cursor, restId, TermId.None, cancellationToken).ConfigureAwait(false))
             {
                 next = triple.Object;
 
@@ -217,7 +217,7 @@ public static class RdfCollection
         StorageDelegates.MatchTriplesAsync match,
         CancellationToken cancellationToken)
     {
-        await foreach(EncodedTriple _ in match(subject, predicate, null, cancellationToken).ConfigureAwait(false))
+        await foreach(EncodedTriple _ in match(subject, predicate, TermId.None, cancellationToken).ConfigureAwait(false))
         {
             return true;
         }

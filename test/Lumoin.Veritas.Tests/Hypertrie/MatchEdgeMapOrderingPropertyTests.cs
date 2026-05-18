@@ -7,7 +7,7 @@ using Lumoin.Veritas.Core.Hypertrie.Storage;
 namespace Lumoin.Veritas.Tests.Hypertrie;
 
 /// <summary>
-/// Pins the structural contract <see cref="HypertrieOps.Match(HypertrieNode, uint?, uint?, uint?)"/>
+/// Pins the structural contract <see cref="HypertrieOps.Match(HypertrieNode, TermId, TermId, TermId)"/>
 /// relies on: at every depth, a node's edge maps are indexed in
 /// ascending order of the remaining original positions. The
 /// contract is established by <c>BuildPathDepth2</c>'s internal
@@ -31,12 +31,15 @@ namespace Lumoin.Veritas.Tests.Hypertrie;
 /// </para>
 /// <para>
 /// <b>Term-id range.</b> The generator picks term ids from a
-/// small range (0..5) so distinct triples reuse subjects,
+/// small range (1..6) so distinct triples reuse subjects,
 /// predicates, and objects across the set. That maximises the
 /// fan-out at every depth — depth-2 nodes carry multiple inner
 /// edge map entries, depth-1 leaves carry multiple keys — which
 /// is exactly the structure where an edge-map-ordering bug would
-/// surface.
+/// surface. The range starts at <c>1</c> because <c>0</c> is the
+/// <see cref="TermId.None"/> sentinel used to signal "unbound" in
+/// the Match signature; including <c>0</c> as a generated term id
+/// would alias bound queries with unbound ones.
 /// </para>
 /// </remarks>
 [TestClass]
@@ -47,7 +50,7 @@ internal sealed class MatchEdgeMapOrderingPropertyTests
     [TestMethod]
     public void MatchAgreesWithBruteForceOverAllBindPatterns()
     {
-        Gen.Int[0, 5].Array[3].Array[1, 30].Sample(tripleArrays =>
+        Gen.Int[1, 6].Array[3].Array[1, 30].Sample(tripleArrays =>
         {
             EncodedTriple[] triples = [.. tripleArrays
                 .Select(static a => EncodedTriple.FromEncoded((uint)a[0], (uint)a[1], (uint)a[2]))
@@ -76,15 +79,15 @@ internal sealed class MatchEdgeMapOrderingPropertyTests
                 bool pBound = (patternBits & 2) != 0;
                 bool oBound = (patternBits & 4) != 0;
 
-                uint? s = sBound ? binding.Subject.Encoded : null;
-                uint? p = pBound ? binding.Predicate.Encoded : null;
-                uint? o = oBound ? binding.Object.Encoded : null;
+                TermId s = sBound ? binding.Subject : TermId.None;
+                TermId p = pBound ? binding.Predicate : TermId.None;
+                TermId o = oBound ? binding.Object : TermId.None;
 
                 HashSet<EncodedTriple> actual = [.. HypertrieOps.Match(graph.Snapshot.Root, s, p, o)];
                 HashSet<EncodedTriple> expected = [.. ground.Where(t =>
-                    (!sBound || t.Subject.Encoded == s!.Value) &&
-                    (!pBound || t.Predicate.Encoded == p!.Value) &&
-                    (!oBound || t.Object.Encoded == o!.Value))];
+                    (!sBound || t.Subject == s) &&
+                    (!pBound || t.Predicate == p) &&
+                    (!oBound || t.Object == o))];
 
                 Assert.IsTrue(
                     expected.SetEquals(actual),

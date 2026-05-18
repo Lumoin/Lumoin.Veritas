@@ -291,8 +291,8 @@ internal sealed class EditSessionParityTests
 
             Assert.AreEqual(expectedId, committed.Id);
 
-            HashSet<EncodedTriple> expectedSet = [.. HypertrieOps.Match(expected.Snapshot.Root, null, null, null)];
-            HashSet<EncodedTriple> actualSet = [.. HypertrieOps.Match(committed.Root, null, null, null)];
+            HashSet<EncodedTriple> expectedSet = [.. HypertrieOps.Match(expected.Snapshot.Root, TermId.None, TermId.None, TermId.None)];
+            HashSet<EncodedTriple> actualSet = [.. HypertrieOps.Match(committed.Root, TermId.None, TermId.None, TermId.None)];
             Assert.IsTrue(expectedSet.SetEquals(actualSet));
         }
         finally

@@ -143,7 +143,7 @@ internal sealed class EditSessionTests
             //all triples from the committed root surfaces both the
             //seed and the added triple.
             Assert.AreNotEqual(scope.GraphStore.Snapshot.Id, committed.Id);
-            HashSet<EncodedTriple> reachable = [.. HypertrieOps.Match(committed.Root, null, null, null)];
+            HashSet<EncodedTriple> reachable = [.. HypertrieOps.Match(committed.Root, TermId.None, TermId.None, TermId.None)];
             Assert.HasCount(2, reachable);
             Assert.Contains(added, reachable);
         }
@@ -167,7 +167,7 @@ internal sealed class EditSessionTests
             using HypertrieSnapshot committed = await scope.Session.CommitAsync(TestContext.CancellationToken).ConfigureAwait(false);
 
             Assert.AreNotEqual(scope.GraphStore.Snapshot.Id, committed.Id);
-            HashSet<EncodedTriple> reachable = [.. HypertrieOps.Match(committed.Root, null, null, null)];
+            HashSet<EncodedTriple> reachable = [.. HypertrieOps.Match(committed.Root, TermId.None, TermId.None, TermId.None)];
             Assert.HasCount(1, reachable);
             Assert.Contains(kept, reachable);
             Assert.DoesNotContain(toRemove, reachable);
@@ -240,7 +240,7 @@ internal sealed class EditSessionTests
 
             using HypertrieSnapshot committed = await scope.Session.CommitAsync(TestContext.CancellationToken).ConfigureAwait(false);
 
-            HashSet<EncodedTriple> reachable = [.. HypertrieOps.Match(committed.Root, null, null, null)];
+            HashSet<EncodedTriple> reachable = [.. HypertrieOps.Match(committed.Root, TermId.None, TermId.None, TermId.None)];
             Assert.HasCount(2, reachable);
             Assert.Contains(kept, reachable);
             Assert.Contains(toAdd, reachable);
@@ -399,7 +399,7 @@ internal sealed class EditSessionTests
             session.Add(EncodedTriple.FromEncoded(4, 5, 6));
             using HypertrieSnapshot committed = await session.CommitAsync(TestContext.CancellationToken).ConfigureAwait(false);
 
-            HashSet<EncodedTriple> reachable = [.. HypertrieOps.Match(committed.Root, null, null, null)];
+            HashSet<EncodedTriple> reachable = [.. HypertrieOps.Match(committed.Root, TermId.None, TermId.None, TermId.None)];
             Assert.HasCount(2, reachable);
         }
         finally

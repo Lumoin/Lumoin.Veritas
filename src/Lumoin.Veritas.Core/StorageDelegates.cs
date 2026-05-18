@@ -22,27 +22,30 @@ namespace Lumoin.Veritas.Core;
 /// all implement the same delegate signatures with entirely different internals.
 /// </para>
 /// <para>
-/// <b>Pattern positions.</b> Match and remove delegates take nullable
-/// <see cref="TermId"/> values — <c>null</c> means "any," a value means "must
-/// match this encoded identifier." Typing the pattern positions as
-/// <see cref="TermId"/> rather than raw <see cref="long"/> makes it explicit
-/// at call sites that these values must come from a <see cref="TermDictionary"/>.
+/// <b>Pattern positions.</b> Match and remove delegates take
+/// <see cref="TermId"/> values directly. <see cref="TermId.None"/> means
+/// "any value at this position" (the pattern is unbound here); a concrete
+/// non-<see cref="TermId.None"/> value means "must match this exact encoded
+/// identifier." <see cref="TermId.None"/> equals <c>default(TermId)</c>, so
+/// a position parameter that defaults to <c>default</c> is unbound by
+/// construction.
 /// </para>
 /// </remarks>
 public static class StorageDelegates
 {
     /// <summary>
-    /// Matches encoded triples against a pattern. Unbound positions are <c>null</c>.
+    /// Matches encoded triples against a pattern. Unbound positions are
+    /// <see cref="TermId.None"/>.
     /// </summary>
-    /// <param name="subject">The subject to match, or <c>null</c> for any subject.</param>
-    /// <param name="predicate">The predicate to match, or <c>null</c> for any predicate.</param>
-    /// <param name="object">The object to match, or <c>null</c> for any object.</param>
+    /// <param name="subject">The subject to match, or <see cref="TermId.None"/> for any subject.</param>
+    /// <param name="predicate">The predicate to match, or <see cref="TermId.None"/> for any predicate.</param>
+    /// <param name="object">The object to match, or <see cref="TermId.None"/> for any object.</param>
     /// <param name="cancellationToken">A token to cancel the enumeration.</param>
     /// <returns>An async sequence of matching triples.</returns>
     public delegate IAsyncEnumerable<EncodedTriple> MatchTriplesAsync(
-        TermId? subject,
-        TermId? predicate,
-        TermId? @object,
+        TermId subject,
+        TermId predicate,
+        TermId @object,
         CancellationToken cancellationToken);
 
     /// <summary>
@@ -58,15 +61,15 @@ public static class StorageDelegates
     /// <summary>
     /// Removes all triples matching the given pattern.
     /// </summary>
-    /// <param name="subject">The subject to match, or <c>null</c> for any subject.</param>
-    /// <param name="predicate">The predicate to match, or <c>null</c> for any predicate.</param>
-    /// <param name="object">The object to match, or <c>null</c> for any object.</param>
+    /// <param name="subject">The subject to match, or <see cref="TermId.None"/> for any subject.</param>
+    /// <param name="predicate">The predicate to match, or <see cref="TermId.None"/> for any predicate.</param>
+    /// <param name="object">The object to match, or <see cref="TermId.None"/> for any object.</param>
     /// <param name="cancellationToken">A token to cancel the operation.</param>
     /// <returns>The number of triples removed.</returns>
     public delegate ValueTask<long> RemoveTriplesAsync(
-        TermId? subject,
-        TermId? predicate,
-        TermId? @object,
+        TermId subject,
+        TermId predicate,
+        TermId @object,
         CancellationToken cancellationToken);
 
     /// <summary>
@@ -114,9 +117,9 @@ public static class StorageDelegates
     private static async IAsyncEnumerable<EncodedTriple> FilteredMatch(
         MatchTriplesAsync inner,
         TripleVisibilityFilter filter,
-        TermId? subject,
-        TermId? predicate,
-        TermId? @object,
+        TermId subject,
+        TermId predicate,
+        TermId @object,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         await foreach(EncodedTriple triple in inner(subject, predicate, @object, cancellationToken).ConfigureAwait(false))

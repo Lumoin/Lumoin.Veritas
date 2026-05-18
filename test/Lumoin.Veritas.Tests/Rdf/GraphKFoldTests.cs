@@ -10,6 +10,10 @@ internal sealed class GraphKFoldTests
 {
     public TestContext TestContext { get; set; } = null!;
 
+    //Encoded node ids start at 10 (well clear of the TermId.None
+    //sentinel at 0) so bound-to-X match queries inside the fold
+    //do not alias with unbound queries.
+
     //Per-instance mutable state used by the test algebras below.
     //MSTest creates a fresh instance per test method so there is no
     //cross-test contamination.
@@ -45,18 +49,18 @@ internal sealed class GraphKFoldTests
     public async Task SumAllChildrenOnTreeReturnsTreeSize()
     {
         //Tree:
-        //  0 -p-> 1 -p-> 2
-        //  0 -p-> 3
+        //  10 -p-> 11 -p-> 12
+        //  10 -p-> 13
         //All four nodes exist; algebra visits each exactly once; result is 4.
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 100, 1),
-            EncodedTriple.FromEncoded(1, 100, 2),
-            EncodedTriple.FromEncoded(0, 100, 3)
+            EncodedTriple.FromEncoded(10, 100, 11),
+            EncodedTriple.FromEncoded(11, 100, 12),
+            EncodedTriple.FromEncoded(10, 100, 13)
         ]);
 
         int result = await GraphKFold.FoldAsync<int>(
-            rootNodeId: TermId.FromEncoded(0),
+            rootNodeId: TermId.FromEncoded(10),
             algebra: SumAllChildrenAlgebra,
             match: store.AsMatchDelegate(),
             pool: null,
@@ -70,7 +74,7 @@ internal sealed class GraphKFoldTests
     public async Task SumAllChildrenOnSingletonReturnsOne()
     {
         //Root 42 has no outgoing edges. Algebra sees zero children; result = 1.
-        InMemoryGraphStore store = InMemoryGraphStore.Build([EncodedTriple.FromEncoded(1, 100, 2)]);
+        InMemoryGraphStore store = InMemoryGraphStore.Build([EncodedTriple.FromEncoded(11, 100, 12)]);
 
         int result = await GraphKFold.FoldAsync<int>(
             rootNodeId: TermId.FromEncoded(42),
@@ -119,18 +123,18 @@ internal sealed class GraphKFoldTests
     [TestMethod]
     public async Task ShortCircuitStopsAfterFirstPositiveChild()
     {
-        //Root 5 has three children with positive ids 10, 20, 30. The algebra
+        //Root 50 has three children with positive ids 60, 70, 80. The algebra
         //forces child 0, sees a positive value, short-circuits. Only two
         //algebra invocations should occur: root + first child.
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(5, 100, 10),
-            EncodedTriple.FromEncoded(5, 100, 20),
-            EncodedTriple.FromEncoded(5, 100, 30)
+            EncodedTriple.FromEncoded(50, 100, 60),
+            EncodedTriple.FromEncoded(50, 100, 70),
+            EncodedTriple.FromEncoded(50, 100, 80)
         ]);
 
         int result = await GraphKFold.FoldAsync<int>(
-            rootNodeId: TermId.FromEncoded(5),
+            rootNodeId: TermId.FromEncoded(50),
             algebra: AnyPositiveAlgebra,
             match: store.AsMatchDelegate(),
             pool: null,
@@ -166,28 +170,28 @@ internal sealed class GraphKFoldTests
     public async Task SharedChildInDagReducedExactlyOnce()
     {
         //DAG:
-        //  5 -p-> 1 -p-> 3
-        //  5 -p-> 2 -p-> 3
-        //Node 3 is shared. Must be reduced exactly once.
+        //  15 -p-> 11 -p-> 13
+        //  15 -p-> 12 -p-> 13
+        //Node 13 is shared. Must be reduced exactly once.
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(5, 100, 1),
-            EncodedTriple.FromEncoded(5, 100, 2),
-            EncodedTriple.FromEncoded(1, 100, 3),
-            EncodedTriple.FromEncoded(2, 100, 3)
+            EncodedTriple.FromEncoded(15, 100, 11),
+            EncodedTriple.FromEncoded(15, 100, 12),
+            EncodedTriple.FromEncoded(11, 100, 13),
+            EncodedTriple.FromEncoded(12, 100, 13)
         ]);
 
         _ = await GraphKFold.FoldAsync<int>(
-            rootNodeId: TermId.FromEncoded(5),
+            rootNodeId: TermId.FromEncoded(15),
             algebra: RecordInvocationAlgebra,
             match: store.AsMatchDelegate(),
             pool: null,
             cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
-        Assert.AreEqual(1, invocationsByNode[TermId.FromEncoded(5)]);
-        Assert.AreEqual(1, invocationsByNode[TermId.FromEncoded(1)]);
-        Assert.AreEqual(1, invocationsByNode[TermId.FromEncoded(2)]);
-        Assert.AreEqual(1, invocationsByNode[TermId.FromEncoded(3)]);
+        Assert.AreEqual(1, invocationsByNode[TermId.FromEncoded(15)]);
+        Assert.AreEqual(1, invocationsByNode[TermId.FromEncoded(11)]);
+        Assert.AreEqual(1, invocationsByNode[TermId.FromEncoded(12)]);
+        Assert.AreEqual(1, invocationsByNode[TermId.FromEncoded(13)]);
     }
 
     //----------------------------------------------------------------------
@@ -214,17 +218,17 @@ internal sealed class GraphKFoldTests
     [TestMethod]
     public async Task ForcingThroughCycleThrowsInvalidOperationException()
     {
-        //Cycle 0 -> 1 -> 2 -> 0. Driver must detect and throw.
+        //Cycle 10 -> 11 -> 12 -> 10. Driver must detect and throw.
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 100, 1),
-            EncodedTriple.FromEncoded(1, 100, 2),
-            EncodedTriple.FromEncoded(2, 100, 0)
+            EncodedTriple.FromEncoded(10, 100, 11),
+            EncodedTriple.FromEncoded(11, 100, 12),
+            EncodedTriple.FromEncoded(12, 100, 10)
         ]);
 
         InvalidOperationException ex = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
             async () => await GraphKFold.FoldAsync<int>(
-                rootNodeId: TermId.FromEncoded(0),
+                rootNodeId: TermId.FromEncoded(10),
                 algebra: ForceAllAlgebra,
                 match: store.AsMatchDelegate(),
                 pool: null,
@@ -255,7 +259,7 @@ internal sealed class GraphKFoldTests
         InMemoryGraphStore store = InMemoryGraphStore.Build([]);
 
         int result = await GraphKFold.FoldAsync<int>(
-            rootNodeId: TermId.FromEncoded(0),
+            rootNodeId: TermId.FromEncoded(10),
             algebra: YieldsSkipAlgebra,
             match: store.AsMatchDelegate(),
             pool: null,
@@ -272,13 +276,13 @@ internal sealed class GraphKFoldTests
         //pick the KFold implementation.
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 100, 1),
-            EncodedTriple.FromEncoded(1, 100, 2),
-            EncodedTriple.FromEncoded(0, 100, 3)
+            EncodedTriple.FromEncoded(10, 100, 11),
+            EncodedTriple.FromEncoded(11, 100, 12),
+            EncodedTriple.FromEncoded(10, 100, 13)
         ]);
 
         int result = await GraphCata.FoldAsync<int>(
-            rootNodeId: TermId.FromEncoded(0),
+            rootNodeId: TermId.FromEncoded(10),
             algebra: (GraphAlgebras.GraphKAlgebra<int>)SumAllChildrenAlgebra,
             match: store.AsMatchDelegate(),
             pool: null,

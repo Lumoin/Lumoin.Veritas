@@ -78,7 +78,7 @@ internal static class ShapePopulation
         Dictionary<IriId, List<TermId>> parameterValues = [];
         TermId? pathValue = null;
 
-        await foreach(EncodedTriple triple in shapeGraphMatch(builder.Id, null, null, cancellationToken).ConfigureAwait(false))
+        await foreach(EncodedTriple triple in shapeGraphMatch(builder.Id, TermId.None, TermId.None, cancellationToken).ConfigureAwait(false))
         {
             IriId predicate = IriId.FromUnchecked(triple.Predicate);
             TermId value = triple.Object;
@@ -369,7 +369,7 @@ internal static class ShapePopulation
             TermId? first = null;
             TermId? rest = null;
 
-            await foreach(EncodedTriple triple in shapeGraphMatch(current, rdfListIds.RdfFirst, null, cancellationToken).ConfigureAwait(false))
+            await foreach(EncodedTriple triple in shapeGraphMatch(current, rdfListIds.RdfFirst, TermId.None, cancellationToken).ConfigureAwait(false))
             {
                 first = triple.Object;
                 break;
@@ -381,7 +381,7 @@ internal static class ShapePopulation
                 return null;
             }
 
-            await foreach(EncodedTriple triple in shapeGraphMatch(current, rdfListIds.RdfRest, null, cancellationToken).ConfigureAwait(false))
+            await foreach(EncodedTriple triple in shapeGraphMatch(current, rdfListIds.RdfRest, TermId.None, cancellationToken).ConfigureAwait(false))
             {
                 rest = triple.Object;
                 break;

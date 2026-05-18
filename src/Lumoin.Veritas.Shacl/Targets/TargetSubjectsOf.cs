@@ -27,7 +27,7 @@ public sealed record TargetSubjectsOf(IriId PredicateId): Target
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         HashSet<TermId> yielded = [];
-        await foreach(EncodedTriple triple in dataMatch(null, PredicateId, null, cancellationToken).ConfigureAwait(false))
+        await foreach(EncodedTriple triple in dataMatch(TermId.None, PredicateId, TermId.None, cancellationToken).ConfigureAwait(false))
         {
             if(yielded.Add(triple.Subject))
             {

@@ -183,7 +183,7 @@ public static class RdfsInference
         //expansion use the pre-computed closures.
 
         //Emit subclass type inferences (rdfs9) by streaming rdf:type assertions.
-        await foreach(EncodedTriple typeTriple in match(null, vocabulary.RdfType, null, cancellationToken).ConfigureAwait(false))
+        await foreach(EncodedTriple typeTriple in match(TermId.None, vocabulary.RdfType, TermId.None, cancellationToken).ConfigureAwait(false))
         {
             if(superClasses.TryGetValue(typeTriple.Object, out HashSet<TermId>? supers))
             {
@@ -205,7 +205,7 @@ public static class RdfsInference
 
         //Stream the whole graph once to apply rdfs7, rdfs2, rdfs3. Use a match with
         //all three positions unbound. For each triple, consult the pre-computed maps.
-        await foreach(EncodedTriple triple in match(null, null, null, cancellationToken).ConfigureAwait(false))
+        await foreach(EncodedTriple triple in match(TermId.None, TermId.None, TermId.None, cancellationToken).ConfigureAwait(false))
         {
             //rdfs7: emit (s, super, o) for every super-property of p beyond p itself.
             if(superProperties.TryGetValue(triple.Predicate, out HashSet<TermId>? supers))
@@ -426,7 +426,7 @@ public static class RdfsInference
         //premise is asserted when (c1, sCO, super) is a direct edge,
         //otherwise derived by the rdfs11 emission above; the consumer
         //finds it in the stream by triple equality.
-        await foreach(EncodedTriple typeTriple in match(null, vocabulary.RdfType, null, cancellationToken).ConfigureAwait(false))
+        await foreach(EncodedTriple typeTriple in match(TermId.None, vocabulary.RdfType, TermId.None, cancellationToken).ConfigureAwait(false))
         {
             if(superClasses.TryGetValue(typeTriple.Object, out HashSet<TermId>? supers))
             {
@@ -451,7 +451,7 @@ public static class RdfsInference
         }
 
         //Whole-ABox sweep: rdfs7, rdfs2, rdfs3 — α-decomposed.
-        await foreach(EncodedTriple triple in match(null, null, null, cancellationToken).ConfigureAwait(false))
+        await foreach(EncodedTriple triple in match(TermId.None, TermId.None, TermId.None, cancellationToken).ConfigureAwait(false))
         {
             //rdfs7: (p, sPO, super) and (s, p, o) ⇒ (s, super, o).
             //Antecedents = [(p, sPO, super), triple]. The first
@@ -594,7 +594,7 @@ public static class RdfsInference
         CancellationToken cancellationToken)
     {
         HashSet<(TermId, TermId)> pairs = [];
-        await foreach(EncodedTriple triple in match(null, predicate, null, cancellationToken).ConfigureAwait(false))
+        await foreach(EncodedTriple triple in match(TermId.None, predicate, TermId.None, cancellationToken).ConfigureAwait(false))
         {
             pairs.Add((triple.Subject, triple.Object));
         }

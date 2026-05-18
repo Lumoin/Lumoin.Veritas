@@ -10,12 +10,16 @@ internal sealed class GraphFoldTests
 {
     public TestContext TestContext { get; set; } = null!;
 
+    //Encoded node ids start at 10 (well clear of the TermId.None
+    //sentinel at 0) so bound-to-X queries do not alias with
+    //unbound queries inside the fold's match calls.
+
     [TestMethod]
     public async Task FoldReturnsAlgebraResultForNodeWithNoOutgoing()
     {
         //Root node 42 has no outgoing edges. The algebra is still invoked once with
         //an empty outgoing list, and its result is returned.
-        InMemoryGraphStore store = InMemoryGraphStore.Build([EncodedTriple.FromEncoded(1, 100, 2)]);
+        InMemoryGraphStore store = InMemoryGraphStore.Build([EncodedTriple.FromEncoded(11, 100, 12)]);
 
         int result = await GraphFold.FoldAsync<int>(
             rootNodeId: TermId.FromEncoded(42),
@@ -29,16 +33,16 @@ internal sealed class GraphFoldTests
     [TestMethod]
     public async Task FoldCountsOutgoingTriplesAtRoot()
     {
-        //Root 0 has three outgoing triples.
+        //Root 10 has three outgoing triples.
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 100, 1),
-            EncodedTriple.FromEncoded(0, 200, 2),
-            EncodedTriple.FromEncoded(0, 300, 3)
+            EncodedTriple.FromEncoded(10, 100, 11),
+            EncodedTriple.FromEncoded(10, 200, 12),
+            EncodedTriple.FromEncoded(10, 300, 13)
         ]);
 
         int result = await GraphFold.FoldAsync<int>(
-            rootNodeId: TermId.FromEncoded(0),
+            rootNodeId: TermId.FromEncoded(10),
             algebra: (_, outgoing, _) => outgoing.Count,
             match: store.AsMatchDelegate(),
             cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
@@ -50,21 +54,21 @@ internal sealed class GraphFoldTests
     public async Task FoldAggregatesTreeSize()
     {
         //Tree:
-        //  0 -p-> 1 -p-> 2
-        //  0 -p-> 3
-        //Leaves 2 and 3 have no outgoing edges but are still reduced to 1 each
+        //  10 -p-> 11 -p-> 12
+        //  10 -p-> 13
+        //Leaves 12 and 13 have no outgoing edges but are still reduced to 1 each
         //by the algebra (outgoing and childResults are both empty lists).
-        //Node 1 has one child (2 -> 1). Result = 1 + 1 = 2.
-        //Node 0 has two children (1 -> 2, 3 -> 1). Result = 1 + 2 + 1 = 4.
+        //Node 11 has one child (12 -> 1). Result = 1 + 1 = 2.
+        //Node 10 has two children (11 -> 2, 13 -> 1). Result = 1 + 2 + 1 = 4.
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 100, 1),
-            EncodedTriple.FromEncoded(1, 100, 2),
-            EncodedTriple.FromEncoded(0, 100, 3)
+            EncodedTriple.FromEncoded(10, 100, 11),
+            EncodedTriple.FromEncoded(11, 100, 12),
+            EncodedTriple.FromEncoded(10, 100, 13)
         ]);
 
         int result = await GraphFold.FoldAsync<int>(
-            rootNodeId: TermId.FromEncoded(0),
+            rootNodeId: TermId.FromEncoded(10),
             algebra: (_, _, childResults) =>
             {
                 int sum = 1;
@@ -84,19 +88,19 @@ internal sealed class GraphFoldTests
     [TestMethod]
     public async Task FoldTerminatesOnCycles()
     {
-        //Cycle 0 -> 1 -> 2 -> 0. The visited set breaks the cycle and each node is
-        //reduced exactly once.
+        //Cycle 10 -> 11 -> 12 -> 10. The visited set breaks the cycle and each node
+        //is reduced exactly once.
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 100, 1),
-            EncodedTriple.FromEncoded(1, 100, 2),
-            EncodedTriple.FromEncoded(2, 100, 0)
+            EncodedTriple.FromEncoded(10, 100, 11),
+            EncodedTriple.FromEncoded(11, 100, 12),
+            EncodedTriple.FromEncoded(12, 100, 10)
         ]);
 
         int callCount = 0;
 
         int result = await GraphFold.FoldAsync<int>(
-            rootNodeId: TermId.FromEncoded(0),
+            rootNodeId: TermId.FromEncoded(10),
             algebra: (_, _, _) =>
             {
                 callCount++;

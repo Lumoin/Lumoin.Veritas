@@ -74,7 +74,7 @@ public static class ClosedEvaluator
         ImmutableArray<ValidationResult>.Builder builder = ImmutableArray.CreateBuilder<ValidationResult>();
 
         await foreach(EncodedTriple triple in context.DataGraphMatch(
-            focusNode, null, null, cancellationToken).ConfigureAwait(false))
+            focusNode, TermId.None, TermId.None, cancellationToken).ConfigureAwait(false))
         {
             if(allowedEncoded.Contains(triple.Predicate.Encoded))
             {

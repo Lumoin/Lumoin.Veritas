@@ -71,7 +71,7 @@ public sealed record RdfAdjacencyAdapter(StorageDelegates.MatchTriplesAsync Matc
         IriId predicate,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        await foreach(EncodedTriple triple in Match(source, predicate.Value, null, cancellationToken).ConfigureAwait(false))
+        await foreach(EncodedTriple triple in Match(source, predicate.Value, TermId.None, cancellationToken).ConfigureAwait(false))
         {
             yield return triple.Object;
         }
@@ -92,7 +92,7 @@ public sealed record RdfAdjacencyAdapter(StorageDelegates.MatchTriplesAsync Matc
         IriId predicate,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        await foreach(EncodedTriple triple in Match(null, predicate.Value, target, cancellationToken).ConfigureAwait(false))
+        await foreach(EncodedTriple triple in Match(TermId.None, predicate.Value, target, cancellationToken).ConfigureAwait(false))
         {
             yield return triple.Subject;
         }
@@ -109,7 +109,7 @@ public sealed record RdfAdjacencyAdapter(StorageDelegates.MatchTriplesAsync Matc
         TermId source,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        await foreach(EncodedTriple triple in Match(source, null, null, cancellationToken).ConfigureAwait(false))
+        await foreach(EncodedTriple triple in Match(source, TermId.None, TermId.None, cancellationToken).ConfigureAwait(false))
         {
             yield return triple.Object;
         }

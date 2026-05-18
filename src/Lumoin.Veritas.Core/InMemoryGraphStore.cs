@@ -82,26 +82,35 @@ public sealed class InMemoryGraphStore
     /// <summary>
     /// Returns all triples matching the given pattern.
     /// </summary>
-    /// <param name="subject">The subject to match, or <c>null</c> for any.</param>
-    /// <param name="predicate">The predicate to match, or <c>null</c> for any.</param>
-    /// <param name="object">The object to match, or <c>null</c> for any.</param>
+    /// <param name="subject">The subject to match, or <see cref="TermId.None"/> for any.</param>
+    /// <param name="predicate">The predicate to match, or <see cref="TermId.None"/> for any.</param>
+    /// <param name="object">The object to match, or <see cref="TermId.None"/> for any.</param>
     /// <returns>All matching triples.</returns>
-    public IEnumerable<EncodedTriple> Match(TermId? subject, TermId? predicate, TermId? @object)
+    /// <remarks>
+    /// <para>
+    /// <b>Unbound positions.</b> A position parameter of
+    /// <see cref="TermId.None"/> means "match any value at this
+    /// position." Since <see cref="TermId.None"/> equals
+    /// <c>default(TermId)</c>, position parameters that default to
+    /// <c>default</c> are unbound by construction.
+    /// </para>
+    /// </remarks>
+    public IEnumerable<EncodedTriple> Match(TermId subject, TermId predicate, TermId @object)
     {
         //Select the best index based on which positions are bound.
-        if(subject.HasValue)
+        if(!subject.IsNone)
         {
-            return ScanSpo(subject.Value, predicate, @object);
+            return ScanSpo(subject, predicate, @object);
         }
 
-        if(predicate.HasValue)
+        if(!predicate.IsNone)
         {
-            return ScanPos(predicate.Value, @object, subject);
+            return ScanPos(predicate, @object, subject);
         }
 
-        if(@object.HasValue)
+        if(!@object.IsNone)
         {
-            return ScanOsp(@object.Value, subject, predicate);
+            return ScanOsp(@object, subject, predicate);
         }
 
         //All unbound — return everything.
@@ -126,17 +135,21 @@ public sealed class InMemoryGraphStore
         return _ => ValueTask.FromResult((long)Count);
     }
 
-    private IEnumerable<EncodedTriple> ScanSpo(TermId subject, TermId? predicate, TermId? @object)
+    //The first parameter is the bound index key (must be a
+    //concrete non-TermId.None value — the scan is meaningless
+    //otherwise). The remaining parameters may be TermId.None for
+    //unbound positions.
+    private IEnumerable<EncodedTriple> ScanSpo(TermId subject, TermId predicate, TermId @object)
     {
         int start = LowerBound(Spo, subject, static t => t.Subject);
         for(int i = start; i < Spo.Length && Spo[i].Subject == subject; i++)
         {
-            if(predicate.HasValue && Spo[i].Predicate != predicate.Value)
+            if(!predicate.IsNone && Spo[i].Predicate != predicate)
             {
                 continue;
             }
 
-            if(@object.HasValue && Spo[i].Object != @object.Value)
+            if(!@object.IsNone && Spo[i].Object != @object)
             {
                 continue;
             }
@@ -145,17 +158,17 @@ public sealed class InMemoryGraphStore
         }
     }
 
-    private IEnumerable<EncodedTriple> ScanPos(TermId predicate, TermId? @object, TermId? subject)
+    private IEnumerable<EncodedTriple> ScanPos(TermId predicate, TermId @object, TermId subject)
     {
         int start = LowerBound(Pos, predicate, static t => t.Predicate);
         for(int i = start; i < Pos.Length && Pos[i].Predicate == predicate; i++)
         {
-            if(@object.HasValue && Pos[i].Object != @object.Value)
+            if(!@object.IsNone && Pos[i].Object != @object)
             {
                 continue;
             }
 
-            if(subject.HasValue && Pos[i].Subject != subject.Value)
+            if(!subject.IsNone && Pos[i].Subject != subject)
             {
                 continue;
             }
@@ -164,17 +177,17 @@ public sealed class InMemoryGraphStore
         }
     }
 
-    private IEnumerable<EncodedTriple> ScanOsp(TermId @object, TermId? subject, TermId? predicate)
+    private IEnumerable<EncodedTriple> ScanOsp(TermId @object, TermId subject, TermId predicate)
     {
         int start = LowerBound(Osp, @object, static t => t.Object);
         for(int i = start; i < Osp.Length && Osp[i].Object == @object; i++)
         {
-            if(subject.HasValue && Osp[i].Subject != subject.Value)
+            if(!subject.IsNone && Osp[i].Subject != subject)
             {
                 continue;
             }
 
-            if(predicate.HasValue && Osp[i].Predicate != predicate.Value)
+            if(!predicate.IsNone && Osp[i].Predicate != predicate)
             {
                 continue;
             }

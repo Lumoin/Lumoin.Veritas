@@ -11,6 +11,10 @@ internal sealed class PropertyPathEvaluatorTests
 {
     public TestContext TestContext { get; set; } = null!;
 
+    //Encoded node ids start at 10 (well clear of the TermId.None
+    //sentinel at 0) so bound-to-X match queries do not alias with
+    //unbound queries inside the path evaluator.
+
     //Local helper: wraps a raw predicate id as an IriId. SHACL/SPARQL
     //predicates are always IRIs so an unchecked wrap is appropriate in tests.
     private static IriId PredIri(uint encoded) => IriId.FromUnchecked(TermId.FromEncoded(encoded));
@@ -20,32 +24,32 @@ internal sealed class PropertyPathEvaluatorTests
     {
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 100, 1),
-            EncodedTriple.FromEncoded(0, 100, 2),
-            EncodedTriple.FromEncoded(0, 200, 3)
+            EncodedTriple.FromEncoded(10, 100, 11),
+            EncodedTriple.FromEncoded(10, 100, 12),
+            EncodedTriple.FromEncoded(10, 200, 13)
         ]);
 
         HashSet<TermId> reached = [];
         await foreach(TermId node in PropertyPathEvaluator.EvaluateAsync(
-            TermId.FromEncoded(0), new PredicatePath(PredIri(100)), store.AsMatchDelegate(), TestContext.CancellationToken).ConfigureAwait(false))
+            TermId.FromEncoded(10), new PredicatePath(PredIri(100)), store.AsMatchDelegate(), TestContext.CancellationToken).ConfigureAwait(false))
         {
             reached.Add(node);
         }
 
         CollectionAssert.AreEquivalent(
-            new TermId[] { TermId.FromEncoded(1), TermId.FromEncoded(2) },
+            new TermId[] { TermId.FromEncoded(11), TermId.FromEncoded(12) },
             reached.ToList());
     }
 
     [TestMethod]
     public async Task SequencePathThreadsResultsBetweenSteps()
     {
-        //0 -p1-> 1 -p2-> 2; sequence p1/p2 from 0 should reach {2}.
+        //10 -p1-> 11 -p2-> 12; sequence p1/p2 from 10 should reach {12}.
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 100, 1),
-            EncodedTriple.FromEncoded(1, 200, 2),
-            EncodedTriple.FromEncoded(1, 200, 3)
+            EncodedTriple.FromEncoded(10, 100, 11),
+            EncodedTriple.FromEncoded(11, 200, 12),
+            EncodedTriple.FromEncoded(11, 200, 13)
         ]);
 
         PropertyPath path = new SequencePath(
@@ -56,13 +60,13 @@ internal sealed class PropertyPathEvaluatorTests
 
         HashSet<TermId> reached = [];
         await foreach(TermId node in PropertyPathEvaluator.EvaluateAsync(
-            TermId.FromEncoded(0), path, store.AsMatchDelegate(), TestContext.CancellationToken).ConfigureAwait(false))
+            TermId.FromEncoded(10), path, store.AsMatchDelegate(), TestContext.CancellationToken).ConfigureAwait(false))
         {
             reached.Add(node);
         }
 
         CollectionAssert.AreEquivalent(
-            new TermId[] { TermId.FromEncoded(2), TermId.FromEncoded(3) },
+            new TermId[] { TermId.FromEncoded(12), TermId.FromEncoded(13) },
             reached.ToList());
     }
 
@@ -71,8 +75,8 @@ internal sealed class PropertyPathEvaluatorTests
     {
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 100, 1),
-            EncodedTriple.FromEncoded(0, 200, 2)
+            EncodedTriple.FromEncoded(10, 100, 11),
+            EncodedTriple.FromEncoded(10, 200, 12)
         ]);
 
         PropertyPath path = new AlternativePath(
@@ -83,82 +87,82 @@ internal sealed class PropertyPathEvaluatorTests
 
         HashSet<TermId> reached = [];
         await foreach(TermId node in PropertyPathEvaluator.EvaluateAsync(
-            TermId.FromEncoded(0), path, store.AsMatchDelegate(), TestContext.CancellationToken).ConfigureAwait(false))
+            TermId.FromEncoded(10), path, store.AsMatchDelegate(), TestContext.CancellationToken).ConfigureAwait(false))
         {
             reached.Add(node);
         }
 
         CollectionAssert.AreEquivalent(
-            new TermId[] { TermId.FromEncoded(1), TermId.FromEncoded(2) },
+            new TermId[] { TermId.FromEncoded(11), TermId.FromEncoded(12) },
             reached.ToList());
     }
 
     [TestMethod]
     public async Task InversePathFlipsDirection()
     {
-        //0 -p-> 1; inverse of p from 1 should reach 0.
-        InMemoryGraphStore store = InMemoryGraphStore.Build([EncodedTriple.FromEncoded(0, 100, 1)]);
+        //10 -p-> 11; inverse of p from 11 should reach 10.
+        InMemoryGraphStore store = InMemoryGraphStore.Build([EncodedTriple.FromEncoded(10, 100, 11)]);
 
         PropertyPath path = new InversePath(new PredicatePath(PredIri(100)));
 
         HashSet<TermId> reached = [];
         await foreach(TermId node in PropertyPathEvaluator.EvaluateAsync(
-            TermId.FromEncoded(1), path, store.AsMatchDelegate(), TestContext.CancellationToken).ConfigureAwait(false))
+            TermId.FromEncoded(11), path, store.AsMatchDelegate(), TestContext.CancellationToken).ConfigureAwait(false))
         {
             reached.Add(node);
         }
 
         CollectionAssert.AreEquivalent(
-            new TermId[] { TermId.FromEncoded(0) },
+            new TermId[] { TermId.FromEncoded(10) },
             reached.ToList());
     }
 
     [TestMethod]
     public async Task ZeroOrMoreIncludesStartAndAllReachable()
     {
-        //Chain 0 -> 1 -> 2 -> 3.
+        //Chain 10 -> 11 -> 12 -> 13.
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 100, 1),
-            EncodedTriple.FromEncoded(1, 100, 2),
-            EncodedTriple.FromEncoded(2, 100, 3)
+            EncodedTriple.FromEncoded(10, 100, 11),
+            EncodedTriple.FromEncoded(11, 100, 12),
+            EncodedTriple.FromEncoded(12, 100, 13)
         ]);
 
         PropertyPath path = new ZeroOrMorePath(new PredicatePath(PredIri(100)));
 
         HashSet<TermId> reached = [];
         await foreach(TermId node in PropertyPathEvaluator.EvaluateAsync(
-            TermId.FromEncoded(0), path, store.AsMatchDelegate(), TestContext.CancellationToken).ConfigureAwait(false))
+            TermId.FromEncoded(10), path, store.AsMatchDelegate(), TestContext.CancellationToken).ConfigureAwait(false))
         {
             reached.Add(node);
         }
 
         CollectionAssert.AreEquivalent(
-            new TermId[] { TermId.FromEncoded(0), TermId.FromEncoded(1), TermId.FromEncoded(2), TermId.FromEncoded(3) },
+            new TermId[] { TermId.FromEncoded(10), TermId.FromEncoded(11), TermId.FromEncoded(12), TermId.FromEncoded(13) },
             reached.ToList());
     }
 
     [TestMethod]
     public async Task OneOrMoreExcludesStartUnlessReachableByCycle()
     {
-        //Chain 0 -> 1 -> 2; start not reachable from itself.
+        //Chain 10 -> 11 -> 12; start not reachable from itself.
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 100, 1),
-            EncodedTriple.FromEncoded(1, 100, 2)
+            EncodedTriple.FromEncoded(10, 100, 11),
+            EncodedTriple.FromEncoded(11, 100, 12)
         ]);
 
         PropertyPath path = new OneOrMorePath(new PredicatePath(PredIri(100)));
 
         HashSet<TermId> reached = [];
         await foreach(TermId node in PropertyPathEvaluator.EvaluateAsync(
-            TermId.FromEncoded(0), path, store.AsMatchDelegate(), TestContext.CancellationToken).ConfigureAwait(false))
+            TermId.FromEncoded(10), path, store.AsMatchDelegate(), TestContext.CancellationToken).ConfigureAwait(false))
         {
             reached.Add(node);
         }
 
         CollectionAssert.AreEquivalent(
-            new TermId[] { TermId.FromEncoded(1), TermId.FromEncoded(2) },
+            new TermId[] { TermId.FromEncoded(11), TermId.FromEncoded(12) },
             reached.ToList());
     }
 
@@ -167,21 +171,21 @@ internal sealed class PropertyPathEvaluatorTests
     {
         InMemoryGraphStore store = InMemoryGraphStore.Build(
         [
-            EncodedTriple.FromEncoded(0, 100, 1),
-            EncodedTriple.FromEncoded(1, 100, 2)
+            EncodedTriple.FromEncoded(10, 100, 11),
+            EncodedTriple.FromEncoded(11, 100, 12)
         ]);
 
         PropertyPath path = new ZeroOrOnePath(new PredicatePath(PredIri(100)));
 
         HashSet<TermId> reached = [];
         await foreach(TermId node in PropertyPathEvaluator.EvaluateAsync(
-            TermId.FromEncoded(0), path, store.AsMatchDelegate(), TestContext.CancellationToken).ConfigureAwait(false))
+            TermId.FromEncoded(10), path, store.AsMatchDelegate(), TestContext.CancellationToken).ConfigureAwait(false))
         {
             reached.Add(node);
         }
 
         CollectionAssert.AreEquivalent(
-            new TermId[] { TermId.FromEncoded(0), TermId.FromEncoded(1) },
+            new TermId[] { TermId.FromEncoded(10), TermId.FromEncoded(11) },
             reached.ToList());
     }
 }

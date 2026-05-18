@@ -266,7 +266,7 @@ internal sealed class HypertrieGraphStoreParityTests
         HypertrieGraphStore deduped = await HypertrieGraphStore.BuildAsync(triples, store, TestContext.CancellationToken).ConfigureAwait(false);
 
         //Sanity: matching still returns every triple.
-        HashSet<EncodedTriple> matched = [.. deduped.Match(null, null, null)];
+        HashSet<EncodedTriple> matched = [.. deduped.Match(TermId.None, TermId.None, TermId.None)];
         Assert.HasCount(subjectCount, matched);
 
         Assert.IsLessThanOrEqualTo(subjectCount, store.Count,
@@ -297,9 +297,9 @@ internal sealed class HypertrieGraphStoreParityTests
         InMemoryGraphStore inMemory = InMemoryGraphStore.Build(materialized);
         HypertrieGraphStore hypertrie = await HypertrieGraphStore.BuildAsync(materialized, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
 
-        TermId? subject = s.HasValue ? TermId.FromEncoded(s.Value) : null;
-        TermId? predicate = p.HasValue ? TermId.FromEncoded(p.Value) : null;
-        TermId? @object = o.HasValue ? TermId.FromEncoded(o.Value) : null;
+        TermId subject = s.HasValue ? TermId.FromEncoded(s.Value) : TermId.None;
+        TermId predicate = p.HasValue ? TermId.FromEncoded(p.Value) : TermId.None;
+        TermId @object = o.HasValue ? TermId.FromEncoded(o.Value) : TermId.None;
 
         List<EncodedTriple> hypertrieList = [.. hypertrie.Match(subject, predicate, @object)];
         HashSet<EncodedTriple> hypertrieSet = [.. hypertrieList];

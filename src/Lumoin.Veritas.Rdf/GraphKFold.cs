@@ -149,7 +149,7 @@ public static class GraphKFold
             cancellationToken.ThrowIfCancellationRequested();
             TermId currentNodeId = discoveryQueue.Dequeue();
             List<EncodedTriple> triples = [];
-            await foreach(EncodedTriple triple in match(currentNodeId, null, null, cancellationToken).ConfigureAwait(false))
+            await foreach(EncodedTriple triple in match(currentNodeId, TermId.None, TermId.None, cancellationToken).ConfigureAwait(false))
             {
                 triples.Add(triple);
                 if(!nodeIdToLocal.ContainsKey(triple.Object))

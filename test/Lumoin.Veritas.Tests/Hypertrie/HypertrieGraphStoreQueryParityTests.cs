@@ -268,9 +268,9 @@ internal sealed class HypertrieGraphStoreQueryParityTests
     //it matches) or zero bindings (when it does not).
     private static List<Dictionary<Variable, long>> MatchPattern(InMemoryGraphStore store, TriplePattern pattern)
     {
-        TermId? subject = pattern.Subject.IsBound ? pattern.Subject.BoundTerm : null;
-        TermId? predicate = pattern.Predicate.IsBound ? pattern.Predicate.BoundTerm : null;
-        TermId? obj = pattern.Object.IsBound ? pattern.Object.BoundTerm : null;
+        TermId subject = pattern.Subject.IsBound ? pattern.Subject.BoundTerm : TermId.None;
+        TermId predicate = pattern.Predicate.IsBound ? pattern.Predicate.BoundTerm : TermId.None;
+        TermId obj = pattern.Object.IsBound ? pattern.Object.BoundTerm : TermId.None;
 
         List<Dictionary<Variable, long>> results = [];
 

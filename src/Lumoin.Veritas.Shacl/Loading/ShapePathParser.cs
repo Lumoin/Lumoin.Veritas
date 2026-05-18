@@ -101,7 +101,7 @@ internal static class ShapePathParser
         //forms by carrying rdf:first. Operator forms carry exactly one of
         //the sh:path-operator predicates.
         List<EncodedTriple> outgoing = new();
-        await foreach(EncodedTriple triple in shapeGraphMatch(pathTerm, null, null, cancellationToken).ConfigureAwait(false))
+        await foreach(EncodedTriple triple in shapeGraphMatch(pathTerm, TermId.None, TermId.None, cancellationToken).ConfigureAwait(false))
         {
             outgoing.Add(triple);
         }
@@ -211,7 +211,7 @@ internal static class ShapePathParser
             TermId? first = null;
             TermId? rest = null;
 
-            await foreach(EncodedTriple triple in shapeGraphMatch(cursor, null, null, cancellationToken).ConfigureAwait(false))
+            await foreach(EncodedTriple triple in shapeGraphMatch(cursor, TermId.None, TermId.None, cancellationToken).ConfigureAwait(false))
             {
                 if(triple.Predicate == rdfListIds.RdfFirst)
                 {

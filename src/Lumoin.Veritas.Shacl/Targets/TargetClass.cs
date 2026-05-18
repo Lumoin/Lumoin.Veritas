@@ -49,7 +49,7 @@ public sealed record TargetClass(IriId ClassId, IriId RdfTypeId, IriId RdfsSubCl
 
         foreach(TermId cls in classSet)
         {
-            await foreach(EncodedTriple triple in dataMatch(null, RdfTypeId, cls, cancellationToken).ConfigureAwait(false))
+            await foreach(EncodedTriple triple in dataMatch(TermId.None, RdfTypeId, cls, cancellationToken).ConfigureAwait(false))
             {
                 if(yielded.Add(triple.Subject))
                 {
