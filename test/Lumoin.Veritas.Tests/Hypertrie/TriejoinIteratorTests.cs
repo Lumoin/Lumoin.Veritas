@@ -136,7 +136,7 @@ internal sealed class TriejoinIteratorTests
 
         using TriejoinIterator iterator = new(store.Snapshot, AllVariables(s, p, o), [s, p, o], VeritasClock.System);
 
-        List<uint> subjects = [];
+        List<TermId> subjects = [];
 
         while(!iterator.AtEnd)
         {
@@ -145,7 +145,7 @@ internal sealed class TriejoinIteratorTests
         }
 
         Assert.HasCount(3, subjects);
-        CollectionAssert.AreEqual(new uint[] { 1, 2, 3 }, subjects);
+        CollectionAssert.AreEqual(new TermId[] { TermId.FromEncoded(1), TermId.FromEncoded(2), TermId.FromEncoded(3) }, subjects);
     }
 
     [TestMethod]
@@ -158,9 +158,9 @@ internal sealed class TriejoinIteratorTests
 
         using TriejoinIterator iterator = new(store.Snapshot, AllVariables(s, p, o), [s, p, o], VeritasClock.System);
 
-        Assert.IsTrue(iterator.Open(1U, TestContext.CancellationToken));
+        Assert.IsTrue(iterator.Open(TermId.FromEncoded(1U), TestContext.CancellationToken));
 
-        List<uint> predicates = [];
+        List<TermId> predicates = [];
 
         while(!iterator.AtEnd)
         {
@@ -169,7 +169,7 @@ internal sealed class TriejoinIteratorTests
         }
 
         Assert.HasCount(2, predicates);
-        CollectionAssert.AreEqual(new uint[] { 10, 11 }, predicates);
+        CollectionAssert.AreEqual(new TermId[] { TermId.FromEncoded(10), TermId.FromEncoded(11) }, predicates);
     }
 
     [TestMethod]
@@ -187,7 +187,7 @@ internal sealed class TriejoinIteratorTests
 
         while(!iterator.AtEnd)
         {
-            uint subject = iterator.Key;
+            TermId subject = iterator.Key;
 
             if(!iterator.Open(subject, ct))
             {
@@ -198,7 +198,7 @@ internal sealed class TriejoinIteratorTests
 
             while(!iterator.AtEnd)
             {
-                uint predicate = iterator.Key;
+                TermId predicate = iterator.Key;
 
                 if(!iterator.Open(predicate, ct))
                 {
@@ -209,11 +209,11 @@ internal sealed class TriejoinIteratorTests
 
                 while(!iterator.AtEnd)
                 {
-                    uint obj = iterator.Key;
+                    TermId obj = iterator.Key;
 
                     if(iterator.Open(obj, ct))
                     {
-                        visited.Add(EncodedTriple.FromEncoded(subject, predicate, obj));
+                        visited.Add(EncodedTriple.FromEncoded(subject.Encoded, predicate.Encoded, obj.Encoded));
                         iterator.Up();
                     }
 
@@ -242,7 +242,7 @@ internal sealed class TriejoinIteratorTests
 
         using TriejoinIterator iterator = new(store.Snapshot, AllVariables(s, p, o), [s, p, o], VeritasClock.System);
 
-        bool opened = iterator.Open(999U, TestContext.CancellationToken);
+        bool opened = iterator.Open(TermId.FromEncoded(999U), TestContext.CancellationToken);
 
         Assert.IsFalse(opened);
         //State unchanged: cursor still at first key.
@@ -260,14 +260,14 @@ internal sealed class TriejoinIteratorTests
 
         using TriejoinIterator iterator = new(store.Snapshot, AllVariables(s, p, o), [s, p, o], VeritasClock.System);
 
-        iterator.Open(1U, TestContext.CancellationToken);
+        iterator.Open(TermId.FromEncoded(1U), TestContext.CancellationToken);
 
         Assert.AreEqual(1, iterator.DescendedLevels);
 
         iterator.Up();
 
         Assert.AreEqual(0, iterator.DescendedLevels);
-        Assert.AreEqual(1U, iterator.Key);
+        Assert.AreEqual(TermId.FromEncoded(1U), iterator.Key);
     }
 
     [TestMethod]
@@ -293,10 +293,10 @@ internal sealed class TriejoinIteratorTests
 
         using TriejoinIterator iterator = new(store.Snapshot, AllVariables(s, p, o), [s, p, o], VeritasClock.System);
 
-        iterator.Seek(2U, TestContext.CancellationToken);
+        iterator.Seek(TermId.FromEncoded(2U), TestContext.CancellationToken);
 
         Assert.IsFalse(iterator.AtEnd);
-        Assert.AreEqual(2U, iterator.Key);
+        Assert.AreEqual(TermId.FromEncoded(2U), iterator.Key);
     }
 
     [TestMethod]
@@ -309,7 +309,7 @@ internal sealed class TriejoinIteratorTests
 
         using TriejoinIterator iterator = new(store.Snapshot, AllVariables(s, p, o), [s, p, o], VeritasClock.System);
 
-        iterator.Seek(999U, TestContext.CancellationToken);
+        iterator.Seek(TermId.FromEncoded(999U), TestContext.CancellationToken);
 
         Assert.IsTrue(iterator.AtEnd);
     }
@@ -330,7 +330,7 @@ internal sealed class TriejoinIteratorTests
         //First level is now ?p, ranged over predicates for subject=1.
         Assert.AreEqual(p, iterator.CurrentVariable);
         Assert.IsFalse(iterator.AtEnd);
-        Assert.AreEqual(10U, iterator.Key);
+        Assert.AreEqual(TermId.FromEncoded(10U), iterator.Key);
     }
 
     [TestMethod]
@@ -361,7 +361,7 @@ internal sealed class TriejoinIteratorTests
 
         using TriejoinIterator iterator = new(store.Snapshot, pattern, [o], VeritasClock.System);
 
-        List<uint> objects = [];
+        List<TermId> objects = [];
 
         while(!iterator.AtEnd)
         {
@@ -371,7 +371,7 @@ internal sealed class TriejoinIteratorTests
 
         //Triples (1,10,100) and (1,10,101) match.
         Assert.HasCount(2, objects);
-        CollectionAssert.AreEqual(new uint[] { 100, 101 }, objects);
+        CollectionAssert.AreEqual(new TermId[] { TermId.FromEncoded(100), TermId.FromEncoded(101) }, objects);
     }
 
     [TestMethod]
@@ -384,11 +384,11 @@ internal sealed class TriejoinIteratorTests
 
         using TriejoinIterator iterator = new(store.Snapshot, AllVariables(s, p, o), [s, p, o], VeritasClock.System);
 
-        iterator.Open(1U, TestContext.CancellationToken);
-        iterator.Open(10U, TestContext.CancellationToken);
+        iterator.Open(TermId.FromEncoded(1U), TestContext.CancellationToken);
+        iterator.Open(TermId.FromEncoded(10U), TestContext.CancellationToken);
 
-        Assert.AreEqual(1U, iterator.ValueOf(s));
-        Assert.AreEqual(10U, iterator.ValueOf(p));
+        Assert.AreEqual(TermId.FromEncoded(1U), iterator.ValueOf(s));
+        Assert.AreEqual(TermId.FromEncoded(10U), iterator.ValueOf(p));
     }
 
     [TestMethod]
@@ -401,7 +401,7 @@ internal sealed class TriejoinIteratorTests
 
         using TriejoinIterator iterator = new(store.Snapshot, AllVariables(s, p, o), [s, p, o], VeritasClock.System);
 
-        iterator.Open(1U, TestContext.CancellationToken);
+        iterator.Open(TermId.FromEncoded(1U), TestContext.CancellationToken);
 
         Assert.Throws<ArgumentException>(() => iterator.ValueOf(p));
     }
@@ -418,11 +418,11 @@ internal sealed class TriejoinIteratorTests
 
         Assert.AreEqual(s, iterator.CurrentVariable);
 
-        iterator.Open(1U, TestContext.CancellationToken);
+        iterator.Open(TermId.FromEncoded(1U), TestContext.CancellationToken);
 
         Assert.AreEqual(p, iterator.CurrentVariable);
 
-        iterator.Open(10U, TestContext.CancellationToken);
+        iterator.Open(TermId.FromEncoded(10U), TestContext.CancellationToken);
 
         Assert.AreEqual(o, iterator.CurrentVariable);
     }
@@ -437,9 +437,9 @@ internal sealed class TriejoinIteratorTests
 
         using TriejoinIterator iterator = new(store.Snapshot, AllVariables(s, p, o), [s, p, o], VeritasClock.System);
 
-        iterator.Open(1U, TestContext.CancellationToken);
-        iterator.Open(10U, TestContext.CancellationToken);
-        iterator.Open(100U, TestContext.CancellationToken);
+        iterator.Open(TermId.FromEncoded(1U), TestContext.CancellationToken);
+        iterator.Open(TermId.FromEncoded(10U), TestContext.CancellationToken);
+        iterator.Open(TermId.FromEncoded(100U), TestContext.CancellationToken);
 
         Assert.Throws<InvalidOperationException>(() => _ = iterator.CurrentVariable);
     }
@@ -459,7 +459,7 @@ internal sealed class TriejoinIteratorTests
 
         //First-level keys are objects across the entire dataset:
         //{100, 101, 200, 300}.
-        List<uint> firstLevel = [];
+        List<TermId> firstLevel = [];
 
         while(!iterator.AtEnd)
         {
@@ -468,7 +468,7 @@ internal sealed class TriejoinIteratorTests
         }
 
         Assert.HasCount(4, firstLevel);
-        CollectionAssert.AreEqual(new uint[] { 100, 101, 200, 300 }, firstLevel);
+        CollectionAssert.AreEqual(new TermId[] { TermId.FromEncoded(100), TermId.FromEncoded(101), TermId.FromEncoded(200), TermId.FromEncoded(300) }, firstLevel);
     }
 
     [TestMethod]
@@ -481,9 +481,9 @@ internal sealed class TriejoinIteratorTests
 
         using TriejoinIterator iterator = new(store.Snapshot, AllVariables(s, p, o), [s, p, o], VeritasClock.System);
 
-        Assert.IsTrue(iterator.Open(1U, TestContext.CancellationToken));
-        Assert.IsTrue(iterator.Open(10U, TestContext.CancellationToken));
-        Assert.IsTrue(iterator.Open(100U, TestContext.CancellationToken));
+        Assert.IsTrue(iterator.Open(TermId.FromEncoded(1U), TestContext.CancellationToken));
+        Assert.IsTrue(iterator.Open(TermId.FromEncoded(10U), TestContext.CancellationToken));
+        Assert.IsTrue(iterator.Open(TermId.FromEncoded(100U), TestContext.CancellationToken));
 
         //All three variables bound. Iterator can rewind correctly.
         iterator.Up();
@@ -501,10 +501,10 @@ internal sealed class TriejoinIteratorTests
 
         using TriejoinIterator iterator = new(store.Snapshot, AllVariables(s, p, o), [s, p, o], VeritasClock.System);
 
-        iterator.Open(1U, TestContext.CancellationToken);
-        iterator.Open(10U, TestContext.CancellationToken);
+        iterator.Open(TermId.FromEncoded(1U), TestContext.CancellationToken);
+        iterator.Open(TermId.FromEncoded(10U), TestContext.CancellationToken);
 
-        uint objectBefore = iterator.Key;
+        TermId objectBefore = iterator.Key;
 
         iterator.Open(objectBefore, TestContext.CancellationToken);
         iterator.Up();

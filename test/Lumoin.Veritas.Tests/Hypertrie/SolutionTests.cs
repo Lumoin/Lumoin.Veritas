@@ -1,3 +1,4 @@
+using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie.Execution;
 using Lumoin.Veritas.Core.Hypertrie.Planning;
 using Lumoin.Veritas.Core.Hypertrie.Query;
@@ -22,12 +23,12 @@ internal sealed class SolutionTests
     public void TryGetValueReturnsTrueForBoundVariable()
     {
         Variable v = new(7);
-        Solution solution = new([new(v, 42)]);
+        Solution solution = new([new(v, TermId.FromEncoded(42))]);
 
-        bool found = solution.TryGetValue(v, out long value);
+        bool found = solution.TryGetValue(v, out TermId value);
 
         Assert.IsTrue(found);
-        Assert.AreEqual(42L, value);
+        Assert.AreEqual(TermId.FromEncoded(42), value);
     }
 
     [TestMethod]
@@ -35,21 +36,21 @@ internal sealed class SolutionTests
     {
         Variable bound = new(0);
         Variable unbound = new(99);
-        Solution solution = new([new(bound, 1)]);
+        Solution solution = new([new(bound, TermId.FromEncoded(1))]);
 
-        bool found = solution.TryGetValue(unbound, out long value);
+        bool found = solution.TryGetValue(unbound, out TermId value);
 
         Assert.IsFalse(found);
-        Assert.AreEqual(0L, value);
+        Assert.AreEqual(TermId.None, value);
     }
 
     [TestMethod]
     public void GetReturnsValueForBoundVariable()
     {
         Variable v = new(3);
-        Solution solution = new([new(v, 100)]);
+        Solution solution = new([new(v, TermId.FromEncoded(100))]);
 
-        Assert.AreEqual(100L, solution.Get(v));
+        Assert.AreEqual(TermId.FromEncoded(100), solution.Get(v));
     }
 
     [TestMethod]
@@ -57,7 +58,7 @@ internal sealed class SolutionTests
     {
         Variable bound = new(0);
         Variable unbound = new(99);
-        Solution solution = new([new(bound, 1)]);
+        Solution solution = new([new(bound, TermId.FromEncoded(1))]);
 
         Assert.Throws<ArgumentException>(() => solution.Get(unbound));
     }
@@ -69,11 +70,11 @@ internal sealed class SolutionTests
         Variable b = new(1);
         Variable c = new(2);
 
-        Solution solution = new([new(a, 10), new(b, 20), new(c, 30)]);
+        Solution solution = new([new(a, TermId.FromEncoded(10)), new(b, TermId.FromEncoded(20)), new(c, TermId.FromEncoded(30))]);
 
-        Assert.AreEqual(10L, solution.Get(a));
-        Assert.AreEqual(20L, solution.Get(b));
-        Assert.AreEqual(30L, solution.Get(c));
+        Assert.AreEqual(TermId.FromEncoded(10), solution.Get(a));
+        Assert.AreEqual(TermId.FromEncoded(20), solution.Get(b));
+        Assert.AreEqual(TermId.FromEncoded(30), solution.Get(c));
     }
 
     [TestMethod]

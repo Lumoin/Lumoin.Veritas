@@ -1,3 +1,4 @@
+using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie.Planning;
 using Lumoin.Veritas.Core.Hypertrie.Query;
 
@@ -37,13 +38,13 @@ internal sealed class FirstOccurrencePlannerTests
 
         FirstOccurrencePlanner planner = new(bgp);
 
-        VariableBinding[] oneBound = [new(s, 42)];
+        VariableBinding[] oneBound = [new(s, TermId.FromEncoded(42))];
         PlannerContext afterFirst = new(bgp, oneBound, [], []);
         PlannerDecision decision = planner.Plan(afterFirst, TestContext.CancellationToken);
 
         Assert.AreEqual(p, decision.AsDescendVariable());
 
-        VariableBinding[] twoBound = [new(s, 42), new(p, 99)];
+        VariableBinding[] twoBound = [new(s, TermId.FromEncoded(42)), new(p, TermId.FromEncoded(99))];
         PlannerContext afterSecond = new(bgp, twoBound, [], []);
         decision = planner.Plan(afterSecond, TestContext.CancellationToken);
 
@@ -61,7 +62,7 @@ internal sealed class FirstOccurrencePlannerTests
 
         FirstOccurrencePlanner planner = new(bgp);
 
-        VariableBinding[] allBound = [new(s, 1), new(p, 2), new(o, 3)];
+        VariableBinding[] allBound = [new(s, TermId.FromEncoded(1)), new(p, TermId.FromEncoded(2)), new(o, TermId.FromEncoded(3))];
         PlannerContext context = new(bgp, allBound, [], []);
         PlannerDecision decision = planner.Plan(context, TestContext.CancellationToken);
 
@@ -79,7 +80,7 @@ internal sealed class FirstOccurrencePlannerTests
 
         IteratorSnapshot[] snapshots =
         [
-            new(PatternIndex: 0, CurrentVariable: s, Key: 0, AtEnd: true, DescendedLevels: 0),
+            new(PatternIndex: 0, CurrentVariable: s, Key: TermId.FromEncoded(0), AtEnd: true, DescendedLevels: 0),
         ];
 
         PlannerContext context = new(bgp, [], snapshots, []);
@@ -103,10 +104,10 @@ internal sealed class FirstOccurrencePlannerTests
 
         IteratorSnapshot[] snapshots =
         [
-            new(PatternIndex: 0, CurrentVariable: s, Key: 0, AtEnd: true, DescendedLevels: 0),
+            new(PatternIndex: 0, CurrentVariable: s, Key: TermId.FromEncoded(0), AtEnd: true, DescendedLevels: 0),
         ];
 
-        PlannerContext context = new(bgp, [new(s, 1)], snapshots, []);
+        PlannerContext context = new(bgp, [new(s, TermId.FromEncoded(1))], snapshots, []);
         PlannerDecision decision = planner.Plan(context, TestContext.CancellationToken);
 
         Assert.AreEqual(PlannerDecisionKind.SkipBranch, decision.Kind);

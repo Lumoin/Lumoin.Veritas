@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie.Storage;
 
 namespace Lumoin.Veritas.Core.Hypertrie.Execution;
@@ -79,7 +80,7 @@ public static class LeapfrogIntersection
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
     public static bool TryFindNextCommonKey(
         IReadOnlyList<TriejoinIterator> participants,
-        out uint commonKey,
+        out TermId commonKey,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(participants);
@@ -94,7 +95,7 @@ public static class LeapfrogIntersection
         //Initial scan: if any participant is at end, no common key
         //exists; otherwise compute the starting target as the max
         //of the participants' current keys.
-        uint target = uint.MinValue;
+        TermId target = TermId.None;
 
         for(int i = 0; i < participants.Count; i++)
         {
@@ -102,12 +103,12 @@ public static class LeapfrogIntersection
 
             if(iterator.AtEnd)
             {
-                commonKey = 0;
+                commonKey = TermId.None;
 
                 return false;
             }
 
-            uint key = iterator.Key;
+            TermId key = iterator.Key;
 
             if(key > target)
             {
@@ -143,12 +144,12 @@ public static class LeapfrogIntersection
 
                 if(iterator.AtEnd)
                 {
-                    commonKey = 0;
+                    commonKey = TermId.None;
 
                     return false;
                 }
 
-                uint newKey = iterator.Key;
+                TermId newKey = iterator.Key;
 
                 if(newKey > target)
                 {

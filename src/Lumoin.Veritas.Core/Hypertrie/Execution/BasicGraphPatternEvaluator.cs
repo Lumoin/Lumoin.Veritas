@@ -370,7 +370,7 @@ public sealed class BasicGraphPatternEvaluator
             bindings.RemoveAt(bindings.Count - 1);
 
             //Try to find the next common key at this level.
-            if(LeapfrogIntersection.TryFindNextCommonKey(frame, out uint commonKey, cancellationToken))
+            if(LeapfrogIntersection.TryFindNextCommonKey(frame, out TermId commonKey, cancellationToken))
             {
                 //Re-open every participant on the new common key
                 //and push the frame back. The level was popped from
@@ -455,7 +455,7 @@ public sealed class BasicGraphPatternEvaluator
             return false;
         }
 
-        if(!LeapfrogIntersection.TryFindNextCommonKey(participants, out uint commonKey, cancellationToken))
+        if(!LeapfrogIntersection.TryFindNextCommonKey(participants, out TermId commonKey, cancellationToken))
         {
             return false;
         }
@@ -596,7 +596,7 @@ public sealed class BasicGraphPatternEvaluator
 
             if(binding.Variable == variable)
             {
-                return binding.Value;
+                return binding.Value.Encoded;
             }
         }
 
@@ -604,7 +604,7 @@ public sealed class BasicGraphPatternEvaluator
         //variables that exist only in this pattern and have been
         //bound here but did not yet make it into the global
         //bindings list.
-        return iterator.ValueOf(variable);
+        return iterator.ValueOf(variable).Encoded;
     }
 
     //Bounded sliding window — append, then trim from the head if
@@ -634,7 +634,7 @@ public sealed class BasicGraphPatternEvaluator
             Variable currentVariable = iterator.DescendedLevels < iterator.VariableOrder.Count
                 ? iterator.CurrentVariable
                 : default;
-            uint key = iterator.AtEnd ? 0 : iterator.Key;
+            TermId key = iterator.AtEnd ? TermId.None : iterator.Key;
 
             iteratorSnapshots[i] = new IteratorSnapshot(
                 PatternIndex: iterator.PatternIndex,

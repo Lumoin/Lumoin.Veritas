@@ -47,8 +47,12 @@ internal sealed class HypertrieGraphStoreQueryTests
 
         Assert.HasCount(2, solutions);
 
-        HashSet<(long, long)> pairs = [.. solutions.Select(sol => (sol.Get(s), sol.Get(o)))];
-        Assert.IsTrue(pairs.SetEquals(new[] { (1L, 2L), (2L, 3L) }));
+        HashSet<(TermId, TermId)> pairs = [.. solutions.Select(sol => (sol.Get(s), sol.Get(o)))];
+        Assert.IsTrue(pairs.SetEquals(new[]
+        {
+            (TermId.FromEncoded(1), TermId.FromEncoded(2)),
+            (TermId.FromEncoded(2), TermId.FromEncoded(3))
+        }));
     }
 
     [TestMethod]
@@ -77,8 +81,8 @@ internal sealed class HypertrieGraphStoreQueryTests
         List<Solution> solutions = await CollectAsync(store.Query(bgp, VeritasClock.System, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
 
         Assert.HasCount(1, solutions);
-        Assert.AreEqual(1L, solutions[0].Get(x));
-        Assert.AreEqual(2L, solutions[0].Get(y));
+        Assert.AreEqual(TermId.FromEncoded(1), solutions[0].Get(x));
+        Assert.AreEqual(TermId.FromEncoded(2), solutions[0].Get(y));
     }
 
     [TestMethod]
@@ -128,10 +132,10 @@ internal sealed class HypertrieGraphStoreQueryTests
         List<Solution> solutions = await CollectAsync(store.Query(bgp, VeritasClock.System, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
 
         Assert.HasCount(1, solutions);
-        Assert.AreEqual(1L, solutions[0].Get(a));
-        Assert.AreEqual(2L, solutions[0].Get(b));
-        Assert.AreEqual(3L, solutions[0].Get(c));
-        Assert.AreEqual(10L, solutions[0].Get(city));
+        Assert.AreEqual(TermId.FromEncoded(1), solutions[0].Get(a));
+        Assert.AreEqual(TermId.FromEncoded(2), solutions[0].Get(b));
+        Assert.AreEqual(TermId.FromEncoded(3), solutions[0].Get(c));
+        Assert.AreEqual(TermId.FromEncoded(10), solutions[0].Get(city));
     }
 
     [TestMethod]
@@ -275,8 +279,8 @@ internal sealed class HypertrieGraphStoreQueryTests
 
         //Of (1,2) and (2,3), only (2,3) survives.
         Assert.HasCount(1, solutions);
-        Assert.AreEqual(2L, solutions[0].Get(s));
-        Assert.AreEqual(3L, solutions[0].Get(o));
+        Assert.AreEqual(TermId.FromEncoded(2), solutions[0].Get(s));
+        Assert.AreEqual(TermId.FromEncoded(3), solutions[0].Get(o));
     }
 
     [TestMethod]

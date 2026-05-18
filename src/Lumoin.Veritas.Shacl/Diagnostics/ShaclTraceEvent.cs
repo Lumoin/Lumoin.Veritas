@@ -1,5 +1,6 @@
 using System;
 using Lumoin.Veritas.Core.Diagnostics;
+using Lumoin.Veritas.Core.Encoding;
 
 namespace Lumoin.Veritas.Shacl.Diagnostics;
 
@@ -57,19 +58,30 @@ public readonly record struct ShaclTraceEvent: ITraceEvent
 
     /// <summary>
     /// The focus node under evaluation. Populated for all event kinds
-    /// except where the event is non-focus-specific.
+    /// except where the event is non-focus-specific. A focus node may
+    /// be an IRI, blank node, or literal — the wrapper is
+    /// <see cref="TermId"/>, the general handle without a kind
+    /// constraint.
     /// </summary>
-    public uint FocusNodeId { get; init; }
+    public TermId FocusNodeId { get; init; }
 
-    /// <summary>The shape currently being applied. Populated for all event kinds.</summary>
-    public uint ShapeId { get; init; }
+    /// <summary>
+    /// The shape currently being applied. Populated for all event
+    /// kinds. Most SHACL shapes are IRIs, but the spec permits
+    /// blank-node (anonymous / inline) shapes too — the wrapper is
+    /// <see cref="TermId"/>, matching <see cref="Shape.Id"/>'s
+    /// permissiveness on this point.
+    /// </summary>
+    public TermId ShapeId { get; init; }
 
     /// <summary>
     /// The value node associated with the event, for variants that have
     /// one (e.g. <see cref="ShaclTraceEventKind.ValidationResultProduced"/>).
-    /// Zero when the variant does not carry a value node.
+    /// <see cref="TermId.None"/> when the variant does not carry a
+    /// value node. Value nodes may be IRIs, blank nodes, or literals
+    /// — the wrapper is <see cref="TermId"/>.
     /// </summary>
-    public uint ValueNodeId { get; init; }
+    public TermId ValueNodeId { get; init; }
 
     /// <summary>
     /// The constraint-component IRI when the event relates to a specific
@@ -95,12 +107,17 @@ public readonly record struct ShaclTraceEvent: ITraceEvent
     /// <summary>
     /// Creates a <see cref="ShaclTraceEventKind.FocusNodeSelected"/> event.
     /// </summary>
+    /// <param name="sequenceNumber">Monotonically increasing event sequence number.</param>
+    /// <param name="timestampTicks">UTC ticks at event creation.</param>
+    /// <param name="correlationId">Correlation id linking events from the same validation run.</param>
+    /// <param name="focusNodeId">The focus node handle under evaluation.</param>
+    /// <param name="shapeId">The shape handle being applied to <paramref name="focusNodeId"/>.</param>
     public static ShaclTraceEvent FocusNodeSelected(
         long sequenceNumber,
         long timestampTicks,
         Guid correlationId,
-        uint focusNodeId,
-        uint shapeId)
+        TermId focusNodeId,
+        TermId shapeId)
         => new()
         {
             SequenceNumber = sequenceNumber,
@@ -114,12 +131,18 @@ public readonly record struct ShaclTraceEvent: ITraceEvent
     /// <summary>
     /// Creates a <see cref="ShaclTraceEventKind.ConstraintEvaluationStarted"/> event.
     /// </summary>
+    /// <param name="sequenceNumber">Monotonically increasing event sequence number.</param>
+    /// <param name="timestampTicks">UTC ticks at event creation.</param>
+    /// <param name="correlationId">Correlation id linking events from the same validation run.</param>
+    /// <param name="focusNodeId">The focus node handle under evaluation.</param>
+    /// <param name="shapeId">The shape handle being applied to <paramref name="focusNodeId"/>.</param>
+    /// <param name="constraintIri">The constraint-component IRI string.</param>
     public static ShaclTraceEvent ConstraintStarted(
         long sequenceNumber,
         long timestampTicks,
         Guid correlationId,
-        uint focusNodeId,
-        uint shapeId,
+        TermId focusNodeId,
+        TermId shapeId,
         string constraintIri)
         => new()
         {
@@ -135,12 +158,19 @@ public readonly record struct ShaclTraceEvent: ITraceEvent
     /// <summary>
     /// Creates a <see cref="ShaclTraceEventKind.ConstraintEvaluationCompleted"/> event.
     /// </summary>
+    /// <param name="sequenceNumber">Monotonically increasing event sequence number.</param>
+    /// <param name="timestampTicks">UTC ticks at event creation.</param>
+    /// <param name="correlationId">Correlation id linking events from the same validation run.</param>
+    /// <param name="focusNodeId">The focus node handle under evaluation.</param>
+    /// <param name="shapeId">The shape handle being applied to <paramref name="focusNodeId"/>.</param>
+    /// <param name="constraintIri">The constraint-component IRI string.</param>
+    /// <param name="status">Constraint pass/fail/skip outcome.</param>
     public static ShaclTraceEvent ConstraintCompleted(
         long sequenceNumber,
         long timestampTicks,
         Guid correlationId,
-        uint focusNodeId,
-        uint shapeId,
+        TermId focusNodeId,
+        TermId shapeId,
         string constraintIri,
         ConstraintEvaluationStatus status)
         => new()
@@ -158,14 +188,22 @@ public readonly record struct ShaclTraceEvent: ITraceEvent
     /// <summary>
     /// Creates a <see cref="ShaclTraceEventKind.ValidationResultProduced"/> event.
     /// </summary>
+    /// <param name="sequenceNumber">Monotonically increasing event sequence number.</param>
+    /// <param name="timestampTicks">UTC ticks at event creation.</param>
+    /// <param name="correlationId">Correlation id linking events from the same validation run.</param>
+    /// <param name="focusNodeId">The focus node handle under evaluation.</param>
+    /// <param name="shapeId">The shape handle being applied to <paramref name="focusNodeId"/>.</param>
+    /// <param name="constraintIri">The constraint-component IRI string.</param>
+    /// <param name="valueNodeId">The value node handle the result refers to, or <see cref="TermId.None"/> when none.</param>
+    /// <param name="severity">Severity of the produced validation result.</param>
     public static ShaclTraceEvent ResultProduced(
         long sequenceNumber,
         long timestampTicks,
         Guid correlationId,
-        uint focusNodeId,
-        uint shapeId,
+        TermId focusNodeId,
+        TermId shapeId,
         string constraintIri,
-        uint valueNodeId,
+        TermId valueNodeId,
         Severity severity)
         => new()
         {
@@ -183,12 +221,18 @@ public readonly record struct ShaclTraceEvent: ITraceEvent
     /// <summary>
     /// Creates a <see cref="ShaclTraceEventKind.ConstraintNotImplemented"/> event.
     /// </summary>
+    /// <param name="sequenceNumber">Monotonically increasing event sequence number.</param>
+    /// <param name="timestampTicks">UTC ticks at event creation.</param>
+    /// <param name="correlationId">Correlation id linking events from the same validation run.</param>
+    /// <param name="focusNodeId">The focus node handle under evaluation.</param>
+    /// <param name="shapeId">The shape handle being applied to <paramref name="focusNodeId"/>.</param>
+    /// <param name="constraintIri">The constraint-component IRI string the validator does not implement.</param>
     public static ShaclTraceEvent ConstraintNotImplemented(
         long sequenceNumber,
         long timestampTicks,
         Guid correlationId,
-        uint focusNodeId,
-        uint shapeId,
+        TermId focusNodeId,
+        TermId shapeId,
         string constraintIri)
         => new()
         {

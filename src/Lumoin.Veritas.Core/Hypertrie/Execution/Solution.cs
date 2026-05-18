@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie.Planning;
 using Lumoin.Veritas.Core.Hypertrie.Query;
 using Lumoin.Veritas.Core.Sourcing;
@@ -90,9 +91,10 @@ public sealed class Solution
     /// <summary>
     /// Returns <c>true</c> when <paramref name="variable"/> is
     /// bound in this solution; <paramref name="value"/> receives
-    /// the bound value on success and <c>0</c> on failure.
+    /// the bound <see cref="TermId"/> on success and
+    /// <see cref="TermId.None"/> on failure.
     /// </summary>
-    public bool TryGetValue(Variable variable, out long value)
+    public bool TryGetValue(Variable variable, out TermId value)
     {
         for(int i = 0; i < Bindings.Count; i++)
         {
@@ -106,20 +108,20 @@ public sealed class Solution
             }
         }
 
-        value = 0;
+        value = TermId.None;
 
         return false;
     }
 
     /// <summary>
-    /// Returns the value bound to <paramref name="variable"/>,
+    /// Returns the <see cref="TermId"/> bound to <paramref name="variable"/>,
     /// or throws when the variable is not bound in this
     /// solution.
     /// </summary>
     /// <exception cref="ArgumentException"><paramref name="variable"/> is not bound in this solution.</exception>
-    public long Get(Variable variable)
+    public TermId Get(Variable variable)
     {
-        if(TryGetValue(variable, out long value))
+        if(TryGetValue(variable, out TermId value))
         {
             return value;
         }

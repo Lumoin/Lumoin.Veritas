@@ -89,8 +89,8 @@ internal sealed class ValidationTrace
             ShaclTraceEvent evt = CapturedEvents[i];
             sb.Append("  #").Append(evt.SequenceNumber.ToString(CultureInfo.InvariantCulture));
             sb.Append(' ').Append(evt.Kind);
-            sb.Append(" focus=").Append(FormatTerm((uint)evt.FocusNodeId, dictionary));
-            sb.Append(" shape=").Append(FormatTerm((uint)evt.ShapeId, dictionary));
+            sb.Append(" focus=").Append(FormatTerm(evt.FocusNodeId.Encoded, dictionary));
+            sb.Append(" shape=").Append(FormatTerm(evt.ShapeId.Encoded, dictionary));
 
             if(evt.ConstraintIri is not null)
             {
@@ -105,9 +105,9 @@ internal sealed class ValidationTrace
             if(evt.Kind == ShaclTraceEventKind.ValidationResultProduced)
             {
                 sb.Append(" sev=").Append(evt.Severity);
-                if(evt.ValueNodeId != 0)
+                if(!evt.ValueNodeId.IsNone)
                 {
-                    sb.Append(" value=").Append(FormatTerm((uint)evt.ValueNodeId, dictionary));
+                    sb.Append(" value=").Append(FormatTerm(evt.ValueNodeId.Encoded, dictionary));
                 }
             }
 

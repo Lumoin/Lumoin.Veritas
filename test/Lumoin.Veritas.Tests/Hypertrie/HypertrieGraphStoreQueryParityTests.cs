@@ -190,9 +190,9 @@ internal sealed class HypertrieGraphStoreQueryParityTests
 
         foreach(Variable variable in bgp.Variables)
         {
-            if(solution.TryGetValue(variable, out long value))
+            if(solution.TryGetValue(variable, out TermId value))
             {
-                parts.Add($"{variable.Id}={value}");
+                parts.Add($"{variable.Id}={value.Encoded}");
             }
         }
 

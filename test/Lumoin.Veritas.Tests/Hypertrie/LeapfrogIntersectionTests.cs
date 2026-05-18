@@ -30,11 +30,11 @@ internal sealed class LeapfrogIntersectionTests
 
         bool found = LeapfrogIntersection.TryFindNextCommonKey(
             [iterator],
-            out uint commonKey,
+            out TermId commonKey,
             TestContext.CancellationToken);
 
         Assert.IsTrue(found);
-        Assert.AreEqual(10U, commonKey);
+        Assert.AreEqual(TermId.FromEncoded(10U), commonKey);
     }
 
     [TestMethod]
@@ -49,11 +49,11 @@ internal sealed class LeapfrogIntersectionTests
 
         bool found = LeapfrogIntersection.TryFindNextCommonKey(
             [a, b],
-            out uint commonKey,
+            out TermId commonKey,
             TestContext.CancellationToken);
 
         Assert.IsTrue(found);
-        Assert.AreEqual(5U, commonKey);
+        Assert.AreEqual(TermId.FromEncoded(5U), commonKey);
     }
 
     [TestMethod]
@@ -69,11 +69,11 @@ internal sealed class LeapfrogIntersectionTests
 
         bool found = LeapfrogIntersection.TryFindNextCommonKey(
             [a, b],
-            out uint commonKey,
+            out TermId commonKey,
             TestContext.CancellationToken);
 
         Assert.IsFalse(found);
-        Assert.AreEqual(0U, commonKey);
+        Assert.AreEqual(TermId.None, commonKey);
     }
 
     [TestMethod]
@@ -89,11 +89,11 @@ internal sealed class LeapfrogIntersectionTests
 
         bool found = LeapfrogIntersection.TryFindNextCommonKey(
             [a, b],
-            out uint commonKey,
+            out TermId commonKey,
             TestContext.CancellationToken);
 
         Assert.IsTrue(found);
-        Assert.AreEqual(4U, commonKey);
+        Assert.AreEqual(TermId.FromEncoded(4U), commonKey);
     }
 
     [TestMethod]
@@ -110,9 +110,9 @@ internal sealed class LeapfrogIntersectionTests
         using TriejoinIterator a = left.OpenSubjectIterator();
         using TriejoinIterator b = right.OpenSubjectIterator();
 
-        List<uint> intersection = [];
+        List<TermId> intersection = [];
 
-        while(LeapfrogIntersection.TryFindNextCommonKey([a, b], out uint commonKey, TestContext.CancellationToken))
+        while(LeapfrogIntersection.TryFindNextCommonKey([a, b], out TermId commonKey, TestContext.CancellationToken))
         {
             intersection.Add(commonKey);
 
@@ -122,7 +122,7 @@ internal sealed class LeapfrogIntersectionTests
             b.Next(TestContext.CancellationToken);
         }
 
-        CollectionAssert.AreEqual(new uint[] { 4, 10 }, intersection);
+        CollectionAssert.AreEqual(new TermId[] { TermId.FromEncoded(4), TermId.FromEncoded(10) }, intersection);
     }
 
     [TestMethod]
@@ -141,11 +141,11 @@ internal sealed class LeapfrogIntersectionTests
 
         bool found = LeapfrogIntersection.TryFindNextCommonKey(
             [iterA, iterB, iterC],
-            out uint commonKey,
+            out TermId commonKey,
             TestContext.CancellationToken);
 
         Assert.IsTrue(found);
-        Assert.AreEqual(5U, commonKey);
+        Assert.AreEqual(TermId.FromEncoded(5U), commonKey);
     }
 
     [TestMethod]
@@ -164,11 +164,11 @@ internal sealed class LeapfrogIntersectionTests
 
         bool found = LeapfrogIntersection.TryFindNextCommonKey(
             [iterA, iterB, iterC],
-            out uint commonKey,
+            out TermId commonKey,
             TestContext.CancellationToken);
 
         Assert.IsFalse(found);
-        Assert.AreEqual(0U, commonKey);
+        Assert.AreEqual(TermId.None, commonKey);
     }
 
     [TestMethod]
@@ -190,11 +190,11 @@ internal sealed class LeapfrogIntersectionTests
 
         bool found = LeapfrogIntersection.TryFindNextCommonKey(
             [iterA, iterB],
-            out uint commonKey,
+            out TermId commonKey,
             TestContext.CancellationToken);
 
         Assert.IsTrue(found);
-        Assert.AreEqual(200U, commonKey);
+        Assert.AreEqual(TermId.FromEncoded(200U), commonKey);
     }
 
     [TestMethod]
@@ -209,11 +209,11 @@ internal sealed class LeapfrogIntersectionTests
 
         bool found = LeapfrogIntersection.TryFindNextCommonKey(
             [iterA],
-            out uint commonKey,
+            out TermId commonKey,
             TestContext.CancellationToken);
 
         Assert.IsFalse(found);
-        Assert.AreEqual(0U, commonKey);
+        Assert.AreEqual(TermId.None, commonKey);
     }
 
     [TestMethod]

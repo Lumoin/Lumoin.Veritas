@@ -1,3 +1,4 @@
+using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie.Query;
 using Lumoin.Veritas.Core.Hypertrie.Storage;
 using System.Diagnostics;
@@ -39,10 +40,10 @@ namespace Lumoin.Veritas.Core.Hypertrie.Planning;
 /// no warning.
 /// </para>
 /// </remarks>
-[DebuggerDisplay("IteratorSnapshot Pattern={PatternIndex} Var={CurrentVariable.Id} Key={Key} AtEnd={AtEnd}")]
+[DebuggerDisplay("IteratorSnapshot Pattern={PatternIndex} Var={CurrentVariable.Id} Key={Key.Encoded} AtEnd={AtEnd}")]
 public readonly record struct IteratorSnapshot(
     int PatternIndex,
     Variable CurrentVariable,
-    long Key,
+    TermId Key,
     bool AtEnd,
     int DescendedLevels);

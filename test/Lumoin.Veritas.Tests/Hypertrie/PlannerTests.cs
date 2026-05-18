@@ -86,7 +86,7 @@ internal sealed class PlannerTests
         Variable o = registry.GetOrAdd("o");
 
         BasicGraphPattern bgp = new([], registry);
-        VariableBinding[] bindings = [new(s, 42)];
+        VariableBinding[] bindings = [new(s, TermId.FromEncoded(42))];
 
         Planner planner = (context, ct) =>
         {
@@ -115,7 +115,7 @@ internal sealed class PlannerTests
         Variable s = registry.GetOrAdd("s");
 
         BasicGraphPattern bgp = new([], registry);
-        IteratorSnapshot[] snapshots = [new(PatternIndex: 0, CurrentVariable: s, Key: 100, AtEnd: false, DescendedLevels: 0)];
+        IteratorSnapshot[] snapshots = [new(PatternIndex: 0, CurrentVariable: s, Key: TermId.FromEncoded(100), AtEnd: false, DescendedLevels: 0)];
 
         Planner planner = (context, ct) =>
         {

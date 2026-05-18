@@ -208,12 +208,12 @@ public sealed class TriejoinIterator: IDisposable
     }
 
     /// <summary>
-    /// The current key at the current level — the value the
-    /// iterator's cursor is positioned on. Undefined when
-    /// <see cref="AtEnd"/>.
+    /// The current key at the current level — the
+    /// <see cref="TermId"/> the iterator's cursor is positioned
+    /// on. Undefined when <see cref="AtEnd"/>.
     /// </summary>
     /// <exception cref="InvalidOperationException">The iterator is at end.</exception>
-    public uint Key
+    public TermId Key
     {
         get
         {
@@ -222,7 +222,7 @@ public sealed class TriejoinIterator: IDisposable
                 throw new InvalidOperationException("Iterator is at end; Key is undefined.");
             }
 
-            return Frames[Frames.Count - 1].Cursor.CurrentKey;
+            return TermId.FromEncoded(Frames[Frames.Count - 1].Cursor.CurrentKey);
         }
     }
 
@@ -283,19 +283,19 @@ public sealed class TriejoinIterator: IDisposable
     }
 
     /// <summary>
-    /// Returns the value previously bound to
+    /// Returns the <see cref="TermId"/> previously bound to
     /// <paramref name="variable"/> by a successful
     /// <see cref="Open"/>. The variable must precede the current
     /// level in <see cref="VariableOrder"/>.
     /// </summary>
     /// <exception cref="ArgumentException"><paramref name="variable"/> has not yet been bound, or is not in this iterator's variable order.</exception>
-    public uint ValueOf(Variable variable)
+    public TermId ValueOf(Variable variable)
     {
         for(int i = 0; i < DescendedLevels; i++)
         {
             if(VariableOrder[i] == variable)
             {
-                return OpenedValues[i];
+                return TermId.FromEncoded(OpenedValues[i]);
             }
         }
 
@@ -309,12 +309,12 @@ public sealed class TriejoinIterator: IDisposable
     /// when no descent path exists, in which case the iterator's
     /// state is unchanged.
     /// </summary>
-    /// <param name="value">The value to bind the current variable to.</param>
+    /// <param name="value">The <see cref="TermId"/> to bind the current variable to.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns><c>true</c> when the descent succeeded.</returns>
     /// <exception cref="InvalidOperationException">All variables have already been bound.</exception>
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
-    public bool Open(uint value, CancellationToken cancellationToken = default)
+    public bool Open(TermId value, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -338,13 +338,14 @@ public sealed class TriejoinIterator: IDisposable
         }
 
         EdgeMap edgeMap = currentFrame.Node.EdgeMaps[positionInRemaining];
+        uint rawValue = value.Encoded;
 
-        if(!EdgeMap.TryGetChild(in edgeMap, value, out HypertrieNode? child))
+        if(!EdgeMap.TryGetChild(in edgeMap, rawValue, out HypertrieNode? child))
         {
             return false;
         }
 
-        OpenedValues[DescendedLevels] = value;
+        OpenedValues[DescendedLevels] = rawValue;
 
         if(currentFrame.Node.Depth == 1)
         {
@@ -356,7 +357,7 @@ public sealed class TriejoinIterator: IDisposable
             //subsequent Up restores trivially.
             DescendedLevels++;
 
-            EmitIteratorAdvanced(VariableOrder[DescendedLevels - 1], value);
+            EmitIteratorAdvanced(VariableOrder[DescendedLevels - 1], rawValue);
 
             return true;
         }
@@ -381,7 +382,7 @@ public sealed class TriejoinIterator: IDisposable
 
         DescendedLevels++;
 
-        EmitIteratorAdvanced(VariableOrder[DescendedLevels - 1], value);
+        EmitIteratorAdvanced(VariableOrder[DescendedLevels - 1], rawValue);
 
         return true;
     }
@@ -448,10 +449,10 @@ public sealed class TriejoinIterator: IDisposable
     /// greater than or equal to <paramref name="target"/>. Never
     /// moves the cursor backwards.
     /// </summary>
-    /// <param name="target">The seek target.</param>
+    /// <param name="target">The seek target as a <see cref="TermId"/>.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
-    public void Seek(uint target, CancellationToken cancellationToken = default)
+    public void Seek(TermId target, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -462,7 +463,7 @@ public sealed class TriejoinIterator: IDisposable
 
         DescentFrame frame = Frames[Frames.Count - 1];
         EdgeMapKeyCursor cursor = frame.Cursor;
-        cursor.SeekTo(target);
+        cursor.SeekTo(target.Encoded);
         frame.Cursor = cursor;
 
         if(cursor.AtEnd)

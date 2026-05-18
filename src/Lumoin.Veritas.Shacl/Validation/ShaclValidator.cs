@@ -277,8 +277,8 @@ public static class ShaclValidator
                 runState.NextSequence(),
                 runState.TimeProvider.GetUtcNow().UtcTicks,
                 runState.CorrelationId,
-                focus.Encoded,
-                shape.Id.Encoded);
+                focus,
+                shape.Id);
             traceHandler(in evt);
         }
 
@@ -303,15 +303,15 @@ public static class ShaclValidator
                         runState.NextSequence(),
                         runState.TimeProvider.GetUtcNow().UtcTicks,
                         runState.CorrelationId,
-                        focus.Encoded,
-                        shape.Id.Encoded,
+                        focus,
+                        shape.Id,
                         componentIriString)
                     : ShaclTraceEvent.ConstraintNotImplemented(
                         runState.NextSequence(),
                         runState.TimeProvider.GetUtcNow().UtcTicks,
                         runState.CorrelationId,
-                        focus.Encoded,
-                        shape.Id.Encoded,
+                        focus,
+                        shape.Id,
                         componentIriString);
                 traceHandler(in evt);
             }
@@ -334,10 +334,10 @@ public static class ShaclValidator
                         runState.NextSequence(),
                         runState.TimeProvider.GetUtcNow().UtcTicks,
                         runState.CorrelationId,
-                        focus.Encoded,
-                        shape.Id.Encoded,
+                        focus,
+                        shape.Id,
                         componentIri.ToString(),
-                        result.ValueNode?.Encoded ?? 0,
+                        result.ValueNode ?? TermId.None,
                         result.Severity);
                     traceHandler(in evt);
                 }
@@ -354,8 +354,8 @@ public static class ShaclValidator
                     runState.NextSequence(),
                     runState.TimeProvider.GetUtcNow().UtcTicks,
                     runState.CorrelationId,
-                    focus.Encoded,
-                    shape.Id.Encoded,
+                    focus,
+                    shape.Id,
                     componentIri.ToString(),
                     status);
                 traceHandler(in evt);
@@ -400,15 +400,77 @@ public static class ShaclValidator
     //no-closure-over-parameters convention.
     private sealed class RunState
     {
+        /// <summary>
+        /// Correlation id stamped on every <see cref="ShaclTraceEvent"/>
+        /// emitted by this validation run. One id per call to
+        /// <see cref="ValidateAsync"/>; consumers join trace events
+        /// from the same run by this value.
+        /// </summary>
         public required Guid CorrelationId { get; init; }
+
+        /// <summary>
+        /// Monotonically-increasing event sequence stamped on each
+        /// emitted <see cref="ShaclTraceEvent"/>. Mutable because
+        /// every emission post-increments it; see
+        /// <see cref="NextSequence"/>.
+        /// </summary>
         public required long SequenceCounter { get; set; }
+
+        /// <summary>
+        /// Caller-supplied trace handler, or <c>null</c> when the
+        /// run is untraced. Every emission site checks this for
+        /// <c>null</c> before constructing the event payload.
+        /// </summary>
         public required TraceHandler<ShaclTraceEvent>? TraceHandler { get; init; }
-        public required HashSet<(long ShapeId, long Focus)> InProgress { get; init; }
+
+        /// <summary>
+        /// Cycle-detection set carrying the
+        /// <c>(shape, focus)</c> pairs currently in flight on this
+        /// validation's call stack. <see cref="InvokeRecurseAsync"/>
+        /// adds on entry and removes on exit; re-entering a pair
+        /// triggers the SHACL §3.5 recursion termination rule.
+        /// </summary>
+        public required HashSet<(TermId ShapeId, TermId Focus)> InProgress { get; init; }
+
+        /// <summary>
+        /// The pluggable registry of constraint-component
+        /// evaluators keyed by component IRI. Looked up once per
+        /// constraint during <c>ValidateAtFocusAsync</c>.
+        /// </summary>
         public required ConstraintEvaluatorRegistry Evaluators { get; init; }
+
+        /// <summary>
+        /// The match delegate over the data graph (the graph being
+        /// validated, distinct from the shape graph). Threaded into
+        /// per-focus value-node computation and into individual
+        /// constraint evaluators via <see cref="Context"/>.
+        /// </summary>
         public required StorageDelegates.MatchTriplesAsync DataGraphMatch { get; init; }
+
+        /// <summary>
+        /// Clock used to stamp <see cref="ShaclTraceEvent.TimestampTicks"/>
+        /// on emitted trace events. Pass <see cref="System.TimeProvider.System"/>
+        /// in production; tests pinning trace timing pass a
+        /// <c>FakeTimeProvider</c>.
+        /// </summary>
         public required TimeProvider TimeProvider { get; init; }
+
+        /// <summary>
+        /// The composed <see cref="ValidationContext"/> handed to
+        /// constraint evaluators. Set lazily after construction
+        /// because the context's <see cref="ValidationContext.ShapeValidator"/>
+        /// is the method-group-converted <see cref="InvokeRecurseAsync"/>,
+        /// which can only be referenced after the
+        /// <see cref="RunState"/> instance exists. Non-null
+        /// throughout validation.
+        /// </summary>
         public ValidationContext? Context { get; set; }
 
+        /// <summary>
+        /// Post-increments <see cref="SequenceCounter"/> and returns
+        /// the prior value, producing a monotonically-increasing
+        /// sequence number stamped on every emitted trace event.
+        /// </summary>
         public long NextSequence() => SequenceCounter++;
 
         //Method-group-converted to ShapeValidatorDelegate and stored
@@ -425,7 +487,7 @@ public static class ShaclValidator
                 return [];
             }
 
-            (long ShapeId, long Focus) key = (shape.Id.Encoded, focus.Encoded);
+            (TermId ShapeId, TermId Focus) key = (shape.Id, focus);
             if(!InProgress.Add(key))
             {
                 //Cycle: (shape, focus) is already on the stack. Per
