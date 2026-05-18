@@ -32,4 +32,13 @@ internal readonly record struct EdgeMapDistributionResult
 
     /// <summary>Histogram of SortedArray-tier entry counts bucketed by power-of-two ranges. Keys are the inclusive lower bound of each bucket.</summary>
     public IReadOnlyDictionary<int, int> SortedArrayCountHistogram { get; init; }
+
+    /// <summary>Histogram of Inline-tier entry counts bucketed to mirror the pre-Batch-4 survey shape (1, 2, 3-4, 5-8). Keys are the inclusive lower bound of each bucket.</summary>
+    public IReadOnlyDictionary<int, int> InlineCountHistogram { get; init; }
+
+    /// <summary>Per-depth tier counts. Outer key is the node depth (the trie root has the highest depth, leaves depth 1); inner array indices map: 0 = Empty, 1 = Inline, 2 = SortedArray.</summary>
+    public IReadOnlyDictionary<int, int[]> PerDepthTierCounts { get; init; }
+
+    /// <summary>The number of distinct <c>HypertrieNode</c> instances visited during the walk.</summary>
+    public int DistinctNodeCount { get; init; }
 }

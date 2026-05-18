@@ -153,6 +153,22 @@ internal static class HypertrieSoak
         return new SoakResult(iterations, sw.Elapsed, solutionCount);
     }
 
+    /// <summary>
+    /// Generates the Seed=1 synthetic corpus that the build and
+    /// query soaks consume. Exposed for the
+    /// <c>--profile-edgemap-distribution --synthetic</c> workbench
+    /// scenario so the same RNG draws drive both the soak traces and
+    /// the EdgeMap distribution survey.
+    /// </summary>
+    /// <param name="targetTripleCount">The number of distinct triples to materialise.</param>
+    /// <returns>An array of distinct synthetic triples sized to <paramref name="targetTripleCount"/>.</returns>
+    public static EncodedTriple[] GenerateSyntheticTriples(int targetTripleCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(targetTripleCount);
+
+        return GenerateTriples(targetTripleCount);
+    }
+
     private static EncodedTriple[] GenerateTriples(int targetTripleCount)
     {
         //Many subjects and objects, a narrow predicate vocabulary —

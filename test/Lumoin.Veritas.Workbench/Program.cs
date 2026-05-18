@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Threading;
@@ -91,10 +92,23 @@ internal static class Program
             {
                 if(args.Length < 2)
                 {
-                    await Console.Error.WriteLineAsync("--profile-edgemap-distribution requires a path argument.").ConfigureAwait(false);
+                    await Console.Error.WriteLineAsync("--profile-edgemap-distribution requires a path argument or --synthetic [--triple-count N].").ConfigureAwait(false);
                     PrintUsage(Console.Error);
 
                     return 1;
+                }
+
+                if(args[1] == "--synthetic")
+                {
+                    if(!TryParseSyntheticTripleCount(args, out int syntheticTripleCount, out string? syntheticError))
+                    {
+                        await Console.Error.WriteLineAsync(syntheticError).ConfigureAwait(false);
+                        PrintUsage(Console.Error);
+
+                        return 1;
+                    }
+
+                    return await RunEdgeMapDistributionSyntheticAsync(syntheticTripleCount, CancellationToken.None).ConfigureAwait(false);
                 }
 
                 string corpusPath = args[1];
@@ -191,6 +205,80 @@ internal static class Program
         return true;
     }
 
+    //Parses the optional --triple-count <N> tail of a --synthetic
+    //EdgeMap-distribution invocation. Defaults to
+    //HypertrieSoak.DefaultTripleCount when absent.
+    private static bool TryParseSyntheticTripleCount(
+        string[] args,
+        out int tripleCount,
+        out string? error)
+    {
+        tripleCount = HypertrieSoak.DefaultTripleCount;
+        error = null;
+
+        for(int i = 2; i < args.Length; i++)
+        {
+            switch(args[i])
+            {
+                case "--triple-count":
+                {
+                    if(i + 1 >= args.Length)
+                    {
+                        error = "--triple-count requires a non-negative integer.";
+
+                        return false;
+                    }
+
+                    if(!int.TryParse(args[i + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) || parsed < 0)
+                    {
+                        error = $"--triple-count value '{args[i + 1]}' is not a non-negative integer.";
+
+                        return false;
+                    }
+
+                    tripleCount = parsed;
+                    i++;
+                    break;
+                }
+                default:
+                {
+                    error = $"Unknown option: {args[i]}";
+
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    //Generates a Seed=1 synthetic corpus matching HypertrieSoak's
+    //RNG draws, builds the hypertrie, surveys EdgeMap distribution,
+    //and prints the histogram. Mirrors the pre-Batch-4 standalone
+    //EdgeMapSurvey program's input shape so the surveys are
+    //comparable corpus-for-corpus.
+    private static async Task<int> RunEdgeMapDistributionSyntheticAsync(int tripleCount, CancellationToken cancellationToken)
+    {
+        await Console.Out.WriteLineAsync($"[soak] edgemap distribution, synthetic Seed=1 corpus, target {tripleCount:N0} triples").ConfigureAwait(false);
+
+        Stopwatch generateWatch = Stopwatch.StartNew();
+        EncodedTriple[] triples = HypertrieSoak.GenerateSyntheticTriples(tripleCount);
+        generateWatch.Stop();
+
+        await Console.Out.WriteLineAsync($"[soak] generated {triples.Length:N0} distinct triples in {generateWatch.Elapsed.TotalSeconds:F2}s").ConfigureAwait(false);
+
+        Stopwatch buildWatch = Stopwatch.StartNew();
+        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(triples, VeritasHashing.Default, cancellationToken).ConfigureAwait(false);
+        buildWatch.Stop();
+
+        await Console.Out.WriteLineAsync($"[soak] built hypertrie in {buildWatch.Elapsed.TotalSeconds:F2}s").ConfigureAwait(false);
+
+        EdgeMapDistributionResult result = EdgeMapDistribution.Survey(store.Snapshot.Store, store.Snapshot.Root);
+        await Console.Out.WriteLineAsync(FormatDistributionResult(result)).ConfigureAwait(false);
+
+        return 0;
+    }
+
     //Loads the NQuads corpus, builds the hypertrie, surveys
     //EdgeMap distribution, and prints the histogram.
     private static async Task<int> RunEdgeMapDistributionAsync(string corpusPath, CancellationToken cancellationToken)
@@ -248,10 +336,28 @@ internal static class Program
     private static string FormatDistributionResult(EdgeMapDistributionResult result)
     {
         System.Text.StringBuilder sb = new();
+        sb.AppendLine(CultureInfo.InvariantCulture, $"[soak] distinct nodes: {result.DistinctNodeCount:N0}");
         sb.AppendLine(CultureInfo.InvariantCulture, $"[soak] total edgemaps: {result.TotalEdgeMaps:N0}");
         sb.AppendLine(CultureInfo.InvariantCulture, $"[soak]   Empty:        {result.EmptyCount:N0}");
         sb.AppendLine(CultureInfo.InvariantCulture, $"[soak]   Inline(1-8):  {result.InlineCount:N0}");
         sb.AppendLine(CultureInfo.InvariantCulture, $"[soak]   SortedArray:  {result.SortedArrayCount:N0}");
+
+        if(result.InlineCount > 0)
+        {
+            sb.AppendLine("[soak]   Inline histogram (entry count: edgemaps):");
+            foreach(KeyValuePair<int, int> bucket in result.InlineCountHistogram)
+            {
+                string label = bucket.Key switch
+                {
+                    1 => "    1",
+                    2 => "    2",
+                    3 => "  3-4",
+                    5 => "  5-8",
+                    _ => $"{bucket.Key,5}",
+                };
+                sb.AppendLine(CultureInfo.InvariantCulture, $"[soak]     {label} : {bucket.Value:N0}");
+            }
+        }
 
         if(result.SortedArrayCount > 0)
         {
@@ -259,6 +365,18 @@ internal static class Program
             foreach(KeyValuePair<int, int> bucket in result.SortedArrayCountHistogram)
             {
                 sb.AppendLine(CultureInfo.InvariantCulture, $"[soak]     {bucket.Key,5}+ : {bucket.Value:N0}");
+            }
+        }
+
+        if(result.PerDepthTierCounts.Count > 0)
+        {
+            sb.AppendLine("[soak]   Per-depth tier counts (depth: empty/inline/sortedArray):");
+            List<int> depths = [.. result.PerDepthTierCounts.Keys];
+            depths.Sort((a, b) => b.CompareTo(a));
+            foreach(int depth in depths)
+            {
+                int[] counts = result.PerDepthTierCounts[depth];
+                sb.AppendLine(CultureInfo.InvariantCulture, $"[soak]     depth {depth}: {counts[0]:N0} / {counts[1]:N0} / {counts[2]:N0}");
             }
         }
 
@@ -273,6 +391,7 @@ internal static class Program
         writer.WriteLine("  workbench --profile-build [--duration <seconds>] [--triple-count <N>]");
         writer.WriteLine("  workbench --profile-query [--duration <seconds>] [--triple-count <N>]");
         writer.WriteLine("  workbench --profile-edgemap-distribution <path-to-nquads-file>");
+        writer.WriteLine("  workbench --profile-edgemap-distribution --synthetic [--triple-count <N>]");
         writer.WriteLine("  workbench --help");
         writer.WriteLine();
         writer.WriteLine("Defaults:");

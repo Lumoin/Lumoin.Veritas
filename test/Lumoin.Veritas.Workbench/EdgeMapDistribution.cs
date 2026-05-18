@@ -27,6 +27,11 @@ internal static class EdgeMapDistribution
         9, 16, 32, 64, 128, 256, 512, 1024,
     ];
 
+    private static readonly int[] InlineBucketLowerBounds =
+    [
+        1, 2, 3, 5,
+    ];
+
     /// <summary>
     /// Surveys the EdgeMap distribution across every reachable
     /// node in <paramref name="store"/> from
@@ -45,11 +50,19 @@ internal static class EdgeMapDistribution
         int inline = 0;
         int sortedArray = 0;
 
-        Dictionary<int, int> histogram = [];
+        Dictionary<int, int> sortedHistogram = [];
         foreach(int bucket in SortedArrayBucketLowerBounds)
         {
-            histogram[bucket] = 0;
+            sortedHistogram[bucket] = 0;
         }
+
+        Dictionary<int, int> inlineHistogram = [];
+        foreach(int bucket in InlineBucketLowerBounds)
+        {
+            inlineHistogram[bucket] = 0;
+        }
+
+        Dictionary<int, int[]> perDepth = [];
 
         if(rootHandle.IsNone)
         {
@@ -59,7 +72,10 @@ internal static class EdgeMapDistribution
                 EmptyCount = 0,
                 InlineCount = 0,
                 SortedArrayCount = 0,
-                SortedArrayCountHistogram = histogram,
+                SortedArrayCountHistogram = sortedHistogram,
+                InlineCountHistogram = inlineHistogram,
+                PerDepthTierCounts = perDepth,
+                DistinctNodeCount = 0,
             };
         }
 
@@ -76,6 +92,12 @@ internal static class EdgeMapDistribution
             }
 
             HypertrieNode node = store.GetByHandle(handle);
+            if(!perDepth.TryGetValue(node.Depth, out int[]? depthCounts))
+            {
+                depthCounts = new int[3];
+                perDepth[node.Depth] = depthCounts;
+            }
+
             for(int position = 0; position < node.Depth; position++)
             {
                 ref readonly EdgeMap map = ref node.EdgeMaps[position];
@@ -85,19 +107,25 @@ internal static class EdgeMapDistribution
                     case EdgeMapKind.Empty:
                     {
                         empty++;
+                        depthCounts[0]++;
                         break;
                     }
                     case EdgeMapKind.Inline:
                     {
                         inline++;
+                        depthCounts[1]++;
+                        int inlineCount = EdgeMap.Count(in map);
+                        int inlineBucket = BucketFor(inlineCount, InlineBucketLowerBounds);
+                        inlineHistogram[inlineBucket]++;
                         break;
                     }
                     case EdgeMapKind.SortedArray:
                     {
                         sortedArray++;
-                        int count = EdgeMap.Count(in map);
-                        int bucket = BucketFor(count);
-                        histogram[bucket]++;
+                        depthCounts[2]++;
+                        int sortedCount = EdgeMap.Count(in map);
+                        int sortedBucket = BucketFor(sortedCount, SortedArrayBucketLowerBounds);
+                        sortedHistogram[sortedBucket]++;
                         break;
                     }
                     default:
@@ -123,17 +151,20 @@ internal static class EdgeMapDistribution
             EmptyCount = empty,
             InlineCount = inline,
             SortedArrayCount = sortedArray,
-            SortedArrayCountHistogram = histogram,
+            SortedArrayCountHistogram = sortedHistogram,
+            InlineCountHistogram = inlineHistogram,
+            PerDepthTierCounts = perDepth,
+            DistinctNodeCount = visited.Count,
         };
     }
 
     //Returns the inclusive lower bound of the bucket containing
-    //the given entry count. SortedArray entry counts are always
-    //>= 9 (anything smaller is in the Inline tier).
-    private static int BucketFor(int count)
+    //the given entry count from a sorted ascending list of bucket
+    //lower bounds.
+    private static int BucketFor(int count, int[] bucketLowerBounds)
     {
-        int chosen = SortedArrayBucketLowerBounds[0];
-        foreach(int lower in SortedArrayBucketLowerBounds)
+        int chosen = bucketLowerBounds[0];
+        foreach(int lower in bucketLowerBounds)
         {
             if(count >= lower)
             {
