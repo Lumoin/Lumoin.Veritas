@@ -1,10 +1,12 @@
 using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core.Hypertrie.Editing;
+using Lumoin.Veritas.Core.Memory;
 using Lumoin.Veritas.Core.Threading;
 
 namespace Lumoin.Veritas.Core.Hypertrie.Storage;
@@ -12,21 +14,22 @@ namespace Lumoin.Veritas.Core.Hypertrie.Storage;
 /// <summary>
 /// Interns <see cref="HypertrieNode"/> instances by
 /// <see cref="NodeIdentifier"/>. The first time a given identifier
-/// is presented with a node, the store records the node and
-/// returns it; subsequent calls with the same identifier and
-/// content-equivalent edge maps return the recorded node. Hash
-/// collisions are detected by full content comparison and
-/// disambiguated by chaining; correctness is preserved at the
-/// cost of a content compare per chain probe.
+/// is presented with a node, the store records the node in its
+/// segmented arena and returns a <see cref="NodeHandle"/>;
+/// subsequent calls with the same identifier and content-equivalent
+/// edge maps return the existing handle. Hash collisions are
+/// detected by full content comparison and disambiguated by
+/// chaining; correctness is preserved at the cost of a content
+/// compare per chain probe.
 /// </summary>
 /// <remarks>
 /// <para>
-/// The store is the single owner of the canonicalisation
-/// contract: any two structurally-identical nodes that pass
-/// through it become reference-equal. Consumers must not mutate
-/// a node after presenting it to the store, because every other
-/// node that shares the canonical instance would silently
-/// change.
+/// The store is the single owner of the canonicalisation contract:
+/// any two structurally-identical nodes that pass through it become
+/// handle-equal. Consumers must not mutate a node's
+/// <see cref="HypertrieNode.EdgeMaps"/> array after presenting it,
+/// because every other node that resolves to the same handle would
+/// silently observe the change.
 /// </para>
 /// <para>
 /// <b>Concurrent intern.</b> The intern table is a
@@ -35,37 +38,50 @@ namespace Lumoin.Veritas.Core.Hypertrie.Storage;
 /// hit, then either <c>TryAdd</c> a fresh head or <c>TryUpdate</c>
 /// onto the observed head. Concurrent writers racing on the same
 /// identifier converge — content-equal candidates collapse to one
-/// canonical instance, content-different candidates chain. Reads
+/// canonical handle, content-different candidates chain. Reads
 /// (lookup, content-walk, the success branch when the content
 /// already matches) take no lock at all.
+/// </para>
+/// <para>
+/// <b>Segmented arena.</b> Canonical nodes live in a segmented
+/// arena of <see cref="HypertrieNode"/> values rented from
+/// <see cref="VeritasMemoryPool{T}"/>. Each segment holds
+/// <see cref="SegmentSize"/> entries; the outer array of segments
+/// is grown by allocate-and-publish under a brief lock. Index 0 of
+/// segment 0 is reserved for the <see cref="NodeHandle.None"/>
+/// sentinel; real handles start at 1.
+/// Readers compute
+/// <c>(segment, offset) = (handle &gt;&gt; SegmentShift, handle &amp; SegmentMask)</c>,
+/// index twice, and read the value — lock-free in steady state
+/// because segments never move once allocated.
 /// </para>
 /// <para>
 /// <b>Hash function.</b> The store carries the
 /// <see cref="VeritasHash"/> used by every layer that computes
 /// content-addressed identifiers — node identifiers, edit
 /// commitments. Carrying the delegate here means the store and
-/// any consumer that builds nodes for it agree on the same
-/// hash by construction. The library never picks a default
-/// hash; the application names one (typically
-/// <see cref="VeritasHashing.Default"/>) at the composition
-/// root.
+/// any consumer that builds nodes for it agree on the same hash
+/// by construction.
 /// </para>
 /// <para>
-/// <b>Snapshot registry.</b> The store also tracks the set of
+/// <b>Snapshot registry.</b> The store tracks the set of
 /// <see cref="HypertrieSnapshot"/> instances currently holding a
-/// reference to it. Snapshots register themselves on
-/// construction and deregister on final release. The registry
-/// drives the mark phase of <see cref="SweepAsync"/>: every node
-/// reachable from any registered snapshot is preserved; every
-/// other interned node is eligible for eviction.
+/// reference to it. Snapshots register themselves on construction
+/// and deregister on final release. The registry drives the mark
+/// phase of <see cref="SweepAsync"/>: every node reachable from
+/// any registered snapshot is preserved; every other interned
+/// node is eligible for chain eviction. Arena slots themselves are
+/// not reclaimed by sweep — the chain entry is dropped but the
+/// arena slot remains occupied until store disposal. This matches
+/// the existing build-once-and-share-forever lifecycle.
 /// </para>
 /// <para>
 /// <b>Mutation gate.</b> A
 /// <see cref="AsyncSharedExclusiveLock"/> coordinates the
-/// build/edit-session and sweep paths. Builds and (in a future
-/// batch) edit sessions take the gate in <em>shared</em> mode —
-/// many concurrent mutators may run together; structural sharing
-/// in the intern table makes them naturally compatible.
+/// build/edit-session and sweep paths. Builds and edit sessions
+/// take the gate in <em>shared</em> mode — many concurrent
+/// mutators may run together; structural sharing in the intern
+/// table makes them naturally compatible.
 /// <see cref="SweepAsync"/> takes the gate in <em>exclusive</em>
 /// mode — no concurrent mutators while it walks the intern table
 /// to prune. Reads (iterators, queries, snapshot acquire and
@@ -84,13 +100,11 @@ namespace Lumoin.Veritas.Core.Hypertrie.Storage;
 /// </para>
 /// <para>
 /// <b>Disposal.</b> The store is <see cref="IDisposable"/>
-/// because it owns an <see cref="AsyncSharedExclusiveLock"/>. In
-/// typical usage where the store outlives all of its
-/// <see cref="HypertrieGraphStore"/> consumers, explicit disposal
-/// is unnecessary — the lock allocates no <c>WaitHandle</c> on
-/// the paths used here, so the garbage collector reclaims
-/// everything cleanly. Long-lived hosts that recycle stores
-/// during operation should still call <see cref="Dispose"/> at
+/// because it owns the segmented arena's pool rentals plus every
+/// <see cref="EdgeMap"/>'s SortedArray-tier rentals. Disposal
+/// walks every stored node, releases its EdgeMaps' rentals, then
+/// releases every arena segment. Long-lived hosts that recycle
+/// stores during operation should call <see cref="Dispose"/> at
 /// end of life. Calling <see cref="Dispose"/> while a build or
 /// sweep is in flight is a contract violation; callers ensure no
 /// such operation is pending before disposing.
@@ -99,6 +113,18 @@ namespace Lumoin.Veritas.Core.Hypertrie.Storage;
 [DebuggerDisplay("NodeStore Count={Count} AcquiredSnapshots={AcquiredSnapshotCount} SweepCount={SweepCount}")]
 public sealed class NodeStore: IDisposable
 {
+    /// <summary>The number of <see cref="HypertrieNode"/> entries per arena segment. 4096 entries × ~16 bytes = ~64 KB per segment; fits comfortably in L2 cache.</summary>
+    private const int SegmentShift = 12;
+
+    /// <summary>The size of each arena segment, derived from <see cref="SegmentShift"/>.</summary>
+    private const int SegmentSize = 1 << SegmentShift;
+
+    /// <summary>The bit mask for extracting an in-segment offset from a handle.</summary>
+    private const uint SegmentMask = SegmentSize - 1;
+
+    /// <summary>Initial capacity of the outer segments array. Grown by doubling on demand.</summary>
+    private const int InitialSegmentArrayCapacity = 4;
+
     //The intern table: identifier -> chain head. Concurrent so
     //multiple in-flight intern calls can write without an outer
     //lock; the chain is rebuilt on hash collision and only the
@@ -111,6 +137,34 @@ public sealed class NodeStore: IDisposable
     //The shared/exclusive gate. Builds and edit sessions take
     //shared; sweeps take exclusive.
     private AsyncSharedExclusiveLock MutationGate { get; } = new();
+
+    //Pool from which arena segments are rented. Retained for the
+    //store's lifetime so disposal can return every segment.
+    private VeritasMemoryPool<HypertrieNode> NodePool { get; }
+
+    //The segmented arena. Each segment is an IMemoryOwner whose
+    //Memory.Span[offset] is the canonical HypertrieNode at index
+    //(segmentIndex * SegmentSize + offset). Segments never move
+    //once allocated; readers are lock-free.
+    //
+    //The outer array reference is volatile-published on grow so
+    //readers see either the old or new array, never a torn one.
+    //New segments are allocated under SegmentAllocationLock.
+    private IMemoryOwner<HypertrieNode>?[] segments;
+
+    //Monotonic next-handle counter. Increments under
+    //SegmentAllocationLock when allocating a new slot. Handle 0
+    //is reserved for NodeHandle.None.
+    private uint nextHandle = 1;
+
+    //Lock taken briefly when allocating a new arena slot or
+    //growing the outer segments array. Read paths never touch it.
+    private object SegmentAllocationLock { get; } = new();
+
+    //Number of times a CAS-loop iteration in Intern lost the race
+    //and discarded a freshly-allocated handle. Diagnostic only;
+    //surfaces pathological contention via Debug.Assert.
+    private int racesLost;
 
     private int nodeCount;
 
@@ -163,25 +217,47 @@ public sealed class NodeStore: IDisposable
     /// <summary>
     /// Constructs an empty store using
     /// <paramref name="hash"/> as the hash function and no
-    /// journal.
+    /// journal. The arena's node pool defaults to a fresh
+    /// <see cref="VeritasMemoryPool{HypertrieNode}"/> instance.
     /// </summary>
     /// <param name="hash">The hash function the store and its consumers share. Pass <see cref="VeritasHashing.Default"/> for the canonical xxHash64 implementation.</param>
     /// <exception cref="ArgumentNullException"><paramref name="hash"/> is <c>null</c>.</exception>
     public NodeStore(VeritasHash hash)
+        : this(hash, new VeritasMemoryPool<HypertrieNode>())
+    {
+    }
+
+    /// <summary>
+    /// Constructs an empty store using
+    /// <paramref name="hash"/> as the hash function and
+    /// <paramref name="nodePool"/> as the source of arena
+    /// segments. No journal.
+    /// </summary>
+    /// <param name="hash">The hash function the store and its consumers share.</param>
+    /// <param name="nodePool">Pool from which arena segments are rented. Retained for the store's lifetime; the caller must keep the pool alive at least as long as the store.</param>
+    /// <exception cref="ArgumentNullException">A required argument is <c>null</c>.</exception>
+    public NodeStore(VeritasHash hash, VeritasMemoryPool<HypertrieNode> nodePool)
     {
         ArgumentNullException.ThrowIfNull(hash);
+        ArgumentNullException.ThrowIfNull(nodePool);
 
         Hash = hash;
+        NodePool = nodePool;
         JournalAppend = null;
         JournalRead = null;
+
+        segments = new IMemoryOwner<HypertrieNode>?[InitialSegmentArrayCapacity];
+        AllocateInitialSegment();
     }
 
     /// <summary>
     /// Constructs an empty store using
     /// <paramref name="hash"/> as the hash function and the
-    /// given journal delegates.
+    /// given journal delegates. The arena's node pool defaults to
+    /// a fresh <see cref="VeritasMemoryPool{HypertrieNode}"/>
+    /// instance.
     /// </summary>
-    /// <param name="hash">The hash function the store and its consumers share. Pass <see cref="VeritasHashing.Default"/> for the canonical xxHash64 implementation.</param>
+    /// <param name="hash">The hash function the store and its consumers share.</param>
     /// <param name="journalAppend">The append-with-OCC delegate; must not be <c>null</c>.</param>
     /// <param name="journalRead">The read delegate; must not be <c>null</c>.</param>
     /// <exception cref="ArgumentNullException">A required argument is <c>null</c>.</exception>
@@ -189,57 +265,103 @@ public sealed class NodeStore: IDisposable
         VeritasHash hash,
         JournalDelegates.AppendJournalEntryAsync journalAppend,
         JournalDelegates.ReadJournalEntriesAsync journalRead)
+        : this(hash, new VeritasMemoryPool<HypertrieNode>(), journalAppend, journalRead)
+    {
+    }
+
+    /// <summary>
+    /// Constructs an empty store with all dependencies supplied.
+    /// </summary>
+    /// <param name="hash">The hash function the store and its consumers share.</param>
+    /// <param name="nodePool">Pool from which arena segments are rented.</param>
+    /// <param name="journalAppend">The append-with-OCC delegate; must not be <c>null</c>.</param>
+    /// <param name="journalRead">The read delegate; must not be <c>null</c>.</param>
+    /// <exception cref="ArgumentNullException">A required argument is <c>null</c>.</exception>
+    public NodeStore(
+        VeritasHash hash,
+        VeritasMemoryPool<HypertrieNode> nodePool,
+        JournalDelegates.AppendJournalEntryAsync journalAppend,
+        JournalDelegates.ReadJournalEntriesAsync journalRead)
     {
         ArgumentNullException.ThrowIfNull(hash);
+        ArgumentNullException.ThrowIfNull(nodePool);
         ArgumentNullException.ThrowIfNull(journalAppend);
         ArgumentNullException.ThrowIfNull(journalRead);
 
         Hash = hash;
+        NodePool = nodePool;
         JournalAppend = journalAppend;
         JournalRead = journalRead;
+
+        segments = new IMemoryOwner<HypertrieNode>?[InitialSegmentArrayCapacity];
+        AllocateInitialSegment();
+    }
+
+    //Rents segment 0 and reserves slot 0 as the NodeHandle.None
+    //sentinel. Called once from each constructor; runs before any
+    //Intern call so no synchronisation is needed.
+    private void AllocateInitialSegment()
+    {
+        IMemoryOwner<HypertrieNode> seg = NodePool.Rent(SegmentSize);
+        seg.Memory.Span[0] = default;
+        segments[0] = seg;
+        //nextHandle is initialised to 1, leaving slot 0 reserved.
     }
 
     /// <summary>
-    /// Returns the canonical instance for the given
+    /// Returns the canonical handle for the given
     /// (<paramref name="identifier"/>, <paramref name="candidate"/>)
     /// pair. If <paramref name="identifier"/> has not been seen,
-    /// records <paramref name="candidate"/> as the canonical
-    /// instance and returns it. If the identifier has been seen
-    /// and an existing canonical node has content-equal edge
-    /// maps (and equal depth), returns the existing canonical
-    /// node. If the identifier has been seen but no chain entry's
-    /// content matches (a hash collision), chains the candidate
-    /// onto the bucket and returns the candidate.
+    /// records <paramref name="candidate"/> in the arena and
+    /// returns a fresh handle. If the identifier has been seen
+    /// and an existing canonical node has content-equal edge maps
+    /// (and equal depth), returns the existing handle. If the
+    /// identifier has been seen but no chain entry's content
+    /// matches (a hash collision), chains the candidate onto the
+    /// bucket and returns the candidate's fresh handle.
     /// </summary>
     /// <remarks>
     /// <para>
     /// Concurrent intern calls on the same identifier converge
     /// through a CAS loop on the dictionary entry. A retry happens
-    /// only when another writer races us; the path is allocation-
-    /// and lock-free in the uncontended case.
+    /// only when another writer races us; when a retry discovers
+    /// the bucket already holds a content-equal entry, the
+    /// previously-allocated arena slot is left occupied (no
+    /// reclamation in the steady state). This matches the existing
+    /// build-once lifecycle and the existing waste-on-loss pattern
+    /// the chain-entry class allocation had.
     /// </para>
     /// </remarks>
     /// <param name="identifier">The candidate's identifier.</param>
-    /// <param name="candidate">The candidate node; must not be <c>null</c>.</param>
-    /// <returns>The canonical node for this identifier and content.</returns>
-    public HypertrieNode Intern(NodeIdentifier identifier, HypertrieNode candidate)
+    /// <param name="candidate">The candidate node; <see cref="HypertrieNode.EdgeMaps"/> must not be <c>null</c>.</param>
+    /// <returns>The canonical handle for this identifier and content.</returns>
+    public NodeHandle Intern(NodeIdentifier identifier, HypertrieNode candidate)
     {
-        ArgumentNullException.ThrowIfNull(candidate);
+        if(candidate.EdgeMaps is null)
+        {
+            throw new ArgumentException("Candidate node must have a non-null EdgeMaps array.", nameof(candidate));
+        }
+
+        NodeHandle freshHandle = AllocateHandle(candidate);
 
         while(true)
         {
             if(!Storage.TryGetValue(identifier, out ChainEntry? observedHead))
             {
                 //First node observed for this identifier — try to claim the bucket.
-                ChainEntry freshHead = new() { Node = candidate, Next = null };
+                ChainEntry freshHead = new() { NodeHandle = freshHandle, Next = null };
                 if(Storage.TryAdd(identifier, freshHead))
                 {
                     Interlocked.Increment(ref nodeCount);
 
-                    return candidate;
+                    Debug.Assert(!freshHandle.IsNone, "Intern must return a real handle, never the sentinel.");
+                    return freshHandle;
                 }
 
                 //Lost the race; another writer took the bucket. Retry from the top.
+                Interlocked.Increment(ref racesLost);
+                Debug.Assert(Volatile.Read(ref racesLost) <= 1000,
+                    "Excessive contention on Intern; slot waste exceeded threshold.");
                 continue;
             }
 
@@ -248,30 +370,60 @@ public sealed class NodeStore: IDisposable
 
             while(cursor is not null)
             {
-                if(cursor.Node.Depth == candidate.Depth && NodeContentEquals(cursor.Node, candidate))
+                HypertrieNode cursorNode = GetByHandle(cursor.NodeHandle);
+                if(cursorNode.Depth == candidate.Depth && NodeContentEquals(cursorNode, candidate))
                 {
-                    return cursor.Node;
+                    //Found content-equal entry; the freshly-allocated handle is wasted.
+                    return cursor.NodeHandle;
                 }
 
                 cursor = cursor.Next;
             }
 
             //No content match in the observed chain — push the
-            //candidate onto the head and try to publish the new
-            //head atomically. If we lose the CAS, another writer
-            //changed the chain (added a content-equal entry, or
-            //added another collision); we go back to the top and
-            //re-examine the chain.
-            ChainEntry newHead = new() { Node = candidate, Next = observedHead };
+            //candidate's handle onto the head and try to publish
+            //the new head atomically. If we lose the CAS, another
+            //writer changed the chain (added a content-equal
+            //entry, or added another collision); we go back to the
+            //top and re-examine.
+            ChainEntry newHead = new() { NodeHandle = freshHandle, Next = observedHead };
             if(Storage.TryUpdate(identifier, newHead, observedHead))
             {
                 Interlocked.Increment(ref nodeCount);
 
-                return candidate;
+                Debug.Assert(!freshHandle.IsNone, "Intern must return a real handle, never the sentinel.");
+                return freshHandle;
             }
 
             //Lost the CAS; retry.
+            Interlocked.Increment(ref racesLost);
+            Debug.Assert(Volatile.Read(ref racesLost) <= 1000,
+                "Excessive contention on Intern; slot waste exceeded threshold.");
         }
+    }
+
+    /// <summary>
+    /// Resolves a handle to the corresponding
+    /// <see cref="HypertrieNode"/>.
+    /// </summary>
+    /// <param name="handle">The handle to resolve.</param>
+    /// <returns>The node identified by <paramref name="handle"/>.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="handle"/> is <see cref="NodeHandle.None"/> or out of range.</exception>
+    public HypertrieNode GetByHandle(NodeHandle handle)
+    {
+        Debug.Assert(!handle.IsNone, "GetByHandle called with NodeHandle.None.");
+
+        uint encoded = handle.Encoded;
+        if(encoded == 0 || encoded >= Volatile.Read(ref nextHandle))
+        {
+            throw new ArgumentOutOfRangeException(nameof(handle), encoded,
+                $"Handle must be between 1 and {Volatile.Read(ref nextHandle) - 1}; '0' is reserved for NodeHandle.None.");
+        }
+
+        int segmentIndex = (int)(encoded >> SegmentShift);
+        int offset = (int)(encoded & SegmentMask);
+        IMemoryOwner<HypertrieNode>?[] segs = Volatile.Read(ref segments);
+        return segs[segmentIndex]!.Memory.Span[offset];
     }
 
     /// <summary>
@@ -279,6 +431,8 @@ public sealed class NodeStore: IDisposable
     /// <paramref name="identifier"/>; for diagnostics and tests
     /// only.
     /// </summary>
+    /// <param name="identifier">The identifier to check.</param>
+    /// <returns><c>true</c> when the identifier is present.</returns>
     public bool Contains(NodeIdentifier identifier) => Storage.ContainsKey(identifier);
 
     /// <summary>
@@ -287,6 +441,7 @@ public sealed class NodeStore: IDisposable
     /// <see cref="HypertrieSnapshot"/>'s constructor; consumers
     /// do not call this directly.
     /// </summary>
+    /// <param name="snapshot">The snapshot to register.</param>
     internal void RegisterSnapshot(HypertrieSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -303,6 +458,7 @@ public sealed class NodeStore: IDisposable
     /// <see cref="HypertrieSnapshot.Release"/> when the reference
     /// count reaches zero; consumers do not call this directly.
     /// </summary>
+    /// <param name="snapshot">The snapshot to deregister.</param>
     internal void UnregisterSnapshot(HypertrieSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -318,6 +474,8 @@ public sealed class NodeStore: IDisposable
     /// currently in the acquired-snapshots registry.
     /// Diagnostic / tests only.
     /// </summary>
+    /// <param name="snapshot">The snapshot to look up.</param>
+    /// <returns><c>true</c> when present.</returns>
     public bool IsSnapshotAcquired(HypertrieSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -330,10 +488,10 @@ public sealed class NodeStore: IDisposable
 
     /// <summary>
     /// Acquires the mutation gate in shared mode. Multiple shared
-    /// holders may run concurrently. Builds and (in a future
-    /// batch) edit-session commits hold this scope while they
-    /// mutate the intern table; sweeps wait for the scope to
-    /// release before claiming the gate exclusively.
+    /// holders may run concurrently. Builds and edit-session
+    /// commits hold this scope while they mutate the intern
+    /// table; sweeps wait for the scope to release before
+    /// claiming the gate exclusively.
     /// </summary>
     /// <param name="cancellationToken">A token that aborts the wait.</param>
     /// <returns>A scope handle whose disposal releases the shared hold.</returns>
@@ -363,43 +521,6 @@ public sealed class NodeStore: IDisposable
     /// <param name="baseSnapshot">The snapshot the session branches from. The session acquires a fresh reference; the caller's reference is not consumed.</param>
     /// <param name="cancellationToken">A token that aborts the open.</param>
     /// <returns>An opened session ready to receive edits.</returns>
-    /// <remarks>
-    /// <para>
-    /// <b>Optimistic concurrency on Started.</b>
-    /// <see cref="EditSessionEntryKind.Started"/> is non-mutating
-    /// — its <c>ChildId</c> equals its <c>ParentId</c>, both equal
-    /// <paramref name="baseSnapshot"/>'s identifier. The journal
-    /// rejects the append when the head no longer equals
-    /// <c>baseSnapshot.Id</c>; in that case this method retries
-    /// against the new head reported in
-    /// <see cref="EditSessionConcurrencyException.ActualHead"/>
-    /// only if the new head still corresponds to
-    /// <paramref name="baseSnapshot"/>'s identifier (i.e. the
-    /// retry is harmless because no actual state change happened
-    /// between the two append attempts). When the head has
-    /// genuinely moved, the open propagates the
-    /// <see cref="EditSessionConcurrencyException"/> to the
-    /// caller — opening a session against a stale snapshot is a
-    /// caller error the library does not paper over.
-    /// </para>
-    /// <para>
-    /// <b>No journal, no Started entry.</b> When the store was
-    /// constructed without a journal, no entry is written; the
-    /// session still acquires the shared scope and the snapshot
-    /// reference. The session's <c>Started</c> / <c>Committed</c>
-    /// / <c>Abandoned</c> lifecycle is purely in-memory in that
-    /// configuration.
-    /// </para>
-    /// <para>
-    /// <b>Cleanup on failure.</b> When the
-    /// <see cref="EditSessionEntryKind.Started"/> append fails for
-    /// any reason — non-OCC exceptions or the unhandleable
-    /// genuine-head-moved case — this method releases the shared
-    /// scope and the snapshot reference before propagating, so
-    /// the caller never sees a half-opened session leaking
-    /// resources.
-    /// </para>
-    /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="baseSnapshot"/> is <c>null</c>.</exception>
     /// <exception cref="EditSessionConcurrencyException">The journal head no longer corresponds to <paramref name="baseSnapshot"/>; another session committed first.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was triggered.</exception>
@@ -412,13 +533,6 @@ public sealed class NodeStore: IDisposable
 
         SessionId sessionId = SessionId.NewId();
 
-        //Acquire resources in the order: scope first, snapshot
-        //reference second, journal append third. Any failure on a
-        //later step releases everything acquired earlier before
-        //propagating. The shape mirrors the ownership-transfer
-        //pattern (CA2000) used elsewhere in the library: the
-        //local references are non-null until ownership transfers
-        //to the constructed EditSession.
         SharedScope scope = await EnterSharedScopeAsync(cancellationToken).ConfigureAwait(false);
         HypertrieSnapshot? acquired = null;
         bool ownershipTransferred = false;
@@ -429,13 +543,6 @@ public sealed class NodeStore: IDisposable
 
             if(JournalAppend is not null)
             {
-                //The Started entry is non-mutating: ChildId
-                //equals ParentId equals baseSnapshot.Id. A
-                //genuine head movement causes the OCC append to
-                //throw; we surface the exception so the caller
-                //rebases. There is no value in retrying inside
-                //this method because the caller's intent is tied
-                //to the specific baseSnapshot supplied.
                 JournalEntry startedEntry = JournalEntry.Started(baseSnapshot.Id, sessionId);
                 await JournalAppend(startedEntry, baseSnapshot.Id, cancellationToken).ConfigureAwait(false);
             }
@@ -456,23 +563,19 @@ public sealed class NodeStore: IDisposable
 
     /// <summary>
     /// Walks the node graph reachable from every currently
-    /// acquired snapshot and evicts every interned canonical
-    /// node not on that reachable set. Acquires the mutation
+    /// acquired snapshot and evicts every chain entry pointing at
+    /// a handle not on that reachable set. Acquires the mutation
     /// gate exclusively for the duration of the sweep, blocking
-    /// concurrent builds and edit-session commits while it
-    /// runs; reads are unaffected. Triggering is the operator's
-    /// responsibility — the library never sweeps unprompted.
+    /// concurrent builds and edit-session commits while it runs;
+    /// reads are unaffected. Arena slots themselves are not
+    /// reclaimed — the slot remains occupied until store
+    /// disposal — but the chain entry is dropped, releasing its
+    /// share of <see cref="Count"/>.
     /// </summary>
     /// <param name="cancellationToken">A token that aborts the sweep at any per-step check.</param>
     /// <returns>Statistics describing the sweep.</returns>
     public async ValueTask<SweepResult> SweepAsync(CancellationToken cancellationToken = default)
     {
-        //Acquire the exclusive scope and dispose it explicitly in a
-        //finally so the DisposeAsync await can carry ConfigureAwait(false).
-        //C# does not yet have syntax for ConfigureAwait on a `await using`
-        //declaration; the manual shape satisfies CA2007 without the
-        //semantic of ConfiguredAsyncDisposable, which would erase the
-        //ExclusiveScope static type.
         ExclusiveScope scope = await EnterExclusiveScopeAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -482,7 +585,7 @@ public sealed class NodeStore: IDisposable
                 live = [.. AcquiredSnapshots];
             }
 
-            HashSet<HypertrieNode> reachable = new(ReferenceEqualityComparer.Instance);
+            HashSet<NodeHandle> reachable = [];
 
             foreach(HypertrieSnapshot snapshot in live)
             {
@@ -498,10 +601,11 @@ public sealed class NodeStore: IDisposable
     }
 
     /// <summary>
-    /// Releases the resources owned by this store. Safe to call
-    /// only when no build or sweep is in flight; concurrent
-    /// disposal is a contract violation. Disposing a store more
-    /// than once is a no-op.
+    /// Releases the resources owned by this store. Disposes every
+    /// stored <see cref="EdgeMap"/>'s SortedArray-tier rentals
+    /// and every arena segment. Safe to call only when no build
+    /// or sweep is in flight; concurrent disposal is a contract
+    /// violation. Disposing more than once is a no-op.
     /// </summary>
     public void Dispose()
     {
@@ -510,36 +614,117 @@ public sealed class NodeStore: IDisposable
             return;
         }
 
+        //Walk every allocated arena slot, releasing each
+        //EdgeMap's SortedArray rentals. Slot 0 holds the sentinel
+        //(default(HypertrieNode), EdgeMaps == null) — skip it.
+        uint allocated = Volatile.Read(ref nextHandle);
+        IMemoryOwner<HypertrieNode>?[] segs = segments;
+        for(uint h = 1; h < allocated; h++)
+        {
+            int segIndex = (int)(h >> SegmentShift);
+            int offset = (int)(h & SegmentMask);
+            IMemoryOwner<HypertrieNode>? seg = segs[segIndex];
+            if(seg is null)
+            {
+                continue;
+            }
+
+            HypertrieNode node = seg.Memory.Span[offset];
+            if(node.EdgeMaps is null)
+            {
+                continue;
+            }
+
+            for(int i = 0; i < node.EdgeMaps.Length; i++)
+            {
+                EdgeMap.DisposeRentals(ref node.EdgeMaps[i]);
+            }
+        }
+
+        //Now release the arena segments themselves.
+        for(int i = 0; i < segs.Length; i++)
+        {
+            segs[i]?.Dispose();
+            segs[i] = null;
+        }
+
         MutationGate.Dispose();
     }
 
-    //Walks every reachable node from the given root and adds it
-    //to the reachable set. Iterative to satisfy the "no recursion
-    //in graph algorithms" rule; the work stack carries nodes
-    //pending visit and dedup is performed by the set itself.
-    private static void MarkReachable(HypertrieNode root, HashSet<HypertrieNode> reachable, CancellationToken cancellationToken)
+    //Allocates a fresh arena slot, writes the candidate node into
+    //it, and returns the handle. Grows the segments array on
+    //demand. The lock covers slot reservation, segment allocation
+    //if needed, and the slot write — so any reader that
+    //subsequently calls GetByHandle on the returned handle sees
+    //the populated slot via volatile reads of the segments array.
+    private NodeHandle AllocateHandle(HypertrieNode node)
     {
-        Stack<HypertrieNode> work = new();
+        lock(SegmentAllocationLock)
+        {
+            uint handle = nextHandle;
+            int segIndex = (int)(handle >> SegmentShift);
+            int offset = (int)(handle & SegmentMask);
+
+            //Grow the outer segments array if needed.
+            if(segIndex >= segments.Length)
+            {
+                int newCapacity = segments.Length * 2;
+                while(segIndex >= newCapacity)
+                {
+                    newCapacity *= 2;
+                }
+
+                IMemoryOwner<HypertrieNode>?[] newArray = new IMemoryOwner<HypertrieNode>?[newCapacity];
+                Array.Copy(segments, newArray, segments.Length);
+                Volatile.Write(ref segments, newArray);
+            }
+
+            //Allocate the segment if it doesn't exist.
+            if(segments[segIndex] is null)
+            {
+                segments[segIndex] = NodePool.Rent(SegmentSize);
+            }
+
+            segments[segIndex]!.Memory.Span[offset] = node;
+            Volatile.Write(ref nextHandle, handle + 1);
+
+            return NodeHandle.FromEncoded(handle);
+        }
+    }
+
+    //Walks every reachable node from the given root and adds its
+    //handle to the reachable set. Iterative to satisfy the "no
+    //recursion in graph algorithms" rule; the work stack carries
+    //handles pending visit and dedup is performed by the set
+    //itself.
+    private void MarkReachable(NodeHandle root, HashSet<NodeHandle> reachable, CancellationToken cancellationToken)
+    {
+        Stack<NodeHandle> work = new();
         work.Push(root);
 
         while(work.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            HypertrieNode current = work.Pop();
-            if(!reachable.Add(current))
+            NodeHandle currentHandle = work.Pop();
+            if(currentHandle.IsNone)
             {
-                //Already visited — every node reachable from it is already on the reachable set.
                 continue;
             }
 
+            if(!reachable.Add(currentHandle))
+            {
+                continue;
+            }
+
+            HypertrieNode current = GetByHandle(currentHandle);
             for(int position = 0; position < current.Depth; position++)
             {
-                foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(current.EdgeMaps[position]))
+                foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(current.EdgeMaps[position]))
                 {
-                    //At depth-1 leaves the child reference is null;
-                    //higher depths always carry a non-null child.
-                    if(entry.Value is not null)
+                    //At depth-1 leaves the child handle is None;
+                    //higher depths always carry a real handle.
+                    if(!entry.Value.IsNone)
                     {
                         work.Push(entry.Value);
                     }
@@ -549,11 +734,11 @@ public sealed class NodeStore: IDisposable
     }
 
     //Walks the intern table once, dropping bucket entries whose
-    //node is not in the reachable set. Buckets are mutated in a
+    //handle is not in the reachable set. Buckets are mutated in a
     //second pass to avoid modifying the dictionary during
     //enumeration. Returns sweep statistics for the diagnostic
     //surface.
-    private SweepResult PruneUnreachable(HashSet<HypertrieNode> reachable, CancellationToken cancellationToken)
+    private SweepResult PruneUnreachable(HashSet<NodeHandle> reachable, CancellationToken cancellationToken)
     {
         List<NodeIdentifier> keysToRemove = [];
         List<KeyValuePair<NodeIdentifier, ChainEntry>> keysToReplace = [];
@@ -566,12 +751,9 @@ public sealed class NodeStore: IDisposable
 
             ChainEntry head = bucket.Value;
 
-            //Common case: a single-entry chain. Either the node is
-            //reachable and the bucket stays unchanged, or the node
-            //is unreachable and the whole bucket goes.
             if(head.Next is null)
             {
-                if(!reachable.Contains(head.Node))
+                if(!reachable.Contains(head.NodeHandle))
                 {
                     keysToRemove.Add(bucket.Key);
                     evicted++;
@@ -581,10 +763,6 @@ public sealed class NodeStore: IDisposable
                 continue;
             }
 
-            //Collision chain: rebuild from reachable entries. The
-            //rebuild reverses chain order, which is harmless —
-            //chain order has no semantic meaning beyond head-first
-            //collision lookup.
             ChainEntry? newHead = null;
             int oldLength = 0;
             int newLength = 0;
@@ -592,9 +770,9 @@ public sealed class NodeStore: IDisposable
             for(ChainEntry? cursor = head; cursor is not null; cursor = cursor.Next)
             {
                 oldLength++;
-                if(reachable.Contains(cursor.Node))
+                if(reachable.Contains(cursor.NodeHandle))
                 {
-                    newHead = new ChainEntry { Node = cursor.Node, Next = newHead };
+                    newHead = new ChainEntry { NodeHandle = cursor.NodeHandle, Next = newHead };
                     newLength++;
                 }
             }
@@ -620,9 +798,6 @@ public sealed class NodeStore: IDisposable
 
         foreach(KeyValuePair<NodeIdentifier, ChainEntry> kvp in keysToReplace)
         {
-            //Indexer setter on ConcurrentDictionary is an atomic
-            //upsert; under exclusive scope no concurrent writer
-            //can race us anyway.
             Storage[kvp.Key] = kvp.Value;
         }
 
@@ -653,9 +828,9 @@ public sealed class NodeStore: IDisposable
     //Compares two edge maps for content equality. Two maps are
     //equal when they hold the same set of (key, child) pairs,
     //regardless of representation: an Inline-kind map and a
-    //SortedArray-kind map with the same single entry are content
+    //SortedArray-kind map with the same entry set are content
     //equal even though their EdgeMap.Equals would return false
-    //because the heap fields differ.
+    //because the heap fields (rental owners) differ.
     private static bool EdgeMapContentEquals(in EdgeMap left, in EdgeMap right)
     {
         int leftCount = EdgeMap.Count(in left);
@@ -671,18 +846,18 @@ public sealed class NodeStore: IDisposable
             return true;
         }
 
-        foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(left))
+        foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(left))
         {
-            if(!EdgeMap.TryGetChild(in right, entry.Key, out HypertrieNode? rightChild))
+            if(!EdgeMap.TryGetChild(in right, entry.Key, InlineKeyLookups.Scalar, out NodeHandle rightChild))
             {
                 return false;
             }
 
-            //Children are themselves canonical instances by the time
-            //their parent reaches Intern, so reference equality on
-            //children is exactly content equality. For depth-1 leaves
-            //both sides carry null and the comparison still holds.
-            if(!ReferenceEquals(entry.Value, rightChild))
+            //Children are canonical handles by the time their
+            //parent reaches Intern, so handle equality is exactly
+            //content equality. For depth-1 leaves both sides carry
+            //NodeHandle.None and the comparison still holds.
+            if(entry.Value != rightChild)
             {
                 return false;
             }
@@ -699,8 +874,10 @@ public sealed class NodeStore: IDisposable
     //head.
     private sealed class ChainEntry
     {
-        public required HypertrieNode Node { get; init; }
+        /// <summary>The arena handle for the canonical node this chain entry pins.</summary>
+        public required NodeHandle NodeHandle { get; init; }
 
+        /// <summary>The next entry in the collision chain, or <c>null</c> at the tail.</summary>
         public ChainEntry? Next { get; init; }
     }
 }

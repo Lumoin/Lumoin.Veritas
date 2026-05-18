@@ -234,7 +234,8 @@ public sealed class EditSession: IAsyncDisposable
             BaseSnapshot,
             literalAdds,
             literalRemoves,
-            Store);
+            Store,
+            BuildPools.CreateDefault());
 
         //Empty effective delta — return base acquired, no journal
         //entry, transition to Committed.

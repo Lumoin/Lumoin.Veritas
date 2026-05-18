@@ -50,10 +50,9 @@ namespace Lumoin.Veritas.Core.Hypertrie.Storage;
 /// <b>Equality.</b> Two cursors are equal when their snapshotted
 /// representation matches and they are at the same position.
 /// Reference equality is used on the heap-typed snapshot fields
-/// (<see cref="SortedKeys"/>, <see cref="SortedChildren"/>,
-/// <see cref="InlineChild"/>); structural equality across array
-/// contents would be linear in entry count and is not the
-/// semantic any current consumer needs.
+/// (<see cref="SortedKeys"/>, <see cref="SortedChildren"/>);
+/// structural equality across array contents would be linear in
+/// entry count and is not the semantic any current consumer needs.
 /// </para>
 /// </remarks>
 [DebuggerDisplay("EdgeMapKeyCursor Kind={Kind} AtEnd={AtEnd}")]
@@ -67,19 +66,13 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
     /// </summary>
     private EdgeMapKind Kind { get; }
 
-    /// <summary>For <see cref="EdgeMapKind.Inline"/>: the inline key snapshotted at construction.</summary>
-    private uint InlineKey { get; }
-
-    /// <summary>For <see cref="EdgeMapKind.Inline"/>: the inline child snapshotted at construction.</summary>
-    private HypertrieNode? InlineChild { get; }
-
-    /// <summary>For <see cref="EdgeMapKind.SortedArray"/>: the keys array reference snapshotted at construction.</summary>
+    /// <summary>The sorted-ascending key snapshot for both <see cref="EdgeMapKind.Inline"/> and <see cref="EdgeMapKind.SortedArray"/>. <c>null</c> only for <see cref="EdgeMapKind.Empty"/>.</summary>
     private uint[]? SortedKeys { get; }
 
-    /// <summary>For <see cref="EdgeMapKind.SortedArray"/>: the children array reference snapshotted at construction.</summary>
-    private HypertrieNode?[]? SortedChildren { get; }
+    /// <summary>The child-handle snapshot, parallel to <see cref="SortedKeys"/>. At depth-1 leaves every slot is <see cref="NodeHandle.None"/>.</summary>
+    private NodeHandle[]? SortedChildren { get; }
 
-    /// <summary>For <see cref="EdgeMapKind.SortedArray"/>: the count of valid entries.</summary>
+    /// <summary>The count of valid entries in <see cref="SortedKeys"/> / <see cref="SortedChildren"/>.</summary>
     private int SortedCount { get; }
 
     /// <summary>
@@ -101,8 +94,6 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
         {
             case EdgeMapKind.Empty:
             {
-                InlineKey = 0;
-                InlineChild = null;
                 SortedKeys = null;
                 SortedChildren = null;
                 SortedCount = 0;
@@ -112,21 +103,21 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
             }
             case EdgeMapKind.Inline:
             {
-                InlineKey = map.InlineKey;
-                InlineChild = map.InlineChild;
-                SortedKeys = null;
-                SortedChildren = null;
-                SortedCount = 0;
+                //Inline tier holds up to 8 entries in ascending key
+                //order. Materialise the parallel arrays so the
+                //cursor reads the same code path as SortedArray; the
+                //per-cursor allocation is bounded by InlineCapacity.
+                SortedKeys = EdgeMap.InlineKeysSpan(in map).ToArray();
+                SortedChildren = EdgeMap.InlineChildrenSpan(in map).ToArray();
+                SortedCount = SortedKeys.Length;
                 Position = 0;
 
                 break;
             }
             case EdgeMapKind.SortedArray:
             {
-                InlineKey = 0;
-                InlineChild = null;
-                SortedKeys = map.SortedKeys;
-                SortedChildren = map.SortedChildren;
+                SortedKeys = EdgeMap.SortedKeysSpan(in map).ToArray();
+                SortedChildren = EdgeMap.SortedChildrenSpan(in map).ToArray();
                 SortedCount = map.SortedCount;
                 Position = 0;
 
@@ -146,7 +137,7 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
     public bool AtEnd => Kind switch
     {
         EdgeMapKind.Empty => true,
-        EdgeMapKind.Inline => Position >= 1,
+        EdgeMapKind.Inline => Position >= SortedCount,
         EdgeMapKind.SortedArray => Position >= SortedCount,
         _ => throw new UnreachableException(),
     };
@@ -167,7 +158,7 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
 
             return Kind switch
             {
-                EdgeMapKind.Inline => InlineKey,
+                EdgeMapKind.Inline => SortedKeys![Position],
                 EdgeMapKind.SortedArray => SortedKeys![Position],
                 _ => throw new UnreachableException(),
             };
@@ -175,12 +166,12 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
     }
 
     /// <summary>
-    /// The current child reference, which may legitimately be
-    /// <c>null</c> at depth-1 leaves. Undefined when
-    /// <see cref="AtEnd"/> is <c>true</c>.
+    /// The current child handle, which is <see cref="NodeHandle.None"/>
+    /// at depth-1 leaves and a real handle at deeper nodes. Undefined
+    /// when <see cref="AtEnd"/> is <c>true</c>.
     /// </summary>
     /// <exception cref="InvalidOperationException">The cursor is past the end.</exception>
-    public HypertrieNode? CurrentChild
+    public NodeHandle CurrentChild
     {
         get
         {
@@ -191,7 +182,7 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
 
             return Kind switch
             {
-                EdgeMapKind.Inline => InlineChild,
+                EdgeMapKind.Inline => SortedChildren![Position],
                 EdgeMapKind.SortedArray => SortedChildren![Position],
                 _ => throw new UnreachableException(),
             };
@@ -244,14 +235,6 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
         switch(Kind)
         {
             case EdgeMapKind.Inline:
-            {
-                if(InlineKey < target)
-                {
-                    Position = 1;
-                }
-
-                return;
-            }
             case EdgeMapKind.SortedArray:
             {
                 int remaining = SortedCount - Position;
@@ -297,10 +280,8 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
     public bool Equals(EdgeMapKeyCursor other)
     {
         return Kind == other.Kind
-            && InlineKey == other.InlineKey
             && SortedCount == other.SortedCount
             && Position == other.Position
-            && ReferenceEquals(InlineChild, other.InlineChild)
             && ReferenceEquals(SortedKeys, other.SortedKeys)
             && ReferenceEquals(SortedChildren, other.SortedChildren);
     }
@@ -316,8 +297,6 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
         //reference-equality semantics used in Equals.
         return HashCode.Combine(
             Kind,
-            InlineKey,
-            InlineChild,
             SortedKeys,
             SortedChildren,
             SortedCount,

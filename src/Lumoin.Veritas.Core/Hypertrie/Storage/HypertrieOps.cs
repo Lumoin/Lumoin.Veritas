@@ -46,45 +46,44 @@ public static class HypertrieOps
     private const int PositionObject = 2;
 
     //Non-zero presence marker fed into the entry hash for depth-1
-    //leaves where the child reference is null.
+    //leaves where the child slot is NodeHandle.None.
     private const ulong LeafChildMarker = 1UL;
 
     /// <summary>
-    /// Builds a depth-3 hypertrie root from the given triples,
-    /// interning every node it produces through
-    /// <paramref name="store"/>. Two calls with content-equal
-    /// triple sets and the same store return the same root
-    /// instance.
+    /// Builds a depth-3 hypertrie root from the given
+    /// pre-deduplicated, lex-sorted triples and returns the
+    /// canonical root handle.
     /// </summary>
-    /// <param name="triples">The triples to index. Duplicates are removed.</param>
+    /// <param name="triples">The distinct, lex-sorted triples to index.</param>
     /// <param name="store">The intern table. The same store may be reused across many calls.</param>
-    /// <returns>The canonical depth-3 root for the given triple set.</returns>
+    /// <param name="pools">The pools bundle used for EdgeMap promotion and grow.</param>
+    /// <returns>The canonical depth-3 root's handle for the given triple set.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="triples"/> or <paramref name="store"/> is <c>null</c>.</exception>
-    public static HypertrieNode BuildBottomUp(IEnumerable<EncodedTriple> triples, NodeStore store)
+    internal static NodeHandle BuildBottomUp(DistinctSortedTriples triples, NodeStore store, BuildPools pools)
     {
         ArgumentNullException.ThrowIfNull(triples);
         ArgumentNullException.ThrowIfNull(store);
 
-        DistinctSortedTriples distinct = DistinctSortedTriples.Create(triples);
-        (HypertrieNode root, NodeIdentifier _) = BuildBottomUpWithIdentifier(distinct, store);
+        (NodeHandle root, NodeIdentifier _) = BuildBottomUpWithIdentifier(triples, store, pools);
 
         return root;
     }
 
     /// <summary>
     /// Builds a depth-3 hypertrie root from the given triples and
-    /// returns it together with its content-addressed identifier.
-    /// Equivalent to <see cref="BuildBottomUp"/> but exposes the
-    /// root identifier the build already computes internally, so
-    /// callers (notably <see cref="HypertrieSnapshot"/>
-    /// construction) do not have to recompute it from a finished
-    /// node tree.
+    /// returns the canonical root handle together with its
+    /// content-addressed identifier. Equivalent to
+    /// <see cref="BuildBottomUp"/> but exposes the root identifier
+    /// the build already computes internally, so callers (notably
+    /// <see cref="HypertrieSnapshot"/> construction) do not have to
+    /// recompute it from a finished node tree.
     /// </summary>
     /// <param name="triples">The distinct, lex-sorted triples to index.</param>
     /// <param name="store">The intern table. The same store may be reused across many calls.</param>
-    /// <returns>A tuple of the canonical depth-3 root and its content-addressed identifier.</returns>
+    /// <param name="pools">The pools bundle used for EdgeMap promotion and grow.</param>
+    /// <returns>A tuple of the canonical depth-3 root's handle and its content-addressed identifier.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="triples"/> or <paramref name="store"/> is <c>null</c>.</exception>
-    internal static (HypertrieNode Root, NodeIdentifier Id) BuildBottomUpWithIdentifier(DistinctSortedTriples triples, NodeStore store)
+    internal static (NodeHandle Root, NodeIdentifier Id) BuildBottomUpWithIdentifier(DistinctSortedTriples triples, NodeStore store, BuildPools pools)
     {
         ArgumentNullException.ThrowIfNull(triples);
         ArgumentNullException.ThrowIfNull(store);
@@ -109,23 +108,23 @@ public static class HypertrieOps
         //object) for the S-first path, (subject, object) for the
         //P-first path, and (subject, predicate) for the O-first
         //path.
-        Dictionary<uint, HypertrieNode> sFirstDepth2 = BuildPathDepth2(spoView, store, PositionSubject);
-        Dictionary<uint, HypertrieNode> pFirstDepth2 = BuildPathDepth2(psoView, store, PositionPredicate);
-        Dictionary<uint, HypertrieNode> oFirstDepth2 = BuildPathDepth2(ospView, store, PositionObject);
+        Dictionary<uint, NodeHandle> sFirstDepth2 = BuildPathDepth2(spoView, store, PositionSubject, pools);
+        Dictionary<uint, NodeHandle> pFirstDepth2 = BuildPathDepth2(psoView, store, PositionPredicate, pools);
+        Dictionary<uint, NodeHandle> oFirstDepth2 = BuildPathDepth2(ospView, store, PositionObject, pools);
 
         //Build the depth-3 root: three edge maps, one per starting
         //position, each holding the pre-built depth-2 mapping for
         //that position.
-        HypertrieNode root = new(3);
-        PopulateRootEdgeMap(ref root.EdgeMaps[PositionSubject], sFirstDepth2);
-        PopulateRootEdgeMap(ref root.EdgeMaps[PositionPredicate], pFirstDepth2);
-        PopulateRootEdgeMap(ref root.EdgeMaps[PositionObject], oFirstDepth2);
+        HypertrieNode root = HypertrieNode.Create(3);
+        PopulateRootEdgeMap(ref root.EdgeMaps[PositionSubject], sFirstDepth2, pools);
+        PopulateRootEdgeMap(ref root.EdgeMaps[PositionPredicate], pFirstDepth2, pools);
+        PopulateRootEdgeMap(ref root.EdgeMaps[PositionObject], oFirstDepth2, pools);
 
         //Compute the root's identifier and intern it. Returning
-        //both the canonical root and its identifier saves the
-        //caller a redundant identifier recomputation.
-        NodeIdentifier rootIdentifier = ComputeIdentifier(root, store.Hash, knownChildIdentifiers: null);
-        HypertrieNode canonicalRoot = store.Intern(rootIdentifier, root);
+        //both the canonical root's handle and its identifier saves
+        //the caller a redundant identifier recomputation.
+        NodeIdentifier rootIdentifier = ComputeIdentifier(root, store, store.Hash, knownChildIdentifiers: null);
+        NodeHandle canonicalRoot = store.Intern(rootIdentifier, root);
         return (canonicalRoot, rootIdentifier);
     }
 
@@ -135,11 +134,12 @@ public static class HypertrieOps
     /// position means "any value at this position."
     /// </summary>
     /// <param name="root">The depth-3 root node to query.</param>
+    /// <param name="store">The store backing <paramref name="root"/>; used to resolve child handles during descent.</param>
     /// <param name="subject">The subject term identifier to match, or <see cref="TermId.None"/> for any subject.</param>
     /// <param name="predicate">The predicate term identifier to match, or <see cref="TermId.None"/> for any predicate.</param>
     /// <param name="object">The object term identifier to match, or <see cref="TermId.None"/> for any object.</param>
     /// <returns>An enumerable of matching triples; each is yielded exactly once.</returns>
-    /// <exception cref="ArgumentNullException"><paramref name="root"/> is <c>null</c>.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="store"/> is <c>null</c>.</exception>
     /// <exception cref="ArgumentException"><paramref name="root"/> is not a depth-3 node.</exception>
     /// <remarks>
     /// <para>
@@ -154,11 +154,12 @@ public static class HypertrieOps
     /// </remarks>
     public static IEnumerable<EncodedTriple> Match(
         HypertrieNode root,
+        NodeStore store,
         TermId subject,
         TermId predicate,
         TermId @object)
     {
-        ArgumentNullException.ThrowIfNull(root);
+        ArgumentNullException.ThrowIfNull(store);
         if(root.Depth != 3)
         {
             throw new ArgumentException(
@@ -166,7 +167,7 @@ public static class HypertrieOps
                 nameof(root));
         }
 
-        return MatchCore(root, subject, predicate, @object);
+        return MatchCore(root, store, subject, predicate, @object);
     }
 
     //Builds the depth-2 mapping for one of the three root descent
@@ -186,10 +187,11 @@ public static class HypertrieOps
     //list to the run length, then hands the run to
     //BuildAndInternDepth2 — no dictionary, no per-bucket
     //rehashing, no list growth.
-    private static Dictionary<uint, HypertrieNode> BuildPathDepth2(
+    private static Dictionary<uint, NodeHandle> BuildPathDepth2(
         ReadOnlySpan<EncodedTriple> sortedByOuter,
         NodeStore store,
-        int outerPosition)
+        int outerPosition,
+        BuildPools pools)
     {
         (int innerPosition1, int innerPosition2) = outerPosition switch
         {
@@ -199,7 +201,7 @@ public static class HypertrieOps
             _ => throw new UnreachableException(),
         };
 
-        Dictionary<uint, HypertrieNode> result = [];
+        Dictionary<uint, NodeHandle> result = [];
         int index = 0;
         int length = sortedByOuter.Length;
         while(index < length)
@@ -222,7 +224,7 @@ public static class HypertrieOps
                 entries.Add((ValueAt(triple, innerPosition1), ValueAt(triple, innerPosition2)));
             }
 
-            HypertrieNode depth2 = BuildAndInternDepth2(entries, store);
+            NodeHandle depth2 = BuildAndInternDepth2(entries, store, pools);
             result[outerKey] = depth2;
             index = runEnd;
         }
@@ -279,9 +281,10 @@ public static class HypertrieOps
     //Children are interned through the store before the depth-2
     //node is built, so the depth-2 node's identifier sees
     //canonical child identifiers.
-    private static HypertrieNode BuildAndInternDepth2(
+    private static NodeHandle BuildAndInternDepth2(
         List<(uint Inner1, uint Inner2)> entries,
-        NodeStore store)
+        NodeStore store,
+        BuildPools pools)
     {
         //Group by Inner1 -> set of Inner2; group by Inner2 -> set of Inner1.
         Dictionary<uint, HashSet<uint>> byInner1 = [];
@@ -306,54 +309,55 @@ public static class HypertrieOps
         //Build & intern depth-1 leaves for each grouping; reuse
         //already-interned leaves when two groupings produce the
         //same set (common when the data has symmetry).
-        Dictionary<uint, HypertrieNode> leavesByInner1 = BuildAndInternLeaves(byInner1, store);
-        Dictionary<uint, HypertrieNode> leavesByInner2 = BuildAndInternLeaves(byInner2, store);
+        Dictionary<uint, NodeHandle> leavesByInner1 = BuildAndInternLeaves(byInner1, store, pools);
+        Dictionary<uint, NodeHandle> leavesByInner2 = BuildAndInternLeaves(byInner2, store, pools);
 
         //Assemble the depth-2 node with both edge maps populated.
-        HypertrieNode depth2 = new(2);
-        foreach(KeyValuePair<uint, HypertrieNode> entry in leavesByInner1)
+        HypertrieNode depth2 = HypertrieNode.Create(2);
+        foreach(KeyValuePair<uint, NodeHandle> entry in leavesByInner1)
         {
-            EdgeMap.InsertOrReplace(ref depth2.EdgeMaps[0], entry.Key, entry.Value);
+            EdgeMap.InsertOrReplace(ref depth2.EdgeMaps[0], entry.Key, entry.Value, pools, pools.InlineLookup);
         }
-        foreach(KeyValuePair<uint, HypertrieNode> entry in leavesByInner2)
+        foreach(KeyValuePair<uint, NodeHandle> entry in leavesByInner2)
         {
-            EdgeMap.InsertOrReplace(ref depth2.EdgeMaps[1], entry.Key, entry.Value);
+            EdgeMap.InsertOrReplace(ref depth2.EdgeMaps[1], entry.Key, entry.Value, pools, pools.InlineLookup);
         }
 
         //Compute the depth-2 node's identifier using the canonical
         //children's identifiers, then intern.
-        Dictionary<HypertrieNode, NodeIdentifier> childIdentifiers = CollectChildIdentifiers(depth2, store.Hash);
-        NodeIdentifier identifier = ComputeIdentifier(depth2, store.Hash, childIdentifiers);
+        Dictionary<NodeHandle, NodeIdentifier> childIdentifiers = CollectChildIdentifiers(depth2, store, store.Hash);
+        NodeIdentifier identifier = ComputeIdentifier(depth2, store, store.Hash, childIdentifiers);
         return store.Intern(identifier, depth2);
     }
 
     //Builds a depth-1 leaf for every distinct key set in `groups`,
     //interning each through `store` and returning a map from group
-    //key to canonical leaf.
-    private static Dictionary<uint, HypertrieNode> BuildAndInternLeaves(
+    //key to canonical leaf handle.
+    private static Dictionary<uint, NodeHandle> BuildAndInternLeaves(
         Dictionary<uint, HashSet<uint>> groups,
-        NodeStore store)
+        NodeStore store,
+        BuildPools pools)
     {
-        Dictionary<uint, HypertrieNode> result = new(groups.Count);
+        Dictionary<uint, NodeHandle> result = new(groups.Count);
         foreach(KeyValuePair<uint, HashSet<uint>> group in groups)
         {
-            HypertrieNode leaf = new(1);
+            HypertrieNode leaf = HypertrieNode.Create(1);
             foreach(uint member in group.Value)
             {
-                EdgeMap.InsertOrReplace(ref leaf.EdgeMaps[0], member, null);
+                EdgeMap.InsertOrReplace(ref leaf.EdgeMaps[0], member, NodeHandle.None, pools, pools.InlineLookup);
             }
-            NodeIdentifier identifier = ComputeIdentifier(leaf, store.Hash, knownChildIdentifiers: null);
+            NodeIdentifier identifier = ComputeIdentifier(leaf, store, store.Hash, knownChildIdentifiers: null);
             result[group.Key] = store.Intern(identifier, leaf);
         }
         return result;
     }
 
     //Populates one root edge map from a depth-2 mapping.
-    private static void PopulateRootEdgeMap(ref EdgeMap edgeMap, Dictionary<uint, HypertrieNode> mapping)
+    private static void PopulateRootEdgeMap(ref EdgeMap edgeMap, Dictionary<uint, NodeHandle> mapping, BuildPools pools)
     {
-        foreach(KeyValuePair<uint, HypertrieNode> entry in mapping)
+        foreach(KeyValuePair<uint, NodeHandle> entry in mapping)
         {
-            EdgeMap.InsertOrReplace(ref edgeMap, entry.Key, entry.Value);
+            EdgeMap.InsertOrReplace(ref edgeMap, entry.Key, entry.Value, pools, pools.InlineLookup);
         }
     }
 
@@ -370,20 +374,20 @@ public static class HypertrieOps
     }
 
     //Walks `node`'s edge maps and collects the canonical identifier
-    //of every distinct non-null child. Used at depth-2 and depth-3
+    //of every distinct child handle. Used at depth-2 and depth-3
     //where children are themselves canonical interned nodes; the
     //identifier dictionary is consulted by `ComputeIdentifier` so
     //the parent's hash mixes in canonical child identifiers, not
     //object hashes. The hash is threaded through so the same mixer
     //is used end-to-end in a single build.
-    private static Dictionary<HypertrieNode, NodeIdentifier> CollectChildIdentifiers(HypertrieNode node, VeritasHash hash)
+    private static Dictionary<NodeHandle, NodeIdentifier> CollectChildIdentifiers(HypertrieNode node, NodeStore store, VeritasHash hash)
     {
-        Dictionary<HypertrieNode, NodeIdentifier> result = new(ReferenceEqualityComparer.Instance);
+        Dictionary<NodeHandle, NodeIdentifier> result = [];
         for(int position = 0; position < node.Depth; position++)
         {
-            foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
+            foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
             {
-                if(entry.Value is null)
+                if(entry.Value.IsNone)
                 {
                     continue;
                 }
@@ -397,7 +401,8 @@ public static class HypertrieOps
                 //content using the same hash function the store
                 //uses; this is O(child entries) per distinct child
                 //and fires once per build, not per query.
-                NodeIdentifier childIdentifier = ComputeIdentifier(entry.Value, hash, knownChildIdentifiers: null);
+                HypertrieNode childNode = store.GetByHandle(entry.Value);
+                NodeIdentifier childIdentifier = ComputeIdentifier(childNode, store, hash, knownChildIdentifiers: null);
                 result[entry.Value] = childIdentifier;
             }
         }
@@ -418,16 +423,17 @@ public static class HypertrieOps
     //patch could disagree on per-node identifiers.
     internal static NodeIdentifier ComputeIdentifier(
         HypertrieNode node,
+        NodeStore store,
         VeritasHash hash,
-        Dictionary<HypertrieNode, NodeIdentifier>? knownChildIdentifiers)
+        Dictionary<NodeHandle, NodeIdentifier>? knownChildIdentifiers)
     {
         //Fast path: depth-1 leaves never look up children.
         if(node.Depth == 1)
         {
             NodeIdentifier id = NodeIdentifier.Empty;
-            foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[0]))
+            foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(node.EdgeMaps[0]))
             {
-                ulong childIdentifier = entry.Value is null ? LeafChildMarker : LookupChildIdentifier(entry.Value, knownChildIdentifiers);
+                ulong childIdentifier = entry.Value.IsNone ? LeafChildMarker : LookupChildIdentifier(entry.Value, knownChildIdentifiers);
                 id = id.Add(NodeEntryHashing.Default(hash, entry.Key, childIdentifier));
             }
             return id;
@@ -445,8 +451,8 @@ public static class HypertrieOps
         //every reachable child first via an explicit post-order
         //traversal, then fold. This keeps the whole routine
         //non-recursive even for depth-3 inputs.
-        Dictionary<HypertrieNode, NodeIdentifier> computed = ComputePostOrderIdentifiers(node, hash);
-        return computed[node];
+        Dictionary<NodeHandle, NodeIdentifier> computed = ComputePostOrderIdentifiers(node, store, hash);
+        return FoldInner(node, hash, computed);
     }
 
     //Folds a single inner node's identifier given a complete
@@ -454,14 +460,14 @@ public static class HypertrieOps
     private static NodeIdentifier FoldInner(
         HypertrieNode node,
         VeritasHash hash,
-        Dictionary<HypertrieNode, NodeIdentifier> childIdentifiers)
+        Dictionary<NodeHandle, NodeIdentifier> childIdentifiers)
     {
         NodeIdentifier id = NodeIdentifier.Empty;
         for(int position = 0; position < node.Depth; position++)
         {
-            foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
+            foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
             {
-                ulong childIdentifier = entry.Value is null ? LeafChildMarker : childIdentifiers[entry.Value].Value;
+                ulong childIdentifier = entry.Value.IsNone ? LeafChildMarker : childIdentifiers[entry.Value].Value;
                 id = id.Add(NodeEntryHashing.Default(hash, entry.Key, childIdentifier));
             }
         }
@@ -469,61 +475,77 @@ public static class HypertrieOps
     }
 
     //Looks up the identifier of `child` in `table` if supplied. A
-    //depth-1 leaf must never carry a non-null child, so reaching
+    //depth-1 leaf must never carry a non-None child, so reaching
     //this method without `table` populated for `child` is an
     //invariant violation; throw rather than silently substituting
     //a default mixer that would not be the one in use.
     private static ulong LookupChildIdentifier(
-        HypertrieNode child,
-        Dictionary<HypertrieNode, NodeIdentifier>? table)
+        NodeHandle child,
+        Dictionary<NodeHandle, NodeIdentifier>? table)
     {
         if(table is not null && table.TryGetValue(child, out NodeIdentifier known))
         {
             return known.Value;
         }
-        throw new InvalidOperationException("Depth-1 leaf carries a non-null child, which violates the leaf invariant.");
+        throw new InvalidOperationException("Depth-1 leaf carries a non-None child handle, which violates the leaf invariant.");
     }
 
     //Computes every reachable node's identifier in post-order so
     //that when each node is processed, its children's identifiers
-    //are already in the result dictionary. Delegates the post-order
-    //walk itself to IterativeTraversal.PostOrder, leaving only the
-    //per-node folding step in this method.
-    private static Dictionary<HypertrieNode, NodeIdentifier> ComputePostOrderIdentifiers(
+    //are already in the result dictionary. The walk operates on
+    //NodeHandle values; the adjacency dereferences each handle via
+    //the store to enumerate its children.
+    private static Dictionary<NodeHandle, NodeIdentifier> ComputePostOrderIdentifiers(
         HypertrieNode root,
+        NodeStore store,
         VeritasHash hash)
     {
-        Dictionary<HypertrieNode, NodeIdentifier> known = new(ReferenceEqualityComparer.Instance);
-        foreach(HypertrieNode node in IterativeTraversal.PostOrder(
-            seeds: [root],
-            keyOf: static node => node,
-            adjacency: EnumerateNonNullChildren))
+        //Seed the post-order walk from each non-None child of the
+        //root (the root itself has no handle in the store before
+        //interning, so its identifier is folded by the caller).
+        List<NodeHandle> seeds = [];
+        for(int position = 0; position < root.Depth; position++)
         {
+            foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(root.EdgeMaps[position]))
+            {
+                if(!entry.Value.IsNone)
+                {
+                    seeds.Add(entry.Value);
+                }
+            }
+        }
+
+        Dictionary<NodeHandle, NodeIdentifier> known = [];
+        foreach(NodeHandle handle in IterativeTraversal.PostOrder(
+            seeds: seeds,
+            adjacency: h => EnumerateNonNullChildHandles(h, store)))
+        {
+            HypertrieNode node = store.GetByHandle(handle);
             NodeIdentifier id = NodeIdentifier.Empty;
             for(int position = 0; position < node.Depth; position++)
             {
-                foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
+                foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
                 {
-                    ulong childIdentifier = entry.Value is null ? LeafChildMarker : known[entry.Value].Value;
+                    ulong childIdentifier = entry.Value.IsNone ? LeafChildMarker : known[entry.Value].Value;
                     id = id.Add(NodeEntryHashing.Default(hash, entry.Key, childIdentifier));
                 }
             }
-            known[node] = id;
+            known[handle] = id;
         }
         return known;
     }
 
-    //Adjacency for the post-order walk: yields every non-null child
-    //referenced from any of `node`'s edge maps. Static and free of
-    //captures so the delegate group can be passed without
-    //allocation.
-    private static IEnumerable<HypertrieNode> EnumerateNonNullChildren(HypertrieNode node)
+    //Adjacency for the post-order walk: yields every non-None
+    //child handle referenced from any of the node's edge maps.
+    //Closes over `store` so the delegate can dereference handles.
+    private static IEnumerable<NodeHandle> EnumerateNonNullChildHandles(NodeHandle handle, NodeStore store)
     {
+        HypertrieNode node = store.GetByHandle(handle);
         for(int position = 0; position < node.Depth; position++)
         {
-            foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
+            foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
             {
-                if(entry.Value is not null)
+                if(!entry.Value.IsNone)
                 {
                     yield return entry.Value;
                 }
@@ -571,10 +593,12 @@ public static class HypertrieOps
 
     private static IEnumerable<EncodedTriple> MatchCore(
         HypertrieNode root,
+        NodeStore store,
         TermId subject,
         TermId predicate,
         TermId @object)
     {
+        InlineKeyLookup inlineLookup = InlineKeyLookups.Scalar;
         Stack<MatchFrame> stack = new();
         stack.Push(new MatchFrame
         {
@@ -604,14 +628,14 @@ public static class HypertrieOps
             {
                 if(!chosenBound.IsNone)
                 {
-                    if(EdgeMap.TryGetChild(node.EdgeMaps[chosenEdgeMapIndex], chosenBound.Encoded, out _))
+                    if(EdgeMap.TryGetChild(in node.EdgeMaps[chosenEdgeMapIndex], chosenBound.Encoded, inlineLookup, out _))
                     {
                         yield return BuildTriple(frame, chosenPosition, chosenBound.Encoded);
                     }
                 }
                 else
                 {
-                    foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[chosenEdgeMapIndex]))
+                    foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(node.EdgeMaps[chosenEdgeMapIndex]))
                     {
                         yield return BuildTriple(frame, chosenPosition, entry.Key);
                     }
@@ -623,19 +647,21 @@ public static class HypertrieOps
 
             if(!chosenBound.IsNone)
             {
-                if(EdgeMap.TryGetChild(node.EdgeMaps[chosenEdgeMapIndex], chosenBound.Encoded, out HypertrieNode? child)
-                    && child is not null)
+                if(EdgeMap.TryGetChild(in node.EdgeMaps[chosenEdgeMapIndex], chosenBound.Encoded, inlineLookup, out NodeHandle childHandle)
+                    && !childHandle.IsNone)
                 {
+                    HypertrieNode child = store.GetByHandle(childHandle);
                     stack.Push(NewMatchFrame(frame, chosenPosition, chosenBound.Encoded, child, childPending));
                 }
             }
             else
             {
-                foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(node.EdgeMaps[chosenEdgeMapIndex]))
+                foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(node.EdgeMaps[chosenEdgeMapIndex]))
                 {
-                    if(entry.Value is not null)
+                    if(!entry.Value.IsNone)
                     {
-                        stack.Push(NewMatchFrame(frame, chosenPosition, entry.Key, entry.Value, childPending));
+                        HypertrieNode child = store.GetByHandle(entry.Value);
+                        stack.Push(NewMatchFrame(frame, chosenPosition, entry.Key, child, childPending));
                     }
                 }
             }

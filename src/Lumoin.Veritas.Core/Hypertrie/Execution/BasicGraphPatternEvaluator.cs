@@ -79,8 +79,7 @@ namespace Lumoin.Veritas.Core.Hypertrie.Execution;
 /// <para>
 /// <b>Self-joins.</b> Patterns with self-joins (the same
 /// variable in multiple positions of one pattern) are rejected
-/// at construction by the underlying iterator. A future batch
-/// lifts that restriction.
+/// at construction by the underlying iterator.
 /// </para>
 /// </remarks>
 [DebuggerDisplay("BasicGraphPatternEvaluator Patterns={query.Patterns.Count}")]
@@ -495,8 +494,10 @@ public sealed class BasicGraphPatternEvaluator
 
             //Match returns the canonical triple if the pattern
             //resolves; we only need existence.
+            HypertrieNode root = snapshot.Store.GetByHandle(snapshot.Root);
             IEnumerable<EncodedTriple> matches = HypertrieOps.Match(
-                snapshot.Root,
+                root,
+                snapshot.Store,
                 pattern.Subject.BoundTerm,
                 pattern.Predicate.BoundTerm,
                 pattern.Object.BoundTerm);

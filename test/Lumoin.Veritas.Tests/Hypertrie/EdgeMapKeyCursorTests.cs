@@ -21,7 +21,8 @@ internal sealed class EdgeMapKeyCursorTests
     public void InlineMapCursorVisitsTheSingleKeyThenEnds()
     {
         EdgeMap map = default;
-        EdgeMap.InsertOrReplace(ref map, 42U, null);
+        BuildPools pools = BuildPools.CreateDefault();
+        EdgeMap.InsertOrReplace(ref map, 42U, NodeHandle.None, pools, InlineKeyLookups.Scalar);
 
         EdgeMapKeyCursor cursor = new(in map);
 
@@ -37,12 +38,16 @@ internal sealed class EdgeMapKeyCursorTests
     public void SortedArrayCursorVisitsKeysInAscendingOrder()
     {
         EdgeMap map = default;
-        uint[] inputs = [50, 10, 30, 20, 40];
+        BuildPools pools = BuildPools.CreateDefault();
+        //Push past the 8-entry Inline boundary to materialise SortedArray.
+        uint[] inputs = [50, 10, 30, 20, 40, 5, 60, 25, 15];
 
         foreach(uint key in inputs)
         {
-            EdgeMap.InsertOrReplace(ref map, key, null);
+            EdgeMap.InsertOrReplace(ref map, key, NodeHandle.None, pools, InlineKeyLookups.Scalar);
         }
+
+        Assert.AreEqual(EdgeMapKind.SortedArray, map.Kind);
 
         EdgeMapKeyCursor cursor = new(in map);
         uint[] visited = new uint[inputs.Length];
@@ -96,10 +101,11 @@ internal sealed class EdgeMapKeyCursorTests
     public void SeekToFindsExactKey()
     {
         EdgeMap map = default;
+        BuildPools pools = BuildPools.CreateDefault();
 
         for(uint key = 0; key < 10; key++)
         {
-            EdgeMap.InsertOrReplace(ref map, key * 10, null);
+            EdgeMap.InsertOrReplace(ref map, key * 10, NodeHandle.None, pools, InlineKeyLookups.Scalar);
         }
 
         EdgeMapKeyCursor cursor = new(in map);
@@ -113,11 +119,12 @@ internal sealed class EdgeMapKeyCursorTests
     public void SeekToFindsFirstKeyAtOrAfterTarget()
     {
         EdgeMap map = default;
+        BuildPools pools = BuildPools.CreateDefault();
         uint[] keys = [10, 20, 30, 40, 50];
 
         foreach(uint key in keys)
         {
-            EdgeMap.InsertOrReplace(ref map, key, null);
+            EdgeMap.InsertOrReplace(ref map, key, NodeHandle.None, pools, InlineKeyLookups.Scalar);
         }
 
         EdgeMapKeyCursor cursor = new(in map);
@@ -131,8 +138,9 @@ internal sealed class EdgeMapKeyCursorTests
     public void SeekToBeyondLastKeyReachesAtEnd()
     {
         EdgeMap map = default;
-        EdgeMap.InsertOrReplace(ref map, 10U, null);
-        EdgeMap.InsertOrReplace(ref map, 20U, null);
+        BuildPools pools = BuildPools.CreateDefault();
+        EdgeMap.InsertOrReplace(ref map, 10U, NodeHandle.None, pools, InlineKeyLookups.Scalar);
+        EdgeMap.InsertOrReplace(ref map, 20U, NodeHandle.None, pools, InlineKeyLookups.Scalar);
 
         EdgeMapKeyCursor cursor = new(in map);
         cursor.SeekTo(99U);
@@ -144,9 +152,10 @@ internal sealed class EdgeMapKeyCursorTests
     public void SeekToWithTargetBelowCurrentIsNoOp()
     {
         EdgeMap map = default;
-        EdgeMap.InsertOrReplace(ref map, 10U, null);
-        EdgeMap.InsertOrReplace(ref map, 20U, null);
-        EdgeMap.InsertOrReplace(ref map, 30U, null);
+        BuildPools pools = BuildPools.CreateDefault();
+        EdgeMap.InsertOrReplace(ref map, 10U, NodeHandle.None, pools, InlineKeyLookups.Scalar);
+        EdgeMap.InsertOrReplace(ref map, 20U, NodeHandle.None, pools, InlineKeyLookups.Scalar);
+        EdgeMap.InsertOrReplace(ref map, 30U, NodeHandle.None, pools, InlineKeyLookups.Scalar);
 
         EdgeMapKeyCursor cursor = new(in map);
         cursor.MoveNext();
@@ -164,7 +173,8 @@ internal sealed class EdgeMapKeyCursorTests
     public void SeekToOnInlineMapWithMatchingKeyDoesNotAdvance()
     {
         EdgeMap map = default;
-        EdgeMap.InsertOrReplace(ref map, 7U, null);
+        BuildPools pools = BuildPools.CreateDefault();
+        EdgeMap.InsertOrReplace(ref map, 7U, NodeHandle.None, pools, InlineKeyLookups.Scalar);
 
         EdgeMapKeyCursor cursor = new(in map);
         cursor.SeekTo(7U);
@@ -177,7 +187,8 @@ internal sealed class EdgeMapKeyCursorTests
     public void SeekToOnInlineMapWithLargerTargetReachesEnd()
     {
         EdgeMap map = default;
-        EdgeMap.InsertOrReplace(ref map, 7U, null);
+        BuildPools pools = BuildPools.CreateDefault();
+        EdgeMap.InsertOrReplace(ref map, 7U, NodeHandle.None, pools, InlineKeyLookups.Scalar);
 
         EdgeMapKeyCursor cursor = new(in map);
         cursor.SeekTo(8U);
@@ -189,7 +200,8 @@ internal sealed class EdgeMapKeyCursorTests
     public void SeekToOnInlineMapWithSmallerTargetIsNoOp()
     {
         EdgeMap map = default;
-        EdgeMap.InsertOrReplace(ref map, 7U, null);
+        BuildPools pools = BuildPools.CreateDefault();
+        EdgeMap.InsertOrReplace(ref map, 7U, NodeHandle.None, pools, InlineKeyLookups.Scalar);
 
         EdgeMapKeyCursor cursor = new(in map);
         cursor.SeekTo(3U);
@@ -203,10 +215,11 @@ internal sealed class EdgeMapKeyCursorTests
     {
         const int total = 4096;
         EdgeMap map = default;
+        BuildPools pools = BuildPools.CreateDefault();
 
         for(uint key = 0; key < total; key++)
         {
-            EdgeMap.InsertOrReplace(ref map, key * 2, null);
+            EdgeMap.InsertOrReplace(ref map, key * 2, NodeHandle.None, pools, InlineKeyLookups.Scalar);
         }
 
         EdgeMapKeyCursor cursor = new(in map);
@@ -218,36 +231,38 @@ internal sealed class EdgeMapKeyCursorTests
     }
 
     [TestMethod]
-    public void CurrentChildIsNullForDepthOneLeafEntries()
+    public void CurrentChildIsNoneForDepthOneLeafEntries()
     {
         EdgeMap map = default;
-        EdgeMap.InsertOrReplace(ref map, 1U, null);
-        EdgeMap.InsertOrReplace(ref map, 2U, null);
+        BuildPools pools = BuildPools.CreateDefault();
+        EdgeMap.InsertOrReplace(ref map, 1U, NodeHandle.None, pools, InlineKeyLookups.Scalar);
+        EdgeMap.InsertOrReplace(ref map, 2U, NodeHandle.None, pools, InlineKeyLookups.Scalar);
 
         EdgeMapKeyCursor cursor = new(in map);
 
-        Assert.IsNull(cursor.CurrentChild);
+        Assert.IsTrue(cursor.CurrentChild.IsNone);
 
         cursor.MoveNext();
 
-        Assert.IsNull(cursor.CurrentChild);
+        Assert.IsTrue(cursor.CurrentChild.IsNone);
     }
 
     [TestMethod]
-    public void CurrentChildReturnsReferenceForInnerNodeEntries()
+    public void CurrentChildReturnsHandleForInnerNodeEntries()
     {
-        HypertrieNode child1 = new(2);
-        HypertrieNode child2 = new(2);
+        NodeHandle child1 = NodeHandle.FromEncoded(10);
+        NodeHandle child2 = NodeHandle.FromEncoded(20);
         EdgeMap map = default;
-        EdgeMap.InsertOrReplace(ref map, 1U, child1);
-        EdgeMap.InsertOrReplace(ref map, 2U, child2);
+        BuildPools pools = BuildPools.CreateDefault();
+        EdgeMap.InsertOrReplace(ref map, 1U, child1, pools, InlineKeyLookups.Scalar);
+        EdgeMap.InsertOrReplace(ref map, 2U, child2, pools, InlineKeyLookups.Scalar);
 
         EdgeMapKeyCursor cursor = new(in map);
 
-        Assert.AreSame(child1, cursor.CurrentChild);
+        Assert.AreEqual(child1, cursor.CurrentChild);
 
         cursor.MoveNext();
 
-        Assert.AreSame(child2, cursor.CurrentChild);
+        Assert.AreEqual(child2, cursor.CurrentChild);
     }
 }

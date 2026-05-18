@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.NQuads\Lumoin.Veritas.NQuads.csproj" />
   </ItemGroup>
 
 </Project>

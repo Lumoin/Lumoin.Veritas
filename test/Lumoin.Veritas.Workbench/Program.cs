@@ -1,6 +1,14 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
+using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Encoding;
+using Lumoin.Veritas.Core.Hypertrie;
+using Lumoin.Veritas.Core.Hypertrie.Storage;
+using Lumoin.Veritas.NQuads;
 
 namespace Lumoin.Veritas.Workbench;
 
@@ -19,21 +27,8 @@ namespace Lumoin.Veritas.Workbench;
 /// dotnet run -c Release --project test/Lumoin.Veritas.Workbench -- --profile-build
 /// dotnet run -c Release --project test/Lumoin.Veritas.Workbench -- --profile-query --duration 30
 /// dotnet run -c Release --project test/Lumoin.Veritas.Workbench -- --profile-build --duration 60 --triple-count 1000000
+/// dotnet run -c Release --project test/Lumoin.Veritas.Workbench -- --profile-edgemap-distribution path/to/data.nq
 /// </code>
-/// or, with <c>dotnet-trace</c> attached:
-/// <code>
-/// dotnet build -c Release test/Lumoin.Veritas.Workbench
-/// dotnet-trace collect --format Speedscope --output build-soak.nettrace -- ^
-///   dotnet test/Lumoin.Veritas.Workbench/bin/Release/net10.0/Lumoin.Veritas.Workbench.dll --profile-build
-/// </code>
-/// </para>
-/// <para>
-/// <b>Future shape.</b> The current argv-walk is suitable for two
-/// commands plus optional flags. When the scenario set grows past
-/// roughly four commands, or sub-commands appear, swap in
-/// <c>System.CommandLine</c> and reconstruct the root command shape
-/// in a test helper analogous to the <c>BuildTestableRootCommand</c>
-/// pattern. Out of scope for this batch.
 /// </para>
 /// </remarks>
 internal static class Program
@@ -47,6 +42,8 @@ internal static class Program
     /// <see cref="Console.Error"/>; results to
     /// <see cref="Console.Out"/>.
     /// </summary>
+    /// <param name="args">Argument vector from the OS.</param>
+    /// <returns>Exit code; 0 on success.</returns>
     public static async Task<int> Main(string[] args)
     {
         if(args.Length == 0 || IsHelpRequest(args[0]))
@@ -56,18 +53,18 @@ internal static class Program
             return 0;
         }
 
-        if(!TryParseOptions(args, out TimeSpan duration, out int tripleCount, out string? error))
-        {
-            await Console.Error.WriteLineAsync(error).ConfigureAwait(false);
-            PrintUsage(Console.Error);
-
-            return 1;
-        }
-
         switch(args[0])
         {
             case "--profile-build":
             {
+                if(!TryParseSoakOptions(args, out TimeSpan duration, out int tripleCount, out string? error))
+                {
+                    await Console.Error.WriteLineAsync(error).ConfigureAwait(false);
+                    PrintUsage(Console.Error);
+
+                    return 1;
+                }
+
                 await Console.Out.WriteLineAsync($"[soak] hypertrie build, {tripleCount:N0} triples, target duration {duration.TotalSeconds:F0}s").ConfigureAwait(false);
                 SoakResult result = await HypertrieSoak.RunBuildSoakAsync(duration, tripleCount).ConfigureAwait(false);
                 await Console.Out.WriteLineAsync(FormatBuildResult(result, tripleCount)).ConfigureAwait(false);
@@ -76,11 +73,39 @@ internal static class Program
             }
             case "--profile-query":
             {
+                if(!TryParseSoakOptions(args, out TimeSpan duration, out int tripleCount, out string? error))
+                {
+                    await Console.Error.WriteLineAsync(error).ConfigureAwait(false);
+                    PrintUsage(Console.Error);
+
+                    return 1;
+                }
+
                 await Console.Out.WriteLineAsync($"[soak] hypertrie query, {tripleCount:N0} triples, target duration {duration.TotalSeconds:F0}s").ConfigureAwait(false);
                 SoakResult result = await HypertrieSoak.RunQuerySoakAsync(duration, tripleCount).ConfigureAwait(false);
                 await Console.Out.WriteLineAsync(FormatQueryResult(result)).ConfigureAwait(false);
 
                 return 0;
+            }
+            case "--profile-edgemap-distribution":
+            {
+                if(args.Length < 2)
+                {
+                    await Console.Error.WriteLineAsync("--profile-edgemap-distribution requires a path argument.").ConfigureAwait(false);
+                    PrintUsage(Console.Error);
+
+                    return 1;
+                }
+
+                string corpusPath = args[1];
+                if(!File.Exists(corpusPath))
+                {
+                    await Console.Error.WriteLineAsync($"File not found: {corpusPath}").ConfigureAwait(false);
+
+                    return 1;
+                }
+
+                return await RunEdgeMapDistributionAsync(corpusPath, CancellationToken.None).ConfigureAwait(false);
             }
             default:
             {
@@ -97,7 +122,10 @@ internal static class Program
         return arg == "--help" || arg == "-h" || arg == "/?";
     }
 
-    private static bool TryParseOptions(
+    //Parses --duration and --triple-count flags from the soak-scenario
+    //argv. Returns false when an unknown flag is present so the
+    //caller surfaces the error to stderr and prints usage.
+    private static bool TryParseSoakOptions(
         string[] args,
         out TimeSpan duration,
         out int tripleCount,
@@ -163,6 +191,41 @@ internal static class Program
         return true;
     }
 
+    //Loads the NQuads corpus, builds the hypertrie, surveys
+    //EdgeMap distribution, and prints the histogram.
+    private static async Task<int> RunEdgeMapDistributionAsync(string corpusPath, CancellationToken cancellationToken)
+    {
+        await Console.Out.WriteLineAsync($"[soak] edgemap distribution, corpus {corpusPath}").ConfigureAwait(false);
+
+        TermDictionary dictionary = new();
+        List<EncodedTriple> triples = [];
+
+        FileStream stream = File.OpenRead(corpusPath);
+        try
+        {
+            await foreach(Quad quad in NQuadsReader.ReadAsync(stream, pool: null, cancellationToken).ConfigureAwait(false))
+            {
+                TermId subject = dictionary.GetOrAdd(quad.Subject);
+                TermId predicate = dictionary.GetOrAdd(quad.Predicate);
+                TermId @object = dictionary.GetOrAdd(quad.Object);
+                triples.Add(new EncodedTriple(subject, predicate, @object));
+            }
+        }
+        finally
+        {
+            await stream.DisposeAsync().ConfigureAwait(false);
+        }
+
+        await Console.Out.WriteLineAsync($"[soak] loaded {triples.Count:N0} triples, {dictionary.Count:N0} distinct terms").ConfigureAwait(false);
+
+        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(triples, VeritasHashing.Default, cancellationToken).ConfigureAwait(false);
+        EdgeMapDistributionResult result = EdgeMapDistribution.Survey(store.Snapshot.Store, store.Snapshot.Root);
+
+        await Console.Out.WriteLineAsync(FormatDistributionResult(result)).ConfigureAwait(false);
+
+        return 0;
+    }
+
     private static string FormatBuildResult(SoakResult result, int tripleCount)
     {
         double secs = result.Elapsed.TotalSeconds;
@@ -182,13 +245,34 @@ internal static class Program
             $"= {iterPerSec:N0} iter/s ({result.AuxiliaryCount:N0} total solutions emitted)";
     }
 
-    private static void PrintUsage(System.IO.TextWriter writer)
+    private static string FormatDistributionResult(EdgeMapDistributionResult result)
+    {
+        System.Text.StringBuilder sb = new();
+        sb.AppendLine(CultureInfo.InvariantCulture, $"[soak] total edgemaps: {result.TotalEdgeMaps:N0}");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"[soak]   Empty:        {result.EmptyCount:N0}");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"[soak]   Inline(1-8):  {result.InlineCount:N0}");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"[soak]   SortedArray:  {result.SortedArrayCount:N0}");
+
+        if(result.SortedArrayCount > 0)
+        {
+            sb.AppendLine("[soak]   SortedArray histogram (bucket lower-bound: count):");
+            foreach(KeyValuePair<int, int> bucket in result.SortedArrayCountHistogram)
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture, $"[soak]     {bucket.Key,5}+ : {bucket.Value:N0}");
+            }
+        }
+
+        return sb.ToString().TrimEnd();
+    }
+
+    private static void PrintUsage(TextWriter writer)
     {
         writer.WriteLine("Lumoin.Veritas.Workbench");
         writer.WriteLine();
         writer.WriteLine("Usage:");
         writer.WriteLine("  workbench --profile-build [--duration <seconds>] [--triple-count <N>]");
         writer.WriteLine("  workbench --profile-query [--duration <seconds>] [--triple-count <N>]");
+        writer.WriteLine("  workbench --profile-edgemap-distribution <path-to-nquads-file>");
         writer.WriteLine("  workbench --help");
         writer.WriteLine();
         writer.WriteLine("Defaults:");

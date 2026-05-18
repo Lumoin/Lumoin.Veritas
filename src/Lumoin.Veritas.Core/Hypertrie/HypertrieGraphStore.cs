@@ -75,9 +75,9 @@ namespace Lumoin.Veritas.Core.Hypertrie;
 /// <see cref="NodeIdentifier.Empty"/> to the new root identifier.
 /// A build against a store whose journal head is non-empty fails
 /// with <see cref="EditSessionConcurrencyException"/> — initial
-/// builds are first-entry-only, and subsequent state changes go
-/// through edit sessions in a future batch. Stores constructed
-/// without a journal write no entries and are unaffected.
+/// builds are first-entry-only; subsequent state changes go
+/// through edit sessions. Stores constructed without a journal
+/// write no entries and are unaffected.
 /// </para>
 /// <para>
 /// <b>Async surface.</b> Building requires entering the
@@ -135,11 +135,12 @@ public sealed class HypertrieGraphStore
         //disposes it. Setting the local to null on the success path
         //is the explicit signal that ownership has been transferred.
         NodeStore? store = null;
+        BuildPools pools = BuildPools.CreateDefault();
 
         try
         {
-            store = new NodeStore(hash);
-            HypertrieGraphStore result = await BuildAsync(triples, store, cancellationToken).ConfigureAwait(false);
+            store = new NodeStore(hash, pools.NodePool);
+            HypertrieGraphStore result = await BuildAsync(triples, store, pools, cancellationToken).ConfigureAwait(false);
             store = null;
 
             return result;
@@ -163,9 +164,31 @@ public sealed class HypertrieGraphStore
     /// <returns>A new immutable graph store.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="triples"/> or <paramref name="store"/> is <c>null</c>.</exception>
     /// <exception cref="EditSessionConcurrencyException"><paramref name="store"/> has a journal whose head is not <see cref="NodeIdentifier.Empty"/>; subsequent state changes go through edit sessions, not <see cref="BuildAsync(IEnumerable{EncodedTriple}, NodeStore, CancellationToken)"/>.</exception>
+    public static ValueTask<HypertrieGraphStore> BuildAsync(
+        IEnumerable<EncodedTriple> triples,
+        NodeStore store,
+        CancellationToken cancellationToken = default)
+    {
+        return BuildAsync(triples, store, BuildPools.CreateDefault(), cancellationToken);
+    }
+
+    /// <summary>
+    /// Builds a new <see cref="HypertrieGraphStore"/> from the
+    /// given triples, interning every node it produces through
+    /// <paramref name="store"/> and using <paramref name="pools"/>
+    /// for EdgeMap-tier buffer rentals.
+    /// </summary>
+    /// <param name="triples">The triples to index.</param>
+    /// <param name="store">The intern table to use.</param>
+    /// <param name="pools">The pools bundle.</param>
+    /// <param name="cancellationToken">A token that aborts the build at any per-step check.</param>
+    /// <returns>A new immutable graph store.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="triples"/> or <paramref name="store"/> is <c>null</c>.</exception>
+    /// <exception cref="EditSessionConcurrencyException"><paramref name="store"/> has a journal whose head is not <see cref="NodeIdentifier.Empty"/>; subsequent state changes go through edit sessions.</exception>
     public static async ValueTask<HypertrieGraphStore> BuildAsync(
         IEnumerable<EncodedTriple> triples,
         NodeStore store,
+        BuildPools pools,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(triples);
@@ -193,7 +216,7 @@ public sealed class HypertrieGraphStore
         SharedScope scope = await store.EnterSharedScopeAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            (HypertrieNode root, NodeIdentifier rootId) = HypertrieOps.BuildBottomUpWithIdentifier(distinctSorted, store);
+            (NodeHandle rootHandle, NodeIdentifier rootId) = HypertrieOps.BuildBottomUpWithIdentifier(distinctSorted, store, pools);
 
             //Journal append (when the store has a journal). The OCC
             //contract requires a parent of NodeIdentifier.Empty; a
@@ -208,7 +231,7 @@ public sealed class HypertrieGraphStore
                 await store.JournalAppend(entry, NodeIdentifier.Empty, cancellationToken).ConfigureAwait(false);
             }
 
-            HypertrieSnapshot snapshot = new(store, root, rootId);
+            HypertrieSnapshot snapshot = new(store, rootHandle, rootId);
 
             return new HypertrieGraphStore(snapshot, distinctSorted.Count);
         }
@@ -254,7 +277,8 @@ public sealed class HypertrieGraphStore
     /// </remarks>
     public IEnumerable<EncodedTriple> Match(TermId subject, TermId predicate, TermId @object)
     {
-        return HypertrieOps.Match(Snapshot.Root, subject, predicate, @object);
+        HypertrieNode root = Snapshot.Store.GetByHandle(Snapshot.Root);
+        return HypertrieOps.Match(root, Snapshot.Store, subject, predicate, @object);
     }
 
     /// <summary>

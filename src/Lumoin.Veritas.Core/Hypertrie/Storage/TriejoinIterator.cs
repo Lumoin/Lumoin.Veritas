@@ -65,8 +65,8 @@ namespace Lumoin.Veritas.Core.Hypertrie.Storage;
 /// </para>
 /// <para>
 /// <b>Self-joins.</b> A pattern in which the same variable
-/// appears in two or more positions is currently rejected at
-/// construction time. A later batch lifts that restriction.
+/// appears in two or more positions is rejected at
+/// construction time.
 /// </para>
 /// <para>
 /// <b>Tracing.</b> When a <see cref="TraceHandler{TEvent}"/> is
@@ -340,7 +340,7 @@ public sealed class TriejoinIterator: IDisposable
         EdgeMap edgeMap = currentFrame.Node.EdgeMaps[positionInRemaining];
         uint rawValue = value.Encoded;
 
-        if(!EdgeMap.TryGetChild(in edgeMap, rawValue, out HypertrieNode? child))
+        if(!EdgeMap.TryGetChild(in edgeMap, rawValue, InlineKeyLookups.Scalar, out NodeHandle childHandle))
         {
             return false;
         }
@@ -362,10 +362,9 @@ public sealed class TriejoinIterator: IDisposable
             return true;
         }
 
-        if(child is null)
-        {
-            throw new InvalidOperationException("Non-leaf edge map carries a null child reference; this indicates an invariant violation in the hypertrie.");
-        }
+        Debug.Assert(!childHandle.IsNone, "depth-2 or depth-3 descent yielded NodeHandle.None; invariant violation.");
+
+        HypertrieNode child = Snapshot.Store.GetByHandle(childHandle);
 
         //Non-leaf descent: push a frame for the child node with a
         //fresh cursor over the appropriate edge map for the next
@@ -546,7 +545,7 @@ public sealed class TriejoinIterator: IDisposable
     //descent will proceed (or constructionAtEnd is set).
     private void InitialiseFromBoundPositions(CancellationToken cancellationToken)
     {
-        HypertrieNode current = Snapshot.Root;
+        HypertrieNode current = Snapshot.Store.GetByHandle(Snapshot.Root);
         int[] remainingPositions = [PositionSubject, PositionPredicate, PositionObject];
 
         for(int rdfPosition = 0; rdfPosition < 3; rdfPosition++)
@@ -570,7 +569,7 @@ public sealed class TriejoinIterator: IDisposable
             uint boundValue = slot.BoundTerm.Encoded;
             EdgeMap edgeMap = current.EdgeMaps[positionInRemaining];
 
-            if(!EdgeMap.TryGetChild(in edgeMap, boundValue, out HypertrieNode? child))
+            if(!EdgeMap.TryGetChild(in edgeMap, boundValue, InlineKeyLookups.Scalar, out NodeHandle childHandle))
             {
                 constructionAtEnd = true;
 
@@ -588,12 +587,9 @@ public sealed class TriejoinIterator: IDisposable
                 return;
             }
 
-            if(child is null)
-            {
-                throw new InvalidOperationException("Non-leaf edge map carries a null child reference; this indicates an invariant violation in the hypertrie.");
-            }
+            Debug.Assert(!childHandle.IsNone, "depth-2 or depth-3 descent yielded NodeHandle.None; invariant violation.");
 
-            current = child;
+            current = Snapshot.Store.GetByHandle(childHandle);
             remainingPositions = WithoutAt(remainingPositions, positionInRemaining);
         }
 

@@ -8,6 +8,10 @@ internal sealed class EdgeMapTests
 {
     public TestContext TestContext { get; set; } = null!;
 
+    //A non-None stub child handle for tests that exercise EdgeMap
+    //mechanics without caring about resolvability via a real store.
+    private static NodeHandle StubChild { get; } = NodeHandle.FromEncoded(1);
+
     [TestMethod]
     public void EmptyMapHasZeroCount()
     {
@@ -21,57 +25,65 @@ internal sealed class EdgeMapTests
     public void FirstInsertPromotesEmptyToInline()
     {
         EdgeMap map = default;
-        HypertrieNode child = new(2);
+        BuildPools pools = BuildPools.CreateDefault();
 
-        EdgeMap.InsertOrReplace(ref map, 42U, child);
+        EdgeMap.InsertOrReplace(ref map, 42U, StubChild, pools, InlineKeyLookups.Scalar);
 
         Assert.AreEqual(EdgeMapKind.Inline, map.Kind);
         Assert.AreEqual(1, EdgeMap.Count(in map));
-        Assert.AreEqual(42U, map.InlineKey);
-        Assert.AreSame(child, map.InlineChild);
+        Assert.AreEqual(42U, EdgeMap.InlineKeysSpan(in map)[0]);
+        Assert.AreEqual(StubChild, EdgeMap.InlineChildrenSpan(in map)[0]);
     }
 
     [TestMethod]
     public void RepeatedInsertOnInlineReplacesChild()
     {
         EdgeMap map = default;
-        HypertrieNode first = new(2);
-        HypertrieNode second = new(2);
+        BuildPools pools = BuildPools.CreateDefault();
+        NodeHandle first = NodeHandle.FromEncoded(1);
+        NodeHandle second = NodeHandle.FromEncoded(2);
 
-        EdgeMap.InsertOrReplace(ref map, 42U, first);
-        EdgeMap.InsertOrReplace(ref map, 42U, second);
+        EdgeMap.InsertOrReplace(ref map, 42U, first, pools, InlineKeyLookups.Scalar);
+        EdgeMap.InsertOrReplace(ref map, 42U, second, pools, InlineKeyLookups.Scalar);
 
         Assert.AreEqual(EdgeMapKind.Inline, map.Kind);
         Assert.AreEqual(1, EdgeMap.Count(in map));
-        Assert.AreSame(second, map.InlineChild);
+        Assert.AreEqual(second, EdgeMap.InlineChildrenSpan(in map)[0]);
     }
 
     [TestMethod]
-    public void SecondDistinctInsertPromotesInlineToSortedArray()
+    public void SecondDistinctInsertKeepsMapInline()
     {
+        //Inline tier now holds up to InlineCapacity (8) entries.
+        //A second distinct insert no longer promotes to SortedArray.
         EdgeMap map = default;
-        HypertrieNode first = new(2);
-        HypertrieNode second = new(2);
+        BuildPools pools = BuildPools.CreateDefault();
+        NodeHandle first = NodeHandle.FromEncoded(1);
+        NodeHandle second = NodeHandle.FromEncoded(2);
 
-        EdgeMap.InsertOrReplace(ref map, 10U, first);
-        EdgeMap.InsertOrReplace(ref map, 5U, second);
+        EdgeMap.InsertOrReplace(ref map, 10U, first, pools, InlineKeyLookups.Scalar);
+        EdgeMap.InsertOrReplace(ref map, 5U, second, pools, InlineKeyLookups.Scalar);
 
-        Assert.AreEqual(EdgeMapKind.SortedArray, map.Kind);
+        Assert.AreEqual(EdgeMapKind.Inline, map.Kind);
         Assert.AreEqual(2, EdgeMap.Count(in map));
-        //Inline fields are zeroed on promotion.
-        Assert.AreEqual(0U, map.InlineKey);
-        Assert.IsNull(map.InlineChild);
+
+        //Inline tier maintains ascending key order — 5 then 10.
+        ReadOnlySpan<uint> keys = EdgeMap.InlineKeysSpan(in map);
+        Assert.AreEqual(5U, keys[0]);
+        Assert.AreEqual(10U, keys[1]);
     }
 
     [TestMethod]
     public void SortedArrayKeepsKeysInAscendingOrder()
     {
         EdgeMap map = default;
+        BuildPools pools = BuildPools.CreateDefault();
+        //Push past the 8-entry Inline boundary so the map is SortedArray.
         uint[] inputs = [50, 10, 30, 20, 40, 5, 60, 25, 15, 35];
 
         foreach(uint key in inputs)
         {
-            EdgeMap.InsertOrReplace(ref map, key, null);
+            EdgeMap.InsertOrReplace(ref map, key, NodeHandle.None, pools, InlineKeyLookups.Scalar);
         }
 
         Assert.AreEqual(EdgeMapKind.SortedArray, map.Kind);
@@ -86,17 +98,18 @@ internal sealed class EdgeMapTests
     public void SortedArrayBinarySearchFindsAllInsertedKeys()
     {
         EdgeMap map = default;
+        BuildPools pools = BuildPools.CreateDefault();
         uint[] inputs = [50, 10, 30, 20, 40, 5, 60, 25, 15, 35];
 
         foreach(uint key in inputs)
         {
-            EdgeMap.InsertOrReplace(ref map, key, null);
+            EdgeMap.InsertOrReplace(ref map, key, NodeHandle.None, pools, InlineKeyLookups.Scalar);
         }
 
         foreach(uint key in inputs)
         {
             Assert.IsTrue(
-                EdgeMap.TryGetChild(in map, key, out _),
+                EdgeMap.TryGetChild(in map, key, InlineKeyLookups.Scalar, out _),
                 $"Expected key {key} to be present in the SortedArray map.");
         }
     }
@@ -105,33 +118,41 @@ internal sealed class EdgeMapTests
     public void SortedArrayReplaceKeepsCountStable()
     {
         EdgeMap map = default;
-        EdgeMap.InsertOrReplace(ref map, 10U, new HypertrieNode(2));
-        EdgeMap.InsertOrReplace(ref map, 20U, new HypertrieNode(2));
-        Assert.AreEqual(EdgeMapKind.SortedArray, map.Kind);
+        BuildPools pools = BuildPools.CreateDefault();
 
-        HypertrieNode replacement = new(2);
-        EdgeMap.InsertOrReplace(ref map, 10U, replacement);
+        //Push past the 8-entry Inline boundary so the map is SortedArray.
+        for(uint k = 1; k <= 9; k++)
+        {
+            EdgeMap.InsertOrReplace(ref map, k, NodeHandle.FromEncoded(k), pools, InlineKeyLookups.Scalar);
+        }
+        Assert.AreEqual(EdgeMapKind.SortedArray, map.Kind);
+        int countBefore = EdgeMap.Count(in map);
+
+        NodeHandle replacement = NodeHandle.FromEncoded(99);
+        EdgeMap.InsertOrReplace(ref map, 5U, replacement, pools, InlineKeyLookups.Scalar);
 
         Assert.AreEqual(EdgeMapKind.SortedArray, map.Kind);
-        Assert.AreEqual(2, EdgeMap.Count(in map));
-        Assert.IsTrue(EdgeMap.TryGetChild(in map, 10U, out HypertrieNode? actual));
-        Assert.AreSame(replacement, actual);
+        Assert.AreEqual(countBefore, EdgeMap.Count(in map));
+        Assert.IsTrue(EdgeMap.TryGetChild(in map, 5U, InlineKeyLookups.Scalar, out NodeHandle actual));
+        Assert.AreEqual(replacement, actual);
     }
 
     [TestMethod]
     public void SortedArrayGrowsBeyondInitialCapacity()
     {
         EdgeMap map = default;
+        BuildPools pools = BuildPools.CreateDefault();
 
-        //SortedArrayInitialCapacity is 4 internally; pushing 8 entries forces at least one growth.
-        for(uint key = 0; key < 8; key++)
+        //Push past the 8-entry Inline boundary, then far enough to
+        //force at least one SortedArray growth.
+        for(uint key = 0; key < 32; key++)
         {
-            EdgeMap.InsertOrReplace(ref map, key, null);
+            EdgeMap.InsertOrReplace(ref map, key, NodeHandle.None, pools, InlineKeyLookups.Scalar);
         }
 
         Assert.AreEqual(EdgeMapKind.SortedArray, map.Kind);
-        Assert.AreEqual(8, EdgeMap.Count(in map));
-        Assert.IsLessThanOrEqualTo(map.SortedKeys!.Length, map.SortedCount);
+        Assert.AreEqual(32, EdgeMap.Count(in map));
+        Assert.AreEqual(32, map.SortedCount);
     }
 
     [TestMethod]
@@ -144,9 +165,10 @@ internal sealed class EdgeMapTests
         //doubling.
         const int total = 4096;
         EdgeMap map = default;
+        BuildPools pools = BuildPools.CreateDefault();
         for(uint key = 0; key < total; key++)
         {
-            EdgeMap.InsertOrReplace(ref map, key, null);
+            EdgeMap.InsertOrReplace(ref map, key, NodeHandle.None, pools, InlineKeyLookups.Scalar);
         }
 
         Assert.AreEqual(EdgeMapKind.SortedArray, map.Kind);
@@ -158,15 +180,16 @@ internal sealed class EdgeMapTests
     {
         const int total = 4096;
         EdgeMap map = default;
+        BuildPools pools = BuildPools.CreateDefault();
         for(uint key = 0; key < total; key++)
         {
-            EdgeMap.InsertOrReplace(ref map, key, null);
+            EdgeMap.InsertOrReplace(ref map, key, NodeHandle.None, pools, InlineKeyLookups.Scalar);
         }
 
         for(uint key = 0; key < total; key++)
         {
             Assert.IsTrue(
-                EdgeMap.TryGetChild(in map, key, out _),
+                EdgeMap.TryGetChild(in map, key, InlineKeyLookups.Scalar, out _),
                 $"Expected key {key} to be present at high cardinality.");
         }
     }
@@ -179,19 +202,20 @@ internal sealed class EdgeMapTests
         //insertAt = 0 and shifts the entire current contents up.
         const int total = 1024;
         EdgeMap map = default;
+        BuildPools pools = BuildPools.CreateDefault();
         for(uint key = total; key > 0; key--)
         {
-            EdgeMap.InsertOrReplace(ref map, key - 1, null);
+            EdgeMap.InsertOrReplace(ref map, key - 1, NodeHandle.None, pools, InlineKeyLookups.Scalar);
         }
 
         Assert.AreEqual(EdgeMapKind.SortedArray, map.Kind);
         bool hasPrevious = false;
         uint previousKey = 0;
-        foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(map))
+        foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(map))
         {
             if(hasPrevious)
             {
-                Assert.IsLessThan(entry.Key, previousKey, $"SortedArray order violated at key {entry.Key}; previous key was {previousKey}.");
+                Assert.IsGreaterThan(previousKey, entry.Key, $"SortedArray order violated at key {entry.Key}; previous key was {previousKey}.");
             }
 
             hasPrevious = true;
@@ -204,23 +228,24 @@ internal sealed class EdgeMapTests
     {
         EdgeMap map = default;
 
-        bool found = EdgeMap.TryGetChild(in map, 0U, out HypertrieNode? child);
+        bool found = EdgeMap.TryGetChild(in map, 0U, InlineKeyLookups.Scalar, out NodeHandle child);
 
         Assert.IsFalse(found);
-        Assert.IsNull(child);
+        Assert.IsTrue(child.IsNone);
     }
 
     [TestMethod]
     public void TryGetChildOnInlineMapDistinguishesPresentFromAbsent()
     {
         EdgeMap map = default;
-        HypertrieNode node = new(2);
-        EdgeMap.InsertOrReplace(ref map, 7U, node);
+        BuildPools pools = BuildPools.CreateDefault();
+        NodeHandle node = NodeHandle.FromEncoded(42);
+        EdgeMap.InsertOrReplace(ref map, 7U, node, pools, InlineKeyLookups.Scalar);
 
-        Assert.IsTrue(EdgeMap.TryGetChild(in map, 7U, out HypertrieNode? hit));
-        Assert.AreSame(node, hit);
-        Assert.IsFalse(EdgeMap.TryGetChild(in map, 8U, out HypertrieNode? miss));
-        Assert.IsNull(miss);
+        Assert.IsTrue(EdgeMap.TryGetChild(in map, 7U, InlineKeyLookups.Scalar, out NodeHandle hit));
+        Assert.AreEqual(node, hit);
+        Assert.IsFalse(EdgeMap.TryGetChild(in map, 8U, InlineKeyLookups.Scalar, out NodeHandle miss));
+        Assert.IsTrue(miss.IsNone);
     }
 
     [TestMethod]
@@ -232,29 +257,32 @@ internal sealed class EdgeMapTests
     }
 
     [TestMethod]
-    public void DepthOneLeavesStoreNullChildAsPresenceMarker()
+    public void DepthOneLeavesStoreNoneChildAsPresenceMarker()
     {
         EdgeMap map = default;
+        BuildPools pools = BuildPools.CreateDefault();
 
-        EdgeMap.InsertOrReplace(ref map, 100U, null);
-        EdgeMap.InsertOrReplace(ref map, 200U, null);
-        EdgeMap.InsertOrReplace(ref map, 150U, null);
+        EdgeMap.InsertOrReplace(ref map, 100U, NodeHandle.None, pools, InlineKeyLookups.Scalar);
+        EdgeMap.InsertOrReplace(ref map, 200U, NodeHandle.None, pools, InlineKeyLookups.Scalar);
+        EdgeMap.InsertOrReplace(ref map, 150U, NodeHandle.None, pools, InlineKeyLookups.Scalar);
 
-        Assert.AreEqual(EdgeMapKind.SortedArray, map.Kind);
-        Assert.IsTrue(EdgeMap.TryGetChild(in map, 100U, out HypertrieNode? c1));
-        Assert.IsNull(c1);
-        Assert.IsTrue(EdgeMap.TryGetChild(in map, 150U, out HypertrieNode? c2));
-        Assert.IsNull(c2);
-        Assert.IsTrue(EdgeMap.TryGetChild(in map, 200U, out HypertrieNode? c3));
-        Assert.IsNull(c3);
+        //Three entries still fit in Inline (capacity 8).
+        Assert.AreEqual(EdgeMapKind.Inline, map.Kind);
+        Assert.IsTrue(EdgeMap.TryGetChild(in map, 100U, InlineKeyLookups.Scalar, out NodeHandle c1));
+        Assert.IsTrue(c1.IsNone);
+        Assert.IsTrue(EdgeMap.TryGetChild(in map, 150U, InlineKeyLookups.Scalar, out NodeHandle c2));
+        Assert.IsTrue(c2.IsNone);
+        Assert.IsTrue(EdgeMap.TryGetChild(in map, 200U, InlineKeyLookups.Scalar, out NodeHandle c3));
+        Assert.IsTrue(c3.IsNone);
     }
 
     [TestMethod]
     public void EqualMapsCompareEqualOnValueAndReferenceFields()
     {
         EdgeMap map = default;
-        HypertrieNode child = new(2);
-        EdgeMap.InsertOrReplace(ref map, 1U, child);
+        BuildPools pools = BuildPools.CreateDefault();
+        NodeHandle child = NodeHandle.FromEncoded(7);
+        EdgeMap.InsertOrReplace(ref map, 1U, child, pools, InlineKeyLookups.Scalar);
         EdgeMap copy = map;
 
         Assert.IsTrue(map.Equals(copy));
@@ -269,14 +297,63 @@ internal sealed class EdgeMapTests
         //distinct backing arrays and therefore compare unequal — by
         //design, equality is reference-based on the heap fields.
         EdgeMap left = default;
-        EdgeMap.InsertOrReplace(ref left, 1U, null);
-        EdgeMap.InsertOrReplace(ref left, 2U, null);
-
         EdgeMap right = default;
-        EdgeMap.InsertOrReplace(ref right, 1U, null);
-        EdgeMap.InsertOrReplace(ref right, 2U, null);
+        BuildPools leftPools = BuildPools.CreateDefault();
+        BuildPools rightPools = BuildPools.CreateDefault();
+
+        //Push past the 8-entry Inline boundary so both maps are SortedArray.
+        for(uint k = 1; k <= 9; k++)
+        {
+            EdgeMap.InsertOrReplace(ref left, k, NodeHandle.None, leftPools, InlineKeyLookups.Scalar);
+            EdgeMap.InsertOrReplace(ref right, k, NodeHandle.None, rightPools, InlineKeyLookups.Scalar);
+        }
+        Assert.AreEqual(EdgeMapKind.SortedArray, left.Kind);
+        Assert.AreEqual(EdgeMapKind.SortedArray, right.Kind);
 
         Assert.IsFalse(left.Equals(right));
         Assert.IsTrue(left != right);
+    }
+
+    [TestMethod]
+    public void InlineTierGrowsToEightThenPromotesToSortedArray()
+    {
+        EdgeMap map = default;
+        BuildPools pools = BuildPools.CreateDefault();
+
+        for(uint key = 1; key <= 8; key++)
+        {
+            EdgeMap.InsertOrReplace(ref map, key, NodeHandle.None, pools, InlineKeyLookups.Scalar);
+            Assert.AreEqual(EdgeMapKind.Inline, map.Kind);
+        }
+
+        EdgeMap.InsertOrReplace(ref map, 9, NodeHandle.None, pools, InlineKeyLookups.Scalar);
+        Assert.AreEqual(EdgeMapKind.SortedArray, map.Kind);
+        Assert.AreEqual(9, EdgeMap.Count(in map));
+
+        //All 9 keys present in ascending order.
+        ReadOnlySpan<uint> keys = EdgeMap.SortedKeysSpan(in map);
+        for(int i = 0; i < 9; i++)
+        {
+            Assert.AreEqual((uint)(i + 1), keys[i]);
+        }
+    }
+
+    [TestMethod]
+    public void InlineKeyLookupDelegateIsInvokedForInlineTier()
+    {
+        EdgeMap map = default;
+        BuildPools pools = BuildPools.CreateDefault();
+        int invocationCount = 0;
+        int RecordingLookup(ReadOnlySpan<uint> keys, uint needle)
+        {
+            invocationCount++;
+            return InlineKeyLookups.Scalar(keys, needle);
+        }
+
+        EdgeMap.InsertOrReplace(ref map, 42u, NodeHandle.None, pools, RecordingLookup);
+        int before = invocationCount;
+
+        EdgeMap.TryGetChild(in map, 42u, RecordingLookup, out _);
+        Assert.IsGreaterThan(before, invocationCount);
     }
 }
