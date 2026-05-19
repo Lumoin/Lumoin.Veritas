@@ -99,9 +99,17 @@ internal static class HypertrieSoak
         while(sw.Elapsed < duration)
         {
             HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(triples, VeritasHashing.Default).ConfigureAwait(false);
-            //Touch the store reference so the JIT cannot eliminate
-            //the call as dead code.
-            _ = store;
+            //The parameterless BuildAsync overload creates a fresh
+            //NodeStore and transfers ownership to the returned graph
+            //store via its snapshot. HypertrieGraphStore exposes no
+            //direct Dispose, so the loop reaches through Snapshot.Store
+            //to release arena segments and EdgeMap rentals before the
+            //next iteration starts. Without this call the per-build
+            //slab inventory accumulates until the GC reclaims each
+            //unreachable store; retained-heap measurements over the
+            //loop then reflect the soak's own retention rather than
+            //the storage layer's steady state.
+            store.Snapshot.Store.Dispose();
             iterations++;
         }
 
@@ -133,24 +141,35 @@ internal static class HypertrieSoak
 
         EncodedTriple[] triples = GenerateTriples(tripleCount);
         HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(triples, VeritasHashing.Default).ConfigureAwait(false);
-        BasicGraphPattern pattern = BuildSinglePattern();
-
-        long iterations = 0;
-        long solutionCount = 0;
-        Stopwatch sw = Stopwatch.StartNew();
-        while(sw.Elapsed < duration)
+        try
         {
-            await foreach(Solution _ in store.Query(pattern, VeritasClock.System).ConfigureAwait(false))
+            BasicGraphPattern pattern = BuildSinglePattern();
+
+            long iterations = 0;
+            long solutionCount = 0;
+            Stopwatch sw = Stopwatch.StartNew();
+            while(sw.Elapsed < duration)
             {
-                solutionCount++;
+                await foreach(Solution _ in store.Query(pattern, VeritasClock.System).ConfigureAwait(false))
+                {
+                    solutionCount++;
+                }
+
+                iterations++;
             }
 
-            iterations++;
+            sw.Stop();
+
+            return new SoakResult(iterations, sw.Elapsed, solutionCount);
         }
-
-        sw.Stop();
-
-        return new SoakResult(iterations, sw.Elapsed, solutionCount);
+        finally
+        {
+            //The parameterless BuildAsync overload owns the underlying
+            //NodeStore; release it through Snapshot.Store before
+            //returning so the soak does not leave per-test slab
+            //inventory pinned until GC.
+            store.Snapshot.Store.Dispose();
+        }
     }
 
     /// <summary>
