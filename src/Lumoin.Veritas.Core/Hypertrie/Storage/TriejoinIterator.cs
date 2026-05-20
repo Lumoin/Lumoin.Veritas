@@ -628,7 +628,7 @@ public sealed class TriejoinIterator: IDisposable
             throw new InvalidOperationException("Internal error: variable's RDF position not found in node's remaining-position list.");
         }
 
-        return new EdgeMapKeyCursor(in node.EdgeMaps[positionInRemaining]);
+        return new EdgeMapKeyCursor(node, positionInRemaining);
     }
 
     //Returns the index of `value` in `array`, or -1 if absent.

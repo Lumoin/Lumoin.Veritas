@@ -607,6 +607,22 @@ public sealed class NodeStore: IDisposable
     /// or sweep is in flight; concurrent disposal is a contract
     /// violation. Disposing more than once is a no-op.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Slab clearing.</b> Before each arena segment is returned
+    /// to <see cref="NodePool"/>, its span is cleared via
+    /// <see cref="Span{T}.Clear"/>. The clear zeroes every
+    /// <see cref="HypertrieNode"/> slot, dropping the per-node
+    /// <see cref="HypertrieNode.EdgeMaps"/> array reference so the
+    /// heap-allocated <see cref="EdgeMap"/>[] arrays the slabs
+    /// previously referenced become unreachable and GC-collectible.
+    /// Without this clear, pool-retained slab buffers continue to
+    /// hold the previous store's <see cref="EdgeMap"/>[] arrays
+    /// alive through the slab → slot → array reference chain,
+    /// producing the retention shape post-Batch-4 measurements
+    /// surfaced (~695 MB at 100K triples held through pool slabs).
+    /// </para>
+    /// </remarks>
     public void Dispose()
     {
         if(Interlocked.Exchange(ref disposed, 1) != 0)
@@ -641,10 +657,23 @@ public sealed class NodeStore: IDisposable
             }
         }
 
-        //Now release the arena segments themselves.
+        //Now release the arena segments themselves. Clear each
+        //slab before disposal so the pool-retained buffer drops
+        //its references to the heap-allocated EdgeMap[] arrays
+        //the slots previously held; GC then reclaims those
+        //arrays. Without this, the pool's slab inventory pins
+        //every EdgeMap[] every store ever allocated until the
+        //pool itself becomes unreachable.
         for(int i = 0; i < segs.Length; i++)
         {
-            segs[i]?.Dispose();
+            IMemoryOwner<HypertrieNode>? slab = segs[i];
+            if(slab is null)
+            {
+                continue;
+            }
+
+            slab.Memory.Span.Clear();
+            slab.Dispose();
             segs[i] = null;
         }
 

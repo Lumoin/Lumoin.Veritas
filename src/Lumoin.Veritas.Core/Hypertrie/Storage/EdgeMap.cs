@@ -335,6 +335,49 @@ public struct EdgeMap: IEquatable<EdgeMap>
     }
 
     /// <summary>
+    /// Returns the key at <paramref name="position"/> within
+    /// <paramref name="map"/>. Position is a logical index into
+    /// the map's sorted-ascending key sequence: for
+    /// <see cref="EdgeMapKind.Inline"/>, the index into
+    /// <see cref="InlineKeys"/> in <c>[0, InlineCount)</c>; for
+    /// <see cref="EdgeMapKind.SortedArray"/>, the index into the
+    /// rented keys buffer in <c>[0, SortedCount)</c>.
+    /// </summary>
+    /// <param name="map">The map to read.</param>
+    /// <param name="position">The position index.</param>
+    /// <returns>The key at <paramref name="position"/>.</returns>
+    public static uint KeyAt(in EdgeMap map, int position)
+    {
+        return map.Kind switch
+        {
+            EdgeMapKind.Inline => map.InlineKeys[position],
+            EdgeMapKind.SortedArray => map.SortedKeysOwner!.Memory.Span[position],
+            _ => throw new UnreachableException(),
+        };
+    }
+
+    /// <summary>
+    /// Returns the child handle at <paramref name="position"/>
+    /// within <paramref name="map"/>. At depth-1 leaves this is
+    /// <see cref="NodeHandle.None"/>; at depth-2 and depth-3 nodes
+    /// it is a real handle. Position is the logical index into the
+    /// map's sorted-ascending key sequence (same semantics as
+    /// <see cref="KeyAt"/>).
+    /// </summary>
+    /// <param name="map">The map to read.</param>
+    /// <param name="position">The position index.</param>
+    /// <returns>The child handle at <paramref name="position"/>.</returns>
+    public static NodeHandle ChildAt(in EdgeMap map, int position)
+    {
+        return map.Kind switch
+        {
+            EdgeMapKind.Inline => map.InlineChildren[position],
+            EdgeMapKind.SortedArray => map.SortedChildrenOwner!.Memory.Span[position],
+            _ => throw new UnreachableException(),
+        };
+    }
+
+    /// <summary>
     /// Returns a read-only span over the Inline tier's valid key
     /// prefix.
     /// </summary>
