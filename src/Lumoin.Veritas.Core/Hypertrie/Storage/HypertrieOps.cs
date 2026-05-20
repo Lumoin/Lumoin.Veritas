@@ -756,7 +756,7 @@ public static class HypertrieOps
             MatchFrame frame = stack.Pop();
             HypertrieNode node = frame.Node;
 
-            int chosenPosition = SelectPosition(frame.PendingPositions, subject, predicate, @object);
+            int chosenPosition = SelectPosition(frame.PendingPositions, subject, predicate, @object, node);
             int chosenEdgeMapIndex = EdgeMapIndexOf(frame.PendingPositions, chosenPosition);
             TermId chosenBound = chosenPosition switch
             {
@@ -903,14 +903,13 @@ public static class HypertrieOps
     //"a pending position whose query value is bound" — that is the
     //position the user has constrained, so descending on it slices
     //the search space immediately. If no bound position is pending,
-    //falls back to the lowest-numbered pending position. The choice
-    //is by *original* position (0=S, 1=P, 2=O); the caller maps it
-    //to the local edge map index via EdgeMapIndexOf.
-    //
-    //Iteration walks positions 0..2 in ascending order so the
-    //fall-through case naturally returns the lowest pending bit
-    //without a separate code path.
-    private static int SelectPosition(byte pending, TermId subject, TermId predicate, TermId @object)
+    //picks the pending position whose edge map has the smallest
+    //cardinality (the `min_card_pos` heuristic) — descending on the
+    //narrowest fan-out keeps the result-space exploration tightest.
+    //Ties on cardinality go to the lower-numbered position. The
+    //choice is by *original* position (0=S, 1=P, 2=O); the caller
+    //maps it to the local edge map index via EdgeMapIndexOf.
+    private static int SelectPosition(byte pending, TermId subject, TermId predicate, TermId @object, HypertrieNode node)
     {
         int firstPending = -1;
         for(int position = 0; position < 3; position++)
@@ -939,12 +938,29 @@ public static class HypertrieOps
             }
         }
 
-        //No bound position pending — return the first pending one.
-        //The loop above always finds at least one pending position
-        //because Match never reaches a frame whose bitset is zero
-        //(a frame with no pending positions cannot be descended).
         Debug.Assert(firstPending >= 0, "MatchFrame must have at least one pending position.");
-        return firstPending;
+
+        //No bound position pending. Choose the pending position
+        //whose edge map carries the fewest entries; ties go to the
+        //lower-numbered position by the order this loop visits.
+        int chosen = firstPending;
+        int chosenCount = EdgeMap.Count(in node.EdgeMaps[EdgeMapIndexOf(pending, firstPending)]);
+        for(int position = firstPending + 1; position < 3; position++)
+        {
+            if(!IsPending(pending, position))
+            {
+                continue;
+            }
+
+            int count = EdgeMap.Count(in node.EdgeMaps[EdgeMapIndexOf(pending, position)]);
+            if(count < chosenCount)
+            {
+                chosen = position;
+                chosenCount = count;
+            }
+        }
+
+        return chosen;
     }
 
     private static EncodedTriple BuildTriple(MatchFrame frame, int newPosition, uint newValue)
