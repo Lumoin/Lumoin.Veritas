@@ -57,6 +57,19 @@ internal sealed class DistinctSortedTriples
     public ReadOnlySpan<EncodedTriple> AsSpan() => sorted;
 
     /// <summary>
+    /// Returns the underlying sorted array as a reference.
+    /// <b>Caller contract:</b> never mutate the returned array — the
+    /// wrapper's distinct-and-sorted invariants are baked into every
+    /// downstream recipient. This accessor exists so internal build
+    /// paths that need to derive index permutations through struct
+    /// comparators can capture the array reference; comparators
+    /// implementing <see cref="IComparer{T}"/> cannot capture a
+    /// <see cref="ReadOnlySpan{T}"/> in a field.
+    /// </summary>
+    /// <returns>The underlying array, ordered by (Subject, Predicate, Object).</returns>
+    internal EncodedTriple[] AsArray() => sorted;
+
+    /// <summary>
     /// Materialises a sorted, deduplicated triple set from any
     /// triple enumeration. The input is enumerated exactly once.
     /// </summary>

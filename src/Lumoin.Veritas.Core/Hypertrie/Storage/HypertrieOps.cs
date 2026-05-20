@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
@@ -89,43 +90,90 @@ public static class HypertrieOps
         ArgumentNullException.ThrowIfNull(store);
 
         //The wrapper hands us the canonical SPO ordering for free.
-        //Materialise the two other orderings (PSO and OSP) by
-        //copying the SPO span and re-sorting under the
-        //corresponding comparer. Per-position grouping in
-        //BuildPathDepth2 then collapses to a linear walk over a
-        //sorted span — no dictionary, no per-group List allocation
-        //beyond the outer-key bucket.
-        ReadOnlySpan<EncodedTriple> spoView = triples.AsSpan();
-        EncodedTriple[] psoView = spoView.ToArray();
-        Array.Sort(psoView, ComparePsoOrdering);
-        EncodedTriple[] ospView = spoView.ToArray();
-        Array.Sort(ospView, CompareOspOrdering);
+        //Materialise the two other orderings (PSO and OSP) as uint
+        //index permutations over the SPO array — 4 bytes per triple
+        //rented from BuildPools.PermutationPool, in place of 12
+        //bytes per triple for a full EncodedTriple copy. Each
+        //permutation is sorted via a struct comparer whose
+        //Compare(uint, uint) reads two triples out of the SPO array
+        //and dispatches to the corresponding ordering comparator.
+        EncodedTriple[] spoArray = triples.AsArray();
+        ReadOnlySpan<EncodedTriple> spoView = spoArray;
+        int tripleCount = spoArray.Length;
 
-        //Three descent paths off the root: one starting at S, one
-        //at P, one at O. Each path's depth-2 node is keyed by that
-        //starting position and indexes the remaining two by them
-        //in a fixed pair order. The pair order is (predicate,
-        //object) for the S-first path, (subject, object) for the
-        //P-first path, and (subject, predicate) for the O-first
-        //path.
-        Dictionary<uint, NodeHandle> sFirstDepth2 = BuildPathDepth2(spoView, store, PositionSubject, pools);
-        Dictionary<uint, NodeHandle> pFirstDepth2 = BuildPathDepth2(psoView, store, PositionPredicate, pools);
-        Dictionary<uint, NodeHandle> oFirstDepth2 = BuildPathDepth2(ospView, store, PositionObject, pools);
+        //Rent only when there is something to permute. The pool's
+        //exact-size policy rejects zero-sized rentals, and the
+        //downstream BuildPathDepth2 path treats an empty permutation
+        //span as "walk source directly" — so the empty-triple case
+        //flows through unchanged with both permutations as empty
+        //spans.
+        IMemoryOwner<uint>? psoPermutationOwner = null;
+        IMemoryOwner<uint>? ospPermutationOwner = null;
+        try
+        {
+            ReadOnlySpan<uint> psoPermutation = ReadOnlySpan<uint>.Empty;
+            ReadOnlySpan<uint> ospPermutation = ReadOnlySpan<uint>.Empty;
 
-        //Build the depth-3 root: three edge maps, one per starting
-        //position, each holding the pre-built depth-2 mapping for
-        //that position.
-        HypertrieNode root = HypertrieNode.Create(3);
-        PopulateRootEdgeMap(ref root.EdgeMaps[PositionSubject], sFirstDepth2, pools);
-        PopulateRootEdgeMap(ref root.EdgeMaps[PositionPredicate], pFirstDepth2, pools);
-        PopulateRootEdgeMap(ref root.EdgeMaps[PositionObject], oFirstDepth2, pools);
+            if(tripleCount > 0)
+            {
+                psoPermutationOwner = pools.PermutationPool.Rent(tripleCount);
+                ospPermutationOwner = pools.PermutationPool.Rent(tripleCount);
 
-        //Compute the root's identifier and intern it. Returning
-        //both the canonical root's handle and its identifier saves
-        //the caller a redundant identifier recomputation.
-        NodeIdentifier rootIdentifier = ComputeIdentifier(root, store, store.Hash, knownChildIdentifiers: null);
-        NodeHandle canonicalRoot = store.Intern(rootIdentifier, root);
-        return (canonicalRoot, rootIdentifier);
+                Span<uint> psoSpan = psoPermutationOwner.Memory.Span[..tripleCount];
+                Span<uint> ospSpan = ospPermutationOwner.Memory.Span[..tripleCount];
+
+                //Initialise both permutations to identity, then sort
+                //under their respective triple-comparators. The sorts
+                //are specialised by TComparer (struct) so the
+                //comparator's Compare call inlines through JIT
+                //specialisation.
+                for(int i = 0; i < tripleCount; i++)
+                {
+                    psoSpan[i] = (uint)i;
+                    ospSpan[i] = (uint)i;
+                }
+
+                psoSpan.Sort(new PsoPermutationComparer(spoArray));
+                ospSpan.Sort(new OspPermutationComparer(spoArray));
+
+                psoPermutation = psoSpan;
+                ospPermutation = ospSpan;
+            }
+
+            //Three descent paths off the root: one starting at S, one
+            //at P, one at O. Each path's depth-2 node is keyed by that
+            //starting position and indexes the remaining two by them
+            //in a fixed pair order. The pair order is (predicate,
+            //object) for the S-first path, (subject, object) for the
+            //P-first path, and (subject, predicate) for the O-first
+            //path. The S-first path walks spoView directly; the
+            //P-first and O-first paths walk spoView through their
+            //permutation indirection. An empty permutation parameter
+            //to BuildPathDepth2 means "use the source span as-is."
+            Dictionary<uint, NodeHandle> sFirstDepth2 = BuildPathDepth2(spoView, ReadOnlySpan<uint>.Empty, store, PositionSubject, pools);
+            Dictionary<uint, NodeHandle> pFirstDepth2 = BuildPathDepth2(spoView, psoPermutation, store, PositionPredicate, pools);
+            Dictionary<uint, NodeHandle> oFirstDepth2 = BuildPathDepth2(spoView, ospPermutation, store, PositionObject, pools);
+
+            //Build the depth-3 root: three edge maps, one per starting
+            //position, each holding the pre-built depth-2 mapping for
+            //that position.
+            HypertrieNode root = HypertrieNode.Create(3);
+            PopulateRootEdgeMap(ref root.EdgeMaps[PositionSubject], sFirstDepth2, pools);
+            PopulateRootEdgeMap(ref root.EdgeMaps[PositionPredicate], pFirstDepth2, pools);
+            PopulateRootEdgeMap(ref root.EdgeMaps[PositionObject], oFirstDepth2, pools);
+
+            //Compute the root's identifier and intern it. Returning
+            //both the canonical root's handle and its identifier saves
+            //the caller a redundant identifier recomputation.
+            NodeIdentifier rootIdentifier = ComputeIdentifier(root, store, store.Hash, knownChildIdentifiers: null);
+            NodeHandle canonicalRoot = store.Intern(rootIdentifier, root);
+            return (canonicalRoot, rootIdentifier);
+        }
+        finally
+        {
+            psoPermutationOwner?.Dispose();
+            ospPermutationOwner?.Dispose();
+        }
     }
 
     /// <summary>
@@ -188,7 +236,8 @@ public static class HypertrieOps
     //BuildAndInternDepth2 — no dictionary, no per-bucket
     //rehashing, no list growth.
     private static Dictionary<uint, NodeHandle> BuildPathDepth2(
-        ReadOnlySpan<EncodedTriple> sortedByOuter,
+        ReadOnlySpan<EncodedTriple> source,
+        ReadOnlySpan<uint> permutation,
         NodeStore store,
         int outerPosition,
         BuildPools pools)
@@ -201,18 +250,31 @@ public static class HypertrieOps
             _ => throw new UnreachableException(),
         };
 
+        //An empty permutation means "walk source directly" — the
+        //canonical SPO descent. A non-empty permutation means "walk
+        //source through this index indirection" — the PSO and OSP
+        //descents. The branch is hoistable by JIT because permutation
+        //is a parameter that does not change inside the loop.
+        bool usePermutation = !permutation.IsEmpty;
         Dictionary<uint, NodeHandle> result = [];
         int index = 0;
-        int length = sortedByOuter.Length;
+        int length = usePermutation ? permutation.Length : source.Length;
         while(index < length)
         {
-            uint outerKey = ValueAt(sortedByOuter[index], outerPosition);
+            EncodedTriple firstTriple = usePermutation ? source[(int)permutation[index]] : source[index];
+            uint outerKey = ValueAt(firstTriple, outerPosition);
 
             //Slide the right edge of the run to the first triple
             //whose outer value differs.
             int runEnd = index + 1;
-            while(runEnd < length && ValueAt(sortedByOuter[runEnd], outerPosition) == outerKey)
+            while(runEnd < length)
             {
+                EncodedTriple candidate = usePermutation ? source[(int)permutation[runEnd]] : source[runEnd];
+                if(ValueAt(candidate, outerPosition) != outerKey)
+                {
+                    break;
+                }
+
                 runEnd++;
             }
 
@@ -220,7 +282,7 @@ public static class HypertrieOps
             List<(uint Inner1, uint Inner2)> entries = new(capacity: runLength);
             for(int cursor = index; cursor < runEnd; cursor++)
             {
-                EncodedTriple triple = sortedByOuter[cursor];
+                EncodedTriple triple = usePermutation ? source[(int)permutation[cursor]] : source[cursor];
                 entries.Add((ValueAt(triple, innerPosition1), ValueAt(triple, innerPosition2)));
             }
 
@@ -230,6 +292,26 @@ public static class HypertrieOps
         }
 
         return result;
+    }
+
+    //Struct comparer that sorts a permutation buffer of indices into
+    //the canonical SPO array, ordered by ComparePsoOrdering. Captured
+    //as a struct (not a class) so MemoryExtensions.Sort can specialise
+    //its TComparer generic parameter and inline the comparator's
+    //Compare call. Holds the array reference (not a span) because
+    //IComparer<uint>-implementing types are not ref structs and
+    //cannot hold ReadOnlySpan fields.
+    private readonly struct PsoPermutationComparer(EncodedTriple[] source): IComparer<uint>
+    {
+        public int Compare(uint a, uint b) => ComparePsoOrdering(source[a], source[b]);
+    }
+
+    //Struct comparer that sorts a permutation buffer of indices into
+    //the canonical SPO array, ordered by CompareOspOrdering. Same
+    //specialisation contract as PsoPermutationComparer.
+    private readonly struct OspPermutationComparer(EncodedTriple[] source): IComparer<uint>
+    {
+        public int Compare(uint a, uint b) => CompareOspOrdering(source[a], source[b]);
     }
 
     //Comparator for PSO ordering: predicate, then subject, then

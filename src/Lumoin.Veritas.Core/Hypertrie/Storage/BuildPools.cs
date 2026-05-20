@@ -51,6 +51,25 @@ public readonly struct BuildPools
     /// <summary>Pool used by <see cref="NodeStore"/> for the segmented <see cref="HypertrieNode"/> arena.</summary>
     public VeritasMemoryPool<HypertrieNode> NodePool { get; }
 
+    /// <summary>
+    /// Pool used by the bottom-up build path to materialise PSO and
+    /// OSP orderings as index permutations over the canonical SPO
+    /// triple array, in place of full <see cref="EncodedTriple"/>[]
+    /// copies. One rental per non-canonical ordering, sized to the
+    /// distinct triple count.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="KeyPool"/> because the size profile
+    /// differs by orders of magnitude: <see cref="KeyPool"/> rents
+    /// small (≤ low-hundreds-of-elements) buffers for individual
+    /// SortedArray-tier <see cref="EdgeMap"/>s, while permutation
+    /// rents scale with the input triple count (1M+ uints possible).
+    /// Sharing the pool would force <see cref="VeritasMemoryPool{T}"/>'s
+    /// exact-size slab policy to hold one very large slab alongside
+    /// many small ones, wasting capacity.
+    /// </remarks>
+    public VeritasMemoryPool<uint> PermutationPool { get; }
+
     /// <summary>Implementation used by Inline-tier lookups in <see cref="EdgeMap.TryGetChild"/>.</summary>
     public InlineKeyLookup InlineLookup { get; }
 
@@ -60,22 +79,26 @@ public readonly struct BuildPools
     /// <param name="keyPool">Pool for SortedArray-tier key buffers.</param>
     /// <param name="childPool">Pool for SortedArray-tier child-handle buffers.</param>
     /// <param name="nodePool">Pool used by <see cref="NodeStore"/> for its segmented arena.</param>
+    /// <param name="permutationPool">Pool used by the build path to materialise PSO and OSP orderings as index permutations.</param>
     /// <param name="inlineLookup">Inline-tier lookup implementation.</param>
     /// <exception cref="ArgumentNullException">A required argument is <c>null</c>.</exception>
     public BuildPools(
         VeritasMemoryPool<uint> keyPool,
         VeritasMemoryPool<NodeHandle> childPool,
         VeritasMemoryPool<HypertrieNode> nodePool,
+        VeritasMemoryPool<uint> permutationPool,
         InlineKeyLookup inlineLookup)
     {
         ArgumentNullException.ThrowIfNull(keyPool);
         ArgumentNullException.ThrowIfNull(childPool);
         ArgumentNullException.ThrowIfNull(nodePool);
+        ArgumentNullException.ThrowIfNull(permutationPool);
         ArgumentNullException.ThrowIfNull(inlineLookup);
 
         KeyPool = keyPool;
         ChildPool = childPool;
         NodePool = nodePool;
+        PermutationPool = permutationPool;
         InlineLookup = inlineLookup;
     }
 
@@ -91,6 +114,7 @@ public readonly struct BuildPools
             new VeritasMemoryPool<uint>(),
             new VeritasMemoryPool<NodeHandle>(),
             new VeritasMemoryPool<HypertrieNode>(),
+            new VeritasMemoryPool<uint>(),
             InlineKeyLookups.SelectBestAvailable());
     }
 }
