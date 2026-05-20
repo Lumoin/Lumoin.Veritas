@@ -329,6 +329,27 @@ public sealed class TriejoinIterator: IDisposable
         }
 
         DescentFrame currentFrame = Frames[Frames.Count - 1];
+        uint rawValue = value.Encoded;
+
+        //Synthetic SEN-leaf frame: the cursor carries a single key
+        //and the frame's Node is default. Descent succeeds iff the
+        //requested value matches the SEN's key.
+        if(currentFrame.Node.EdgeMaps is null)
+        {
+            uint senKey = currentFrame.Cursor.CurrentKey;
+            if(rawValue != senKey)
+            {
+                return false;
+            }
+
+            OpenedValues[DescendedLevels] = rawValue;
+            DescendedLevels++;
+
+            EmitIteratorAdvanced(VariableOrder[DescendedLevels - 1], rawValue);
+
+            return true;
+        }
+
         int positionInRemaining = IndexOf(currentFrame.RemainingPositions, LevelPositions[DescendedLevels]);
 
         if(positionInRemaining < 0)
@@ -338,7 +359,6 @@ public sealed class TriejoinIterator: IDisposable
         }
 
         EdgeMap edgeMap = currentFrame.Node.EdgeMaps[positionInRemaining];
-        uint rawValue = value.Encoded;
 
         if(!EdgeMap.TryGetChild(in edgeMap, rawValue, InlineKeyLookups.Scalar, out NodeHandle childHandle))
         {
@@ -364,12 +384,35 @@ public sealed class TriejoinIterator: IDisposable
 
         Debug.Assert(!childHandle.IsNone, "depth-2 or depth-3 descent yielded NodeHandle.None; invariant violation.");
 
+        int[] childRemainingPositions = WithoutAt(currentFrame.RemainingPositions, positionInRemaining);
+
+        if(childHandle.IsSingleEntry)
+        {
+            //SEN child: push a synthetic frame whose cursor yields
+            //the SEN's single key. The next level enumerates one
+            //value (or seeks to it), and an Open against the same
+            //value completes the descent.
+            EdgeMapKeyCursor senCursor = new(childHandle.SingleEntryKey);
+
+            Frames.Add(new DescentFrame
+            {
+                Node = default,
+                RemainingPositions = childRemainingPositions,
+                Cursor = senCursor,
+            });
+
+            DescendedLevels++;
+
+            EmitIteratorAdvanced(VariableOrder[DescendedLevels - 1], rawValue);
+
+            return true;
+        }
+
         HypertrieNode child = Snapshot.Store.GetByHandle(childHandle);
 
         //Non-leaf descent: push a frame for the child node with a
         //fresh cursor over the appropriate edge map for the next
         //variable level.
-        int[] childRemainingPositions = WithoutAt(currentFrame.RemainingPositions, positionInRemaining);
         EdgeMapKeyCursor childCursor = BuildCursorForLevel(child, childRemainingPositions, DescendedLevels + 1);
 
         Frames.Add(new DescentFrame
@@ -547,6 +590,7 @@ public sealed class TriejoinIterator: IDisposable
     {
         HypertrieNode current = Snapshot.Store.GetByHandle(Snapshot.Root);
         int[] remainingPositions = [PositionSubject, PositionPredicate, PositionObject];
+        NodeHandle senChild = NodeHandle.None;
 
         for(int rdfPosition = 0; rdfPosition < 3; rdfPosition++)
         {
@@ -567,6 +611,24 @@ public sealed class TriejoinIterator: IDisposable
             }
 
             uint boundValue = slot.BoundTerm.Encoded;
+
+            //If a prior iteration descended into an SEN leaf, this
+            //iteration's bound is verified against the SEN's single
+            //key — there is no further edge map to query.
+            if(!senChild.IsNone)
+            {
+                if(senChild.SingleEntryKey != boundValue)
+                {
+                    constructionAtEnd = true;
+
+                    return;
+                }
+
+                remainingPositions = WithoutAt(remainingPositions, positionInRemaining);
+
+                continue;
+            }
+
             EdgeMap edgeMap = current.EdgeMaps[positionInRemaining];
 
             if(!EdgeMap.TryGetChild(in edgeMap, boundValue, InlineKeyLookups.Scalar, out NodeHandle childHandle))
@@ -587,20 +649,46 @@ public sealed class TriejoinIterator: IDisposable
                 return;
             }
 
+            if(childHandle.IsSingleEntry)
+            {
+                //Descended into an SEN leaf. Subsequent bound
+                //iterations compare against the SEN's key directly;
+                //subsequent variable iterations open a synthetic
+                //single-key frame.
+                senChild = childHandle;
+                remainingPositions = WithoutAt(remainingPositions, positionInRemaining);
+
+                continue;
+            }
+
             Debug.Assert(!childHandle.IsNone, "depth-2 or depth-3 descent yielded NodeHandle.None; invariant violation.");
 
             current = Snapshot.Store.GetByHandle(childHandle);
             remainingPositions = WithoutAt(remainingPositions, positionInRemaining);
         }
 
-        //Push the post-bound frontier frame with a cursor positioned
-        //at the appropriate edge map for the first variable level.
         if(VariableOrder.Count == 0)
         {
-            //Fully bound pattern reached a non-leaf node — must
-            //not happen for a depth-3 hypertrie because three
-            //bound positions descend through depth-2 to depth-1
-            //leaf. Defensive only.
+            //Fully bound pattern. If a SEN was reached, the bound
+            //verification above already completed (or set
+            //constructionAtEnd). Nothing else to do.
+            return;
+        }
+
+        if(!senChild.IsNone)
+        {
+            //Post-bound frontier landed on a SEN leaf. The next
+            //(and only remaining) variable enumerates the SEN's
+            //single key via a synthetic cursor.
+            EdgeMapKeyCursor senCursor = new(senChild.SingleEntryKey);
+
+            Frames.Add(new DescentFrame
+            {
+                Node = default,
+                RemainingPositions = remainingPositions,
+                Cursor = senCursor,
+            });
+
             return;
         }
 

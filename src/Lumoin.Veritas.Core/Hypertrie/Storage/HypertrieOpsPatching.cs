@@ -403,12 +403,10 @@ public static class HypertrieOpsPatching
         return newEdgeMap;
     }
 
-    //Patches one depth-1 leaf. Rebuilds the edge map from scratch:
-    //every old key not in the removes list is reinserted, then
-    //every new addition is inserted. The InsertOrReplace path
-    //chooses the canonical EdgeMapKind for the resulting entry
-    //count. Returns NodeHandle.None when no entries survive — the
-    //leaf is dead and the caller drops the corresponding bucket key.
+    //Patches one depth-1 leaf. Returns None when no entries survive,
+    //a SEN-encoded handle when exactly one entry survives, or an
+    //interned FN leaf handle when two or more entries survive. The
+    //old leaf may itself be None, SEN, or FN.
     private static NodeHandle PatchLeaf(NodeHandle oldLeafHandle, List<LeafEdit> edits, NodeStore store, BuildPools pools)
     {
         //Materialise the removed keys for O(1) membership in the
@@ -424,7 +422,15 @@ public static class HypertrieOpsPatching
 
         EdgeMap newEdgeMap = default;
 
-        if(!oldLeafHandle.IsNone)
+        if(oldLeafHandle.IsSingleEntry)
+        {
+            uint oldKey = oldLeafHandle.SingleEntryKey;
+            if(!removedKeys.Contains(oldKey))
+            {
+                EdgeMap.InsertOrReplace(ref newEdgeMap, oldKey, NodeHandle.None, pools, pools.InlineLookup);
+            }
+        }
+        else if(!oldLeafHandle.IsNone)
         {
             HypertrieNode oldLeaf = store.GetByHandle(oldLeafHandle);
             foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(oldLeaf.EdgeMaps[0]))
@@ -448,23 +454,38 @@ public static class HypertrieOpsPatching
             }
         }
 
-        if(EdgeMap.Count(in newEdgeMap) == 0)
+        int finalCount = EdgeMap.Count(in newEdgeMap);
+
+        if(finalCount == 0)
         {
             return NodeHandle.None;
+        }
+
+        if(finalCount == 1)
+        {
+            //SEN encoding: the surviving key lives inline in the
+            //parent's slot. The newEdgeMap we built holds the
+            //surviving key in the Inline tier (no pool rentals at
+            //count == 1), so leaving it to GC frees no rentals.
+            uint soleKey = EdgeMap.InlineKeysSpan(in newEdgeMap)[0];
+
+            return NodeHandle.ForSingleEntry(soleKey);
         }
 
         HypertrieNode newLeaf = HypertrieNode.Create(1);
         newLeaf.EdgeMaps[0] = newEdgeMap;
 
         NodeIdentifier identifier = ComputeIdentifier(newLeaf, store, store.Hash, knownChildIdentifiers: null);
+
         return store.Intern(identifier, newLeaf);
     }
 
     //Walks the depth-3 hypertrie rooted at `root` checking whether
     //`triple` is present. Reuses HypertrieOps.Match's S-first
     //descent contract: descend the subject edge map, then the
-    //object edge map of the resulting D2, then check the leaf for
-    //the predicate.
+    //predicate edge map of the resulting D2, then check the leaf
+    //for the object. The leaf may be FN (real arena node) or SEN
+    //(inline single key in the parent's slot).
     private static bool IsPresent(HypertrieNode root, NodeStore store, EncodedTriple triple)
     {
         uint s = triple.Subject.Encoded;
@@ -486,9 +507,15 @@ public static class HypertrieOpsPatching
             return false;
         }
 
+        //Step 3a: SEN leaf — the single key is encoded inline.
+        if(leafHandle.IsSingleEntry)
+        {
+            return leafHandle.SingleEntryKey == o;
+        }
+
+        //Step 3b: FN leaf → standard arena lookup for the object.
         HypertrieNode leaf = store.GetByHandle(leafHandle);
 
-        //Step 3: leaf.EdgeMaps[0] (keyed by O) → presence.
         return EdgeMap.TryGetChild(in leaf.EdgeMaps[0], o, inlineLookup, out _);
     }
 
@@ -519,19 +546,26 @@ public static class HypertrieOpsPatching
         {
             foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
             {
-                if(entry.Value.IsNone)
+                //SEN children carry their content inline and need
+                //no arena lookup; ComputeIdentifier delegates to
+                //HypertrieOps, which resolves SEN slot identifiers
+                //on the fly from the SEN key.
+                if(entry.Value.IsNone || entry.Value.IsSingleEntry)
                 {
                     continue;
                 }
+
                 if(result.ContainsKey(entry.Value))
                 {
                     continue;
                 }
+
                 HypertrieNode childNode = store.GetByHandle(entry.Value);
                 NodeIdentifier childIdentifier = ComputeIdentifier(childNode, store, hash, knownChildIdentifiers: null);
                 result[entry.Value] = childIdentifier;
             }
         }
+
         return result;
     }
 

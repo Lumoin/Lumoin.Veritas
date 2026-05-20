@@ -4,11 +4,12 @@ using System.Diagnostics;
 namespace Lumoin.Veritas.Core.Hypertrie.Storage;
 
 /// <summary>
-/// A sorted-key cursor over one <see cref="EdgeMap"/>. Exposes
+/// A sorted-key cursor over one <see cref="EdgeMap"/>, or a
+/// synthetic single-key cursor used at SEN descent. Exposes
 /// uniform <see cref="MoveNext"/> / <see cref="SeekTo"/> /
 /// <see cref="AtEnd"/> / <see cref="CurrentKey"/> /
-/// <see cref="CurrentChild"/> operations regardless of which
-/// <see cref="EdgeMapKind"/> the underlying map carries.
+/// <see cref="CurrentChild"/> operations regardless of the
+/// underlying source.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -19,57 +20,38 @@ namespace Lumoin.Veritas.Core.Hypertrie.Storage;
 /// key in sorted order (<see cref="MoveNext"/>) or jump to a
 /// specific key (also <see cref="SeekTo"/>). Both algorithms
 /// require the keys to be visited in ascending order — which is
-/// what <see cref="EdgeMapKind.SortedArray"/> gives us natively
-/// and what <see cref="EdgeMapKind.Inline"/> trivially satisfies.
+/// what <see cref="EdgeMapKind.SortedArray"/> gives us natively,
+/// what <see cref="EdgeMapKind.Inline"/> trivially satisfies, and
+/// what the single-key synthetic cursor satisfies by carrying
+/// exactly one element.
 /// </para>
 /// <para>
-/// <b>State.</b> The cursor is a value-typed mutable struct
-/// holding the parent <see cref="HypertrieNode"/> by value (a
-/// 16-byte struct copy that shares the canonical
-/// <see cref="HypertrieNode.EdgeMaps"/> array reference), the
-/// index identifying which of the node's edge maps the cursor
-/// walks, a snapshot of the map's <see cref="EdgeMapKind"/> and
-/// entry count (cached once at construction because interned
-/// nodes are immutable), and a current position. The cursor does
-/// not materialise the underlying key or child storage into per-
-/// cursor arrays — every read goes through the static
-/// <see cref="EdgeMap.KeyAt"/> and <see cref="EdgeMap.ChildAt"/>
-/// accessors on the live map. Mutating operations take the cursor
-/// by <see langword="ref"/>; read-only operations take it by
-/// <see langword="in"/>.
+/// <b>State.</b> In edge-map mode the cursor holds the parent
+/// <see cref="HypertrieNode"/> by value (a 16-byte struct copy
+/// that shares the canonical <see cref="HypertrieNode.EdgeMaps"/>
+/// array reference), the index identifying which of the node's
+/// edge maps the cursor walks, a snapshot of the map's
+/// <see cref="EdgeMapKind"/> and entry count, and a current
+/// position. In synthetic mode the cursor instead carries a
+/// single key value and a flag; descent code reads the key
+/// directly without consulting any node.
 /// </para>
 /// <para>
 /// <b>Lifetime.</b> A cursor must not outlive the underlying
-/// <see cref="HypertrieNode"/>'s storage. Because hypertrie nodes
-/// are immutable after interning and pinned by snapshots, the
-/// cursor is safe to hold as long as the consumer holds a
-/// reference to a live snapshot.
-/// </para>
-/// <para>
-/// <b>Initial state.</b> A freshly-constructed cursor is
-/// positioned at the first key (if any) — equivalent to having
-/// just called <see cref="MoveNext"/> from the "before-first"
-/// virtual position. <see cref="AtEnd"/> is <c>true</c> only when
-/// the underlying map is empty or the cursor has advanced past
-/// the last key.
-/// </para>
-/// <para>
-/// <b>Equality.</b> Two cursors are equal when they walk the same
-/// edge map of the same node and are at the same position. The
-/// node is compared by the reference equality of its
-/// <see cref="HypertrieNode.EdgeMaps"/> array — canonical
-/// interned nodes share their array reference by construction, so
-/// this is a fast O(1) comparison without inspecting array
-/// contents.
+/// <see cref="HypertrieNode"/>'s storage. Synthetic cursors hold
+/// no node reference and are valid as long as their containing
+/// frame is.
 /// </para>
 /// </remarks>
-[DebuggerDisplay("EdgeMapKeyCursor Kind={kind} AtEnd={AtEnd}")]
+[DebuggerDisplay("EdgeMapKeyCursor IsSynthetic={isSynthetic} AtEnd={AtEnd}")]
 public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
 {
     private readonly HypertrieNode node;
     private readonly byte edgeMapIndex;
     private readonly EdgeMapKind kind;
     private readonly int totalCount;
+    private readonly uint syntheticKey;
+    private readonly bool isSynthetic;
     private int position;
 
     /// <summary>
@@ -86,6 +68,7 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
         {
             throw new ArgumentException("Cannot construct a cursor over a default HypertrieNode (no edge maps).", nameof(node));
         }
+
         if(edgeMapIndex < 0 || edgeMapIndex >= node.EdgeMaps.Length)
         {
             throw new ArgumentOutOfRangeException(
@@ -96,10 +79,31 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
 
         this.node = node;
         this.edgeMapIndex = (byte)edgeMapIndex;
+        syntheticKey = 0U;
+        isSynthetic = false;
 
         ref EdgeMap map = ref node.EdgeMaps[edgeMapIndex];
         kind = map.Kind;
         totalCount = EdgeMap.Count(in map);
+        position = 0;
+    }
+
+    /// <summary>
+    /// Constructs a synthetic single-key cursor that yields exactly
+    /// one key (<paramref name="singleKey"/>) and exactly one child
+    /// (<see cref="NodeHandle.None"/>). Used at SEN descent where
+    /// the next variable level is a virtual depth-1 leaf with no
+    /// real node to walk.
+    /// </summary>
+    /// <param name="singleKey">The single key this cursor yields.</param>
+    public EdgeMapKeyCursor(uint singleKey)
+    {
+        node = default;
+        edgeMapIndex = 0;
+        kind = EdgeMapKind.Inline;
+        totalCount = 1;
+        syntheticKey = singleKey;
+        isSynthetic = true;
         position = 0;
     }
 
@@ -123,7 +127,13 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
                 throw new InvalidOperationException("Cursor is past the end; CurrentKey is not defined.");
             }
 
+            if(isSynthetic)
+            {
+                return syntheticKey;
+            }
+
             ref EdgeMap map = ref node.EdgeMaps![edgeMapIndex];
+
             return EdgeMap.KeyAt(in map, position);
         }
     }
@@ -143,7 +153,13 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
                 throw new InvalidOperationException("Cursor is past the end; CurrentChild is not defined.");
             }
 
+            if(isSynthetic)
+            {
+                return NodeHandle.None;
+            }
+
             ref EdgeMap map = ref node.EdgeMaps![edgeMapIndex];
+
             return EdgeMap.ChildAt(in map, position);
         }
     }
@@ -176,18 +192,23 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
     /// target less than <see cref="CurrentKey"/> is a logical
     /// no-op.
     /// </para>
-    /// <para>
-    /// The seek uses
-    /// <see cref="MemoryExtensions.BinarySearch{T}(ReadOnlySpan{T}, T)"/>
-    /// over the suffix <c>[position..totalCount)</c> of the
-    /// underlying map's key span so it remains O(log n) in the
-    /// remaining entry count rather than O(log total).
-    /// </para>
     /// </remarks>
     public void SeekTo(uint target)
     {
         if(AtEnd)
         {
+            return;
+        }
+
+        if(isSynthetic)
+        {
+            //The synthetic cursor carries exactly one key; if the
+            //target is past it, advance to end. Otherwise stay.
+            if(target > syntheticKey)
+            {
+                position = totalCount;
+            }
+
             return;
         }
 
@@ -221,10 +242,21 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
     /// Returns <c>true</c> when <paramref name="other"/> walks the
     /// same edge map (same parent node by canonical array
     /// reference equality and same edge-map index) and is at the
-    /// same position.
+    /// same position, or when both are synthetic cursors over the
+    /// same key at the same position.
     /// </summary>
     public bool Equals(EdgeMapKeyCursor other)
     {
+        if(isSynthetic != other.isSynthetic)
+        {
+            return false;
+        }
+
+        if(isSynthetic)
+        {
+            return syntheticKey == other.syntheticKey && position == other.position;
+        }
+
         return ReferenceEquals(node.EdgeMaps, other.node.EdgeMaps)
             && edgeMapIndex == other.edgeMapIndex
             && position == other.position;
@@ -236,7 +268,13 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
     /// <inheritdoc/>
     public override int GetHashCode()
     {
+        if(isSynthetic)
+        {
+            return HashCode.Combine(true, syntheticKey, position);
+        }
+
         return HashCode.Combine(
+            false,
             node.EdgeMaps is null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(node.EdgeMaps),
             edgeMapIndex,
             position);

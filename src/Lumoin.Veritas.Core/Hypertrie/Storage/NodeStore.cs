@@ -718,6 +718,13 @@ public sealed class NodeStore: IDisposable
         lock(SegmentAllocationLock)
         {
             uint handle = nextHandle;
+            if((handle & NodeHandle.SenTag) != 0U)
+            {
+                throw new InvalidOperationException(
+                    $"Arena handle space exhausted: next handle 0x{handle:X} collides with the SEN tag bit. " +
+                    $"The arena supports up to {NodeHandle.ContentMask} slots.");
+            }
+
             int segIndex = (int)(handle >> SegmentShift);
             int offset = (int)(handle & SegmentMask);
 
@@ -763,7 +770,10 @@ public sealed class NodeStore: IDisposable
             cancellationToken.ThrowIfCancellationRequested();
 
             NodeHandle currentHandle = work.Pop();
-            if(currentHandle.IsNone)
+            //SEN handles carry their data inline in the parent's
+            //edge map slot — they hold no arena entry and need no
+            //marking. None handles are absence sentinels.
+            if(currentHandle.IsNone || currentHandle.IsSingleEntry)
             {
                 continue;
             }
@@ -778,9 +788,7 @@ public sealed class NodeStore: IDisposable
             {
                 foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(current.EdgeMaps[position]))
                 {
-                    //At depth-1 leaves the child handle is None;
-                    //higher depths always carry a real handle.
-                    if(!entry.Value.IsNone)
+                    if(!entry.Value.IsNone && !entry.Value.IsSingleEntry)
                     {
                         work.Push(entry.Value);
                     }

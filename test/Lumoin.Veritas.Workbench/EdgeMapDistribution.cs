@@ -76,16 +76,28 @@ internal static class EdgeMapDistribution
                 InlineCountHistogram = inlineHistogram,
                 PerDepthTierCounts = perDepth,
                 DistinctNodeCount = 0,
+                SingleEntryNodeCount = 0,
             };
         }
 
         HashSet<NodeHandle> visited = [];
         Stack<NodeHandle> work = new();
+        int senCount = 0;
         work.Push(rootHandle);
 
         while(work.Count > 0)
         {
             NodeHandle handle = work.Pop();
+
+            //SEN handles carry their leaf inline; they have no arena
+            //entry to walk. Count them separately and move on.
+            if(handle.IsSingleEntry)
+            {
+                senCount++;
+
+                continue;
+            }
+
             if(handle.IsNone || !visited.Add(handle))
             {
                 continue;
@@ -108,6 +120,7 @@ internal static class EdgeMapDistribution
                     {
                         empty++;
                         depthCounts[0]++;
+
                         break;
                     }
                     case EdgeMapKind.Inline:
@@ -117,6 +130,7 @@ internal static class EdgeMapDistribution
                         int inlineCount = EdgeMap.Count(in map);
                         int inlineBucket = BucketFor(inlineCount, InlineBucketLowerBounds);
                         inlineHistogram[inlineBucket]++;
+
                         break;
                     }
                     case EdgeMapKind.SortedArray:
@@ -126,6 +140,7 @@ internal static class EdgeMapDistribution
                         int sortedCount = EdgeMap.Count(in map);
                         int sortedBucket = BucketFor(sortedCount, SortedArrayBucketLowerBounds);
                         sortedHistogram[sortedBucket]++;
+
                         break;
                     }
                     default:
@@ -134,7 +149,9 @@ internal static class EdgeMapDistribution
                     }
                 }
 
-                //Recurse into non-None child handles.
+                //Push every non-None child onto the work stack. SEN
+                //children are recognised at pop time and counted
+                //without an arena lookup.
                 foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
                 {
                     if(!entry.Value.IsNone)
@@ -155,6 +172,7 @@ internal static class EdgeMapDistribution
             InlineCountHistogram = inlineHistogram,
             PerDepthTierCounts = perDepth,
             DistinctNodeCount = visited.Count,
+            SingleEntryNodeCount = senCount,
         };
     }
 

@@ -41,4 +41,7 @@ internal readonly record struct EdgeMapDistributionResult
 
     /// <summary>The number of distinct <c>HypertrieNode</c> instances visited during the walk.</summary>
     public int DistinctNodeCount { get; init; }
+
+    /// <summary>The number of SEN-encoded depth-1 leaves referenced from the visited nodes. SEN leaves carry their single key inline in the parent slot and have no separate <c>HypertrieNode</c> instance, so they are not part of <see cref="DistinctNodeCount"/>.</summary>
+    public int SingleEntryNodeCount { get; init; }
 }

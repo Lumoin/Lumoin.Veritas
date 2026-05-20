@@ -3,6 +3,7 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using Lumoin.Veritas.Core.Algebra;
 using Lumoin.Veritas.Core.Encoding;
 
@@ -413,8 +414,11 @@ public static class HypertrieOps
     }
 
     //Builds a depth-1 leaf for every distinct key set in `groups`,
-    //interning each through `store` and returning a map from group
-    //key to canonical leaf handle.
+    //returning a map from group key to canonical leaf handle.
+    //Groups of size 1 are emitted as SEN-encoded handles directly
+    //in the parent's slot; no <see cref="HypertrieNode"/> object is
+    //allocated and no intern-table entry is created. Larger groups
+    //allocate a leaf node and intern it.
     private static Dictionary<uint, NodeHandle> BuildAndInternLeaves(
         Dictionary<uint, HashSet<uint>> groups,
         NodeStore store,
@@ -423,6 +427,20 @@ public static class HypertrieOps
         Dictionary<uint, NodeHandle> result = new(groups.Count);
         foreach(KeyValuePair<uint, HashSet<uint>> group in groups)
         {
+            if(group.Value.Count == 1)
+            {
+                uint soleKey = 0;
+                foreach(uint k in group.Value)
+                {
+                    soleKey = k;
+                    break;
+                }
+
+                result[group.Key] = NodeHandle.ForSingleEntry(soleKey);
+
+                continue;
+            }
+
             HypertrieNode leaf = HypertrieNode.Create(1);
             foreach(uint member in group.Value)
             {
@@ -469,7 +487,12 @@ public static class HypertrieOps
         {
             foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
             {
-                if(entry.Value.IsNone)
+                //SEN children carry their content inline in the slot,
+                //so they have no arena entry to look up. The parent's
+                //folded identifier mixes their identifier in via
+                //ChildIdentifierValue's SEN branch, computed on the
+                //fly from the SEN key.
+                if(entry.Value.IsNone || entry.Value.IsSingleEntry)
                 {
                     continue;
                 }
@@ -489,6 +512,39 @@ public static class HypertrieOps
             }
         }
         return result;
+    }
+
+    //Returns the identifier-value to mix into a parent's folded
+    //identifier for the given child slot. None slots contribute
+    //the leaf-child marker; SEN slots contribute the synthetic
+    //depth-1 identifier their content would produce as an FN leaf;
+    //FN slots look up the precomputed identifier in the table.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ulong ChildIdentifierValue(NodeHandle child, VeritasHash hash, Dictionary<NodeHandle, NodeIdentifier> table)
+    {
+        if(child.IsNone)
+        {
+            return LeafChildMarker;
+        }
+
+        if(child.IsSingleEntry)
+        {
+            return SenIdentifierValue(hash, child.SingleEntryKey);
+        }
+
+        return table[child].Value;
+    }
+
+    //The identifier value an SEN-encoded slot contributes to its
+    //parent's identifier. An SEN slot represents the same content
+    //as a depth-1 FN leaf with one entry; computing the same hash
+    //both representations would produce keeps build-path dedup
+    //consistent across SEN/FN representations of equal content.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ulong SenIdentifierValue(VeritasHash hash, uint singleKey)
+    {
+        ulong entryHash = NodeEntryHashing.Default(hash, singleKey, LeafChildMarker);
+        return entryHash & NodeIdentifier.ContentMask;
     }
 
     //Computes the identifier of a single node by XOR-folding a
@@ -538,7 +594,8 @@ public static class HypertrieOps
     }
 
     //Folds a single inner node's identifier given a complete
-    //child-identifier table.
+    //child-identifier table for its FN children. SEN and None
+    //children resolve via the same path.
     private static NodeIdentifier FoldInner(
         HypertrieNode node,
         VeritasHash hash,
@@ -549,7 +606,7 @@ public static class HypertrieOps
         {
             foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
             {
-                ulong childIdentifier = entry.Value.IsNone ? LeafChildMarker : childIdentifiers[entry.Value].Value;
+                ulong childIdentifier = ChildIdentifierValue(entry.Value, hash, childIdentifiers);
                 id = id.Add(NodeEntryHashing.Default(hash, entry.Key, childIdentifier));
             }
         }
@@ -582,15 +639,17 @@ public static class HypertrieOps
         NodeStore store,
         VeritasHash hash)
     {
-        //Seed the post-order walk from each non-None child of the
-        //root (the root itself has no handle in the store before
-        //interning, so its identifier is folded by the caller).
+        //Seed the post-order walk from each FN child of the root
+        //(SEN and None slots are not walk targets — SEN content is
+        //inline, None means absent). The root itself has no handle
+        //in the store before interning, so its identifier is folded
+        //by the caller.
         List<NodeHandle> seeds = [];
         for(int position = 0; position < root.Depth; position++)
         {
             foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(root.EdgeMaps[position]))
             {
-                if(!entry.Value.IsNone)
+                if(entry.Value.IsArenaHandle)
                 {
                     seeds.Add(entry.Value);
                 }
@@ -608,7 +667,7 @@ public static class HypertrieOps
             {
                 foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
                 {
-                    ulong childIdentifier = entry.Value.IsNone ? LeafChildMarker : known[entry.Value].Value;
+                    ulong childIdentifier = ChildIdentifierValue(entry.Value, hash, known);
                     id = id.Add(NodeEntryHashing.Default(hash, entry.Key, childIdentifier));
                 }
             }
@@ -617,9 +676,10 @@ public static class HypertrieOps
         return known;
     }
 
-    //Adjacency for the post-order walk: yields every non-None
-    //child handle referenced from any of the node's edge maps.
-    //Closes over `store` so the delegate can dereference handles.
+    //Adjacency for the post-order walk: yields every FN child
+    //handle referenced from any of the node's edge maps. SEN
+    //children carry their content inline and have no arena entry
+    //to descend into. None slots are absence sentinels.
     private static IEnumerable<NodeHandle> EnumerateNonNullChildHandles(NodeHandle handle, NodeStore store)
     {
         HypertrieNode node = store.GetByHandle(handle);
@@ -627,7 +687,7 @@ public static class HypertrieOps
         {
             foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
             {
-                if(!entry.Value.IsNone)
+                if(entry.Value.IsArenaHandle)
                 {
                     yield return entry.Value;
                 }
@@ -732,15 +792,39 @@ public static class HypertrieOps
                 if(EdgeMap.TryGetChild(in node.EdgeMaps[chosenEdgeMapIndex], chosenBound.Encoded, inlineLookup, out NodeHandle childHandle)
                     && !childHandle.IsNone)
                 {
-                    HypertrieNode child = store.GetByHandle(childHandle);
-                    stack.Push(NewMatchFrame(frame, chosenPosition, chosenBound.Encoded, child, childPending));
+                    if(childHandle.IsSingleEntry)
+                    {
+                        ProcessSingleEntryChild(frame, chosenPosition, chosenBound.Encoded, childPending, childHandle.SingleEntryKey, subject, predicate, @object, out EncodedTriple? produced);
+                        if(produced is EncodedTriple senTriple)
+                        {
+                            yield return senTriple;
+                        }
+                    }
+                    else
+                    {
+                        HypertrieNode child = store.GetByHandle(childHandle);
+                        stack.Push(NewMatchFrame(frame, chosenPosition, chosenBound.Encoded, child, childPending));
+                    }
                 }
             }
             else
             {
                 foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(node.EdgeMaps[chosenEdgeMapIndex]))
                 {
-                    if(!entry.Value.IsNone)
+                    if(entry.Value.IsNone)
+                    {
+                        continue;
+                    }
+
+                    if(entry.Value.IsSingleEntry)
+                    {
+                        ProcessSingleEntryChild(frame, chosenPosition, entry.Key, childPending, entry.Value.SingleEntryKey, subject, predicate, @object, out EncodedTriple? produced);
+                        if(produced is EncodedTriple senTriple)
+                        {
+                            yield return senTriple;
+                        }
+                    }
+                    else
                     {
                         HypertrieNode child = store.GetByHandle(entry.Value);
                         stack.Push(NewMatchFrame(frame, chosenPosition, entry.Key, child, childPending));
@@ -748,6 +832,71 @@ public static class HypertrieOps
                 }
             }
         }
+    }
+
+    //Resolves a SEN child at the depth-2 → depth-1 transition. The
+    //SEN carries the last position's value inline; this method
+    //applies any bound on that position, and on a match emits a
+    //fully-resolved triple via the out parameter. A null out
+    //indicates the SEN's key did not match the bound.
+    private static void ProcessSingleEntryChild(
+        MatchFrame frame,
+        int chosenPosition,
+        uint chosenValue,
+        byte childPending,
+        uint senKey,
+        TermId subject,
+        TermId predicate,
+        TermId @object,
+        out EncodedTriple? produced)
+    {
+        Debug.Assert(BitOperations.PopCount((uint)childPending) == 1,
+            "SEN child requires exactly one remaining position; SEN at non-leaf descent is an invariant violation.");
+
+        int lastPosition = BitOperations.TrailingZeroCount((uint)childPending);
+        TermId lastBound = BoundForPosition(lastPosition, subject, predicate, @object);
+
+        if(!lastBound.IsNone && lastBound.Encoded != senKey)
+        {
+            produced = null;
+
+            return;
+        }
+
+        produced = BuildTripleTwoPositions(frame, chosenPosition, chosenValue, lastPosition, senKey);
+    }
+
+    //Returns the user-supplied bound for the given original position.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static TermId BoundForPosition(int position, TermId subject, TermId predicate, TermId @object)
+    {
+        return position switch
+        {
+            PositionSubject => subject,
+            PositionPredicate => predicate,
+            PositionObject => @object,
+            _ => throw new UnreachableException(),
+        };
+    }
+
+    //Builds a triple from a match frame plus two newly-resolved
+    //positions. Used at SEN descent where both the depth-2 entry's
+    //key and the SEN's inline key are resolved in one step.
+    private static EncodedTriple BuildTripleTwoPositions(MatchFrame frame, int firstPosition, uint firstValue, int secondPosition, uint secondValue)
+    {
+        uint s =
+            firstPosition == PositionSubject ? firstValue :
+            secondPosition == PositionSubject ? secondValue :
+            frame.ResolvedSubject ?? throw new InvalidOperationException("Subject not resolved when constructing triple.");
+        uint p =
+            firstPosition == PositionPredicate ? firstValue :
+            secondPosition == PositionPredicate ? secondValue :
+            frame.ResolvedPredicate ?? throw new InvalidOperationException("Predicate not resolved when constructing triple.");
+        uint o =
+            firstPosition == PositionObject ? firstValue :
+            secondPosition == PositionObject ? secondValue :
+            frame.ResolvedObject ?? throw new InvalidOperationException("Object not resolved when constructing triple.");
+        return EncodedTriple.FromEncoded(s, p, o);
     }
 
     //Picks the next original position to descend on. Preference is
