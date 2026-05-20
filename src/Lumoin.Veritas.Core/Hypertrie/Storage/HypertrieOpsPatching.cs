@@ -19,54 +19,20 @@ namespace Lumoin.Veritas.Core.Hypertrie.Storage;
 /// a base root and a delta. Both go through the same
 /// <see cref="NodeStore.Intern"/> and converge on the same
 /// canonical depth-3 root for any pair of inputs that resolve to
-/// the same final triple set. The parity is exercised in
-/// dedicated tests; here it is enforced by structure: every node
-/// the patcher produces is built from scratch using
-/// <see cref="EdgeMap.InsertOrReplace"/> and interned through the
-/// same store, so the resulting <c>EdgeMap.Kind</c> mirrors what
-/// the build path produces for the same entry set
-/// (<c>Empty</c> for zero entries, <c>Inline</c> for one,
-/// <c>SortedArray</c> for two or more).
-/// </para>
-/// <para>
-/// <b>Three descent paths.</b> The depth-3 root has three edge
-/// maps — one per starting position. The root's S-position edge
-/// map's child at key <c>s</c> is a depth-2 node whose first edge
-/// map is keyed by the predicate (with depth-1 leaves indexed by
-/// object) and whose second edge map is keyed by the object
-/// (with depth-1 leaves indexed by predicate). The P- and
-/// O-position edge maps have analogous shapes; the precise
-/// inner-key ordering is fixed by
-/// <see cref="HypertrieOps.BuildBottomUp"/> and the patcher
-/// matches it exactly so the canonical interned instances align.
+/// the same final triple set.
 /// </para>
 /// <para>
 /// <b>Per-edit cost.</b> A single triple add or remove touches
 /// six depth-1 leaves — two leaves per descent path, one keyed by
 /// the inner-1 position and one keyed by the inner-2 position —
 /// plus three depth-2 nodes (one per descent path) plus the root.
-/// All ten of those nodes are re-interned. The remainder of the
-/// hypertrie is shared with the input.
-/// </para>
-/// <para>
-/// <b>Batching.</b> Edits arrive as collections, not one at a
-/// time. Within one <see cref="ApplyDelta"/> call the patcher
-/// groups every edit by its outer key for each descent path,
-/// processes the affected (path, outer-key) buckets once each,
-/// and produces one new D2 node per bucket — not one D2 node per
-/// edit. A session committing N edits all sharing the same outer
-/// keys re-interns 3 + bucket_count D2s and one root, not 3N
-/// D2s and N roots.
+/// All ten of those nodes are re-interned.
 /// </para>
 /// <para>
 /// <b>Delta filtering.</b> The caller supplies the literal
 /// session edits; the patcher filters them against the base
 /// snapshot before applying. An add of a triple already present
-/// is a no-op; a remove of a triple not present is a no-op. The
-/// resulting effective additions and effective removals are
-/// returned alongside the new root and identifier so the caller
-/// can record them on the journal entry — the journal sees what
-/// actually changed, not what the session asked for.
+/// is a no-op; a remove of a triple not present is a no-op.
 /// </para>
 /// </remarks>
 public static class HypertrieOpsPatching
@@ -108,8 +74,7 @@ public static class HypertrieOpsPatching
         ArgumentNullException.ThrowIfNull(removals);
         ArgumentNullException.ThrowIfNull(store);
 
-        NodeHandle baseRootHandle = baseSnapshot.Root;
-        HypertrieNode baseRoot = store.GetByHandle(baseRootHandle);
+        HypertrieNode baseRoot = baseSnapshot.Root;
         if(baseRoot.Depth != 3)
         {
             throw new ArgumentException(
@@ -121,7 +86,7 @@ public static class HypertrieOpsPatching
         List<EncodedTriple> effectiveAdds = new(additions.Count);
         foreach(EncodedTriple triple in additions)
         {
-            if(!IsPresent(baseRoot, store, triple))
+            if(!IsPresent(baseRoot, triple))
             {
                 effectiveAdds.Add(triple);
             }
@@ -130,7 +95,7 @@ public static class HypertrieOpsPatching
         List<EncodedTriple> effectiveRemoves = new(removals.Count);
         foreach(EncodedTriple triple in removals)
         {
-            if(IsPresent(baseRoot, store, triple))
+            if(IsPresent(baseRoot, triple))
             {
                 effectiveRemoves.Add(triple);
             }
@@ -139,7 +104,7 @@ public static class HypertrieOpsPatching
         if(effectiveAdds.Count == 0 && effectiveRemoves.Count == 0)
         {
             return new ApplyDeltaResult(
-                Root: baseRootHandle,
+                Root: baseRoot,
                 Id: baseSnapshot.Id,
                 EffectiveAdditions: [],
                 EffectiveRemovals: []);
@@ -152,7 +117,7 @@ public static class HypertrieOpsPatching
         //  O-first: outer=O, inner1=S, inner2=P
         //Each path yields a fresh root edge map.
         EdgeMap newSubjectEdgeMap = PatchPath(
-            in baseRoot.EdgeMaps[PositionSubject],
+            in baseRoot.Edge0,
             effectiveAdds,
             effectiveRemoves,
             outer: PositionSubject,
@@ -162,7 +127,7 @@ public static class HypertrieOpsPatching
             pools);
 
         EdgeMap newPredicateEdgeMap = PatchPath(
-            in baseRoot.EdgeMaps[PositionPredicate],
+            in baseRoot.Edge1,
             effectiveAdds,
             effectiveRemoves,
             outer: PositionPredicate,
@@ -172,7 +137,7 @@ public static class HypertrieOpsPatching
             pools);
 
         EdgeMap newObjectEdgeMap = PatchPath(
-            in baseRoot.EdgeMaps[PositionObject],
+            in baseRoot.Edge2,
             effectiveAdds,
             effectiveRemoves,
             outer: PositionObject,
@@ -181,36 +146,24 @@ public static class HypertrieOpsPatching
             store,
             pools);
 
-        //Assemble the new root. EdgeMap is a struct; assigning
-        //into the array slots is a copy of the value type, so the
-        //heap arrays produced by PatchPath flow into the new root
-        //without aliasing the path-local locals.
-        HypertrieNode newRoot = HypertrieNode.Create(3);
-        newRoot.EdgeMaps[PositionSubject] = newSubjectEdgeMap;
-        newRoot.EdgeMaps[PositionPredicate] = newPredicateEdgeMap;
-        newRoot.EdgeMaps[PositionObject] = newObjectEdgeMap;
+        //Assemble the new root.
+        HypertrieNode newRoot = new(3);
+        newRoot.Edge0 = newSubjectEdgeMap;
+        newRoot.Edge1 = newPredicateEdgeMap;
+        newRoot.Edge2 = newObjectEdgeMap;
 
-        Dictionary<NodeHandle, NodeIdentifier> childIdentifiers = CollectChildIdentifiers(newRoot, store, store.Hash);
-        NodeIdentifier newRootId = ComputeIdentifier(newRoot, store, store.Hash, childIdentifiers);
-        NodeHandle canonicalRootHandle = store.Intern(newRootId, newRoot);
+        Dictionary<HypertrieNode, NodeIdentifier> childIdentifiers = CollectChildIdentifiers(newRoot, store.Hash);
+        NodeIdentifier newRootId = ComputeIdentifier(newRoot, store.Hash, childIdentifiers);
+        HypertrieNode canonicalRoot = store.Intern(newRootId, newRoot);
 
         return new ApplyDeltaResult(
-            Root: canonicalRootHandle,
+            Root: canonicalRoot,
             Id: newRootId,
             EffectiveAdditions: effectiveAdds,
             EffectiveRemovals: effectiveRemoves);
     }
 
-    //Patches one of the three descent paths off the root. Walks
-    //the base path's outer edge map, building a new edge map by:
-    //  - groupings of edits affecting outer keys present in the base
-    //    drive PatchD2 to produce updated D2 nodes (or NodeHandle.None
-    //    when the bucket becomes empty);
-    //  - groupings of edits affecting outer keys NOT present in the
-    //    base produce fresh D2 nodes from scratch;
-    //  - outer keys present in the base with no edits affecting them
-    //    are copied through as references to the existing canonical
-    //    D2 nodes — those subtrees are shared.
+    //Patches one of the three descent paths off the root.
     private static EdgeMap PatchPath(
         in EdgeMap baseOuterEdgeMap,
         List<EncodedTriple> effectiveAdds,
@@ -221,14 +174,7 @@ public static class HypertrieOpsPatching
         NodeStore store,
         BuildPools pools)
     {
-        //Group edits by their outer key. Each bucket carries the
-        //(inner1, inner2) projections of the affected triples plus
-        //a kind flag indicating whether the edit is an add or a
-        //remove. The dictionary's value is keyed by inner1, then by
-        //inner2, and the bool says "true=add, false=remove" because
-        //a given (outer, inner1, inner2) triple is added xor removed
-        //inside one ApplyDelta call (the EditBuffer layer above
-        //already collapsed the two on a same-triple basis).
+        //Group edits by their outer key.
         Dictionary<uint, List<EditEntry>> editsByOuter = [];
         foreach(EncodedTriple triple in effectiveAdds)
         {
@@ -263,37 +209,34 @@ public static class HypertrieOpsPatching
         //First pass: walk the base outer edge map. Every existing
         //outer key either has edits (rebuild its D2) or has none
         //(carry its D2 over unchanged).
-        foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(baseOuterEdgeMap))
+        foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(baseOuterEdgeMap))
         {
             uint outerKey = entry.Key;
-            NodeHandle oldD2Handle = entry.Value;
+            HypertrieNode? oldD2 = entry.Value;
 
             if(editsByOuter.TryGetValue(outerKey, out List<EditEntry>? bucket))
             {
-                NodeHandle newD2Handle = PatchD2(oldD2Handle, bucket, store, pools);
-                if(!newD2Handle.IsNone)
+                HypertrieNode? newD2 = PatchD2(oldD2, bucket, store, pools);
+                if(newD2 is not null)
                 {
-                    EdgeMap.InsertOrReplace(ref newEdgeMap, outerKey, newD2Handle, pools, pools.InlineLookup);
+                    EdgeMap.InsertOrReplace(ref newEdgeMap, outerKey, newD2, pools, pools.InlineLookup);
                 }
                 editsByOuter.Remove(outerKey);
             }
             else
             {
-                EdgeMap.InsertOrReplace(ref newEdgeMap, outerKey, oldD2Handle, pools, pools.InlineLookup);
+                EdgeMap.InsertOrReplace(ref newEdgeMap, outerKey, oldD2, pools, pools.InlineLookup);
             }
         }
 
         //Second pass: outer keys that survived the dictionary erase
-        //above are pure-additions buckets — the base did not have
-        //the outer key, so every edit in the bucket must be an add
-        //(removes against absent triples were filtered earlier).
-        //Build a fresh D2 for each.
+        //above are pure-additions buckets.
         foreach(KeyValuePair<uint, List<EditEntry>> remaining in editsByOuter)
         {
-            NodeHandle newD2Handle = PatchD2(oldD2Handle: NodeHandle.None, remaining.Value, store, pools);
-            if(!newD2Handle.IsNone)
+            HypertrieNode? newD2 = PatchD2(oldD2: null, remaining.Value, store, pools);
+            if(newD2 is not null)
             {
-                EdgeMap.InsertOrReplace(ref newEdgeMap, remaining.Key, newD2Handle, pools, pools.InlineLookup);
+                EdgeMap.InsertOrReplace(ref newEdgeMap, remaining.Key, newD2, pools, pools.InlineLookup);
             }
         }
 
@@ -301,18 +244,12 @@ public static class HypertrieOpsPatching
     }
 
     //Patches one depth-2 node for a single (outer-key) bucket.
-    //Builds a fresh D2 from scratch using EdgeMap.InsertOrReplace,
-    //which means the resulting EdgeMap kinds follow the canonical
-    //promotion ladder for the post-edit entry counts. Returns
-    //NodeHandle.None when both edge maps end up empty — that is the
+    //Returns null when both edge maps end up empty — that is the
     //signal to the caller that the outer key should be dropped from
     //the root edge map entirely.
-    private static NodeHandle PatchD2(NodeHandle oldD2Handle, List<EditEntry> bucket, NodeStore store, BuildPools pools)
+    private static HypertrieNode? PatchD2(HypertrieNode? oldD2, List<EditEntry> bucket, NodeStore store, BuildPools pools)
     {
-        //Re-bucket edits by inner1 (drives the first edge map's
-        //leaves) and by inner2 (drives the second edge map's
-        //leaves). Same edits, two views; mirrors the symmetry the
-        //build path uses.
+        //Re-bucket edits by inner1 and inner2.
         Dictionary<uint, List<LeafEdit>> byInner1 = [];
         Dictionary<uint, List<LeafEdit>> byInner2 = [];
 
@@ -334,31 +271,27 @@ public static class HypertrieOpsPatching
         }
 
         //Build the two new edge maps.
-        EdgeMap baseEdgeMap0 = oldD2Handle.IsNone ? default : store.GetByHandle(oldD2Handle).EdgeMaps[0];
-        EdgeMap baseEdgeMap1 = oldD2Handle.IsNone ? default : store.GetByHandle(oldD2Handle).EdgeMaps[1];
+        EdgeMap baseEdgeMap0 = oldD2 is null ? default : oldD2.Edge0;
+        EdgeMap baseEdgeMap1 = oldD2 is null ? default : oldD2.Edge1;
 
         EdgeMap newEdgeMap0 = PatchD2EdgeMap(baseEdgeMap0, byInner1, store, pools);
         EdgeMap newEdgeMap1 = PatchD2EdgeMap(baseEdgeMap1, byInner2, store, pools);
 
         if(EdgeMap.Count(in newEdgeMap0) == 0 && EdgeMap.Count(in newEdgeMap1) == 0)
         {
-            return NodeHandle.None;
+            return null;
         }
 
-        HypertrieNode newD2 = HypertrieNode.Create(2);
-        newD2.EdgeMaps[0] = newEdgeMap0;
-        newD2.EdgeMaps[1] = newEdgeMap1;
+        HypertrieNode newD2 = new(2);
+        newD2.Edge0 = newEdgeMap0;
+        newD2.Edge1 = newEdgeMap1;
 
-        Dictionary<NodeHandle, NodeIdentifier> childIdentifiers = CollectChildIdentifiers(newD2, store, store.Hash);
-        NodeIdentifier identifier = ComputeIdentifier(newD2, store, store.Hash, childIdentifiers);
+        Dictionary<HypertrieNode, NodeIdentifier> childIdentifiers = CollectChildIdentifiers(newD2, store.Hash);
+        NodeIdentifier identifier = ComputeIdentifier(newD2, store.Hash, childIdentifiers);
         return store.Intern(identifier, newD2);
     }
 
-    //Patches one of the two edge maps inside a D2 node. The
-    //structure mirrors PatchPath at one level shallower: walk the
-    //base edge map, rebuild a leaf for every key with edits, copy
-    //through every key without edits, then process pure-addition
-    //leaves not present in the base.
+    //Patches one of the two edge maps inside a D2 node.
     private static EdgeMap PatchD2EdgeMap(
         EdgeMap baseEdgeMap,
         Dictionary<uint, List<LeafEdit>> editsByLeafKey,
@@ -367,49 +300,40 @@ public static class HypertrieOpsPatching
     {
         EdgeMap newEdgeMap = default;
 
-        //Snapshot pending leaf-edit keys so we can drop entries as
-        //we consume them — the dictionary itself is mutated inside
-        //the loop. Iteration order over the base edge map is
-        //independent of dictionary mutation.
-        foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(baseEdgeMap))
+        foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(baseEdgeMap))
         {
             uint leafKey = entry.Key;
-            NodeHandle oldLeafHandle = entry.Value;
+            HypertrieNode? oldLeaf = entry.Value;
 
             if(editsByLeafKey.TryGetValue(leafKey, out List<LeafEdit>? edits))
             {
-                NodeHandle newLeafHandle = PatchLeaf(oldLeafHandle, edits, store, pools);
-                if(!newLeafHandle.IsNone)
+                HypertrieNode? newLeaf = PatchLeaf(oldLeaf, edits, store, pools);
+                if(newLeaf is not null)
                 {
-                    EdgeMap.InsertOrReplace(ref newEdgeMap, leafKey, newLeafHandle, pools, pools.InlineLookup);
+                    EdgeMap.InsertOrReplace(ref newEdgeMap, leafKey, newLeaf, pools, pools.InlineLookup);
                 }
                 editsByLeafKey.Remove(leafKey);
             }
             else
             {
-                EdgeMap.InsertOrReplace(ref newEdgeMap, leafKey, oldLeafHandle, pools, pools.InlineLookup);
+                EdgeMap.InsertOrReplace(ref newEdgeMap, leafKey, oldLeaf, pools, pools.InlineLookup);
             }
         }
 
         foreach(KeyValuePair<uint, List<LeafEdit>> remaining in editsByLeafKey)
         {
-            NodeHandle newLeafHandle = PatchLeaf(oldLeafHandle: NodeHandle.None, remaining.Value, store, pools);
-            if(!newLeafHandle.IsNone)
+            HypertrieNode? newLeaf = PatchLeaf(oldLeaf: null, remaining.Value, store, pools);
+            if(newLeaf is not null)
             {
-                EdgeMap.InsertOrReplace(ref newEdgeMap, remaining.Key, newLeafHandle, pools, pools.InlineLookup);
+                EdgeMap.InsertOrReplace(ref newEdgeMap, remaining.Key, newLeaf, pools, pools.InlineLookup);
             }
         }
 
         return newEdgeMap;
     }
 
-    //Patches one depth-1 leaf. Rebuilds the edge map from scratch:
-    //every old key not in the removes list is reinserted, then
-    //every new addition is inserted. The InsertOrReplace path
-    //chooses the canonical EdgeMapKind for the resulting entry
-    //count. Returns NodeHandle.None when no entries survive — the
-    //leaf is dead and the caller drops the corresponding bucket key.
-    private static NodeHandle PatchLeaf(NodeHandle oldLeafHandle, List<LeafEdit> edits, NodeStore store, BuildPools pools)
+    //Patches one depth-1 leaf. Returns null when no entries survive.
+    private static HypertrieNode? PatchLeaf(HypertrieNode? oldLeaf, List<LeafEdit> edits, NodeStore store, BuildPools pools)
     {
         //Materialise the removed keys for O(1) membership in the
         //old-key copy loop.
@@ -424,14 +348,13 @@ public static class HypertrieOpsPatching
 
         EdgeMap newEdgeMap = default;
 
-        if(!oldLeafHandle.IsNone)
+        if(oldLeaf is not null)
         {
-            HypertrieNode oldLeaf = store.GetByHandle(oldLeafHandle);
-            foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(oldLeaf.EdgeMaps[0]))
+            foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(oldLeaf.Edge0))
             {
                 if(!removedKeys.Contains(entry.Key))
                 {
-                    EdgeMap.InsertOrReplace(ref newEdgeMap, entry.Key, NodeHandle.None, pools, pools.InlineLookup);
+                    EdgeMap.InsertOrReplace(ref newEdgeMap, entry.Key, child: null, pools, pools.InlineLookup);
                 }
             }
         }
@@ -440,32 +363,25 @@ public static class HypertrieOpsPatching
         {
             if(edit.IsAddition)
             {
-                //InsertOrReplace is idempotent on duplicate keys, so
-                //adding a key that the base also carried (which the
-                //pre-filter against IsPresent should have excluded
-                //anyway) is harmless.
-                EdgeMap.InsertOrReplace(ref newEdgeMap, edit.Key, NodeHandle.None, pools, pools.InlineLookup);
+                EdgeMap.InsertOrReplace(ref newEdgeMap, edit.Key, child: null, pools, pools.InlineLookup);
             }
         }
 
         if(EdgeMap.Count(in newEdgeMap) == 0)
         {
-            return NodeHandle.None;
+            return null;
         }
 
-        HypertrieNode newLeaf = HypertrieNode.Create(1);
-        newLeaf.EdgeMaps[0] = newEdgeMap;
+        HypertrieNode newLeaf = new(1);
+        newLeaf.Edge0 = newEdgeMap;
 
-        NodeIdentifier identifier = ComputeIdentifier(newLeaf, store, store.Hash, knownChildIdentifiers: null);
+        NodeIdentifier identifier = ComputeIdentifier(newLeaf, store.Hash, knownChildIdentifiers: null);
         return store.Intern(identifier, newLeaf);
     }
 
     //Walks the depth-3 hypertrie rooted at `root` checking whether
-    //`triple` is present. Reuses HypertrieOps.Match's S-first
-    //descent contract: descend the subject edge map, then the
-    //object edge map of the resulting D2, then check the leaf for
-    //the predicate.
-    private static bool IsPresent(HypertrieNode root, NodeStore store, EncodedTriple triple)
+    //`triple` is present.
+    private static bool IsPresent(HypertrieNode root, EncodedTriple triple)
     {
         uint s = triple.Subject.Encoded;
         uint p = triple.Predicate.Encoded;
@@ -473,28 +389,22 @@ public static class HypertrieOpsPatching
         InlineKeyLookup inlineLookup = InlineKeyLookups.Scalar;
 
         //Step 1: subject edge map at the root → D2 node keyed by P, O.
-        if(!EdgeMap.TryGetChild(in root.EdgeMaps[PositionSubject], s, inlineLookup, out NodeHandle d2Handle) || d2Handle.IsNone)
+        if(!EdgeMap.TryGetChild(in root.Edge0, s, inlineLookup, out HypertrieNode? d2) || d2 is null)
         {
             return false;
         }
 
-        HypertrieNode d2 = store.GetByHandle(d2Handle);
-
-        //Step 2: D2.EdgeMaps[0] (keyed by P) → leaf indexed by O.
-        if(!EdgeMap.TryGetChild(in d2.EdgeMaps[0], p, inlineLookup, out NodeHandle leafHandle) || leafHandle.IsNone)
+        //Step 2: D2.Edge0 (keyed by P) → leaf indexed by O.
+        if(!EdgeMap.TryGetChild(in d2.Edge0, p, inlineLookup, out HypertrieNode? leaf) || leaf is null)
         {
             return false;
         }
 
-        HypertrieNode leaf = store.GetByHandle(leafHandle);
-
-        //Step 3: leaf.EdgeMaps[0] (keyed by O) → presence.
-        return EdgeMap.TryGetChild(in leaf.EdgeMaps[0], o, inlineLookup, out _);
+        //Step 3: leaf.Edge0 (keyed by O) → presence.
+        return EdgeMap.TryGetChild(in leaf.Edge0, o, inlineLookup, out _);
     }
 
     //Reads the value at `position` from `triple` (0=S, 1=P, 2=O).
-    //Mirrors HypertrieOps.ValueAt; declared locally because that
-    //one is private to HypertrieOps.
     private static uint ValueAt(EncodedTriple triple, int position)
     {
         return position switch
@@ -507,19 +417,16 @@ public static class HypertrieOpsPatching
     }
 
     //Walks `node`'s edge maps and collects the canonical identifier
-    //of every distinct non-None child via post-order traversal.
-    //Children produced by Patch* are interned through the store, so
-    //their identifiers are recoverable by recomputing from content.
-    //This mirrors HypertrieOps.CollectChildIdentifiers exactly so
-    //the two routines agree on per-node identifiers.
-    private static Dictionary<NodeHandle, NodeIdentifier> CollectChildIdentifiers(HypertrieNode node, NodeStore store, VeritasHash hash)
+    //of every distinct non-null child via recomputation from content.
+    private static Dictionary<HypertrieNode, NodeIdentifier> CollectChildIdentifiers(HypertrieNode node, VeritasHash hash)
     {
-        Dictionary<NodeHandle, NodeIdentifier> result = [];
+        Dictionary<HypertrieNode, NodeIdentifier> result = [];
         for(int position = 0; position < node.Depth; position++)
         {
-            foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
+            ref EdgeMap map = ref node.EdgeMapAt(position);
+            foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(map))
             {
-                if(entry.Value.IsNone)
+                if(entry.Value is null)
                 {
                     continue;
                 }
@@ -527,35 +434,27 @@ public static class HypertrieOpsPatching
                 {
                     continue;
                 }
-                HypertrieNode childNode = store.GetByHandle(entry.Value);
-                NodeIdentifier childIdentifier = ComputeIdentifier(childNode, store, hash, knownChildIdentifiers: null);
+                NodeIdentifier childIdentifier = ComputeIdentifier(entry.Value, hash, knownChildIdentifiers: null);
                 result[entry.Value] = childIdentifier;
             }
         }
         return result;
     }
 
-    //Computes the identifier of a single node by XOR-folding a
-    //per-entry hash over every entry in every edge map. Delegates
-    //to HypertrieOps so the build and patch paths cannot drift —
-    //both produce the same identifier for the same content using
-    //the same per-entry mixer and the same leaf-child marker.
+    //Computes the identifier of a single node. Delegates to
+    //HypertrieOps so the build and patch paths cannot drift.
     private static NodeIdentifier ComputeIdentifier(
         HypertrieNode node,
-        NodeStore store,
         VeritasHash hash,
-        Dictionary<NodeHandle, NodeIdentifier>? knownChildIdentifiers)
+        Dictionary<HypertrieNode, NodeIdentifier>? knownChildIdentifiers)
     {
-        return HypertrieOps.ComputeIdentifier(node, store, hash, knownChildIdentifiers);
+        return HypertrieOps.ComputeIdentifier(node, hash, knownChildIdentifiers);
     }
 
     //An edit affecting one (outer, inner1, inner2) cell of one
     //descent path. IsAddition is the kind flag.
     private readonly record struct EditEntry(uint Inner1, uint Inner2, bool IsAddition);
 
-    //An edit affecting one entry of one depth-1 leaf. The leaf's
-    //single edge map is keyed by the original triple's third
-    //position; Key carries that position's value. IsAddition is
-    //the kind flag.
+    //An edit affecting one entry of one depth-1 leaf.
     private readonly record struct LeafEdit(uint Key, bool IsAddition);
 }

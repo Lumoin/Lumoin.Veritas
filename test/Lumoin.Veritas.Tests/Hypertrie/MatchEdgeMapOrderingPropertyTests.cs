@@ -83,7 +83,7 @@ internal sealed class MatchEdgeMapOrderingPropertyTests
                 TermId p = pBound ? binding.Predicate : TermId.None;
                 TermId o = oBound ? binding.Object : TermId.None;
 
-                HashSet<EncodedTriple> actual = [.. HypertrieOps.Match(graph.Snapshot.Store.GetByHandle(graph.Snapshot.Root), graph.Snapshot.Store, s, p, o)];
+                HashSet<EncodedTriple> actual = [.. HypertrieOps.Match(graph.Snapshot.Root, s, p, o)];
                 HashSet<EncodedTriple> expected = [.. ground.Where(t =>
                     (!sBound || t.Subject == s) &&
                     (!pBound || t.Predicate == p) &&

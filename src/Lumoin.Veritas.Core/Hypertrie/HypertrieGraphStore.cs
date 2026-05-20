@@ -139,7 +139,7 @@ public sealed class HypertrieGraphStore
 
         try
         {
-            store = new NodeStore(hash, pools.NodePool);
+            store = new NodeStore(hash);
             HypertrieGraphStore result = await BuildAsync(triples, store, pools, cancellationToken).ConfigureAwait(false);
             store = null;
 
@@ -216,7 +216,7 @@ public sealed class HypertrieGraphStore
         SharedScope scope = await store.EnterSharedScopeAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            (NodeHandle rootHandle, NodeIdentifier rootId) = HypertrieOps.BuildBottomUpWithIdentifier(distinctSorted, store, pools);
+            (HypertrieNode root, NodeIdentifier rootId) = HypertrieOps.BuildBottomUpWithIdentifier(distinctSorted, store, pools);
 
             //Journal append (when the store has a journal). The OCC
             //contract requires a parent of NodeIdentifier.Empty; a
@@ -231,7 +231,7 @@ public sealed class HypertrieGraphStore
                 await store.JournalAppend(entry, NodeIdentifier.Empty, cancellationToken).ConfigureAwait(false);
             }
 
-            HypertrieSnapshot snapshot = new(store, rootHandle, rootId);
+            HypertrieSnapshot snapshot = new(store, root, rootId);
 
             return new HypertrieGraphStore(snapshot, distinctSorted.Count);
         }
@@ -277,8 +277,7 @@ public sealed class HypertrieGraphStore
     /// </remarks>
     public IEnumerable<EncodedTriple> Match(TermId subject, TermId predicate, TermId @object)
     {
-        HypertrieNode root = Snapshot.Store.GetByHandle(Snapshot.Root);
-        return HypertrieOps.Match(root, Snapshot.Store, subject, predicate, @object);
+        return HypertrieOps.Match(Snapshot.Root, subject, predicate, @object);
     }
 
     /// <summary>

@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using Lumoin.Veritas.Core.Hypertrie.Storage;
 
 namespace Lumoin.Veritas.Core.Hypertrie.Storage;
 
@@ -10,7 +9,7 @@ namespace Lumoin.Veritas.Core.Hypertrie.Storage;
 /// edits filtered against the base snapshot's contents — so the
 /// caller can record exactly what changed on the journal entry.
 /// </summary>
-/// <param name="Root">The canonical (interned) new root's handle.</param>
+/// <param name="Root">The canonical (interned) new root reference.</param>
 /// <param name="Id">The content-addressed identifier of <paramref name="Root"/>.</param>
 /// <param name="EffectiveAdditions">Triples actually added — those not already present in the base.</param>
 /// <param name="EffectiveRemovals">Triples actually removed — those that were present in the base.</param>
@@ -25,7 +24,7 @@ namespace Lumoin.Veritas.Core.Hypertrie.Storage;
 /// </para>
 /// </remarks>
 public readonly record struct ApplyDeltaResult(
-    NodeHandle Root,
+    HypertrieNode Root,
     NodeIdentifier Id,
     IReadOnlyList<EncodedTriple> EffectiveAdditions,
     IReadOnlyList<EncodedTriple> EffectiveRemovals);

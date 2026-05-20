@@ -11,8 +11,9 @@ namespace Lumoin.Veritas.Core.Hypertrie.Storage;
 /// <summary>
 /// One edge map of a <see cref="HypertrieNode"/>. Maps an encoded
 /// term identifier (<see cref="uint"/>) to a child
-/// <see cref="NodeHandle"/> for inner nodes, or carries the key
-/// alone as a presence marker for depth-1 leaves.
+/// <see cref="HypertrieNode"/> reference for inner nodes, or
+/// carries the key alone (with a <c>null</c> child slot) as a
+/// presence marker for depth-1 leaves.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -76,10 +77,10 @@ namespace Lumoin.Veritas.Core.Hypertrie.Storage;
 /// <see cref="HypertrieNode.Depth"/> determines whether the edge
 /// map represents leaves (Depth == 1, descent stops; triples are
 /// emitted from the edge map's keys alone) or inner nodes (Depth
-/// 2 or 3, descent continues through child handles). At depth-1
-/// the child handles in this map are structurally
-/// <see cref="NodeHandle.None"/> and semantically unused; at
-/// depth-2 and depth-3 every child handle is non-None.
+/// 2 or 3, descent continues through child references). At depth-1
+/// the child references in this map are structurally <c>null</c>
+/// and semantically unused; at depth-2 and depth-3 every child
+/// reference is non-<c>null</c>.
 /// </para>
 /// <para>
 /// <b>Equality.</b> Two edge maps are equal when every field is
@@ -113,14 +114,14 @@ public struct EdgeMap: IEquatable<EdgeMap>
     /// <summary>For <see cref="EdgeMapKind.Inline"/>: inline storage for keys, ascending. Only the prefix <c>[0..InlineCount)</c> is valid.</summary>
     public InlineKeyBuffer InlineKeys;
 
-    /// <summary>For <see cref="EdgeMapKind.Inline"/>: inline storage for child handles, parallel to <see cref="InlineKeys"/>. Only the prefix <c>[0..InlineCount)</c> is valid. At depth-1 leaves every slot is <see cref="NodeHandle.None"/>.</summary>
+    /// <summary>For <see cref="EdgeMapKind.Inline"/>: inline storage for child references, parallel to <see cref="InlineKeys"/>. Only the prefix <c>[0..InlineCount)</c> is valid. At depth-1 leaves every slot is <c>null</c>.</summary>
     public InlineChildBuffer InlineChildren;
 
     /// <summary>For <see cref="EdgeMapKind.SortedArray"/>: the rented keys buffer. Owns the rental; disposed on grow or on <see cref="NodeStore.Dispose"/>.</summary>
     public IMemoryOwner<uint>? SortedKeysOwner { get; private set; }
 
-    /// <summary>For <see cref="EdgeMapKind.SortedArray"/>: the rented children buffer. Owns the rental; disposed on grow or on <see cref="NodeStore.Dispose"/>. At depth-1 leaves every slot is <see cref="NodeHandle.None"/>.</summary>
-    public IMemoryOwner<NodeHandle>? SortedChildrenOwner { get; private set; }
+    /// <summary>For <see cref="EdgeMapKind.SortedArray"/>: the rented children buffer. Owns the rental; disposed on grow or on <see cref="NodeStore.Dispose"/>. At depth-1 leaves every slot is <c>null</c>.</summary>
+    public IMemoryOwner<HypertrieNode?>? SortedChildrenOwner { get; private set; }
 
     /// <summary>For <see cref="EdgeMapKind.SortedArray"/>: the number of valid entries; the rented buffers may be longer.</summary>
     public int SortedCount { get; private set; }
@@ -147,9 +148,9 @@ public struct EdgeMap: IEquatable<EdgeMap>
     /// <param name="map">The map to query.</param>
     /// <param name="key">The key to search for.</param>
     /// <param name="inlineLookup">The inline-tier lookup implementation; obtain from <see cref="InlineKeyLookups.SelectBestAvailable"/> or a cached delegate.</param>
-    /// <param name="child">On <c>true</c>: the child handle associated with <paramref name="key"/>, which is <see cref="NodeHandle.None"/> at depth-1 leaves. On <c>false</c>: <see cref="NodeHandle.None"/>.</param>
+    /// <param name="child">On <c>true</c>: the child reference associated with <paramref name="key"/>, which is <c>null</c> at depth-1 leaves. On <c>false</c>: <c>null</c>.</param>
     /// <returns><c>true</c> when the key is present; otherwise <c>false</c>.</returns>
-    public static bool TryGetChild(in EdgeMap map, uint key, InlineKeyLookup inlineLookup, out NodeHandle child)
+    public static bool TryGetChild(in EdgeMap map, uint key, InlineKeyLookup inlineLookup, out HypertrieNode? child)
     {
         ArgumentNullException.ThrowIfNull(inlineLookup);
 
@@ -157,7 +158,7 @@ public struct EdgeMap: IEquatable<EdgeMap>
         {
             case EdgeMapKind.Empty:
             {
-                child = NodeHandle.None;
+                child = null;
 
                 return false;
             }
@@ -174,7 +175,7 @@ public struct EdgeMap: IEquatable<EdgeMap>
                     return true;
                 }
 
-                child = NodeHandle.None;
+                child = null;
 
                 return false;
             }
@@ -189,7 +190,7 @@ public struct EdgeMap: IEquatable<EdgeMap>
                     return true;
                 }
 
-                child = NodeHandle.None;
+                child = null;
 
                 return false;
             }
@@ -208,10 +209,10 @@ public struct EdgeMap: IEquatable<EdgeMap>
     /// </summary>
     /// <param name="map">The map to mutate.</param>
     /// <param name="key">The key to insert or replace.</param>
-    /// <param name="child">The child handle to store. <see cref="NodeHandle.None"/> is meaningful at depth-1 leaves (the key alone is the answer) and structurally meaningless elsewhere; the depth-2/depth-3 invariant is enforced by callers.</param>
+    /// <param name="child">The child reference to store. <c>null</c> is meaningful at depth-1 leaves (the key alone is the answer) and structurally meaningless elsewhere; the depth-2/depth-3 invariant is enforced by callers.</param>
     /// <param name="pools">The pools used for SortedArray buffer rentals when this insert triggers a promotion or a grow.</param>
     /// <param name="inlineLookup">The inline-tier lookup implementation, used to detect duplicate keys inside the Inline tier.</param>
-    public static void InsertOrReplace(ref EdgeMap map, uint key, NodeHandle child, BuildPools pools, InlineKeyLookup inlineLookup)
+    public static void InsertOrReplace(ref EdgeMap map, uint key, HypertrieNode? child, BuildPools pools, InlineKeyLookup inlineLookup)
     {
         ArgumentNullException.ThrowIfNull(inlineLookup);
 
@@ -266,7 +267,7 @@ public struct EdgeMap: IEquatable<EdgeMap>
                 }
 
                 Span<uint> writableKeys = map.SortedKeysOwner!.Memory.Span;
-                Span<NodeHandle> writableChildren = map.SortedChildrenOwner!.Memory.Span;
+                Span<HypertrieNode?> writableChildren = map.SortedChildrenOwner!.Memory.Span;
 
                 for(int i = map.SortedCount; i > insertAt; i--)
                 {
@@ -297,7 +298,7 @@ public struct EdgeMap: IEquatable<EdgeMap>
     /// </summary>
     /// <param name="map">The map to enumerate.</param>
     /// <returns>An enumerable of <c>(key, child)</c> pairs in ascending key order.</returns>
-    public static IEnumerable<KeyValuePair<uint, NodeHandle>> Enumerate(EdgeMap map)
+    public static IEnumerable<KeyValuePair<uint, HypertrieNode?>> Enumerate(EdgeMap map)
     {
         switch(map.Kind)
         {
@@ -309,7 +310,7 @@ public struct EdgeMap: IEquatable<EdgeMap>
             {
                 for(int i = 0; i < map.InlineCount; i++)
                 {
-                    yield return new KeyValuePair<uint, NodeHandle>(map.InlineKeys[i], map.InlineChildren[i]);
+                    yield return new KeyValuePair<uint, HypertrieNode?>(map.InlineKeys[i], map.InlineChildren[i]);
                 }
 
                 yield break;
@@ -317,12 +318,12 @@ public struct EdgeMap: IEquatable<EdgeMap>
             case EdgeMapKind.SortedArray:
             {
                 Memory<uint> keys = map.SortedKeysOwner!.Memory;
-                Memory<NodeHandle> children = map.SortedChildrenOwner!.Memory;
+                Memory<HypertrieNode?> children = map.SortedChildrenOwner!.Memory;
                 int count = map.SortedCount;
 
                 for(int i = 0; i < count; i++)
                 {
-                    yield return new KeyValuePair<uint, NodeHandle>(keys.Span[i], children.Span[i]);
+                    yield return new KeyValuePair<uint, HypertrieNode?>(keys.Span[i], children.Span[i]);
                 }
 
                 yield break;
@@ -332,6 +333,43 @@ public struct EdgeMap: IEquatable<EdgeMap>
                 throw new UnreachableException();
             }
         }
+    }
+
+    /// <summary>
+    /// Returns the key at <paramref name="position"/> within the
+    /// map. Position semantics: for <see cref="EdgeMapKind.Inline"/>
+    /// in <c>[0, InlineCount)</c>; for <see cref="EdgeMapKind.SortedArray"/>
+    /// in <c>[0, SortedCount)</c>.
+    /// </summary>
+    /// <param name="map">The map to read.</param>
+    /// <param name="position">The position index.</param>
+    /// <returns>The key at <paramref name="position"/>.</returns>
+    public static uint KeyAt(in EdgeMap map, int position)
+    {
+        return map.Kind switch
+        {
+            EdgeMapKind.Inline => map.InlineKeys[position],
+            EdgeMapKind.SortedArray => map.SortedKeysOwner!.Memory.Span[position],
+            _ => throw new UnreachableException(),
+        };
+    }
+
+    /// <summary>
+    /// Returns the child reference at <paramref name="position"/>
+    /// within the map. At depth-1 leaves this is <c>null</c>; at
+    /// depth-2 and depth-3 nodes it is a real child reference.
+    /// </summary>
+    /// <param name="map">The map to read.</param>
+    /// <param name="position">The position index.</param>
+    /// <returns>The child reference at <paramref name="position"/>.</returns>
+    public static HypertrieNode? ChildAt(in EdgeMap map, int position)
+    {
+        return map.Kind switch
+        {
+            EdgeMapKind.Inline => map.InlineChildren[position],
+            EdgeMapKind.SortedArray => map.SortedChildrenOwner!.Memory.Span[position],
+            _ => throw new UnreachableException(),
+        };
     }
 
     /// <summary>
@@ -353,7 +391,7 @@ public struct EdgeMap: IEquatable<EdgeMap>
     /// </summary>
     /// <param name="map">The map whose Inline children to span.</param>
     /// <returns>A span covering <c>[0..InlineCount)</c>.</returns>
-    public static ReadOnlySpan<NodeHandle> InlineChildrenSpan(in EdgeMap map)
+    public static ReadOnlySpan<HypertrieNode?> InlineChildrenSpan(in EdgeMap map)
     {
         return MemoryMarshal.CreateReadOnlySpan(
             ref Unsafe.AsRef(in map.InlineChildren[0]),
@@ -377,7 +415,7 @@ public struct EdgeMap: IEquatable<EdgeMap>
     /// </summary>
     /// <param name="map">The map whose SortedArray children to span.</param>
     /// <returns>A span covering <c>[0..SortedCount)</c>.</returns>
-    public static ReadOnlySpan<NodeHandle> SortedChildrenSpan(in EdgeMap map)
+    public static ReadOnlySpan<HypertrieNode?> SortedChildrenSpan(in EdgeMap map)
     {
         return map.SortedChildrenOwner!.Memory.Span[..map.SortedCount];
     }
@@ -408,7 +446,7 @@ public struct EdgeMap: IEquatable<EdgeMap>
     //Inserts (key, child) into the Inline tier at the position
     //preserving ascending key order. Capacity check is the
     //caller's responsibility.
-    private static void InsertIntoInline(ref EdgeMap map, uint key, NodeHandle child)
+    private static void InsertIntoInline(ref EdgeMap map, uint key, HypertrieNode? child)
     {
         Debug.Assert(map.InlineCount < InlineCapacity, "Inline tier is full; promotion should be handled by the caller.");
 
@@ -440,15 +478,15 @@ public struct EdgeMap: IEquatable<EdgeMap>
 
     //Promotes the Inline tier (currently at InlineCapacity entries)
     //plus one additional entry into a SortedArray representation.
-    private static void PromoteInlineToSortedArray(ref EdgeMap map, uint newKey, NodeHandle newChild, BuildPools pools)
+    private static void PromoteInlineToSortedArray(ref EdgeMap map, uint newKey, HypertrieNode? newChild, BuildPools pools)
     {
         Debug.Assert(map.InlineCount == InlineCapacity, "Promotion called with Inline tier not full.");
 
         IMemoryOwner<uint> keysOwner = pools.KeyPool.Rent(SortedArrayInitialCapacity);
-        IMemoryOwner<NodeHandle> childrenOwner = pools.ChildPool.Rent(SortedArrayInitialCapacity);
+        IMemoryOwner<HypertrieNode?> childrenOwner = pools.ChildPool.Rent(SortedArrayInitialCapacity);
 
         Span<uint> keys = keysOwner.Memory.Span;
-        Span<NodeHandle> children = childrenOwner.Memory.Span;
+        Span<HypertrieNode?> children = childrenOwner.Memory.Span;
 
         //Inline tier is ascending; merge the new entry into its sorted position via insertion sort over 9 elements.
         int insertAt = InlineCapacity;
@@ -492,11 +530,11 @@ public struct EdgeMap: IEquatable<EdgeMap>
     private static void GrowSortedArray(ref EdgeMap map, BuildPools pools)
     {
         IMemoryOwner<uint> oldKeysOwner = map.SortedKeysOwner!;
-        IMemoryOwner<NodeHandle> oldChildrenOwner = map.SortedChildrenOwner!;
+        IMemoryOwner<HypertrieNode?> oldChildrenOwner = map.SortedChildrenOwner!;
 
         int newCapacity = oldKeysOwner.Memory.Length * 2;
         IMemoryOwner<uint> newKeysOwner = pools.KeyPool.Rent(newCapacity);
-        IMemoryOwner<NodeHandle> newChildrenOwner = pools.ChildPool.Rent(newCapacity);
+        IMemoryOwner<HypertrieNode?> newChildrenOwner = pools.ChildPool.Rent(newCapacity);
 
         oldKeysOwner.Memory.Span[..map.SortedCount].CopyTo(newKeysOwner.Memory.Span);
         oldChildrenOwner.Memory.Span[..map.SortedCount].CopyTo(newChildrenOwner.Memory.Span);
@@ -543,7 +581,7 @@ public struct EdgeMap: IEquatable<EdgeMap>
         {
             for(int i = 0; i < InlineCount; i++)
             {
-                if(InlineKeys[i] != other.InlineKeys[i] || InlineChildren[i] != other.InlineChildren[i])
+                if(InlineKeys[i] != other.InlineKeys[i] || !ReferenceEquals(InlineChildren[i], other.InlineChildren[i]))
                 {
                     return false;
                 }

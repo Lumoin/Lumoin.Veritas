@@ -28,12 +28,12 @@ namespace Lumoin.Veritas.Core.Hypertrie.Storage;
 /// <see cref="BuildPools"/> directly.
 /// </para>
 /// <para>
-/// <b>Pool lifetime.</b> The <see cref="NodePool"/> reference is
-/// retained by <see cref="NodeStore"/> for the lifetime of the
-/// store — the segmented arena rents segments from it during
-/// build and disposes them on <see cref="NodeStore.Dispose"/>.
-/// Consumers that share a single pool across many stores must keep
-/// the pool alive at least as long as any store referencing it.
+/// <b>Pool lifetime.</b> Pool slabs are returned automatically
+/// when an <see cref="IMemoryOwner{T}"/> rental is disposed.
+/// Consumers that share a single pool across many stores must
+/// keep the pool alive at least as long as any rental referencing
+/// it. There is no per-node arena pool: nodes are class instances
+/// allocated by builders and managed by the GC.
 /// </para>
 /// </remarks>
 [SuppressMessage(
@@ -45,16 +45,13 @@ public readonly struct BuildPools
     /// <summary>Pool used for SortedArray-tier key buffers inside <see cref="EdgeMap"/>.</summary>
     public VeritasMemoryPool<uint> KeyPool { get; }
 
-    /// <summary>Pool used for SortedArray-tier child-handle buffers inside <see cref="EdgeMap"/>.</summary>
-    public VeritasMemoryPool<NodeHandle> ChildPool { get; }
-
-    /// <summary>Pool used by <see cref="NodeStore"/> for the segmented <see cref="HypertrieNode"/> arena.</summary>
-    public VeritasMemoryPool<HypertrieNode> NodePool { get; }
+    /// <summary>Pool used for SortedArray-tier child-reference buffers inside <see cref="EdgeMap"/>. Slot type is nullable because depth-1 leaves carry <c>null</c> in every slot.</summary>
+    public VeritasMemoryPool<HypertrieNode?> ChildPool { get; }
 
     /// <summary>
     /// Pool used by the bottom-up build path to materialise PSO and
     /// OSP orderings as index permutations over the canonical SPO
-    /// triple array, in place of full <see cref="EncodedTriple"/>[]
+    /// triple array, in place of full <see cref="Lumoin.Veritas.Core.EncodedTriple"/>[]
     /// copies. One rental per non-canonical ordering, sized to the
     /// distinct triple count.
     /// </summary>
@@ -77,27 +74,23 @@ public readonly struct BuildPools
     /// Constructs a build-pools bundle. All fields are required.
     /// </summary>
     /// <param name="keyPool">Pool for SortedArray-tier key buffers.</param>
-    /// <param name="childPool">Pool for SortedArray-tier child-handle buffers.</param>
-    /// <param name="nodePool">Pool used by <see cref="NodeStore"/> for its segmented arena.</param>
+    /// <param name="childPool">Pool for SortedArray-tier child-reference buffers.</param>
     /// <param name="permutationPool">Pool used by the build path to materialise PSO and OSP orderings as index permutations.</param>
     /// <param name="inlineLookup">Inline-tier lookup implementation.</param>
     /// <exception cref="ArgumentNullException">A required argument is <c>null</c>.</exception>
     public BuildPools(
         VeritasMemoryPool<uint> keyPool,
-        VeritasMemoryPool<NodeHandle> childPool,
-        VeritasMemoryPool<HypertrieNode> nodePool,
+        VeritasMemoryPool<HypertrieNode?> childPool,
         VeritasMemoryPool<uint> permutationPool,
         InlineKeyLookup inlineLookup)
     {
         ArgumentNullException.ThrowIfNull(keyPool);
         ArgumentNullException.ThrowIfNull(childPool);
-        ArgumentNullException.ThrowIfNull(nodePool);
         ArgumentNullException.ThrowIfNull(permutationPool);
         ArgumentNullException.ThrowIfNull(inlineLookup);
 
         KeyPool = keyPool;
         ChildPool = childPool;
-        NodePool = nodePool;
         PermutationPool = permutationPool;
         InlineLookup = inlineLookup;
     }
@@ -112,8 +105,7 @@ public readonly struct BuildPools
     {
         return new BuildPools(
             new VeritasMemoryPool<uint>(),
-            new VeritasMemoryPool<NodeHandle>(),
-            new VeritasMemoryPool<HypertrieNode>(),
+            new VeritasMemoryPool<HypertrieNode?>(),
             new VeritasMemoryPool<uint>(),
             InlineKeyLookups.SelectBestAvailable());
     }

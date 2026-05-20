@@ -17,7 +17,7 @@ internal sealed class HypertrieSnapshotTests
     public void NewSnapshotHasReferenceCountOne()
     {
         using NodeStore store = new(VeritasHashing.Default);
-        NodeHandle root = InternFreshRoot(store);
+        HypertrieNode root = InternFreshRoot(store);
 
         using HypertrieSnapshot snapshot = new(store, root, SyntheticId);
 
@@ -28,7 +28,7 @@ internal sealed class HypertrieSnapshotTests
     public void NewSnapshotIsRegisteredWithStore()
     {
         using NodeStore store = new(VeritasHashing.Default);
-        NodeHandle root = InternFreshRoot(store);
+        HypertrieNode root = InternFreshRoot(store);
 
         using HypertrieSnapshot snapshot = new(store, root, SyntheticId);
 
@@ -40,7 +40,7 @@ internal sealed class HypertrieSnapshotTests
     public void IdIsExposedFromConstructor()
     {
         using NodeStore store = new(VeritasHashing.Default);
-        NodeHandle root = InternFreshRoot(store);
+        HypertrieNode root = InternFreshRoot(store);
 
         using HypertrieSnapshot snapshot = new(store, root, SyntheticId);
 
@@ -53,7 +53,7 @@ internal sealed class HypertrieSnapshotTests
         //An empty graph is a legitimate snapshot whose root has
         //the empty identifier; the constructor must accept it.
         using NodeStore store = new(VeritasHashing.Default);
-        NodeHandle root = InternFreshRoot(store);
+        HypertrieNode root = InternFreshRoot(store);
 
         using HypertrieSnapshot snapshot = new(store, root, NodeIdentifier.Empty);
 
@@ -64,7 +64,7 @@ internal sealed class HypertrieSnapshotTests
     public void AcquireIncrementsReferenceCount()
     {
         using NodeStore store = new(VeritasHashing.Default);
-        NodeHandle root = InternFreshRoot(store);
+        HypertrieNode root = InternFreshRoot(store);
         using HypertrieSnapshot snapshot = new(store, root, SyntheticId);
 
         snapshot.Acquire();
@@ -80,7 +80,7 @@ internal sealed class HypertrieSnapshotTests
     public void AcquireReturnsTheSameSnapshot()
     {
         using NodeStore store = new(VeritasHashing.Default);
-        NodeHandle root = InternFreshRoot(store);
+        HypertrieNode root = InternFreshRoot(store);
         using HypertrieSnapshot snapshot = new(store, root, SyntheticId);
 
         HypertrieSnapshot returned = snapshot.Acquire();
@@ -94,7 +94,7 @@ internal sealed class HypertrieSnapshotTests
     public void ReleaseDecrementsReferenceCount()
     {
         using NodeStore store = new(VeritasHashing.Default);
-        NodeHandle root = InternFreshRoot(store);
+        HypertrieNode root = InternFreshRoot(store);
         using HypertrieSnapshot snapshot = new(store, root, SyntheticId);
         snapshot.Acquire();
 
@@ -107,7 +107,7 @@ internal sealed class HypertrieSnapshotTests
     public void ReleaseToZeroDeregistersFromStore()
     {
         using NodeStore store = new(VeritasHashing.Default);
-        NodeHandle root = InternFreshRoot(store);
+        HypertrieNode root = InternFreshRoot(store);
         using HypertrieSnapshot snapshot = new(store, root, SyntheticId);
 
         snapshot.Release();
@@ -121,7 +121,7 @@ internal sealed class HypertrieSnapshotTests
     public void AcquireAfterFullReleaseThrows()
     {
         using NodeStore store = new(VeritasHashing.Default);
-        NodeHandle root = InternFreshRoot(store);
+        HypertrieNode root = InternFreshRoot(store);
         using HypertrieSnapshot snapshot = new(store, root, SyntheticId);
         snapshot.Release();
 
@@ -132,7 +132,7 @@ internal sealed class HypertrieSnapshotTests
     public void DisposeReleasesOnce()
     {
         using NodeStore store = new(VeritasHashing.Default);
-        NodeHandle root = InternFreshRoot(store);
+        HypertrieNode root = InternFreshRoot(store);
         HypertrieSnapshot snapshot = new(store, root, SyntheticId);
 
         snapshot.Dispose();
@@ -145,7 +145,7 @@ internal sealed class HypertrieSnapshotTests
     public void DoubleDisposeIsNoOp()
     {
         using NodeStore store = new(VeritasHashing.Default);
-        NodeHandle root = InternFreshRoot(store);
+        HypertrieNode root = InternFreshRoot(store);
         HypertrieSnapshot snapshot = new(store, root, SyntheticId);
 
         snapshot.Dispose();
@@ -158,7 +158,7 @@ internal sealed class HypertrieSnapshotTests
     public void AcquireFollowedByReleaseLeavesOriginalCount()
     {
         using NodeStore store = new(VeritasHashing.Default);
-        NodeHandle root = InternFreshRoot(store);
+        HypertrieNode root = InternFreshRoot(store);
         using HypertrieSnapshot snapshot = new(store, root, SyntheticId);
 
         snapshot.Acquire();
@@ -172,7 +172,7 @@ internal sealed class HypertrieSnapshotTests
     public void MultipleAcquiresAndReleasesBalance()
     {
         using NodeStore store = new(VeritasHashing.Default);
-        NodeHandle root = InternFreshRoot(store);
+        HypertrieNode root = InternFreshRoot(store);
         using HypertrieSnapshot snapshot = new(store, root, SyntheticId);
 
         for(int i = 0; i < 5; i++)
@@ -194,15 +194,15 @@ internal sealed class HypertrieSnapshotTests
     [TestMethod]
     public void ConstructorRejectsNullStore()
     {
-        Assert.Throws<ArgumentNullException>(() => new HypertrieSnapshot(null!, NodeHandle.None, SyntheticId));
+        Assert.Throws<ArgumentNullException>(() => new HypertrieSnapshot(null!, null!, SyntheticId));
     }
 
     [TestMethod]
     public void TwoIndependentSnapshotsRegisterIndependently()
     {
         using NodeStore store = new(VeritasHashing.Default);
-        NodeHandle root1 = InternFreshRoot(store);
-        NodeHandle root2 = InternFreshRoot(store, distinguisher: 7U);
+        HypertrieNode root1 = InternFreshRoot(store);
+        HypertrieNode root2 = InternFreshRoot(store, distinguisher: 7U);
         NodeIdentifier id1 = new(0x1111);
         NodeIdentifier id2 = new(0x2222);
 
@@ -222,9 +222,9 @@ internal sealed class HypertrieSnapshotTests
     //returns the handle. Used by tests that just need a real
     //handle to thread through the snapshot constructor without
     //caring about content.
-    private static NodeHandle InternFreshRoot(NodeStore store, uint distinguisher = 1U)
+    private static HypertrieNode InternFreshRoot(NodeStore store, uint distinguisher = 1U)
     {
-        HypertrieNode root = HypertrieNode.Create(3);
+        HypertrieNode root = new(3);
         NodeIdentifier id = new(distinguisher);
         return store.Intern(id, root);
     }

@@ -13,7 +13,7 @@ internal sealed class BuildPoolsTests
         BuildPools pools = BuildPools.CreateDefault();
         Assert.IsNotNull(pools.KeyPool);
         Assert.IsNotNull(pools.ChildPool);
-        Assert.IsNotNull(pools.NodePool);
+        Assert.IsNotNull(pools.PermutationPool);
         Assert.IsNotNull(pools.InlineLookup);
     }
 
