@@ -172,6 +172,13 @@ public sealed class NodeStore: IDisposable
 
     private int disposed;
 
+    //Resources whose lifetime is bound to this store's lifetime.
+    //Populated by AttachToLifetime; disposed after the arena/edge-
+    //map cleanup completes in Dispose. The list is lazily
+    //allocated so stores that own no external resources pay no
+    //per-store cost for an empty list.
+    private List<IDisposable>? attachedLifetimeResources;
+
     /// <summary>The hash function the store and every layer that computes content-addressed identifiers share. Set once at construction; the only place a hash function is named in a running system.</summary>
     public VeritasHash Hash { get; }
 
@@ -436,6 +443,24 @@ public sealed class NodeStore: IDisposable
     public bool Contains(NodeIdentifier identifier) => Storage.ContainsKey(identifier);
 
     /// <summary>
+    /// Binds <paramref name="resource"/>'s lifetime to this store.
+    /// The resource is disposed by <see cref="Dispose"/> after the
+    /// arena and edge-map cleanup completes. Use this to bind
+    /// pools or other external resources whose validity must
+    /// outlast every rental the store made through them; the
+    /// resource is disposed deterministically when the store is.
+    /// </summary>
+    /// <param name="resource">The resource to dispose alongside this store.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="resource"/> is <c>null</c>.</exception>
+    internal void AttachToLifetime(IDisposable resource)
+    {
+        ArgumentNullException.ThrowIfNull(resource);
+
+        attachedLifetimeResources ??= [];
+        attachedLifetimeResources.Add(resource);
+    }
+
+    /// <summary>
     /// Adds <paramref name="snapshot"/> to the registry of
     /// currently-acquired snapshots. Called by
     /// <see cref="HypertrieSnapshot"/>'s constructor; consumers
@@ -609,18 +634,12 @@ public sealed class NodeStore: IDisposable
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>Slab clearing.</b> Before each arena segment is returned
-    /// to <see cref="NodePool"/>, its span is cleared via
-    /// <see cref="Span{T}.Clear"/>. The clear zeroes every
-    /// <see cref="HypertrieNode"/> slot, dropping the per-node
-    /// <see cref="HypertrieNode.EdgeMaps"/> array reference so the
-    /// heap-allocated <see cref="EdgeMap"/>[] arrays the slabs
-    /// previously referenced become unreachable and GC-collectible.
-    /// Without this clear, pool-retained slab buffers continue to
-    /// hold the previous store's <see cref="EdgeMap"/>[] arrays
-    /// alive through the slab → slot → array reference chain,
-    /// producing the retention shape post-Batch-4 measurements
-    /// surfaced (~695 MB at 100K triples held through pool slabs).
+    /// <b>Slab clearing.</b> Each arena segment's span is cleared
+    /// before the segment returns to <see cref="NodePool"/>, so
+    /// the pool's reusable buffer carries no references to nodes'
+    /// <see cref="EdgeMap"/>[] arrays. The arrays are GC-collectible
+    /// while the pool's slab inventory remains intact for the next
+    /// store.
     /// </para>
     /// </remarks>
     public void Dispose()
@@ -657,13 +676,9 @@ public sealed class NodeStore: IDisposable
             }
         }
 
-        //Now release the arena segments themselves. Clear each
-        //slab before disposal so the pool-retained buffer drops
-        //its references to the heap-allocated EdgeMap[] arrays
-        //the slots previously held; GC then reclaims those
-        //arrays. Without this, the pool's slab inventory pins
-        //every EdgeMap[] every store ever allocated until the
-        //pool itself becomes unreachable.
+        //Clear each slab before returning it to the pool so the
+        //pool-retained buffer holds no references to nodes'
+        //EdgeMap[] arrays.
         for(int i = 0; i < segs.Length; i++)
         {
             IMemoryOwner<HypertrieNode>? slab = segs[i];
@@ -675,6 +690,18 @@ public sealed class NodeStore: IDisposable
             slab.Memory.Span.Clear();
             slab.Dispose();
             segs[i] = null;
+        }
+
+        //Dispose lifetime-bound resources. Order matters: arena
+        //and edge-map rentals returned above must complete before
+        //a pool is disposed, since a disposed pool rejects further
+        //Rent/Return calls.
+        if(attachedLifetimeResources is not null)
+        {
+            foreach(IDisposable resource in attachedLifetimeResources)
+            {
+                resource.Dispose();
+            }
         }
 
         MutationGate.Dispose();

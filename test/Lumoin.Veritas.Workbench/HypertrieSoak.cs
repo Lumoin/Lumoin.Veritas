@@ -99,16 +99,10 @@ internal static class HypertrieSoak
         while(sw.Elapsed < duration)
         {
             HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(triples, VeritasHashing.Default).ConfigureAwait(false);
-            //The parameterless BuildAsync overload creates a fresh
-            //NodeStore and transfers ownership to the returned graph
-            //store via its snapshot. HypertrieGraphStore exposes no
-            //direct Dispose, so the loop reaches through Snapshot.Store
-            //to release arena segments and EdgeMap rentals before the
-            //next iteration starts. Without this call the per-build
-            //slab inventory accumulates until the GC reclaims each
-            //unreachable store; retained-heap measurements over the
-            //loop then reflect the soak's own retention rather than
-            //the storage layer's steady state.
+            //Release the store before the next iteration so
+            //retention measurements reflect the storage layer's
+            //steady state. The parameterless BuildAsync overload
+            //transfers NodeStore ownership through Snapshot.Store.
             store.Snapshot.Store.Dispose();
             iterations++;
         }
@@ -164,10 +158,9 @@ internal static class HypertrieSoak
         }
         finally
         {
-            //The parameterless BuildAsync overload owns the underlying
-            //NodeStore; release it through Snapshot.Store before
-            //returning so the soak does not leave per-test slab
-            //inventory pinned until GC.
+            //Release the store before returning. The parameterless
+            //BuildAsync overload transfers NodeStore ownership
+            //through Snapshot.Store.
             store.Snapshot.Store.Dispose();
         }
     }

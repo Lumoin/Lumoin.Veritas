@@ -140,6 +140,14 @@ public sealed class HypertrieGraphStore
         try
         {
             store = new NodeStore(hash, pools.NodePool);
+
+            //Bind the pools to the store's lifetime so disposing
+            //the store releases their slab inventory.
+            store.AttachToLifetime(pools.NodePool);
+            store.AttachToLifetime(pools.KeyPool);
+            store.AttachToLifetime(pools.ChildPool);
+            store.AttachToLifetime(pools.PermutationPool);
+
             HypertrieGraphStore result = await BuildAsync(triples, store, pools, cancellationToken).ConfigureAwait(false);
             store = null;
 
