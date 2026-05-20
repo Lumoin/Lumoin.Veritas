@@ -80,8 +80,8 @@ public sealed class HypertrieSnapshot: IDisposable
     /// <summary>The intern table holding the canonical node instances reachable from <see cref="Root"/>.</summary>
     public NodeStore Store { get; }
 
-    /// <summary>The depth-3 root pinned by this snapshot.</summary>
-    public HypertrieNode Root { get; }
+    /// <summary>The handle of the depth-3 root pinned by this snapshot. Resolve to a <see cref="HypertrieNode"/> via <see cref="NodeStore.GetByHandle(NodeHandle)"/> on <see cref="Store"/>.</summary>
+    public NodeHandle Root { get; }
 
     /// <summary>The content-addressed identifier of <see cref="Root"/>; the snapshot's identity in the journal.</summary>
     public NodeIdentifier Id { get; }
@@ -98,13 +98,12 @@ public sealed class HypertrieSnapshot: IDisposable
     /// trusts the caller and does not recompute it.
     /// </summary>
     /// <param name="store">The intern table.</param>
-    /// <param name="root">The canonical hypertrie root to pin.</param>
+    /// <param name="root">The hypertrie root handle to pin.</param>
     /// <param name="id">The content-addressed identifier of <paramref name="root"/>.</param>
-    /// <exception cref="ArgumentNullException">A required argument is <c>null</c>.</exception>
-    public HypertrieSnapshot(NodeStore store, HypertrieNode root, NodeIdentifier id)
+    /// <exception cref="ArgumentNullException"><paramref name="store"/> is <c>null</c>.</exception>
+    public HypertrieSnapshot(NodeStore store, NodeHandle root, NodeIdentifier id)
     {
         ArgumentNullException.ThrowIfNull(store);
-        ArgumentNullException.ThrowIfNull(root);
 
         Store = store;
         Root = root;

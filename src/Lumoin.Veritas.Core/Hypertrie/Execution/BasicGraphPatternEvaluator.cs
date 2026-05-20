@@ -494,8 +494,10 @@ public sealed class BasicGraphPatternEvaluator
 
             //Match returns the canonical triple if the pattern
             //resolves; we only need existence.
+            HypertrieNode root = snapshot.Store.GetByHandle(snapshot.Root);
             IEnumerable<EncodedTriple> matches = HypertrieOps.Match(
-                snapshot.Root,
+                root,
+                snapshot.Store,
                 pattern.Subject.BoundTerm,
                 pattern.Predicate.BoundTerm,
                 pattern.Object.BoundTerm);

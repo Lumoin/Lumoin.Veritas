@@ -273,7 +273,7 @@ internal static class Program
 
         await Console.Out.WriteLineAsync($"[soak] built hypertrie in {buildWatch.Elapsed.TotalSeconds:F2}s").ConfigureAwait(false);
 
-        EdgeMapDistributionResult result = EdgeMapDistribution.Survey(store.Snapshot.Root);
+        EdgeMapDistributionResult result = EdgeMapDistribution.Survey(store.Snapshot.Store, store.Snapshot.Root);
         await Console.Out.WriteLineAsync(FormatDistributionResult(result)).ConfigureAwait(false);
 
         return 0;
@@ -307,7 +307,7 @@ internal static class Program
         await Console.Out.WriteLineAsync($"[soak] loaded {triples.Count:N0} triples, {dictionary.Count:N0} distinct terms").ConfigureAwait(false);
 
         HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(triples, VeritasHashing.Default, cancellationToken).ConfigureAwait(false);
-        EdgeMapDistributionResult result = EdgeMapDistribution.Survey(store.Snapshot.Root);
+        EdgeMapDistributionResult result = EdgeMapDistribution.Survey(store.Snapshot.Store, store.Snapshot.Root);
 
         await Console.Out.WriteLineAsync(FormatDistributionResult(result)).ConfigureAwait(false);
 

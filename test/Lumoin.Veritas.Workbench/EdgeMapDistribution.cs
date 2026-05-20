@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Lumoin.Veritas.Core.Hypertrie;
 using Lumoin.Veritas.Core.Hypertrie.Storage;
 
 namespace Lumoin.Veritas.Workbench;
@@ -13,11 +14,10 @@ namespace Lumoin.Veritas.Workbench;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The walk is iterative: a work stack of <see cref="HypertrieNode"/>
-/// references plus a <see cref="HashSet{T}"/> for visited dedup
-/// (reference equality on the class type). Each visited node
-/// contributes one edge map per remaining position (depth = 1 → 1
-/// edge map, depth = 3 → 3 edge maps).
+/// The walk is iterative: a work stack of <see cref="NodeHandle"/>
+/// values plus a <see cref="HashSet{T}"/> for visited-handle dedup.
+/// Each visited node contributes one edge map per remaining
+/// position (depth = 1 → 1 edge map, depth = 3 → 3 edge maps).
 /// </para>
 /// </remarks>
 internal static class EdgeMapDistribution
@@ -34,14 +34,16 @@ internal static class EdgeMapDistribution
 
     /// <summary>
     /// Surveys the EdgeMap distribution across every reachable
-    /// node from <paramref name="root"/>.
+    /// node in <paramref name="store"/> from
+    /// <paramref name="rootHandle"/>.
     /// </summary>
-    /// <param name="root">The root node to start the walk from.</param>
+    /// <param name="store">The intern table holding the hypertrie nodes.</param>
+    /// <param name="rootHandle">The root handle to start the walk from.</param>
     /// <returns>An <see cref="EdgeMapDistributionResult"/> with per-tier counts and the SortedArray histogram.</returns>
-    /// <exception cref="ArgumentNullException"><paramref name="root"/> is <c>null</c>.</exception>
-    public static EdgeMapDistributionResult Survey(HypertrieNode root)
+    /// <exception cref="ArgumentNullException"><paramref name="store"/> is <c>null</c>.</exception>
+    public static EdgeMapDistributionResult Survey(NodeStore store, NodeHandle rootHandle)
     {
-        ArgumentNullException.ThrowIfNull(root);
+        ArgumentNullException.ThrowIfNull(store);
 
         int total = 0;
         int empty = 0;
@@ -62,18 +64,34 @@ internal static class EdgeMapDistribution
 
         Dictionary<int, int[]> perDepth = [];
 
-        HashSet<HypertrieNode> visited = [];
-        Stack<HypertrieNode> work = new();
-        work.Push(root);
+        if(rootHandle.IsNone)
+        {
+            return new EdgeMapDistributionResult
+            {
+                TotalEdgeMaps = 0,
+                EmptyCount = 0,
+                InlineCount = 0,
+                SortedArrayCount = 0,
+                SortedArrayCountHistogram = sortedHistogram,
+                InlineCountHistogram = inlineHistogram,
+                PerDepthTierCounts = perDepth,
+                DistinctNodeCount = 0,
+            };
+        }
+
+        HashSet<NodeHandle> visited = [];
+        Stack<NodeHandle> work = new();
+        work.Push(rootHandle);
 
         while(work.Count > 0)
         {
-            HypertrieNode node = work.Pop();
-            if(!visited.Add(node))
+            NodeHandle handle = work.Pop();
+            if(handle.IsNone || !visited.Add(handle))
             {
                 continue;
             }
 
+            HypertrieNode node = store.GetByHandle(handle);
             if(!perDepth.TryGetValue(node.Depth, out int[]? depthCounts))
             {
                 depthCounts = new int[3];
@@ -82,7 +100,7 @@ internal static class EdgeMapDistribution
 
             for(int position = 0; position < node.Depth; position++)
             {
-                ref EdgeMap map = ref node.EdgeMapAt(position);
+                ref readonly EdgeMap map = ref node.EdgeMaps[position];
                 total++;
                 switch(map.Kind)
                 {
@@ -116,10 +134,10 @@ internal static class EdgeMapDistribution
                     }
                 }
 
-                //Recurse into non-null child references.
-                foreach(KeyValuePair<uint, HypertrieNode?> entry in EdgeMap.Enumerate(map))
+                //Recurse into non-None child handles.
+                foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
                 {
-                    if(entry.Value is not null)
+                    if(!entry.Value.IsNone)
                     {
                         work.Push(entry.Value);
                     }

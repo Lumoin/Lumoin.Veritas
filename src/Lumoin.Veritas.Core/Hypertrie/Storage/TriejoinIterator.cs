@@ -337,10 +337,10 @@ public sealed class TriejoinIterator: IDisposable
             return false;
         }
 
-        ref EdgeMap edgeMap = ref currentFrame.Node.EdgeMapAt(positionInRemaining);
+        EdgeMap edgeMap = currentFrame.Node.EdgeMaps[positionInRemaining];
         uint rawValue = value.Encoded;
 
-        if(!EdgeMap.TryGetChild(in edgeMap, rawValue, InlineKeyLookups.Scalar, out HypertrieNode? child))
+        if(!EdgeMap.TryGetChild(in edgeMap, rawValue, InlineKeyLookups.Scalar, out NodeHandle childHandle))
         {
             return false;
         }
@@ -362,17 +362,19 @@ public sealed class TriejoinIterator: IDisposable
             return true;
         }
 
-        Debug.Assert(child is not null, "depth-2 or depth-3 descent yielded null child; invariant violation.");
+        Debug.Assert(!childHandle.IsNone, "depth-2 or depth-3 descent yielded NodeHandle.None; invariant violation.");
+
+        HypertrieNode child = Snapshot.Store.GetByHandle(childHandle);
 
         //Non-leaf descent: push a frame for the child node with a
         //fresh cursor over the appropriate edge map for the next
         //variable level.
         int[] childRemainingPositions = WithoutAt(currentFrame.RemainingPositions, positionInRemaining);
-        EdgeMapKeyCursor childCursor = BuildCursorForLevel(child!, childRemainingPositions, DescendedLevels + 1);
+        EdgeMapKeyCursor childCursor = BuildCursorForLevel(child, childRemainingPositions, DescendedLevels + 1);
 
         Frames.Add(new DescentFrame
         {
-            Node = child!,
+            Node = child,
             RemainingPositions = childRemainingPositions,
             Cursor = childCursor,
         });
@@ -543,7 +545,7 @@ public sealed class TriejoinIterator: IDisposable
     //descent will proceed (or constructionAtEnd is set).
     private void InitialiseFromBoundPositions(CancellationToken cancellationToken)
     {
-        HypertrieNode current = Snapshot.Root;
+        HypertrieNode current = Snapshot.Store.GetByHandle(Snapshot.Root);
         int[] remainingPositions = [PositionSubject, PositionPredicate, PositionObject];
 
         for(int rdfPosition = 0; rdfPosition < 3; rdfPosition++)
@@ -565,9 +567,9 @@ public sealed class TriejoinIterator: IDisposable
             }
 
             uint boundValue = slot.BoundTerm.Encoded;
-            ref EdgeMap edgeMap = ref current.EdgeMapAt(positionInRemaining);
+            EdgeMap edgeMap = current.EdgeMaps[positionInRemaining];
 
-            if(!EdgeMap.TryGetChild(in edgeMap, boundValue, InlineKeyLookups.Scalar, out HypertrieNode? child))
+            if(!EdgeMap.TryGetChild(in edgeMap, boundValue, InlineKeyLookups.Scalar, out NodeHandle childHandle))
             {
                 constructionAtEnd = true;
 
@@ -585,9 +587,9 @@ public sealed class TriejoinIterator: IDisposable
                 return;
             }
 
-            Debug.Assert(child is not null, "depth-2 or depth-3 descent yielded null child; invariant violation.");
+            Debug.Assert(!childHandle.IsNone, "depth-2 or depth-3 descent yielded NodeHandle.None; invariant violation.");
 
-            current = child!;
+            current = Snapshot.Store.GetByHandle(childHandle);
             remainingPositions = WithoutAt(remainingPositions, positionInRemaining);
         }
 
@@ -626,7 +628,7 @@ public sealed class TriejoinIterator: IDisposable
             throw new InvalidOperationException("Internal error: variable's RDF position not found in node's remaining-position list.");
         }
 
-        return new EdgeMapKeyCursor(node, positionInRemaining);
+        return new EdgeMapKeyCursor(in node.EdgeMaps[positionInRemaining]);
     }
 
     //Returns the index of `value` in `array`, or -1 if absent.
