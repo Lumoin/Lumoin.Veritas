@@ -64,6 +64,53 @@ internal static class Program
             return;
         }
 
+        //Property-path soak entrypoints. Each cell builds a fresh
+        //store, runs three repetitions per path shape, and prints
+        //min/median/max wall-clock plus allocation, GC, and peak
+        //working-set metrics. Run cells separately so a 10M failure
+        //in one cell does not block the others.
+        if(args.Length > 0 && args[0] == "--profile-path-chain-100k")
+        {
+            PropertyPathSoak.RunChainSoakAsync(100_000).GetAwaiter().GetResult();
+
+            return;
+        }
+
+        if(args.Length > 0 && args[0] == "--profile-path-chain-1m")
+        {
+            PropertyPathSoak.RunChainSoakAsync(1_000_000).GetAwaiter().GetResult();
+
+            return;
+        }
+
+        if(args.Length > 0 && args[0] == "--profile-path-chain-10m")
+        {
+            PropertyPathSoak.RunChainSoakAsync(10_000_000).GetAwaiter().GetResult();
+
+            return;
+        }
+
+        if(args.Length > 0 && args[0] == "--profile-path-smallworld-100k")
+        {
+            PropertyPathSoak.RunSmallWorldSoakAsync(100_000).GetAwaiter().GetResult();
+
+            return;
+        }
+
+        if(args.Length > 0 && args[0] == "--profile-path-smallworld-1m")
+        {
+            PropertyPathSoak.RunSmallWorldSoakAsync(1_000_000).GetAwaiter().GetResult();
+
+            return;
+        }
+
+        if(args.Length > 0 && args[0] == "--profile-path-smallworld-10m")
+        {
+            PropertyPathSoak.RunSmallWorldSoakAsync(10_000_000).GetAwaiter().GetResult();
+
+            return;
+        }
+
         BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
     }
 }

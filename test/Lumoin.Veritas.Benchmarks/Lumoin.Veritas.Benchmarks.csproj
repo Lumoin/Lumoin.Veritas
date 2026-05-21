@@ -51,6 +51,7 @@
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Cid\Lumoin.Veritas.Cid.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.LinkedData\Lumoin.Veritas.LinkedData.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Rdf\Lumoin.Veritas.Rdf.csproj" />
   </ItemGroup>
 
 </Project>
