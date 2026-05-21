@@ -290,6 +290,45 @@ public sealed class HypertrieGraphStore
     }
 
     /// <summary>
+    /// Returns the cross-product of <paramref name="subjects"/> with a
+    /// bound <paramref name="predicate"/>, optionally constrained by a
+    /// bound <paramref name="object"/>. Performs a single
+    /// predicate-rooted descent through the depth-3 trie and probes
+    /// once per subject.
+    /// </summary>
+    /// <param name="subjects">The encoded subject identifiers. May be empty; must not contain <see cref="TermId.None"/>.</param>
+    /// <param name="predicate">The bound predicate to match.</param>
+    /// <param name="object">The object to match, or <see cref="TermId.None"/> for any.</param>
+    /// <returns>Matching triples; output ordering is unspecified.</returns>
+    /// <exception cref="ArgumentException"><paramref name="predicate"/> is <see cref="TermId.None"/>, or <paramref name="subjects"/> contains <see cref="TermId.None"/>.</exception>
+    public IEnumerable<EncodedTriple> MatchBySubjects(
+        ReadOnlyMemory<TermId> subjects,
+        TermId predicate,
+        TermId @object)
+    {
+        HypertrieNode root = Snapshot.Store.GetByHandle(Snapshot.Root);
+        return HypertrieOps.MatchBySubjects(root, Snapshot.Store, subjects, predicate, @object);
+    }
+
+    /// <summary>
+    /// Mirror of <see cref="MatchBySubjects"/> across the object
+    /// position.
+    /// </summary>
+    /// <param name="subject">The subject to match, or <see cref="TermId.None"/> for any.</param>
+    /// <param name="predicate">The bound predicate to match.</param>
+    /// <param name="objects">The encoded object identifiers. May be empty; must not contain <see cref="TermId.None"/>.</param>
+    /// <returns>Matching triples; output ordering is unspecified.</returns>
+    /// <exception cref="ArgumentException"><paramref name="predicate"/> is <see cref="TermId.None"/>, or <paramref name="objects"/> contains <see cref="TermId.None"/>.</exception>
+    public IEnumerable<EncodedTriple> MatchByObjects(
+        TermId subject,
+        TermId predicate,
+        ReadOnlyMemory<TermId> objects)
+    {
+        HypertrieNode root = Snapshot.Store.GetByHandle(Snapshot.Root);
+        return HypertrieOps.MatchByObjects(root, Snapshot.Store, subject, predicate, objects);
+    }
+
+    /// <summary>
     /// Evaluates a basic graph pattern against this store using
     /// worst-case-optimal joins.
     /// </summary>
@@ -339,6 +378,38 @@ public sealed class HypertrieGraphStore
     public StorageDelegates.MatchTriplesAsync AsMatchDelegate()
     {
         return (s, p, o, ct) => ToAsyncEnumerable(Match(s, p, o), ct);
+    }
+
+    /// <summary>
+    /// Creates a <see cref="StorageDelegates.MatchTriplesBySubjectsAsync"/>
+    /// delegate backed by this store.
+    /// </summary>
+    public StorageDelegates.MatchTriplesBySubjectsAsync AsMatchBySubjectsDelegate()
+    {
+        return (subjects, p, o, ct) => ToAsyncEnumerable(MatchBySubjects(subjects, p, o), ct);
+    }
+
+    /// <summary>
+    /// Creates a <see cref="StorageDelegates.MatchTriplesByObjectsAsync"/>
+    /// delegate backed by this store.
+    /// </summary>
+    public StorageDelegates.MatchTriplesByObjectsAsync AsMatchByObjectsDelegate()
+    {
+        return (s, p, objects, ct) => ToAsyncEnumerable(MatchByObjects(s, p, objects), ct);
+    }
+
+    /// <summary>
+    /// Bundles the three match delegates into a <see cref="GraphMatchOps"/>
+    /// for callers — such as
+    /// <see cref="Lumoin.Veritas.Rdf.PropertyPathEvaluator"/> — that need
+    /// all three forms.
+    /// </summary>
+    public GraphMatchOps AsMatchOps()
+    {
+        return new GraphMatchOps(
+            AsMatchDelegate(),
+            AsMatchBySubjectsDelegate(),
+            AsMatchByObjectsDelegate());
     }
 
     /// <summary>

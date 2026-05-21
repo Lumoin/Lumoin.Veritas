@@ -63,7 +63,7 @@ public static class MinListLengthEvaluator
                 context.RdfFirstId,
                 context.RdfRestId,
                 context.RdfNilId,
-                context.DataGraphMatch,
+                context.DataMatchOps.MatchTriples,
                 cancellationToken).ConfigureAwait(false);
 
             if(members is null)

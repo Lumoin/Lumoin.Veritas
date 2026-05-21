@@ -294,7 +294,7 @@ internal static class TestShaclPipelineExtensions
 
         InMemoryGraphStore dataStore = InMemoryGraphStore.Build(state.DataTriples);
         ShaclPipelineDataState libraryState = ShaclPipeline.Begin(
-            state.Shapes, state.Dictionary, dataStore.AsMatchDelegate());
+            state.Shapes, state.Dictionary, dataStore.AsMatchOps());
 
         foreach(KeyValuePair<Utf8String, ConstraintEvaluator> kvp in state.Evaluators)
         {
@@ -324,7 +324,7 @@ internal static class TestShaclPipelineExtensions
 
         InMemoryGraphStore dataStore = InMemoryGraphStore.Build(state.DataTriples);
         ShaclPipelineDataState libraryState = ShaclPipeline.Begin(
-            state.Shapes, state.Dictionary, dataStore.AsMatchDelegate());
+            state.Shapes, state.Dictionary, dataStore.AsMatchOps());
 
         foreach(KeyValuePair<Utf8String, ConstraintEvaluator> kvp in state.Evaluators)
         {

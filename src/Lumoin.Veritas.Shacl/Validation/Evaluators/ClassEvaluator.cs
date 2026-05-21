@@ -68,7 +68,7 @@ public static class ClassEvaluator
         cancellationToken.ThrowIfCancellationRequested();
 
         ClassConstraint classConstraint = (ClassConstraint)constraint;
-        RdfAdjacencyAdapter adapter = new(context.DataGraphMatch);
+        RdfAdjacencyAdapter adapter = new(context.DataMatchOps.MatchTriples);
         ImmutableArray<ValidationResult>.Builder builder = ImmutableArray.CreateBuilder<ValidationResult>();
 
         foreach(TermId value in valueNodes)

@@ -49,6 +49,77 @@ public static class StorageDelegates
         CancellationToken cancellationToken);
 
     /// <summary>
+    /// Matches encoded triples for the cross-product of a subject set and a
+    /// bound predicate, optionally constrained by a bound object. The storage
+    /// provider is expected to perform a single predicate-rooted descent
+    /// followed by per-subject lookups against the resulting subject mapping,
+    /// rather than re-descending per subject.
+    /// </summary>
+    /// <param name="subjects">The encoded subject identifiers to look up under <paramref name="predicate"/>. May be empty; must not contain <see cref="TermId.None"/>.</param>
+    /// <param name="predicate">The predicate to match. Must be bound (non-<see cref="TermId.None"/>); this primitive exists to amortise a single predicate descent across the subject set.</param>
+    /// <param name="object">The object to match, or <see cref="TermId.None"/> for any object.</param>
+    /// <param name="cancellationToken">A token to cancel the enumeration.</param>
+    /// <returns>An async sequence of matching triples.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>Predicate must be bound.</b> Passing <see cref="TermId.None"/> for
+    /// <paramref name="predicate"/> has no algorithmic story for this
+    /// primitive; the implementation throws
+    /// <see cref="ArgumentException"/>. For the all-unbound or
+    /// predicate-unbound cases, callers use
+    /// <see cref="MatchTriplesAsync"/>.
+    /// </para>
+    /// <para>
+    /// <b>Subject set excludes <see cref="TermId.None"/>.</b> The
+    /// <see cref="TermId.None"/> sentinel means "unbound" and has no
+    /// meaning as a member of a concrete subject set; the implementation
+    /// throws <see cref="ArgumentException"/> on encountering one.
+    /// </para>
+    /// <para>
+    /// <b>Empty set is permitted.</b> An empty
+    /// <paramref name="subjects"/> set produces an empty result with no
+    /// exception.
+    /// </para>
+    /// <para>
+    /// <b>Duplicates and ordering.</b> The set is not required to be
+    /// deduplicated; the implementation is not required to dedupe the
+    /// output stream in the presence of duplicate subject keys. Callers
+    /// that need distinct results pre-deduplicate the set (a
+    /// <see cref="HashSet{T}"/> is sufficient). Output ordering is
+    /// unspecified.
+    /// </para>
+    /// </remarks>
+    public delegate IAsyncEnumerable<EncodedTriple> MatchTriplesBySubjectsAsync(
+        ReadOnlyMemory<TermId> subjects,
+        TermId predicate,
+        TermId @object,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Matches encoded triples for the cross-product of an object set and a
+    /// bound predicate, optionally constrained by a bound subject. Mirror of
+    /// <see cref="MatchTriplesBySubjectsAsync"/> across the object position.
+    /// </summary>
+    /// <param name="subject">The subject to match, or <see cref="TermId.None"/> for any subject.</param>
+    /// <param name="predicate">The predicate to match. Must be bound (non-<see cref="TermId.None"/>); this primitive exists to amortise a single predicate descent across the object set.</param>
+    /// <param name="objects">The encoded object identifiers to look up under <paramref name="predicate"/>. May be empty; must not contain <see cref="TermId.None"/>.</param>
+    /// <param name="cancellationToken">A token to cancel the enumeration.</param>
+    /// <returns>An async sequence of matching triples.</returns>
+    /// <remarks>
+    /// <para>
+    /// The contract on <paramref name="predicate"/>, <paramref name="objects"/>
+    /// membership, empty-set tolerance, duplicate-tolerance, and unspecified
+    /// ordering matches <see cref="MatchTriplesBySubjectsAsync"/> point for
+    /// point; refer to that delegate's remarks.
+    /// </para>
+    /// </remarks>
+    public delegate IAsyncEnumerable<EncodedTriple> MatchTriplesByObjectsAsync(
+        TermId subject,
+        TermId predicate,
+        ReadOnlyMemory<TermId> objects,
+        CancellationToken cancellationToken);
+
+    /// <summary>
     /// Inserts a batch of encoded triples into the store.
     /// </summary>
     /// <param name="triples">The triples to insert.</param>

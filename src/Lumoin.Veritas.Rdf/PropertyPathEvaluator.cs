@@ -28,10 +28,12 @@ namespace Lumoin.Veritas.Rdf;
 /// the call stack bounded regardless of path nesting depth.
 /// </para>
 /// <para>
-/// Evaluation is driven entirely by <see cref="StorageDelegates.MatchTriplesAsync"/>.
-/// Inverse paths flip the match call from <c>match(s, p, null)</c> to
-/// <c>match(null, p, o)</c>. Storage providers that can answer both forms
-/// efficiently — via separate POS and OSP indices — will see linear behaviour.
+/// Evaluation is driven by a <see cref="GraphMatchOps"/> bundle: single-pattern
+/// match for storage that still goes one triple at a time, and
+/// subject-set / object-set primitives for the one-step expansion at the heart
+/// of every constructor. The subject- and object-set primitives let the
+/// hypertrie amortise the predicate-rooted descent across an entire start set
+/// rather than re-descending per element.
 /// </para>
 /// </remarks>
 public static class PropertyPathEvaluator
@@ -42,10 +44,10 @@ public static class PropertyPathEvaluator
     /// </summary>
     /// <param name="start">The encoded identifier of the starting node.</param>
     /// <param name="path">The property path AST.</param>
-    /// <param name="match">The pattern match delegate over the graph.</param>
+    /// <param name="ops">The bundle of match delegates over the graph.</param>
     /// <param name="cancellationToken">A token to cancel the enumeration.</param>
     /// <returns>An async sequence of reachable node identifiers.</returns>
-    /// <exception cref="ArgumentNullException"><paramref name="path"/> or <paramref name="match"/> is <c>null</c>.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="path"/> is <c>null</c>.</exception>
     /// <remarks>
     /// <para>
     /// The yielded sequence is a set: each reachable node appears exactly once
@@ -103,12 +105,11 @@ public static class PropertyPathEvaluator
     public static IAsyncEnumerable<TermId> EvaluateAsync(
         TermId start,
         PropertyPath path,
-        StorageDelegates.MatchTriplesAsync match,
+        GraphMatchOps ops,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(path);
-        ArgumentNullException.ThrowIfNull(match);
-        return EvaluateFromSetCore([start], path, match, cancellationToken);
+        return EvaluateFromSetCore([start], path, ops, cancellationToken);
     }
 
     /// <summary>
@@ -117,15 +118,15 @@ public static class PropertyPathEvaluator
     /// </summary>
     /// <param name="starts">The encoded identifiers of the starting nodes.</param>
     /// <param name="path">The property path AST.</param>
-    /// <param name="match">The pattern match delegate over the graph.</param>
+    /// <param name="ops">The bundle of match delegates over the graph.</param>
     /// <param name="cancellationToken">A token to cancel the enumeration.</param>
     /// <returns>An async sequence of reachable node identifiers.</returns>
     /// <exception cref="ArgumentNullException">
-    /// <paramref name="starts"/>, <paramref name="path"/>, or <paramref name="match"/> is <c>null</c>.
+    /// <paramref name="starts"/> or <paramref name="path"/> is <c>null</c>.
     /// </exception>
     /// <remarks>
     /// <para>
-    /// The semantics match <see cref="EvaluateAsync(TermId, PropertyPath, StorageDelegates.MatchTriplesAsync, CancellationToken)"/>
+    /// The semantics match <see cref="EvaluateAsync(TermId, PropertyPath, GraphMatchOps, CancellationToken)"/>
     /// extended to a set of starts: the result is the union of evaluating the
     /// path from each start. Per-start results are deduplicated structurally.
     /// </para>
@@ -137,29 +138,28 @@ public static class PropertyPathEvaluator
     /// empty set for the same reason.
     /// </para>
     /// <para>
-    /// All corner cases listed on <see cref="EvaluateAsync(TermId, PropertyPath, StorageDelegates.MatchTriplesAsync, CancellationToken)"/>
+    /// All corner cases listed on <see cref="EvaluateAsync(TermId, PropertyPath, GraphMatchOps, CancellationToken)"/>
     /// apply per-start to this overload.
     /// </para>
     /// </remarks>
     public static IAsyncEnumerable<TermId> EvaluateFromSetAsync(
         IReadOnlyCollection<TermId> starts,
         PropertyPath path,
-        StorageDelegates.MatchTriplesAsync match,
+        GraphMatchOps ops,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(starts);
         ArgumentNullException.ThrowIfNull(path);
-        ArgumentNullException.ThrowIfNull(match);
-        return EvaluateFromSetCore(starts, path, match, cancellationToken);
+        return EvaluateFromSetCore(starts, path, ops, cancellationToken);
     }
 
     private static async IAsyncEnumerable<TermId> EvaluateFromSetCore(
         IReadOnlyCollection<TermId> starts,
         PropertyPath path,
-        StorageDelegates.MatchTriplesAsync match,
+        GraphMatchOps ops,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        HashSet<TermId> results = await EvaluateToSetAsync(starts, path, match, cancellationToken).ConfigureAwait(false);
+        HashSet<TermId> results = await EvaluateToSetAsync(starts, path, ops, cancellationToken).ConfigureAwait(false);
         foreach(TermId node in results)
         {
             yield return node;
@@ -169,7 +169,7 @@ public static class PropertyPathEvaluator
     private static async ValueTask<HashSet<TermId>> EvaluateToSetAsync(
         IReadOnlyCollection<TermId> starts,
         PropertyPath path,
-        StorageDelegates.MatchTriplesAsync match,
+        GraphMatchOps ops,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -178,43 +178,43 @@ public static class PropertyPathEvaluator
         {
             case PredicatePath predicatePath:
             {
-                return await ExpandOneStepAsync(starts, predicatePath.Predicate, forward: true, match, cancellationToken).ConfigureAwait(false);
+                return await ExpandOneStepAsync(starts, predicatePath.Predicate, forward: true, ops, cancellationToken).ConfigureAwait(false);
             }
 
             case InversePath inversePath when inversePath.Inner is PredicatePath innerPredicate:
             {
-                return await ExpandOneStepAsync(starts, innerPredicate.Predicate, forward: false, match, cancellationToken).ConfigureAwait(false);
+                return await ExpandOneStepAsync(starts, innerPredicate.Predicate, forward: false, ops, cancellationToken).ConfigureAwait(false);
             }
 
             case InversePath inversePath:
             {
                 PropertyPath inverted = InvertPath(inversePath.Inner);
-                return await EvaluateToSetAsync(starts, inverted, match, cancellationToken).ConfigureAwait(false);
+                return await EvaluateToSetAsync(starts, inverted, ops, cancellationToken).ConfigureAwait(false);
             }
 
             case SequencePath sequencePath:
             {
-                return await EvaluateSequenceAsync(starts, sequencePath.Steps, match, cancellationToken).ConfigureAwait(false);
+                return await EvaluateSequenceAsync(starts, sequencePath.Steps, ops, cancellationToken).ConfigureAwait(false);
             }
 
             case AlternativePath alternativePath:
             {
-                return await EvaluateAlternativeAsync(starts, alternativePath.Alternatives, match, cancellationToken).ConfigureAwait(false);
+                return await EvaluateAlternativeAsync(starts, alternativePath.Alternatives, ops, cancellationToken).ConfigureAwait(false);
             }
 
             case ZeroOrMorePath zeroOrMorePath:
             {
-                return await EvaluateZeroOrMoreAsync(starts, zeroOrMorePath.Inner, match, cancellationToken).ConfigureAwait(false);
+                return await EvaluateZeroOrMoreAsync(starts, zeroOrMorePath.Inner, ops, cancellationToken).ConfigureAwait(false);
             }
 
             case OneOrMorePath oneOrMorePath:
             {
-                return await EvaluateOneOrMoreAsync(starts, oneOrMorePath.Inner, match, cancellationToken).ConfigureAwait(false);
+                return await EvaluateOneOrMoreAsync(starts, oneOrMorePath.Inner, ops, cancellationToken).ConfigureAwait(false);
             }
 
             case ZeroOrOnePath zeroOrOnePath:
             {
-                HashSet<TermId> oneStep = await EvaluateToSetAsync(starts, zeroOrOnePath.Inner, match, cancellationToken).ConfigureAwait(false);
+                HashSet<TermId> oneStep = await EvaluateToSetAsync(starts, zeroOrOnePath.Inner, ops, cancellationToken).ConfigureAwait(false);
                 foreach(TermId start in starts)
                 {
                     oneStep.Add(start);
@@ -234,27 +234,41 @@ public static class PropertyPathEvaluator
         IReadOnlyCollection<TermId> starts,
         IriId predicate,
         bool forward,
-        StorageDelegates.MatchTriplesAsync match,
+        GraphMatchOps ops,
         CancellationToken cancellationToken)
     {
-        HashSet<TermId> next = [];
+        if(starts.Count == 0)
+        {
+            return [];
+        }
+
+        //Materialise the start set into a pre-sized array. The subject-
+        //and object-set primitives consume ReadOnlyMemory<TermId>, and a
+        //single allocation here lets the storage layer amortise the
+        //predicate-rooted descent across the whole set instead of
+        //re-descending per start.
+        TermId[] startsArray = new TermId[starts.Count];
+        int index = 0;
         foreach(TermId start in starts)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            startsArray[index++] = start;
+        }
 
-            if(forward)
+        HashSet<TermId> next = [];
+        if(forward)
+        {
+            await foreach(EncodedTriple triple in ops.MatchTriplesBySubjects(
+                startsArray, predicate.Value, TermId.None, cancellationToken).ConfigureAwait(false))
             {
-                await foreach(EncodedTriple triple in match(start, predicate, TermId.None, cancellationToken).ConfigureAwait(false))
-                {
-                    next.Add(triple.Object);
-                }
+                next.Add(triple.Object);
             }
-            else
+        }
+        else
+        {
+            await foreach(EncodedTriple triple in ops.MatchTriplesByObjects(
+                TermId.None, predicate.Value, startsArray, cancellationToken).ConfigureAwait(false))
             {
-                await foreach(EncodedTriple triple in match(TermId.None, predicate, start, cancellationToken).ConfigureAwait(false))
-                {
-                    next.Add(triple.Subject);
-                }
+                next.Add(triple.Subject);
             }
         }
 
@@ -264,13 +278,13 @@ public static class PropertyPathEvaluator
     private static async ValueTask<HashSet<TermId>> EvaluateSequenceAsync(
         IReadOnlyCollection<TermId> starts,
         ImmutableArray<PropertyPath> steps,
-        StorageDelegates.MatchTriplesAsync match,
+        GraphMatchOps ops,
         CancellationToken cancellationToken)
     {
         IReadOnlyCollection<TermId> current = starts;
         foreach(PropertyPath step in steps)
         {
-            HashSet<TermId> expanded = await EvaluateToSetAsync(current, step, match, cancellationToken).ConfigureAwait(false);
+            HashSet<TermId> expanded = await EvaluateToSetAsync(current, step, ops, cancellationToken).ConfigureAwait(false);
             current = expanded;
         }
 
@@ -280,13 +294,13 @@ public static class PropertyPathEvaluator
     private static async ValueTask<HashSet<TermId>> EvaluateAlternativeAsync(
         IReadOnlyCollection<TermId> starts,
         ImmutableArray<PropertyPath> alternatives,
-        StorageDelegates.MatchTriplesAsync match,
+        GraphMatchOps ops,
         CancellationToken cancellationToken)
     {
         HashSet<TermId> union = [];
         foreach(PropertyPath alternative in alternatives)
         {
-            HashSet<TermId> branch = await EvaluateToSetAsync(starts, alternative, match, cancellationToken).ConfigureAwait(false);
+            HashSet<TermId> branch = await EvaluateToSetAsync(starts, alternative, ops, cancellationToken).ConfigureAwait(false);
             foreach(TermId node in branch)
             {
                 union.Add(node);
@@ -391,7 +405,7 @@ public static class PropertyPathEvaluator
     private static async ValueTask<HashSet<TermId>> EvaluateZeroOrMoreAsync(
         IReadOnlyCollection<TermId> starts,
         PropertyPath inner,
-        StorageDelegates.MatchTriplesAsync match,
+        GraphMatchOps ops,
         CancellationToken cancellationToken)
     {
         HashSet<TermId> visited = [];
@@ -410,7 +424,7 @@ public static class PropertyPathEvaluator
             cancellationToken.ThrowIfCancellationRequested();
             TermId current = frontier.Dequeue();
 
-            HashSet<TermId> expanded = await EvaluateToSetAsync([current], inner, match, cancellationToken).ConfigureAwait(false);
+            HashSet<TermId> expanded = await EvaluateToSetAsync([current], inner, ops, cancellationToken).ConfigureAwait(false);
             foreach(TermId next in expanded)
             {
                 if(visited.Add(next))
@@ -442,11 +456,11 @@ public static class PropertyPathEvaluator
     private static async ValueTask<HashSet<TermId>> EvaluateOneOrMoreAsync(
         IReadOnlyCollection<TermId> starts,
         PropertyPath inner,
-        StorageDelegates.MatchTriplesAsync match,
+        GraphMatchOps ops,
         CancellationToken cancellationToken)
     {
         //Take one step first, then take zero-or-more from each result, and union all.
-        HashSet<TermId> firstStep = await EvaluateToSetAsync(starts, inner, match, cancellationToken).ConfigureAwait(false);
+        HashSet<TermId> firstStep = await EvaluateToSetAsync(starts, inner, ops, cancellationToken).ConfigureAwait(false);
         if(firstStep.Count == 0)
         {
             return firstStep;
@@ -467,7 +481,7 @@ public static class PropertyPathEvaluator
             cancellationToken.ThrowIfCancellationRequested();
             TermId current = frontier.Dequeue();
 
-            HashSet<TermId> expanded = await EvaluateToSetAsync([current], inner, match, cancellationToken).ConfigureAwait(false);
+            HashSet<TermId> expanded = await EvaluateToSetAsync([current], inner, ops, cancellationToken).ConfigureAwait(false);
             foreach(TermId next in expanded)
             {
                 if(visited.Add(next))

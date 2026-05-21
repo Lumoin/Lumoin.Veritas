@@ -67,7 +67,7 @@ public static class ShaclPipelineExtensions
 
         return await ShaclValidator.ValidateAsync(
             state.Shapes,
-            state.DataGraphMatch,
+            state.DataMatchOps,
             state.Dictionary,
             evaluators,
             timeProvider,
@@ -95,7 +95,7 @@ public static class ShaclPipelineExtensions
 
         return await ShaclValidator.ValidateAsync(
             state.Shapes,
-            state.DataGraphMatch,
+            state.DataMatchOps,
             state.Dictionary,
             evaluators,
             timeProvider,

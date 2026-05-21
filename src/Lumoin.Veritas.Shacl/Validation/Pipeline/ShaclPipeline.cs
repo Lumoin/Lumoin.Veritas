@@ -33,27 +33,25 @@ public static class ShaclPipeline
 {
     /// <summary>
     /// Begins a pipeline against a pre-built
-    /// <see cref="ShapeRegistry"/> and a
-    /// <see cref="StorageDelegates.MatchTriplesAsync"/> over the data
-    /// graph. The returned state has an empty evaluator registration
-    /// and is ready for <c>WithEvaluator</c> calls and a terminal
-    /// <c>RunAsync</c>.
+    /// <see cref="ShapeRegistry"/> and a <see cref="GraphMatchOps"/>
+    /// bundle over the data graph. The returned state has an empty
+    /// evaluator registration and is ready for <c>WithEvaluator</c>
+    /// calls and a terminal <c>RunAsync</c>.
     /// </summary>
     /// <param name="shapes">The loaded shape registry.</param>
     /// <param name="dictionary">
     /// The term dictionary shared by both the shape graph and the
     /// data graph.
     /// </param>
-    /// <param name="dataGraphMatch">The data-graph match delegate.</param>
+    /// <param name="dataMatchOps">The data-graph match-op bundle.</param>
     public static ShaclPipelineDataState Begin(
         ShapeRegistry shapes,
         TermDictionary dictionary,
-        StorageDelegates.MatchTriplesAsync dataGraphMatch)
+        GraphMatchOps dataMatchOps)
     {
         ArgumentNullException.ThrowIfNull(shapes);
         ArgumentNullException.ThrowIfNull(dictionary);
-        ArgumentNullException.ThrowIfNull(dataGraphMatch);
 
-        return new ShaclPipelineDataState(shapes, dictionary, dataGraphMatch, Evaluators: []);
+        return new ShaclPipelineDataState(shapes, dictionary, dataMatchOps, Evaluators: []);
     }
 }

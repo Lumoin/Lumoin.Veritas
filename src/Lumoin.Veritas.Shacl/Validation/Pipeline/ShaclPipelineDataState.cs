@@ -31,18 +31,18 @@ namespace Lumoin.Veritas.Shacl.Validation.Pipeline;
 /// </para>
 /// <para>
 /// <b>Data-graph access.</b>
-/// <see cref="DataGraphMatch"/> is the read-only data-graph access
-/// delegate used by the validator for target expansion, value-node
+/// <see cref="DataMatchOps"/> is the read-only data-graph access
+/// bundle used by the validator for target expansion, value-node
 /// computation, and constraint-specific traversal. The library does
 /// not append to the data graph through this state; consumers that
 /// want to build a data graph in code do so through their own
 /// builder (test infrastructure provides one for the in-memory case)
-/// and pass the resulting <see cref="StorageDelegates.MatchTriplesAsync"/>
-/// to <see cref="ShaclPipeline.Begin"/>.
+/// and pass the resulting <see cref="GraphMatchOps"/> to
+/// <see cref="ShaclPipeline.Begin"/>.
 /// </para>
 /// </remarks>
 public sealed record ShaclPipelineDataState(
     ShapeRegistry Shapes,
     TermDictionary Dictionary,
-    StorageDelegates.MatchTriplesAsync DataGraphMatch,
+    GraphMatchOps DataMatchOps,
     Dictionary<Utf8String, ConstraintEvaluator> Evaluators): IShaclPipelineState;

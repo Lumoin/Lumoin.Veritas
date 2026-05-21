@@ -99,11 +99,11 @@ public static class ShaclValidator
 {
     /// <summary>
     /// Runs validation over <paramref name="shapes"/> against the data
-    /// graph exposed by <paramref name="dataGraphMatch"/>, dispatching
+    /// graph exposed by <paramref name="dataMatchOps"/>, dispatching
     /// constraints through <paramref name="evaluators"/>.
     /// </summary>
     /// <param name="shapes">The loaded shape registry.</param>
-    /// <param name="dataGraphMatch">Match delegate over the data graph.</param>
+    /// <param name="dataMatchOps">Match-op bundle over the data graph.</param>
     /// <param name="dictionary">
     /// The term dictionary shared by the shape graph and the data graph.
     /// </param>
@@ -115,7 +115,7 @@ public static class ShaclValidator
     /// <exception cref="ArgumentNullException">Any required argument is <c>null</c>.</exception>
     public static async Task<ValidationReport> ValidateAsync(
         ShapeRegistry shapes,
-        StorageDelegates.MatchTriplesAsync dataGraphMatch,
+        GraphMatchOps dataMatchOps,
         TermDictionary dictionary,
         ConstraintEvaluatorRegistry evaluators,
         TimeProvider timeProvider,
@@ -123,7 +123,6 @@ public static class ShaclValidator
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(shapes);
-        ArgumentNullException.ThrowIfNull(dataGraphMatch);
         ArgumentNullException.ThrowIfNull(dictionary);
         ArgumentNullException.ThrowIfNull(evaluators);
         ArgumentNullException.ThrowIfNull(timeProvider);
@@ -153,13 +152,13 @@ public static class ShaclValidator
             TraceHandler = effectiveOptions.TraceHandler,
             InProgress = [],
             Evaluators = evaluators,
-            DataGraphMatch = dataGraphMatch,
+            DataMatchOps = dataMatchOps,
             TimeProvider = timeProvider,
         };
 
         ValidationContext context = new()
         {
-            DataGraphMatch = dataGraphMatch,
+            DataMatchOps = dataMatchOps,
             Shapes = shapes,
             Dictionary = dictionary,
             Options = effectiveOptions,
@@ -190,7 +189,7 @@ public static class ShaclValidator
             HashSet<TermId> focusNodes = [];
             foreach(Target target in shape.Targets)
             {
-                await foreach(TermId focus in target.ExpandAsync(dataGraphMatch, cancellationToken).ConfigureAwait(false))
+                await foreach(TermId focus in target.ExpandAsync(dataMatchOps.MatchTriples, cancellationToken).ConfigureAwait(false))
                 {
                     focusNodes.Add(focus);
                 }
@@ -284,7 +283,7 @@ public static class ShaclValidator
 
         PropertyPath? path = shape is PropertyShape propertyShape ? propertyShape.Path : null;
         ImmutableArray<TermId> valueNodes = await ComputeValueNodesAsync(
-            focus, path, runState.DataGraphMatch, cancellationToken).ConfigureAwait(false);
+            focus, path, runState.DataMatchOps, cancellationToken).ConfigureAwait(false);
 
         ImmutableArray<ValidationResult>.Builder builder = ImmutableArray.CreateBuilder<ValidationResult>();
 
@@ -375,7 +374,7 @@ public static class ShaclValidator
     private static async Task<ImmutableArray<TermId>> ComputeValueNodesAsync(
         TermId focus,
         PropertyPath? path,
-        StorageDelegates.MatchTriplesAsync dataGraphMatch,
+        GraphMatchOps dataMatchOps,
         CancellationToken cancellationToken)
     {
         if(path is null)
@@ -385,7 +384,7 @@ public static class ShaclValidator
 
         List<TermId> values = [];
         await foreach(TermId value in PropertyPathEvaluator.EvaluateAsync(
-            focus, path, dataGraphMatch, cancellationToken).ConfigureAwait(false))
+            focus, path, dataMatchOps, cancellationToken).ConfigureAwait(false))
         {
             values.Add(value);
         }
@@ -440,12 +439,12 @@ public static class ShaclValidator
         public required ConstraintEvaluatorRegistry Evaluators { get; init; }
 
         /// <summary>
-        /// The match delegate over the data graph (the graph being
+        /// The match-op bundle over the data graph (the graph being
         /// validated, distinct from the shape graph). Threaded into
         /// per-focus value-node computation and into individual
         /// constraint evaluators via <see cref="Context"/>.
         /// </summary>
-        public required StorageDelegates.MatchTriplesAsync DataGraphMatch { get; init; }
+        public required GraphMatchOps DataMatchOps { get; init; }
 
         /// <summary>
         /// Clock used to stamp <see cref="ShaclTraceEvent.TimestampTicks"/>

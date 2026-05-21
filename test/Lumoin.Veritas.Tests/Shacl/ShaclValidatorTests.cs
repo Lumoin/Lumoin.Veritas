@@ -47,7 +47,7 @@ internal sealed class ShaclValidatorTests
 
         ValidationReport report = await ShaclValidator.ValidateAsync(
             registry,
-            dataStore.AsMatchDelegate(),
+            dataStore.AsMatchOps(),
             dictionary,
             ConstraintEvaluatorRegistry.Empty,
             VeritasClock.System,
@@ -78,7 +78,7 @@ internal sealed class ShaclValidatorTests
 
         ValidationReport report = await ShaclValidator.ValidateAsync(
             registry,
-            dataStore.AsMatchDelegate(),
+            dataStore.AsMatchOps(),
             dictionary,
             ConstraintEvaluatorRegistry.Empty,
             VeritasClock.System,
@@ -137,7 +137,7 @@ internal sealed class ShaclValidatorTests
 
         ValidationReport report = await ShaclValidator.ValidateAsync(
             registry,
-            dataStore.AsMatchDelegate(),
+            dataStore.AsMatchOps(),
             dictionary,
             evaluators,
             VeritasClock.System,
@@ -183,7 +183,7 @@ internal sealed class ShaclValidatorTests
 
         ValidationReport report = await ShaclValidator.ValidateAsync(
             registry,
-            dataStore.AsMatchDelegate(),
+            dataStore.AsMatchOps(),
             dictionary,
             ConstraintEvaluatorRegistry.Empty,
             VeritasClock.System,
@@ -237,7 +237,7 @@ internal sealed class ShaclValidatorTests
 
         ValidationReport report = await ShaclValidator.ValidateAsync(
             registry,
-            dataStore.AsMatchDelegate(),
+            dataStore.AsMatchOps(),
             dictionary,
             evaluators,
             VeritasClock.System,
@@ -288,7 +288,7 @@ internal sealed class ShaclValidatorTests
 
         ValidationReport report = await ShaclValidator.ValidateAsync(
             registry,
-            dataStore.AsMatchDelegate(),
+            dataStore.AsMatchOps(),
             dictionary,
             evaluators,
             VeritasClock.System,
@@ -349,7 +349,7 @@ internal sealed class ShaclValidatorTests
 
         ValidationReport report = await ShaclValidator.ValidateAsync(
             registry,
-            dataStore.AsMatchDelegate(),
+            dataStore.AsMatchOps(),
             dictionary,
             evaluators,
             VeritasClock.System,
@@ -408,7 +408,7 @@ internal sealed class ShaclValidatorTests
 
         ValidationReport report = await ShaclValidator.ValidateAsync(
             registry,
-            dataStore.AsMatchDelegate(),
+            dataStore.AsMatchOps(),
             dictionary,
             evaluators,
             VeritasClock.System,
@@ -450,7 +450,7 @@ internal sealed class ShaclValidatorTests
 
         ValidationReport report = await ShaclValidator.ValidateAsync(
             registry,
-            dataStore.AsMatchDelegate(),
+            dataStore.AsMatchOps(),
             dictionary,
             ConstraintEvaluatorRegistry.Empty,
             VeritasClock.System,
@@ -518,7 +518,7 @@ internal sealed class ShaclValidatorTests
 
         ValidationReport report = await ShaclValidator.ValidateAsync(
             registry,
-            dataStore.AsMatchDelegate(),
+            dataStore.AsMatchOps(),
             dictionary,
             evaluators,
             VeritasClock.System,

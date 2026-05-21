@@ -87,7 +87,7 @@ public static class RootClassEvaluator
         cancellationToken.ThrowIfCancellationRequested();
 
         RootClassConstraint rcc = (RootClassConstraint)constraint;
-        RdfAdjacencyAdapter adapter = new(context.DataGraphMatch);
+        RdfAdjacencyAdapter adapter = new(context.DataMatchOps.MatchTriples);
 
         //Strict superclasses of the declared root class. This is the
         //set whose intersection with the value's SHACL types must be

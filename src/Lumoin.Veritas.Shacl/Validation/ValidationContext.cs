@@ -53,8 +53,16 @@ namespace Lumoin.Veritas.Shacl.Validation;
 /// </remarks>
 public sealed record ValidationContext
 {
-    /// <summary>Match delegate against the data graph being validated.</summary>
-    public required StorageDelegates.MatchTriplesAsync DataGraphMatch { get; init; }
+    /// <summary>
+    /// Match-op bundle against the data graph being validated. Carries
+    /// the three primitive forms — single-pattern match, subject-set
+    /// match, and object-set match — that the validator and property-path
+    /// evaluator require. Constraint evaluators that only need
+    /// single-pattern lookup read <c>DataMatchOps.MatchTriples</c>;
+    /// path-evaluation consumers pass the whole bundle to
+    /// <see cref="Lumoin.Veritas.Rdf.PropertyPathEvaluator"/>.
+    /// </summary>
+    public required GraphMatchOps DataMatchOps { get; init; }
 
     /// <summary>The loaded shape registry.</summary>
     public required ShapeRegistry Shapes { get; init; }

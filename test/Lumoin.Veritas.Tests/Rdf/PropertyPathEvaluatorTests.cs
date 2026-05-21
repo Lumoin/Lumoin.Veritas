@@ -395,7 +395,7 @@ internal sealed class PropertyPathEvaluatorTests
 
         HashSet<TermId> reached = [];
         await foreach(TermId node in PropertyPathEvaluator.EvaluateFromSetAsync(
-            Array.Empty<TermId>(), path, store.AsMatchDelegate(), TestContext.CancellationToken).ConfigureAwait(false))
+            Array.Empty<TermId>(), path, store.AsMatchOps(), TestContext.CancellationToken).ConfigureAwait(false))
         {
             reached.Add(node);
         }
@@ -588,7 +588,7 @@ internal sealed class PropertyPathEvaluatorTests
         HashSet<TermId> reached = [];
         TermId[] starts = [TermId.FromEncoded(10), TermId.FromEncoded(20)];
         await foreach(TermId node in PropertyPathEvaluator.EvaluateFromSetAsync(
-            starts, path, store.AsMatchDelegate(), TestContext.CancellationToken).ConfigureAwait(false))
+            starts, path, store.AsMatchOps(), TestContext.CancellationToken).ConfigureAwait(false))
         {
             reached.Add(node);
         }
@@ -663,7 +663,7 @@ internal sealed class PropertyPathEvaluatorTests
     {
         HashSet<TermId> reached = [];
         await foreach(TermId node in PropertyPathEvaluator.EvaluateAsync(
-            start, path, store.AsMatchDelegate(), TestContext.CancellationToken).ConfigureAwait(false))
+            start, path, store.AsMatchOps(), TestContext.CancellationToken).ConfigureAwait(false))
         {
             reached.Add(node);
         }

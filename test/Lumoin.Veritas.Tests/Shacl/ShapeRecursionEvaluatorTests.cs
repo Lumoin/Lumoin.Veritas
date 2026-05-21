@@ -70,7 +70,7 @@ internal sealed class ShapeRecursionEvaluatorTests
         InMemoryGraphStore dataStore = InMemoryGraphStore.Build([t]);
 
         ValidationReport report = await ShaclValidator.ValidateAsync(
-            registry, dataStore.AsMatchDelegate(), dictionary,
+            registry, dataStore.AsMatchOps(), dictionary,
             ShaclBuiltInEvaluators.All,
             VeritasClock.System, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
@@ -105,7 +105,7 @@ internal sealed class ShapeRecursionEvaluatorTests
         InMemoryGraphStore dataStore = InMemoryGraphStore.Build([t]);
 
         ValidationReport report = await ShaclValidator.ValidateAsync(
-            registry, dataStore.AsMatchDelegate(), dictionary,
+            registry, dataStore.AsMatchOps(), dictionary,
             ShaclBuiltInEvaluators.All,
             VeritasClock.System, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
@@ -137,7 +137,7 @@ internal sealed class ShapeRecursionEvaluatorTests
         InMemoryGraphStore dataStore = InMemoryGraphStore.Build([t]);
 
         ValidationReport report = await ShaclValidator.ValidateAsync(
-            registry, dataStore.AsMatchDelegate(), dictionary,
+            registry, dataStore.AsMatchOps(), dictionary,
             ShaclBuiltInEvaluators.All,
             VeritasClock.System, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
@@ -167,7 +167,7 @@ internal sealed class ShapeRecursionEvaluatorTests
         InMemoryGraphStore dataStore = InMemoryGraphStore.Build([]);
 
         ValidationReport report = await ShaclValidator.ValidateAsync(
-            registry, dataStore.AsMatchDelegate(), dictionary,
+            registry, dataStore.AsMatchOps(), dictionary,
             ShaclBuiltInEvaluators.All,
             VeritasClock.System, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
@@ -328,7 +328,7 @@ internal sealed class ShapeRecursionEvaluatorTests
         InMemoryGraphStore dataStore = InMemoryGraphStore.Build([]);
 
         ValidationReport report = await ShaclValidator.ValidateAsync(
-            registry, dataStore.AsMatchDelegate(), dictionary,
+            registry, dataStore.AsMatchOps(), dictionary,
             ShaclBuiltInEvaluators.All,
             VeritasClock.System, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
@@ -355,7 +355,7 @@ internal sealed class ShapeRecursionEvaluatorTests
         InMemoryGraphStore dataStore = InMemoryGraphStore.Build([]);
 
         ValidationReport report = await ShaclValidator.ValidateAsync(
-            registry, dataStore.AsMatchDelegate(), dictionary,
+            registry, dataStore.AsMatchOps(), dictionary,
             ShaclBuiltInEvaluators.All,
             VeritasClock.System, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
@@ -397,7 +397,7 @@ internal sealed class ShapeRecursionEvaluatorTests
         InMemoryGraphStore dataStore = InMemoryGraphStore.Build([]);
 
         return await ShaclValidator.ValidateAsync(
-            registry, dataStore.AsMatchDelegate(), dictionary,
+            registry, dataStore.AsMatchOps(), dictionary,
             ShaclBuiltInEvaluators.All,
             VeritasClock.System, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
@@ -425,7 +425,7 @@ internal sealed class ShapeRecursionEvaluatorTests
         InMemoryGraphStore dataStore = InMemoryGraphStore.Build([]);
 
         return await ShaclValidator.ValidateAsync(
-            registry, dataStore.AsMatchDelegate(), dictionary,
+            registry, dataStore.AsMatchOps(), dictionary,
             ShaclBuiltInEvaluators.All,
             VeritasClock.System, cancellationToken: cancellationToken).ConfigureAwait(false);
     }

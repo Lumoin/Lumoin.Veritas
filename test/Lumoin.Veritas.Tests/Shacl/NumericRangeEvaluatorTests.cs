@@ -319,7 +319,7 @@ internal sealed class NumericRangeEvaluatorTests
         });
 
         return await ShaclValidator.ValidateAsync(
-            registry, dataStore.AsMatchDelegate(), dictionary, evaluators,
+            registry, dataStore.AsMatchOps(), dictionary, evaluators,
             VeritasClock.System,
             cancellationToken: cancellationToken).ConfigureAwait(false);
     }

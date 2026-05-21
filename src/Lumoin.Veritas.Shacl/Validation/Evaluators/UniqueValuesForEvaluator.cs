@@ -77,7 +77,7 @@ public static class UniqueValuesForEvaluator
             return [];
         }
 
-        RdfAdjacencyAdapter adapter = new(context.DataGraphMatch);
+        RdfAdjacencyAdapter adapter = new(context.DataMatchOps.MatchTriples);
         ImmutableArray<ValidationResult>.Builder builder = ImmutableArray.CreateBuilder<ValidationResult>();
 
         foreach(TermId value in valueNodes)

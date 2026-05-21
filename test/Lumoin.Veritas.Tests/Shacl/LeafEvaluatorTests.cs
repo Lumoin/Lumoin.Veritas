@@ -426,7 +426,7 @@ internal sealed class LeafEvaluatorTests
         });
 
         return await ShaclValidator.ValidateAsync(
-            registry, dataStore.AsMatchDelegate(), dictionary, evaluators,
+            registry, dataStore.AsMatchOps(), dictionary, evaluators,
             VeritasClock.System,
             cancellationToken: cancellationToken).ConfigureAwait(false);
     }
@@ -457,7 +457,7 @@ internal sealed class LeafEvaluatorTests
         });
 
         return await ShaclValidator.ValidateAsync(
-            registry, dataStore.AsMatchDelegate(), dictionary, evaluators,
+            registry, dataStore.AsMatchOps(), dictionary, evaluators,
             VeritasClock.System,
             cancellationToken: cancellationToken).ConfigureAwait(false);
     }
@@ -486,7 +486,7 @@ internal sealed class LeafEvaluatorTests
         });
 
         return await ShaclValidator.ValidateAsync(
-            registry, dataStore.AsMatchDelegate(), dictionary, evaluators,
+            registry, dataStore.AsMatchOps(), dictionary, evaluators,
             VeritasClock.System,
             cancellationToken: cancellationToken).ConfigureAwait(false);
     }
@@ -515,7 +515,7 @@ internal sealed class LeafEvaluatorTests
         });
 
         return await ShaclValidator.ValidateAsync(
-            registry, dataStore.AsMatchDelegate(), dictionary, evaluators,
+            registry, dataStore.AsMatchOps(), dictionary, evaluators,
             VeritasClock.System,
             cancellationToken: cancellationToken).ConfigureAwait(false);
     }
@@ -552,7 +552,7 @@ internal sealed class LeafEvaluatorTests
         });
 
         return await ShaclValidator.ValidateAsync(
-            registry, dataStore.AsMatchDelegate(), dictionary, evaluators,
+            registry, dataStore.AsMatchOps(), dictionary, evaluators,
             VeritasClock.System,
             cancellationToken: cancellationToken).ConfigureAwait(false);
     }
@@ -670,7 +670,7 @@ internal sealed class LeafEvaluatorTests
         {
             ValidationContext context = new()
             {
-                DataGraphMatch = dataStore.AsMatchDelegate(),
+                DataMatchOps = dataStore.AsMatchOps(),
                 Shapes = registry,
                 Dictionary = dictionary,
                 Options = ShaclValidatorOptions.Default,
@@ -693,7 +693,7 @@ internal sealed class LeafEvaluatorTests
             PropertyShape propertyShape = (PropertyShape)shape;
             List<TermId> values = [];
             await foreach(TermId v in PropertyPathEvaluator.EvaluateAsync(
-                focusNodes[0], propertyShape.Path, dataStore.AsMatchDelegate(), cancellationToken).ConfigureAwait(false))
+                focusNodes[0], propertyShape.Path, dataStore.AsMatchOps(), cancellationToken).ConfigureAwait(false))
             {
                 values.Add(v);
             }
@@ -711,7 +711,7 @@ internal sealed class LeafEvaluatorTests
         }
 
         ValidationReport report = await ShaclValidator.ValidateAsync(
-            registry, dataStore.AsMatchDelegate(), dictionary, evaluators,
+            registry, dataStore.AsMatchOps(), dictionary, evaluators,
             VeritasClock.System,
             cancellationToken: cancellationToken).ConfigureAwait(false);
         return (report, new ClassMembershipCache());

@@ -51,7 +51,7 @@ internal static class PairPropertyComparisonSet
         HashSet<TermId> seen = [];
         ImmutableArray<TermId>.Builder builder = ImmutableArray.CreateBuilder<TermId>();
 
-        await foreach(EncodedTriple triple in context.DataGraphMatch(
+        await foreach(EncodedTriple triple in context.DataMatchOps.MatchTriples(
             focusNode, otherPredicate.Value, TermId.None, cancellationToken).ConfigureAwait(false))
         {
             if(seen.Add(triple.Object))

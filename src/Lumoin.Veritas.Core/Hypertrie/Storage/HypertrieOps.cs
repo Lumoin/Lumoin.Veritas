@@ -219,6 +219,110 @@ public static class HypertrieOps
         return MatchCore(root, store, subject, predicate, @object);
     }
 
+    /// <summary>
+    /// Returns every triple in <paramref name="root"/> whose subject is a
+    /// member of <paramref name="subjects"/>, whose predicate equals
+    /// <paramref name="predicate"/>, and (when bound) whose object equals
+    /// <paramref name="object"/>. Performs a single predicate-rooted
+    /// descent and probes once per subject — not <c>|subjects| × </c> root
+    /// descents.
+    /// </summary>
+    /// <param name="root">The depth-3 root node to query.</param>
+    /// <param name="store">The store backing <paramref name="root"/>.</param>
+    /// <param name="subjects">The subject set. May be empty; must not contain <see cref="TermId.None"/>.</param>
+    /// <param name="predicate">The predicate. Must be bound.</param>
+    /// <param name="object">The object to match, or <see cref="TermId.None"/> for any.</param>
+    /// <returns>Matching triples; output ordering is unspecified.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="store"/> is <c>null</c>.</exception>
+    /// <exception cref="ArgumentException"><paramref name="root"/> is not depth-3; <paramref name="predicate"/> is <see cref="TermId.None"/>; or <paramref name="subjects"/> contains <see cref="TermId.None"/>.</exception>
+    public static IEnumerable<EncodedTriple> MatchBySubjects(
+        HypertrieNode root,
+        NodeStore store,
+        ReadOnlyMemory<TermId> subjects,
+        TermId predicate,
+        TermId @object)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        if(root.Depth != 3)
+        {
+            throw new ArgumentException(
+                $"MatchBySubjects must start at a depth-3 root; got depth={root.Depth}.",
+                nameof(root));
+        }
+
+        if(predicate.IsNone)
+        {
+            throw new ArgumentException(
+                "Predicate must be bound for MatchBySubjects.",
+                nameof(predicate));
+        }
+
+        //Eager validation of the subject-set membership invariant; the
+        //failure surfaces at the call site rather than mid-enumeration.
+        ReadOnlySpan<TermId> validateSpan = subjects.Span;
+        for(int i = 0; i < validateSpan.Length; i++)
+        {
+            if(validateSpan[i].IsNone)
+            {
+                throw new ArgumentException(
+                    "Subject set must not contain TermId.None.",
+                    nameof(subjects));
+            }
+        }
+
+        return MatchBySubjectsCore(root, store, subjects, predicate, @object);
+    }
+
+    /// <summary>
+    /// Mirror of <see cref="MatchBySubjects"/> across the object position:
+    /// returns triples whose object is a member of <paramref name="objects"/>,
+    /// whose predicate equals <paramref name="predicate"/>, and (when bound)
+    /// whose subject equals <paramref name="subject"/>.
+    /// </summary>
+    /// <param name="root">The depth-3 root node to query.</param>
+    /// <param name="store">The store backing <paramref name="root"/>.</param>
+    /// <param name="subject">The subject to match, or <see cref="TermId.None"/> for any.</param>
+    /// <param name="predicate">The predicate. Must be bound.</param>
+    /// <param name="objects">The object set. May be empty; must not contain <see cref="TermId.None"/>.</param>
+    /// <returns>Matching triples; output ordering is unspecified.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="store"/> is <c>null</c>.</exception>
+    /// <exception cref="ArgumentException"><paramref name="root"/> is not depth-3; <paramref name="predicate"/> is <see cref="TermId.None"/>; or <paramref name="objects"/> contains <see cref="TermId.None"/>.</exception>
+    public static IEnumerable<EncodedTriple> MatchByObjects(
+        HypertrieNode root,
+        NodeStore store,
+        TermId subject,
+        TermId predicate,
+        ReadOnlyMemory<TermId> objects)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        if(root.Depth != 3)
+        {
+            throw new ArgumentException(
+                $"MatchByObjects must start at a depth-3 root; got depth={root.Depth}.",
+                nameof(root));
+        }
+
+        if(predicate.IsNone)
+        {
+            throw new ArgumentException(
+                "Predicate must be bound for MatchByObjects.",
+                nameof(predicate));
+        }
+
+        ReadOnlySpan<TermId> validateSpan = objects.Span;
+        for(int i = 0; i < validateSpan.Length; i++)
+        {
+            if(validateSpan[i].IsNone)
+            {
+                throw new ArgumentException(
+                    "Object set must not contain TermId.None.",
+                    nameof(objects));
+            }
+        }
+
+        return MatchByObjectsCore(root, store, subject, predicate, objects);
+    }
+
     //Builds the depth-2 mapping for one of the three root descent
     //paths. <paramref name="outerPosition"/> picks which position the
     //depth-2 node is keyed by; the two remaining positions are
@@ -830,6 +934,171 @@ public static class HypertrieOps
                         stack.Push(NewMatchFrame(frame, chosenPosition, entry.Key, child, childPending));
                     }
                 }
+            }
+        }
+    }
+
+    //Descends one root edge: looks up `outerKey` in the root's edge map
+    //for `outerPosition`, returning the depth-2 mapping node when one
+    //exists. Returns false when the root has no entry for that key or
+    //when the entry is None. SEN at the depth-3 → depth-2 transition
+    //is an invariant violation (SEN appears only at depth-2 → depth-1)
+    //and is rejected via the IsArenaHandle assert.
+    private static bool TryDescendRoot(
+        HypertrieNode root,
+        NodeStore store,
+        int outerPosition,
+        uint outerKey,
+        InlineKeyLookup inlineLookup,
+        out HypertrieNode depth2)
+    {
+        if(!EdgeMap.TryGetChild(in root.EdgeMaps[outerPosition], outerKey, inlineLookup, out NodeHandle depth2Handle)
+            || depth2Handle.IsNone)
+        {
+            depth2 = default;
+
+            return false;
+        }
+
+        Debug.Assert(depth2Handle.IsArenaHandle,
+            "Depth-2 mapping handles are always arena handles; SEN appears only at depth-2 → depth-1.");
+
+        depth2 = store.GetByHandle(depth2Handle);
+
+        return true;
+    }
+
+    //Body of MatchBySubjects. Performs the single predicate-rooted
+    //descent, then iterates the subject set and probes the per-subject
+    //depth-1 leaf. SEN children are resolved inline; FN children fan
+    //out into the depth-1 enumeration. The optional bound object
+    //narrows the depth-1 walk to a single key lookup.
+    private static IEnumerable<EncodedTriple> MatchBySubjectsCore(
+        HypertrieNode root,
+        NodeStore store,
+        ReadOnlyMemory<TermId> subjects,
+        TermId predicate,
+        TermId @object)
+    {
+        InlineKeyLookup inlineLookup = InlineKeyLookups.Scalar;
+
+        //One descent to the predicate's depth-2 mapping. The depth-2
+        //node from the P-first descent has EdgeMaps[0] keyed by S and
+        //EdgeMaps[1] keyed by O — that ordering is established by
+        //BuildPathDepth2 for outerPosition=PositionPredicate, whose
+        //inner positions resolve to (Subject, Object) in ascending
+        //order.
+        if(!TryDescendRoot(root, store, PositionPredicate, predicate.Encoded, inlineLookup, out HypertrieNode depth2))
+        {
+            yield break;
+        }
+
+        uint predicateKey = predicate.Encoded;
+
+        //Per subject: look up the depth-1 leaf in depth2.EdgeMaps[0]
+        //and yield its contents filtered by the optional object bound.
+        for(int i = 0; i < subjects.Length; i++)
+        {
+            uint subjectKey = subjects.Span[i].Encoded;
+            if(!EdgeMap.TryGetChild(in depth2.EdgeMaps[0], subjectKey, inlineLookup, out NodeHandle leafHandle)
+                || leafHandle.IsNone)
+            {
+                continue;
+            }
+
+            if(leafHandle.IsSingleEntry)
+            {
+                //SEN at depth-2 → depth-1 carries the single inner key
+                //inline. For the P-first descent, EdgeMaps[0] is
+                //subject-keyed and the SEN's inline key is therefore
+                //the object value.
+                uint senObject = leafHandle.SingleEntryKey;
+                if(!@object.IsNone && @object.Encoded != senObject)
+                {
+                    continue;
+                }
+
+                yield return EncodedTriple.FromEncoded(subjectKey, predicateKey, senObject);
+
+                continue;
+            }
+
+            HypertrieNode leaf = store.GetByHandle(leafHandle);
+            if(!@object.IsNone)
+            {
+                if(EdgeMap.TryGetChild(in leaf.EdgeMaps[0], @object.Encoded, inlineLookup, out _))
+                {
+                    yield return EncodedTriple.FromEncoded(subjectKey, predicateKey, @object.Encoded);
+                }
+
+                continue;
+            }
+
+            foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(leaf.EdgeMaps[0]))
+            {
+                yield return EncodedTriple.FromEncoded(subjectKey, predicateKey, entry.Key);
+            }
+        }
+    }
+
+    //Mirror of MatchBySubjectsCore across the object position. The
+    //P-first depth-2 node has EdgeMaps[1] keyed by O and (when FN) its
+    //depth-1 leaves are keyed by S; that ordering follows the same
+    //BuildPathDepth2 invariant cited above.
+    private static IEnumerable<EncodedTriple> MatchByObjectsCore(
+        HypertrieNode root,
+        NodeStore store,
+        TermId subject,
+        TermId predicate,
+        ReadOnlyMemory<TermId> objects)
+    {
+        InlineKeyLookup inlineLookup = InlineKeyLookups.Scalar;
+
+        if(!TryDescendRoot(root, store, PositionPredicate, predicate.Encoded, inlineLookup, out HypertrieNode depth2))
+        {
+            yield break;
+        }
+
+        uint predicateKey = predicate.Encoded;
+
+        for(int i = 0; i < objects.Length; i++)
+        {
+            uint objectKey = objects.Span[i].Encoded;
+            if(!EdgeMap.TryGetChild(in depth2.EdgeMaps[1], objectKey, inlineLookup, out NodeHandle leafHandle)
+                || leafHandle.IsNone)
+            {
+                continue;
+            }
+
+            if(leafHandle.IsSingleEntry)
+            {
+                //SEN inline key is the subject for the object-keyed
+                //slot of the P-first depth-2 node.
+                uint senSubject = leafHandle.SingleEntryKey;
+                if(!subject.IsNone && subject.Encoded != senSubject)
+                {
+                    continue;
+                }
+
+                yield return EncodedTriple.FromEncoded(senSubject, predicateKey, objectKey);
+
+                continue;
+            }
+
+            HypertrieNode leaf = store.GetByHandle(leafHandle);
+            if(!subject.IsNone)
+            {
+                if(EdgeMap.TryGetChild(in leaf.EdgeMaps[0], subject.Encoded, inlineLookup, out _))
+                {
+                    yield return EncodedTriple.FromEncoded(subject.Encoded, predicateKey, objectKey);
+                }
+
+                continue;
+            }
+
+            foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(leaf.EdgeMaps[0]))
+            {
+                yield return EncodedTriple.FromEncoded(entry.Key, predicateKey, objectKey);
             }
         }
     }

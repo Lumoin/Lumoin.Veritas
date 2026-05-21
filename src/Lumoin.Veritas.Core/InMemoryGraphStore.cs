@@ -121,12 +121,143 @@ public sealed class InMemoryGraphStore
     }
 
     /// <summary>
+    /// Returns the cross-product of <paramref name="subjects"/> with a
+    /// bound <paramref name="predicate"/>, optionally constrained by a
+    /// bound <paramref name="object"/>. The POS index is descended once
+    /// for the predicate; every triple in that predicate range is then
+    /// filtered by a hashed subject-set membership test.
+    /// </summary>
+    /// <param name="subjects">The encoded subject identifiers. May be empty; must not contain <see cref="TermId.None"/>.</param>
+    /// <param name="predicate">The bound predicate to match.</param>
+    /// <param name="object">The object to match, or <see cref="TermId.None"/> for any.</param>
+    /// <returns>Matching triples; output ordering is unspecified.</returns>
+    /// <exception cref="ArgumentException"><paramref name="predicate"/> is <see cref="TermId.None"/>, or <paramref name="subjects"/> contains <see cref="TermId.None"/>.</exception>
+    public IEnumerable<EncodedTriple> MatchBySubjects(
+        ReadOnlyMemory<TermId> subjects,
+        TermId predicate,
+        TermId @object)
+    {
+        if(predicate.IsNone)
+        {
+            throw new ArgumentException(
+                "Predicate must be bound for MatchBySubjects. Use Match with an unbound predicate instead.",
+                nameof(predicate));
+        }
+
+        if(subjects.IsEmpty)
+        {
+            return [];
+        }
+
+        //Eager validation so the call site (not the consumer's foreach)
+        //sees the invariant failure.
+        ReadOnlySpan<TermId> span = subjects.Span;
+        for(int i = 0; i < span.Length; i++)
+        {
+            if(span[i].IsNone)
+            {
+                throw new ArgumentException(
+                    "Subject set must not contain TermId.None. None means 'unbound' and has no meaning as a set member.",
+                    nameof(subjects));
+            }
+        }
+
+        HashSet<TermId> subjectSet = new(subjects.Length);
+        for(int i = 0; i < span.Length; i++)
+        {
+            subjectSet.Add(span[i]);
+        }
+
+        return ScanPosBySubjectSet(predicate, @object, subjectSet);
+    }
+
+    /// <summary>
+    /// Mirror of <see cref="MatchBySubjects"/> across the object position:
+    /// returns the cross-product of a bound <paramref name="predicate"/>
+    /// with <paramref name="objects"/>, optionally constrained by a bound
+    /// <paramref name="subject"/>.
+    /// </summary>
+    /// <param name="subject">The subject to match, or <see cref="TermId.None"/> for any.</param>
+    /// <param name="predicate">The bound predicate to match.</param>
+    /// <param name="objects">The encoded object identifiers. May be empty; must not contain <see cref="TermId.None"/>.</param>
+    /// <returns>Matching triples; output ordering is unspecified.</returns>
+    /// <exception cref="ArgumentException"><paramref name="predicate"/> is <see cref="TermId.None"/>, or <paramref name="objects"/> contains <see cref="TermId.None"/>.</exception>
+    public IEnumerable<EncodedTriple> MatchByObjects(
+        TermId subject,
+        TermId predicate,
+        ReadOnlyMemory<TermId> objects)
+    {
+        if(predicate.IsNone)
+        {
+            throw new ArgumentException(
+                "Predicate must be bound for MatchByObjects. Use Match with an unbound predicate instead.",
+                nameof(predicate));
+        }
+
+        if(objects.IsEmpty)
+        {
+            return [];
+        }
+
+        ReadOnlySpan<TermId> span = objects.Span;
+        for(int i = 0; i < span.Length; i++)
+        {
+            if(span[i].IsNone)
+            {
+                throw new ArgumentException(
+                    "Object set must not contain TermId.None. None means 'unbound' and has no meaning as a set member.",
+                    nameof(objects));
+            }
+        }
+
+        HashSet<TermId> objectSet = new(objects.Length);
+        for(int i = 0; i < span.Length; i++)
+        {
+            objectSet.Add(span[i]);
+        }
+
+        return ScanPosByObjectSet(subject, predicate, objectSet);
+    }
+
+    /// <summary>
     /// Creates a <see cref="StorageDelegates.MatchTriplesAsync"/> delegate backed by this store.
     /// </summary>
     /// <returns>An async match delegate.</returns>
     public StorageDelegates.MatchTriplesAsync AsMatchDelegate()
     {
         return (s, p, o, ct) => ToAsyncEnumerable(Match(s, p, o), ct);
+    }
+
+    /// <summary>
+    /// Creates a <see cref="StorageDelegates.MatchTriplesBySubjectsAsync"/>
+    /// delegate backed by this store.
+    /// </summary>
+    public StorageDelegates.MatchTriplesBySubjectsAsync AsMatchBySubjectsDelegate()
+    {
+        return (subjects, p, o, ct) => ToAsyncEnumerable(MatchBySubjects(subjects, p, o), ct);
+    }
+
+    /// <summary>
+    /// Creates a <see cref="StorageDelegates.MatchTriplesByObjectsAsync"/>
+    /// delegate backed by this store.
+    /// </summary>
+    public StorageDelegates.MatchTriplesByObjectsAsync AsMatchByObjectsDelegate()
+    {
+        return (s, p, objects, ct) => ToAsyncEnumerable(MatchByObjects(s, p, objects), ct);
+    }
+
+    /// <summary>
+    /// Bundles the three match delegates into a <see cref="GraphMatchOps"/>
+    /// for callers — such as
+    /// <see cref="Lumoin.Veritas.Rdf.PropertyPathEvaluator"/> — that need
+    /// all three forms.
+    /// </summary>
+    public GraphMatchOps AsMatchOps()
+    {
+        return new GraphMatchOps(
+            AsMatchDelegate(),
+            AsMatchBySubjectsDelegate(),
+            AsMatchByObjectsDelegate());
     }
 
     /// <summary>
@@ -172,6 +303,49 @@ public sealed class InMemoryGraphStore
             }
 
             if(!subject.IsNone && Pos[i].Subject != subject)
+            {
+                continue;
+            }
+
+            yield return Pos[i];
+        }
+    }
+
+    //Predicate-rooted scan filtered by a hashed subject set. The
+    //caller is responsible for predicate-bound and subject-set-nonempty
+    //validation; this helper assumes both. The optional bound object
+    //narrows the row further.
+    private IEnumerable<EncodedTriple> ScanPosBySubjectSet(TermId predicate, TermId @object, HashSet<TermId> subjectSet)
+    {
+        int start = LowerBound(Pos, predicate, static t => t.Predicate);
+        for(int i = start; i < Pos.Length && Pos[i].Predicate == predicate; i++)
+        {
+            if(!@object.IsNone && Pos[i].Object != @object)
+            {
+                continue;
+            }
+
+            if(!subjectSet.Contains(Pos[i].Subject))
+            {
+                continue;
+            }
+
+            yield return Pos[i];
+        }
+    }
+
+    //Mirror of ScanPosBySubjectSet across the object position.
+    private IEnumerable<EncodedTriple> ScanPosByObjectSet(TermId subject, TermId predicate, HashSet<TermId> objectSet)
+    {
+        int start = LowerBound(Pos, predicate, static t => t.Predicate);
+        for(int i = start; i < Pos.Length && Pos[i].Predicate == predicate; i++)
+        {
+            if(!subject.IsNone && Pos[i].Subject != subject)
+            {
+                continue;
+            }
+
+            if(!objectSet.Contains(Pos[i].Object))
             {
                 continue;
             }
