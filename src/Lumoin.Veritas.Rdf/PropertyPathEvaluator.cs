@@ -46,6 +46,60 @@ public static class PropertyPathEvaluator
     /// <param name="cancellationToken">A token to cancel the enumeration.</param>
     /// <returns>An async sequence of reachable node identifiers.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="path"/> or <paramref name="match"/> is <c>null</c>.</exception>
+    /// <remarks>
+    /// <para>
+    /// The yielded sequence is a set: each reachable node appears exactly once
+    /// even when several distinct paths reach it. This matches the set-valued
+    /// semantics of SPARQL 1.1 §9 and SHACL 1.2 Core §2.3; multiset semantics
+    /// (one binding per distinct path) are not produced here.
+    /// </para>
+    /// <para>
+    /// Corner cases by constructor:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><description>
+    /// <c>ZeroOrMorePath</c>: the start node is always included, regardless of
+    /// whether it has any outgoing edges matching the inner path. The traversal
+    /// is cycle-safe: a visited set short-circuits the BFS when the inner path
+    /// reaches a node already seen.
+    /// </description></item>
+    /// <item><description>
+    /// <c>OneOrMorePath</c>: the start node is included if and only if it is
+    /// reachable from itself via the inner path (a cycle). This is achieved by
+    /// seeding the BFS visited set with the first inner step's result, not with
+    /// the starts. An empty first step short-circuits the traversal to the empty
+    /// set without entering the BFS loop.
+    /// </description></item>
+    /// <item><description>
+    /// <c>ZeroOrOnePath</c>: the start node is always included unconditionally,
+    /// even when the inner path produces an empty step from it.
+    /// </description></item>
+    /// <item><description>
+    /// <c>InversePath</c>: a bare predicate inverse is dispatched directly to
+    /// a backward storage call. A compound inverse (over a sequence,
+    /// alternative, or repetition) is rewritten internally so that <c>^</c> is
+    /// pushed inward: sequence steps are reversed and inverted, alternatives
+    /// distribute the inverse over their branches, repetitions commute with
+    /// inversion, and double inverse cancels.
+    /// </description></item>
+    /// <item><description>
+    /// <c>SequencePath</c>: the result of each step becomes the start set of
+    /// the next step. An empty intermediate set propagates to an empty final
+    /// result.
+    /// </description></item>
+    /// <item><description>
+    /// <c>AlternativePath</c>: branches are evaluated independently from the
+    /// same start set, and the union is returned. Duplicate alternatives
+    /// deduplicate naturally via the set semantics.
+    /// </description></item>
+    /// </list>
+    /// <para>
+    /// The evaluator is fully iterative at the data-graph level: BFS frontiers
+    /// in the Kleene operators use an explicit <see cref="Queue{T}"/>. Stack
+    /// depth is therefore bounded by the AST nesting, not by graph diameter or
+    /// cycle length.
+    /// </para>
+    /// </remarks>
     public static IAsyncEnumerable<TermId> EvaluateAsync(
         TermId start,
         PropertyPath path,
@@ -69,6 +123,24 @@ public static class PropertyPathEvaluator
     /// <exception cref="ArgumentNullException">
     /// <paramref name="starts"/>, <paramref name="path"/>, or <paramref name="match"/> is <c>null</c>.
     /// </exception>
+    /// <remarks>
+    /// <para>
+    /// The semantics match <see cref="EvaluateAsync(TermId, PropertyPath, StorageDelegates.MatchTriplesAsync, CancellationToken)"/>
+    /// extended to a set of starts: the result is the union of evaluating the
+    /// path from each start. Per-start results are deduplicated structurally.
+    /// </para>
+    /// <para>
+    /// An empty <paramref name="starts"/> collection yields the empty set for
+    /// every constructor. In particular, <c>ZeroOrMorePath</c> over no starts
+    /// yields no reflexive elements because there are no starts to be
+    /// reflexive about, and <c>ZeroOrOnePath</c> over no starts yields the
+    /// empty set for the same reason.
+    /// </para>
+    /// <para>
+    /// All corner cases listed on <see cref="EvaluateAsync(TermId, PropertyPath, StorageDelegates.MatchTriplesAsync, CancellationToken)"/>
+    /// apply per-start to this overload.
+    /// </para>
+    /// </remarks>
     public static IAsyncEnumerable<TermId> EvaluateFromSetAsync(
         IReadOnlyCollection<TermId> starts,
         PropertyPath path,
@@ -302,6 +374,20 @@ public static class PropertyPathEvaluator
         }
     }
 
+    /// <summary>
+    /// Implements <c>A*</c>: the set of nodes reachable from
+    /// <paramref name="starts"/> via zero or more applications of
+    /// <paramref name="inner"/>, including the starts by reflexivity.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Reflexivity is unconditional: every start is added to the visited set
+    /// before any inner expansion runs, so a start with no outgoing inner edge
+    /// still appears in the result. The BFS terminates on cycles because
+    /// <see cref="HashSet{T}.Add(T)"/> returns <c>false</c> for already-visited
+    /// nodes, blocking re-enqueueing.
+    /// </para>
+    /// </remarks>
     private static async ValueTask<HashSet<TermId>> EvaluateZeroOrMoreAsync(
         IReadOnlyCollection<TermId> starts,
         PropertyPath inner,
@@ -337,6 +423,22 @@ public static class PropertyPathEvaluator
         return visited;
     }
 
+    /// <summary>
+    /// Implements <c>A+</c>: the set of nodes reachable from
+    /// <paramref name="starts"/> via one or more applications of
+    /// <paramref name="inner"/>, including a start only if it is reachable
+    /// from itself via the inner path.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The mechanical difference from <c>A*</c> is the BFS seed. The first
+    /// inner step is taken from the starts, and its result — not the starts
+    /// themselves — seeds the visited set. A start therefore appears in the
+    /// output only when the inner path reaches it from another node (or from
+    /// itself via a self-loop). An empty first step short-circuits the
+    /// traversal to the empty set before any BFS iteration runs.
+    /// </para>
+    /// </remarks>
     private static async ValueTask<HashSet<TermId>> EvaluateOneOrMoreAsync(
         IReadOnlyCollection<TermId> starts,
         PropertyPath inner,
