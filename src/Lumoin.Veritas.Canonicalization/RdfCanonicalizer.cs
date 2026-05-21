@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
-using System.Linq;
 using System.Text;
 using Lumoin.Veritas.Core;
 
@@ -53,7 +52,13 @@ public static class RdfCanonicalizer
         ArgumentNullException.ThrowIfNull(quads);
         ArgumentNullException.ThrowIfNull(hash);
 
-        List<Quad> dataset = quads.ToList();
+        List<Quad> dataset = quads is ICollection<Quad> sourceCollection
+            ? new List<Quad>(sourceCollection.Count)
+            : [];
+        foreach(Quad q in quads)
+        {
+            dataset.Add(q);
+        }
 
         //Step 1. Collect blank node to quads mapping.
         //For each blank node identifier, record every quad in which it appears.
@@ -97,10 +102,16 @@ public static class RdfCanonicalizer
         }
 
         //Assign canonical identifiers to uniquely-hashed blank nodes.
-        List<string> uniqueHashes = hashToBlank.Keys
-            .Where(h => !nonUniqueHashes.Contains(h))
-            .OrderBy(h => h, StringComparer.Ordinal)
-            .ToList();
+        List<string> uniqueHashes = new(hashToBlank.Count);
+        foreach(string hashKey in hashToBlank.Keys)
+        {
+            if(!nonUniqueHashes.Contains(hashKey))
+            {
+                uniqueHashes.Add(hashKey);
+            }
+        }
+
+        uniqueHashes.Sort(StringComparer.Ordinal);
 
         foreach(string h in uniqueHashes)
         {
@@ -110,10 +121,22 @@ public static class RdfCanonicalizer
         }
 
         //Step 3. For hash collisions, use the n-degree quads algorithm.
-        List<string> collisionBlankIds = nonUniqueHashes
-            .SelectMany(h => blankNodeToQuads.Keys.Where(id => simpleMap[id] == h))
-            .Distinct()
-            .ToList();
+        HashSet<string> nonUniqueHashSet = new(nonUniqueHashes.Count);
+        foreach(string h in nonUniqueHashes)
+        {
+            nonUniqueHashSet.Add(h);
+        }
+
+        //blankNodeToQuads.Keys are already distinct; the membership test below
+        //is over distinct ids, so no extra de-duplication is needed.
+        List<string> collisionBlankIds = [];
+        foreach(string id in blankNodeToQuads.Keys)
+        {
+            if(nonUniqueHashSet.Contains(simpleMap[id]))
+            {
+                collisionBlankIds.Add(id);
+            }
+        }
 
         //Hash n-degree quads for each collision blank node to get a unique identifier.
         List<(string Hash, List<string> Identifiers)> ndegreeResults = [];
@@ -123,11 +146,24 @@ public static class RdfCanonicalizer
 
         //Group collision blank nodes by their first-degree hash, then within each group
         //compute the n-degree hash to get a stable ordering.
-        foreach(string groupHash in nonUniqueHashes.OrderBy(h => h, StringComparer.Ordinal))
+        string[] sortedNonUniqueHashes = new string[nonUniqueHashes.Count];
+        for(int i = 0; i < nonUniqueHashes.Count; i++)
         {
-            List<string> groupMembers = blankNodeToQuads.Keys
-                .Where(id => simpleMap[id] == groupHash)
-                .ToList();
+            sortedNonUniqueHashes[i] = nonUniqueHashes[i];
+        }
+
+        Array.Sort(sortedNonUniqueHashes, StringComparer.Ordinal);
+
+        foreach(string groupHash in sortedNonUniqueHashes)
+        {
+            List<string> groupMembers = [];
+            foreach(string id in blankNodeToQuads.Keys)
+            {
+                if(simpleMap[id] == groupHash)
+                {
+                    groupMembers.Add(id);
+                }
+            }
 
             List<(string NdHash, string BlankId)> groupResults = [];
 
@@ -144,17 +180,22 @@ public static class RdfCanonicalizer
             }
 
             //Assign canonical identifiers in n-degree hash order.
-            foreach((string _, string blankId) in groupResults.OrderBy(r => r.NdHash, StringComparer.Ordinal))
+            groupResults.Sort(static (a, b) => StringComparer.Ordinal.Compare(a.NdHash, b.NdHash));
+
+            foreach((string _, string blankId) in groupResults)
             {
                 canonicalMap[blankId] = canonicalIssuer.Issue(blankId);
             }
         }
 
         //Step 4. Serialize all quads using canonical blank node identifiers, sort, and join.
-        List<string> lines = dataset
-            .Select(q => NQuadsSerializer.SerializeQuad(q, canonicalMap))
-            .OrderBy(line => line, StringComparer.Ordinal)
-            .ToList();
+        string[] lines = new string[dataset.Count];
+        for(int i = 0; i < dataset.Count; i++)
+        {
+            lines[i] = NQuadsSerializer.SerializeQuad(dataset[i], canonicalMap);
+        }
+
+        Array.Sort(lines, StringComparer.Ordinal);
 
         return string.Concat(lines);
     }
@@ -215,10 +256,13 @@ public static class RdfCanonicalizer
         List<Quad> quads,
         HashDelegate hash)
     {
-        List<string> nquads = quads
-            .Select(q => SerializeForFirstDegree(q, blankId))
-            .OrderBy(s => s, StringComparer.Ordinal)
-            .ToList();
+        string[] nquads = new string[quads.Count];
+        for(int i = 0; i < quads.Count; i++)
+        {
+            nquads[i] = SerializeForFirstDegree(quads[i], blankId);
+        }
+
+        Array.Sort(nquads, StringComparer.Ordinal);
 
         string joined = string.Concat(nquads);
         byte[] hashBytes = hash(Encoding.UTF8.GetBytes(joined));
@@ -289,7 +333,16 @@ public static class RdfCanonicalizer
         //Build a data-to-hash string by iterating related blank nodes in hash order.
         StringBuilder dataToHash = new();
 
-        foreach(string relatedHash in hashToRelated.Keys.OrderBy(h => h, StringComparer.Ordinal))
+        string[] sortedRelatedHashes = new string[hashToRelated.Count];
+        int relatedIndex = 0;
+        foreach(string h in hashToRelated.Keys)
+        {
+            sortedRelatedHashes[relatedIndex++] = h;
+        }
+
+        Array.Sort(sortedRelatedHashes, StringComparer.Ordinal);
+
+        foreach(string relatedHash in sortedRelatedHashes)
         {
             dataToHash.Append(relatedHash);
 
@@ -479,10 +532,13 @@ public static class RdfCanonicalizer
     private static string SerializeWithoutBlankNodes(List<Quad> dataset)
     {
         Dictionary<string, string> emptyMap = [];
-        List<string> lines = dataset
-            .Select(q => NQuadsSerializer.SerializeQuad(q, emptyMap))
-            .OrderBy(line => line, StringComparer.Ordinal)
-            .ToList();
+        string[] lines = new string[dataset.Count];
+        for(int i = 0; i < dataset.Count; i++)
+        {
+            lines[i] = NQuadsSerializer.SerializeQuad(dataset[i], emptyMap);
+        }
+
+        Array.Sort(lines, StringComparer.Ordinal);
 
         return string.Concat(lines);
     }

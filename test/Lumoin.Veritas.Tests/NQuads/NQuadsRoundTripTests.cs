@@ -131,12 +131,14 @@ internal sealed class NQuadsRoundTripTests
     public async Task RoundTripLargeSetPreservesCount()
     {
         using Utf8StringPool pool = new();
-        Quad[] original = Enumerable.Range(0, 100)
-            .Select(i => new Quad(
+        Quad[] original = new Quad[100];
+        for(int i = 0; i < original.Length; i++)
+        {
+            original[i] = new Quad(
                 new NamedNode(pool.Intern($"http://example.org/s{i}")),
                 new NamedNode(pool.Intern("http://example.org/p")),
-                new NamedNode(pool.Intern($"http://example.org/o{i}"))))
-            .ToArray();
+                new NamedNode(pool.Intern($"http://example.org/o{i}")));
+        }
 
         List<Quad> roundTripped = await RoundTripAsync(original, TestContext.CancellationToken).ConfigureAwait(false);
 

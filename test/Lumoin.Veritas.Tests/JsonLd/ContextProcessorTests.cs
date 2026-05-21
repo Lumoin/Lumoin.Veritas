@@ -278,7 +278,19 @@ internal sealed class ContextProcessorTests
             .ConfigureAwait(false);
 
         Assert.IsTrue(result.TryGetTerm("tags", out TermDefinition? def));
-        CollectionAssert.Contains(def?.ContainerMapping.ToList(), "@set");
+        Assert.IsNotNull(def);
+
+        bool foundSet = false;
+        foreach(string container in def.ContainerMapping)
+        {
+            if(container == "@set")
+            {
+                foundSet = true;
+                break;
+            }
+        }
+
+        Assert.IsTrue(foundSet, "ContainerMapping should contain @set");
     }
 
     /// <summary>

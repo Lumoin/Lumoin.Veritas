@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie;
@@ -9,6 +10,17 @@ namespace Lumoin.Veritas.Tests.Hypertrie;
 internal sealed class HypertrieGraphStoreTests
 {
     public TestContext TestContext { get; set; } = null!;
+
+    private static List<T> Collect<T>(IEnumerable<T> source)
+    {
+        List<T> list = [];
+        foreach(T item in source)
+        {
+            list.Add(item);
+        }
+
+        return list;
+    }
 
     //Encoded values start at 10 (well clear of the TermId.None
     //sentinel at 0) so bound-to-X queries do not alias with
@@ -32,7 +44,7 @@ internal sealed class HypertrieGraphStoreTests
             EncodedTriple.FromEncoded(13, 14, 15)
         ], VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
 
-        List<EncodedTriple> results = store.Match(TermId.None, TermId.None, TermId.None).ToList();
+        List<EncodedTriple> results = Collect(store.Match(TermId.None, TermId.None, TermId.None));
 
         Assert.HasCount(2, results);
     }
@@ -47,7 +59,7 @@ internal sealed class HypertrieGraphStoreTests
             EncodedTriple.FromEncoded(15, 11, 12)
         ], VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
 
-        List<EncodedTriple> results = store.Match(TermId.FromEncoded(10), TermId.None, TermId.None).ToList();
+        List<EncodedTriple> results = Collect(store.Match(TermId.FromEncoded(10), TermId.None, TermId.None));
 
         Assert.HasCount(2, results);
     }
@@ -62,7 +74,7 @@ internal sealed class HypertrieGraphStoreTests
             EncodedTriple.FromEncoded(15, 16, 17)
         ], VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
 
-        List<EncodedTriple> results = store.Match(TermId.None, TermId.FromEncoded(11), TermId.None).ToList();
+        List<EncodedTriple> results = Collect(store.Match(TermId.None, TermId.FromEncoded(11), TermId.None));
 
         Assert.HasCount(2, results);
     }
@@ -77,7 +89,7 @@ internal sealed class HypertrieGraphStoreTests
             EncodedTriple.FromEncoded(15, 16, 17)
         ], VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
 
-        List<EncodedTriple> results = store.Match(TermId.None, TermId.None, TermId.FromEncoded(12)).ToList();
+        List<EncodedTriple> results = Collect(store.Match(TermId.None, TermId.None, TermId.FromEncoded(12)));
 
         Assert.HasCount(2, results);
     }
@@ -93,7 +105,7 @@ internal sealed class HypertrieGraphStoreTests
             EncodedTriple.FromEncoded(16, 11, 17)
         ], VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
 
-        List<EncodedTriple> results = store.Match(TermId.FromEncoded(10), TermId.FromEncoded(11), TermId.None).ToList();
+        List<EncodedTriple> results = Collect(store.Match(TermId.FromEncoded(10), TermId.FromEncoded(11), TermId.None));
 
         Assert.HasCount(2, results);
     }
@@ -109,7 +121,7 @@ internal sealed class HypertrieGraphStoreTests
             EncodedTriple.FromEncoded(16, 11, 12)
         ], VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
 
-        List<EncodedTriple> results = store.Match(TermId.FromEncoded(10), TermId.None, TermId.FromEncoded(12)).ToList();
+        List<EncodedTriple> results = Collect(store.Match(TermId.FromEncoded(10), TermId.None, TermId.FromEncoded(12)));
 
         Assert.HasCount(2, results);
     }
@@ -125,7 +137,7 @@ internal sealed class HypertrieGraphStoreTests
             EncodedTriple.FromEncoded(16, 17, 12)
         ], VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
 
-        List<EncodedTriple> results = store.Match(TermId.None, TermId.FromEncoded(11), TermId.FromEncoded(12)).ToList();
+        List<EncodedTriple> results = Collect(store.Match(TermId.None, TermId.FromEncoded(11), TermId.FromEncoded(12)));
 
         Assert.HasCount(2, results);
     }
@@ -140,7 +152,7 @@ internal sealed class HypertrieGraphStoreTests
             EncodedTriple.FromEncoded(13, 14, 15)
         ], VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
 
-        List<EncodedTriple> results = store.Match(TermId.FromEncoded(10), TermId.FromEncoded(11), TermId.FromEncoded(12)).ToList();
+        List<EncodedTriple> results = Collect(store.Match(TermId.FromEncoded(10), TermId.FromEncoded(11), TermId.FromEncoded(12)));
 
         Assert.HasCount(1, results);
         Assert.AreEqual(EncodedTriple.FromEncoded(10, 11, 12), results[0]);
@@ -154,7 +166,7 @@ internal sealed class HypertrieGraphStoreTests
             EncodedTriple.FromEncoded(10, 11, 12)
         ], VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
 
-        List<EncodedTriple> results = store.Match(TermId.FromEncoded(99), TermId.None, TermId.None).ToList();
+        List<EncodedTriple> results = Collect(store.Match(TermId.FromEncoded(99), TermId.None, TermId.None));
 
         Assert.IsEmpty(results);
     }
@@ -182,7 +194,7 @@ internal sealed class HypertrieGraphStoreTests
         ];
         HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(triples, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
 
-        List<EncodedTriple> results = store.Match(TermId.None, TermId.None, TermId.None).ToList();
+        List<EncodedTriple> results = Collect(store.Match(TermId.None, TermId.None, TermId.None));
 
         Assert.HasCount(triples.Length, results);
         HashSet<EncodedTriple> distinct = [.. results];

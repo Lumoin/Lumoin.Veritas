@@ -124,7 +124,13 @@ internal readonly struct CborLdActiveContextScope
 
         //Sort alphabetically per JSON-LD 1.1 §4.1.4 step 8 — application
         //order is observable when two types define conflicting term mappings.
-        string[] sortedTypeIris = typeIris.OrderBy(iri => iri, StringComparer.Ordinal).ToArray();
+        string[] sortedTypeIris = new string[typeIris.Count];
+        for(int i = 0; i < typeIris.Count; i++)
+        {
+            sortedTypeIris[i] = typeIris[i];
+        }
+
+        Array.Sort(sortedTypeIris, StringComparer.Ordinal);
 
         LinkedDataContext running = current;
         foreach(string typeIri in sortedTypeIris)

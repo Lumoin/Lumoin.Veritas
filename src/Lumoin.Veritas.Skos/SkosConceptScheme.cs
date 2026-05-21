@@ -2,6 +2,7 @@ using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Encoding;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -358,20 +359,39 @@ public sealed class SkosConceptScheme
             }
         }
 
+        Dictionary<TermId, IReadOnlyList<TermId>> broaderReadOnly = new(broaderIndex.Count);
+        foreach(KeyValuePair<TermId, HashSet<TermId>> entry in broaderIndex)
+        {
+            TermId[] values = new TermId[entry.Value.Count];
+            entry.Value.CopyTo(values);
+            broaderReadOnly[entry.Key] = values;
+        }
+
+        Dictionary<TermId, IReadOnlyList<TermId>> narrowerReadOnly = new(narrowerIndex.Count);
+        foreach(KeyValuePair<TermId, HashSet<TermId>> entry in narrowerIndex)
+        {
+            TermId[] values = new TermId[entry.Value.Count];
+            entry.Value.CopyTo(values);
+            narrowerReadOnly[entry.Key] = values;
+        }
+
+        TermId[] topConceptArray = new TermId[topConceptIds.Count];
+        topConceptIds.CopyTo(topConceptArray);
+
+        Dictionary<TermId, IReadOnlyList<(TermId, Literal)>> labelReadOnly = new(labelIndex.Count);
+        foreach(KeyValuePair<TermId, List<(TermId, Literal)>> entry in labelIndex)
+        {
+            labelReadOnly[entry.Key] = entry.Value.AsReadOnly();
+        }
+
         return new SkosConceptScheme(
             dictionary,
             schemeId,
             conceptIds,
-            broaderIndex.ToDictionary(
-                kvp => kvp.Key,
-                kvp => (IReadOnlyList<TermId>)kvp.Value.ToList().AsReadOnly()),
-            narrowerIndex.ToDictionary(
-                kvp => kvp.Key,
-                kvp => (IReadOnlyList<TermId>)kvp.Value.ToList().AsReadOnly()),
-            topConceptIds.ToList().AsReadOnly(),
-            labelIndex.ToDictionary(
-                kvp => kvp.Key,
-                kvp => (IReadOnlyList<(TermId, Literal)>)kvp.Value.AsReadOnly()));
+            broaderReadOnly,
+            narrowerReadOnly,
+            topConceptArray,
+            labelReadOnly);
     }
 
     private IEnumerable<string> TraverseTransitive(

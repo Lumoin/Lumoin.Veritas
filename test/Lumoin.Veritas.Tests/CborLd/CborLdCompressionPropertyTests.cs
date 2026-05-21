@@ -1,3 +1,4 @@
+using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Linq;
@@ -53,7 +54,19 @@ internal sealed class CborLdCompressionPropertyTests
     private static Gen<List<string>> TermNameGenerator()
     {
         return AsciiKeyGenerator().Array[3, 7].Select(arr =>
-            arr.GroupBy(s => s).Select(g => g.Key).ToList());
+        {
+            HashSet<string> seen = new(arr.Length, StringComparer.Ordinal);
+            List<string> distinct = new(arr.Length);
+            foreach(string s in arr)
+            {
+                if(seen.Add(s))
+                {
+                    distinct.Add(s);
+                }
+            }
+
+            return distinct;
+        });
     }
 
     private static CborLdRegistryEntry BuildRegistryEntry(List<string> termNames)
@@ -94,10 +107,17 @@ internal sealed class CborLdCompressionPropertyTests
             .Array[0, 5]
             .Select(entries =>
             {
-                IEnumerable<KeyValuePair<string, CborLdInputNode>> deduped = entries
-                    .GroupBy(e => e.Key)
-                    .Select(g => new KeyValuePair<string, CborLdInputNode>(g.Key, g.First().Value));
-                return (CborLdInputNode)new CborLdInputMap(deduped.ToList());
+                Dictionary<string, CborLdInputNode> firstByKey = new(entries.Length, StringComparer.Ordinal);
+                List<KeyValuePair<string, CborLdInputNode>> deduped = new(entries.Length);
+                foreach((string Key, CborLdInputNode Value) entry in entries)
+                {
+                    if(firstByKey.TryAdd(entry.Key, entry.Value))
+                    {
+                        deduped.Add(new KeyValuePair<string, CborLdInputNode>(entry.Key, entry.Value));
+                    }
+                }
+
+                return (CborLdInputNode)new CborLdInputMap(deduped);
             });
 
         return Gen.Int[0, 6].SelectMany(i => i switch

@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.Linq;
 using CsCheck;
 using Lumoin.Veritas.Cbor;
@@ -49,10 +51,18 @@ internal static class DifferentialCborValueGenerator
             .Select(entries =>
             {
                 //Deduplicate by key; BCL Ctap2Canonical rejects duplicate keys.
-                (string Key, DifferentialCborValue Value)[] deduped = entries
-                    .GroupBy(e => e.Key)
-                    .Select(g => g.First())
-                    .ToArray();
+                Dictionary<string, DifferentialCborValue> firstByKey = new(entries.Length, StringComparer.Ordinal);
+                List<(string Key, DifferentialCborValue Value)> dedupedList = new(entries.Length);
+                foreach((string Key, DifferentialCborValue Value) entry in entries)
+                {
+                    if(firstByKey.TryAdd(entry.Key, entry.Value))
+                    {
+                        dedupedList.Add(entry);
+                    }
+                }
+
+                (string Key, DifferentialCborValue Value)[] deduped = new (string Key, DifferentialCborValue Value)[dedupedList.Count];
+                dedupedList.CopyTo(deduped);
                 return (DifferentialCborValue)new DifferentialCborStringMap(deduped);
             });
 

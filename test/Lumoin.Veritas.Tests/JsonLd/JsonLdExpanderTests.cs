@@ -197,9 +197,14 @@ internal sealed class JsonLdExpanderTests
 
         List<Quad> quads = await ExtractAsync(doc, TestContext.CancellationToken).ConfigureAwait(false);
 
-        List<Quad> typeQuads = quads
-            .Where(q => q.Predicate.Iri.ToString() == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
-            .ToList();
+        List<Quad> typeQuads = [];
+        foreach(Quad q in quads)
+        {
+            if(q.Predicate.Iri.Span.SequenceEqual("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"u8))
+            {
+                typeQuads.Add(q);
+            }
+        }
 
         Assert.HasCount(2, typeQuads);
     }
@@ -217,9 +222,14 @@ internal sealed class JsonLdExpanderTests
 
         List<Quad> quads = await ExtractAsync(doc, TestContext.CancellationToken).ConfigureAwait(false);
 
-        List<Quad> nameQuads = quads
-            .Where(q => q.Predicate.Iri.ToString() == "http://schema.org/name")
-            .ToList();
+        List<Quad> nameQuads = [];
+        foreach(Quad q in quads)
+        {
+            if(q.Predicate.Iri.Span.SequenceEqual("http://schema.org/name"u8))
+            {
+                nameQuads.Add(q);
+            }
+        }
 
         Assert.HasCount(2, nameQuads);
     }

@@ -19,6 +19,13 @@ internal sealed class PropertyPathEvaluatorTests
     //predicates are always IRIs so an unchecked wrap is appropriate in tests.
     private static IriId PredIri(uint encoded) => IriId.FromUnchecked(TermId.FromEncoded(encoded));
 
+    private static TermId[] AsArray(HashSet<TermId> set)
+    {
+        TermId[] arr = new TermId[set.Count];
+        set.CopyTo(arr);
+        return arr;
+    }
+
     [TestMethod]
     public async Task PredicatePathReachesDirectNeighbours()
     {
@@ -38,7 +45,7 @@ internal sealed class PropertyPathEvaluatorTests
 
         CollectionAssert.AreEquivalent(
             new TermId[] { TermId.FromEncoded(11), TermId.FromEncoded(12) },
-            reached.ToList());
+            AsArray(reached));
     }
 
     [TestMethod]
@@ -67,7 +74,7 @@ internal sealed class PropertyPathEvaluatorTests
 
         CollectionAssert.AreEquivalent(
             new TermId[] { TermId.FromEncoded(12), TermId.FromEncoded(13) },
-            reached.ToList());
+            AsArray(reached));
     }
 
     [TestMethod]
@@ -94,7 +101,7 @@ internal sealed class PropertyPathEvaluatorTests
 
         CollectionAssert.AreEquivalent(
             new TermId[] { TermId.FromEncoded(11), TermId.FromEncoded(12) },
-            reached.ToList());
+            AsArray(reached));
     }
 
     [TestMethod]
@@ -114,7 +121,7 @@ internal sealed class PropertyPathEvaluatorTests
 
         CollectionAssert.AreEquivalent(
             new TermId[] { TermId.FromEncoded(10) },
-            reached.ToList());
+            AsArray(reached));
     }
 
     [TestMethod]
@@ -139,7 +146,7 @@ internal sealed class PropertyPathEvaluatorTests
 
         CollectionAssert.AreEquivalent(
             new TermId[] { TermId.FromEncoded(10), TermId.FromEncoded(11), TermId.FromEncoded(12), TermId.FromEncoded(13) },
-            reached.ToList());
+            AsArray(reached));
     }
 
     [TestMethod]
@@ -163,7 +170,7 @@ internal sealed class PropertyPathEvaluatorTests
 
         CollectionAssert.AreEquivalent(
             new TermId[] { TermId.FromEncoded(11), TermId.FromEncoded(12) },
-            reached.ToList());
+            AsArray(reached));
     }
 
     [TestMethod]
@@ -186,6 +193,6 @@ internal sealed class PropertyPathEvaluatorTests
 
         CollectionAssert.AreEquivalent(
             new TermId[] { TermId.FromEncoded(10), TermId.FromEncoded(11) },
-            reached.ToList());
+            AsArray(reached));
     }
 }

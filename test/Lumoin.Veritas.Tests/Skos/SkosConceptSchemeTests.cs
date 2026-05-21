@@ -1,4 +1,6 @@
+using System.Collections.Generic;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Skos;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -8,6 +10,17 @@ namespace Lumoin.Veritas.Tests.Skos;
 internal sealed class SkosConceptSchemeTests
 {
     public TestContext TestContext { get; set; } = null!;
+
+    private static List<T> Collect<T>(IEnumerable<T> source)
+    {
+        List<T> list = source is ICollection<T> col ? new List<T>(col.Count) : [];
+        foreach(T item in source)
+        {
+            list.Add(item);
+        }
+
+        return list;
+    }
 
     //Test scheme IRI.
     private const string SchemeIri = "http://example.org/scheme";
@@ -64,7 +77,7 @@ internal sealed class SkosConceptSchemeTests
             TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.IsNotNull(scheme);
-        List<string> topConcepts = scheme.TopConcepts.ToList();
+        List<string> topConcepts = Collect(scheme.TopConcepts);
 
         //Animal and Bird are top concepts (no broader in the scheme).
         //Dog and Cat are narrower than Mammal; Mammal is narrower than Animal.
@@ -85,7 +98,7 @@ internal sealed class SkosConceptSchemeTests
             TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.IsNotNull(scheme);
-        List<string> broaderOfDog = scheme.GetBroader(Dog).ToList();
+        List<string> broaderOfDog = Collect(scheme.GetBroader(Dog));
 
         Assert.HasCount(1, broaderOfDog);
         Assert.AreEqual(Mammal, broaderOfDog[0]);
@@ -104,7 +117,7 @@ internal sealed class SkosConceptSchemeTests
             TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.IsNotNull(scheme);
-        List<string> narrowerOfMammal = scheme.GetNarrower(Mammal).ToList();
+        List<string> narrowerOfMammal = Collect(scheme.GetNarrower(Mammal));
 
         Assert.HasCount(2, narrowerOfMammal);
         Assert.Contains(Dog, narrowerOfMammal);
@@ -124,7 +137,7 @@ internal sealed class SkosConceptSchemeTests
             TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.IsNotNull(scheme);
-        List<string> ancestors = scheme.GetAllBroader(Dog).ToList();
+        List<string> ancestors = Collect(scheme.GetAllBroader(Dog));
 
         //Dog → Mammal → Animal.
         Assert.HasCount(2, ancestors);
@@ -145,7 +158,7 @@ internal sealed class SkosConceptSchemeTests
             TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.IsNotNull(scheme);
-        List<string> descendants = scheme.GetAllNarrower(Animal).ToList();
+        List<string> descendants = Collect(scheme.GetAllNarrower(Animal));
 
         //Animal → Mammal → Dog, Cat.
         Assert.HasCount(3, descendants);
@@ -167,7 +180,7 @@ internal sealed class SkosConceptSchemeTests
             TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.IsNotNull(scheme);
-        List<string> broaderOfAnimal = scheme.GetBroader(Animal).ToList();
+        List<string> broaderOfAnimal = Collect(scheme.GetBroader(Animal));
 
         Assert.IsEmpty(broaderOfAnimal);
     }
@@ -185,7 +198,7 @@ internal sealed class SkosConceptSchemeTests
             TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.IsNotNull(scheme);
-        List<string> ancestors = scheme.GetAllBroader("http://example.org/Unknown").ToList();
+        List<string> ancestors = Collect(scheme.GetAllBroader("http://example.org/Unknown"));
 
         Assert.IsEmpty(ancestors);
     }
@@ -203,7 +216,7 @@ internal sealed class SkosConceptSchemeTests
             TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.IsNotNull(scheme);
-        List<Literal> labels = scheme.GetPrefLabels(Dog).ToList();
+        List<Literal> labels = Collect(scheme.GetPrefLabels(Dog));
 
         Assert.HasCount(2, labels);
     }
@@ -221,7 +234,7 @@ internal sealed class SkosConceptSchemeTests
             TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.IsNotNull(scheme);
-        List<Literal> englishLabels = scheme.GetPrefLabels(Dog, "en").ToList();
+        List<Literal> englishLabels = Collect(scheme.GetPrefLabels(Dog, "en"));
 
         Assert.HasCount(1, englishLabels);
         Assert.AreEqual("Dog", englishLabels[0].Value.ToString());
@@ -297,7 +310,12 @@ internal sealed class SkosConceptSchemeTests
                 new Literal(InternIri("Hund"), new NamedNode(InternIri(langString.Iri.ToString())), InternIri("de")))
         ];
 
-        List<EncodedTriple> encoded = quads.Select(q => q.Encode(dictionary).AsTriple()).ToList();
+        List<EncodedTriple> encoded = new(quads.Count);
+        foreach(Quad q in quads)
+        {
+            encoded.Add(q.Encode(dictionary).AsTriple());
+        }
+
         InMemoryGraphStore store = InMemoryGraphStore.Build(encoded);
 
         return (store, dictionary, pool);

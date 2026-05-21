@@ -317,19 +317,24 @@ internal sealed class VeritasMemoryPoolTests
     {
         using VeritasMemoryPool<byte> pool = new();
 
-        Task<int>[] tasks = Enumerable.Range(0, 50).Select(async i =>
+        Task<int>[] tasks = new Task<int>[50];
+        for(int i = 0; i < tasks.Length; i++)
         {
-            IMemoryOwner<byte> owner = pool.Rent((i % 8 + 1) * 16);
-            owner.Memory.Span.Fill((byte)(i % 256));
+            int captured = i;
+            tasks[i] = Task.Run(async () =>
+            {
+                IMemoryOwner<byte> owner = pool.Rent((captured % 8 + 1) * 16);
+                owner.Memory.Span.Fill((byte)(captured % 256));
 
-            //Yield to force potential thread switches.
-            await Task.Yield();
+                //Yield to force potential thread switches.
+                await Task.Yield();
 
-            int length = owner.Memory.Length;
-            owner.Dispose();
+                int length = owner.Memory.Length;
+                owner.Dispose();
 
-            return length;
-        }).ToArray();
+                return length;
+            });
+        }
 
         int[] results = await Task.WhenAll(tasks).ConfigureAwait(false);
 

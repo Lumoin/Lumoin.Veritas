@@ -74,10 +74,17 @@ internal sealed class CborLdRoundTripPropertyTests
             .Array[0, 5]
             .Select(entries =>
             {
-                IEnumerable<KeyValuePair<string, CborLdInputNode>> deduped = entries
-                    .GroupBy(e => e.Key)
-                    .Select(g => new KeyValuePair<string, CborLdInputNode>(g.Key, g.First().Value));
-                return (CborLdInputNode)new CborLdInputMap(deduped.ToList());
+                Dictionary<string, CborLdInputNode> firstByKey = new(entries.Length, StringComparer.Ordinal);
+                List<KeyValuePair<string, CborLdInputNode>> deduped = new(entries.Length);
+                foreach((string Key, CborLdInputNode Value) entry in entries)
+                {
+                    if(firstByKey.TryAdd(entry.Key, entry.Value))
+                    {
+                        deduped.Add(new KeyValuePair<string, CborLdInputNode>(entry.Key, entry.Value));
+                    }
+                }
+
+                return (CborLdInputNode)new CborLdInputMap(deduped);
             });
 
         return Gen.Int[0, 6].SelectMany(i => i switch
@@ -115,10 +122,16 @@ internal sealed class CborLdRoundTripPropertyTests
             .Array[0, 8]
             .Select(entries =>
             {
-                List<KeyValuePair<string, CborLdInputNode>> deduped = entries
-                    .GroupBy(e => e.Key)
-                    .Select(g => new KeyValuePair<string, CborLdInputNode>(g.Key, g.First().Value))
-                    .ToList();
+                Dictionary<string, CborLdInputNode> firstByKey = new(entries.Length, StringComparer.Ordinal);
+                List<KeyValuePair<string, CborLdInputNode>> deduped = new(entries.Length);
+                foreach((string Key, CborLdInputNode Value) entry in entries)
+                {
+                    if(firstByKey.TryAdd(entry.Key, entry.Value))
+                    {
+                        deduped.Add(new KeyValuePair<string, CborLdInputNode>(entry.Key, entry.Value));
+                    }
+                }
+
                 List<KeyValuePair<string, CborLdInputNode>> reversed = [..deduped];
                 reversed.Reverse();
                 return (new CborLdInputMap(deduped), new CborLdInputMap(reversed));

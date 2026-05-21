@@ -128,7 +128,12 @@ internal sealed class ShapeGraphBuilder
     /// </summary>
     public (InMemoryGraphStore Store, TermDictionary Dictionary) Finish()
     {
-        List<EncodedTriple> encoded = quads.Select(q => q.Encode(Dictionary).AsTriple()).ToList();
+        List<EncodedTriple> encoded = new(quads.Count);
+        foreach(Quad q in quads)
+        {
+            encoded.Add(q.Encode(Dictionary).AsTriple());
+        }
+
         return (InMemoryGraphStore.Build(encoded), Dictionary);
     }
 

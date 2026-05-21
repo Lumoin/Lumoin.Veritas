@@ -56,7 +56,12 @@ internal sealed class ShapeLoaderTests
             ShaclBuiltInComponents.All,
             cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
-        List<Shape> shapes = registry.AllShapes.ToList();
+        List<Shape> shapes = [];
+        foreach(Shape s in registry.AllShapes)
+        {
+            shapes.Add(s);
+        }
+
         Assert.HasCount(1, shapes);
 
         Shape shape = shapes[0];
@@ -82,7 +87,12 @@ internal sealed class ShapeLoaderTests
             ShaclBuiltInComponents.All,
             cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
-        List<Shape> shapes = registry.AllShapes.ToList();
+        List<Shape> shapes = [];
+        foreach(Shape s in registry.AllShapes)
+        {
+            shapes.Add(s);
+        }
+
         Assert.HasCount(1, shapes);
 
         PropertyShape ps = (PropertyShape)shapes[0];

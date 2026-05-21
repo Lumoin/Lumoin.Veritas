@@ -65,7 +65,10 @@ public sealed class InMemoryGraphStore
     public static InMemoryGraphStore Build(IEnumerable<EncodedTriple> triples)
     {
         ArgumentNullException.ThrowIfNull(triples);
-        EncodedTriple[] spoArray = triples.Distinct().ToArray();
+
+        HashSet<EncodedTriple> distinct = new(triples);
+        EncodedTriple[] spoArray = new EncodedTriple[distinct.Count];
+        distinct.CopyTo(spoArray);
         Array.Sort(spoArray, CompareSpo);
 
         EncodedTriple[] posArray = new EncodedTriple[spoArray.Length];

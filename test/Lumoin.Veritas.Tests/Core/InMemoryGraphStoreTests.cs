@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Encoding;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -8,6 +9,17 @@ namespace Lumoin.Veritas.Tests.Core;
 internal sealed class InMemoryGraphStoreTests
 {
     public TestContext TestContext { get; set; } = null!;
+
+    private static List<T> Collect<T>(IEnumerable<T> source)
+    {
+        List<T> list = [];
+        foreach(T item in source)
+        {
+            list.Add(item);
+        }
+
+        return list;
+    }
 
     //Encoded values start at 10 (well clear of the TermId.None
     //sentinel at 0) so bound-to-X queries do not alias with
@@ -31,7 +43,7 @@ internal sealed class InMemoryGraphStoreTests
             EncodedTriple.FromEncoded(13, 14, 15)
         ]);
 
-        List<EncodedTriple> results = store.Match(TermId.None, TermId.None, TermId.None).ToList();
+        List<EncodedTriple> results = Collect(store.Match(TermId.None, TermId.None, TermId.None));
 
         Assert.HasCount(2, results);
     }
@@ -46,7 +58,7 @@ internal sealed class InMemoryGraphStoreTests
             EncodedTriple.FromEncoded(15, 11, 12)
         ]);
 
-        List<EncodedTriple> results = store.Match(TermId.FromEncoded(10), TermId.None, TermId.None).ToList();
+        List<EncodedTriple> results = Collect(store.Match(TermId.FromEncoded(10), TermId.None, TermId.None));
 
         Assert.HasCount(2, results);
     }
@@ -61,7 +73,7 @@ internal sealed class InMemoryGraphStoreTests
             EncodedTriple.FromEncoded(15, 16, 17)
         ]);
 
-        List<EncodedTriple> results = store.Match(TermId.None, TermId.FromEncoded(11), TermId.None).ToList();
+        List<EncodedTriple> results = Collect(store.Match(TermId.None, TermId.FromEncoded(11), TermId.None));
 
         Assert.HasCount(2, results);
     }
@@ -76,7 +88,7 @@ internal sealed class InMemoryGraphStoreTests
             EncodedTriple.FromEncoded(15, 16, 17)
         ]);
 
-        List<EncodedTriple> results = store.Match(TermId.None, TermId.None, TermId.FromEncoded(12)).ToList();
+        List<EncodedTriple> results = Collect(store.Match(TermId.None, TermId.None, TermId.FromEncoded(12)));
 
         Assert.HasCount(2, results);
     }
@@ -92,7 +104,7 @@ internal sealed class InMemoryGraphStoreTests
             EncodedTriple.FromEncoded(16, 11, 17)
         ]);
 
-        List<EncodedTriple> results = store.Match(TermId.FromEncoded(10), TermId.FromEncoded(11), TermId.None).ToList();
+        List<EncodedTriple> results = Collect(store.Match(TermId.FromEncoded(10), TermId.FromEncoded(11), TermId.None));
 
         Assert.HasCount(2, results);
     }
@@ -107,7 +119,7 @@ internal sealed class InMemoryGraphStoreTests
             EncodedTriple.FromEncoded(13, 14, 15)
         ]);
 
-        List<EncodedTriple> results = store.Match(TermId.FromEncoded(10), TermId.FromEncoded(11), TermId.FromEncoded(12)).ToList();
+        List<EncodedTriple> results = Collect(store.Match(TermId.FromEncoded(10), TermId.FromEncoded(11), TermId.FromEncoded(12)));
 
         Assert.HasCount(1, results);
         Assert.AreEqual(EncodedTriple.FromEncoded(10, 11, 12), results[0]);
@@ -121,7 +133,7 @@ internal sealed class InMemoryGraphStoreTests
             EncodedTriple.FromEncoded(10, 11, 12)
         ]);
 
-        List<EncodedTriple> results = store.Match(TermId.FromEncoded(99), TermId.None, TermId.None).ToList();
+        List<EncodedTriple> results = Collect(store.Match(TermId.FromEncoded(99), TermId.None, TermId.None));
 
         Assert.IsEmpty(results);
     }

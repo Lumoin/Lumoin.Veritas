@@ -166,7 +166,16 @@ internal sealed class DagCborRoundTripPropertyTests
         Gen<Node> child = TreeGenerator(maxDepth - 1);
 
         Gen<Node> arrayGen = child.Array[0, 4]
-            .Select(items => (Node)new ArrayNode(items.ToList()));
+            .Select(items =>
+            {
+                List<Node> nodes = new(items.Length);
+                foreach(Node node in items)
+                {
+                    nodes.Add(node);
+                }
+
+                return (Node)new ArrayNode(nodes);
+            });
 
         Gen<Node> mapGen =
             (from k in AsciiKeyGenerator() from v in child select (Key: k, Value: v))
@@ -174,10 +183,16 @@ internal sealed class DagCborRoundTripPropertyTests
             .Select(entries =>
             {
                 //Deduplicate by key; the writer's canonical mode sorts and rejects duplicates.
-                List<KeyValuePair<string, Node>> deduped = entries
-                    .GroupBy(e => e.Key)
-                    .Select(g => new KeyValuePair<string, Node>(g.Key, g.First().Value))
-                    .ToList();
+                Dictionary<string, Node> firstByKey = new(entries.Length, System.StringComparer.Ordinal);
+                List<KeyValuePair<string, Node>> deduped = new(entries.Length);
+                foreach((string Key, Node Value) entry in entries)
+                {
+                    if(firstByKey.TryAdd(entry.Key, entry.Value))
+                    {
+                        deduped.Add(new KeyValuePair<string, Node>(entry.Key, entry.Value));
+                    }
+                }
+
                 return (Node)new MapNode(deduped);
             });
 
