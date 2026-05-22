@@ -1,11 +1,14 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Encoding;
+using Lumoin.Veritas.Core.Memory;
 
 namespace Lumoin.Veritas.Rdf;
 
@@ -402,12 +405,12 @@ public static class PropertyPathEvaluator
     /// nodes, blocking re-enqueueing.
     /// </para>
     /// <para>
-    /// Each iteration advances the entire frontier through one
-    /// <see cref="ExpandFrontierAsync"/> call. For predicate-leaf and
-    /// leaf-alternation inners the call dispatches to the batched
-    /// storage primitives so that the per-iteration cost is one
-    /// predicate-rooted descent regardless of frontier size; the
-    /// fallback shape iterates per element for arbitrary nested inners.
+    /// The frontier is a pool-rented <see cref="FrontierBuffer"/> rather than
+    /// a <see cref="HashSet{T}"/>; uniqueness on the frontier is guaranteed
+    /// structurally because nodes are only appended when <c>visited.Add</c>
+    /// returned true. Two buffers are held and swapped each iteration, so
+    /// per-iteration allocation drops to zero past the seed and any growth
+    /// events.
     /// </para>
     /// </remarks>
     private static async ValueTask<HashSet<TermId>> EvaluateZeroOrMoreAsync(
@@ -417,8 +420,12 @@ public static class PropertyPathEvaluator
         CancellationToken cancellationToken)
     {
         HashSet<TermId> visited = [];
-        HashSet<TermId> currentFrontier = [];
+        using FrontierBuffer currentFrontier = new(VeritasMemoryPool<TermId>.Shared, initialCapacity: 16);
+        using FrontierBuffer nextFrontier = new(VeritasMemoryPool<TermId>.Shared, initialCapacity: 16);
 
+        //Seed: every start enters visited and the frontier. Reflexivity
+        //is unconditional for ZeroOrMore so a start with no outgoing
+        //inner edge still appears in the result via visited.
         foreach(TermId start in starts)
         {
             if(visited.Add(start))
@@ -427,11 +434,17 @@ public static class PropertyPathEvaluator
             }
         }
 
-        while(currentFrontier.Count > 0)
+        FrontierBuffer current = currentFrontier;
+        FrontierBuffer next = nextFrontier;
+
+        while(current.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            currentFrontier = await ExpandFrontierAsync(
-                currentFrontier, inner, visited, ops, cancellationToken).ConfigureAwait(false);
+            next.Reset();
+            await ExpandFrontierAsync(
+                current.AsMemory(), inner, visited, next, ops, cancellationToken).ConfigureAwait(false);
+
+            (current, next) = (next, current);
         }
 
         return visited;
@@ -469,36 +482,50 @@ public static class PropertyPathEvaluator
         }
 
         HashSet<TermId> visited = new(firstStep);
-        HashSet<TermId> currentFrontier = firstStep;
+        using FrontierBuffer currentFrontier = new(VeritasMemoryPool<TermId>.Shared, initialCapacity: Math.Max(firstStep.Count, 16));
+        using FrontierBuffer nextFrontier = new(VeritasMemoryPool<TermId>.Shared, initialCapacity: 16);
 
-        while(currentFrontier.Count > 0)
+        foreach(TermId node in firstStep)
+        {
+            currentFrontier.Add(node);
+        }
+
+        FrontierBuffer current = currentFrontier;
+        FrontierBuffer next = nextFrontier;
+
+        while(current.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            currentFrontier = await ExpandFrontierAsync(
-                currentFrontier, inner, visited, ops, cancellationToken).ConfigureAwait(false);
+            next.Reset();
+            await ExpandFrontierAsync(
+                current.AsMemory(), inner, visited, next, ops, cancellationToken).ConfigureAwait(false);
+
+            (current, next) = (next, current);
         }
 
         return visited;
     }
 
     /// <summary>
-    /// Advances the whole BFS frontier by one inner-path step. Dispatches
-    /// to the batched storage primitives for predicate-leaf and
-    /// leaf-alternation inners; falls back to a per-element loop calling
+    /// Advances the whole BFS frontier by one inner-path step, appending
+    /// newly-discovered nodes to <paramref name="next"/>. Dispatches to the
+    /// batched storage primitives for predicate-leaf and leaf-alternation
+    /// inners; falls back to a per-element loop calling
     /// <see cref="EvaluateToSetAsync"/> for arbitrary nested inners.
     /// </summary>
     /// <remarks>
     /// <para>
     /// The visited-set update happens inline as the storage stream yields
     /// triples, so a node already in <paramref name="visited"/> is never
-    /// added to the returned next-frontier set. This is the correctness
-    /// invariant for cycle-safe BFS: stale rediscoveries do not re-enqueue.
+    /// appended to <paramref name="next"/>. This is the correctness invariant
+    /// for cycle-safe BFS: stale rediscoveries do not re-enqueue.
     /// </para>
     /// </remarks>
-    private static async ValueTask<HashSet<TermId>> ExpandFrontierAsync(
-        HashSet<TermId> frontier,
+    private static async ValueTask ExpandFrontierAsync(
+        ReadOnlyMemory<TermId> frontier,
         PropertyPath inner,
         HashSet<TermId> visited,
+        FrontierBuffer next,
         GraphMatchOps ops,
         CancellationToken cancellationToken)
     {
@@ -506,26 +533,30 @@ public static class PropertyPathEvaluator
         {
             case PredicatePath predicateLeaf:
             {
-                return await ExpandFrontierByPredicateAsync(
-                    frontier, predicateLeaf.Predicate, forward: true, visited, ops, cancellationToken).ConfigureAwait(false);
+                await ExpandFrontierByPredicateAsync(
+                    frontier, predicateLeaf.Predicate, forward: true, visited, next, ops, cancellationToken).ConfigureAwait(false);
+                break;
             }
 
             case InversePath { Inner: PredicatePath inverseLeaf }:
             {
-                return await ExpandFrontierByPredicateAsync(
-                    frontier, inverseLeaf.Predicate, forward: false, visited, ops, cancellationToken).ConfigureAwait(false);
+                await ExpandFrontierByPredicateAsync(
+                    frontier, inverseLeaf.Predicate, forward: false, visited, next, ops, cancellationToken).ConfigureAwait(false);
+                break;
             }
 
             case AlternativePath alternative when AllBranchesAreLeaves(alternative):
             {
-                return await ExpandFrontierByLeafAlternationAsync(
-                    frontier, alternative, visited, ops, cancellationToken).ConfigureAwait(false);
+                await ExpandFrontierByLeafAlternationAsync(
+                    frontier, alternative, visited, next, ops, cancellationToken).ConfigureAwait(false);
+                break;
             }
 
             default:
             {
-                return await ExpandFrontierByFallbackAsync(
-                    frontier, inner, visited, ops, cancellationToken).ConfigureAwait(false);
+                await ExpandFrontierByFallbackAsync(
+                    frontier, inner, visited, next, ops, cancellationToken).ConfigureAwait(false);
+                break;
             }
         }
     }
@@ -551,78 +582,70 @@ public static class PropertyPathEvaluator
     }
 
     /// <summary>
-    /// Predicate-leaf fast path: one batched storage call materialises the
-    /// frontier's next-step set in a single predicate-rooted descent, no
-    /// matter how many nodes the frontier carries. <paramref name="forward"/>
-    /// distinguishes <c>:p</c> from <c>^:p</c>.
+    /// Predicate-leaf fast path: one batched storage call advances the
+    /// whole frontier in a single predicate-rooted descent.
+    /// <paramref name="forward"/> distinguishes <c>:p</c> from <c>^:p</c>.
+    /// The frontier memory is passed straight through to the storage
+    /// primitive, with no per-call buffer materialisation.
     /// </summary>
-    private static async ValueTask<HashSet<TermId>> ExpandFrontierByPredicateAsync(
-        HashSet<TermId> frontier,
+    private static async ValueTask ExpandFrontierByPredicateAsync(
+        ReadOnlyMemory<TermId> frontier,
         IriId predicate,
         bool forward,
         HashSet<TermId> visited,
+        FrontierBuffer next,
         GraphMatchOps ops,
         CancellationToken cancellationToken)
     {
-        if(frontier.Count == 0)
+        if(frontier.IsEmpty)
         {
-            return [];
+            return;
         }
 
-        //One TermId[] per BFS iteration, sized to the frontier; this
-        //replaces the N per-element wrappers the per-node shape produced.
-        TermId[] frontierBuffer = new TermId[frontier.Count];
-        frontier.CopyTo(frontierBuffer);
-
-        HashSet<TermId> nextFrontier = [];
         if(forward)
         {
             await foreach(EncodedTriple triple in ops.MatchTriplesBySubjects(
-                frontierBuffer, predicate.Value, TermId.None, cancellationToken).ConfigureAwait(false))
+                frontier, predicate.Value, TermId.None, cancellationToken).ConfigureAwait(false))
             {
                 if(visited.Add(triple.Object))
                 {
-                    nextFrontier.Add(triple.Object);
+                    next.Add(triple.Object);
                 }
             }
         }
         else
         {
             await foreach(EncodedTriple triple in ops.MatchTriplesByObjects(
-                TermId.None, predicate.Value, frontierBuffer, cancellationToken).ConfigureAwait(false))
+                TermId.None, predicate.Value, frontier, cancellationToken).ConfigureAwait(false))
             {
                 if(visited.Add(triple.Subject))
                 {
-                    nextFrontier.Add(triple.Subject);
+                    next.Add(triple.Subject);
                 }
             }
         }
-
-        return nextFrontier;
     }
 
     /// <summary>
     /// Leaf-alternation fast path: each branch issues one batched call
-    /// against the same materialised frontier buffer. The visited-set
-    /// update is shared across branches so later branches see updates
-    /// from earlier ones, and the union folds into one next-frontier set.
+    /// against the same shared frontier memory. The visited-set update
+    /// is shared across branches so later branches see updates from
+    /// earlier ones; the per-branch unions append to the same
+    /// <paramref name="next"/> buffer.
     /// </summary>
-    private static async ValueTask<HashSet<TermId>> ExpandFrontierByLeafAlternationAsync(
-        HashSet<TermId> frontier,
+    private static async ValueTask ExpandFrontierByLeafAlternationAsync(
+        ReadOnlyMemory<TermId> frontier,
         AlternativePath alternation,
         HashSet<TermId> visited,
+        FrontierBuffer next,
         GraphMatchOps ops,
         CancellationToken cancellationToken)
     {
-        if(frontier.Count == 0)
+        if(frontier.IsEmpty)
         {
-            return [];
+            return;
         }
 
-        TermId[] frontierBuffer = new TermId[frontier.Count];
-        frontier.CopyTo(frontierBuffer);
-
-        HashSet<TermId> nextFrontier = [];
         foreach(PropertyPath branch in alternation.Alternatives)
         {
             switch(branch)
@@ -630,11 +653,11 @@ public static class PropertyPathEvaluator
                 case PredicatePath predicateLeaf:
                 {
                     await foreach(EncodedTriple triple in ops.MatchTriplesBySubjects(
-                        frontierBuffer, predicateLeaf.Predicate.Value, TermId.None, cancellationToken).ConfigureAwait(false))
+                        frontier, predicateLeaf.Predicate.Value, TermId.None, cancellationToken).ConfigureAwait(false))
                     {
                         if(visited.Add(triple.Object))
                         {
-                            nextFrontier.Add(triple.Object);
+                            next.Add(triple.Object);
                         }
                     }
 
@@ -644,11 +667,11 @@ public static class PropertyPathEvaluator
                 case InversePath { Inner: PredicatePath inverseLeaf }:
                 {
                     await foreach(EncodedTriple triple in ops.MatchTriplesByObjects(
-                        TermId.None, inverseLeaf.Predicate.Value, frontierBuffer, cancellationToken).ConfigureAwait(false))
+                        TermId.None, inverseLeaf.Predicate.Value, frontier, cancellationToken).ConfigureAwait(false))
                     {
                         if(visited.Add(triple.Subject))
                         {
-                            nextFrontier.Add(triple.Subject);
+                            next.Add(triple.Subject);
                         }
                     }
 
@@ -665,8 +688,6 @@ public static class PropertyPathEvaluator
                 }
             }
         }
-
-        return nextFrontier;
     }
 
     /// <summary>
@@ -676,27 +697,124 @@ public static class PropertyPathEvaluator
     /// the per-element shape preserves correctness on the long tail at
     /// the cost of not capturing the batched-frontier perf win.
     /// </summary>
-    private static async ValueTask<HashSet<TermId>> ExpandFrontierByFallbackAsync(
-        HashSet<TermId> frontier,
+    private static async ValueTask ExpandFrontierByFallbackAsync(
+        ReadOnlyMemory<TermId> frontier,
         PropertyPath inner,
         HashSet<TermId> visited,
+        FrontierBuffer next,
         GraphMatchOps ops,
         CancellationToken cancellationToken)
     {
-        HashSet<TermId> nextFrontier = [];
-        foreach(TermId current in frontier)
+        for(int i = 0; i < frontier.Length; i++)
         {
+            TermId current = frontier.Span[i];
+
             HashSet<TermId> step = await EvaluateToSetAsync(
                 [current], inner, ops, cancellationToken).ConfigureAwait(false);
-            foreach(TermId next in step)
+
+            foreach(TermId discovered in step)
             {
-                if(visited.Add(next))
+                if(visited.Add(discovered))
                 {
-                    nextFrontier.Add(next);
+                    next.Add(discovered);
                 }
             }
         }
+    }
 
-        return nextFrontier;
+    /// <summary>
+    /// Pool-rented append-only buffer used as the BFS frontier in the
+    /// Kleene helpers. Replaces the prior <see cref="HashSet{T}"/> frontier:
+    /// uniqueness on the frontier is guaranteed structurally because nodes
+    /// are only appended when the caller's separate visited-set
+    /// <c>Add</c> returned true.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Holds an <see cref="IMemoryOwner{T}"/> rental from the supplied
+    /// <see cref="VeritasMemoryPool{T}"/>. On overflow the buffer
+    /// doubles via a fresh rental; the prior owner is disposed so the
+    /// pool can reuse its slab.
+    /// </para>
+    /// <para>
+    /// Not thread-safe. One instance is owned by one BFS evaluation and
+    /// disposed when the evaluation exits.
+    /// </para>
+    /// </remarks>
+    [DebuggerDisplay("FrontierBuffer Count={Count} Capacity={Owner.Memory.Length}")]
+    private sealed class FrontierBuffer: IDisposable
+    {
+        /// <summary>The pool the buffer rents its backing memory from.</summary>
+        private VeritasMemoryPool<TermId> Pool { get; }
+
+        /// <summary>The current rental backing the buffer; replaced on grow events.</summary>
+        private IMemoryOwner<TermId> Owner { get; set; }
+
+        /// <summary>Number of valid entries currently held; the live span is <c>Owner.Memory[..Count]</c>.</summary>
+        public int Count { get; private set; }
+
+        /// <summary>
+        /// Rents an initial buffer sized to at least
+        /// <paramref name="initialCapacity"/>. The pool's exact-size
+        /// rental semantics mean the rental's memory length equals the
+        /// requested capacity rounded up to the pool's nearest tier.
+        /// </summary>
+        /// <param name="pool">The pool to rent from. Pass <see cref="VeritasMemoryPool{T}.Shared"/> in production.</param>
+        /// <param name="initialCapacity">Initial capacity hint. Must be positive.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="pool"/> is <c>null</c>.</exception>
+        /// <exception cref="ArgumentOutOfRangeException"><paramref name="initialCapacity"/> is non-positive.</exception>
+        public FrontierBuffer(VeritasMemoryPool<TermId> pool, int initialCapacity)
+        {
+            ArgumentNullException.ThrowIfNull(pool);
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(initialCapacity);
+
+            Pool = pool;
+            Owner = pool.Rent(initialCapacity);
+        }
+
+        /// <summary>
+        /// Appends <paramref name="item"/> to the buffer; grows the
+        /// backing rental by doubling on overflow.
+        /// </summary>
+        public void Add(TermId item)
+        {
+            if(Count == Owner.Memory.Length)
+            {
+                //Double-and-copy growth. The old rental is disposed
+                //after the copy; the pool reuses its slab as
+                //appropriate.
+                IMemoryOwner<TermId> larger = Pool.Rent(Owner.Memory.Length * 2);
+                Owner.Memory.Span.CopyTo(larger.Memory.Span);
+                Owner.Dispose();
+                Owner = larger;
+            }
+
+            Owner.Memory.Span[Count++] = item;
+        }
+
+        /// <summary>
+        /// Returns the live span of the buffer as a
+        /// <see cref="ReadOnlyMemory{T}"/> of length <see cref="Count"/>.
+        /// </summary>
+        public ReadOnlyMemory<TermId> AsMemory()
+        {
+            return Owner.Memory[..Count];
+        }
+
+        /// <summary>
+        /// Clears the buffer's logical contents without releasing the
+        /// rental. Used between BFS iterations to recycle the buffer
+        /// in place.
+        /// </summary>
+        public void Reset()
+        {
+            Count = 0;
+        }
+
+        /// <summary>Releases the current rental back to the pool.</summary>
+        public void Dispose()
+        {
+            Owner.Dispose();
+        }
     }
 }
