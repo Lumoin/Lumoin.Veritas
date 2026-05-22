@@ -401,6 +401,14 @@ public static class PropertyPathEvaluator
     /// <see cref="HashSet{T}.Add(T)"/> returns <c>false</c> for already-visited
     /// nodes, blocking re-enqueueing.
     /// </para>
+    /// <para>
+    /// Each iteration advances the entire frontier through one
+    /// <see cref="ExpandFrontierAsync"/> call. For predicate-leaf and
+    /// leaf-alternation inners the call dispatches to the batched
+    /// storage primitives so that the per-iteration cost is one
+    /// predicate-rooted descent regardless of frontier size; the
+    /// fallback shape iterates per element for arbitrary nested inners.
+    /// </para>
     /// </remarks>
     private static async ValueTask<HashSet<TermId>> EvaluateZeroOrMoreAsync(
         IReadOnlyCollection<TermId> starts,
@@ -409,29 +417,21 @@ public static class PropertyPathEvaluator
         CancellationToken cancellationToken)
     {
         HashSet<TermId> visited = [];
-        Queue<TermId> frontier = new();
+        HashSet<TermId> currentFrontier = [];
 
         foreach(TermId start in starts)
         {
             if(visited.Add(start))
             {
-                frontier.Enqueue(start);
+                currentFrontier.Add(start);
             }
         }
 
-        while(frontier.Count > 0)
+        while(currentFrontier.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            TermId current = frontier.Dequeue();
-
-            HashSet<TermId> expanded = await EvaluateToSetAsync([current], inner, ops, cancellationToken).ConfigureAwait(false);
-            foreach(TermId next in expanded)
-            {
-                if(visited.Add(next))
-                {
-                    frontier.Enqueue(next);
-                }
-            }
+            currentFrontier = await ExpandFrontierAsync(
+                currentFrontier, inner, visited, ops, cancellationToken).ConfigureAwait(false);
         }
 
         return visited;
@@ -459,38 +459,244 @@ public static class PropertyPathEvaluator
         GraphMatchOps ops,
         CancellationToken cancellationToken)
     {
-        //Take one step first, then take zero-or-more from each result, and union all.
+        //First step from the starts seeds the visited set so the start
+        //node is included only if reachable via a cycle. Empty first
+        //step short-circuits the BFS.
         HashSet<TermId> firstStep = await EvaluateToSetAsync(starts, inner, ops, cancellationToken).ConfigureAwait(false);
         if(firstStep.Count == 0)
         {
             return firstStep;
         }
 
-        HashSet<TermId> visited = [];
-        Queue<TermId> frontier = new();
-        foreach(TermId node in firstStep)
-        {
-            if(visited.Add(node))
-            {
-                frontier.Enqueue(node);
-            }
-        }
+        HashSet<TermId> visited = new(firstStep);
+        HashSet<TermId> currentFrontier = firstStep;
 
-        while(frontier.Count > 0)
+        while(currentFrontier.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            TermId current = frontier.Dequeue();
+            currentFrontier = await ExpandFrontierAsync(
+                currentFrontier, inner, visited, ops, cancellationToken).ConfigureAwait(false);
+        }
 
-            HashSet<TermId> expanded = await EvaluateToSetAsync([current], inner, ops, cancellationToken).ConfigureAwait(false);
-            foreach(TermId next in expanded)
+        return visited;
+    }
+
+    /// <summary>
+    /// Advances the whole BFS frontier by one inner-path step. Dispatches
+    /// to the batched storage primitives for predicate-leaf and
+    /// leaf-alternation inners; falls back to a per-element loop calling
+    /// <see cref="EvaluateToSetAsync"/> for arbitrary nested inners.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The visited-set update happens inline as the storage stream yields
+    /// triples, so a node already in <paramref name="visited"/> is never
+    /// added to the returned next-frontier set. This is the correctness
+    /// invariant for cycle-safe BFS: stale rediscoveries do not re-enqueue.
+    /// </para>
+    /// </remarks>
+    private static async ValueTask<HashSet<TermId>> ExpandFrontierAsync(
+        HashSet<TermId> frontier,
+        PropertyPath inner,
+        HashSet<TermId> visited,
+        GraphMatchOps ops,
+        CancellationToken cancellationToken)
+    {
+        switch(inner)
+        {
+            case PredicatePath predicateLeaf:
             {
-                if(visited.Add(next))
+                return await ExpandFrontierByPredicateAsync(
+                    frontier, predicateLeaf.Predicate, forward: true, visited, ops, cancellationToken).ConfigureAwait(false);
+            }
+
+            case InversePath { Inner: PredicatePath inverseLeaf }:
+            {
+                return await ExpandFrontierByPredicateAsync(
+                    frontier, inverseLeaf.Predicate, forward: false, visited, ops, cancellationToken).ConfigureAwait(false);
+            }
+
+            case AlternativePath alternative when AllBranchesAreLeaves(alternative):
+            {
+                return await ExpandFrontierByLeafAlternationAsync(
+                    frontier, alternative, visited, ops, cancellationToken).ConfigureAwait(false);
+            }
+
+            default:
+            {
+                return await ExpandFrontierByFallbackAsync(
+                    frontier, inner, visited, ops, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static bool AllBranchesAreLeaves(AlternativePath alternative)
+    {
+        foreach(PropertyPath branch in alternative.Alternatives)
+        {
+            if(branch is PredicatePath)
+            {
+                continue;
+            }
+
+            if(branch is InversePath { Inner: PredicatePath })
+            {
+                continue;
+            }
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Predicate-leaf fast path: one batched storage call materialises the
+    /// frontier's next-step set in a single predicate-rooted descent, no
+    /// matter how many nodes the frontier carries. <paramref name="forward"/>
+    /// distinguishes <c>:p</c> from <c>^:p</c>.
+    /// </summary>
+    private static async ValueTask<HashSet<TermId>> ExpandFrontierByPredicateAsync(
+        HashSet<TermId> frontier,
+        IriId predicate,
+        bool forward,
+        HashSet<TermId> visited,
+        GraphMatchOps ops,
+        CancellationToken cancellationToken)
+    {
+        if(frontier.Count == 0)
+        {
+            return [];
+        }
+
+        //One TermId[] per BFS iteration, sized to the frontier; this
+        //replaces the N per-element wrappers the per-node shape produced.
+        TermId[] frontierBuffer = new TermId[frontier.Count];
+        frontier.CopyTo(frontierBuffer);
+
+        HashSet<TermId> nextFrontier = [];
+        if(forward)
+        {
+            await foreach(EncodedTriple triple in ops.MatchTriplesBySubjects(
+                frontierBuffer, predicate.Value, TermId.None, cancellationToken).ConfigureAwait(false))
+            {
+                if(visited.Add(triple.Object))
                 {
-                    frontier.Enqueue(next);
+                    nextFrontier.Add(triple.Object);
+                }
+            }
+        }
+        else
+        {
+            await foreach(EncodedTriple triple in ops.MatchTriplesByObjects(
+                TermId.None, predicate.Value, frontierBuffer, cancellationToken).ConfigureAwait(false))
+            {
+                if(visited.Add(triple.Subject))
+                {
+                    nextFrontier.Add(triple.Subject);
                 }
             }
         }
 
-        return visited;
+        return nextFrontier;
+    }
+
+    /// <summary>
+    /// Leaf-alternation fast path: each branch issues one batched call
+    /// against the same materialised frontier buffer. The visited-set
+    /// update is shared across branches so later branches see updates
+    /// from earlier ones, and the union folds into one next-frontier set.
+    /// </summary>
+    private static async ValueTask<HashSet<TermId>> ExpandFrontierByLeafAlternationAsync(
+        HashSet<TermId> frontier,
+        AlternativePath alternation,
+        HashSet<TermId> visited,
+        GraphMatchOps ops,
+        CancellationToken cancellationToken)
+    {
+        if(frontier.Count == 0)
+        {
+            return [];
+        }
+
+        TermId[] frontierBuffer = new TermId[frontier.Count];
+        frontier.CopyTo(frontierBuffer);
+
+        HashSet<TermId> nextFrontier = [];
+        foreach(PropertyPath branch in alternation.Alternatives)
+        {
+            switch(branch)
+            {
+                case PredicatePath predicateLeaf:
+                {
+                    await foreach(EncodedTriple triple in ops.MatchTriplesBySubjects(
+                        frontierBuffer, predicateLeaf.Predicate.Value, TermId.None, cancellationToken).ConfigureAwait(false))
+                    {
+                        if(visited.Add(triple.Object))
+                        {
+                            nextFrontier.Add(triple.Object);
+                        }
+                    }
+
+                    break;
+                }
+
+                case InversePath { Inner: PredicatePath inverseLeaf }:
+                {
+                    await foreach(EncodedTriple triple in ops.MatchTriplesByObjects(
+                        TermId.None, inverseLeaf.Predicate.Value, frontierBuffer, cancellationToken).ConfigureAwait(false))
+                    {
+                        if(visited.Add(triple.Subject))
+                        {
+                            nextFrontier.Add(triple.Subject);
+                        }
+                    }
+
+                    break;
+                }
+
+                default:
+                {
+                    //Dispatcher only routes here when AllBranchesAreLeaves
+                    //returned true, so reaching this arm means an invariant
+                    //has slipped.
+                    throw new InvalidOperationException(
+                        "Alternation branch in fast path is not a predicate or inverse-predicate leaf.");
+                }
+            }
+        }
+
+        return nextFrontier;
+    }
+
+    /// <summary>
+    /// Fallback expansion for arbitrary inner paths (sequence, nested
+    /// Kleene, mixed-shape alternations). Iterates the frontier per
+    /// element and dispatches each to <see cref="EvaluateToSetAsync"/>;
+    /// the per-element shape preserves correctness on the long tail at
+    /// the cost of not capturing the batched-frontier perf win.
+    /// </summary>
+    private static async ValueTask<HashSet<TermId>> ExpandFrontierByFallbackAsync(
+        HashSet<TermId> frontier,
+        PropertyPath inner,
+        HashSet<TermId> visited,
+        GraphMatchOps ops,
+        CancellationToken cancellationToken)
+    {
+        HashSet<TermId> nextFrontier = [];
+        foreach(TermId current in frontier)
+        {
+            HashSet<TermId> step = await EvaluateToSetAsync(
+                [current], inner, ops, cancellationToken).ConfigureAwait(false);
+            foreach(TermId next in step)
+            {
+                if(visited.Add(next))
+                {
+                    nextFrontier.Add(next);
+                }
+            }
+        }
+
+        return nextFrontier;
     }
 }

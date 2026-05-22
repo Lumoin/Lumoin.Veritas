@@ -162,6 +162,18 @@ public sealed class InMemoryGraphStore
             }
         }
 
+        //Singleton dispatch: when the set has exactly one subject, the
+        //SPO-prefix scan via Match(s, p, o) is O(log N + outgoing(s))
+        //per call, which beats the POS-range scan that has to walk every
+        //triple on the predicate. The Kleene helpers in
+        //PropertyPathEvaluator advance their frontier in a single
+        //batched call, but per-element fallback paths still come
+        //through here with singletons.
+        if(subjects.Length == 1)
+        {
+            return Match(span[0], predicate, @object);
+        }
+
         HashSet<TermId> subjectSet = new(subjects.Length);
         for(int i = 0; i < span.Length; i++)
         {
@@ -208,6 +220,15 @@ public sealed class InMemoryGraphStore
                     "Object set must not contain TermId.None. None means 'unbound' and has no meaning as a set member.",
                     nameof(objects));
             }
+        }
+
+        //Singleton dispatch: the OSP-prefix scan via Match(s, p, o) is
+        //O(log N + incoming(o)) per call versus a POS-range walk that
+        //touches every triple on the predicate. See the singleton path
+        //in MatchBySubjects for the mirror reasoning.
+        if(objects.Length == 1)
+        {
+            return Match(subject, predicate, span[0]);
         }
 
         HashSet<TermId> objectSet = new(objects.Length);
