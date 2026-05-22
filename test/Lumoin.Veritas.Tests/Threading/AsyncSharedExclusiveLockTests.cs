@@ -5,19 +5,17 @@ namespace Lumoin.Veritas.Tests.Threading;
 [TestClass]
 internal sealed class AsyncSharedExclusiveLockTests
 {
-    //Per-test cancellation budget. The lock's correctness
-    //guarantees are deterministic (no operation depends on
-    //wall-clock for correctness), so any test that takes longer
-    //than this to complete has hit a deadlock and the budget
-    //fires to surface that as a clean failure rather than a
-    //test-runner timeout. The budget is well below MSTest's
-    //default runner timeout so the cancellation arrives first
-    //and the failure message attributes the deadlock to the
-    //specific operation. Sized generously so OS scheduling
-    //jitter under parallel test execution cannot graze the
-    //threshold — a real deadlock blocks forever, so any
+    //Budget used by the one test below that has no per-operation
+    //structural assertion to anchor — InterleavedSharedAndExclusiveAcquiresDoNotDeadlock
+    //runs a bounded sequence of acquires and the only failure
+    //signal is "the sequence never finishes." Every other test
+    //in this file verifies the lock structurally (e.g., by
+    //asserting an acquired ValueTask's IsCompleted property) and
+    //does not depend on this budget. The value is generous so OS
+    //scheduling jitter under parallel test execution cannot
+    //graze the threshold; a real deadlock blocks forever, so any
     //finite budget detects it.
-    private static TimeSpan DeadlockBudget { get; } = TimeSpan.FromSeconds(30);
+    private static TimeSpan InterleavedTestBudget { get; } = TimeSpan.FromSeconds(30);
 
     public TestContext TestContext { get; set; } = null!;
 
@@ -35,9 +33,7 @@ internal sealed class AsyncSharedExclusiveLockTests
     public async Task SharedAcquireAndReleaseRestoresZeroCount()
     {
         using AsyncSharedExclusiveLock gate = new();
-        using CancellationTokenSource budget = NewBudget();
-
-        SharedScope scope = await gate.EnterSharedAsync(budget.Token).ConfigureAwait(false);
+        SharedScope scope = await gate.EnterSharedAsync(TestContext.CancellationToken).ConfigureAwait(false);
         try
         {
             Assert.AreEqual(1, gate.SharedCount);
@@ -54,11 +50,9 @@ internal sealed class AsyncSharedExclusiveLockTests
     public async Task MultipleSharedHoldersRunConcurrently()
     {
         using AsyncSharedExclusiveLock gate = new();
-        using CancellationTokenSource budget = NewBudget();
-
-        SharedScope a = await gate.EnterSharedAsync(budget.Token).ConfigureAwait(false);
-        SharedScope b = await gate.EnterSharedAsync(budget.Token).ConfigureAwait(false);
-        SharedScope c = await gate.EnterSharedAsync(budget.Token).ConfigureAwait(false);
+        SharedScope a = await gate.EnterSharedAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        SharedScope b = await gate.EnterSharedAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        SharedScope c = await gate.EnterSharedAsync(TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.AreEqual(3, gate.SharedCount);
 
@@ -76,9 +70,7 @@ internal sealed class AsyncSharedExclusiveLockTests
     public async Task ExclusiveBlocksWhileSharedHeld()
     {
         using AsyncSharedExclusiveLock gate = new();
-        using CancellationTokenSource budget = NewBudget();
-
-        SharedScope shared = await gate.EnterSharedAsync(budget.Token).ConfigureAwait(false);
+        SharedScope shared = await gate.EnterSharedAsync(TestContext.CancellationToken).ConfigureAwait(false);
 
         //An exclusive acquirer started while a shared holder is
         //active cannot complete synchronously — the lock would
@@ -86,7 +78,7 @@ internal sealed class AsyncSharedExclusiveLockTests
         //Observing IsCompleted=false at the moment of return is
         //a deterministic proof of contention; a Task.Delay would
         //add nothing but a wall-clock guess.
-        ValueTask<ExclusiveScope> exclusivePending = gate.EnterExclusiveAsync(budget.Token);
+        ValueTask<ExclusiveScope> exclusivePending = gate.EnterExclusiveAsync(TestContext.CancellationToken);
         Assert.IsFalse(exclusivePending.IsCompleted, "Exclusive must not complete while a shared holder is active.");
 
         await shared.DisposeAsync().ConfigureAwait(false);
@@ -106,11 +98,9 @@ internal sealed class AsyncSharedExclusiveLockTests
     public async Task SharedBlocksWhileExclusiveHeld()
     {
         using AsyncSharedExclusiveLock gate = new();
-        using CancellationTokenSource budget = NewBudget();
+        ExclusiveScope exclusive = await gate.EnterExclusiveAsync(TestContext.CancellationToken).ConfigureAwait(false);
 
-        ExclusiveScope exclusive = await gate.EnterExclusiveAsync(budget.Token).ConfigureAwait(false);
-
-        ValueTask<SharedScope> sharedPending = gate.EnterSharedAsync(budget.Token);
+        ValueTask<SharedScope> sharedPending = gate.EnterSharedAsync(TestContext.CancellationToken);
         Assert.IsFalse(sharedPending.IsCompleted, "Shared must not complete while an exclusive holder is active.");
 
         await exclusive.DisposeAsync().ConfigureAwait(false);
@@ -130,16 +120,14 @@ internal sealed class AsyncSharedExclusiveLockTests
     public async Task ExclusiveHasWriterPriorityOverNewShared()
     {
         using AsyncSharedExclusiveLock gate = new();
-        using CancellationTokenSource budget = NewBudget();
-
-        SharedScope first = await gate.EnterSharedAsync(budget.Token).ConfigureAwait(false);
+        SharedScope first = await gate.EnterSharedAsync(TestContext.CancellationToken).ConfigureAwait(false);
 
         //Exclusive arrives — must wait on first shared but should
         //also block any new shared holder from forming.
-        ValueTask<ExclusiveScope> exclusivePending = gate.EnterExclusiveAsync(budget.Token);
+        ValueTask<ExclusiveScope> exclusivePending = gate.EnterExclusiveAsync(TestContext.CancellationToken);
         Assert.IsFalse(exclusivePending.IsCompleted, "Exclusive must not complete while a shared holder is active.");
 
-        ValueTask<SharedScope> latecomerPending = gate.EnterSharedAsync(budget.Token);
+        ValueTask<SharedScope> latecomerPending = gate.EnterSharedAsync(TestContext.CancellationToken);
         Assert.IsFalse(latecomerPending.IsCompleted, "A shared acquirer arriving after an exclusive waiter must not jump the queue.");
 
         //Release the first shared holder — exclusive should run next.
@@ -168,10 +156,8 @@ internal sealed class AsyncSharedExclusiveLockTests
     public async Task SharedHonoursCancellation()
     {
         using AsyncSharedExclusiveLock gate = new();
-        using CancellationTokenSource budget = NewBudget();
-
         //Hold the gate exclusively so the next shared acquire blocks.
-        ExclusiveScope exclusive = await gate.EnterExclusiveAsync(budget.Token).ConfigureAwait(false);
+        ExclusiveScope exclusive = await gate.EnterExclusiveAsync(TestContext.CancellationToken).ConfigureAwait(false);
         try
         {
             using CancellationTokenSource cts = new();
@@ -193,9 +179,7 @@ internal sealed class AsyncSharedExclusiveLockTests
     public async Task ExclusiveHonoursCancellation()
     {
         using AsyncSharedExclusiveLock gate = new();
-        using CancellationTokenSource budget = NewBudget();
-
-        SharedScope shared = await gate.EnterSharedAsync(budget.Token).ConfigureAwait(false);
+        SharedScope shared = await gate.EnterSharedAsync(TestContext.CancellationToken).ConfigureAwait(false);
         try
         {
             using CancellationTokenSource cts = new();
@@ -220,9 +204,7 @@ internal sealed class AsyncSharedExclusiveLockTests
         //in a state where future acquires succeed without leaking
         //a permit.
         using AsyncSharedExclusiveLock gate = new();
-        using CancellationTokenSource budget = NewBudget();
-
-        ExclusiveScope blocker = await gate.EnterExclusiveAsync(budget.Token).ConfigureAwait(false);
+        ExclusiveScope blocker = await gate.EnterExclusiveAsync(TestContext.CancellationToken).ConfigureAwait(false);
 
         using CancellationTokenSource cts = new();
         ValueTask<SharedScope> cancelled = gate.EnterSharedAsync(cts.Token);
@@ -234,7 +216,7 @@ internal sealed class AsyncSharedExclusiveLockTests
         await blocker.DisposeAsync().ConfigureAwait(false);
 
         //After releasing the blocker, future acquires must work.
-        SharedScope follow = await gate.EnterSharedAsync(budget.Token).ConfigureAwait(false);
+        SharedScope follow = await gate.EnterSharedAsync(TestContext.CancellationToken).ConfigureAwait(false);
         try
         {
             Assert.AreEqual(1, gate.SharedCount);
@@ -253,13 +235,11 @@ internal sealed class AsyncSharedExclusiveLockTests
         const int holders = 32;
 
         using AsyncSharedExclusiveLock gate = new();
-        using CancellationTokenSource budget = NewBudget();
-
         Task<SharedScope>[] tasks = new Task<SharedScope>[holders];
 
         for(int i = 0; i < holders; i++)
         {
-            tasks[i] = gate.EnterSharedAsync(budget.Token).AsTask();
+            tasks[i] = gate.EnterSharedAsync(TestContext.CancellationToken).AsTask();
         }
 
         SharedScope[] scopes = await Task.WhenAll(tasks).ConfigureAwait(false);
@@ -337,19 +317,6 @@ internal sealed class AsyncSharedExclusiveLockTests
             }
         }, TestContext.CancellationToken);
 
-        await work.WaitAsync(DeadlockBudget, TestContext.CancellationToken).ConfigureAwait(false);
-    }
-
-    //Builds a per-test cancellation source linked to the test's
-    //own cancellation token and cancelled after DeadlockBudget.
-    //Tests that await any lock acquisition use this so a real
-    //deadlock fails fast with a token-level cancellation rather
-    //than waiting for the test-runner timeout.
-    private CancellationTokenSource NewBudget()
-    {
-        CancellationTokenSource budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
-        budget.CancelAfter(DeadlockBudget);
-
-        return budget;
+        await work.WaitAsync(InterleavedTestBudget, TestContext.CancellationToken).ConfigureAwait(false);
     }
 }
