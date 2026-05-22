@@ -483,6 +483,7 @@ public static class HypertrieOps
                 bucket1 = [];
                 byInner1[inner1] = bucket1;
             }
+
             bucket1.Add(inner2);
 
             if(!byInner2.TryGetValue(inner2, out HashSet<uint>? bucket2))
@@ -490,6 +491,7 @@ public static class HypertrieOps
                 bucket2 = [];
                 byInner2[inner2] = bucket2;
             }
+
             bucket2.Add(inner1);
         }
 
@@ -550,9 +552,11 @@ public static class HypertrieOps
             {
                 EdgeMap.InsertOrReplace(ref leaf.EdgeMaps[0], member, NodeHandle.None, pools, pools.InlineLookup);
             }
+
             NodeIdentifier identifier = ComputeIdentifier(leaf, store, store.Hash, knownChildIdentifiers: null);
             result[group.Key] = store.Intern(identifier, leaf);
         }
+
         return result;
     }
 
@@ -678,6 +682,7 @@ public static class HypertrieOps
                 ulong childIdentifier = entry.Value.IsNone ? LeafChildMarker : LookupChildIdentifier(entry.Value, knownChildIdentifiers);
                 id = id.Add(NodeEntryHashing.Default(hash, entry.Key, childIdentifier));
             }
+
             return id;
         }
 
@@ -775,8 +780,10 @@ public static class HypertrieOps
                     id = id.Add(NodeEntryHashing.Default(hash, entry.Key, childIdentifier));
                 }
             }
+
             known[handle] = id;
         }
+
         return known;
     }
 
