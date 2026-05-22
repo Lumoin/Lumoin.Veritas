@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using Lumoin.Veritas.Core.Algebra;
+using Lumoin.Veritas.Core.Collections;
 using Lumoin.Veritas.Core.Encoding;
 
 namespace Lumoin.Veritas.Core.Hypertrie.Storage;
@@ -468,93 +469,137 @@ public static class HypertrieOps
     //Children are interned through the store before the depth-2
     //node is built, so the depth-2 node's identifier sees
     //canonical child identifiers.
+    //
+    //The grouping is by stable radix sort, not by
+    //Dictionary<uint, HashSet<uint>>: the input (Inner1, Inner2)
+    //pairs are globally distinct (the build receives a
+    //distinct-triple set, so for any fixed outer key the inner
+    //pairs are distinct), which means no per-group dedup is
+    //required. Materialising the pairs into pool-rented parallel
+    //spans and sorting them lets the leaf-building walk run as a
+    //linear scan over contiguous same-key runs — no per-group
+    //dictionary lookup, no per-group HashSet resize storm. The
+    //single-entry case fast-paths through to two SEN children
+    //without touching the pool.
     private static NodeHandle BuildAndInternDepth2(
         List<(uint Inner1, uint Inner2)> entries,
         NodeStore store,
         BuildPools pools)
     {
-        //Group by Inner1 -> set of Inner2; group by Inner2 -> set of Inner1.
-        Dictionary<uint, HashSet<uint>> byInner1 = [];
-        Dictionary<uint, HashSet<uint>> byInner2 = [];
-        foreach((uint inner1, uint inner2) in entries)
+        int entryCount = entries.Count;
+        if(entryCount == 1)
         {
-            if(!byInner1.TryGetValue(inner1, out HashSet<uint>? bucket1))
-            {
-                bucket1 = [];
-                byInner1[inner1] = bucket1;
-            }
-
-            bucket1.Add(inner2);
-
-            if(!byInner2.TryGetValue(inner2, out HashSet<uint>? bucket2))
-            {
-                bucket2 = [];
-                byInner2[inner2] = bucket2;
-            }
-
-            bucket2.Add(inner1);
+            return BuildAndInternSingleEntryDepth2(entries[0], store, pools);
         }
 
-        //Build & intern depth-1 leaves for each grouping; reuse
-        //already-interned leaves when two groupings produce the
-        //same set (common when the data has symmetry).
-        Dictionary<uint, NodeHandle> leavesByInner1 = BuildAndInternLeaves(byInner1, store, pools);
-        Dictionary<uint, NodeHandle> leavesByInner2 = BuildAndInternLeaves(byInner2, store, pools);
+        using IMemoryOwner<uint> by1KeysOwner = pools.PermutationPool.Rent(entryCount);
+        using IMemoryOwner<uint> by1MembersOwner = pools.PermutationPool.Rent(entryCount);
+        using IMemoryOwner<uint> by2KeysOwner = pools.PermutationPool.Rent(entryCount);
+        using IMemoryOwner<uint> by2MembersOwner = pools.PermutationPool.Rent(entryCount);
 
-        //Assemble the depth-2 node with both edge maps populated.
+        Span<uint> by1Keys = by1KeysOwner.Memory.Span[..entryCount];
+        Span<uint> by1Members = by1MembersOwner.Memory.Span[..entryCount];
+        Span<uint> by2Keys = by2KeysOwner.Memory.Span[..entryCount];
+        Span<uint> by2Members = by2MembersOwner.Memory.Span[..entryCount];
+
+        //Materialise both groupings in a single pass over entries.
+        //by1 carries (Inner1, Inner2) to drive the Inner1-keyed
+        //edge map; by2 carries (Inner2, Inner1) to drive the
+        //Inner2-keyed edge map.
+        for(int i = 0; i < entryCount; i++)
+        {
+            (uint inner1, uint inner2) = entries[i];
+            by1Keys[i] = inner1;
+            by1Members[i] = inner2;
+            by2Keys[i] = inner2;
+            by2Members[i] = inner1;
+        }
+
+        RadixSort.Sort(by1Keys, by1Members);
+        RadixSort.Sort(by2Keys, by2Members);
+
+        Dictionary<uint, NodeHandle> leavesByInner1 = BuildAndInternLeavesFromSortedGroups(by1Keys, by1Members, store, pools);
+        Dictionary<uint, NodeHandle> leavesByInner2 = BuildAndInternLeavesFromSortedGroups(by2Keys, by2Members, store, pools);
+
         HypertrieNode depth2 = HypertrieNode.Create(2);
         foreach(KeyValuePair<uint, NodeHandle> entry in leavesByInner1)
         {
             EdgeMap.InsertOrReplace(ref depth2.EdgeMaps[0], entry.Key, entry.Value, pools, pools.InlineLookup);
         }
+
         foreach(KeyValuePair<uint, NodeHandle> entry in leavesByInner2)
         {
             EdgeMap.InsertOrReplace(ref depth2.EdgeMaps[1], entry.Key, entry.Value, pools, pools.InlineLookup);
         }
 
-        //Compute the depth-2 node's identifier using the canonical
-        //children's identifiers, then intern.
         Dictionary<NodeHandle, NodeIdentifier> childIdentifiers = CollectChildIdentifiers(depth2, store, store.Hash);
         NodeIdentifier identifier = ComputeIdentifier(depth2, store, store.Hash, childIdentifiers);
         return store.Intern(identifier, depth2);
     }
 
-    //Builds a depth-1 leaf for every distinct key set in `groups`,
-    //returning a map from group key to canonical leaf handle.
-    //Groups of size 1 are emitted as SEN-encoded handles directly
-    //in the parent's slot; no <see cref="HypertrieNode"/> object is
-    //allocated and no intern-table entry is created. Larger groups
-    //allocate a leaf node and intern it.
-    private static Dictionary<uint, NodeHandle> BuildAndInternLeaves(
-        Dictionary<uint, HashSet<uint>> groups,
+    //Single-entry fast path. The depth-2 node holds two SEN
+    //children — one per inner position — without renting from
+    //the pool or running a sort. This case is the dominant
+    //per-call shape for S-first and O-first descents on chain
+    //workloads, where each outer key has a single (inner1, inner2)
+    //pair.
+    private static NodeHandle BuildAndInternSingleEntryDepth2(
+        (uint Inner1, uint Inner2) entry,
         NodeStore store,
         BuildPools pools)
     {
-        Dictionary<uint, NodeHandle> result = new(groups.Count);
-        foreach(KeyValuePair<uint, HashSet<uint>> group in groups)
+        HypertrieNode depth2 = HypertrieNode.Create(2);
+        EdgeMap.InsertOrReplace(ref depth2.EdgeMaps[0], entry.Inner1, NodeHandle.ForSingleEntry(entry.Inner2), pools, pools.InlineLookup);
+        EdgeMap.InsertOrReplace(ref depth2.EdgeMaps[1], entry.Inner2, NodeHandle.ForSingleEntry(entry.Inner1), pools, pools.InlineLookup);
+
+        Dictionary<NodeHandle, NodeIdentifier> childIdentifiers = CollectChildIdentifiers(depth2, store, store.Hash);
+        NodeIdentifier identifier = ComputeIdentifier(depth2, store, store.Hash, childIdentifiers);
+        return store.Intern(identifier, depth2);
+    }
+
+    //Walks parallel (sortedKeys, sortedMembers) spans, where
+    //sortedKeys is in ascending order. Each contiguous run of
+    //equal keys is one group; the run's members are the
+    //corresponding sortedMembers slice. Groups of size 1 emit
+    //as SEN-encoded handles directly in the parent's slot; no
+    //HypertrieNode object is allocated and no intern-table entry
+    //is created. Larger groups allocate a leaf node and intern it.
+    private static Dictionary<uint, NodeHandle> BuildAndInternLeavesFromSortedGroups(
+        ReadOnlySpan<uint> sortedKeys,
+        ReadOnlySpan<uint> sortedMembers,
+        NodeStore store,
+        BuildPools pools)
+    {
+        Dictionary<uint, NodeHandle> result = [];
+        int length = sortedKeys.Length;
+        int start = 0;
+        while(start < length)
         {
-            if(group.Value.Count == 1)
+            uint key = sortedKeys[start];
+            int end = start + 1;
+            while(end < length && sortedKeys[end] == key)
             {
-                uint soleKey = 0;
-                foreach(uint k in group.Value)
+                end++;
+            }
+
+            int memberCount = end - start;
+            if(memberCount == 1)
+            {
+                result[key] = NodeHandle.ForSingleEntry(sortedMembers[start]);
+            }
+            else
+            {
+                HypertrieNode leaf = HypertrieNode.Create(1);
+                for(int i = start; i < end; i++)
                 {
-                    soleKey = k;
-                    break;
+                    EdgeMap.InsertOrReplace(ref leaf.EdgeMaps[0], sortedMembers[i], NodeHandle.None, pools, pools.InlineLookup);
                 }
 
-                result[group.Key] = NodeHandle.ForSingleEntry(soleKey);
-
-                continue;
+                NodeIdentifier identifier = ComputeIdentifier(leaf, store, store.Hash, knownChildIdentifiers: null);
+                result[key] = store.Intern(identifier, leaf);
             }
 
-            HypertrieNode leaf = HypertrieNode.Create(1);
-            foreach(uint member in group.Value)
-            {
-                EdgeMap.InsertOrReplace(ref leaf.EdgeMaps[0], member, NodeHandle.None, pools, pools.InlineLookup);
-            }
-
-            NodeIdentifier identifier = ComputeIdentifier(leaf, store, store.Hash, knownChildIdentifiers: null);
-            result[group.Key] = store.Intern(identifier, leaf);
+            start = end;
         }
 
         return result;

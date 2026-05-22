@@ -88,6 +88,41 @@ internal static class HypertrieSoak
     /// The iteration count, elapsed wall-clock time, and zero
     /// auxiliary count.
     /// </returns>
+    /// <summary>
+    /// One-shot allocation probe. Builds the
+    /// <see cref="HypertrieGraphStore"/> exactly once from a fresh
+    /// synthetic corpus and reports the wall-clock build time, the
+    /// total bytes the build allocated on the current thread, and
+    /// the gen2 heap size after a full collect. Use this when
+    /// comparing allocation profiles across implementation changes.
+    /// </summary>
+    /// <param name="tripleCount">The synthetic corpus size to build against.</param>
+    /// <returns>The single-iteration allocation and timing result.</returns>
+    public static async Task<AllocationResult> RunBuildAllocationProbeAsync(int tripleCount = DefaultTripleCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(tripleCount);
+
+        EncodedTriple[] triples = GenerateTriples(tripleCount);
+
+        //Collect before measuring so the baseline allocation count
+        //is free of corpus-generation churn.
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        long allocBefore = GC.GetAllocatedBytesForCurrentThread();
+        Stopwatch sw = Stopwatch.StartNew();
+        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(triples, VeritasHashing.Default).ConfigureAwait(false);
+        sw.Stop();
+        long allocAfter = GC.GetAllocatedBytesForCurrentThread();
+
+        long peakGen2 = GC.GetGeneration(store) == 2 ? GC.GetTotalMemory(forceFullCollection: false) : GC.GetTotalMemory(forceFullCollection: false);
+
+        store.Snapshot.Store.Dispose();
+
+        return new AllocationResult(sw.Elapsed, allocAfter - allocBefore, peakGen2);
+    }
+
     public static async Task<SoakResult> RunBuildSoakAsync(TimeSpan duration, int tripleCount = DefaultTripleCount)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(tripleCount);

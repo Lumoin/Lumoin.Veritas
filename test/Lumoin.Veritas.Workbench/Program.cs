@@ -88,6 +88,22 @@ internal static class Program
 
                 return 0;
             }
+            case "--profile-build-allocations":
+            {
+                if(!TryParseSoakOptions(args, out TimeSpan _, out int tripleCount, out string? error))
+                {
+                    await Console.Error.WriteLineAsync(error).ConfigureAwait(false);
+                    PrintUsage(Console.Error);
+
+                    return 1;
+                }
+
+                await Console.Out.WriteLineAsync($"[alloc] hypertrie build, {tripleCount:N0} triples").ConfigureAwait(false);
+                AllocationResult allocResult = await HypertrieSoak.RunBuildAllocationProbeAsync(tripleCount).ConfigureAwait(false);
+                await Console.Out.WriteLineAsync(FormatAllocationResult(allocResult, tripleCount)).ConfigureAwait(false);
+
+                return 0;
+            }
             case "--profile-edgemap-distribution":
             {
                 if(args.Length < 2)
@@ -322,6 +338,18 @@ internal static class Program
 
         return $"[soak] {result.Iterations:N0} build iterations in {secs:F2}s " +
             $"= {iterPerSec:N0} iter/s ({triplesPerSec:N0} triples/s)";
+    }
+
+    private static string FormatAllocationResult(AllocationResult result, int tripleCount)
+    {
+        double secs = result.Elapsed.TotalSeconds;
+        double mib = result.AllocatedBytes / (1024d * 1024d);
+        double gib = mib / 1024d;
+        double bytesPerTriple = tripleCount > 0 ? (double)result.AllocatedBytes / tripleCount : 0;
+
+        return $"[alloc] build of {tripleCount:N0} triples took {secs:F2}s, " +
+            $"allocated {result.AllocatedBytes:N0} bytes ({mib:F1} MiB, {gib:F2} GiB), " +
+            $"~{bytesPerTriple:F1} bytes/triple, peak gen2 size {result.PeakGen2Bytes:N0} bytes";
     }
 
     private static string FormatQueryResult(SoakResult result)
