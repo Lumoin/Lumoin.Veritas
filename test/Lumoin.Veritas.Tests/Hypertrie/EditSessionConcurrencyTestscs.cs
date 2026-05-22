@@ -19,8 +19,14 @@ internal sealed class EditSessionConcurrencyTests
     //Per-test cancellation budget. Same convention the
     //AsyncSharedExclusiveLock tests use: any operation taking
     //longer than this has hit a deadlock and the budget fires
-    //the failure rather than the runner-level timeout.
-    private static TimeSpan DeadlockBudget { get; } = TimeSpan.FromSeconds(2);
+    //the failure rather than the runner-level timeout. The
+    //budget bounds the wait on a real deadlock; in the
+    //no-deadlock path the work completes in milliseconds and
+    //the budget is never approached. Sized generously so OS
+    //scheduling jitter under parallel test execution cannot
+    //graze the threshold — a real deadlock blocks forever, so
+    //any finite budget detects it.
+    private static TimeSpan DeadlockBudget { get; } = TimeSpan.FromSeconds(30);
 
     public TestContext TestContext { get; set; } = null!;
 

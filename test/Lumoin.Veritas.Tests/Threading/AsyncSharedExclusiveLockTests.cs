@@ -13,8 +13,11 @@ internal sealed class AsyncSharedExclusiveLockTests
     //test-runner timeout. The budget is well below MSTest's
     //default runner timeout so the cancellation arrives first
     //and the failure message attributes the deadlock to the
-    //specific operation.
-    private static TimeSpan DeadlockBudget { get; } = TimeSpan.FromSeconds(2);
+    //specific operation. Sized generously so OS scheduling
+    //jitter under parallel test execution cannot graze the
+    //threshold — a real deadlock blocks forever, so any
+    //finite budget detects it.
+    private static TimeSpan DeadlockBudget { get; } = TimeSpan.FromSeconds(30);
 
     public TestContext TestContext { get; set; } = null!;
 
