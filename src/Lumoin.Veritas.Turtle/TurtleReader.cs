@@ -43,16 +43,18 @@ public static class TurtleReader
     /// <param name="input">The UTF-8 encoded source stream.</param>
     /// <param name="syntax">Whether the source is Turtle or TriG.</param>
     /// <param name="pool">Optional pool to intern interned strings into. A private pool is created when null.</param>
+    /// <param name="baseIri">Optional document base IRI for resolving relative references that precede any in-document <c>@base</c>.</param>
     /// <param name="cancellationToken">A token to cancel iteration.</param>
     /// <returns>An async sequence of parsed quads.</returns>
     public static IAsyncEnumerable<Quad> ReadAsync(
         Stream input,
         TurtleSyntax syntax,
         Utf8StringPool? pool = null,
+        string? baseIri = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(input);
-        return IterateBareAsync(input, syntax, pool, cancellationToken);
+        return IterateBareAsync(input, syntax, pool, baseIri, cancellationToken);
     }
 
     /// <summary>
@@ -61,15 +63,17 @@ public static class TurtleReader
     /// <param name="source">The UTF-8 source bytes.</param>
     /// <param name="syntax">Whether the source is Turtle or TriG.</param>
     /// <param name="pool">Optional pool to intern strings into.</param>
+    /// <param name="baseIri">Optional document base IRI for resolving relative references that precede any in-document <c>@base</c>.</param>
     /// <param name="cancellationToken">A token to cancel iteration.</param>
     /// <returns>An async sequence of parsed quads.</returns>
     public static IAsyncEnumerable<Quad> ReadAsync(
         ReadOnlyMemory<byte> source,
         TurtleSyntax syntax,
         Utf8StringPool? pool = null,
+        string? baseIri = null,
         CancellationToken cancellationToken = default)
     {
-        return IterateBareFromMemoryAsync(source, syntax, pool, cancellationToken);
+        return IterateBareFromMemoryAsync(source, syntax, pool, baseIri, cancellationToken);
     }
 
     /// <summary>
@@ -80,6 +84,7 @@ public static class TurtleReader
     /// <param name="syntax">Whether the source is Turtle or TriG.</param>
     /// <param name="documentId">The content-addressed document identifier.</param>
     /// <param name="pool">Optional pool to intern strings into.</param>
+    /// <param name="baseIri">Optional document base IRI for resolving relative references that precede any in-document <c>@base</c>.</param>
     /// <param name="cancellationToken">A token to cancel iteration.</param>
     /// <returns>A tuple of the parsed document AST and an async iterator over source-tagged quads.</returns>
     public static (TurtleDocument Document, IAsyncEnumerable<EmittedQuad> Quads) ReadWithSourceAsync(
@@ -87,6 +92,7 @@ public static class TurtleReader
         TurtleSyntax syntax,
         DocumentId documentId,
         Utf8StringPool? pool = null,
+        string? baseIri = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(input);
@@ -95,7 +101,7 @@ public static class TurtleReader
         byte[] bytes = ReadAllBytes(input);
 
         TurtleDocument document = ParseDocument(bytes, syntax, documentId, effectivePool);
-        IAsyncEnumerable<EmittedQuad> quads = IterateWithSourceAsync(document, effectivePool, cancellationToken);
+        IAsyncEnumerable<EmittedQuad> quads = IterateWithSourceAsync(document, effectivePool, baseIri, cancellationToken);
         return (document, quads);
     }
 
@@ -107,6 +113,7 @@ public static class TurtleReader
     /// <param name="syntax">Whether the source is Turtle or TriG.</param>
     /// <param name="documentId">The content-addressed document identifier.</param>
     /// <param name="pool">Optional pool to intern strings into.</param>
+    /// <param name="baseIri">Optional document base IRI for resolving relative references that precede any in-document <c>@base</c>.</param>
     /// <param name="cancellationToken">A token to cancel iteration.</param>
     /// <returns>A tuple of the parsed document AST and an async iterator over source-tagged quads.</returns>
     public static (TurtleDocument Document, IAsyncEnumerable<EmittedQuad> Quads) ReadWithSourceAsync(
@@ -114,11 +121,12 @@ public static class TurtleReader
         TurtleSyntax syntax,
         DocumentId documentId,
         Utf8StringPool? pool = null,
+        string? baseIri = null,
         CancellationToken cancellationToken = default)
     {
         Utf8StringPool effectivePool = pool ?? new Utf8StringPool();
         TurtleDocument document = ParseDocument(source.ToArray(), syntax, documentId, effectivePool);
-        IAsyncEnumerable<EmittedQuad> quads = IterateWithSourceAsync(document, effectivePool, cancellationToken);
+        IAsyncEnumerable<EmittedQuad> quads = IterateWithSourceAsync(document, effectivePool, baseIri, cancellationToken);
         return (document, quads);
     }
 
@@ -126,6 +134,7 @@ public static class TurtleReader
         Stream input,
         TurtleSyntax syntax,
         Utf8StringPool? pool,
+        string? baseIri,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         Utf8StringPool ownedPool = pool ?? new Utf8StringPool();
@@ -133,7 +142,7 @@ public static class TurtleReader
         {
             byte[] bytes = await ReadAllBytesAsync(input, cancellationToken).ConfigureAwait(false);
             TurtleDocument document = ParseDocument(bytes, syntax, MintDocumentId(bytes), ownedPool);
-            TurtleQuadEmitter emitter = new(document, ownedPool);
+            TurtleQuadEmitter emitter = new(document, ownedPool, baseIri);
             foreach(EmittedQuad emitted in emitter.Emit())
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -153,6 +162,7 @@ public static class TurtleReader
         ReadOnlyMemory<byte> source,
         TurtleSyntax syntax,
         Utf8StringPool? pool,
+        string? baseIri,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         Utf8StringPool ownedPool = pool ?? new Utf8StringPool();
@@ -160,7 +170,7 @@ public static class TurtleReader
         {
             byte[] bytes = source.ToArray();
             TurtleDocument document = ParseDocument(bytes, syntax, MintDocumentId(bytes), ownedPool);
-            TurtleQuadEmitter emitter = new(document, ownedPool);
+            TurtleQuadEmitter emitter = new(document, ownedPool, baseIri);
             foreach(EmittedQuad emitted in emitter.Emit())
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -181,9 +191,10 @@ public static class TurtleReader
     private static async IAsyncEnumerable<EmittedQuad> IterateWithSourceAsync(
         TurtleDocument document,
         Utf8StringPool pool,
+        string? baseIri,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        TurtleQuadEmitter emitter = new(document, pool);
+        TurtleQuadEmitter emitter = new(document, pool, baseIri);
         foreach(EmittedQuad emitted in emitter.Emit())
         {
             cancellationToken.ThrowIfCancellationRequested();

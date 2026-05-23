@@ -151,7 +151,7 @@ internal sealed class TurtleRoundTripTests
         encoded.Position = 0;
 
         List<Quad> result = [];
-        await foreach(Quad quad in TurtleReader.ReadAsync(encoded, syntax, pool: null, cancellationToken).ConfigureAwait(false))
+        await foreach(Quad quad in TurtleReader.ReadAsync(encoded, syntax, pool: null, cancellationToken: cancellationToken).ConfigureAwait(false))
         {
             result.Add(quad);
         }

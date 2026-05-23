@@ -36,13 +36,19 @@ public sealed class TurtleQuadEmitter
     /// </summary>
     /// <param name="document">The parsed Turtle or TriG document.</param>
     /// <param name="pool">The pool used to intern emitter-allocated identifiers.</param>
-    public TurtleQuadEmitter(TurtleDocument document, Utf8StringPool pool)
+    /// <param name="documentBase">
+    /// The document's retrieval IRI, used as the initial base for resolving relative references
+    /// that appear before any in-document <c>@base</c> directive. A later <c>@base</c> resolves
+    /// against it. When <see langword="null"/>, only an in-document <c>@base</c> establishes a base.
+    /// </param>
+    public TurtleQuadEmitter(TurtleDocument document, Utf8StringPool pool, string? documentBase = null)
     {
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(pool);
 
         Document = document;
         Pool = pool;
+        baseIri = documentBase;
     }
 
     /// <summary>Gets the parsed document being walked.</summary>
@@ -290,7 +296,7 @@ public sealed class TurtleQuadEmitter
             {
                 case IriTerm iri:
                 {
-                    resolved[current.NodeId] = new NamedNode(ResolveIri(iri.Value));
+                    resolved[current.NodeId] = new NamedNode(ResolveIri(iri.Value, iri.Span));
 
                     break;
                 }
@@ -539,7 +545,7 @@ public sealed class TurtleQuadEmitter
     {
         return predicate switch
         {
-            IriTerm iri => new NamedNode(ResolveIri(iri.Value)),
+            IriTerm iri => new NamedNode(ResolveIri(iri.Value, iri.Span)),
             PrefixedNameTerm prefixed => new NamedNode(ExpandPrefixedName(prefixed)),
             _ => throw new TurtleParseException(
                 $"Predicate must be an IRI or prefixed name, was {predicate.GetType().Name}.",
@@ -552,7 +558,7 @@ public sealed class TurtleQuadEmitter
         NamedNode datatype;
         if(literal.Datatype is IriTerm iriDatatype)
         {
-            datatype = new NamedNode(ResolveIri(iriDatatype.Value));
+            datatype = new NamedNode(ResolveIri(iriDatatype.Value, iriDatatype.Span));
         }
         else if(literal.Datatype is PrefixedNameTerm prefixedDatatype)
         {
@@ -574,7 +580,7 @@ public sealed class TurtleQuadEmitter
         return new Literal(literal.Value, datatype, literal.Language, literal.Direction);
     }
 
-    private Utf8String ResolveIri(Utf8String value)
+    private Utf8String ResolveIri(Utf8String value, SourceSpan span)
     {
         //Absolute IRIs pass through without allocating; only a relative reference needs resolving.
         ReadOnlySpan<byte> bytes = value.Span;
@@ -583,10 +589,10 @@ public sealed class TurtleQuadEmitter
             return value;
         }
 
-        //A relative reference is resolved against the in-scope @base per RFC 3986 §5. When no
-        //@base is in scope — or the @base itself is not absolute — the reference cannot be made
-        //absolute here; it passes through unchanged. Rejecting it requires a document-context base
-        //the reader does not yet accept, so enforcement is deferred to the caller's policy.
+        //A relative reference is resolved against the in-scope base (the document base, then any
+        //@base directive) per RFC 3986 §5. RDF admits only absolute IRIs in term positions, so a
+        //reference that stays relative — because no base is in scope, or the base itself is not
+        //absolute — cannot be expressed and is rejected.
         if(baseIri is not null)
         {
             string resolved = IriResolver.ResolveIri(baseIri, value.ToString());
@@ -596,7 +602,9 @@ public sealed class TurtleQuadEmitter
             }
         }
 
-        return value;
+        throw new TurtleParseException(
+            $"Relative IRI '{value.ToString()}' cannot be resolved to an absolute IRI; no absolute @base or document base is in scope.",
+            span);
     }
 
     private Utf8String ExpandPrefixedName(PrefixedNameTerm prefixed)

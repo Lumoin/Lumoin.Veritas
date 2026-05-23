@@ -47,15 +47,15 @@ vendored snapshot and passes, so all 301 cases pass with no skips.
   pinned down. Documented at the call site in `RdfCanonicalizer`.
 - **Turtle relative-IRI resolution is RFC 3986 §5** via
   `Lumoin.Veritas.Core.Iris.IriResolver` (shared with JSON-LD and
-  CBOR-LD, backed by `System.Uri`); chained `@base` directives
-  compose. **Enforcement of "remains relative" is still deferred.**
-  N-Triples and N-Quads reject scheme-less IRIs, but Turtle passes an
-  unresolved relative reference through unchanged rather than throwing.
-  Rejecting it requires a document-context base on `TurtleReader`
-  (which the reader does not yet accept) plus a rework of the
-  conformance harness's manifest traversal, whose `manifest.ttl` files
-  use relative IRIs against their own retrieval URL. Tracked as the
-  next sub-batch.
+  CBOR-LD, backed by `System.Uri`); chained `@base` directives compose,
+  and `TurtleReader` accepts an optional document base IRI for
+  references that precede any in-document `@base`. A reference that
+  stays relative — no absolute base in scope — is now **rejected** with
+  a `TurtleParseException`, matching N-Triples and N-Quads. The
+  conformance harness supplies each `manifest.ttl`'s own `file://`
+  retrieval URL as its base; no vendored eval or syntax fixture depends
+  on an external base (the two relative-IRI eval fixtures carry their
+  own in-document `BASE`).
 
 ## Reproducing this report
 

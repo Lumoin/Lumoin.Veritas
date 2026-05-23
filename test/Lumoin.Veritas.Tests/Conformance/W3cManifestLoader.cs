@@ -110,8 +110,17 @@ internal static class W3cManifestLoader
         byte[] bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
         Uri manifestUri = new(Path.GetFullPath(path));
 
+        //The manifest's own file URL is its retrieval base: its relative IRIs (#manifest, sibling
+        //action/result files, ../-style includes) resolve to absolute file URIs, which the path
+        //helpers below map straight back to disk. The base is harness bookkeeping and never reaches
+        //test output, so a file:// base is the right choice here.
         List<Quad> quads = [];
-        await foreach(Quad q in TurtleReader.ReadAsync(bytes, TurtleSyntax.Turtle, pool: null, cancellationToken).ConfigureAwait(false))
+        await foreach(Quad q in TurtleReader.ReadAsync(
+            bytes,
+            TurtleSyntax.Turtle,
+            pool: null,
+            baseIri: manifestUri.AbsoluteUri,
+            cancellationToken: cancellationToken).ConfigureAwait(false))
         {
             quads.Add(q);
         }

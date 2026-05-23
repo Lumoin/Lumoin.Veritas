@@ -20,7 +20,7 @@ internal sealed class W3cTurtleTests
     {
         W3cOutcome outcome = await W3cTestRunner.RunAsync(
             testCase,
-            static (stream, ct) => TurtleReader.ReadAsync(stream, TurtleSyntax.Turtle, pool: null, ct),
+            static (stream, ct) => TurtleReader.ReadAsync(stream, TurtleSyntax.Turtle, pool: null, cancellationToken: ct),
             TestContext.CancellationToken).ConfigureAwait(false);
 
         ConformanceAssertions.Apply(outcome);
