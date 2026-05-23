@@ -35,9 +35,6 @@ namespace Lumoin.Veritas.Turtle.Lexer;
 /// </remarks>
 public sealed class TurtleLexer
 {
-    private readonly ReadOnlyMemory<byte> sourceMemory;
-    private readonly Utf8StringPool pool;
-
     private int position;
     private int line;
     private int column;
@@ -51,9 +48,15 @@ public sealed class TurtleLexer
     {
         ArgumentNullException.ThrowIfNull(pool);
 
-        sourceMemory = source;
-        this.pool = pool;
+        SourceMemory = source;
+        Pool = pool;
     }
+
+    /// <summary>Gets the UTF-8 source bytes being lexed.</summary>
+    private ReadOnlyMemory<byte> SourceMemory { get; }
+
+    /// <summary>Gets the pool used to intern token payloads.</summary>
+    private Utf8StringPool Pool { get; }
 
     /// <summary>
     /// Iterates the source document producing tokens until end of input.
@@ -70,12 +73,12 @@ public sealed class TurtleLexer
         {
             SkipWhitespaceAndComments();
 
-            if(position >= sourceMemory.Length)
+            if(position >= SourceMemory.Length)
             {
                 yield return new TurtleToken(
                     TurtleTokenKind.EndOfInput,
                     CaptureSpan(position, position, line, column, line, column),
-                    pool.Intern(ReadOnlySpan<byte>.Empty));
+                    Pool.Intern(ReadOnlySpan<byte>.Empty));
 
                 yield break;
             }
@@ -86,7 +89,7 @@ public sealed class TurtleLexer
 
     private TurtleToken LexNext()
     {
-        ReadOnlySpan<byte> source = sourceMemory.Span;
+        ReadOnlySpan<byte> source = SourceMemory.Span;
         byte current = source[position];
 
         return current switch
@@ -128,7 +131,7 @@ public sealed class TurtleLexer
             return new TurtleToken(
                 TurtleTokenKind.OpenTripleTerm,
                 CaptureSpan(startByte, position, startLine, startColumn, line, column),
-                pool.Intern("<<("u8));
+                Pool.Intern("<<("u8));
         }
 
         if(position + 1 < source.Length && source[position + 1] == (byte)'<')
@@ -141,7 +144,7 @@ public sealed class TurtleLexer
             return new TurtleToken(
                 TurtleTokenKind.OpenReifiedTriple,
                 CaptureSpan(startByte, position, startLine, startColumn, line, column),
-                pool.Intern("<<"u8));
+                Pool.Intern("<<"u8));
         }
 
         return LexIri(source);
@@ -159,7 +162,7 @@ public sealed class TurtleLexer
             return new TurtleToken(
                 TurtleTokenKind.CloseReifiedTriple,
                 CaptureSpan(startByte, position, startLine, startColumn, line, column),
-                pool.Intern(">>"u8));
+                Pool.Intern(">>"u8));
         }
 
         throw new TurtleParseException(
@@ -179,7 +182,7 @@ public sealed class TurtleLexer
             return new TurtleToken(
                 TurtleTokenKind.OpenAnnotation,
                 CaptureSpan(startByte, position, startLine, startColumn, line, column),
-                pool.Intern("{|"u8));
+                Pool.Intern("{|"u8));
         }
 
         return LexSinglePunctuation(TurtleTokenKind.OpenBrace);
@@ -197,7 +200,7 @@ public sealed class TurtleLexer
             return new TurtleToken(
                 TurtleTokenKind.CloseAnnotation,
                 CaptureSpan(startByte, position, startLine, startColumn, line, column),
-                pool.Intern("|}"u8));
+                Pool.Intern("|}"u8));
         }
 
         throw new TurtleParseException(
@@ -228,7 +231,7 @@ public sealed class TurtleLexer
             return new TurtleToken(
                 TurtleTokenKind.AnonymousBlankNode,
                 CaptureSpan(startByte, position, startLine, startColumn, line, column),
-                pool.Intern("[]"u8));
+                Pool.Intern("[]"u8));
         }
 
         return LexSinglePunctuation(TurtleTokenKind.OpenBracket);
@@ -247,7 +250,7 @@ public sealed class TurtleLexer
             return new TurtleToken(
                 TurtleTokenKind.CloseTripleTerm,
                 CaptureSpan(startByte, position, startLine, startColumn, line, column),
-                pool.Intern(")>>"u8));
+                Pool.Intern(")>>"u8));
         }
 
         return LexSinglePunctuation(TurtleTokenKind.CloseParen);
@@ -259,12 +262,12 @@ public sealed class TurtleLexer
         int startLine = line;
         int startColumn = column;
 
-        AdvanceByte(sourceMemory.Span[position]);
+        AdvanceByte(SourceMemory.Span[position]);
 
         return new TurtleToken(
             kind,
             CaptureSpan(startByte, position, startLine, startColumn, line, column),
-            pool.Intern(sourceMemory.Span.Slice(startByte, position - startByte)));
+            Pool.Intern(SourceMemory.Span.Slice(startByte, position - startByte)));
     }
 
     private TurtleToken LexPeriodOrDecimal(ReadOnlySpan<byte> source)
@@ -290,7 +293,7 @@ public sealed class TurtleLexer
             return new TurtleToken(
                 TurtleTokenKind.TypeMarker,
                 CaptureSpan(startByte, position, startLine, startColumn, line, column),
-                pool.Intern("^^"u8));
+                Pool.Intern("^^"u8));
         }
 
         throw new TurtleParseException(
@@ -326,7 +329,7 @@ public sealed class TurtleLexer
             return new TurtleToken(
                 TurtleTokenKind.PrefixKeyword,
                 CaptureSpan(startByte, position, startLine, startColumn, line, column),
-                pool.Intern("@prefix"u8));
+                Pool.Intern("@prefix"u8));
         }
 
         if(identifier.SequenceEqual("base"u8))
@@ -334,7 +337,7 @@ public sealed class TurtleLexer
             return new TurtleToken(
                 TurtleTokenKind.BaseKeyword,
                 CaptureSpan(startByte, position, startLine, startColumn, line, column),
-                pool.Intern("@base"u8));
+                Pool.Intern("@base"u8));
         }
 
         if(identifier.SequenceEqual("version"u8))
@@ -342,7 +345,7 @@ public sealed class TurtleLexer
             return new TurtleToken(
                 TurtleTokenKind.VersionKeyword,
                 CaptureSpan(startByte, position, startLine, startColumn, line, column),
-                pool.Intern("@version"u8));
+                Pool.Intern("@version"u8));
         }
 
         //Otherwise this is a language tag attached to the preceding literal: continue reading subtags and an optional direction.
@@ -397,7 +400,7 @@ public sealed class TurtleLexer
             }
         }
 
-        Utf8String value = pool.Intern(source.Slice(identifierStart, position - identifierStart));
+        Utf8String value = Pool.Intern(source.Slice(identifierStart, position - identifierStart));
         TurtleTokenKind kind = sawDirection ? TurtleTokenKind.DirLangTag : TurtleTokenKind.LangTag;
 
         return new TurtleToken(
@@ -433,7 +436,7 @@ public sealed class TurtleLexer
                 {
                     AdvanceByte((byte)'>');
 
-                    Utf8String iriValue = pool.Intern(rented.AsSpan(0, written));
+                    Utf8String iriValue = Pool.Intern(rented.AsSpan(0, written));
 
                     return new TurtleToken(
                         TurtleTokenKind.Iri,
@@ -537,14 +540,14 @@ public sealed class TurtleLexer
             AdvanceByte(hex);
         }
 
-        if(codepoint is >= 0xD800 and <= 0xDFFF)
+        if(codepoint >= (uint)UnicodeConstants.SurrogateRangeFirst && codepoint <= (uint)UnicodeConstants.SurrogateRangeLast)
         {
             throw new TurtleParseException(
                 $"Surrogate code point U+{codepoint:X4} is not a valid Unicode scalar value at line {escapeLine + 1} column {escapeColumn + 1}.",
                 SourceSpan.SingleLine(escapeStart, position, escapeLine, escapeColumn, column));
         }
 
-        if(codepoint > 0x10FFFF)
+        if(codepoint > (uint)UnicodeConstants.MaximumCodePoint)
         {
             throw new TurtleParseException(
                 $"Code point U+{codepoint:X} exceeds the Unicode range at line {escapeLine + 1} column {escapeColumn + 1}.",
@@ -587,7 +590,7 @@ public sealed class TurtleLexer
                 if(b == quote)
                 {
                     AdvanceByte(quote);
-                    Utf8String value = pool.Intern(rented.AsSpan(0, written));
+                    Utf8String value = Pool.Intern(rented.AsSpan(0, written));
 
                     return new TurtleToken(
                         TurtleTokenKind.StringLiteral,
@@ -659,7 +662,7 @@ public sealed class TurtleLexer
                 if(b == quote && position + 2 < source.Length && source[position + 1] == quote && source[position + 2] == quote)
                 {
                     AdvanceBytes(3);
-                    Utf8String value = pool.Intern(rented.AsSpan(0, written));
+                    Utf8String value = Pool.Intern(rented.AsSpan(0, written));
 
                     return new TurtleToken(
                         TurtleTokenKind.LongStringLiteral,
@@ -843,7 +846,7 @@ public sealed class TurtleLexer
             column--;
         }
 
-        Utf8String label = pool.Intern(source.Slice(labelStart, position - labelStart));
+        Utf8String label = Pool.Intern(source.Slice(labelStart, position - labelStart));
 
         return new TurtleToken(
             TurtleTokenKind.BlankNodeLabel,
@@ -900,7 +903,7 @@ public sealed class TurtleLexer
             return new TurtleToken(
                 TurtleTokenKind.A,
                 CaptureSpan(startByte, position, startLine, startColumn, line, column),
-                pool.Intern("a"u8));
+                Pool.Intern("a"u8));
         }
 
         if(identifierSpan.SequenceEqual("true"u8) || identifierSpan.SequenceEqual("false"u8))
@@ -908,7 +911,7 @@ public sealed class TurtleLexer
             return new TurtleToken(
                 TurtleTokenKind.BooleanLiteral,
                 CaptureSpan(startByte, position, startLine, startColumn, line, column),
-                pool.Intern(identifierSpan));
+                Pool.Intern(identifierSpan));
         }
 
         if(EqualsIgnoreAsciiCase(identifierSpan, "PREFIX"u8))
@@ -916,7 +919,7 @@ public sealed class TurtleLexer
             return new TurtleToken(
                 TurtleTokenKind.PrefixKeyword,
                 CaptureSpan(startByte, position, startLine, startColumn, line, column),
-                pool.Intern("PREFIX"u8));
+                Pool.Intern("PREFIX"u8));
         }
 
         if(EqualsIgnoreAsciiCase(identifierSpan, "BASE"u8))
@@ -924,7 +927,7 @@ public sealed class TurtleLexer
             return new TurtleToken(
                 TurtleTokenKind.BaseKeyword,
                 CaptureSpan(startByte, position, startLine, startColumn, line, column),
-                pool.Intern("BASE"u8));
+                Pool.Intern("BASE"u8));
         }
 
         if(EqualsIgnoreAsciiCase(identifierSpan, "VERSION"u8))
@@ -932,7 +935,7 @@ public sealed class TurtleLexer
             return new TurtleToken(
                 TurtleTokenKind.VersionKeyword,
                 CaptureSpan(startByte, position, startLine, startColumn, line, column),
-                pool.Intern("VERSION"u8));
+                Pool.Intern("VERSION"u8));
         }
 
         if(identifierSpan.SequenceEqual("GRAPH"u8))
@@ -940,7 +943,7 @@ public sealed class TurtleLexer
             return new TurtleToken(
                 TurtleTokenKind.GraphKeyword,
                 CaptureSpan(startByte, position, startLine, startColumn, line, column),
-                pool.Intern("GRAPH"u8));
+                Pool.Intern("GRAPH"u8));
         }
 
         throw new TurtleParseException(
@@ -1038,13 +1041,13 @@ public sealed class TurtleLexer
             return new TurtleToken(
                 TurtleTokenKind.PrefixNamespace,
                 CaptureSpan(startByte, position, startLine, startColumn, line, column),
-                pool.Intern(fullSpan));
+                Pool.Intern(fullSpan));
         }
 
         return new TurtleToken(
             TurtleTokenKind.PrefixedName,
             CaptureSpan(startByte, position, startLine, startColumn, line, column),
-            pool.Intern(fullSpan));
+            Pool.Intern(fullSpan));
     }
 
     private TurtleToken LexNumericSigned(ReadOnlySpan<byte> source)
@@ -1145,7 +1148,7 @@ public sealed class TurtleLexer
             (false, false) => TurtleTokenKind.IntegerLiteral
         };
 
-        Utf8String value = pool.Intern(source.Slice(startByte, position - startByte));
+        Utf8String value = Pool.Intern(source.Slice(startByte, position - startByte));
 
         return new TurtleToken(
             kind,
@@ -1155,7 +1158,7 @@ public sealed class TurtleLexer
 
     private void SkipWhitespaceAndComments()
     {
-        ReadOnlySpan<byte> source = sourceMemory.Span;
+        ReadOnlySpan<byte> source = SourceMemory.Span;
 
         while(position < source.Length)
         {
@@ -1196,7 +1199,7 @@ public sealed class TurtleLexer
             line++;
             column = 0;
 
-            if(position < sourceMemory.Length && sourceMemory.Span[position] == (byte)'\n')
+            if(position < SourceMemory.Length && SourceMemory.Span[position] == (byte)'\n')
             {
                 position++;
             }
@@ -1211,7 +1214,7 @@ public sealed class TurtleLexer
     {
         for(int i = 0; i < count; i++)
         {
-            AdvanceByte(sourceMemory.Span[position]);
+            AdvanceByte(SourceMemory.Span[position]);
         }
     }
 

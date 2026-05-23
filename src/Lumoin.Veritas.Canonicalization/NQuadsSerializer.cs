@@ -38,8 +38,6 @@ internal static class NQuadsSerializer
     private const char LineFeed = '\n';
     private const char FormFeed = '\f';
     private const char CarriageReturn = '\r';
-    private const char Space = ' ';
-    private const char Delete = '\u007F';
 
     /// <summary>
     /// Serializes a quad to its canonical N-Quads line, using the given blank node
@@ -299,25 +297,8 @@ internal static class NQuadsSerializer
         //Unicode noncharacters via UCHAR when no shorter ECHAR named escape applies. C1 controls
         //(U+0080..U+009F) are not escaped — they pass through as their UTF-8 encoding — so
         //char.IsControl, which also matches the C1 range, would be too broad here.
-        return codePoint < Space || codePoint == Delete || IsUnicodeNoncharacter(codePoint);
-    }
-
-    private static bool IsUnicodeNoncharacter(int codePoint)
-    {
-        //The 32 basic-multilingual-plane noncharacters U+FDD0..U+FDEF.
-        if(codePoint is >= 0xFDD0 and <= 0xFDEF)
-        {
-            return true;
-        }
-
-        //The last two code points of every plane, U+xxFFFE and U+xxFFFF, for planes 0 through 16.
-        int planeOffset = codePoint & 0xFFFF;
-        if(planeOffset is 0xFFFE or 0xFFFF)
-        {
-            int plane = codePoint >> 16;
-            return plane <= 0x10;
-        }
-
-        return false;
+        return codePoint < UnicodeConstants.FirstNonControlCodePoint
+            || codePoint == UnicodeConstants.Delete
+            || UnicodeConstants.IsNoncharacter(codePoint);
     }
 }

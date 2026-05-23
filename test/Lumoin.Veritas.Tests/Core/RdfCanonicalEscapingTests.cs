@@ -192,7 +192,7 @@ internal sealed class RdfCanonicalEscapingTests
     [TestMethod]
     public void EscapesBmpNoncharacterUfffe()
     {
-        string line = CanonicalizeLiteral(char.ConvertFromUtf32(0xFFFE), XsdString);
+        string line = CanonicalizeLiteral(char.ConvertFromUtf32(BmpNoncharacterFffe), XsdString);
 
         Assert.Contains("\\uFFFE", line, StringComparison.Ordinal);
     }
@@ -200,7 +200,7 @@ internal sealed class RdfCanonicalEscapingTests
     [TestMethod]
     public void EscapesBmpNoncharacterUffff()
     {
-        string line = CanonicalizeLiteral(char.ConvertFromUtf32(0xFFFF), XsdString);
+        string line = CanonicalizeLiteral(char.ConvertFromUtf32(BmpNoncharacterFfff), XsdString);
 
         Assert.Contains("\\uFFFF", line, StringComparison.Ordinal);
     }
@@ -208,7 +208,7 @@ internal sealed class RdfCanonicalEscapingTests
     [TestMethod]
     public void EscapesArabicFormNoncharacterFdd0()
     {
-        string line = CanonicalizeLiteral(char.ConvertFromUtf32(0xFDD0), XsdString);
+        string line = CanonicalizeLiteral(char.ConvertFromUtf32(ArabicBlockNoncharacterFirst), XsdString);
 
         Assert.Contains("\\uFDD0", line, StringComparison.Ordinal);
     }
@@ -216,7 +216,7 @@ internal sealed class RdfCanonicalEscapingTests
     [TestMethod]
     public void EscapesAstralNoncharacterWithLongForm()
     {
-        string line = CanonicalizeLiteral(char.ConvertFromUtf32(0x1FFFE), XsdString);
+        string line = CanonicalizeLiteral(char.ConvertFromUtf32(PlaneOneNoncharacterFffe), XsdString);
 
         Assert.Contains("\\U0001FFFE", line, StringComparison.Ordinal);
     }
@@ -224,8 +224,7 @@ internal sealed class RdfCanonicalEscapingTests
     [TestMethod]
     public void PreservesCodePointJustBelowNoncharacterBoundary()
     {
-        //U+FDCF is the scalar value immediately below the U+FDD0 noncharacter block.
-        string line = CanonicalizeLiteral(char.ConvertFromUtf32(0xFDCF), XsdString);
+        string line = CanonicalizeLiteral(char.ConvertFromUtf32(CodePointBelowArabicNoncharacterBlock), XsdString);
 
         Assert.DoesNotContain("\\uFDCF", line, StringComparison.Ordinal);
     }
@@ -233,8 +232,7 @@ internal sealed class RdfCanonicalEscapingTests
     [TestMethod]
     public void PreservesCodePointJustAboveNoncharacterBoundary()
     {
-        //U+FDF0 is the scalar value immediately above the U+FDEF noncharacter block.
-        string line = CanonicalizeLiteral(char.ConvertFromUtf32(0xFDF0), XsdString);
+        string line = CanonicalizeLiteral(char.ConvertFromUtf32(CodePointAboveArabicNoncharacterBlock), XsdString);
 
         Assert.DoesNotContain("\\uFDF0", line, StringComparison.Ordinal);
     }
@@ -242,14 +240,30 @@ internal sealed class RdfCanonicalEscapingTests
     [TestMethod]
     public void PreservesAstralNonNoncharacter()
     {
-        //U+1F600 is an ordinary astral code point and must pass through unescaped.
-        string line = CanonicalizeLiteral(char.ConvertFromUtf32(0x1F600), XsdString);
+        string line = CanonicalizeLiteral(char.ConvertFromUtf32(GrinningFace), XsdString);
 
         Assert.Contains("\U0001F600", line, StringComparison.Ordinal);
         Assert.DoesNotContain("\\U0001F600", line, StringComparison.Ordinal);
     }
 
     private const string XsdString = "http://www.w3.org/2001/XMLSchema#string";
+
+    //The last two code points of the basic multilingual plane are noncharacters.
+    private const int BmpNoncharacterFffe = 0xFFFE;
+    private const int BmpNoncharacterFfff = 0xFFFF;
+
+    //First code point of the Arabic Presentation Forms-A noncharacter block (U+FDD0..U+FDEF).
+    private const int ArabicBlockNoncharacterFirst = 0xFDD0;
+
+    //The penultimate code point of plane 1 (U+1FFFE) is a noncharacter requiring the long escape.
+    private const int PlaneOneNoncharacterFffe = 0x1FFFE;
+
+    //The assigned code points immediately bracketing the Arabic noncharacter block.
+    private const int CodePointBelowArabicNoncharacterBlock = 0xFDCF;
+    private const int CodePointAboveArabicNoncharacterBlock = 0xFDF0;
+
+    //U+1F600 GRINNING FACE: an ordinary assigned astral code point, not a noncharacter.
+    private const int GrinningFace = 0x1F600;
 
     private static string CanonicalizeLiteral(string value, string datatypeIri)
     {
