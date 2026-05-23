@@ -80,6 +80,21 @@ public readonly record struct SourceSpan(
     }
 
     /// <summary>
+    /// Gets the sentinel span used when no source is available — for AST
+    /// nodes built programmatically rather than parsed from a document.
+    /// All endpoints are zero, which is a valid empty span at the start
+    /// of any document; consumers that need to distinguish "no source"
+    /// from "empty span at offset zero" should track that out of band.
+    /// </summary>
+    public static SourceSpan None => new(0, 0, 0, 0, 0, 0);
+
+    /// <summary>
+    /// Gets the length in bytes of the span. Equals <c>EndByte - StartByte</c>
+    /// because byte offsets use the half-open convention.
+    /// </summary>
+    public int ByteLength => EndByte - StartByte;
+
+    /// <summary>
     /// Gets the debugger label rendering the span as bytes and lines.
     /// Used by the type's <see cref="DebuggerDisplayAttribute"/>.
     /// </summary>

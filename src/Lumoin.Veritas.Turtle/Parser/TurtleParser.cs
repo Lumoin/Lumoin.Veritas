@@ -1,0 +1,1276 @@
+using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Globalization;
+using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Sourcing;
+using Lumoin.Veritas.Turtle.Ast;
+using Lumoin.Veritas.Turtle.Lexer;
+
+namespace Lumoin.Veritas.Turtle.Parser;
+
+/// <summary>
+/// Parses a token stream from <see cref="TurtleLexer"/> into a
+/// <see cref="TurtleDocument"/> AST.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The parser is iterative — every production that admits unbounded
+/// grammar nesting (terms, collections, blank-node property lists,
+/// triple terms, reified triples, predicate-object lists, object
+/// lists, annotated objects, annotation blocks) is driven by an
+/// explicit <see cref="Stack{T}"/> of <see cref="ParseFrame"/>
+/// values. The CLR call stack is used only for the top-level
+/// statement-dispatch loop and the leaf-token helpers that consume a
+/// single bounded form (directives, predicate-or-<c>a</c>, blank-node
+/// labels, IRIs, prefixed names, literals). No production calls back
+/// into another via method recursion.
+/// </para>
+/// <para>
+/// The work-stack design keeps deeply-nested input (collections of
+/// collections, blank-node property lists nested arbitrarily deep)
+/// from exhausting the CLR stack and keeps the parser's behaviour
+/// observable: frames are inspectable structures, and a failure at
+/// depth N still has the frame chain to walk back.
+/// </para>
+/// </remarks>
+public sealed class TurtleParser
+{
+    private readonly List<TurtleToken> tokens;
+    private readonly Utf8StringPool pool;
+    private readonly DocumentId documentId;
+    private readonly TurtleSyntax syntax;
+    private readonly Dictionary<int, TurtleAstNode> nodes = [];
+
+    private int index;
+    private int nextNodeId;
+    private int nextSyntheticBlankNode;
+
+    /// <summary>
+    /// Initialises a new <see cref="TurtleParser"/>.
+    /// </summary>
+    /// <param name="tokens">The lexed token stream.</param>
+    /// <param name="pool">The pool used to intern parser-allocated identifiers.</param>
+    /// <param name="documentId">The content-addressed identifier for the source document.</param>
+    /// <param name="syntax">The syntax flavour to accept.</param>
+    public TurtleParser(IEnumerable<TurtleToken> tokens, Utf8StringPool pool, DocumentId documentId, TurtleSyntax syntax)
+    {
+        ArgumentNullException.ThrowIfNull(tokens);
+        ArgumentNullException.ThrowIfNull(pool);
+
+        this.tokens = [];
+        foreach(TurtleToken token in tokens)
+        {
+            this.tokens.Add(token);
+        }
+
+        this.pool = pool;
+        this.documentId = documentId;
+        this.syntax = syntax;
+    }
+
+    /// <summary>
+    /// Parses the token stream into a <see cref="TurtleDocument"/>.
+    /// </summary>
+    /// <returns>The parsed document AST.</returns>
+    public TurtleDocument Parse()
+    {
+        ImmutableArray<PrefixDeclaration>.Builder prefixes = ImmutableArray.CreateBuilder<PrefixDeclaration>();
+        ImmutableArray<BaseDeclaration>.Builder baseDeclarations = ImmutableArray.CreateBuilder<BaseDeclaration>();
+        ImmutableArray<VersionDeclaration>.Builder versions = ImmutableArray.CreateBuilder<VersionDeclaration>();
+        ImmutableArray<Statement>.Builder statements = ImmutableArray.CreateBuilder<Statement>();
+
+        while(Current.Kind != TurtleTokenKind.EndOfInput)
+        {
+            switch(Current.Kind)
+            {
+                case TurtleTokenKind.PrefixKeyword:
+                {
+                    PrefixDeclaration decl = ParsePrefixDeclaration();
+                    prefixes.Add(decl);
+                    statements.Add(decl);
+                    break;
+                }
+
+                case TurtleTokenKind.BaseKeyword:
+                {
+                    BaseDeclaration decl = ParseBaseDeclaration();
+                    baseDeclarations.Add(decl);
+                    statements.Add(decl);
+                    break;
+                }
+
+                case TurtleTokenKind.VersionKeyword:
+                {
+                    VersionDeclaration decl = ParseVersionDeclaration();
+                    versions.Add(decl);
+                    statements.Add(decl);
+                    break;
+                }
+
+                case TurtleTokenKind.GraphKeyword:
+                {
+                    if(syntax != TurtleSyntax.TriG)
+                    {
+                        throw new TurtleParseException(
+                            "GRAPH keyword is only valid in TriG syntax.",
+                            Current.Span);
+                    }
+
+                    statements.Add(ParseGraphBlockWithKeyword());
+                    break;
+                }
+
+                case TurtleTokenKind.OpenBrace:
+                {
+                    if(syntax != TurtleSyntax.TriG)
+                    {
+                        throw new TurtleParseException(
+                            "Graph block '{' is only valid in TriG syntax.",
+                            Current.Span);
+                    }
+
+                    statements.Add(ParseGraphBlockBody(Current.Span, label: null, hasKeyword: false));
+                    break;
+                }
+
+                default:
+                {
+                    Statement parsed = ParseSubjectStartingStatement();
+                    statements.Add(parsed);
+                    break;
+                }
+            }
+        }
+
+        return new TurtleDocument(
+            documentId,
+            prefixes.ToImmutable(),
+            baseDeclarations.ToImmutable(),
+            versions.ToImmutable(),
+            statements.ToImmutable(),
+            nodes);
+    }
+
+    private TurtleToken Current => tokens[index];
+
+    private TurtleToken Peek(int offset)
+    {
+        int target = index + offset;
+        return target < tokens.Count
+            ? tokens[target]
+            : tokens[^1];
+    }
+
+    private void Advance()
+    {
+        if(index < tokens.Count - 1)
+        {
+            index++;
+        }
+    }
+
+    private PrefixDeclaration ParsePrefixDeclaration()
+    {
+        SourceSpan startSpan = Current.Span;
+        bool isSparqlForm = Current.Value.Span.SequenceEqual("PREFIX"u8);
+        Advance();
+
+        if(Current.Kind != TurtleTokenKind.PrefixNamespace)
+        {
+            throw Expected("prefix declaration namespace", Current);
+        }
+
+        Utf8String prefixText = ExtractPrefix(Current.Value);
+        Advance();
+
+        if(Current.Kind != TurtleTokenKind.Iri)
+        {
+            throw Expected("IRI in prefix declaration", Current);
+        }
+
+        IriTerm iri = NewNode(id => new IriTerm(id, Current.Span, Current.Value));
+        SourceSpan endSpan = Current.Span;
+        Advance();
+
+        if(!isSparqlForm)
+        {
+            if(Current.Kind != TurtleTokenKind.Period)
+            {
+                throw Expected("'.' to terminate @prefix directive", Current);
+            }
+
+            endSpan = Current.Span;
+            Advance();
+        }
+
+        SourceSpan totalSpan = CombineSpans(startSpan, endSpan);
+        return NewNode(id => new PrefixDeclaration(id, totalSpan, prefixText, iri));
+    }
+
+    private BaseDeclaration ParseBaseDeclaration()
+    {
+        SourceSpan startSpan = Current.Span;
+        bool isSparqlForm = Current.Value.Span.SequenceEqual("BASE"u8);
+        Advance();
+
+        if(Current.Kind != TurtleTokenKind.Iri)
+        {
+            throw Expected("IRI in base declaration", Current);
+        }
+
+        IriTerm iri = NewNode(id => new IriTerm(id, Current.Span, Current.Value));
+        SourceSpan endSpan = Current.Span;
+        Advance();
+
+        if(!isSparqlForm)
+        {
+            if(Current.Kind != TurtleTokenKind.Period)
+            {
+                throw Expected("'.' to terminate @base directive", Current);
+            }
+
+            endSpan = Current.Span;
+            Advance();
+        }
+
+        SourceSpan totalSpan = CombineSpans(startSpan, endSpan);
+        return NewNode(id => new BaseDeclaration(id, totalSpan, iri));
+    }
+
+    private VersionDeclaration ParseVersionDeclaration()
+    {
+        SourceSpan startSpan = Current.Span;
+        bool isSparqlForm = Current.Value.Span.SequenceEqual("VERSION"u8);
+        Advance();
+
+        if(Current.Kind != TurtleTokenKind.StringLiteral)
+        {
+            throw Expected("string literal in version declaration", Current);
+        }
+
+        Utf8String versionValue = Current.Value;
+        SourceSpan endSpan = Current.Span;
+        Advance();
+
+        if(!isSparqlForm)
+        {
+            if(Current.Kind != TurtleTokenKind.Period)
+            {
+                throw Expected("'.' to terminate @version directive", Current);
+            }
+
+            endSpan = Current.Span;
+            Advance();
+        }
+
+        SourceSpan totalSpan = CombineSpans(startSpan, endSpan);
+        return NewNode(id => new VersionDeclaration(id, totalSpan, versionValue));
+    }
+
+    private GraphBlockStatement ParseGraphBlockWithKeyword()
+    {
+        SourceSpan startSpan = Current.Span;
+        Advance();
+
+        Term label = ConsumeLeafTermFor("graph label");
+        return ParseGraphBlockBody(startSpan, label, hasKeyword: true);
+    }
+
+    private GraphBlockStatement ParseGraphBlockBody(SourceSpan startSpan, Term? label, bool hasKeyword)
+    {
+        if(Current.Kind != TurtleTokenKind.OpenBrace)
+        {
+            throw Expected("'{' to begin graph block", Current);
+        }
+
+        Advance();
+
+        ImmutableArray<TripleStatement>.Builder inner = ImmutableArray.CreateBuilder<TripleStatement>();
+        while(Current.Kind != TurtleTokenKind.CloseBrace)
+        {
+            if(Current.Kind == TurtleTokenKind.EndOfInput)
+            {
+                throw Expected("'}' to close graph block", Current);
+            }
+
+            Statement parsed = ParseSubjectStartingStatement();
+            if(parsed is not TripleStatement triple)
+            {
+                throw new TurtleParseException(
+                    "Only triple statements are permitted inside a graph block.",
+                    parsed.Span);
+            }
+
+            inner.Add(triple);
+        }
+
+        SourceSpan endSpan = Current.Span;
+        Advance();
+
+        SourceSpan totalSpan = CombineSpans(startSpan, endSpan);
+        return NewNode(id => new GraphBlockStatement(id, totalSpan, label, hasKeyword, inner.ToImmutable()));
+    }
+
+    private Statement ParseSubjectStartingStatement()
+    {
+        SourceSpan startSpan = Current.Span;
+
+        //In TriG, an IRI / prefixed-name / blank-node-label followed by '{' is a graph block label.
+        if(syntax == TurtleSyntax.TriG && IsGraphLabelLookahead())
+        {
+            Term label = ConsumeLeafTermFor("graph label");
+            return ParseGraphBlockBody(startSpan, label, hasKeyword: false);
+        }
+
+        Term subject = ParseTerm();
+        return ParseTripleBody(subject, startSpan, allowEmptyPredicates: SubjectAllowsEmptyPredicateList(subject));
+    }
+
+    private bool IsGraphLabelLookahead()
+    {
+        if(Current.Kind is TurtleTokenKind.Iri or TurtleTokenKind.PrefixedName or TurtleTokenKind.BlankNodeLabel
+            && Peek(1).Kind == TurtleTokenKind.OpenBrace)
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool SubjectAllowsEmptyPredicateList(Term subject)
+    {
+        //A blank-node property list or a reified-triple may stand alone as a statement subject.
+        return subject is BlankNodePropertyListTerm or ReifiedTripleTerm;
+    }
+
+    private TripleStatement ParseTripleBody(Term subject, SourceSpan startSpan, bool allowEmptyPredicates)
+    {
+        if(allowEmptyPredicates && Current.Kind == TurtleTokenKind.Period)
+        {
+            SourceSpan endSpan = Current.Span;
+            Advance();
+            SourceSpan totalSpan = CombineSpans(startSpan, endSpan);
+
+            return NewNode(id => new TripleStatement(id, totalSpan, subject, ImmutableArray<PredicateObject>.Empty));
+        }
+
+        ImmutableArray<PredicateObject> predicates = ParsePredicateObjectList();
+
+        if(Current.Kind != TurtleTokenKind.Period)
+        {
+            throw Expected("'.' to terminate triple", Current);
+        }
+
+        SourceSpan periodSpan = Current.Span;
+        Advance();
+
+        SourceSpan total = CombineSpans(startSpan, periodSpan);
+        return NewNode(id => new TripleStatement(id, total, subject, predicates));
+    }
+
+    /// <summary>
+    /// Parses one term — leaf or compound — by driving the work stack.
+    /// Returns the completed term once all pushed sub-frames have
+    /// resolved.
+    /// </summary>
+    private Term ParseTerm()
+    {
+        return (Term)ParseWithStack(ParseFrameKind.Term);
+    }
+
+    /// <summary>
+    /// Parses one predicate-object list at top level (inside a triple
+    /// statement). Returns the completed list once all pushed
+    /// sub-frames have resolved.
+    /// </summary>
+    private ImmutableArray<PredicateObject> ParsePredicateObjectList()
+    {
+        object result = ParseWithStack(ParseFrameKind.PredicateObjectList);
+        return (ImmutableArray<PredicateObject>)result;
+    }
+
+    private object ParseWithStack(ParseFrameKind startKind)
+    {
+        Stack<ParseFrame> frames = new();
+        frames.Push(new ParseFrame { Kind = startKind, StartSpan = Current.Span });
+
+        object? completed = null;
+
+        while(frames.Count > 0)
+        {
+            ParseFrame top = frames.Peek();
+            StepResult step = Step(top, completed);
+            completed = null;
+
+            switch(step.Action)
+            {
+                case StepAction.Pop:
+                {
+                    frames.Pop();
+                    completed = step.Result;
+                    break;
+                }
+
+                case StepAction.Push:
+                {
+                    frames.Push(step.NewFrame!);
+                    break;
+                }
+
+                case StepAction.Continue:
+                {
+                    break;
+                }
+
+                default:
+                {
+                    throw new TurtleParseException("Parser driver reached an undefined state.", Current.Span);
+                }
+            }
+        }
+
+        return completed!;
+    }
+
+    private StepResult Step(ParseFrame frame, object? incoming)
+    {
+        return frame.Kind switch
+        {
+            ParseFrameKind.Term => StepTerm(frame, incoming),
+            ParseFrameKind.Collection => StepCollection(frame, incoming),
+            ParseFrameKind.BlankNodePropertyList => StepBlankNodePropertyList(frame, incoming),
+            ParseFrameKind.TripleTerm => StepTripleTerm(frame, incoming),
+            ParseFrameKind.ReifiedTriple => StepReifiedTriple(frame, incoming),
+            ParseFrameKind.PredicateObjectList => StepPredicateObjectList(frame, incoming),
+            ParseFrameKind.PredicateObject => StepPredicateObject(frame, incoming),
+            ParseFrameKind.ObjectList => StepObjectList(frame, incoming),
+            ParseFrameKind.AnnotatedObject => StepAnnotatedObject(frame, incoming),
+            ParseFrameKind.AnnotationBlock => StepAnnotationBlock(frame, incoming),
+            ParseFrameKind.Reifier => StepReifier(frame, incoming),
+            _ => throw new TurtleParseException($"Unhandled frame kind {frame.Kind}.", frame.StartSpan)
+        };
+    }
+
+    private StepResult StepTerm(ParseFrame frame, object? incoming)
+    {
+        //A Term frame dispatches on the current token. Leafs resolve immediately and pop;
+        //compounds push the matching nested frame and let the parent slot receive its result.
+        if(incoming is not null)
+        {
+            return StepResult.Done(incoming);
+        }
+
+        switch(Current.Kind)
+        {
+            case TurtleTokenKind.Iri:
+            {
+                return StepResult.Done(ConsumeIri());
+            }
+
+            case TurtleTokenKind.PrefixedName:
+            {
+                return StepResult.Done(ConsumePrefixedName());
+            }
+
+            case TurtleTokenKind.BlankNodeLabel:
+            {
+                return StepResult.Done(ConsumeBlankNodeLabel());
+            }
+
+            case TurtleTokenKind.AnonymousBlankNode:
+            {
+                return StepResult.Done(ConsumeAnonymousBlankNode());
+            }
+
+            case TurtleTokenKind.StringLiteral:
+            {
+                return StepResult.Done(ParseStringLiteral());
+            }
+
+            case TurtleTokenKind.IntegerLiteral:
+            {
+                return StepResult.Done(ParseNumericLiteral(TurtleTokenKind.IntegerLiteral));
+            }
+
+            case TurtleTokenKind.DecimalLiteral:
+            {
+                return StepResult.Done(ParseNumericLiteral(TurtleTokenKind.DecimalLiteral));
+            }
+
+            case TurtleTokenKind.DoubleLiteral:
+            {
+                return StepResult.Done(ParseNumericLiteral(TurtleTokenKind.DoubleLiteral));
+            }
+
+            case TurtleTokenKind.BooleanLiteral:
+            {
+                return StepResult.Done(ParseBooleanLiteral());
+            }
+
+            case TurtleTokenKind.A:
+            {
+                return StepResult.Done(ConsumeAKeyword());
+            }
+
+            case TurtleTokenKind.OpenParen:
+            {
+                ParseFrame next = new() { Kind = ParseFrameKind.Collection, StartSpan = Current.Span, TermItems = [] };
+                Advance();
+                return StepResult.Push(next);
+            }
+
+            case TurtleTokenKind.OpenBracket:
+            {
+                ParseFrame next = new() { Kind = ParseFrameKind.BlankNodePropertyList, StartSpan = Current.Span, PredicateObjects = [] };
+                Advance();
+                return StepResult.Push(next);
+            }
+
+            case TurtleTokenKind.OpenTripleTerm:
+            {
+                ParseFrame next = new() { Kind = ParseFrameKind.TripleTerm, StartSpan = Current.Span, Stage = 0 };
+                Advance();
+                return StepResult.Push(next);
+            }
+
+            case TurtleTokenKind.OpenReifiedTriple:
+            {
+                ParseFrame next = new() { Kind = ParseFrameKind.ReifiedTriple, StartSpan = Current.Span, Stage = 0 };
+                Advance();
+                return StepResult.Push(next);
+            }
+
+            default:
+            {
+                throw Expected("term", Current);
+            }
+        }
+    }
+
+    private StepResult StepCollection(ParseFrame frame, object? incoming)
+    {
+        if(incoming is Term term)
+        {
+            frame.TermItems!.Add(term);
+        }
+
+        if(Current.Kind == TurtleTokenKind.CloseParen)
+        {
+            SourceSpan endSpan = Current.Span;
+            Advance();
+            SourceSpan totalSpan = CombineSpans(frame.StartSpan, endSpan);
+            ImmutableArray<Term> items = ToImmutable(frame.TermItems!);
+
+            Term built = NewNode(id => new CollectionTerm(id, totalSpan, items));
+            return StepResult.Done(built);
+        }
+
+        if(Current.Kind == TurtleTokenKind.EndOfInput)
+        {
+            throw Expected("')' to close collection", Current);
+        }
+
+        return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Term, StartSpan = Current.Span });
+    }
+
+    private StepResult StepBlankNodePropertyList(ParseFrame frame, object? incoming)
+    {
+        if(incoming is PredicateObject predObj)
+        {
+            frame.PredicateObjects!.Add(predObj);
+        }
+
+        switch(frame.Stage)
+        {
+            case 0:
+            {
+                //Initial entry: if immediately followed by ']', produce an empty property list.
+                if(Current.Kind == TurtleTokenKind.CloseBracket)
+                {
+                    return FinaliseBlankNodePropertyList(frame);
+                }
+
+                frame.Stage = 1;
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PredicateObject, StartSpan = Current.Span });
+            }
+
+            case 1:
+            {
+                //After parsing one PredicateObject: optionally absorb ';' separators and parse another.
+                while(Current.Kind == TurtleTokenKind.Semicolon)
+                {
+                    Advance();
+                }
+
+                if(Current.Kind == TurtleTokenKind.CloseBracket)
+                {
+                    return FinaliseBlankNodePropertyList(frame);
+                }
+
+                if(!CanStartVerb(Current.Kind))
+                {
+                    throw Expected("predicate or ']' inside blank-node property list", Current);
+                }
+
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PredicateObject, StartSpan = Current.Span });
+            }
+
+            default:
+            {
+                throw new TurtleParseException("Blank-node property list reached unknown stage.", frame.StartSpan);
+            }
+        }
+    }
+
+    private StepResult FinaliseBlankNodePropertyList(ParseFrame frame)
+    {
+        SourceSpan endSpan = Current.Span;
+        Advance();
+        SourceSpan totalSpan = CombineSpans(frame.StartSpan, endSpan);
+        ImmutableArray<PredicateObject> predicates = ToImmutable(frame.PredicateObjects!);
+
+        Term built = NewNode(id => new BlankNodePropertyListTerm(id, totalSpan, predicates));
+        return StepResult.Done(built);
+    }
+
+    private StepResult StepTripleTerm(ParseFrame frame, object? incoming)
+    {
+        switch(frame.Stage)
+        {
+            case 0:
+            {
+                frame.Stage = 1;
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Term, StartSpan = Current.Span });
+            }
+
+            case 1:
+            {
+                frame.Subject = (Term)incoming!;
+                Term predicate = ParsePredicateLeaf();
+                frame.Predicate = predicate;
+                frame.Stage = 2;
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Term, StartSpan = Current.Span });
+            }
+
+            case 2:
+            {
+                frame.Object = (Term)incoming!;
+                if(Current.Kind != TurtleTokenKind.CloseTripleTerm)
+                {
+                    throw Expected("')>>' to close triple term", Current);
+                }
+
+                SourceSpan endSpan = Current.Span;
+                Advance();
+                SourceSpan totalSpan = CombineSpans(frame.StartSpan, endSpan);
+
+                Term subject = frame.Subject!;
+                Term predicate = frame.Predicate!;
+                Term obj = frame.Object!;
+                Term built = NewNode(id => new TripleTermTerm(id, totalSpan, subject, predicate, obj));
+                return StepResult.Done(built);
+            }
+
+            default:
+            {
+                throw new TurtleParseException("Triple term reached unknown stage.", frame.StartSpan);
+            }
+        }
+    }
+
+    private StepResult StepReifiedTriple(ParseFrame frame, object? incoming)
+    {
+        switch(frame.Stage)
+        {
+            case 0:
+            {
+                frame.Stage = 1;
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Term, StartSpan = Current.Span });
+            }
+
+            case 1:
+            {
+                frame.Subject = (Term)incoming!;
+                Term predicate = ParsePredicateLeaf();
+                frame.Predicate = predicate;
+                frame.Stage = 2;
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Term, StartSpan = Current.Span });
+            }
+
+            case 2:
+            {
+                frame.Object = (Term)incoming!;
+
+                if(Current.Kind == TurtleTokenKind.Tilde)
+                {
+                    Advance();
+                    if(Current.Kind is TurtleTokenKind.Iri or TurtleTokenKind.PrefixedName or TurtleTokenKind.BlankNodeLabel)
+                    {
+                        frame.Reifier = ConsumeLeafTermFor("reifier identifier");
+                    }
+                }
+
+                if(Current.Kind != TurtleTokenKind.CloseReifiedTriple)
+                {
+                    throw Expected("'>>' to close reified triple", Current);
+                }
+
+                SourceSpan endSpan = Current.Span;
+                Advance();
+                SourceSpan totalSpan = CombineSpans(frame.StartSpan, endSpan);
+
+                Term subject = frame.Subject!;
+                Term predicate = frame.Predicate!;
+                Term obj = frame.Object!;
+                Term? reifier = frame.Reifier;
+                Term built = NewNode(id => new ReifiedTripleTerm(id, totalSpan, subject, predicate, obj, reifier));
+                return StepResult.Done(built);
+            }
+
+            default:
+            {
+                throw new TurtleParseException("Reified triple reached unknown stage.", frame.StartSpan);
+            }
+        }
+    }
+
+    private StepResult StepPredicateObjectList(ParseFrame frame, object? incoming)
+    {
+        if(incoming is PredicateObject predObj)
+        {
+            frame.PredicateObjects ??= [];
+            frame.PredicateObjects.Add(predObj);
+        }
+
+        switch(frame.Stage)
+        {
+            case 0:
+            {
+                frame.PredicateObjects ??= [];
+                frame.Stage = 1;
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PredicateObject, StartSpan = Current.Span });
+            }
+
+            case 1:
+            {
+                //Absorb ';' separators; the grammar allows trailing ';' before terminators.
+                while(Current.Kind == TurtleTokenKind.Semicolon)
+                {
+                    Advance();
+                }
+
+                if(!CanStartVerb(Current.Kind))
+                {
+                    return StepResult.Done(ToImmutable(frame.PredicateObjects!));
+                }
+
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PredicateObject, StartSpan = Current.Span });
+            }
+
+            default:
+            {
+                throw new TurtleParseException("Predicate-object list reached unknown stage.", frame.StartSpan);
+            }
+        }
+    }
+
+    private StepResult StepPredicateObject(ParseFrame frame, object? incoming)
+    {
+        switch(frame.Stage)
+        {
+            case 0:
+            {
+                Term predicate = ParsePredicateLeaf();
+                frame.Predicate = predicate;
+                frame.Stage = 1;
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.ObjectList, StartSpan = Current.Span });
+            }
+
+            case 1:
+            {
+                ImmutableArray<AnnotatedObject> objects = (ImmutableArray<AnnotatedObject>)incoming!;
+                SourceSpan endSpan = objects[^1].Span;
+                SourceSpan totalSpan = CombineSpans(frame.StartSpan, endSpan);
+                Term predicate = frame.Predicate!;
+                PredicateObject built = NewNode(id => new PredicateObject(id, totalSpan, predicate, objects));
+                return StepResult.Done(built);
+            }
+
+            default:
+            {
+                throw new TurtleParseException("Predicate-object reached unknown stage.", frame.StartSpan);
+            }
+        }
+    }
+
+    private StepResult StepObjectList(ParseFrame frame, object? incoming)
+    {
+        if(incoming is AnnotatedObject annotated)
+        {
+            frame.AnnotatedObjects ??= [];
+            frame.AnnotatedObjects.Add(annotated);
+        }
+
+        switch(frame.Stage)
+        {
+            case 0:
+            {
+                frame.AnnotatedObjects ??= [];
+                frame.Stage = 1;
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.AnnotatedObject, StartSpan = Current.Span });
+            }
+
+            case 1:
+            {
+                if(Current.Kind == TurtleTokenKind.Comma)
+                {
+                    Advance();
+                    return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.AnnotatedObject, StartSpan = Current.Span });
+                }
+
+                return StepResult.Done(ToImmutable(frame.AnnotatedObjects!));
+            }
+
+            default:
+            {
+                throw new TurtleParseException("Object list reached unknown stage.", frame.StartSpan);
+            }
+        }
+    }
+
+    private StepResult StepAnnotatedObject(ParseFrame frame, object? incoming)
+    {
+        if(incoming is Term termResult && frame.Stage == 1)
+        {
+            frame.CurrentObject = termResult;
+            frame.Stage = 2;
+        }
+        else if(incoming is Annotation annotationResult)
+        {
+            frame.Annotations ??= [];
+            frame.Annotations.Add(annotationResult);
+        }
+
+        switch(frame.Stage)
+        {
+            case 0:
+            {
+                frame.Annotations ??= [];
+                frame.Stage = 1;
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Term, StartSpan = Current.Span });
+            }
+
+            case 2:
+            {
+                if(Current.Kind == TurtleTokenKind.Tilde)
+                {
+                    return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Reifier, StartSpan = Current.Span });
+                }
+
+                if(Current.Kind == TurtleTokenKind.OpenAnnotation)
+                {
+                    return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.AnnotationBlock, StartSpan = Current.Span, PredicateObjects = [] });
+                }
+
+                Term obj = frame.CurrentObject!;
+                ImmutableArray<Annotation> annotations = frame.Annotations is null
+                    ? ImmutableArray<Annotation>.Empty
+                    : ToImmutable(frame.Annotations);
+
+                SourceSpan endSpan = annotations.Length > 0 ? annotations[^1].Span : obj.Span;
+                SourceSpan totalSpan = CombineSpans(obj.Span, endSpan);
+                AnnotatedObject built = NewNode(id => new AnnotatedObject(id, totalSpan, obj, annotations));
+                return StepResult.Done(built);
+            }
+
+            default:
+            {
+                throw new TurtleParseException("Annotated object reached unknown stage.", frame.StartSpan);
+            }
+        }
+    }
+
+    private StepResult StepAnnotationBlock(ParseFrame frame, object? incoming)
+    {
+        if(incoming is PredicateObject predObj)
+        {
+            frame.PredicateObjects!.Add(predObj);
+        }
+
+        switch(frame.Stage)
+        {
+            case 0:
+            {
+                Advance();
+                frame.Stage = 1;
+                if(Current.Kind == TurtleTokenKind.CloseAnnotation)
+                {
+                    return FinaliseAnnotationBlock(frame);
+                }
+
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PredicateObject, StartSpan = Current.Span });
+            }
+
+            case 1:
+            {
+                while(Current.Kind == TurtleTokenKind.Semicolon)
+                {
+                    Advance();
+                }
+
+                if(Current.Kind == TurtleTokenKind.CloseAnnotation)
+                {
+                    return FinaliseAnnotationBlock(frame);
+                }
+
+                if(!CanStartVerb(Current.Kind))
+                {
+                    throw Expected("predicate or '|}' inside annotation block", Current);
+                }
+
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PredicateObject, StartSpan = Current.Span });
+            }
+
+            default:
+            {
+                throw new TurtleParseException("Annotation block reached unknown stage.", frame.StartSpan);
+            }
+        }
+    }
+
+    private StepResult FinaliseAnnotationBlock(ParseFrame frame)
+    {
+        SourceSpan endSpan = Current.Span;
+        Advance();
+        SourceSpan totalSpan = CombineSpans(frame.StartSpan, endSpan);
+        ImmutableArray<PredicateObject> predicates = ToImmutable(frame.PredicateObjects!);
+
+        Annotation built = NewNode(id => new AnnotationBlock(id, totalSpan, predicates));
+        return StepResult.Done(built);
+    }
+
+    private StepResult StepReifier(ParseFrame frame, object? incoming)
+    {
+        //A single-step frame: consume '~' and an optional identifier, then pop.
+        Advance();
+        Term? identifier = Current.Kind switch
+        {
+            TurtleTokenKind.Iri => ConsumeIri(),
+            TurtleTokenKind.PrefixedName => ConsumePrefixedName(),
+            TurtleTokenKind.BlankNodeLabel => ConsumeBlankNodeLabel(),
+            _ => null
+        };
+
+        SourceSpan endSpan = identifier?.Span ?? frame.StartSpan;
+        SourceSpan totalSpan = CombineSpans(frame.StartSpan, endSpan);
+        Annotation built = NewNode(id => new ReifierAnnotation(id, totalSpan, identifier));
+        return StepResult.Done(built);
+    }
+
+    private Term ConsumeLeafTermFor(string what)
+    {
+        return Current.Kind switch
+        {
+            TurtleTokenKind.Iri => ConsumeIri(),
+            TurtleTokenKind.PrefixedName => ConsumePrefixedName(),
+            TurtleTokenKind.BlankNodeLabel => ConsumeBlankNodeLabel(),
+            _ => throw Expected(what, Current)
+        };
+    }
+
+    private Term ParsePredicateLeaf()
+    {
+        //Predicates are bounded forms — no recursion possible — so they parse directly.
+        return Current.Kind switch
+        {
+            TurtleTokenKind.Iri => ConsumeIri(),
+            TurtleTokenKind.PrefixedName => ConsumePrefixedName(),
+            TurtleTokenKind.A => ConsumeAKeyword(),
+            _ => throw Expected("predicate", Current)
+        };
+    }
+
+    private static bool CanStartVerb(TurtleTokenKind kind)
+    {
+        return kind is TurtleTokenKind.Iri or TurtleTokenKind.PrefixedName or TurtleTokenKind.A;
+    }
+
+    private IriTerm ConsumeAKeyword()
+    {
+        SourceSpan span = Current.Span;
+        Utf8String rdfType = pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"u8);
+        Advance();
+        return NewNode(id => new IriTerm(id, span, rdfType));
+    }
+
+    private IriTerm ConsumeIri()
+    {
+        SourceSpan span = Current.Span;
+        Utf8String value = Current.Value;
+        Advance();
+        return NewNode(id => new IriTerm(id, span, value));
+    }
+
+    private PrefixedNameTerm ConsumePrefixedName()
+    {
+        SourceSpan span = Current.Span;
+        ReadOnlySpan<byte> bytes = Current.Value.Span;
+        int colonIndex = bytes.IndexOf((byte)':');
+        if(colonIndex < 0)
+        {
+            throw new TurtleParseException(
+                "Prefixed name missing ':' separator.",
+                span);
+        }
+
+        Utf8String prefix = pool.Intern(bytes[..colonIndex]);
+        Utf8String local = pool.Intern(bytes[(colonIndex + 1)..]);
+        Advance();
+
+        return NewNode(id => new PrefixedNameTerm(id, span, prefix, local));
+    }
+
+    private BlankNodeTerm ConsumeBlankNodeLabel()
+    {
+        SourceSpan span = Current.Span;
+        Utf8String label = Current.Value;
+        Advance();
+
+        return NewNode(id => new BlankNodeTerm(id, span, label));
+    }
+
+    private BlankNodeTerm ConsumeAnonymousBlankNode()
+    {
+        SourceSpan span = Current.Span;
+        Advance();
+
+        Utf8String label = AllocateSyntheticBlankNodeLabel();
+        return NewNode(id => new BlankNodeTerm(id, span, label));
+    }
+
+    private LiteralTerm ParseStringLiteral()
+    {
+        SourceSpan startSpan = Current.Span;
+        Utf8String value = Current.Value;
+        Advance();
+
+        Term? datatype = null;
+        Utf8String? language = null;
+        TextDirection? direction = null;
+        SourceSpan endSpan = startSpan;
+
+        switch(Current.Kind)
+        {
+            case TurtleTokenKind.LangTag:
+            {
+                language = Current.Value;
+                endSpan = Current.Span;
+                Advance();
+                break;
+            }
+
+            case TurtleTokenKind.DirLangTag:
+            {
+                ReadOnlySpan<byte> bytes = Current.Value.Span;
+                int dirIndex = IndexOfDoubleDash(bytes);
+                if(dirIndex < 0)
+                {
+                    throw new TurtleParseException(
+                        "Direction-tagged language tag missing '--' separator.",
+                        Current.Span);
+                }
+
+                language = pool.Intern(bytes[..dirIndex]);
+                ReadOnlySpan<byte> dirSpan = bytes[(dirIndex + 2)..];
+                direction = ParseDirection(dirSpan, Current.Span);
+                endSpan = Current.Span;
+                Advance();
+                break;
+            }
+
+            case TurtleTokenKind.TypeMarker:
+            {
+                Advance();
+                switch(Current.Kind)
+                {
+                    case TurtleTokenKind.Iri:
+                    {
+                        datatype = ConsumeIri();
+                        endSpan = datatype.Span;
+                        break;
+                    }
+
+                    case TurtleTokenKind.PrefixedName:
+                    {
+                        datatype = ConsumePrefixedName();
+                        endSpan = datatype.Span;
+                        break;
+                    }
+
+                    default:
+                    {
+                        throw Expected("datatype IRI after '^^'", Current);
+                    }
+                }
+
+                break;
+            }
+
+            default:
+            {
+                break;
+            }
+        }
+
+        SourceSpan totalSpan = CombineSpans(startSpan, endSpan);
+        return NewNode(id => new LiteralTerm(id, totalSpan, value, datatype, language, direction));
+    }
+
+    private static TextDirection ParseDirection(ReadOnlySpan<byte> directionBytes, SourceSpan span)
+    {
+        if(directionBytes.SequenceEqual("ltr"u8))
+        {
+            return TextDirection.Ltr;
+        }
+
+        if(directionBytes.SequenceEqual("rtl"u8))
+        {
+            return TextDirection.Rtl;
+        }
+
+        throw new TurtleParseException(
+            $"Invalid base direction '{System.Text.Encoding.UTF8.GetString(directionBytes)}'; expected 'ltr' or 'rtl'.",
+            span);
+    }
+
+    private LiteralTerm ParseNumericLiteral(TurtleTokenKind kind)
+    {
+        SourceSpan span = Current.Span;
+        Utf8String text = Current.Value;
+        Advance();
+
+        Utf8String datatypeIri = kind switch
+        {
+            TurtleTokenKind.IntegerLiteral => pool.Intern("http://www.w3.org/2001/XMLSchema#integer"u8),
+            TurtleTokenKind.DecimalLiteral => pool.Intern("http://www.w3.org/2001/XMLSchema#decimal"u8),
+            TurtleTokenKind.DoubleLiteral => pool.Intern("http://www.w3.org/2001/XMLSchema#double"u8),
+            _ => throw new TurtleParseException("Numeric kind out of range.", span)
+        };
+
+        Term datatype = NewNode(id => new IriTerm(id, span, datatypeIri));
+        return NewNode(id => new LiteralTerm(id, span, text, datatype, language: null, direction: null));
+    }
+
+    private LiteralTerm ParseBooleanLiteral()
+    {
+        SourceSpan span = Current.Span;
+        Utf8String text = Current.Value;
+        Advance();
+
+        Utf8String datatypeIri = pool.Intern("http://www.w3.org/2001/XMLSchema#boolean"u8);
+        Term datatype = NewNode(id => new IriTerm(id, span, datatypeIri));
+        return NewNode(id => new LiteralTerm(id, span, text, datatype, language: null, direction: null));
+    }
+
+    private Utf8String AllocateSyntheticBlankNodeLabel()
+    {
+        string raw = string.Create(CultureInfo.InvariantCulture, $"b{nextSyntheticBlankNode}");
+        nextSyntheticBlankNode++;
+        return pool.Intern(raw);
+    }
+
+    private TNode NewNode<TNode>(Func<int, TNode> factory)
+        where TNode: TurtleAstNode
+    {
+        int id = nextNodeId++;
+        TNode node = factory(id);
+        nodes[id] = node;
+        return node;
+    }
+
+    private static SourceSpan CombineSpans(SourceSpan left, SourceSpan right)
+    {
+        return new SourceSpan(
+            StartByte: left.StartByte,
+            EndByte: right.EndByte,
+            StartLine: left.StartLine,
+            StartColumn: left.StartColumn,
+            EndLine: right.EndLine,
+            EndColumn: right.EndColumn);
+    }
+
+    private static int IndexOfDoubleDash(ReadOnlySpan<byte> bytes)
+    {
+        for(int i = 0; i + 1 < bytes.Length; i++)
+        {
+            if(bytes[i] == (byte)'-' && bytes[i + 1] == (byte)'-')
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private Utf8String ExtractPrefix(Utf8String namespaceToken)
+    {
+        ReadOnlySpan<byte> bytes = namespaceToken.Span;
+        if(bytes.Length == 0 || bytes[^1] != (byte)':')
+        {
+            throw new TurtleParseException("Prefix declaration name must end with ':'.", Current.Span);
+        }
+
+        return pool.Intern(bytes[..^1]);
+    }
+
+    private static ImmutableArray<TItem> ToImmutable<TItem>(List<TItem> items)
+    {
+        ImmutableArray<TItem>.Builder builder = ImmutableArray.CreateBuilder<TItem>(items.Count);
+        for(int i = 0; i < items.Count; i++)
+        {
+            builder.Add(items[i]);
+        }
+
+        return builder.ToImmutable();
+    }
+
+    private static TurtleParseException Expected(string what, TurtleToken got)
+    {
+        return new TurtleParseException(
+            $"Expected {what} but found {got.Kind} '{got.Value}' at line {got.Span.StartLine + 1} column {got.Span.StartColumn + 1}.",
+            got.Span);
+    }
+
+    /// <summary>
+    /// The instruction returned by a step method: either pop the
+    /// current frame with a completed result, push a new frame to
+    /// recurse into, or continue the same frame on the next iteration.
+    /// </summary>
+    private readonly struct StepResult
+    {
+        private StepResult(StepAction action, object? result, ParseFrame? newFrame)
+        {
+            Action = action;
+            Result = result;
+            NewFrame = newFrame;
+        }
+
+        public StepAction Action { get; }
+
+        public object? Result { get; }
+
+        public ParseFrame? NewFrame { get; }
+
+        public static StepResult Done(object result) => new(StepAction.Pop, result, null);
+
+        public static StepResult Push(ParseFrame next) => new(StepAction.Push, null, next);
+    }
+
+    private enum StepAction
+    {
+        Pop,
+        Push,
+        Continue
+    }
+}

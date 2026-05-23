@@ -29,6 +29,7 @@
     <Project Path="src/Lumoin.Veritas.Owl/Lumoin.Veritas.Owl.csproj" Id="abe5a18f-8105-458d-917a-ddfe42674923" />
     <Project Path="src/Lumoin.Veritas.Shacl/Lumoin.Veritas.Shacl.csproj" Id="89d25066-0d2a-45d0-9405-7359aac01226" />
     <Project Path="src/Lumoin.Veritas.Skos/Lumoin.Veritas.Skos.csproj" Id="c0c164e8-0773-410c-b809-afefd3e4c3b5" />
+    <Project Path="src/Lumoin.Veritas.Turtle/Lumoin.Veritas.Turtle.csproj" />
   </Folder>
   <Folder Name="/test/">
     <Project Path="test/Lumoin.Veritas.Benchmarks/Lumoin.Veritas.Benchmarks.csproj" Id="376c9627-036c-400d-81d4-592ff521399f" />
