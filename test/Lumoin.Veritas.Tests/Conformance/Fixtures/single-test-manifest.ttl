@@ -1,0 +1,12 @@
+PREFIX rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs:   <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX mf:     <http://www.w3.org/2001/sw/DataAccess/tests/test-manifest#>
+PREFIX rdft:   <http://www.w3.org/ns/rdftest#>
+
+<#manifest> rdf:type mf:Manifest ;
+            mf:entries ( <#test-good> ) .
+
+<#test-good> rdf:type rdft:TestTurtlePositiveSyntax ;
+             mf:name "single test" ;
+             rdfs:comment "A single positive-syntax test." ;
+             mf:action <positive-input.ttl> .

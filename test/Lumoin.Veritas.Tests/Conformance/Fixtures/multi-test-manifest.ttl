@@ -1,0 +1,29 @@
+PREFIX rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs:   <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX mf:     <http://www.w3.org/2001/sw/DataAccess/tests/test-manifest#>
+PREFIX rdft:   <http://www.w3.org/ns/rdftest#>
+
+<#manifest> rdf:type mf:Manifest ;
+            mf:entries ( <#one> <#two> <#three> <#four> <#unknown> ) .
+
+<#one> rdf:type rdft:TestTurtlePositiveSyntax ;
+       mf:name "positive syntax one" ;
+       mf:action <positive-input.ttl> .
+
+<#two> rdf:type rdft:TestTurtleNegativeSyntax ;
+       mf:name "negative syntax two" ;
+       mf:action <negative-input.ttl> .
+
+<#three> rdf:type rdft:TestTurtleEval ;
+         mf:name "evaluation three" ;
+         mf:action <positive-input.ttl> ;
+         mf:result <expected-output.nt> .
+
+<#four> rdf:type rdft:TestTurtleNegativeEval ;
+        mf:name "negative evaluation four" ;
+        mf:action <positive-input.ttl> ;
+        mf:result <unexpected-output.nt> .
+
+<#unknown> rdf:type <http://example.org/unknown-test-type> ;
+           mf:name "unknown test type" ;
+           mf:action <positive-input.ttl> .
