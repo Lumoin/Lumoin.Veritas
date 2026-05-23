@@ -521,12 +521,48 @@ public static class NQuadsReader
         }
 
         ReadOnlySpan<byte> iriBytes = line[start..pos];
+
+        //N-Triples and N-Quads have no base IRI, so every IRI must be absolute: it must begin
+        //with a scheme. The scheme is checked on the raw bytes; a UCHAR escape cannot
+        //legitimately form the scheme or its terminating colon.
+        if(!HasAbsoluteIriScheme(iriBytes))
+        {
+            throw new NQuadsParseException(
+                $"IRI '{Encoding.UTF8.GetString(iriBytes)}' is not absolute (missing scheme) on line {lineNumber}.", lineNumber);
+        }
+
         Utf8String iri = pool.Intern(UnescapeIri(iriBytes));
 
         //Skip '>'.
         pos++;
 
         return new NamedNode(iri);
+    }
+
+    private static bool HasAbsoluteIriScheme(ReadOnlySpan<byte> iri)
+    {
+        //RFC 3986 scheme: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":". The scheme must be
+        //non-empty, begin with a letter, and be terminated by a colon.
+        if(iri.IsEmpty || !IsAsciiLetter(iri[0]))
+        {
+            return false;
+        }
+
+        for(int i = 1; i < iri.Length; i++)
+        {
+            byte b = iri[i];
+            if(b == (byte)':')
+            {
+                return true;
+            }
+
+            if(!IsAsciiLetterOrDigit(b) && b != (byte)'+' && b != (byte)'-' && b != (byte)'.')
+            {
+                return false;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
