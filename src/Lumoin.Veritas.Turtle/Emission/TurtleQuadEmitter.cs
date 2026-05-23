@@ -149,13 +149,14 @@ public sealed class TurtleQuadEmitter
         RdfTerm objectTerm,
         RdfTerm? graph)
     {
-        //Per RDF 1.2: every reifier or annotation block produces one
-        //reifying triple "reifier rdf:reifies <<( s p o )>>", with the
-        //annotation block additionally asserting its predicate-object
-        //list with the reifier as subject.
+        //Per RDF 1.2 each reifier and each annotation block produces a reifying triple
+        //"reifier rdf:reifies <<( s p o )>>". A reifier marker (~ with an optional identifier)
+        //leaves its reifier pending so an immediately-following annotation block reuses it;
+        //a block with no pending reifier allocates a fresh blank node. A block consumes the
+        //pending reifier, so consecutive blocks each get their own reifier.
         TripleTerm tripleTerm = new(subject, predicate, objectTerm);
         NamedNode reifies = new(pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies"u8));
-        RdfTerm? currentReifier = null;
+        RdfTerm? pendingReifier = null;
 
         foreach(Annotation annotation in annotatedObject.Annotations)
         {
@@ -163,21 +164,27 @@ public sealed class TurtleQuadEmitter
             {
                 case ReifierAnnotation reifier:
                 {
-                    currentReifier = reifier.Identifier is null
+                    RdfTerm resolvedReifier = reifier.Identifier is null
                         ? AllocateBlankNode()
                         : ResolveTermAsSimple(reifier.Identifier);
 
-                    Quad reificationQuad = new(currentReifier, reifies, tripleTerm, graph);
+                    Quad reificationQuad = new(resolvedReifier, reifies, tripleTerm, graph);
                     yield return new EmittedQuad(reificationQuad, new DocumentNodeRef(document.DocumentId, reifier.NodeId));
+                    pendingReifier = resolvedReifier;
                     break;
                 }
 
                 case AnnotationBlock block:
                 {
-                    if(currentReifier is null)
+                    RdfTerm blockReifier;
+                    if(pendingReifier is not null)
                     {
-                        currentReifier = AllocateBlankNode();
-                        Quad reificationQuad = new(currentReifier, reifies, tripleTerm, graph);
+                        blockReifier = pendingReifier;
+                    }
+                    else
+                    {
+                        blockReifier = AllocateBlankNode();
+                        Quad reificationQuad = new(blockReifier, reifies, tripleTerm, graph);
                         yield return new EmittedQuad(reificationQuad, new DocumentNodeRef(document.DocumentId, block.NodeId));
                     }
 
@@ -192,11 +199,12 @@ public sealed class TurtleQuadEmitter
                                 yield return q;
                             }
 
-                            Quad annotationQuad = new(currentReifier, innerPredicate, innerObjectTerm, graph);
+                            Quad annotationQuad = new(blockReifier, innerPredicate, innerObjectTerm, graph);
                             yield return new EmittedQuad(annotationQuad, new DocumentNodeRef(document.DocumentId, innerObject.NodeId));
                         }
                     }
 
+                    pendingReifier = null;
                     break;
                 }
 
@@ -366,11 +374,9 @@ public sealed class TurtleQuadEmitter
         AppendTo(sink, subjAux);
         AppendTo(sink, objAux);
 
-        //Per RDF 1.2 the reified triple is asserted as a triple AND a reification.
-        sink.Add(new EmittedQuad(
-            new Quad(subject, predicate, objectTerm, graph),
-            new DocumentNodeRef(document.DocumentId, reified.NodeId)));
-
+        //A reified triple <<s p o>> yields only the reifier and the reification
+        //"reifier rdf:reifies <<( s p o )>>"; it does not assert the inner triple. The inner
+        //triple is asserted only when written as a plain statement (optionally annotated).
         RdfTerm reifier = reified.Reifier is null
             ? AllocateBlankNode()
             : ResolveTermAsSimple(reified.Reifier);

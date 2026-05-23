@@ -81,25 +81,32 @@ internal sealed class TurtleQuadEmitterTests
     }
 
     [TestMethod]
-    public void EmitReifiedTripleProducesAssertedAndReification()
+    public void EmitReifiedTripleProducesReificationWithoutAssertingInnerTriple()
     {
         string turtle = "<http://example.org/s> <http://example.org/p> << <http://example.org/a> <http://example.org/b> <http://example.org/c> >> .";
         List<EmittedQuad> quads = EmitAll(turtle, TurtleSyntax.Turtle);
 
-        //Asserted inner triple + reifies link + main triple binding subject/predicate to the reifier (3 quads).
-        Assert.HasCount(3, quads);
+        //A reified triple as an object yields the main statement (s p reifier) and the
+        //reification (reifier rdf:reifies <<( a b c )>>); the inner triple is not asserted.
+        Assert.HasCount(2, quads);
 
         bool sawReifies = false;
+        bool sawInnerAssertion = false;
         foreach(EmittedQuad q in quads)
         {
             if(q.Quad.Predicate.Iri.ToString() == "http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies")
             {
                 sawReifies = true;
-                break;
+            }
+
+            if(q.Quad.Predicate.Iri.ToString() == "http://example.org/b")
+            {
+                sawInnerAssertion = true;
             }
         }
 
         Assert.IsTrue(sawReifies);
+        Assert.IsFalse(sawInnerAssertion, "The inner triple of a reified triple must not be asserted.");
     }
 
     [TestMethod]
@@ -140,6 +147,76 @@ internal sealed class TurtleQuadEmitterTests
         List<EmittedQuad> quads = EmitAll(turtle, TurtleSyntax.Turtle);
 
         Assert.IsNotNull(quads[0].Source);
+    }
+
+    [TestMethod]
+    public void EmitsReificationForReifiedTripleWithIriReifier()
+    {
+        string turtle = "<http://example.org/s> <http://example.org/p> << <http://example.org/a> <http://example.org/b> <http://example.org/c> ~ <http://example.org/r> >> .";
+        List<EmittedQuad> quads = EmitAll(turtle, TurtleSyntax.Turtle);
+
+        EmittedQuad reification = FindReifies(quads);
+        Assert.AreEqual("http://example.org/r", ((NamedNode)reification.Quad.Subject).Iri.ToString());
+        Assert.IsInstanceOfType<TripleTerm>(reification.Quad.Object);
+    }
+
+    [TestMethod]
+    public void EmitsReificationForReifiedTripleWithBlankNodeReifier()
+    {
+        string turtle = "<http://example.org/s> <http://example.org/p> << <http://example.org/a> <http://example.org/b> <http://example.org/c> ~ _:r >> .";
+        List<EmittedQuad> quads = EmitAll(turtle, TurtleSyntax.Turtle);
+
+        EmittedQuad reification = FindReifies(quads);
+        Assert.AreEqual("r", ((BlankNode)reification.Quad.Subject).Label.ToString());
+    }
+
+    [TestMethod]
+    public void AllocatesFreshBlankNodeForBareReifier()
+    {
+        string turtle = "<http://example.org/s> <http://example.org/p> <http://example.org/o> ~ .";
+        List<EmittedQuad> quads = EmitAll(turtle, TurtleSyntax.Turtle);
+
+        EmittedQuad reification = FindReifies(quads);
+        Assert.IsInstanceOfType<BlankNode>(reification.Quad.Subject);
+    }
+
+    [TestMethod]
+    public void DoesNotEmitReificationForTripleTermSyntax()
+    {
+        string turtle = "<http://example.org/s> <http://example.org/p> <<( <http://example.org/a> <http://example.org/b> <http://example.org/c> )>> .";
+        List<EmittedQuad> quads = EmitAll(turtle, TurtleSyntax.Turtle);
+
+        Assert.HasCount(1, quads);
+        Assert.IsInstanceOfType<TripleTerm>(quads[0].Quad.Object);
+        foreach(EmittedQuad q in quads)
+        {
+            Assert.AreNotEqual("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies", q.Quad.Predicate.Iri.ToString());
+        }
+    }
+
+    [TestMethod]
+    public void HandlesMultipleAnnotationBlocks()
+    {
+        string turtle = "<http://example.org/s> <http://example.org/p> <http://example.org/o> {| <http://example.org/m1> <http://example.org/v1> |} {| <http://example.org/m2> <http://example.org/v2> |} .";
+        List<EmittedQuad> quads = EmitAll(turtle, TurtleSyntax.Turtle);
+
+        //Main triple + two reifications + two annotation predicates.
+        Assert.HasCount(5, quads);
+    }
+
+    private static EmittedQuad FindReifies(List<EmittedQuad> quads)
+    {
+        foreach(EmittedQuad q in quads)
+        {
+            if(q.Quad.Predicate.Iri.ToString() == "http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies")
+            {
+                return q;
+            }
+        }
+
+        Assert.Fail("No rdf:reifies quad was emitted.");
+
+        return default!;
     }
 
     private static List<EmittedQuad> EmitAll(string source, TurtleSyntax syntax)

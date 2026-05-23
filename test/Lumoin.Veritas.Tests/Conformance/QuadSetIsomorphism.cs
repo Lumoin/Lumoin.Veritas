@@ -36,13 +36,26 @@ internal static class QuadSetIsomorphism
         ArgumentNullException.ThrowIfNull(left);
         ArgumentNullException.ThrowIfNull(right);
 
-        if(left.Count != right.Count)
-        {
-            return false;
-        }
-
+        //An RDF graph is a set of triples, so the comparison is over the set of canonical
+        //statement lines: a triple repeated in one side but present once in the other still
+        //denotes the same graph. Canonicalization assigns deterministic blank-node labels, so
+        //identical triples produce identical canonical lines on both sides.
         string leftCanonical = RdfCanonicalizer.Canonicalize(left, SHA256.HashData);
         string rightCanonical = RdfCanonicalizer.Canonicalize(right, SHA256.HashData);
-        return string.Equals(leftCanonical, rightCanonical, StringComparison.Ordinal);
+        return CanonicalLineSet(leftCanonical).SetEquals(CanonicalLineSet(rightCanonical));
+    }
+
+    private static HashSet<string> CanonicalLineSet(string canonical)
+    {
+        HashSet<string> lines = new(StringComparer.Ordinal);
+        foreach(string line in canonical.Split('\n'))
+        {
+            if(line.Length > 0)
+            {
+                lines.Add(line);
+            }
+        }
+
+        return lines;
     }
 }
