@@ -903,6 +903,7 @@ public sealed class TurtleLexer
         if(position < source.Length && source[position] == (byte)':')
         {
             AdvanceByte((byte)':');
+
             return LexPrefixedNameOrNamespace(source, startByte, startLine, startColumn);
         }
 
@@ -966,6 +967,7 @@ public sealed class TurtleLexer
         int startColumn)
     {
         AdvanceByte((byte)':');
+
         return LexPrefixedNameOrNamespace(source, startByte, startLine, startColumn);
     }
 
@@ -1299,22 +1301,26 @@ public sealed class TurtleLexer
         if(b >= (byte)'0' && b <= (byte)'9')
         {
             value = (uint)(b - (byte)'0');
+
             return true;
         }
 
         if(b >= (byte)'a' && b <= (byte)'f')
         {
             value = (uint)(b - (byte)'a' + 10);
+
             return true;
         }
 
         if(b >= (byte)'A' && b <= (byte)'F')
         {
             value = (uint)(b - (byte)'A' + 10);
+
             return true;
         }
 
         value = 0;
+
         return false;
     }
 

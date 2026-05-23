@@ -589,6 +589,7 @@ public sealed class TurtleQuadEmitter
 
         baseBytes.CopyTo(buffer);
         bytes.CopyTo(buffer[baseBytes.Length..]);
+
         return Pool.Intern(buffer);
     }
 
@@ -610,6 +611,7 @@ public sealed class TurtleQuadEmitter
 
         nsBytes.CopyTo(buffer);
         localBytes.CopyTo(buffer[nsBytes.Length..]);
+
         return Pool.Intern(buffer);
     }
 
@@ -641,6 +643,7 @@ public sealed class TurtleQuadEmitter
     {
         string label = string.Create(CultureInfo.InvariantCulture, $"g{nextEmitterBlankNode}");
         nextEmitterBlankNode++;
+
         return new BlankNode(Pool.Intern(label));
     }
 }

@@ -66,6 +66,7 @@ internal static class NQuadsSerializer
         }
 
         sb.Append(" .\n");
+
         return sb.ToString();
     }
 
@@ -76,6 +77,7 @@ internal static class NQuadsSerializer
     {
         StringBuilder sb = new();
         AppendTerm(sb, term, blankNodeMap);
+
         return sb.ToString();
     }
 

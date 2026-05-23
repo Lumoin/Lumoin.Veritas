@@ -319,6 +319,7 @@ public static class RdfCanonicalizer
 
         string joined = string.Concat(nquads);
         byte[] hashBytes = hash(Encoding.UTF8.GetBytes(joined));
+
         return Convert.ToHexString(hashBytes).ToLowerInvariant();
     }
 
@@ -329,6 +330,7 @@ public static class RdfCanonicalizer
     private static string SerializeForFirstDegree(Quad quad, string referenceBlankId)
     {
         Dictionary<string, string> placeholderMap = BuildPlaceholderMap(quad, referenceBlankId);
+
         return NQuadsSerializer.SerializeQuad(quad, placeholderMap);
     }
 
@@ -467,6 +469,7 @@ public static class RdfCanonicalizer
         }
 
         byte[] hashBytes = hash(Encoding.UTF8.GetBytes(dataToHash.ToString()));
+
         return Convert.ToHexString(hashBytes).ToLowerInvariant();
     }
 
@@ -556,6 +559,7 @@ public static class RdfCanonicalizer
         string input = $"{position}{predicate}{identifier}";
 
         byte[] hashBytes = hash(Encoding.UTF8.GetBytes(input));
+
         return Convert.ToHexString(hashBytes).ToLowerInvariant();
     }
 

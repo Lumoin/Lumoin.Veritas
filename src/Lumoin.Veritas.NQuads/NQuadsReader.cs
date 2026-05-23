@@ -81,6 +81,7 @@ public static class NQuadsReader
         CancellationToken cancellationToken = default)
     {
         MemoryStream stream = new(nquads.ToArray(), writable: false);
+
         return ParseAsync(stream, pool, cancellationToken);
     }
 
@@ -161,6 +162,7 @@ public static class NQuadsReader
         CancellationToken cancellationToken = default)
     {
         MemoryStream stream = new(nquads.ToArray(), writable: false);
+
         return ParseWithSourceAsync(stream, documentId, pool, cancellationToken);
     }
 
@@ -198,6 +200,7 @@ public static class NQuadsReader
                 }
 
                 Quad quad = ParseLine(trimmed, pool, lineNumber);
+
                 yield return quad;
             }
         }
@@ -247,6 +250,7 @@ public static class NQuadsReader
                 DocumentNodeRef nodeRef = new(documentId, nodeIndex);
                 EmittedQuad emitted = new(quad, nodeRef);
                 nodeIndex++;
+
                 yield return emitted;
             }
         }
@@ -594,6 +598,7 @@ public static class NQuadsReader
         }
 
         Utf8String label = pool.Intern(line[start..pos]);
+
         return new BlankNode(label);
     }
 
@@ -668,6 +673,7 @@ public static class NQuadsReader
             {
                 //Plain literal: implicitly xsd:string.
                 NamedNode xsdString = new(pool.Intern(Vocabulary.Xsd.String.Span));
+
                 return new Literal(value, xsdString);
             }
         }
@@ -717,10 +723,12 @@ public static class NQuadsReader
         if(direction is { } resolvedDirection)
         {
             NamedNode dirLangStringType = new(pool.Intern(Vocabulary.Rdf.DirLangString.Span));
+
             return new Literal(value, dirLangStringType, language, resolvedDirection);
         }
 
         NamedNode langStringType = new(pool.Intern(Vocabulary.Rdf.LangString.Span));
+
         return new Literal(value, langStringType, language);
     }
 

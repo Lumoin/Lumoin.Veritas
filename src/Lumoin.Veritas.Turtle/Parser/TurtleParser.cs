@@ -173,6 +173,7 @@ public sealed class TurtleParser
     private TurtleToken Peek(int offset)
     {
         int target = index + offset;
+
         return target < Tokens.Count
             ? Tokens[target]
             : Tokens[^1];
@@ -221,6 +222,7 @@ public sealed class TurtleParser
         }
 
         SourceSpan totalSpan = CombineSpans(startSpan, endSpan);
+
         return NewNode(id => new PrefixDeclaration(id, totalSpan, prefixText, iri));
     }
 
@@ -251,6 +253,7 @@ public sealed class TurtleParser
         }
 
         SourceSpan totalSpan = CombineSpans(startSpan, endSpan);
+
         return NewNode(id => new BaseDeclaration(id, totalSpan, iri));
     }
 
@@ -288,6 +291,7 @@ public sealed class TurtleParser
         }
 
         SourceSpan totalSpan = CombineSpans(startSpan, endSpan);
+
         return NewNode(id => new VersionDeclaration(id, totalSpan, versionValue));
     }
 
@@ -297,6 +301,7 @@ public sealed class TurtleParser
         Advance();
 
         Term label = ConsumeLeafTermFor("graph label");
+
         return ParseGraphBlockBody(startSpan, label, hasKeyword: true);
     }
 
@@ -339,6 +344,7 @@ public sealed class TurtleParser
         Advance();
 
         SourceSpan totalSpan = CombineSpans(startSpan, endSpan);
+
         return NewNode(id => new GraphBlockStatement(id, totalSpan, label, hasKeyword, inner.ToImmutable()));
     }
 
@@ -350,6 +356,7 @@ public sealed class TurtleParser
         if(Syntax == TurtleSyntax.TriG && IsGraphLabelLookahead())
         {
             Term label = ConsumeLeafTermFor("graph label");
+
             return ParseGraphBlockBody(startSpan, label, hasKeyword: false);
         }
 
@@ -417,6 +424,7 @@ public sealed class TurtleParser
         Advance();
 
         SourceSpan total = CombineSpans(startSpan, periodSpan);
+
         return NewNode(id => new TripleStatement(id, total, subject, predicates));
     }
 
@@ -438,6 +446,7 @@ public sealed class TurtleParser
     private ImmutableArray<PredicateObject> ParsePredicateObjectList()
     {
         object result = ParseWithStack(ParseFrameKind.PredicateObjectList);
+
         return (ImmutableArray<PredicateObject>)result;
     }
 
@@ -571,6 +580,7 @@ public sealed class TurtleParser
             {
                 ParseFrame next = new() { Kind = ParseFrameKind.Collection, StartSpan = Current.Span, TermItems = [] };
                 Advance();
+
                 return StepResult.Push(next);
             }
 
@@ -578,6 +588,7 @@ public sealed class TurtleParser
             {
                 ParseFrame next = new() { Kind = ParseFrameKind.BlankNodePropertyList, StartSpan = Current.Span, PredicateObjects = [] };
                 Advance();
+
                 return StepResult.Push(next);
             }
 
@@ -585,6 +596,7 @@ public sealed class TurtleParser
             {
                 ParseFrame next = new() { Kind = ParseFrameKind.TripleTerm, StartSpan = Current.Span, Stage = 0 };
                 Advance();
+
                 return StepResult.Push(next);
             }
 
@@ -592,6 +604,7 @@ public sealed class TurtleParser
             {
                 ParseFrame next = new() { Kind = ParseFrameKind.ReifiedTriple, StartSpan = Current.Span, Stage = 0 };
                 Advance();
+
                 return StepResult.Push(next);
             }
 
@@ -617,6 +630,7 @@ public sealed class TurtleParser
             ImmutableArray<Term> items = ToImmutable(frame.TermItems!);
 
             Term built = NewNode(id => new CollectionTerm(id, totalSpan, items));
+
             return StepResult.Done(built);
         }
 
@@ -646,6 +660,7 @@ public sealed class TurtleParser
                 }
 
                 frame.Stage = 1;
+
                 return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PredicateObject, StartSpan = Current.Span });
             }
 
@@ -685,6 +700,7 @@ public sealed class TurtleParser
         ImmutableArray<PredicateObject> predicates = ToImmutable(frame.PredicateObjects!);
 
         Term built = NewNode(id => new BlankNodePropertyListTerm(id, totalSpan, predicates));
+
         return StepResult.Done(built);
     }
 
@@ -695,6 +711,7 @@ public sealed class TurtleParser
             case 0:
             {
                 frame.Stage = 1;
+
                 return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Term, StartSpan = Current.Span });
             }
 
@@ -705,6 +722,7 @@ public sealed class TurtleParser
                 Term predicate = ParsePredicateLeaf();
                 frame.Predicate = predicate;
                 frame.Stage = 2;
+
                 return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Term, StartSpan = Current.Span });
             }
 
@@ -725,6 +743,7 @@ public sealed class TurtleParser
                 Term predicate = frame.Predicate!;
                 Term obj = frame.Object!;
                 Term built = NewNode(id => new TripleTermTerm(id, totalSpan, subject, predicate, obj));
+
                 return StepResult.Done(built);
             }
 
@@ -742,6 +761,7 @@ public sealed class TurtleParser
             case 0:
             {
                 frame.Stage = 1;
+
                 return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Term, StartSpan = Current.Span });
             }
 
@@ -752,6 +772,7 @@ public sealed class TurtleParser
                 Term predicate = ParsePredicateLeaf();
                 frame.Predicate = predicate;
                 frame.Stage = 2;
+
                 return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Term, StartSpan = Current.Span });
             }
 
@@ -783,6 +804,7 @@ public sealed class TurtleParser
                 Term obj = frame.Object!;
                 Term? reifier = frame.Reifier;
                 Term built = NewNode(id => new ReifiedTripleTerm(id, totalSpan, subject, predicate, obj, reifier));
+
                 return StepResult.Done(built);
             }
 
@@ -807,6 +829,7 @@ public sealed class TurtleParser
             {
                 frame.PredicateObjects ??= [];
                 frame.Stage = 1;
+
                 return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PredicateObject, StartSpan = Current.Span });
             }
 
@@ -842,6 +865,7 @@ public sealed class TurtleParser
                 Term predicate = ParsePredicateLeaf();
                 frame.Predicate = predicate;
                 frame.Stage = 1;
+
                 return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.ObjectList, StartSpan = Current.Span });
             }
 
@@ -852,6 +876,7 @@ public sealed class TurtleParser
                 SourceSpan totalSpan = CombineSpans(frame.StartSpan, endSpan);
                 Term predicate = frame.Predicate!;
                 PredicateObject built = NewNode(id => new PredicateObject(id, totalSpan, predicate, objects));
+
                 return StepResult.Done(built);
             }
 
@@ -876,6 +901,7 @@ public sealed class TurtleParser
             {
                 frame.AnnotatedObjects ??= [];
                 frame.Stage = 1;
+
                 return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.AnnotatedObject, StartSpan = Current.Span });
             }
 
@@ -884,6 +910,7 @@ public sealed class TurtleParser
                 if(Current.Kind == TurtleTokenKind.Comma)
                 {
                     Advance();
+
                     return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.AnnotatedObject, StartSpan = Current.Span });
                 }
 
@@ -916,6 +943,7 @@ public sealed class TurtleParser
             {
                 frame.Annotations ??= [];
                 frame.Stage = 1;
+
                 return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Term, StartSpan = Current.Span });
             }
 
@@ -939,6 +967,7 @@ public sealed class TurtleParser
                 SourceSpan endSpan = annotations.Length > 0 ? annotations[^1].Span : obj.Span;
                 SourceSpan totalSpan = CombineSpans(obj.Span, endSpan);
                 AnnotatedObject built = NewNode(id => new AnnotatedObject(id, totalSpan, obj, annotations));
+
                 return StepResult.Done(built);
             }
 
@@ -1009,6 +1038,7 @@ public sealed class TurtleParser
         ImmutableArray<PredicateObject> predicates = ToImmutable(frame.PredicateObjects!);
 
         Annotation built = NewNode(id => new AnnotationBlock(id, totalSpan, predicates));
+
         return StepResult.Done(built);
     }
 
@@ -1027,6 +1057,7 @@ public sealed class TurtleParser
         SourceSpan endSpan = identifier?.Span ?? frame.StartSpan;
         SourceSpan totalSpan = CombineSpans(frame.StartSpan, endSpan);
         Annotation built = NewNode(id => new ReifierAnnotation(id, totalSpan, identifier));
+
         return StepResult.Done(built);
     }
 
@@ -1112,6 +1143,7 @@ public sealed class TurtleParser
         SourceSpan span = Current.Span;
         Utf8String rdfType = Pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"u8);
         Advance();
+
         return NewNode(id => new IriTerm(id, span, rdfType));
     }
 
@@ -1120,6 +1152,7 @@ public sealed class TurtleParser
         SourceSpan span = Current.Span;
         Utf8String value = Current.Value;
         Advance();
+
         return NewNode(id => new IriTerm(id, span, value));
     }
 
@@ -1157,6 +1190,7 @@ public sealed class TurtleParser
         Advance();
 
         Utf8String label = AllocateSyntheticBlankNodeLabel();
+
         return NewNode(id => new BlankNodeTerm(id, span, label));
     }
 
@@ -1239,6 +1273,7 @@ public sealed class TurtleParser
         }
 
         SourceSpan totalSpan = CombineSpans(startSpan, endSpan);
+
         return NewNode(id => new LiteralTerm(id, totalSpan, value, datatype, language, direction));
     }
 
@@ -1274,6 +1309,7 @@ public sealed class TurtleParser
         };
 
         Term datatype = NewNode(id => new IriTerm(id, span, datatypeIri));
+
         return NewNode(id => new LiteralTerm(id, span, text, datatype, language: null, direction: null));
     }
 
@@ -1285,6 +1321,7 @@ public sealed class TurtleParser
 
         Utf8String datatypeIri = Pool.Intern("http://www.w3.org/2001/XMLSchema#boolean"u8);
         Term datatype = NewNode(id => new IriTerm(id, span, datatypeIri));
+
         return NewNode(id => new LiteralTerm(id, span, text, datatype, language: null, direction: null));
     }
 
@@ -1292,6 +1329,7 @@ public sealed class TurtleParser
     {
         string raw = string.Create(CultureInfo.InvariantCulture, $"b{nextSyntheticBlankNode}");
         nextSyntheticBlankNode++;
+
         return Pool.Intern(raw);
     }
 
@@ -1301,6 +1339,7 @@ public sealed class TurtleParser
         int id = nextNodeId++;
         TNode node = factory(id);
         Nodes[id] = node;
+
         return node;
     }
 
