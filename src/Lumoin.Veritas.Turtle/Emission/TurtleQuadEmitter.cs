@@ -178,8 +178,10 @@ public sealed class TurtleQuadEmitter
                             : ResolveTermAsSimple(reifier.Identifier);
 
                         Quad reificationQuad = new(resolvedReifier, reifies, tripleTerm, graph);
+
                         yield return new EmittedQuad(reificationQuad, new DocumentNodeRef(document.DocumentId, reifier.NodeId));
                         pendingReifier = resolvedReifier;
+
                         break;
                     }
 
@@ -194,6 +196,7 @@ public sealed class TurtleQuadEmitter
                         {
                             blockReifier = AllocateBlankNode();
                             Quad reificationQuad = new(blockReifier, reifies, tripleTerm, graph);
+
                             yield return new EmittedQuad(reificationQuad, new DocumentNodeRef(document.DocumentId, block.NodeId));
                         }
 
@@ -209,6 +212,7 @@ public sealed class TurtleQuadEmitter
                                 }
 
                                 Quad annotationQuad = new(blockReifier, innerPredicate, innerObjectTerm, graph);
+
                                 yield return new EmittedQuad(annotationQuad, new DocumentNodeRef(document.DocumentId, innerObject.NodeId));
 
                                 //An annotation nested on an object within the block annotates the
@@ -221,6 +225,7 @@ public sealed class TurtleQuadEmitter
                         }
 
                         pendingReifier = null;
+
                         break;
                     }
 
