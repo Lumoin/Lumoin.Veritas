@@ -1,20 +1,46 @@
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text;
 using Lumoin.Veritas.Core;
 
 namespace Lumoin.Veritas.Canonicalization;
 
 /// <summary>
-/// Serializes RDF terms to N-Quads canonical form for use within the RDFC-1.0 algorithm.
+/// Serializes RDF terms to canonical N-Quads form for use within the RDFC-1.0 algorithm.
 /// </summary>
 /// <remarks>
+/// <para>
 /// This is a self-contained serializer used internally by <see cref="RdfCanonicalizer"/>.
 /// It operates on <see cref="string"/> rather than <see cref="Utf8String"/> because the
 /// canonicalization algorithm works with string-form blank node identifiers that may be
 /// rewritten during processing.
+/// </para>
+/// <para>
+/// The output follows the canonical N-Triples / N-Quads rules: literal lexical forms use
+/// the <c>ECHAR</c> named escapes for backspace, tab, line feed, form feed, carriage return,
+/// double quote, and backslash; other characters below <c>U+0020</c> plus the delete
+/// character use a <c>UCHAR</c> escape with uppercase hexadecimal digits; all other
+/// characters (printable ASCII and every non-ASCII code point) pass through unescaped.
+/// Language tags are lower-cased, the implicit <c>xsd:string</c> datatype is omitted, and
+/// triple terms render in the <c>&lt;&lt;( s p o )&gt;&gt;</c> form with single-space separators.
+/// </para>
 /// </remarks>
 internal static class NQuadsSerializer
 {
+    private const string XsdStringIri = "http://www.w3.org/2001/XMLSchema#string";
+
+    //Named control characters. The BCL has no char constants for these (the runtime exposes
+    //escape sequences in C# source — '\b', '\t', '\n', '\f', '\r' — but no named char values
+    //for the backspace, vertical-tab, or delete code points), so the canonical escaping rules
+    //are spelled out here against named constants rather than bare hexadecimal literals.
+    private const char Backspace = '\b';
+    private const char CharacterTabulation = '\t';
+    private const char LineFeed = '\n';
+    private const char FormFeed = '\f';
+    private const char CarriageReturn = '\r';
+    private const char Space = ' ';
+    private const char Delete = '\u007F';
+
     /// <summary>
     /// Serializes a quad to its canonical N-Quads line, using the given blank node
     /// identifier mapping to replace blank node labels.
@@ -65,6 +91,7 @@ internal static class NQuadsSerializer
 
                 break;
             }
+
             case BlankNode blankNode:
             {
                 string label = blankNode.Label.ToString();
@@ -74,13 +101,37 @@ internal static class NQuadsSerializer
 
                 break;
             }
+
             case Literal literal:
             {
                 AppendLiteral(sb, literal);
 
                 break;
             }
+
+            case TripleTerm tripleTerm:
+            {
+                AppendTripleTerm(sb, tripleTerm, blankNodeMap);
+
+                break;
+            }
+
+            default:
+            {
+                break;
+            }
         }
+    }
+
+    private static void AppendTripleTerm(StringBuilder sb, TripleTerm tripleTerm, IReadOnlyDictionary<string, string> blankNodeMap)
+    {
+        sb.Append("<<( ");
+        AppendTerm(sb, tripleTerm.Subject, blankNodeMap);
+        sb.Append(' ');
+        AppendNamedNode(sb, tripleTerm.Predicate);
+        sb.Append(' ');
+        AppendTerm(sb, tripleTerm.Object, blankNodeMap);
+        sb.Append(" )>>");
     }
 
     private static void AppendNamedNode(StringBuilder sb, NamedNode node)
@@ -93,18 +144,47 @@ internal static class NQuadsSerializer
     private static void AppendLiteral(StringBuilder sb, Literal literal)
     {
         sb.Append('"');
-        AppendEscapedString(sb, literal.Value.ToString());
+        AppendCanonicalString(sb, literal.Value.ToString());
+        sb.Append('"');
 
         if(literal.Language is { } lang)
         {
-            sb.Append("\"@");
-            sb.Append(lang.ToString());
+            sb.Append('@');
+            AppendLowercaseAscii(sb, lang.ToString());
+
+            if(literal.BaseDirection is { } direction)
+            {
+                sb.Append("--");
+                sb.Append(direction == TextDirection.Ltr ? "ltr" : "rtl");
+            }
+
+            return;
         }
-        else
+
+        string datatypeIri = literal.Datatype.Iri.ToString();
+        if(string.Equals(datatypeIri, XsdStringIri, System.StringComparison.Ordinal))
         {
-            sb.Append("\"^^<");
-            AppendEscapedIri(sb, literal.Datatype.Iri.ToString());
-            sb.Append('>');
+            //The implicit datatype of a plain literal is xsd:string; canonical form omits it.
+            return;
+        }
+
+        sb.Append("^^<");
+        AppendEscapedIri(sb, datatypeIri);
+        sb.Append('>');
+    }
+
+    private static void AppendLowercaseAscii(StringBuilder sb, string value)
+    {
+        foreach(char c in value)
+        {
+            if(c is >= 'A' and <= 'Z')
+            {
+                sb.Append((char)(c + ('a' - 'A')));
+            }
+            else
+            {
+                sb.Append(c);
+            }
         }
     }
 
@@ -115,7 +195,7 @@ internal static class NQuadsSerializer
         {
             if(c < 0x20 || c == '\\')
             {
-                sb.Append(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"\\u{(int)c:X4}"));
+                sb.Append(string.Create(CultureInfo.InvariantCulture, $"\\u{(int)c:X4}"));
             }
             else
             {
@@ -124,19 +204,84 @@ internal static class NQuadsSerializer
         }
     }
 
-    private static void AppendEscapedString(StringBuilder sb, string value)
+    private static void AppendCanonicalString(StringBuilder sb, string value)
     {
         foreach(char c in value)
         {
             switch(c)
             {
-                case '\t': sb.Append("\\t"); break;
-                case '\n': sb.Append("\\n"); break;
-                case '\r': sb.Append("\\r"); break;
-                case '"': sb.Append("\\\""); break;
-                case '\\': sb.Append("\\\\"); break;
-                default: sb.Append(c); break;
+                case Backspace:
+                {
+                    sb.Append("\\b");
+
+                    break;
+                }
+
+                case CharacterTabulation:
+                {
+                    sb.Append("\\t");
+
+                    break;
+                }
+
+                case LineFeed:
+                {
+                    sb.Append("\\n");
+
+                    break;
+                }
+
+                case FormFeed:
+                {
+                    sb.Append("\\f");
+
+                    break;
+                }
+
+                case CarriageReturn:
+                {
+                    sb.Append("\\r");
+
+                    break;
+                }
+
+                case '"':
+                {
+                    sb.Append("\\\"");
+
+                    break;
+                }
+
+                case '\\':
+                {
+                    sb.Append("\\\\");
+
+                    break;
+                }
+
+                default:
+                {
+                    if(RequiresUnicodeEscape(c))
+                    {
+                        sb.Append(string.Create(CultureInfo.InvariantCulture, $"\\u{(int)c:X4}"));
+                    }
+                    else
+                    {
+                        sb.Append(c);
+                    }
+
+                    break;
+                }
             }
         }
+    }
+
+    private static bool RequiresUnicodeEscape(char c)
+    {
+        //The canonical form escapes every C0 control (below U+0020) and the DEL character via UCHAR
+        //when no shorter ECHAR named escape applies. C1 controls (U+0080..U+009F) are not escaped —
+        //they pass through as their UTF-8 encoding — so char.IsControl, which also matches the C1
+        //range, would be too broad here.
+        return c < Space || c == Delete;
     }
 }

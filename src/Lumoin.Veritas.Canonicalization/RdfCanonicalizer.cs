@@ -542,4 +542,35 @@ public static class RdfCanonicalizer
 
         return string.Concat(lines);
     }
+
+    /// <summary>
+    /// Serializes quads to canonical N-Triples / N-Quads lexical form in
+    /// document order, applying the same per-term escaping, language-tag
+    /// lower-casing, and triple-term rendering as <see cref="Canonicalize"/>,
+    /// but without the dataset-level line reordering or blank-node
+    /// relabelling.
+    /// </summary>
+    /// <remarks>
+    /// This matches the per-statement canonical form the W3C N-Triples and
+    /// N-Quads canonicalization tests expect: those tests canonicalize the
+    /// lexical representation of each statement while preserving document
+    /// order, which is distinct from the RDFC-1.0 dataset canonicalization
+    /// <see cref="Canonicalize"/> performs (sorted lines, canonical
+    /// blank-node identifiers). Blank-node labels pass through unchanged.
+    /// </remarks>
+    /// <param name="quads">The quads to serialize, in the order to emit them.</param>
+    /// <returns>The concatenated canonical statement lines, each ending with <c> .\n</c>.</returns>
+    public static string SerializeStatements(IEnumerable<Quad> quads)
+    {
+        ArgumentNullException.ThrowIfNull(quads);
+
+        Dictionary<string, string> emptyMap = [];
+        StringBuilder builder = new();
+        foreach(Quad quad in quads)
+        {
+            builder.Append(NQuadsSerializer.SerializeQuad(quad, emptyMap));
+        }
+
+        return builder.ToString();
+    }
 }

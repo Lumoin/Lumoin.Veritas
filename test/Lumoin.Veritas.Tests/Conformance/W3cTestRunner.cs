@@ -225,7 +225,10 @@ internal static class W3cTestRunner
         string actualCanonical;
         try
         {
-            actualCanonical = RdfCanonicalizer.Canonicalize(parsed, SHA256.HashData);
+            //N-Triples / N-Quads canonicalization is per-statement lexical canonicalization in
+            //document order, distinct from the RDFC-1.0 dataset canonicalization that sorts lines
+            //and relabels blank nodes.
+            actualCanonical = RdfCanonicalizer.SerializeStatements(parsed);
         }
         catch(Exception ex) when(ex is not OperationCanceledException)
         {
