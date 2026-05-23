@@ -206,9 +206,12 @@ internal static class NQuadsSerializer
 
     private static void AppendCanonicalString(StringBuilder sb, string value)
     {
-        foreach(char c in value)
+        //Iterate by Unicode scalar value so noncharacters above the basic multilingual plane,
+        //which are surrogate pairs in UTF-16, are recognised as single code points.
+        foreach(System.Text.Rune rune in value.EnumerateRunes())
         {
-            switch(c)
+            int codePoint = rune.Value;
+            switch(codePoint)
             {
                 case Backspace:
                 {
@@ -261,14 +264,7 @@ internal static class NQuadsSerializer
 
                 default:
                 {
-                    if(RequiresUnicodeEscape(c))
-                    {
-                        sb.Append(string.Create(CultureInfo.InvariantCulture, $"\\u{(int)c:X4}"));
-                    }
-                    else
-                    {
-                        sb.Append(c);
-                    }
+                    AppendCodePoint(sb, codePoint);
 
                     break;
                 }
@@ -276,12 +272,52 @@ internal static class NQuadsSerializer
         }
     }
 
-    private static bool RequiresUnicodeEscape(char c)
+    private static void AppendCodePoint(StringBuilder sb, int codePoint)
     {
-        //The canonical form escapes every C0 control (below U+0020) and the DEL character via UCHAR
-        //when no shorter ECHAR named escape applies. C1 controls (U+0080..U+009F) are not escaped —
-        //they pass through as their UTF-8 encoding — so char.IsControl, which also matches the C1
-        //range, would be too broad here.
-        return c < Space || c == Delete;
+        if(!RequiresUnicodeEscape(codePoint))
+        {
+            sb.Append(new System.Text.Rune(codePoint).ToString());
+
+            return;
+        }
+
+        //Code points within the basic multilingual plane use the four-digit \u form; those above
+        //it use the eight-digit \U form. Hexadecimal digits are uppercase.
+        if(codePoint <= 0xFFFF)
+        {
+            sb.Append(string.Create(CultureInfo.InvariantCulture, $"\\u{codePoint:X4}"));
+
+            return;
+        }
+
+        sb.Append(string.Create(CultureInfo.InvariantCulture, $"\\U{codePoint:X8}"));
+    }
+
+    private static bool RequiresUnicodeEscape(int codePoint)
+    {
+        //The canonical form escapes every C0 control (below U+0020), the DEL character, and the
+        //Unicode noncharacters via UCHAR when no shorter ECHAR named escape applies. C1 controls
+        //(U+0080..U+009F) are not escaped — they pass through as their UTF-8 encoding — so
+        //char.IsControl, which also matches the C1 range, would be too broad here.
+        return codePoint < Space || codePoint == Delete || IsUnicodeNoncharacter(codePoint);
+    }
+
+    private static bool IsUnicodeNoncharacter(int codePoint)
+    {
+        //The 32 basic-multilingual-plane noncharacters U+FDD0..U+FDEF.
+        if(codePoint is >= 0xFDD0 and <= 0xFDEF)
+        {
+            return true;
+        }
+
+        //The last two code points of every plane, U+xxFFFE and U+xxFFFF, for planes 0 through 16.
+        int planeOffset = codePoint & 0xFFFF;
+        if(planeOffset is 0xFFFE or 0xFFFF)
+        {
+            int plane = codePoint >> 16;
+            return plane <= 0x10;
+        }
+
+        return false;
     }
 }

@@ -189,6 +189,66 @@ internal sealed class RdfCanonicalEscapingTests
         Assert.IsTrue(line.EndsWith(" .\n", StringComparison.Ordinal), line);
     }
 
+    [TestMethod]
+    public void EscapesBmpNoncharacterUfffe()
+    {
+        string line = CanonicalizeLiteral(char.ConvertFromUtf32(0xFFFE), XsdString);
+
+        Assert.Contains("\\uFFFE", line, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void EscapesBmpNoncharacterUffff()
+    {
+        string line = CanonicalizeLiteral(char.ConvertFromUtf32(0xFFFF), XsdString);
+
+        Assert.Contains("\\uFFFF", line, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void EscapesArabicFormNoncharacterFdd0()
+    {
+        string line = CanonicalizeLiteral(char.ConvertFromUtf32(0xFDD0), XsdString);
+
+        Assert.Contains("\\uFDD0", line, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void EscapesAstralNoncharacterWithLongForm()
+    {
+        string line = CanonicalizeLiteral(char.ConvertFromUtf32(0x1FFFE), XsdString);
+
+        Assert.Contains("\\U0001FFFE", line, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void PreservesCodePointJustBelowNoncharacterBoundary()
+    {
+        //U+FDCF is the scalar value immediately below the U+FDD0 noncharacter block.
+        string line = CanonicalizeLiteral(char.ConvertFromUtf32(0xFDCF), XsdString);
+
+        Assert.DoesNotContain("\\uFDCF", line, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void PreservesCodePointJustAboveNoncharacterBoundary()
+    {
+        //U+FDF0 is the scalar value immediately above the U+FDEF noncharacter block.
+        string line = CanonicalizeLiteral(char.ConvertFromUtf32(0xFDF0), XsdString);
+
+        Assert.DoesNotContain("\\uFDF0", line, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void PreservesAstralNonNoncharacter()
+    {
+        //U+1F600 is an ordinary astral code point and must pass through unescaped.
+        string line = CanonicalizeLiteral(char.ConvertFromUtf32(0x1F600), XsdString);
+
+        Assert.Contains("\U0001F600", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("\\U0001F600", line, StringComparison.Ordinal);
+    }
+
     private const string XsdString = "http://www.w3.org/2001/XMLSchema#string";
 
     private static string CanonicalizeLiteral(string value, string datatypeIri)
