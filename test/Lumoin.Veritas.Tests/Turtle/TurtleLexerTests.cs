@@ -287,6 +287,61 @@ internal sealed class TurtleLexerTests
         pool.Dispose();
     }
 
+    [TestMethod]
+    public void ThrowsOnLoneHighSurrogateEscape()
+    {
+        AssertLexThrows("\"\\uD83C\"");
+    }
+
+    [TestMethod]
+    public void ThrowsOnLoneLowSurrogateEscape()
+    {
+        AssertLexThrows("\"\\uDCA1\"");
+    }
+
+    [TestMethod]
+    public void ThrowsOnSurrogatePairEscape()
+    {
+        //Turtle does not encode astral characters as a \u surrogate pair; each \u must be a
+        //Unicode scalar value, so even a well-formed high/low pair is rejected.
+        AssertLexThrows("\"\\uD83C\\uDCA1\"");
+    }
+
+    [TestMethod]
+    public void ThrowsOnCodePointExceedingUnicodeRange()
+    {
+        AssertLexThrows("\"\\U00110000\"");
+    }
+
+    [TestMethod]
+    public void AcceptsAstralCodePointFromLongEscape()
+    {
+        List<TurtleToken> tokens = LexAll("\"\\U0001F600\"");
+
+        Assert.AreEqual(TurtleTokenKind.StringLiteral, tokens[0].Kind);
+        Assert.AreEqual("\U0001F600", tokens[0].Value.ToString());
+    }
+
+    private static void AssertLexThrows(string source)
+    {
+        Utf8StringPool pool = new();
+        try
+        {
+            TurtleLexer lexer = new(Encoding.UTF8.GetBytes(source), pool);
+            Assert.Throws<TurtleParseException>(() =>
+            {
+                foreach(TurtleToken token in lexer.Tokenize())
+                {
+                    _ = token;
+                }
+            });
+        }
+        finally
+        {
+            pool.Dispose();
+        }
+    }
+
     private static List<TurtleToken> LexAll(string source)
     {
         Utf8StringPool pool = new();

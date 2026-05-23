@@ -447,7 +447,7 @@ public sealed class TurtleLexer
                     int escapeLine = line;
                     int escapeColumn = column;
 
-                    char decoded = ReadUcharEscape(source, escapeStart, escapeLine, escapeColumn);
+                    uint decoded = ReadUcharEscape(source, escapeStart, escapeLine, escapeColumn);
                     written = AppendCodepoint(decoded, ref rented, written);
                     continue;
                 }
@@ -485,10 +485,12 @@ public sealed class TurtleLexer
         }
     }
 
-    private char ReadUcharEscape(ReadOnlySpan<byte> source, int escapeStart, int escapeLine, int escapeColumn)
+    private uint ReadUcharEscape(ReadOnlySpan<byte> source, int escapeStart, int escapeLine, int escapeColumn)
     {
-        //The lexer treats both \uXXXX and \UXXXXXXXX inline; full surrogate-pair handling
-        //emits a UTF-16 char that the caller's AppendCodepoint encodes back to UTF-8.
+        //Decodes a \uXXXX or \UXXXXXXXX escape to a full Unicode scalar value. Each escape stands
+        //for one scalar value: surrogate code points (U+D800..U+DFFF) are rejected — Turtle does
+        //not encode astral characters as \u surrogate pairs, only as a single \U escape — and code
+        //points beyond U+10FFFF are rejected as out of range.
         if(position + 1 >= source.Length)
         {
             throw new TurtleParseException(
@@ -535,7 +537,21 @@ public sealed class TurtleLexer
             AdvanceByte(hex);
         }
 
-        return (char)codepoint;
+        if(codepoint is >= 0xD800 and <= 0xDFFF)
+        {
+            throw new TurtleParseException(
+                $"Surrogate code point U+{codepoint:X4} is not a valid Unicode scalar value at line {escapeLine + 1} column {escapeColumn + 1}.",
+                SourceSpan.SingleLine(escapeStart, position, escapeLine, escapeColumn, column));
+        }
+
+        if(codepoint > 0x10FFFF)
+        {
+            throw new TurtleParseException(
+                $"Code point U+{codepoint:X} exceeds the Unicode range at line {escapeLine + 1} column {escapeColumn + 1}.",
+                SourceSpan.SingleLine(escapeStart, position, escapeLine, escapeColumn, column));
+        }
+
+        return codepoint;
     }
 
     private TurtleToken LexShortString(ReadOnlySpan<byte> source, byte quote)
@@ -764,7 +780,7 @@ public sealed class TurtleLexer
                 int escapeStart = position;
                 int escapeLine = line;
                 int escapeColumn = column;
-                char decoded = ReadUcharEscape(source, escapeStart, escapeLine, escapeColumn);
+                uint decoded = ReadUcharEscape(source, escapeStart, escapeLine, escapeColumn);
 
                 return AppendCodepoint(decoded, ref rented, written);
             }
@@ -778,12 +794,13 @@ public sealed class TurtleLexer
         }
     }
 
-    private static int AppendCodepoint(char decoded, ref byte[] rented, int written)
+    private static int AppendCodepoint(uint codepoint, ref byte[] rented, int written)
     {
-        Span<char> chars = stackalloc char[1] { decoded };
-        int maxBytes = Encoding.UTF8.GetMaxByteCount(1);
+        Span<char> chars = stackalloc char[2];
+        int charCount = new System.Text.Rune((int)codepoint).EncodeToUtf16(chars);
+        int maxBytes = Encoding.UTF8.GetMaxByteCount(charCount);
         EnsureCapacity(ref rented, written + maxBytes);
-        int encoded = Encoding.UTF8.GetBytes(chars, rented.AsSpan(written));
+        int encoded = Encoding.UTF8.GetBytes(chars[..charCount], rented.AsSpan(written));
 
         return written + encoded;
     }
