@@ -39,12 +39,24 @@ vendored snapshot and passes, so all 301 cases pass with no skips.
 
 ## Known limitations (no failing test, documented for completeness)
 
-- **RDFC-1.0 n-degree traversal does not recurse into triple terms.**
-  Blank-node discovery and first-degree hashing do; the n-degree
-  related-node extraction inspects only top-level positions. No
-  current test reaches the n-degree path with a triple-term-nested
-  blank node, and the RDF-star position semantics there are not yet
-  pinned down. Documented at the call site in `RdfCanonicalizer`.
+- **RDFC-1.0 n-degree traversal does not recurse into triple terms —
+  spec-blocked, not deferred for effort.** Blank-node discovery and
+  first-degree hashing do recurse (via `CollectBlankNodeLabels`); the
+  n-degree related-node extraction (`AddRelatedBlankNodes`,
+  `EnqueueRelated`) inspects only the top-level `s`/`o`/`g` positions.
+  This cannot be completed against an authority because: (1) the
+  published RDFC-1.0 Recommendation predates RDF-star and defines only
+  `s`/`o`/`g` positions with no recursion into triple terms, so the
+  hash for a triple-term-nested blank node that reaches n-degree is
+  undefined; and (2) the vendored RDF 1.2 c14n corpus
+  (`Material/NQuads/**/c14n`) exercises the order-preserving N-Quads
+  *lexical* canonical form (`SerializeStatements` — it preserves blank
+  labels, e.g. `triple-term-02`), never the RDFC-1.0 relabelling path,
+  so no fixture pins an expected n-degree output. Implementing a
+  position semantics here would invent non-standard, untestable hashes
+  and risk regressing the working RDFC cases. Revisit when RDF 1.2
+  canonicalization is specified. Documented at the call site in
+  `RdfCanonicalizer`.
 - **Turtle relative-IRI resolution is RFC 3986 §5** via
   `Lumoin.Veritas.Core.Iris.IriResolver` (shared with JSON-LD and
   CBOR-LD, backed by `System.Uri`); chained `@base` directives compose,
