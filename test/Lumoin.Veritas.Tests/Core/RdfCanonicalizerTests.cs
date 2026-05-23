@@ -67,6 +67,62 @@ internal sealed class RdfCanonicalizerTests
     }
 
     [TestMethod]
+    public void BlankNodeNestedInTripleTermGetsCanonicalLabel()
+    {
+        using Utf8StringPool pool = new();
+        TripleTerm tripleTerm = new(
+            new BlankNode(pool.Intern("inner")),
+            new NamedNode(pool.Intern("http://example.org/p")),
+            new NamedNode(pool.Intern("http://example.org/o")));
+        Quad[] quads =
+        [
+            new(
+                new BlankNode(pool.Intern("reifier")),
+                new NamedNode(pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies")),
+                tripleTerm)
+        ];
+
+        string result = RdfCanonicalizer.Canonicalize(quads, Sha256);
+
+        //The blank node inside the triple term must be relabelled, not left as _:inner.
+        Assert.DoesNotContain("_:inner", result, StringComparison.Ordinal);
+        Assert.Contains("_:c14n", result, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void SharedBlankNodeAcrossTopLevelAndTripleTermCanonicalisesConsistently()
+    {
+        using Utf8StringPool pool = new();
+        //_:a appears both at top level and inside a triple term; both occurrences must receive
+        //the same canonical label so the two datasets below are isomorphic.
+        Quad[] datasetA =
+        [
+            new(
+                new BlankNode(pool.Intern("a")),
+                new NamedNode(pool.Intern("http://example.org/p")),
+                new TripleTerm(
+                    new BlankNode(pool.Intern("a")),
+                    new NamedNode(pool.Intern("http://example.org/p")),
+                    new NamedNode(pool.Intern("http://example.org/o"))))
+        ];
+        Quad[] datasetB =
+        [
+            new(
+                new BlankNode(pool.Intern("z")),
+                new NamedNode(pool.Intern("http://example.org/p")),
+                new TripleTerm(
+                    new BlankNode(pool.Intern("z")),
+                    new NamedNode(pool.Intern("http://example.org/p")),
+                    new NamedNode(pool.Intern("http://example.org/o"))))
+        ];
+
+        string canonicalA = RdfCanonicalizer.Canonicalize(datasetA, Sha256);
+        string canonicalB = RdfCanonicalizer.Canonicalize(datasetB, Sha256);
+
+        Assert.AreEqual(canonicalA, canonicalB);
+    }
+
+    [TestMethod]
     public void SingleBlankNodeSubjectGetsCanonicalLabel()
     {
         using Utf8StringPool pool = new();

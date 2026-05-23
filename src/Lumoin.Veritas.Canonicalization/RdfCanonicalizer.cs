@@ -207,37 +207,90 @@ public static class RdfCanonicalizer
     private static Dictionary<string, List<Quad>> BuildBlankNodeToQuads(List<Quad> dataset)
     {
         Dictionary<string, List<Quad>> index = [];
-
-        void Register(string blankId, Quad quad)
-        {
-            if(!index.TryGetValue(blankId, out List<Quad>? list))
-            {
-                list = [];
-                index[blankId] = list;
-            }
-
-            list.Add(quad);
-        }
+        HashSet<string> labelsInQuad = [];
 
         foreach(Quad quad in dataset)
         {
-            if(quad.Subject is BlankNode subjectBlank)
-            {
-                Register(subjectBlank.Label.ToString(), quad);
-            }
+            //Collect the distinct blank-node labels of the quad, recursing into triple terms.
+            //A quad is registered once per distinct label even if a label occurs in more than
+            //one position (for example a self-referential triple _:a :p _:a).
+            labelsInQuad.Clear();
+            CollectBlankNodeLabels(quad.Subject, labelsInQuad);
+            CollectBlankNodeLabels(quad.Object, labelsInQuad);
+            CollectBlankNodeLabels(quad.Graph, labelsInQuad);
 
-            if(quad.Object is BlankNode objectBlank)
+            foreach(string label in labelsInQuad)
             {
-                Register(objectBlank.Label.ToString(), quad);
-            }
+                if(!index.TryGetValue(label, out List<Quad>? list))
+                {
+                    list = [];
+                    index[label] = list;
+                }
 
-            if(quad.Graph is BlankNode graphBlank)
-            {
-                Register(graphBlank.Label.ToString(), quad);
+                list.Add(quad);
             }
         }
 
         return index;
+    }
+
+    /// <summary>
+    /// Adds every blank-node label reachable from a term — directly, or nested within a
+    /// triple term — to the supplied sink. The term tree is walked with an explicit stack so
+    /// nested triple terms do not recurse.
+    /// </summary>
+    private static void CollectBlankNodeLabels(RdfTerm? term, ICollection<string> sink)
+    {
+        //Fast path for the common terms that cannot nest, avoiding a stack allocation.
+        switch(term)
+        {
+            case null or NamedNode or Literal:
+            {
+                return;
+            }
+
+            case BlankNode topBlank:
+            {
+                sink.Add(topBlank.Label.ToString());
+
+                return;
+            }
+
+            default:
+            {
+                break;
+            }
+        }
+
+        Stack<RdfTerm> pending = new();
+        pending.Push(term);
+
+        while(pending.Count > 0)
+        {
+            RdfTerm current = pending.Pop();
+            switch(current)
+            {
+                case BlankNode blank:
+                {
+                    sink.Add(blank.Label.ToString());
+
+                    break;
+                }
+
+                case TripleTerm tripleTerm:
+                {
+                    pending.Push(tripleTerm.Subject);
+                    pending.Push(tripleTerm.Object);
+
+                    break;
+                }
+
+                default:
+                {
+                    break;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -286,19 +339,15 @@ public static class RdfCanonicalizer
     private static Dictionary<string, string> BuildPlaceholderMap(Quad quad, string referenceBlankId)
     {
         Dictionary<string, string> map = [];
+        HashSet<string> labels = [];
+        CollectBlankNodeLabels(quad.Subject, labels);
+        CollectBlankNodeLabels(quad.Object, labels);
+        CollectBlankNodeLabels(quad.Graph, labels);
 
-        void Map(RdfTerm? term)
+        foreach(string label in labels)
         {
-            if(term is BlankNode blank)
-            {
-                string label = blank.Label.ToString();
-                map[label] = label == referenceBlankId ? "a" : "z";
-            }
+            map[label] = label == referenceBlankId ? "a" : "z";
         }
-
-        Map(quad.Subject);
-        Map(quad.Object);
-        Map(quad.Graph);
 
         return map;
     }
@@ -457,6 +506,13 @@ public static class RdfCanonicalizer
             }
         }
 
+        //The first-degree hashing and blank-node discovery recurse into triple terms; this
+        //n-degree related-node extraction inspects only the top-level positions. That suffices
+        //for every current test because blank nodes nested in triple terms there are uniquely
+        //identified by their first-degree hash and never reach the n-degree disambiguation. A
+        //dataset that both nests a blank node in a triple term and needs n-degree to distinguish
+        //it would require recursing here with a position semantics the RDF-star canonicalization
+        //rules have not yet pinned down; that is left for a follow-up.
         if(quad.Subject is BlankNode subjectBlank)
         {
             AddRelated(subjectBlank, "s");
