@@ -662,7 +662,7 @@ public sealed class TurtleLexer
                     Utf8String value = pool.Intern(rented.AsSpan(0, written));
 
                     return new TurtleToken(
-                        TurtleTokenKind.StringLiteral,
+                        TurtleTokenKind.LongStringLiteral,
                         CaptureSpan(startByte, position, startLine, startColumn, line, column),
                         value);
                 }

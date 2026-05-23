@@ -59,6 +59,35 @@ internal sealed class TurtleParserTests
     }
 
     [TestMethod]
+    public void AcceptsVersionWithSingleQuotedString()
+    {
+        TurtleDocument document = ParseTurtle("VERSION '1.2'");
+
+        Assert.HasCount(1, document.Versions);
+        Assert.AreEqual("1.2", document.Versions[0].Version.ToString());
+    }
+
+    [TestMethod]
+    public void AcceptsVersionWithDoubleQuotedString()
+    {
+        TurtleDocument document = ParseTurtle("VERSION \"1.2\"");
+
+        Assert.HasCount(1, document.Versions);
+    }
+
+    [TestMethod]
+    public void RejectsVersionWithTripleDoubleQuotedString()
+    {
+        Assert.Throws<TurtleParseException>(() => ParseTurtle("VERSION \"\"\"1.2\"\"\""));
+    }
+
+    [TestMethod]
+    public void RejectsVersionWithTripleSingleQuotedString()
+    {
+        Assert.Throws<TurtleParseException>(() => ParseTurtle("@version '''1.2''' ."));
+    }
+
+    [TestMethod]
     public void ParseTripleWithAbsoluteIris()
     {
         TurtleDocument document = ParseTurtle("<http://example.org/s> <http://example.org/p> <http://example.org/o> .");

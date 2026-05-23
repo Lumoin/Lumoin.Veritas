@@ -75,7 +75,7 @@ internal sealed class TurtleLexerTests
     {
         List<TurtleToken> tokens = LexAll("\"\"\"multi\nline\"\"\"");
 
-        Assert.AreEqual(TurtleTokenKind.StringLiteral, tokens[0].Kind);
+        Assert.AreEqual(TurtleTokenKind.LongStringLiteral, tokens[0].Kind);
         Assert.AreEqual("multi\nline", tokens[0].Value.ToString());
     }
 

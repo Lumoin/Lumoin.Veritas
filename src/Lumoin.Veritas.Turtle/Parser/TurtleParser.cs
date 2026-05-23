@@ -244,6 +244,13 @@ public sealed class TurtleParser
         bool isSparqlForm = Current.Value.Span.SequenceEqual("VERSION"u8);
         Advance();
 
+        if(Current.Kind == TurtleTokenKind.LongStringLiteral)
+        {
+            throw new TurtleParseException(
+                $"The version directive argument must be a short-quoted string, not a long (triple-quoted) string, at line {Current.Span.StartLine + 1} column {Current.Span.StartColumn + 1}.",
+                Current.Span);
+        }
+
         if(Current.Kind != TurtleTokenKind.StringLiteral)
         {
             throw Expected("string literal in version declaration", Current);
@@ -484,6 +491,7 @@ public sealed class TurtleParser
             }
 
             case TurtleTokenKind.StringLiteral:
+            case TurtleTokenKind.LongStringLiteral:
             {
                 return StepResult.Done(ParseStringLiteral());
             }

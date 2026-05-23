@@ -33,8 +33,11 @@ public enum TurtleTokenKind
     /// <summary>The anonymous-blank-node sugar: <c>[]</c> with only whitespace between the brackets.</summary>
     AnonymousBlankNode,
 
-    /// <summary>A string literal in any of the four delimiter forms, decoded into UTF-8 bytes.</summary>
+    /// <summary>A short (single- or double-quoted) string literal, decoded into UTF-8 bytes.</summary>
     StringLiteral,
+
+    /// <summary>A long (triple-quoted) string literal, decoded into UTF-8 bytes.</summary>
+    LongStringLiteral,
 
     /// <summary>An integer literal: <c>42</c>, <c>-17</c>, <c>+0</c>.</summary>
     IntegerLiteral,
