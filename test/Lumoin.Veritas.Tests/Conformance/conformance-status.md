@@ -3,120 +3,81 @@
 **Snapshot date:** 2026-05-23.
 **Corpus:** vendored at `test/Lumoin.Veritas.Tests/Material/`,
 sourced from <https://github.com/w3c/rdf-tests/> on the `main`
-branch (RDF 1.2 corpus only). See the `ATTRIBUTION.md` files
-alongside the corpus for provenance and scope notes. The corpus is
-read directly from the source tree by the harness; it is not copied
-to the build output.
+branch (RDF 1.2 corpus only). Verified 2026-05-23 against upstream
+`main` HEAD `4c255ad` (2026-05-21): the snapshot is at or after that
+commit, so no re-vendoring was required. See the `ATTRIBUTION.md`
+files for provenance. The corpus is read directly from the source
+tree by the harness; it is not copied to the build output.
 
-This is a measurement. Failures listed below are real defects or
-deliberately deferred items, surfaced by running the W3C test cases
-through the harness in `Conformance/`.
+This is a measurement. Failures listed below are deferred items
+queued for the remaining FIX batches, surfaced by running the W3C
+test cases through the harness in `Conformance/`.
 
 ## Headline counts
 
 | Suite     | Total | Passed | Failed | Skipped |
 |-----------|-------|--------|--------|---------|
-| N-Triples |    70 |     65 |      5 |       0 |
-| N-Quads   |    68 |     64 |      4 |       0 |
-| Turtle    |   103 |     90 |     13 |       0 |
+| N-Triples |    70 |     70 |      0 |       0 |
+| N-Quads   |    68 |     68 |      0 |       0 |
+| Turtle    |   103 |     94 |      9 |       0 |
 | TriG      |    60 |     52 |      8 |       0 |
-| **Total** | **301** | **271** | **30** | **0** |
+| **Total** | **301** | **284** | **17** | **0** |
 
-The previous measurement was **135/301**. The four-phase fix batch
-plus the supporting set-semantics and corpus-loading changes lifted
-this to **271/301 (~90 %)**. No structural skips remain.
+The previous measurement was **271/301**. The FIX-1 batch (four small
+grammar/lexer fixes) lifted this to **284/301 (~94 %)**. N-Triples and
+N-Quads are now fully conformant. No structural skips remain.
 
-## Per-phase deltas
+## FIX-1 deltas
 
-| Change | N-Triples | N-Quads | Turtle | TriG |
-|--------|-----------|---------|--------|------|
-| Batch start | 24 | 26 | 57 | 28 |
-| Phase 1 — canonical escaping + order-preserving C14N dispatch | 50 | 52 | 57 | 28 |
-| Phase 3 — N-Quads triple terms + language tightening | 65 | 64 | 70 | 37 |
-| Phase 2 — reification/annotation emission + set-semantics comparison | 65 | 64 | 83 | 52 |
-| Phase 4 — lone-surrogate validation | 65 | 64 | 90 | 52 |
+| Sub-fix | Effect |
+|---------|--------|
+| A — whitespace before language tag / datatype marker | N-Triples 65 → 67, N-Quads 64 → 66 |
+| B — reject long-quoted VERSION argument | Turtle 90 → 94 |
+| C — escape Unicode noncharacters in canonical output | N-Triples 67 → 69, N-Quads 66 → 68 |
+| D — reject scheme-less IRIs in N-Triples/N-Quads | N-Triples 69 → 70 |
 
-Phases 1 and 3 also lifted Turtle and TriG because the
-annotation/reification evaluation tests can only be measured once the
-canonical serializer emits the triple-term form and the N-Quads reader
-parses it in the expected fixtures. The phases were therefore
-implemented in the order 1 then 3 then 2 then 4.
+Phase-0 verification corrected the handoff's framing of sub-fix C: the
+sole noncharacter test is a *positive* C14N test expecting
+noncharacters accepted and escaped, not rejected (the corpus has no
+noncharacter rejection tests). The fix is therefore escaping in the
+canonical serializer, not rejection in the lexer.
 
 ## Remaining failures
 
-### Canonicaliser does not canonicalize blank nodes nested in triple terms (2)
+### Blank nodes nested in triple terms not canonicalized (FIX-2, ~3)
 
-`Turtle 1.2 - blank node labels` and
-`Turtle 1.2 - Annotation on triple with reified triple subject`.
-`RdfCanonicalizer` discovers blank nodes only in the top-level
-subject, object, and graph positions; a blank node appearing inside a
-`TripleTerm` is not collected, so it is not assigned a canonical
-label and isomorphic datasets that share such a blank node compare
-unequal. Fixing this means recursing the blank-node collection and
-the n-degree hashing into triple terms — a delicate change to the
-RDFC-1.0 implementation, deferred to its own batch.
+`Turtle 1.2 - blank node labels`,
+`Turtle 1.2 - Annotation on triple with reified triple subject`, and
+the related TriG case. `RdfCanonicalizer` discovers blank nodes only
+in the top-level subject, object, and graph positions; a blank node
+inside a `TripleTerm` is neither collected nor assigned a canonical
+label, so isomorphic datasets sharing such a blank node compare
+unequal. Recursing the blank-node collection and the n-degree hashing
+into triple terms is FIX-2.
 
-### Nested annotation blocks (2)
+### Nested annotation blocks (FIX-3, ~3)
 
-`Turtle 1.2 - Annotation - nested` and the TriG equivalent. An
-annotation block nested inside another block (`{| :a :b {| :a2 :b2 |} |}`)
-annotates the *outer block's* annotation triple
-(`reifier :a :b`), not the original statement. The emitter expands a
-block's predicate-object list but does not recurse into annotations
-attached to the objects within a block. Deferred.
+`Turtle 1.2 - Annotation - nested`, `TriG 1.2 - Annotation - nested`,
+and `TriG 1.2 - Annotation form (PositiveSyntax)`. An annotation block
+nested inside another block annotates the outer block's annotation
+triple, not the original statement; the emitter does not recurse into
+annotations attached to the objects within a block. FIX-3.
 
-### VERSION directive accepts triple-quoted strings (4)
+### Reified-triple structural validation (FIX-4, ~9)
 
-`VERSION` / `@version` with a triple-quoted string is accepted where
-the grammar restricts the version specifier to a short-quoted string.
-Out of scope for this batch per the handoff (VERSION-string handling
-is a separate item).
+The `bad - …` negative-syntax tests the parser does not yet reject —
+`literal in subject position of reified triple`,
+`reified with list object`, `compound blank node expression`,
+`empty annotation`, and the `N-Triples 1.2 as Turtle 1.2 - Bad - …`
+triple-term/reified-triple subject cases. The parser accepts these;
+enforcing the grammar's positional restrictions is FIX-4, which needs
+its own spec-investigation phase first.
 
-### Reified-triple structural validation (6)
+### TriG direction-tagged positive cases (2)
 
-Negative-syntax tests the parser does not yet reject:
-`bad - literal in subject position of reified triple`,
-`bad - reified with list object`,
-`bad - compound blank node expression`, and the
-`N-Triples 1.2 as Turtle 1.2 - Bad - ...` triple-term/reified-triple
-subject cases. The parser accepts these constructs; enforcing the
-grammar's positional restrictions is the reified-triple-validation
-item, out of scope for this batch.
-
-### Whitespace tolerance in canonical N-Triples/N-Quads inputs (4)
-
-`C14N extra_whitespace-03` / `-04` in both N-Triples and N-Quads. The
-inputs place whitespace before the language tag, around `^^`, or
-before the terminating `.`; the reader does not tolerate it. The
-canonical serializer is correct — this is a reader-tolerance gap.
-
-### Relative IRI without scheme (1)
-
-`N-Triples - Bad - invalid IRI` (`<//example/missing-scheme>`). The
-reader does not validate that an IRI is absolute. IRI scheme
-validation is a broader concern, deferred.
-
-### Noncharacter escaping in the canonical serializer (1)
-
-`C14N literal_needing_uchar_escaping-01`. The expected canonical form
-escapes the Unicode noncharacters U+FFFE and U+FFFF as the UCHAR forms
-`\uFFFE` / `\uFFFF`; the serializer escapes only the C0 controls and
-DEL. The exact noncharacter set the canonical form requires is left
-for a follow-up rather than guessed at.
-
-### Missing expected fixture (1)
-
-`C14N literal_needing_uchar_escaping-02` has no `-c14n` result file in
-the vendored corpus, so the runner reports a missing-fixture failure.
-This is a corpus gap, not a defect; it is surfaced honestly rather
-than skipped.
-
-### TriG positive base-direction / annotation-form (3)
-
-`TriG 1.2 - Annotation form (PositiveSyntax)`,
-`TriG 1.2 - bad - empty annotation`, and two `base direction ltr`
-positive tests. These overlap with the nested-annotation and
-reified-validation items above as they manifest in TriG mode.
+Two `base direction ltr` positive tests in TriG. These manifest
+alongside the annotation/reification handling above and will be
+re-evaluated once FIX-2 and FIX-3 land.
 
 ## Reproducing this report
 
@@ -128,22 +89,13 @@ dotnet test --project test/Lumoin.Veritas.Tests/Lumoin.Veritas.Tests.csproj `
 `Inconclusive` (skipped) is reserved for structural skips; there are
 currently none. Real defects are reported as failures.
 
-## What this batch did
+## Notes for the remaining arc
 
-- **Phase 1**: canonical N-Triples/N-Quads literal escaping (ECHAR +
-  uppercase UCHAR + pass-through), language-tag lower-casing,
-  xsd:string suppression, triple-term rendering, and an
-  order-preserving `SerializeStatements` entry point used by the C14N
-  dispatch.
-- **Phase 3**: N-Quads triple-term parsing (iterative, stack-based)
-  and emission, BCP 47 language-tag validation with `--ltr` / `--rtl`
-  direction, rejection of `rdf:langString` / `rdf:dirLangString` as
-  explicit datatypes, and the missing `\b` / `\f` / `\U` unescapes.
-- **Phase 2**: reified triples no longer assert their inner triple;
-  each annotation block takes its own reifier; the evaluation
-  comparison is set-based.
-- **Phase 4**: the Turtle lexer rejects lone surrogate and
-  out-of-range `\u` / `\U` escapes and encodes astral code points
-  without truncation.
-- Corpus loading moved to a manifest-aware `ITestDataSource` reading
-  from the source tree, dropping the build-output copy.
+- The earlier missing-fixture concern (`literal_needing_uchar_escaping-02`)
+  resolved: the fixture is present and the test passes with FIX-1C.
+- Error reporting is exception-based (`TurtleParseException` /
+  `NQuadsParseException`, each carrying a `SourceSpan`). A
+  diagnostics-collecting parse path with error recovery — for editors
+  that want every error at once rather than the first — is a separate
+  batch; the natural shape mirrors SHACL's `ValidationResult`, keeping
+  the throwing entry point as a thin wrapper.
