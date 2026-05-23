@@ -718,6 +718,7 @@ public sealed class TurtleLexer
                 EnsureCapacity(ref rented, written + 1);
                 rented[written++] = (byte)'\t';
                 AdvanceBytes(2);
+
                 return written;
             }
 
@@ -726,6 +727,7 @@ public sealed class TurtleLexer
                 EnsureCapacity(ref rented, written + 1);
                 rented[written++] = 0x08;
                 AdvanceBytes(2);
+
                 return written;
             }
 
@@ -734,6 +736,7 @@ public sealed class TurtleLexer
                 EnsureCapacity(ref rented, written + 1);
                 rented[written++] = (byte)'\n';
                 AdvanceBytes(2);
+
                 return written;
             }
 
@@ -742,6 +745,7 @@ public sealed class TurtleLexer
                 EnsureCapacity(ref rented, written + 1);
                 rented[written++] = (byte)'\r';
                 AdvanceBytes(2);
+
                 return written;
             }
 
@@ -750,6 +754,7 @@ public sealed class TurtleLexer
                 EnsureCapacity(ref rented, written + 1);
                 rented[written++] = 0x0C;
                 AdvanceBytes(2);
+
                 return written;
             }
 
@@ -758,6 +763,7 @@ public sealed class TurtleLexer
                 EnsureCapacity(ref rented, written + 1);
                 rented[written++] = (byte)'"';
                 AdvanceBytes(2);
+
                 return written;
             }
 
@@ -766,6 +772,7 @@ public sealed class TurtleLexer
                 EnsureCapacity(ref rented, written + 1);
                 rented[written++] = (byte)'\'';
                 AdvanceBytes(2);
+
                 return written;
             }
 
@@ -774,6 +781,7 @@ public sealed class TurtleLexer
                 EnsureCapacity(ref rented, written + 1);
                 rented[written++] = (byte)'\\';
                 AdvanceBytes(2);
+
                 return written;
             }
 

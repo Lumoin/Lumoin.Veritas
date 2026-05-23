@@ -99,6 +99,7 @@ public sealed class TurtleParser
                     PrefixDeclaration decl = ParsePrefixDeclaration();
                     prefixes.Add(decl);
                     statements.Add(decl);
+
                     break;
                 }
 
@@ -107,6 +108,7 @@ public sealed class TurtleParser
                     BaseDeclaration decl = ParseBaseDeclaration();
                     baseDeclarations.Add(decl);
                     statements.Add(decl);
+
                     break;
                 }
 
@@ -115,6 +117,7 @@ public sealed class TurtleParser
                     VersionDeclaration decl = ParseVersionDeclaration();
                     versions.Add(decl);
                     statements.Add(decl);
+
                     break;
                 }
 
@@ -128,6 +131,7 @@ public sealed class TurtleParser
                     }
 
                     statements.Add(ParseGraphBlockWithKeyword());
+
                     break;
                 }
 
@@ -141,6 +145,7 @@ public sealed class TurtleParser
                     }
 
                     statements.Add(ParseGraphBlockBody(Current.Span, label: null, hasKeyword: false));
+
                     break;
                 }
 
@@ -148,6 +153,7 @@ public sealed class TurtleParser
                 {
                     Statement parsed = ParseSubjectStartingStatement();
                     statements.Add(parsed);
+
                     break;
                 }
             }
@@ -454,12 +460,14 @@ public sealed class TurtleParser
                 {
                     frames.Pop();
                     completed = step.Result;
+
                     break;
                 }
 
                 case StepAction.Push:
                 {
                     frames.Push(step.NewFrame!);
+
                     break;
                 }
 
@@ -1170,6 +1178,7 @@ public sealed class TurtleParser
                 language = Current.Value;
                 endSpan = Current.Span;
                 Advance();
+
                 break;
             }
 
@@ -1189,6 +1198,7 @@ public sealed class TurtleParser
                 direction = ParseDirection(dirSpan, Current.Span);
                 endSpan = Current.Span;
                 Advance();
+
                 break;
             }
 
@@ -1201,6 +1211,7 @@ public sealed class TurtleParser
                     {
                         datatype = ConsumeIri();
                         endSpan = datatype.Span;
+
                         break;
                     }
 
@@ -1208,6 +1219,7 @@ public sealed class TurtleParser
                     {
                         datatype = ConsumePrefixedName();
                         endSpan = datatype.Span;
+
                         break;
                     }
 

@@ -67,12 +67,14 @@ public sealed class TurtleQuadEmitter
                 case PrefixDeclaration prefix:
                 {
                     PrefixMap[prefix.Prefix] = prefix.Iri;
+
                     break;
                 }
 
                 case BaseDeclaration baseDecl:
                 {
                     baseIri = baseDecl.Iri;
+
                     break;
                 }
 
@@ -88,6 +90,7 @@ public sealed class TurtleQuadEmitter
                     {
                         yield return q;
                     }
+
                     break;
                 }
 
@@ -104,6 +107,7 @@ public sealed class TurtleQuadEmitter
                             yield return q;
                         }
                     }
+
                     break;
                 }
 
@@ -135,6 +139,7 @@ public sealed class TurtleQuadEmitter
                 }
 
                 Quad mainQuad = new(subject, predicate, objectTerm, graph);
+
                 yield return new EmittedQuad(mainQuad, new DocumentNodeRef(Document.DocumentId, annotatedObject.NodeId));
 
                 if(!annotatedObject.Annotations.IsDefaultOrEmpty)

@@ -377,6 +377,7 @@ public static class NQuadsReader
                 {
                     frame.Subject = ParseTripleTermNode(line, ref pos, pool, lineNumber);
                     frame.Stage = 1;
+
                     break;
                 }
 
@@ -389,6 +390,7 @@ public static class NQuadsReader
 
                     frame.Predicate = (NamedNode)ParseIriRef(line, ref pos, pool, lineNumber);
                     frame.Stage = 2;
+
                     break;
                 }
 
@@ -398,11 +400,13 @@ public static class NQuadsReader
                     {
                         ExpectTripleTermOpen(line, ref pos, lineNumber);
                         frames.Push(new NQuadsTripleTermFrame());
+
                         break;
                     }
 
                     frame.Object = ParseTripleTermObjectLeaf(line, ref pos, pool, lineNumber);
                     frame.Stage = 3;
+
                     break;
                 }
 
@@ -813,33 +817,61 @@ public static class NQuadsReader
                 switch((char)line[pos])
                 {
                     case 't':
+                    {
                         output[outPos++] = (byte)'\t';
                         pos++;
+
                         break;
+                    }
+
                     case 'b':
+                    {
                         output[outPos++] = (byte)'\b';
                         pos++;
+
                         break;
+                    }
+
                     case 'f':
+                    {
                         output[outPos++] = (byte)'\f';
                         pos++;
+
                         break;
+                    }
+
                     case 'n':
+                    {
                         output[outPos++] = (byte)'\n';
                         pos++;
+
                         break;
+                    }
+
                     case 'r':
+                    {
                         output[outPos++] = (byte)'\r';
                         pos++;
+
                         break;
+                    }
+
                     case '"':
+                    {
                         output[outPos++] = (byte)'"';
                         pos++;
+
                         break;
+                    }
+
                     case '\\':
+                    {
                         output[outPos++] = (byte)'\\';
                         pos++;
+
                         break;
+                    }
+
                     case 'u':
                     {
                         pos++;
@@ -851,8 +883,10 @@ public static class NQuadsReader
                         int codePoint = ParseHex4(line[pos..(pos + 4)], lineNumber);
                         pos += 4;
                         outPos += EncodeUtf8CodePoint(codePoint, output.AsSpan(outPos));
+
                         break;
                     }
+
                     case 'U':
                     {
                         pos++;
@@ -864,11 +898,15 @@ public static class NQuadsReader
                         int codePoint = ParseHex8(line[pos..(pos + 8)], lineNumber);
                         pos += 8;
                         outPos += EncodeUtf8CodePoint(codePoint, output.AsSpan(outPos));
+
                         break;
                     }
+
                     default:
+                    {
                         throw new NQuadsParseException(
                             $"Unknown escape sequence '\\{(char)line[pos]}' on line {lineNumber}.", lineNumber);
+                    }
                 }
             }
             else
