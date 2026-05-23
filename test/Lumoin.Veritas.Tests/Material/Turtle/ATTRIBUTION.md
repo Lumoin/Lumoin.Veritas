@@ -1,8 +1,10 @@
 # W3C RDF Test Cases
 
-Source: <https://github.com/w3c/rdf-tests/> at branch `main` (no
-commit SHA was available in the local working copy at the time of
-vendoring; the working tree was snapshotted on 2026-05-22).
+Source: <https://github.com/w3c/rdf-tests/> at branch `main`, working
+tree snapshotted on 2026-05-22. Verified on 2026-05-23 against
+upstream `main` HEAD `4c255ad` (2026-05-21): the snapshot is at or
+after that commit and includes the recent version-directive and
+surrogate-pair test additions, so no re-vendoring was required.
 
 Original paths within the upstream repository:
 

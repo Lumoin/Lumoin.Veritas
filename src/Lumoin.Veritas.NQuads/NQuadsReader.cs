@@ -580,10 +580,16 @@ public static class NQuadsReader
 
             pos++;
 
+            //The language tag and the datatype marker are separate tokens, so white space is
+            //permitted between the closing quote and an '@' or '^^'.
+            SkipWhitespace(line, ref pos);
+
             //Check for language tag or datatype.
             if(pos < line.Length && line[pos] == AtSign)
             {
                 //Language tag: @lang, optionally with an RDF 1.2 base direction @lang--ltr / @lang--rtl.
+                //White space within the tag (after the '@') is not permitted; an empty tag is rejected
+                //downstream.
                 pos++;
                 int tagStart = pos;
                 while(pos < line.Length && !IsWhitespace(line[pos]) && line[pos] != Period)
@@ -595,8 +601,9 @@ public static class NQuadsReader
             }
             else if(pos + 1 < line.Length && line[pos] == Caret && line[pos + 1] == Caret)
             {
-                //Datatype: ^^<IRI>.
+                //Datatype: ^^<IRI>; white space is permitted between '^^' and the IRI.
                 pos += 2;
+                SkipWhitespace(line, ref pos);
 
                 if(pos >= line.Length || line[pos] != LessThan)
                 {
