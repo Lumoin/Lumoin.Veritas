@@ -45,6 +45,7 @@ public sealed class TurtleParser
     private int index;
     private int nextNodeId;
     private int nextSyntheticBlankNode;
+    private bool inGraphBlock;
 
     /// <summary>
     /// Initialises a new <see cref="TurtleParser"/>.
@@ -293,6 +294,11 @@ public sealed class TurtleParser
 
         Advance();
 
+        //Inside a graph block the trailing '.' of the final triple is optional, so a triple may
+        //be terminated by the closing '}'. The flag lets ParseTripleBody accept that.
+        bool wasInGraphBlock = inGraphBlock;
+        inGraphBlock = true;
+
         ImmutableArray<TripleStatement>.Builder inner = ImmutableArray.CreateBuilder<TripleStatement>();
         while(Current.Kind != TurtleTokenKind.CloseBrace)
         {
@@ -311,6 +317,8 @@ public sealed class TurtleParser
 
             inner.Add(triple);
         }
+
+        inGraphBlock = wasInGraphBlock;
 
         SourceSpan endSpan = Current.Span;
         Advance();
@@ -374,6 +382,16 @@ public sealed class TurtleParser
         }
 
         ImmutableArray<PredicateObject> predicates = ParsePredicateObjectList();
+
+        //Inside a graph block the final triple's terminating '.' is optional; a closing '}'
+        //ends it instead and is left for the graph-block parser to consume.
+        if(inGraphBlock && Current.Kind == TurtleTokenKind.CloseBrace)
+        {
+            SourceSpan braceEnd = predicates[^1].Span;
+            SourceSpan braceTotal = CombineSpans(startSpan, braceEnd);
+
+            return NewNode(id => new TripleStatement(id, braceTotal, subject, predicates));
+        }
 
         if(Current.Kind != TurtleTokenKind.Period)
         {

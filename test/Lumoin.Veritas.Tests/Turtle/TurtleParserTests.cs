@@ -296,6 +296,16 @@ internal sealed class TurtleParserTests
     }
 
     [TestMethod]
+    public void TrigGraphBlockAllowsOmittedFinalPeriod()
+    {
+        //The trailing '.' of the last triple in a graph block is optional; '}' terminates it.
+        TurtleDocument document = ParseTriG("<g> { <s> <p> <o> }");
+
+        GraphBlockStatement graph = (GraphBlockStatement)document.Statements[0];
+        Assert.HasCount(1, graph.Triples);
+    }
+
+    [TestMethod]
     public void TrigDefaultGraphTriplesMixWithNamedGraph()
     {
         TurtleDocument document = ParseTriG("<s1> <p> <o> . <g> { <s2> <p> <o> . }");
