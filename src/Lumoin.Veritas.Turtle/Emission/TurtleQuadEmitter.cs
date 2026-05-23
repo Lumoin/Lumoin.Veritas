@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Iris;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Turtle.Ast;
 
@@ -27,7 +28,7 @@ namespace Lumoin.Veritas.Turtle.Emission;
 /// </remarks>
 public sealed class TurtleQuadEmitter
 {
-    private IriTerm? baseIri;
+    private string? baseIri;
     private int nextEmitterBlankNode;
 
     /// <summary>
@@ -73,7 +74,12 @@ public sealed class TurtleQuadEmitter
 
                 case BaseDeclaration baseDecl:
                 {
-                    baseIri = baseDecl.Iri;
+                    //A @base directive may itself be a relative reference; it resolves against the
+                    //base already in scope per RFC 3986 §5, so chained directives compose.
+                    string declared = baseDecl.Iri.Value.ToString();
+                    baseIri = baseIri is null
+                        ? declared
+                        : IriResolver.ResolveIri(baseIri, declared);
 
                     break;
                 }
@@ -570,27 +576,27 @@ public sealed class TurtleQuadEmitter
 
     private Utf8String ResolveIri(Utf8String value)
     {
-        //If the value is absolute (scheme present), use as-is. Otherwise resolve against the base IRI if one is set.
+        //Absolute IRIs pass through without allocating; only a relative reference needs resolving.
         ReadOnlySpan<byte> bytes = value.Span;
         if(IsAbsoluteIri(bytes))
         {
             return value;
         }
 
-        if(baseIri is null)
+        //A relative reference is resolved against the in-scope @base per RFC 3986 §5. When no
+        //@base is in scope — or the @base itself is not absolute — the reference cannot be made
+        //absolute here; it passes through unchanged. Rejecting it requires a document-context base
+        //the reader does not yet accept, so enforcement is deferred to the caller's policy.
+        if(baseIri is not null)
         {
-            return value;
+            string resolved = IriResolver.ResolveIri(baseIri, value.ToString());
+            if(IriResolver.IsAbsoluteIri(resolved))
+            {
+                return Pool.Intern(resolved);
+            }
         }
 
-        ReadOnlySpan<byte> baseBytes = baseIri.Value.Span;
-        Span<byte> buffer = bytes.Length + baseBytes.Length <= 1024
-            ? stackalloc byte[bytes.Length + baseBytes.Length]
-            : new byte[bytes.Length + baseBytes.Length];
-
-        baseBytes.CopyTo(buffer);
-        bytes.CopyTo(buffer[baseBytes.Length..]);
-
-        return Pool.Intern(buffer);
+        return value;
     }
 
     private Utf8String ExpandPrefixedName(PrefixedNameTerm prefixed)

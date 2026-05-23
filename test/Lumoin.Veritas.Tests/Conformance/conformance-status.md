@@ -45,9 +45,17 @@ vendored snapshot and passes, so all 301 cases pass with no skips.
   current test reaches the n-degree path with a triple-term-nested
   blank node, and the RDF-star position semantics there are not yet
   pinned down. Documented at the call site in `RdfCanonicalizer`.
-- **Turtle relative-IRI scheme enforcement is deferred.** N-Triples
-  and N-Quads reject scheme-less IRIs; Turtle does not, because a
-  relative IRI there may resolve against an in-scope `@base`.
+- **Turtle relative-IRI resolution is RFC 3986 §5** via
+  `Lumoin.Veritas.Core.Iris.IriResolver` (shared with JSON-LD and
+  CBOR-LD, backed by `System.Uri`); chained `@base` directives
+  compose. **Enforcement of "remains relative" is still deferred.**
+  N-Triples and N-Quads reject scheme-less IRIs, but Turtle passes an
+  unresolved relative reference through unchanged rather than throwing.
+  Rejecting it requires a document-context base on `TurtleReader`
+  (which the reader does not yet accept) plus a rework of the
+  conformance harness's manifest traversal, whose `manifest.ttl` files
+  use relative IRIs against their own retrieval URL. Tracked as the
+  next sub-batch.
 
 ## Reproducing this report
 

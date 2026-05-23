@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Lumoin.Veritas.Core.Iris;
 
 namespace Lumoin.Veritas.LinkedData;
 
@@ -52,30 +53,7 @@ public static class IriUtils
     /// <summary>Determines whether a string is an absolute IRI (carries a scheme).</summary>
     public static bool IsAbsoluteIri(string value)
     {
-        ArgumentNullException.ThrowIfNull(value);
-        //An absolute IRI has a scheme followed by ':'. The scheme starts with a
-        //letter and contains only letters, digits, '+', '-', or '.'.
-        int colonIndex = value.IndexOf(':', StringComparison.Ordinal);
-        if(colonIndex <= 0)
-        {
-            return false;
-        }
-
-        for(int i = 0; i < colonIndex; i++)
-        {
-            char c = value[i];
-            if(i == 0 && !char.IsAsciiLetter(c))
-            {
-                return false;
-            }
-
-            if(i > 0 && !char.IsAsciiLetterOrDigit(c) && c != '+' && c != '-' && c != '.')
-            {
-                return false;
-            }
-        }
-
-        return true;
+        return IriResolver.IsAbsoluteIri(value);
     }
 
     /// <summary>Determines whether a string is a relative IRI (not absolute, not a keyword).</summary>
@@ -96,32 +74,6 @@ public static class IriUtils
     /// <returns>The resolved IRI.</returns>
     public static string ResolveIri(string baseIri, string relativeIri)
     {
-        ArgumentNullException.ThrowIfNull(baseIri);
-        ArgumentNullException.ThrowIfNull(relativeIri);
-
-        if(string.IsNullOrEmpty(relativeIri))
-        {
-            return baseIri;
-        }
-
-        if(IsAbsoluteIri(relativeIri))
-        {
-            return relativeIri;
-        }
-
-        try
-        {
-            Uri baseUri = new(baseIri);
-            Uri resolved = new(baseUri, relativeIri);
-
-            return resolved.ToString();
-        }
-        catch(UriFormatException)
-        {
-            //If resolution fails, return the relative IRI as-is rather than crashing
-            //the surrounding pipeline. The caller can detect non-resolution because
-            //the result equals the input.
-            return relativeIri;
-        }
+        return IriResolver.ResolveIri(baseIri, relativeIri);
     }
 }
