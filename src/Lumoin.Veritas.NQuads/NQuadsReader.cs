@@ -40,6 +40,9 @@ public static class NQuadsReader
     private const byte AtSign = (byte)'@';
     private const byte Caret = (byte)'^';
     private const byte Period = (byte)'.';
+    private const byte OpenParen = (byte)'(';
+    private const byte CloseParen = (byte)')';
+    private const byte Hyphen = (byte)'-';
 
     /// <summary>
     /// Parses N-Quads from a stream, yielding one <see cref="Quad"/> per statement.
@@ -323,14 +326,163 @@ public static class NQuadsReader
             throw new NQuadsParseException($"Unexpected end of line while reading object on line {lineNumber}.", lineNumber);
         }
 
+        //An object may be a triple term <<( s p o )>> (RDF 1.2). A bare '<<' without the
+        //opening parenthesis is the Turtle reified-triple form, which N-Triples / N-Quads
+        //do not accept.
+        if(line[pos] == LessThan && pos + 1 < line.Length && line[pos + 1] == LessThan)
+        {
+            if(pos + 2 < line.Length && line[pos + 2] == OpenParen)
+            {
+                return ParseTripleTerm(line, ref pos, pool, lineNumber);
+            }
+
+            throw new NQuadsParseException(
+                $"Expected '<<(' to begin a triple term on line {lineNumber}; reified-triple syntax is not valid in N-Triples or N-Quads.", lineNumber);
+        }
+
         return line[pos] switch
         {
             LessThan => ParseIriRef(line, ref pos, pool, lineNumber),
             BlankNodeUnderscore => ParseBlankNode(line, ref pos, pool, lineNumber),
             QuoteByte => ParseLiteral(line, ref pos, pool, lineNumber),
             _ => throw new NQuadsParseException(
-                $"Expected IRI, blank node, or literal for object on line {lineNumber}.", lineNumber)
+                $"Expected IRI, blank node, literal, or triple term for object on line {lineNumber}.", lineNumber)
         };
+    }
+
+    /// <summary>
+    /// Parses a triple term <c>&lt;&lt;( ttSubject verb ttObject )&gt;&gt;</c>, iterating
+    /// with an explicit stack so nested triple terms in the object position do not recurse.
+    /// </summary>
+    /// <remarks>
+    /// Per the RDF 1.2 grammar the triple-term subject is an IRI or blank node and the
+    /// predicate is an IRI; only the object may itself be a triple term, so a deeper frame
+    /// is pushed exclusively from the object position.
+    /// </remarks>
+    private static TripleTerm ParseTripleTerm(ReadOnlySpan<byte> line, ref int pos, Utf8StringPool pool, int lineNumber)
+    {
+        Stack<NQuadsTripleTermFrame> frames = new();
+        ExpectTripleTermOpen(line, ref pos, lineNumber);
+        frames.Push(new NQuadsTripleTermFrame());
+        TripleTerm? completed = null;
+
+        while(frames.Count > 0)
+        {
+            NQuadsTripleTermFrame frame = frames.Peek();
+            SkipWhitespace(line, ref pos);
+
+            switch(frame.Stage)
+            {
+                case 0:
+                {
+                    frame.Subject = ParseTripleTermNode(line, ref pos, pool, lineNumber);
+                    frame.Stage = 1;
+                    break;
+                }
+
+                case 1:
+                {
+                    if(pos >= line.Length || line[pos] != LessThan)
+                    {
+                        throw new NQuadsParseException($"Expected IRI for triple-term predicate on line {lineNumber}.", lineNumber);
+                    }
+
+                    frame.Predicate = (NamedNode)ParseIriRef(line, ref pos, pool, lineNumber);
+                    frame.Stage = 2;
+                    break;
+                }
+
+                case 2:
+                {
+                    if(line[pos] == LessThan && pos + 1 < line.Length && line[pos + 1] == LessThan)
+                    {
+                        ExpectTripleTermOpen(line, ref pos, lineNumber);
+                        frames.Push(new NQuadsTripleTermFrame());
+                        break;
+                    }
+
+                    frame.Object = ParseTripleTermObjectLeaf(line, ref pos, pool, lineNumber);
+                    frame.Stage = 3;
+                    break;
+                }
+
+                default:
+                {
+                    ExpectTripleTermClose(line, ref pos, lineNumber);
+                    TripleTerm built = new(frame.Subject!, frame.Predicate!, frame.Object!);
+                    frames.Pop();
+
+                    if(frames.Count > 0)
+                    {
+                        NQuadsTripleTermFrame parent = frames.Peek();
+                        parent.Object = built;
+                        parent.Stage = 3;
+                    }
+                    else
+                    {
+                        completed = built;
+                    }
+
+                    break;
+                }
+            }
+        }
+
+        return completed!;
+    }
+
+    private static RdfTerm ParseTripleTermNode(ReadOnlySpan<byte> line, ref int pos, Utf8StringPool pool, int lineNumber)
+    {
+        if(pos >= line.Length)
+        {
+            throw new NQuadsParseException($"Unexpected end of line inside triple term on line {lineNumber}.", lineNumber);
+        }
+
+        return line[pos] switch
+        {
+            LessThan => ParseIriRef(line, ref pos, pool, lineNumber),
+            BlankNodeUnderscore => ParseBlankNode(line, ref pos, pool, lineNumber),
+            _ => throw new NQuadsParseException(
+                $"Expected IRI or blank node for triple-term subject on line {lineNumber}.", lineNumber)
+        };
+    }
+
+    private static RdfTerm ParseTripleTermObjectLeaf(ReadOnlySpan<byte> line, ref int pos, Utf8StringPool pool, int lineNumber)
+    {
+        if(pos >= line.Length)
+        {
+            throw new NQuadsParseException($"Unexpected end of line inside triple term on line {lineNumber}.", lineNumber);
+        }
+
+        return line[pos] switch
+        {
+            LessThan => ParseIriRef(line, ref pos, pool, lineNumber),
+            BlankNodeUnderscore => ParseBlankNode(line, ref pos, pool, lineNumber),
+            QuoteByte => ParseLiteral(line, ref pos, pool, lineNumber),
+            _ => throw new NQuadsParseException(
+                $"Expected IRI, blank node, literal, or triple term for triple-term object on line {lineNumber}.", lineNumber)
+        };
+    }
+
+    private static void ExpectTripleTermOpen(ReadOnlySpan<byte> line, ref int pos, int lineNumber)
+    {
+        if(pos + 2 >= line.Length || line[pos] != LessThan || line[pos + 1] != LessThan || line[pos + 2] != OpenParen)
+        {
+            throw new NQuadsParseException($"Expected '<<(' to begin a triple term on line {lineNumber}.", lineNumber);
+        }
+
+        pos += 3;
+    }
+
+    private static void ExpectTripleTermClose(ReadOnlySpan<byte> line, ref int pos, int lineNumber)
+    {
+        SkipWhitespace(line, ref pos);
+        if(pos + 2 >= line.Length || line[pos] != CloseParen || line[pos + 1] != GreaterThan || line[pos + 2] != GreaterThan)
+        {
+            throw new NQuadsParseException($"Expected ')>>' to close a triple term on line {lineNumber}.", lineNumber);
+        }
+
+        pos += 3;
     }
 
     private static RdfTerm ParseGraphName(ReadOnlySpan<byte> line, ref int pos, Utf8StringPool pool, int lineNumber)
@@ -391,7 +543,7 @@ public static class NQuadsReader
         pos += 2;
 
         int start = pos;
-        while(pos < line.Length && !IsWhitespace(line[pos]) && line[pos] != Period)
+        while(pos < line.Length && IsBlankNodeLabelByte(line[pos]))
         {
             pos++;
         }
@@ -431,17 +583,15 @@ public static class NQuadsReader
             //Check for language tag or datatype.
             if(pos < line.Length && line[pos] == AtSign)
             {
-                //Language tag: @lang.
+                //Language tag: @lang, optionally with an RDF 1.2 base direction @lang--ltr / @lang--rtl.
                 pos++;
-                int langStart = pos;
+                int tagStart = pos;
                 while(pos < line.Length && !IsWhitespace(line[pos]) && line[pos] != Period)
                 {
                     pos++;
                 }
 
-                Utf8String language = pool.Intern(line[langStart..pos]);
-                NamedNode langStringType = new(pool.Intern(Vocabulary.Rdf.LangString.Span));
-                return new Literal(value, langStringType, language);
+                return ParseLanguageTaggedLiteral(value, line[tagStart..pos], pool, lineNumber);
             }
             else if(pos + 1 < line.Length && line[pos] == Caret && line[pos + 1] == Caret)
             {
@@ -454,6 +604,17 @@ public static class NQuadsReader
                 }
 
                 NamedNode datatype = ParseIriRef(line, ref pos, pool, lineNumber);
+
+                //rdf:langString and rdf:dirLangString are the datatypes of language-tagged and
+                //direction-tagged strings respectively; they only arise from the @lang form and
+                //must never appear as an explicit ^^ datatype.
+                if(datatype.Iri.Span.SequenceEqual(Vocabulary.Rdf.LangString.Span)
+                    || datatype.Iri.Span.SequenceEqual(Vocabulary.Rdf.DirLangString.Span))
+                {
+                    throw new NQuadsParseException(
+                        $"rdf:langString and rdf:dirLangString require a language tag and cannot be used as an explicit datatype on line {lineNumber}.", lineNumber);
+                }
+
                 return new Literal(value, datatype);
             }
             else
@@ -467,6 +628,125 @@ public static class NQuadsReader
         {
             ArrayPool<byte>.Shared.Return(valueBuffer);
         }
+    }
+
+    /// <summary>
+    /// Builds a language-tagged literal from a validated <c>LANG_DIR</c> tag, splitting an
+    /// optional RDF 1.2 base direction (<c>--ltr</c> / <c>--rtl</c>) from the language subtags.
+    /// </summary>
+    /// <remarks>
+    /// The language portion must match <c>[a-zA-Z]+ ('-' [a-zA-Z0-9]+)*</c>; an empty tag, an
+    /// empty subtag, or a non-alphanumeric character is rejected. When a base direction is
+    /// present it must be exactly <c>ltr</c> or <c>rtl</c> in lower case and the datatype
+    /// becomes <c>rdf:dirLangString</c>; otherwise the datatype is <c>rdf:langString</c>.
+    /// </remarks>
+    private static Literal ParseLanguageTaggedLiteral(Utf8String value, ReadOnlySpan<byte> tag, Utf8StringPool pool, int lineNumber)
+    {
+        if(tag.IsEmpty)
+        {
+            throw new NQuadsParseException($"Empty language tag on line {lineNumber}.", lineNumber);
+        }
+
+        ReadOnlySpan<byte> languagePart = tag;
+        TextDirection? direction = null;
+
+        int directionIndex = IndexOfDoubleHyphen(tag);
+        if(directionIndex >= 0)
+        {
+            languagePart = tag[..directionIndex];
+            ReadOnlySpan<byte> directionPart = tag[(directionIndex + 2)..];
+            direction = directionPart switch
+            {
+                _ when directionPart.SequenceEqual("ltr"u8) => TextDirection.Ltr,
+                _ when directionPart.SequenceEqual("rtl"u8) => TextDirection.Rtl,
+                _ => throw new NQuadsParseException(
+                    $"Invalid base direction '{Encoding.UTF8.GetString(directionPart)}' on line {lineNumber}; expected 'ltr' or 'rtl'.", lineNumber)
+            };
+        }
+
+        ValidateLanguageSubtags(languagePart, lineNumber);
+
+        Utf8String language = pool.Intern(languagePart);
+        if(direction is { } resolvedDirection)
+        {
+            NamedNode dirLangStringType = new(pool.Intern(Vocabulary.Rdf.DirLangString.Span));
+            return new Literal(value, dirLangStringType, language, resolvedDirection);
+        }
+
+        NamedNode langStringType = new(pool.Intern(Vocabulary.Rdf.LangString.Span));
+        return new Literal(value, langStringType, language);
+    }
+
+    private static int IndexOfDoubleHyphen(ReadOnlySpan<byte> tag)
+    {
+        for(int i = 0; i + 1 < tag.Length; i++)
+        {
+            if(tag[i] == Hyphen && tag[i + 1] == Hyphen)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private static void ValidateLanguageSubtags(ReadOnlySpan<byte> language, int lineNumber)
+    {
+        //The primary subtag is one or more ASCII letters; each following '-'-separated subtag
+        //is one or more letters or digits. This is the BCP 47 shape the RDF grammar requires.
+        if(language.IsEmpty || !IsAsciiLetter(language[0]))
+        {
+            throw new NQuadsParseException($"Language tag must begin with a letter on line {lineNumber}.", lineNumber);
+        }
+
+        //Each subtag is one to eight characters per BCP 47.
+        const int MaxSubtagLength = 8;
+        int subtagLength = 0;
+        bool primarySubtag = true;
+        for(int i = 0; i < language.Length; i++)
+        {
+            byte b = language[i];
+            if(b == Hyphen)
+            {
+                if(subtagLength == 0)
+                {
+                    throw new NQuadsParseException($"Empty language subtag on line {lineNumber}.", lineNumber);
+                }
+
+                subtagLength = 0;
+                primarySubtag = false;
+                continue;
+            }
+
+            bool valid = primarySubtag ? IsAsciiLetter(b) : IsAsciiLetterOrDigit(b);
+            if(!valid)
+            {
+                throw new NQuadsParseException(
+                    $"Invalid character '{(char)b}' in language tag on line {lineNumber}.", lineNumber);
+            }
+
+            subtagLength++;
+            if(subtagLength > MaxSubtagLength)
+            {
+                throw new NQuadsParseException(
+                    $"Language subtag exceeds {MaxSubtagLength} characters on line {lineNumber}.", lineNumber);
+            }
+        }
+
+        if(subtagLength == 0)
+        {
+            throw new NQuadsParseException($"Language tag ends with an empty subtag on line {lineNumber}.", lineNumber);
+        }
+    }
+
+    private static bool IsAsciiLetter(byte b)
+    {
+        return b is (>= (byte)'a' and <= (byte)'z') or (>= (byte)'A' and <= (byte)'Z');
+    }
+
+    private static bool IsAsciiLetterOrDigit(byte b)
+    {
+        return IsAsciiLetter(b) || b is >= (byte)'0' and <= (byte)'9';
     }
 
     /// <summary>
@@ -491,6 +771,14 @@ public static class NQuadsReader
                 {
                     case 't':
                         output[outPos++] = (byte)'\t';
+                        pos++;
+                        break;
+                    case 'b':
+                        output[outPos++] = (byte)'\b';
+                        pos++;
+                        break;
+                    case 'f':
+                        output[outPos++] = (byte)'\f';
                         pos++;
                         break;
                     case 'n':
@@ -578,6 +866,13 @@ public static class NQuadsReader
                 pos += 4;
                 outPos += EncodeUtf8CodePoint(codePoint, output.AsSpan(outPos));
             }
+            else if(iri[pos] == (byte)'\\' && pos + 1 < iri.Length && iri[pos + 1] == (byte)'U')
+            {
+                pos += 2;
+                int codePoint = ParseHex8(iri[pos..(pos + 8)], 0);
+                pos += 8;
+                outPos += EncodeUtf8CodePoint(codePoint, output.AsSpan(outPos));
+            }
             else
             {
                 output[outPos++] = iri[pos++];
@@ -634,5 +929,19 @@ public static class NQuadsReader
     private static bool IsWhitespace(byte b)
     {
         return b is (byte)' ' or (byte)'\t';
+    }
+
+    private static bool IsBlankNodeLabelByte(byte b)
+    {
+        //A blank-node label runs until a delimiter: whitespace, the statement terminator,
+        //or a structural character that cannot occur within a label (the angle brackets of a
+        //following term, or the parenthesis of a triple-term close). The period is treated as a
+        //delimiter here, matching the reader's existing whitespace-or-period boundary.
+        return !IsWhitespace(b)
+            && b != Period
+            && b != CloseParen
+            && b != OpenParen
+            && b != LessThan
+            && b != GreaterThan;
     }
 }

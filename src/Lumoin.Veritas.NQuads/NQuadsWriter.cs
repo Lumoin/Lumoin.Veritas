@@ -39,6 +39,10 @@ public static class NQuadsWriter
     private static ReadOnlySpan<byte> Quote => "\""u8;
     private static ReadOnlySpan<byte> DatatypeMarker => "\"^^<"u8;
     private static ReadOnlySpan<byte> LanguageMarker => "\"@"u8;
+    private static ReadOnlySpan<byte> TripleTermOpen => "<<( "u8;
+    private static ReadOnlySpan<byte> TripleTermClose => " )>>"u8;
+    private static ReadOnlySpan<byte> DirectionLtr => "--ltr"u8;
+    private static ReadOnlySpan<byte> DirectionRtl => "--rtl"u8;
 
     /// <summary>
     /// Writes a sequence of quads to the given stream in N-Quads format.
@@ -144,8 +148,30 @@ public static class NQuadsWriter
             NamedNode namedNode => WriteNamedNode(namedNode, buffer, position),
             BlankNode blankNode => WriteBlankNode(blankNode, buffer, position),
             Literal literal => WriteLiteral(literal, buffer, position),
+            TripleTerm tripleTerm => WriteTripleTerm(tripleTerm, buffer, position),
             _ => throw new InvalidOperationException($"Unknown RDF term type: {term.GetType().Name}.")
         };
+    }
+
+    private static int WriteTripleTerm(TripleTerm tripleTerm, byte[] buffer, int position)
+    {
+        buffer.AsSpan(position, TripleTermOpen.Length).CopyFrom(TripleTermOpen);
+        position += TripleTermOpen.Length;
+
+        position = WriteTerm(tripleTerm.Subject, buffer, position);
+        buffer.AsSpan(position, Space.Length).CopyFrom(Space);
+        position += Space.Length;
+
+        position = WriteNamedNode(tripleTerm.Predicate, buffer, position);
+        buffer.AsSpan(position, Space.Length).CopyFrom(Space);
+        position += Space.Length;
+
+        position = WriteTerm(tripleTerm.Object, buffer, position);
+
+        buffer.AsSpan(position, TripleTermClose.Length).CopyFrom(TripleTermClose);
+        position += TripleTermClose.Length;
+
+        return position;
     }
 
     private static int WriteNamedNode(NamedNode node, byte[] buffer, int position)
@@ -189,6 +215,13 @@ public static class NQuadsWriter
 
             language.Span.CopyTo(buffer.AsSpan(position));
             position += language.Length;
+
+            if(literal.BaseDirection is { } direction)
+            {
+                ReadOnlySpan<byte> directionMarker = direction == TextDirection.Ltr ? DirectionLtr : DirectionRtl;
+                buffer.AsSpan(position, directionMarker.Length).CopyFrom(directionMarker);
+                position += directionMarker.Length;
+            }
         }
         else
         {
