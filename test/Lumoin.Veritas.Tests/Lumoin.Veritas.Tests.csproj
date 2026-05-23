@@ -33,23 +33,12 @@
     <None Include="Cbor\Fixtures\Bluesky\*.car" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
-  <ItemGroup>
-    <!-- W3C RDF test cases vendored under Material/; copied to the test
-         binary's output directory so W3cCorpusPath can resolve them at
-         runtime. See Material/NQuads/ATTRIBUTION.md and
-         Material/Turtle/ATTRIBUTION.md for provenance. -->
-    <Content Include="Material\**\*.*">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-  </ItemGroup>
-
-  <ItemGroup>
-    <!-- Hand-authored harness unit-test fixtures. Copied alongside the
-         vendored W3C corpus so the harness's own tests can locate them. -->
-    <Content Include="Conformance\Fixtures\**\*.*">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-  </ItemGroup>
+  <!-- The vendored W3C corpus under Material/ and the hand-authored harness
+       fixtures under Conformance/Fixtures/ are read directly from the source
+       tree by W3cCorpusPath (anchored via [CallerFilePath]) and are
+       deliberately neither compiled nor copied to the build output. See
+       Material/NQuads/ATTRIBUTION.md and Material/Turtle/ATTRIBUTION.md for
+       provenance. -->
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Canonicalization\Lumoin.Veritas.Canonicalization.csproj" />

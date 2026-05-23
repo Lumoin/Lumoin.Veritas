@@ -2,8 +2,6 @@
 // Source vendored in test/Lumoin.Veritas.Tests/Material/NQuads/n-quads/.
 // See Material/NQuads/ATTRIBUTION.md for provenance.
 
-using System.Collections.Generic;
-using System.Reflection;
 using System.Threading.Tasks;
 using Lumoin.Veritas.NQuads;
 using Lumoin.Veritas.Tests.Conformance;
@@ -17,7 +15,7 @@ internal sealed class W3cNQuadsTests
     public TestContext TestContext { get; set; } = null!;
 
     [TestMethod]
-    [DynamicData(nameof(LoadCases), DynamicDataDisplayName = nameof(GetDisplayName))]
+    [W3cManifestData("NQuads", "n-quads")]
     public async Task RunW3cNQuadsTest(W3cTestCase testCase)
     {
         W3cOutcome outcome = await W3cTestRunner.RunAsync(
@@ -26,22 +24,5 @@ internal sealed class W3cNQuadsTests
             TestContext.CancellationToken).ConfigureAwait(false);
 
         ConformanceAssertions.Apply(outcome);
-    }
-
-    public static IEnumerable<object[]> LoadCases()
-    {
-        string manifestPath = W3cCorpusPath.For("NQuads", "n-quads", "manifest.ttl");
-        W3cManifest manifest = W3cManifestLoader.Load(manifestPath);
-        foreach(W3cTestCase testCase in manifest.Tests)
-        {
-            yield return [testCase];
-        }
-    }
-
-    public static string GetDisplayName(MethodInfo methodInfo, object[] data)
-    {
-        W3cTestCase testCase = (W3cTestCase)data[0];
-
-        return $"{testCase.Name} ({testCase.Type})";
     }
 }
