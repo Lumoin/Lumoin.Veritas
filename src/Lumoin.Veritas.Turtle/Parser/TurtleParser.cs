@@ -331,6 +331,17 @@ public sealed class TurtleParser
         }
 
         Term subject = ParseTerm();
+
+        //A triple term is a term that denotes a triple; it may stand only in object position,
+        //never as the subject of an asserted statement. A reified triple, by contrast, yields a
+        //reifier and may begin a statement.
+        if(subject is TripleTermTerm)
+        {
+            throw new TurtleParseException(
+                "A triple term may not be the subject of a statement.",
+                subject.Span);
+        }
+
         return ParseTripleBody(subject, startSpan, allowEmptyPredicates: SubjectAllowsEmptyPredicateList(subject));
     }
 
@@ -655,6 +666,7 @@ public sealed class TurtleParser
             case 1:
             {
                 frame.Subject = (Term)incoming!;
+                ValidateTripleTermSubject(frame.Subject);
                 Term predicate = ParsePredicateLeaf();
                 frame.Predicate = predicate;
                 frame.Stage = 2;
@@ -664,6 +676,7 @@ public sealed class TurtleParser
             case 2:
             {
                 frame.Object = (Term)incoming!;
+                ValidateTripleTermObject(frame.Object);
                 if(Current.Kind != TurtleTokenKind.CloseTripleTerm)
                 {
                     throw Expected("')>>' to close triple term", Current);
@@ -700,6 +713,7 @@ public sealed class TurtleParser
             case 1:
             {
                 frame.Subject = (Term)incoming!;
+                ValidateReifiedTripleSubject(frame.Subject);
                 Term predicate = ParsePredicateLeaf();
                 frame.Predicate = predicate;
                 frame.Stage = 2;
@@ -709,6 +723,7 @@ public sealed class TurtleParser
             case 2:
             {
                 frame.Object = (Term)incoming!;
+                ValidateReifiedTripleObject(frame.Object);
 
                 if(Current.Kind == TurtleTokenKind.Tilde)
                 {
@@ -912,9 +927,13 @@ public sealed class TurtleParser
             {
                 Advance();
                 frame.Stage = 1;
+
+                //An annotation block must contain at least one predicate-object pair; '{| |}' is invalid.
                 if(Current.Kind == TurtleTokenKind.CloseAnnotation)
                 {
-                    return FinaliseAnnotationBlock(frame);
+                    throw new TurtleParseException(
+                        $"An annotation block must contain at least one predicate-object pair at line {Current.Span.StartLine + 1} column {Current.Span.StartColumn + 1}.",
+                        Current.Span);
                 }
 
                 return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PredicateObject, StartSpan = Current.Span });
@@ -1002,6 +1021,55 @@ public sealed class TurtleParser
     private static bool CanStartVerb(TurtleTokenKind kind)
     {
         return kind is TurtleTokenKind.Iri or TurtleTokenKind.PrefixedName or TurtleTokenKind.A;
+    }
+
+    private static bool IsIriOrBlank(Term term)
+    {
+        return term is IriTerm or PrefixedNameTerm or BlankNodeTerm;
+    }
+
+    private static void ValidateTripleTermSubject(Term subject)
+    {
+        //ttSubject ::= iri | BlankNode.
+        if(!IsIriOrBlank(subject))
+        {
+            throw new TurtleParseException(
+                "The subject of a triple term must be an IRI or a blank node.",
+                subject.Span);
+        }
+    }
+
+    private static void ValidateTripleTermObject(Term objectTerm)
+    {
+        //ttObject ::= iri | BlankNode | literal | tripleTerm.
+        if(!IsIriOrBlank(objectTerm) && objectTerm is not (LiteralTerm or TripleTermTerm))
+        {
+            throw new TurtleParseException(
+                "The object of a triple term must be an IRI, blank node, literal, or triple term.",
+                objectTerm.Span);
+        }
+    }
+
+    private static void ValidateReifiedTripleSubject(Term subject)
+    {
+        //rtSubject ::= iri | BlankNode | reifiedTriple.
+        if(!IsIriOrBlank(subject) && subject is not ReifiedTripleTerm)
+        {
+            throw new TurtleParseException(
+                "The subject of a reified triple must be an IRI, blank node, or reified triple.",
+                subject.Span);
+        }
+    }
+
+    private static void ValidateReifiedTripleObject(Term objectTerm)
+    {
+        //rtObject ::= iri | BlankNode | literal | tripleTerm | reifiedTriple.
+        if(!IsIriOrBlank(objectTerm) && objectTerm is not (LiteralTerm or TripleTermTerm or ReifiedTripleTerm))
+        {
+            throw new TurtleParseException(
+                "The object of a reified triple must be an IRI, blank node, literal, triple term, or reified triple.",
+                objectTerm.Span);
+        }
     }
 
     private IriTerm ConsumeAKeyword()
