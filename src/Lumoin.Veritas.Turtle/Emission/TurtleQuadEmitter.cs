@@ -251,55 +251,119 @@ public sealed class TurtleQuadEmitter
 
     private RdfTerm ResolveTerm(Term term, RdfTerm? graph, out List<EmittedQuad> auxiliary)
     {
-        auxiliary = [];
+        List<EmittedQuad> sink = [];
+        auxiliary = sink;
 
+        //Resolve the term tree bottom-up with an explicit stack: a compound term is combined
+        //only after its child terms are resolved, so no production resolves another by recursion.
+        //Auxiliary quads accumulate into the shared sink; each child's quads are appended when the
+        //child is combined, which is before its parent — so order differs from a top-down walk, but
+        //the emitted set is the same.
+        Dictionary<int, RdfTerm> resolved = [];
+        Stack<ResolveFrame> stack = new();
+        stack.Push(new ResolveFrame(term, Expanded: false));
+
+        while(stack.Count > 0)
+        {
+            ResolveFrame frame = stack.Pop();
+            Term current = frame.Term;
+
+            if(frame.Expanded)
+            {
+                resolved[current.NodeId] = CombineResolvedTerm(current, graph, resolved, sink);
+
+                continue;
+            }
+
+            switch(current)
+            {
+                case IriTerm iri:
+                {
+                    resolved[current.NodeId] = new NamedNode(ResolveIri(iri.Value));
+
+                    break;
+                }
+
+                case PrefixedNameTerm prefixed:
+                {
+                    resolved[current.NodeId] = new NamedNode(ExpandPrefixedName(prefixed));
+
+                    break;
+                }
+
+                case BlankNodeTerm blank:
+                {
+                    resolved[current.NodeId] = new BlankNode(blank.Label);
+
+                    break;
+                }
+
+                case LiteralTerm literal:
+                {
+                    resolved[current.NodeId] = BuildLiteral(literal);
+
+                    break;
+                }
+
+                default:
+                {
+                    //A compound term is revisited (Expanded) once its children are resolved.
+                    stack.Push(new ResolveFrame(current, Expanded: true));
+                    PushResolveChildren(current, stack);
+
+                    break;
+                }
+            }
+        }
+
+        return resolved[term.NodeId];
+    }
+
+    private static void PushResolveChildren(Term term, Stack<ResolveFrame> stack)
+    {
         switch(term)
         {
-            case IriTerm iri:
-            {
-                return new NamedNode(ResolveIri(iri.Value));
-            }
-
-            case PrefixedNameTerm prefixed:
-            {
-                return new NamedNode(ExpandPrefixedName(prefixed));
-            }
-
-            case BlankNodeTerm blank:
-            {
-                return new BlankNode(blank.Label);
-            }
-
-            case LiteralTerm literal:
-            {
-                return BuildLiteral(literal);
-            }
-
             case CollectionTerm collection:
             {
-                return BuildCollection(collection, graph, auxiliary);
+                foreach(Term item in collection.Items)
+                {
+                    stack.Push(new ResolveFrame(item, Expanded: false));
+                }
+
+                break;
             }
 
             case BlankNodePropertyListTerm propertyList:
             {
-                BlankNode head = AllocateBlankNode();
-                EmitPropertyListBody(head, propertyList, graph, auxiliary);
-                return head;
+                foreach(PredicateObject predObj in propertyList.Predicates)
+                {
+                    foreach(AnnotatedObject annotatedObject in predObj.Objects)
+                    {
+                        stack.Push(new ResolveFrame(annotatedObject.Object, Expanded: false));
+                    }
+                }
+
+                break;
             }
 
-            case TripleTermTerm tripleTermNode:
+            case TripleTermTerm tripleTerm:
             {
-                RdfTerm inner = ResolveTerm(tripleTermNode.Subject, graph, out List<EmittedQuad> subjAux);
-                NamedNode innerPredicate = ResolvePredicate(tripleTermNode.Predicate);
-                RdfTerm innerObject = ResolveTerm(tripleTermNode.Object, graph, out List<EmittedQuad> objAux);
-                AppendTo(auxiliary, subjAux);
-                AppendTo(auxiliary, objAux);
-                return new TripleTerm(inner, innerPredicate, innerObject);
+                stack.Push(new ResolveFrame(tripleTerm.Subject, Expanded: false));
+                stack.Push(new ResolveFrame(tripleTerm.Object, Expanded: false));
+
+                break;
             }
 
             case ReifiedTripleTerm reified:
             {
-                return ExpandReifiedTriple(reified, graph, auxiliary);
+                stack.Push(new ResolveFrame(reified.Subject, Expanded: false));
+                stack.Push(new ResolveFrame(reified.Object, Expanded: false));
+                if(reified.Reifier is not null)
+                {
+                    stack.Push(new ResolveFrame(reified.Reifier, Expanded: false));
+                }
+
+                break;
             }
 
             default:
@@ -311,11 +375,47 @@ public sealed class TurtleQuadEmitter
         }
     }
 
-    private static void AppendTo(List<EmittedQuad> target, List<EmittedQuad> source)
+    private RdfTerm CombineResolvedTerm(
+        Term term,
+        RdfTerm? graph,
+        Dictionary<int, RdfTerm> resolved,
+        List<EmittedQuad> sink)
     {
-        for(int i = 0; i < source.Count; i++)
+        switch(term)
         {
-            target.Add(source[i]);
+            case CollectionTerm collection:
+            {
+                return BuildCollection(collection, graph, resolved, sink);
+            }
+
+            case BlankNodePropertyListTerm propertyList:
+            {
+                BlankNode head = AllocateBlankNode();
+                EmitPropertyListBody(head, propertyList, graph, resolved, sink);
+
+                return head;
+            }
+
+            case TripleTermTerm tripleTermNode:
+            {
+                RdfTerm inner = resolved[tripleTermNode.Subject.NodeId];
+                NamedNode innerPredicate = ResolvePredicate(tripleTermNode.Predicate);
+                RdfTerm innerObject = resolved[tripleTermNode.Object.NodeId];
+
+                return new TripleTerm(inner, innerPredicate, innerObject);
+            }
+
+            case ReifiedTripleTerm reified:
+            {
+                return ExpandReifiedTriple(reified, graph, resolved, sink);
+            }
+
+            default:
+            {
+                throw new TurtleParseException(
+                    $"Unsupported term kind {term.GetType().Name}.",
+                    term.Span);
+            }
         }
     }
 
@@ -323,6 +423,7 @@ public sealed class TurtleQuadEmitter
         BlankNode head,
         BlankNodePropertyListTerm propertyList,
         RdfTerm? graph,
+        Dictionary<int, RdfTerm> resolved,
         List<EmittedQuad> sink)
     {
         DocumentNodeRef anchor = new(Document.DocumentId, propertyList.NodeId);
@@ -332,8 +433,7 @@ public sealed class TurtleQuadEmitter
             NamedNode predicate = ResolvePredicate(predObj.Predicate);
             foreach(AnnotatedObject annotatedObject in predObj.Objects)
             {
-                RdfTerm obj = ResolveTerm(annotatedObject.Object, graph, out List<EmittedQuad> objAux);
-                AppendTo(sink, objAux);
+                RdfTerm obj = resolved[annotatedObject.Object.NodeId];
 
                 Quad quad = new(head, predicate, obj, graph);
                 sink.Add(new EmittedQuad(quad, new DocumentNodeRef(Document.DocumentId, annotatedObject.NodeId)));
@@ -352,7 +452,11 @@ public sealed class TurtleQuadEmitter
         _ = anchor;
     }
 
-    private RdfTerm BuildCollection(CollectionTerm collection, RdfTerm? graph, List<EmittedQuad> sink)
+    private RdfTerm BuildCollection(
+        CollectionTerm collection,
+        RdfTerm? graph,
+        Dictionary<int, RdfTerm> resolved,
+        List<EmittedQuad> sink)
     {
         NamedNode rdfNil = new(Pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#nil"u8));
         if(collection.Items.IsDefaultOrEmpty)
@@ -368,8 +472,7 @@ public sealed class TurtleQuadEmitter
 
         for(int i = 0; i < collection.Items.Length; i++)
         {
-            RdfTerm item = ResolveTerm(collection.Items[i], graph, out List<EmittedQuad> itemAux);
-            AppendTo(sink, itemAux);
+            RdfTerm item = resolved[collection.Items[i].NodeId];
 
             sink.Add(new EmittedQuad(
                 new Quad(currentHead, rdfFirst, item, graph),
@@ -394,20 +497,22 @@ public sealed class TurtleQuadEmitter
         return head;
     }
 
-    private RdfTerm ExpandReifiedTriple(ReifiedTripleTerm reified, RdfTerm? graph, List<EmittedQuad> sink)
+    private RdfTerm ExpandReifiedTriple(
+        ReifiedTripleTerm reified,
+        RdfTerm? graph,
+        Dictionary<int, RdfTerm> resolved,
+        List<EmittedQuad> sink)
     {
-        RdfTerm subject = ResolveTerm(reified.Subject, graph, out List<EmittedQuad> subjAux);
+        RdfTerm subject = resolved[reified.Subject.NodeId];
         NamedNode predicate = ResolvePredicate(reified.Predicate);
-        RdfTerm objectTerm = ResolveTerm(reified.Object, graph, out List<EmittedQuad> objAux);
-        AppendTo(sink, subjAux);
-        AppendTo(sink, objAux);
+        RdfTerm objectTerm = resolved[reified.Object.NodeId];
 
         //A reified triple <<s p o>> yields only the reifier and the reification
         //"reifier rdf:reifies <<( s p o )>>"; it does not assert the inner triple. The inner
         //triple is asserted only when written as a plain statement (optionally annotated).
         RdfTerm reifier = reified.Reifier is null
             ? AllocateBlankNode()
-            : ResolveTermAsSimple(reified.Reifier);
+            : resolved[reified.Reifier.NodeId];
 
         NamedNode reifies = new(Pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies"u8));
         TripleTerm tripleTerm = new(subject, predicate, objectTerm);
