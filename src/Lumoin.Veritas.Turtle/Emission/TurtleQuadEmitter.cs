@@ -153,64 +153,81 @@ public sealed class TurtleQuadEmitter
         //"reifier rdf:reifies <<( s p o )>>". A reifier marker (~ with an optional identifier)
         //leaves its reifier pending so an immediately-following annotation block reuses it;
         //a block with no pending reifier allocates a fresh blank node. A block consumes the
-        //pending reifier, so consecutive blocks each get their own reifier.
-        TripleTerm tripleTerm = new(subject, predicate, objectTerm);
+        //pending reifier, so consecutive blocks each get their own reifier. Annotation blocks
+        //nest — a block attached to an object inside another block annotates that outer block's
+        //annotation triple — and the nesting is walked with an explicit stack rather than by
+        //recursion.
         NamedNode reifies = new(pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies"u8));
-        RdfTerm? pendingReifier = null;
+        Stack<AnnotationFrame> work = new();
+        work.Push(new AnnotationFrame(annotatedObject, subject, predicate, objectTerm));
 
-        foreach(Annotation annotation in annotatedObject.Annotations)
+        while(work.Count > 0)
         {
-            switch(annotation)
+            AnnotationFrame frame = work.Pop();
+            TripleTerm tripleTerm = new(frame.Subject, frame.Predicate, frame.ObjectTerm);
+            RdfTerm? pendingReifier = null;
+
+            foreach(Annotation annotation in frame.AnnotatedObject.Annotations)
             {
-                case ReifierAnnotation reifier:
+                switch(annotation)
                 {
-                    RdfTerm resolvedReifier = reifier.Identifier is null
-                        ? AllocateBlankNode()
-                        : ResolveTermAsSimple(reifier.Identifier);
-
-                    Quad reificationQuad = new(resolvedReifier, reifies, tripleTerm, graph);
-                    yield return new EmittedQuad(reificationQuad, new DocumentNodeRef(document.DocumentId, reifier.NodeId));
-                    pendingReifier = resolvedReifier;
-                    break;
-                }
-
-                case AnnotationBlock block:
-                {
-                    RdfTerm blockReifier;
-                    if(pendingReifier is not null)
+                    case ReifierAnnotation reifier:
                     {
-                        blockReifier = pendingReifier;
-                    }
-                    else
-                    {
-                        blockReifier = AllocateBlankNode();
-                        Quad reificationQuad = new(blockReifier, reifies, tripleTerm, graph);
-                        yield return new EmittedQuad(reificationQuad, new DocumentNodeRef(document.DocumentId, block.NodeId));
+                        RdfTerm resolvedReifier = reifier.Identifier is null
+                            ? AllocateBlankNode()
+                            : ResolveTermAsSimple(reifier.Identifier);
+
+                        Quad reificationQuad = new(resolvedReifier, reifies, tripleTerm, graph);
+                        yield return new EmittedQuad(reificationQuad, new DocumentNodeRef(document.DocumentId, reifier.NodeId));
+                        pendingReifier = resolvedReifier;
+                        break;
                     }
 
-                    foreach(PredicateObject inner in block.Predicates)
+                    case AnnotationBlock block:
                     {
-                        NamedNode innerPredicate = ResolvePredicate(inner.Predicate);
-                        foreach(AnnotatedObject innerObject in inner.Objects)
+                        RdfTerm blockReifier;
+                        if(pendingReifier is not null)
                         {
-                            RdfTerm innerObjectTerm = ResolveTerm(innerObject.Object, graph, out List<EmittedQuad> aux);
-                            foreach(EmittedQuad q in aux)
-                            {
-                                yield return q;
-                            }
-
-                            Quad annotationQuad = new(blockReifier, innerPredicate, innerObjectTerm, graph);
-                            yield return new EmittedQuad(annotationQuad, new DocumentNodeRef(document.DocumentId, innerObject.NodeId));
+                            blockReifier = pendingReifier;
                         }
+                        else
+                        {
+                            blockReifier = AllocateBlankNode();
+                            Quad reificationQuad = new(blockReifier, reifies, tripleTerm, graph);
+                            yield return new EmittedQuad(reificationQuad, new DocumentNodeRef(document.DocumentId, block.NodeId));
+                        }
+
+                        foreach(PredicateObject inner in block.Predicates)
+                        {
+                            NamedNode innerPredicate = ResolvePredicate(inner.Predicate);
+                            foreach(AnnotatedObject innerObject in inner.Objects)
+                            {
+                                RdfTerm innerObjectTerm = ResolveTerm(innerObject.Object, graph, out List<EmittedQuad> aux);
+                                foreach(EmittedQuad q in aux)
+                                {
+                                    yield return q;
+                                }
+
+                                Quad annotationQuad = new(blockReifier, innerPredicate, innerObjectTerm, graph);
+                                yield return new EmittedQuad(annotationQuad, new DocumentNodeRef(document.DocumentId, innerObject.NodeId));
+
+                                //An annotation nested on an object within the block annotates the
+                                //block's own annotation triple (blockReifier innerPredicate innerObject).
+                                if(!innerObject.Annotations.IsDefaultOrEmpty)
+                                {
+                                    work.Push(new AnnotationFrame(innerObject, blockReifier, innerPredicate, innerObjectTerm));
+                                }
+                            }
+                        }
+
+                        pendingReifier = null;
+                        break;
                     }
 
-                    pendingReifier = null;
-                    break;
-                }
-
-                default:
-                {
-                    break;
+                    default:
+                    {
+                        break;
+                    }
                 }
             }
         }

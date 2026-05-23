@@ -204,6 +204,35 @@ internal sealed class TurtleQuadEmitterTests
         Assert.HasCount(5, quads);
     }
 
+    [TestMethod]
+    public void HandlesNestedAnnotationBlock()
+    {
+        //The inner block annotates the outer block's annotation triple (reifier :a :b).
+        string turtle = "<http://example.org/s> <http://example.org/p> <http://example.org/o> {| <http://example.org/a> <http://example.org/b> {| <http://example.org/a2> <http://example.org/b2> |} |} .";
+        List<EmittedQuad> quads = EmitAll(turtle, TurtleSyntax.Turtle);
+
+        //Main triple, outer reification, outer :a :b, inner reification, inner :a2 :b2.
+        Assert.HasCount(5, quads);
+
+        int reifiesCount = 0;
+        bool sawInnerAnnotation = false;
+        foreach(EmittedQuad q in quads)
+        {
+            if(q.Quad.Predicate.Iri.ToString() == "http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies")
+            {
+                reifiesCount++;
+            }
+
+            if(q.Quad.Predicate.Iri.ToString() == "http://example.org/a2")
+            {
+                sawInnerAnnotation = true;
+            }
+        }
+
+        Assert.AreEqual(2, reifiesCount, "Expected two reification quads (outer and inner).");
+        Assert.IsTrue(sawInnerAnnotation, "Expected the nested annotation predicate to be emitted.");
+    }
+
     private static EmittedQuad FindReifies(List<EmittedQuad> quads)
     {
         foreach(EmittedQuad q in quads)
