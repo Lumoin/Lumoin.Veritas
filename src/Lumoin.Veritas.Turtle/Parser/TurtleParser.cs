@@ -36,12 +36,6 @@ namespace Lumoin.Veritas.Turtle.Parser;
 /// </remarks>
 public sealed class TurtleParser
 {
-    private readonly List<TurtleToken> tokens;
-    private readonly Utf8StringPool pool;
-    private readonly DocumentId documentId;
-    private readonly TurtleSyntax syntax;
-    private readonly Dictionary<int, TurtleAstNode> nodes = [];
-
     private int index;
     private int nextNodeId;
     private int nextSyntheticBlankNode;
@@ -59,16 +53,31 @@ public sealed class TurtleParser
         ArgumentNullException.ThrowIfNull(tokens);
         ArgumentNullException.ThrowIfNull(pool);
 
-        this.tokens = [];
+        Tokens = [];
         foreach(TurtleToken token in tokens)
         {
-            this.tokens.Add(token);
+            Tokens.Add(token);
         }
 
-        this.pool = pool;
-        this.documentId = documentId;
-        this.syntax = syntax;
+        Pool = pool;
+        DocumentId = documentId;
+        Syntax = syntax;
     }
+
+    /// <summary>Gets the materialised token stream the parser indexes into.</summary>
+    private List<TurtleToken> Tokens { get; }
+
+    /// <summary>Gets the pool used to intern parser-allocated identifiers.</summary>
+    private Utf8StringPool Pool { get; }
+
+    /// <summary>Gets the content-addressed identifier of the source document.</summary>
+    private DocumentId DocumentId { get; }
+
+    /// <summary>Gets the syntax flavour being parsed.</summary>
+    private TurtleSyntax Syntax { get; }
+
+    /// <summary>Gets the node-id-keyed lookup table populated as nodes are created.</summary>
+    private Dictionary<int, TurtleAstNode> Nodes { get; } = [];
 
     /// <summary>
     /// Parses the token stream into a <see cref="TurtleDocument"/>.
@@ -111,7 +120,7 @@ public sealed class TurtleParser
 
                 case TurtleTokenKind.GraphKeyword:
                 {
-                    if(syntax != TurtleSyntax.TriG)
+                    if(Syntax != TurtleSyntax.TriG)
                     {
                         throw new TurtleParseException(
                             "GRAPH keyword is only valid in TriG syntax.",
@@ -124,7 +133,7 @@ public sealed class TurtleParser
 
                 case TurtleTokenKind.OpenBrace:
                 {
-                    if(syntax != TurtleSyntax.TriG)
+                    if(Syntax != TurtleSyntax.TriG)
                     {
                         throw new TurtleParseException(
                             "Graph block '{' is only valid in TriG syntax.",
@@ -145,27 +154,27 @@ public sealed class TurtleParser
         }
 
         return new TurtleDocument(
-            documentId,
+            DocumentId,
             prefixes.ToImmutable(),
             baseDeclarations.ToImmutable(),
             versions.ToImmutable(),
             statements.ToImmutable(),
-            nodes);
+            Nodes);
     }
 
-    private TurtleToken Current => tokens[index];
+    private TurtleToken Current => Tokens[index];
 
     private TurtleToken Peek(int offset)
     {
         int target = index + offset;
-        return target < tokens.Count
-            ? tokens[target]
-            : tokens[^1];
+        return target < Tokens.Count
+            ? Tokens[target]
+            : Tokens[^1];
     }
 
     private void Advance()
     {
-        if(index < tokens.Count - 1)
+        if(index < Tokens.Count - 1)
         {
             index++;
         }
@@ -332,7 +341,7 @@ public sealed class TurtleParser
         SourceSpan startSpan = Current.Span;
 
         //In TriG, an IRI / prefixed-name / blank-node-label followed by '{' is a graph block label.
-        if(syntax == TurtleSyntax.TriG && IsGraphLabelLookahead())
+        if(Syntax == TurtleSyntax.TriG && IsGraphLabelLookahead())
         {
             Term label = ConsumeLeafTermFor("graph label");
             return ParseGraphBlockBody(startSpan, label, hasKeyword: false);
@@ -1093,7 +1102,7 @@ public sealed class TurtleParser
     private IriTerm ConsumeAKeyword()
     {
         SourceSpan span = Current.Span;
-        Utf8String rdfType = pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"u8);
+        Utf8String rdfType = Pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"u8);
         Advance();
         return NewNode(id => new IriTerm(id, span, rdfType));
     }
@@ -1118,8 +1127,8 @@ public sealed class TurtleParser
                 span);
         }
 
-        Utf8String prefix = pool.Intern(bytes[..colonIndex]);
-        Utf8String local = pool.Intern(bytes[(colonIndex + 1)..]);
+        Utf8String prefix = Pool.Intern(bytes[..colonIndex]);
+        Utf8String local = Pool.Intern(bytes[(colonIndex + 1)..]);
         Advance();
 
         return NewNode(id => new PrefixedNameTerm(id, span, prefix, local));
@@ -1175,7 +1184,7 @@ public sealed class TurtleParser
                         Current.Span);
                 }
 
-                language = pool.Intern(bytes[..dirIndex]);
+                language = Pool.Intern(bytes[..dirIndex]);
                 ReadOnlySpan<byte> dirSpan = bytes[(dirIndex + 2)..];
                 direction = ParseDirection(dirSpan, Current.Span);
                 endSpan = Current.Span;
@@ -1246,9 +1255,9 @@ public sealed class TurtleParser
 
         Utf8String datatypeIri = kind switch
         {
-            TurtleTokenKind.IntegerLiteral => pool.Intern("http://www.w3.org/2001/XMLSchema#integer"u8),
-            TurtleTokenKind.DecimalLiteral => pool.Intern("http://www.w3.org/2001/XMLSchema#decimal"u8),
-            TurtleTokenKind.DoubleLiteral => pool.Intern("http://www.w3.org/2001/XMLSchema#double"u8),
+            TurtleTokenKind.IntegerLiteral => Pool.Intern("http://www.w3.org/2001/XMLSchema#integer"u8),
+            TurtleTokenKind.DecimalLiteral => Pool.Intern("http://www.w3.org/2001/XMLSchema#decimal"u8),
+            TurtleTokenKind.DoubleLiteral => Pool.Intern("http://www.w3.org/2001/XMLSchema#double"u8),
             _ => throw new TurtleParseException("Numeric kind out of range.", span)
         };
 
@@ -1262,7 +1271,7 @@ public sealed class TurtleParser
         Utf8String text = Current.Value;
         Advance();
 
-        Utf8String datatypeIri = pool.Intern("http://www.w3.org/2001/XMLSchema#boolean"u8);
+        Utf8String datatypeIri = Pool.Intern("http://www.w3.org/2001/XMLSchema#boolean"u8);
         Term datatype = NewNode(id => new IriTerm(id, span, datatypeIri));
         return NewNode(id => new LiteralTerm(id, span, text, datatype, language: null, direction: null));
     }
@@ -1271,7 +1280,7 @@ public sealed class TurtleParser
     {
         string raw = string.Create(CultureInfo.InvariantCulture, $"b{nextSyntheticBlankNode}");
         nextSyntheticBlankNode++;
-        return pool.Intern(raw);
+        return Pool.Intern(raw);
     }
 
     private TNode NewNode<TNode>(Func<int, TNode> factory)
@@ -1279,7 +1288,7 @@ public sealed class TurtleParser
     {
         int id = nextNodeId++;
         TNode node = factory(id);
-        nodes[id] = node;
+        Nodes[id] = node;
         return node;
     }
 
@@ -1315,7 +1324,7 @@ public sealed class TurtleParser
             throw new TurtleParseException("Prefix declaration name must end with ':'.", Current.Span);
         }
 
-        return pool.Intern(bytes[..^1]);
+        return Pool.Intern(bytes[..^1]);
     }
 
     private static ImmutableArray<TItem> ToImmutable<TItem>(List<TItem> items)

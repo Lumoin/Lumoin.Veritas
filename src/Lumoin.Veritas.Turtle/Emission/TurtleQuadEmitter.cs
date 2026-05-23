@@ -27,9 +27,6 @@ namespace Lumoin.Veritas.Turtle.Emission;
 /// </remarks>
 public sealed class TurtleQuadEmitter
 {
-    private readonly TurtleDocument document;
-    private readonly Utf8StringPool pool;
-    private readonly Dictionary<Utf8String, IriTerm> prefixMap = [];
     private IriTerm? baseIri;
     private int nextEmitterBlankNode;
 
@@ -43,9 +40,18 @@ public sealed class TurtleQuadEmitter
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(pool);
 
-        this.document = document;
-        this.pool = pool;
+        Document = document;
+        Pool = pool;
     }
+
+    /// <summary>Gets the parsed document being walked.</summary>
+    private TurtleDocument Document { get; }
+
+    /// <summary>Gets the pool used to intern emitter-allocated identifiers.</summary>
+    private Utf8StringPool Pool { get; }
+
+    /// <summary>Gets the prefix-to-namespace map accumulated from the document's prefix declarations.</summary>
+    private Dictionary<Utf8String, IriTerm> PrefixMap { get; } = [];
 
     /// <summary>
     /// Walks the document and yields <see cref="EmittedQuad"/> instances in
@@ -54,13 +60,13 @@ public sealed class TurtleQuadEmitter
     /// <returns>An iterator over the quads the document expresses.</returns>
     public IEnumerable<EmittedQuad> Emit()
     {
-        foreach(Statement statement in document.Statements)
+        foreach(Statement statement in Document.Statements)
         {
             switch(statement)
             {
                 case PrefixDeclaration prefix:
                 {
-                    prefixMap[prefix.Prefix] = prefix.Iri;
+                    PrefixMap[prefix.Prefix] = prefix.Iri;
                     break;
                 }
 
@@ -129,7 +135,7 @@ public sealed class TurtleQuadEmitter
                 }
 
                 Quad mainQuad = new(subject, predicate, objectTerm, graph);
-                yield return new EmittedQuad(mainQuad, new DocumentNodeRef(document.DocumentId, annotatedObject.NodeId));
+                yield return new EmittedQuad(mainQuad, new DocumentNodeRef(Document.DocumentId, annotatedObject.NodeId));
 
                 if(!annotatedObject.Annotations.IsDefaultOrEmpty)
                 {
@@ -157,7 +163,7 @@ public sealed class TurtleQuadEmitter
         //nest — a block attached to an object inside another block annotates that outer block's
         //annotation triple — and the nesting is walked with an explicit stack rather than by
         //recursion.
-        NamedNode reifies = new(pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies"u8));
+        NamedNode reifies = new(Pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies"u8));
         Stack<AnnotationFrame> work = new();
         work.Push(new AnnotationFrame(annotatedObject, subject, predicate, objectTerm));
 
@@ -179,7 +185,7 @@ public sealed class TurtleQuadEmitter
 
                         Quad reificationQuad = new(resolvedReifier, reifies, tripleTerm, graph);
 
-                        yield return new EmittedQuad(reificationQuad, new DocumentNodeRef(document.DocumentId, reifier.NodeId));
+                        yield return new EmittedQuad(reificationQuad, new DocumentNodeRef(Document.DocumentId, reifier.NodeId));
                         pendingReifier = resolvedReifier;
 
                         break;
@@ -197,7 +203,7 @@ public sealed class TurtleQuadEmitter
                             blockReifier = AllocateBlankNode();
                             Quad reificationQuad = new(blockReifier, reifies, tripleTerm, graph);
 
-                            yield return new EmittedQuad(reificationQuad, new DocumentNodeRef(document.DocumentId, block.NodeId));
+                            yield return new EmittedQuad(reificationQuad, new DocumentNodeRef(Document.DocumentId, block.NodeId));
                         }
 
                         foreach(PredicateObject inner in block.Predicates)
@@ -213,7 +219,7 @@ public sealed class TurtleQuadEmitter
 
                                 Quad annotationQuad = new(blockReifier, innerPredicate, innerObjectTerm, graph);
 
-                                yield return new EmittedQuad(annotationQuad, new DocumentNodeRef(document.DocumentId, innerObject.NodeId));
+                                yield return new EmittedQuad(annotationQuad, new DocumentNodeRef(Document.DocumentId, innerObject.NodeId));
 
                                 //An annotation nested on an object within the block annotates the
                                 //block's own annotation triple (blockReifier innerPredicate innerObject).
@@ -319,7 +325,7 @@ public sealed class TurtleQuadEmitter
         RdfTerm? graph,
         List<EmittedQuad> sink)
     {
-        DocumentNodeRef anchor = new(document.DocumentId, propertyList.NodeId);
+        DocumentNodeRef anchor = new(Document.DocumentId, propertyList.NodeId);
 
         foreach(PredicateObject predObj in propertyList.Predicates)
         {
@@ -330,7 +336,7 @@ public sealed class TurtleQuadEmitter
                 AppendTo(sink, objAux);
 
                 Quad quad = new(head, predicate, obj, graph);
-                sink.Add(new EmittedQuad(quad, new DocumentNodeRef(document.DocumentId, annotatedObject.NodeId)));
+                sink.Add(new EmittedQuad(quad, new DocumentNodeRef(Document.DocumentId, annotatedObject.NodeId)));
 
                 if(!annotatedObject.Annotations.IsDefaultOrEmpty)
                 {
@@ -348,14 +354,14 @@ public sealed class TurtleQuadEmitter
 
     private RdfTerm BuildCollection(CollectionTerm collection, RdfTerm? graph, List<EmittedQuad> sink)
     {
-        NamedNode rdfNil = new(pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#nil"u8));
+        NamedNode rdfNil = new(Pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#nil"u8));
         if(collection.Items.IsDefaultOrEmpty)
         {
             return rdfNil;
         }
 
-        NamedNode rdfFirst = new(pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#first"u8));
-        NamedNode rdfRest = new(pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#rest"u8));
+        NamedNode rdfFirst = new(Pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#first"u8));
+        NamedNode rdfRest = new(Pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#rest"u8));
 
         BlankNode head = AllocateBlankNode();
         BlankNode currentHead = head;
@@ -367,20 +373,20 @@ public sealed class TurtleQuadEmitter
 
             sink.Add(new EmittedQuad(
                 new Quad(currentHead, rdfFirst, item, graph),
-                new DocumentNodeRef(document.DocumentId, collection.NodeId)));
+                new DocumentNodeRef(Document.DocumentId, collection.NodeId)));
 
             if(i == collection.Items.Length - 1)
             {
                 sink.Add(new EmittedQuad(
                     new Quad(currentHead, rdfRest, rdfNil, graph),
-                    new DocumentNodeRef(document.DocumentId, collection.NodeId)));
+                    new DocumentNodeRef(Document.DocumentId, collection.NodeId)));
             }
             else
             {
                 BlankNode next = AllocateBlankNode();
                 sink.Add(new EmittedQuad(
                     new Quad(currentHead, rdfRest, next, graph),
-                    new DocumentNodeRef(document.DocumentId, collection.NodeId)));
+                    new DocumentNodeRef(Document.DocumentId, collection.NodeId)));
                 currentHead = next;
             }
         }
@@ -403,12 +409,12 @@ public sealed class TurtleQuadEmitter
             ? AllocateBlankNode()
             : ResolveTermAsSimple(reified.Reifier);
 
-        NamedNode reifies = new(pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies"u8));
+        NamedNode reifies = new(Pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies"u8));
         TripleTerm tripleTerm = new(subject, predicate, objectTerm);
 
         sink.Add(new EmittedQuad(
             new Quad(reifier, reifies, tripleTerm, graph),
-            new DocumentNodeRef(document.DocumentId, reified.NodeId)));
+            new DocumentNodeRef(Document.DocumentId, reified.NodeId)));
 
         return reifier;
     }
@@ -438,15 +444,15 @@ public sealed class TurtleQuadEmitter
         }
         else if(literal.Language is not null && literal.Direction is not null)
         {
-            datatype = new NamedNode(pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#dirLangString"u8));
+            datatype = new NamedNode(Pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#dirLangString"u8));
         }
         else if(literal.Language is not null)
         {
-            datatype = new NamedNode(pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#langString"u8));
+            datatype = new NamedNode(Pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#langString"u8));
         }
         else
         {
-            datatype = new NamedNode(pool.Intern("http://www.w3.org/2001/XMLSchema#string"u8));
+            datatype = new NamedNode(Pool.Intern("http://www.w3.org/2001/XMLSchema#string"u8));
         }
 
         return new Literal(literal.Value, datatype, literal.Language, literal.Direction);
@@ -473,12 +479,12 @@ public sealed class TurtleQuadEmitter
 
         baseBytes.CopyTo(buffer);
         bytes.CopyTo(buffer[baseBytes.Length..]);
-        return pool.Intern(buffer);
+        return Pool.Intern(buffer);
     }
 
     private Utf8String ExpandPrefixedName(PrefixedNameTerm prefixed)
     {
-        if(!prefixMap.TryGetValue(prefixed.Prefix, out IriTerm? namespaceIri))
+        if(!PrefixMap.TryGetValue(prefixed.Prefix, out IriTerm? namespaceIri))
         {
             throw new TurtleParseException(
                 $"Undeclared prefix '{prefixed.Prefix.ToString()}' in prefixed name.",
@@ -494,7 +500,7 @@ public sealed class TurtleQuadEmitter
 
         nsBytes.CopyTo(buffer);
         localBytes.CopyTo(buffer[nsBytes.Length..]);
-        return pool.Intern(buffer);
+        return Pool.Intern(buffer);
     }
 
     private static bool IsAbsoluteIri(ReadOnlySpan<byte> bytes)
@@ -525,6 +531,6 @@ public sealed class TurtleQuadEmitter
     {
         string label = string.Create(CultureInfo.InvariantCulture, $"g{nextEmitterBlankNode}");
         nextEmitterBlankNode++;
-        return new BlankNode(pool.Intern(label));
+        return new BlankNode(Pool.Intern(label));
     }
 }
