@@ -21,7 +21,7 @@ namespace Lumoin.Veritas.Turtle;
 /// construction without a parsed source uses <see cref="SourceSpan.None"/>.
 /// </para>
 /// </remarks>
-public sealed class TurtleParseException: Exception
+public class TurtleParseException: Exception
 {
     /// <summary>
     /// Initializes a new <see cref="TurtleParseException"/> with a default message.

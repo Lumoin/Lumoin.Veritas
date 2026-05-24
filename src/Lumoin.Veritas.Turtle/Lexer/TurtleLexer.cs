@@ -44,14 +44,16 @@ public sealed class TurtleLexer
     private long consumed;
     private int line;
     private int column;
+    private TokenGrowthContext scratchToken;
 
     /// <summary>
     /// Initialises a new <see cref="TurtleLexer"/> for the supplied UTF-8 source bytes.
     /// </summary>
     /// <param name="source">The UTF-8 encoded source document.</param>
     /// <param name="pool">The pool used to intern token payloads.</param>
-    public TurtleLexer(ReadOnlyMemory<byte> source, Utf8StringPool pool)
-        : this(new ReadOnlySequence<byte>(source), pool)
+    /// <param name="limits">Resource limits applied while lexing; defaults to <see cref="TurtleReaderLimits.Default"/>.</param>
+    public TurtleLexer(ReadOnlyMemory<byte> source, Utf8StringPool pool, TurtleReaderLimits? limits = null)
+        : this(new ReadOnlySequence<byte>(source), pool, limits)
     {
     }
 
@@ -60,12 +62,14 @@ public sealed class TurtleLexer
     /// </summary>
     /// <param name="source">The UTF-8 encoded source document, possibly spanning segments.</param>
     /// <param name="pool">The pool used to intern token payloads.</param>
-    public TurtleLexer(ReadOnlySequence<byte> source, Utf8StringPool pool)
+    /// <param name="limits">Resource limits applied while lexing; defaults to <see cref="TurtleReaderLimits.Default"/>.</param>
+    public TurtleLexer(ReadOnlySequence<byte> source, Utf8StringPool pool, TurtleReaderLimits? limits = null)
     {
         ArgumentNullException.ThrowIfNull(pool);
 
         Source = source;
         Pool = pool;
+        Limits = limits ?? TurtleReaderLimits.Default;
     }
 
     /// <summary>Gets the UTF-8 source bytes being lexed.</summary>
@@ -73,6 +77,9 @@ public sealed class TurtleLexer
 
     /// <summary>Gets the pool used to intern token payloads.</summary>
     private Utf8StringPool Pool { get; }
+
+    /// <summary>Gets the resource limits applied while lexing.</summary>
+    private TurtleReaderLimits Limits { get; }
 
     /// <summary>
     /// Iterates the source document producing tokens until end of input.
@@ -455,6 +462,7 @@ public sealed class TurtleLexer
         int startByte = (int)reader.Consumed;
         int startLine = line;
         int startColumn = column;
+        scratchToken = new TokenGrowthContext(TurtleTokenKind.Iri, 0, startByte, startLine, startColumn);
 
         Advance(ref reader);
 
@@ -607,6 +615,8 @@ public sealed class TurtleLexer
             return LexLongString(ref reader, quote);
         }
 
+        scratchToken = new TokenGrowthContext(TurtleTokenKind.StringLiteral, 0, startByte, startLine, startColumn);
+
         Advance(ref reader);
 
         IMemoryOwner<byte> scratch = Pool.RentScratch(64);
@@ -677,6 +687,7 @@ public sealed class TurtleLexer
         int startByte = (int)reader.Consumed;
         int startLine = line;
         int startColumn = column;
+        scratchToken = new TokenGrowthContext(TurtleTokenKind.LongStringLiteral, 0, startByte, startLine, startColumn);
 
         AdvanceCount(ref reader, 3);
 
@@ -1467,6 +1478,10 @@ public sealed class TurtleLexer
         {
             return;
         }
+
+        //The buffer must grow to hold a longer token; let the limits policy reject it before a
+        //larger buffer is allocated, bounding the contiguous memory any one token can force.
+        Limits.OnTokenGrowth(scratchToken with { ProposedByteLength = required });
 
         int newSize = Math.Max(required, owner.Memory.Length * 2);
         IMemoryOwner<byte> replacement = Pool.RentScratch(newSize);
