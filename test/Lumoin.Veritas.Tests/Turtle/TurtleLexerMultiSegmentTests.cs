@@ -60,6 +60,7 @@ internal sealed class TurtleLexerMultiSegmentTests
     public void FragmentedLongStringMatchesContiguous()
     {
         AssertFragmentationInvariant("\"\"\"first\nsecond \\\"quoted\\\" line\"\"\"", 1, 2, 4);
+        AssertFragmentationInvariant("\"\"\"first\r\nsecond\r\nthird\"\"\"", 1, 2, 4);
     }
 
     [TestMethod]

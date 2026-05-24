@@ -44,6 +44,7 @@ public sealed class TurtleLexer
     private long consumed;
     private int line;
     private int column;
+    private bool pendingCarriageReturn;
     private TokenGrowthContext scratchToken;
 
     /// <summary>
@@ -1262,22 +1263,29 @@ public sealed class TurtleLexer
 
         if(b == (byte)'\n')
         {
-            line++;
-            column = 0;
+            //An LF directly after a CR completes a CR-LF pair the CR already counted as one
+            //newline; a standalone LF opens its own line. The byte is consumed here either way, so
+            //literal content keeps every raw byte rather than folding CR-LF down to a lone CR.
+            if(pendingCarriageReturn)
+            {
+                pendingCarriageReturn = false;
+            }
+            else
+            {
+                line++;
+                column = 0;
+            }
         }
         else if(b == (byte)'\r')
         {
-            //CR is treated as a line break by itself; a CR LF sequence emits a single newline.
+            //CR opens a new line on its own; an immediately following LF folds into the same newline.
             line++;
             column = 0;
-
-            if(reader.TryPeek(out byte next) && next == (byte)'\n')
-            {
-                reader.Advance(1);
-            }
+            pendingCarriageReturn = true;
         }
         else
         {
+            pendingCarriageReturn = false;
             column++;
         }
     }
