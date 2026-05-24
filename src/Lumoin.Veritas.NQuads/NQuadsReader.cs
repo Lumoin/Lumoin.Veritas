@@ -1,7 +1,7 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
-using System.IO;
+using System.IO.Pipelines;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
@@ -43,11 +43,15 @@ public static class NQuadsReader
     private const byte OpenParen = (byte)'(';
     private const byte CloseParen = (byte)')';
     private const byte Hyphen = (byte)'-';
+    private const byte Space = (byte)' ';
+    private const byte Tab = (byte)'\t';
+    private const byte CarriageReturn = (byte)'\r';
+    private const byte NewLine = (byte)'\n';
 
     /// <summary>
-    /// Parses N-Quads from a stream, yielding one <see cref="Quad"/> per statement.
+    /// Parses N-Quads from a pipe, yielding one <see cref="Quad"/> per statement.
     /// </summary>
-    /// <param name="stream">The UTF-8 encoded N-Quads input stream.</param>
+    /// <param name="input">The N-Quads input pipe.</param>
     /// <param name="pool">
     /// The pool used for interning term strings. If <c>null</c>, a temporary pool
     /// is created and disposed when enumeration ends.
@@ -58,11 +62,13 @@ public static class NQuadsReader
     /// A line was encountered that could not be parsed as a valid N-Quads statement.
     /// </exception>
     public static IAsyncEnumerable<Quad> ReadAsync(
-        Stream stream,
+        PipeReader input,
         Utf8StringPool? pool = null,
         CancellationToken cancellationToken = default)
     {
-        return ParseAsync(stream, pool, cancellationToken);
+        ArgumentNullException.ThrowIfNull(input);
+
+        return ParseAsync(input, pool, cancellationToken);
     }
 
     /// <summary>
@@ -80,13 +86,11 @@ public static class NQuadsReader
         Utf8StringPool? pool = null,
         CancellationToken cancellationToken = default)
     {
-        MemoryStream stream = new(nquads.ToArray(), writable: false);
-
-        return ParseAsync(stream, pool, cancellationToken);
+        return ParseAsync(PipeReader.Create(new ReadOnlySequence<byte>(nquads)), pool, cancellationToken);
     }
 
     /// <summary>
-    /// Parses N-Quads from a stream, yielding one
+    /// Parses N-Quads from a pipe, yielding one
     /// <see cref="EmittedQuad"/> per statement with provenance back to the
     /// source document.
     /// </summary>
@@ -101,7 +105,7 @@ public static class NQuadsReader
     /// Span population is deferred to a future surface-syntax loader; the
     /// reference is the document-node ordinal alone.
     /// </remarks>
-    /// <param name="stream">The UTF-8 encoded N-Quads input stream.</param>
+    /// <param name="input">The N-Quads input pipe.</param>
     /// <param name="documentId">
     /// The identity of the document being parsed. The caller mints this
     /// once — typically by applying the application's chosen
@@ -118,12 +122,14 @@ public static class NQuadsReader
     /// A line was encountered that could not be parsed as a valid N-Quads statement.
     /// </exception>
     public static IAsyncEnumerable<EmittedQuad> ReadWithSourceAsync(
-        Stream stream,
+        PipeReader input,
         DocumentId documentId,
         Utf8StringPool? pool = null,
         CancellationToken cancellationToken = default)
     {
-        return ParseWithSourceAsync(stream, documentId, pool, cancellationToken);
+        ArgumentNullException.ThrowIfNull(input);
+
+        return ParseWithSourceAsync(input, documentId, pool, cancellationToken);
     }
 
     /// <summary>
@@ -161,18 +167,21 @@ public static class NQuadsReader
         Utf8StringPool? pool = null,
         CancellationToken cancellationToken = default)
     {
-        MemoryStream stream = new(nquads.ToArray(), writable: false);
-
-        return ParseWithSourceAsync(stream, documentId, pool, cancellationToken);
+        return ParseWithSourceAsync(
+            PipeReader.Create(new ReadOnlySequence<byte>(nquads)),
+            documentId,
+            pool,
+            cancellationToken);
     }
 
     private static async IAsyncEnumerable<Quad> ParseAsync(
-        Stream stream,
+        PipeReader input,
         Utf8StringPool? externalPool,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         //Declare before try so the finally block can always reach it.
         Utf8StringPool? ownedPool = null;
+        byte[]? lineBuffer = null;
 
         try
         {
@@ -180,44 +189,65 @@ public static class NQuadsReader
             //so the finally block does not dispose what we do not own.
             Utf8StringPool pool = externalPool ?? (ownedPool = new Utf8StringPool());
 
-            using StreamReader reader = new(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
-
             int lineNumber = 0;
-            string? line;
 
-            while((line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)) is not null)
+            while(true)
             {
-                lineNumber++;
-                cancellationToken.ThrowIfCancellationRequested();
+                ReadResult result = await input.ReadAsync(cancellationToken).ConfigureAwait(false);
+                ReadOnlySequence<byte> buffer = result.Buffer;
 
-                ReadOnlySpan<byte> lineBytes = Encoding.UTF8.GetBytes(line);
-                ReadOnlySpan<byte> trimmed = lineBytes.Trim((byte)' ').Trim((byte)'\t');
-
-                //Skip empty lines and comments.
-                if(trimmed.IsEmpty || trimmed[0] == Hash)
+                while(TryReadLine(ref buffer, out ReadOnlySequence<byte> line))
                 {
-                    continue;
+                    lineNumber++;
+                    if(ParseLineOrSkip(line, pool, lineNumber, ref lineBuffer) is { } quad)
+                    {
+                        yield return quad;
+                    }
                 }
 
-                Quad quad = ParseLine(trimmed, pool, lineNumber);
+                if(result.IsCompleted)
+                {
+                    //A final line without a trailing newline remains in the buffer at end of input.
+                    if(!buffer.IsEmpty)
+                    {
+                        lineNumber++;
+                        if(ParseLineOrSkip(buffer, pool, lineNumber, ref lineBuffer) is { } quad)
+                        {
+                            yield return quad;
+                        }
+                    }
 
-                yield return quad;
+                    input.AdvanceTo(buffer.End);
+
+                    break;
+                }
+
+                //Consumed up to the start of the unparsed remainder; examined all of it.
+                input.AdvanceTo(buffer.Start, buffer.End);
             }
         }
         finally
         {
+            if(lineBuffer is not null)
+            {
+                ArrayPool<byte>.Shared.Return(lineBuffer);
+            }
+
             ownedPool?.Dispose();
+
+            await input.CompleteAsync().ConfigureAwait(false);
         }
     }
 
     private static async IAsyncEnumerable<EmittedQuad> ParseWithSourceAsync(
-        Stream stream,
+        PipeReader input,
         DocumentId documentId,
         Utf8StringPool? externalPool,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         //Declare before try so the finally block can always reach it.
         Utf8StringPool? ownedPool = null;
+        byte[]? lineBuffer = null;
 
         try
         {
@@ -225,39 +255,131 @@ public static class NQuadsReader
             //so the finally block does not dispose what we do not own.
             Utf8StringPool pool = externalPool ?? (ownedPool = new Utf8StringPool());
 
-            using StreamReader reader = new(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
-
             int lineNumber = 0;
             int nodeIndex = 0;
-            string? line;
 
-            while((line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)) is not null)
+            while(true)
             {
-                lineNumber++;
-                cancellationToken.ThrowIfCancellationRequested();
+                ReadResult result = await input.ReadAsync(cancellationToken).ConfigureAwait(false);
+                ReadOnlySequence<byte> buffer = result.Buffer;
 
-                ReadOnlySpan<byte> lineBytes = Encoding.UTF8.GetBytes(line);
-                ReadOnlySpan<byte> trimmed = lineBytes.Trim((byte)' ').Trim((byte)'\t');
-
-                //Skip empty lines and comments. These do not consume a node index,
-                //so indexes are dense across the parsed quads.
-                if(trimmed.IsEmpty || trimmed[0] == Hash)
+                while(TryReadLine(ref buffer, out ReadOnlySequence<byte> line))
                 {
-                    continue;
+                    lineNumber++;
+                    if(ParseLineOrSkip(line, pool, lineNumber, ref lineBuffer) is { } quad)
+                    {
+                        //Comments and blank lines do not consume a node index, so indexes are
+                        //dense across the parsed quads.
+                        yield return new EmittedQuad(quad, new DocumentNodeRef(documentId, nodeIndex));
+                        nodeIndex++;
+                    }
                 }
 
-                Quad quad = ParseLine(trimmed, pool, lineNumber);
-                DocumentNodeRef nodeRef = new(documentId, nodeIndex);
-                EmittedQuad emitted = new(quad, nodeRef);
-                nodeIndex++;
+                if(result.IsCompleted)
+                {
+                    if(!buffer.IsEmpty)
+                    {
+                        lineNumber++;
+                        if(ParseLineOrSkip(buffer, pool, lineNumber, ref lineBuffer) is { } quad)
+                        {
+                            yield return new EmittedQuad(quad, new DocumentNodeRef(documentId, nodeIndex));
+                            nodeIndex++;
+                        }
+                    }
 
-                yield return emitted;
+                    input.AdvanceTo(buffer.End);
+
+                    break;
+                }
+
+                input.AdvanceTo(buffer.Start, buffer.End);
             }
         }
         finally
         {
+            if(lineBuffer is not null)
+            {
+                ArrayPool<byte>.Shared.Return(lineBuffer);
+            }
+
             ownedPool?.Dispose();
+
+            await input.CompleteAsync().ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Splits the next newline-terminated line from <paramref name="buffer"/>, advancing the
+    /// buffer past the line and its terminator. Returns <see langword="false"/> when the buffer
+    /// holds no complete line.
+    /// </summary>
+    private static bool TryReadLine(ref ReadOnlySequence<byte> buffer, out ReadOnlySequence<byte> line)
+    {
+        SequencePosition? newline = buffer.PositionOf(NewLine);
+        if(newline is null)
+        {
+            line = default;
+
+            return false;
+        }
+
+        line = buffer.Slice(0, newline.Value);
+        buffer = buffer.Slice(buffer.GetPosition(1, newline.Value));
+
+        return true;
+    }
+
+    /// <summary>
+    /// Parses one line's bytes into a quad. Strips a trailing carriage return and surrounding
+    /// whitespace, skips empty and comment lines, and interns terms via <paramref name="pool"/>.
+    /// Returns <see langword="false"/> for a skipped line.
+    /// </summary>
+    private static Quad? ParseLineOrSkip(
+        ReadOnlySequence<byte> line,
+        Utf8StringPool pool,
+        int lineNumber,
+        ref byte[]? lineBuffer)
+    {
+        ReadOnlySpan<byte> span = Materialize(line, ref lineBuffer);
+        if(span.Length > 0 && span[^1] == CarriageReturn)
+        {
+            span = span[..^1];
+        }
+
+        ReadOnlySpan<byte> trimmed = span.Trim(Space).Trim(Tab);
+        if(trimmed.IsEmpty || trimmed[0] == Hash)
+        {
+            return null;
+        }
+
+        return ParseLine(trimmed, pool, lineNumber);
+    }
+
+    /// <summary>
+    /// Returns the line as a contiguous span. A single-segment line is returned in place; a line
+    /// spanning segments is copied into a pooled buffer grown as needed.
+    /// </summary>
+    private static ReadOnlySpan<byte> Materialize(ReadOnlySequence<byte> line, ref byte[]? lineBuffer)
+    {
+        if(line.IsSingleSegment)
+        {
+            return line.FirstSpan;
+        }
+
+        int length = (int)line.Length;
+        if(lineBuffer is null || lineBuffer.Length < length)
+        {
+            if(lineBuffer is not null)
+            {
+                ArrayPool<byte>.Shared.Return(lineBuffer);
+            }
+
+            lineBuffer = ArrayPool<byte>.Shared.Rent(length);
+        }
+
+        line.CopyTo(lineBuffer);
+
+        return lineBuffer.AsSpan(0, length);
     }
 
     /// <summary>

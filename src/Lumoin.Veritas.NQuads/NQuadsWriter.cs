@@ -1,7 +1,7 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
-using System.IO;
+using System.IO.Pipelines;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
@@ -45,20 +45,22 @@ public static class NQuadsWriter
     private static ReadOnlySpan<byte> DirectionRtl => "--rtl"u8;
 
     /// <summary>
-    /// Writes a sequence of quads to the given stream in N-Quads format.
+    /// Writes a sequence of quads to the given pipe in N-Quads format.
     /// </summary>
     /// <param name="quads">The quads to serialize.</param>
-    /// <param name="stream">The output stream. Must be writable.</param>
+    /// <param name="output">The output pipe.</param>
     /// <param name="cancellationToken">A token to cancel the operation.</param>
     public static async ValueTask WriteAsync(
         IAsyncEnumerable<Quad> quads,
-        Stream stream,
+        PipeWriter output,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(quads);
-        ArgumentNullException.ThrowIfNull(stream);
-        //Use a PipeWriter-style approach: buffer writes and flush periodically
-        //to amortize system call overhead without unbounded buffering.
+        ArgumentNullException.ThrowIfNull(output);
+
+        //Serialize into a scratch buffer one quad at a time, then hand whole lines to the pipe
+        //and flush periodically to amortise the cost without unbounded buffering. The escaping
+        //helpers stay byte-array based; the pipe copies each batch into its own pooled memory.
         byte[] buffer = ArrayPool<byte>.Shared.Rent(65536);
         try
         {
@@ -66,57 +68,61 @@ public static class NQuadsWriter
 
             await foreach(Quad quad in quads.WithCancellation(cancellationToken).ConfigureAwait(false))
             {
-                //Estimate max line length to decide if we need to flush first.
-                //Worst case: two long IRIs + literal value + datatype + punctuation.
-                //A conservative estimate is 2048 bytes per quad; if the buffer cannot
-                //hold that, flush before writing.
+                //A conservative 2048-byte-per-quad estimate; hand off the batch before a quad
+                //could overrun the scratch buffer.
                 if(position + 2048 > buffer.Length)
                 {
-                    await stream.WriteAsync(buffer.AsMemory(0, position), cancellationToken).ConfigureAwait(false);
+                    output.Write(buffer.AsSpan(0, position));
                     position = 0;
+
+                    FlushResult flush = await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+                    if(flush.IsCanceled || flush.IsCompleted)
+                    {
+                        break;
+                    }
                 }
 
-                position = WriteQuad(quad, buffer, position, stream, cancellationToken);
-
-                //If WriteQuad flushed mid-quad (large literal), position was reset
-                //and the line ending was appended. The quad is complete.
+                position = WriteQuad(quad, buffer, position);
             }
 
             if(position > 0)
             {
-                await stream.WriteAsync(buffer.AsMemory(0, position), cancellationToken).ConfigureAwait(false);
+                output.Write(buffer.AsSpan(0, position));
             }
+
+            await output.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             ArrayPool<byte>.Shared.Return(buffer);
+
+            await output.CompleteAsync().ConfigureAwait(false);
         }
     }
 
     /// <summary>
-    /// Writes a sequence of quads to the given stream in N-Quads format.
+    /// Writes a sequence of quads to the given pipe in N-Quads format.
     /// </summary>
     /// <param name="quads">The quads to serialize.</param>
-    /// <param name="stream">The output stream. Must be writable.</param>
+    /// <param name="output">The output pipe.</param>
     /// <param name="cancellationToken">A token to cancel the operation.</param>
     public static async ValueTask WriteAsync(
         IEnumerable<Quad> quads,
-        Stream stream,
+        PipeWriter output,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(quads);
-        await WriteAsync(ToAsyncEnumerable(quads, cancellationToken), stream, cancellationToken).ConfigureAwait(false);
+        await WriteAsync(ToAsyncEnumerable(quads, cancellationToken), output, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Writes a single quad to the buffer. Returns the updated buffer position.
+    /// Writes a single quad into the scratch buffer. Returns the updated buffer position.
     /// </summary>
     /// <remarks>
-    /// This method writes entirely into the pre-allocated buffer without async state machines
-    /// in the critical path. The only async operation is a potential mid-buffer flush for
-    /// very large literals, which is uncommon in practice.
+    /// Writes entirely into the pre-allocated buffer with no async state machine; the caller
+    /// hands completed batches to the pipe.
     /// </remarks>
-    private static int WriteQuad(Quad quad, byte[] buffer, int position, Stream stream, CancellationToken cancellationToken)
+    private static int WriteQuad(Quad quad, byte[] buffer, int position)
     {
         position = WriteTerm(quad.Subject, buffer, position);
         buffer.AsSpan(position, Space.Length).CopyFrom(Space);
