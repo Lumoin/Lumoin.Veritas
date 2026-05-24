@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Pipelines;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -48,14 +49,14 @@ public static class TurtleWriter
     /// writes the bytes to <paramref name="output"/>.
     /// </summary>
     /// <param name="quads">The quads to serialise.</param>
-    /// <param name="output">The stream to write UTF-8 bytes to.</param>
+    /// <param name="output">The pipe to write UTF-8 bytes to.</param>
     /// <param name="syntax">Whether to emit Turtle or TriG.</param>
     /// <param name="options">Optional writer knobs.</param>
     /// <param name="cancellationToken">A token to cancel writing.</param>
     /// <returns>A task that completes when all bytes have been written.</returns>
     public static async Task WriteAsync(
         IAsyncEnumerable<Quad> quads,
-        Stream output,
+        PipeWriter output,
         TurtleSyntax syntax,
         TurtleWriterOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -70,18 +71,21 @@ public static class TurtleWriter
         }
 
         WriteCore(materialised, output, syntax, options ?? new TurtleWriterOptions());
+
+        await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+        await output.CompleteAsync().ConfigureAwait(false);
     }
 
     /// <summary>
     /// Serialises an in-memory list of quads as Turtle or TriG.
     /// </summary>
     /// <param name="quads">The quads to serialise.</param>
-    /// <param name="output">The stream to write UTF-8 bytes to.</param>
+    /// <param name="output">The pipe to write UTF-8 bytes to.</param>
     /// <param name="syntax">Whether to emit Turtle or TriG.</param>
     /// <param name="options">Optional writer knobs.</param>
     public static void Write(
         IReadOnlyList<Quad> quads,
-        Stream output,
+        PipeWriter output,
         TurtleSyntax syntax,
         TurtleWriterOptions? options = null)
     {
@@ -89,17 +93,21 @@ public static class TurtleWriter
         ArgumentNullException.ThrowIfNull(output);
 
         WriteCore(quads, output, syntax, options ?? new TurtleWriterOptions());
+        output.Complete();
     }
 
     private static void WriteCore(
         IReadOnlyList<Quad> quads,
-        Stream output,
+        PipeWriter output,
         TurtleSyntax syntax,
         TurtleWriterOptions options)
     {
         Dictionary<string, string> prefixes = BuildPrefixes(quads, options);
 
-        using StreamWriter writer = new(output, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), bufferSize: 8192, leaveOpen: true);
+        //The serialisation is text-based; drive the existing StreamWriter logic over a Stream view
+        //of the pipe. leaveOpen keeps pipe completion the caller-facing method's responsibility.
+        using Stream stream = output.AsStream(leaveOpen: true);
+        using StreamWriter writer = new(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), bufferSize: 8192, leaveOpen: true);
         writer.NewLine = "\n";
 
         if(options.BaseIri is { } baseIri)

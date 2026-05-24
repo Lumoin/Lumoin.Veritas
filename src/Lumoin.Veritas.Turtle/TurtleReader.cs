@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Pipelines;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using Lumoin.Veritas.Core;
@@ -38,22 +39,28 @@ namespace Lumoin.Veritas.Turtle;
 public static class TurtleReader
 {
     /// <summary>
-    /// Reads a UTF-8 stream and yields quads from the parsed document.
+    /// Reads a UTF-8 pipe and yields quads from the parsed document.
     /// </summary>
-    /// <param name="input">The UTF-8 encoded source stream.</param>
+    /// <param name="input">The UTF-8 encoded source pipe.</param>
     /// <param name="syntax">Whether the source is Turtle or TriG.</param>
     /// <param name="pool">Optional pool to intern interned strings into. A private pool is created when null.</param>
     /// <param name="baseIri">Optional document base IRI for resolving relative references that precede any in-document <c>@base</c>.</param>
     /// <param name="cancellationToken">A token to cancel iteration.</param>
     /// <returns>An async sequence of parsed quads.</returns>
+    /// <remarks>
+    /// Turtle is parsed whole-document: the pipe is drained to a contiguous buffer before the
+    /// lexer and parser run. Memory is bounded by document size, not by the longest token.
+    /// Statement-incremental streaming is a separate future effort.
+    /// </remarks>
     public static IAsyncEnumerable<Quad> ReadAsync(
-        Stream input,
+        PipeReader input,
         TurtleSyntax syntax,
         Utf8StringPool? pool = null,
         string? baseIri = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(input);
+
         return IterateBareAsync(input, syntax, pool, baseIri, cancellationToken);
     }
 
@@ -77,18 +84,23 @@ public static class TurtleReader
     }
 
     /// <summary>
-    /// Reads a UTF-8 stream and yields <see cref="EmittedQuad"/> values
+    /// Reads a UTF-8 pipe and yields <see cref="EmittedQuad"/> values
     /// alongside the parsed <see cref="TurtleDocument"/> AST.
     /// </summary>
-    /// <param name="input">The UTF-8 encoded source stream.</param>
+    /// <param name="input">The UTF-8 encoded source pipe.</param>
     /// <param name="syntax">Whether the source is Turtle or TriG.</param>
     /// <param name="documentId">The content-addressed document identifier.</param>
     /// <param name="pool">Optional pool to intern strings into.</param>
     /// <param name="baseIri">Optional document base IRI for resolving relative references that precede any in-document <c>@base</c>.</param>
     /// <param name="cancellationToken">A token to cancel iteration.</param>
     /// <returns>A tuple of the parsed document AST and an async iterator over source-tagged quads.</returns>
-    public static (TurtleDocument Document, IAsyncEnumerable<EmittedQuad> Quads) ReadWithSourceAsync(
-        Stream input,
+    /// <remarks>
+    /// The pipe is drained to a contiguous buffer and parsed before the AST is returned, so this
+    /// overload is asynchronous; the in-memory <see cref="ReadOnlyMemory{T}"/> overload returns
+    /// the tuple synchronously.
+    /// </remarks>
+    public static async System.Threading.Tasks.Task<(TurtleDocument Document, IAsyncEnumerable<EmittedQuad> Quads)> ReadWithSourceAsync(
+        PipeReader input,
         TurtleSyntax syntax,
         DocumentId documentId,
         Utf8StringPool? pool = null,
@@ -98,10 +110,19 @@ public static class TurtleReader
         ArgumentNullException.ThrowIfNull(input);
 
         Utf8StringPool effectivePool = pool ?? new Utf8StringPool();
-        byte[] bytes = ReadAllBytes(input);
+        byte[] bytes;
+        try
+        {
+            bytes = await DrainAsync(input, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            await input.CompleteAsync().ConfigureAwait(false);
+        }
 
         TurtleDocument document = ParseDocument(bytes, syntax, documentId, effectivePool);
         IAsyncEnumerable<EmittedQuad> quads = IterateWithSourceAsync(document, effectivePool, baseIri, cancellationToken);
+
         return (document, quads);
     }
 
@@ -131,7 +152,7 @@ public static class TurtleReader
     }
 
     private static async IAsyncEnumerable<Quad> IterateBareAsync(
-        Stream input,
+        PipeReader input,
         TurtleSyntax syntax,
         Utf8StringPool? pool,
         string? baseIri,
@@ -140,7 +161,7 @@ public static class TurtleReader
         Utf8StringPool ownedPool = pool ?? new Utf8StringPool();
         try
         {
-            byte[] bytes = await ReadAllBytesAsync(input, cancellationToken).ConfigureAwait(false);
+            byte[] bytes = await DrainAsync(input, cancellationToken).ConfigureAwait(false);
             TurtleDocument document = ParseDocument(bytes, syntax, MintDocumentId(bytes), ownedPool);
             TurtleQuadEmitter emitter = new(document, ownedPool, baseIri);
             foreach(EmittedQuad emitted in emitter.Emit())
@@ -155,6 +176,8 @@ public static class TurtleReader
             {
                 ownedPool.Dispose();
             }
+
+            await input.CompleteAsync().ConfigureAwait(false);
         }
     }
 
@@ -221,17 +244,12 @@ public static class TurtleReader
         return new DocumentId(hash);
     }
 
-    private static byte[] ReadAllBytes(Stream input)
+    private static async System.Threading.Tasks.Task<byte[]> DrainAsync(PipeReader input, CancellationToken cancellationToken)
     {
-        using MemoryStream buffer = new();
-        input.CopyTo(buffer);
-        return buffer.ToArray();
-    }
-
-    private static async System.Threading.Tasks.Task<byte[]> ReadAllBytesAsync(Stream input, CancellationToken cancellationToken)
-    {
+        //Turtle parses the whole document, so the pipe is drained into one contiguous buffer.
         using MemoryStream buffer = new();
         await input.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
+
         return buffer.ToArray();
     }
 }
