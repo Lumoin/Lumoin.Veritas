@@ -58,4 +58,19 @@ internal sealed class ParseFrame
 
     /// <summary>Gets or sets the in-progress object's term for an <see cref="ParseFrameKind.AnnotatedObject"/> frame.</summary>
     public Term? CurrentObject { get; set; }
+
+    /// <summary>Gets or sets the accumulated triple statements of a <see cref="ParseFrameKind.GraphBlock"/> body.</summary>
+    public List<TripleStatement>? Triples { get; set; }
+
+    /// <summary>Gets or sets the graph label of a <see cref="ParseFrameKind.GraphBlock"/> frame; <see langword="null"/> for the default graph.</summary>
+    public Term? Label { get; set; }
+
+    /// <summary>Gets or sets whether a <see cref="ParseFrameKind.GraphBlock"/> was introduced by the <c>GRAPH</c> keyword (TriG).</summary>
+    public bool HasKeyword { get; set; }
+
+    /// <summary>Gets or sets whether a <see cref="ParseFrameKind.GraphBlock"/> reads a leaf label token before its opening brace.</summary>
+    public bool HasLabel { get; set; }
+
+    /// <summary>Gets or sets the <see cref="TurtleParser"/>'s graph-block flag as it stood before a <see cref="ParseFrameKind.GraphBlock"/> frame entered, restored when the frame finalises.</summary>
+    public bool SavedInGraphBlock { get; set; }
 }

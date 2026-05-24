@@ -36,13 +36,22 @@ namespace Lumoin.Veritas.Turtle.Parser;
 /// </remarks>
 public sealed class TurtleParser
 {
+    //The most tokens any single Step inspects ahead of the cursor: the four-token "@prefix ns: <iri> ."
+    //directive reads the terminating '.' at offset three. The driver only runs a Step once this many
+    //tokens are buffered ahead (or the stream is complete), so a Step never reads an unbuffered token.
+    private const int MaxStepLookahead = 4;
+
+    private readonly Stack<ParseFrame> frames = new();
+    private readonly bool incremental;
+    private object? completed;
+    private bool tokensComplete;
     private int index;
     private int nextNodeId;
     private int nextSyntheticBlankNode;
     private bool inGraphBlock;
 
     /// <summary>
-    /// Initialises a new <see cref="TurtleParser"/>.
+    /// Initialises a <see cref="TurtleParser"/> over a fully materialised token stream.
     /// </summary>
     /// <param name="tokens">The lexed token stream.</param>
     /// <param name="pool">The pool used to intern parser-allocated identifiers.</param>
@@ -62,6 +71,31 @@ public sealed class TurtleParser
         Pool = pool;
         DocumentId = documentId;
         Syntax = syntax;
+        tokensComplete = true;
+    }
+
+    /// <summary>
+    /// Initialises a <see cref="TurtleParser"/> that is fed tokens incrementally through
+    /// <see cref="FeedToken(TurtleToken)"/> and pulled one statement at a time through
+    /// <see cref="TryParseStatement(out Statement)"/>.
+    /// </summary>
+    /// <param name="pool">The pool used to intern parser-allocated identifiers.</param>
+    /// <param name="documentId">The content-addressed identifier for the source document.</param>
+    /// <param name="syntax">The syntax flavour to accept.</param>
+    /// <remarks>
+    /// The parser suspends — preserving its work stack — when a statement needs tokens that have not
+    /// arrived yet, and resumes when more are fed, so neither the token buffer nor the parse state
+    /// grows with the document. Consumed tokens are trimmed at each statement boundary.
+    /// </remarks>
+    internal TurtleParser(Utf8StringPool pool, DocumentId documentId, TurtleSyntax syntax)
+    {
+        ArgumentNullException.ThrowIfNull(pool);
+
+        Tokens = [];
+        Pool = pool;
+        DocumentId = documentId;
+        Syntax = syntax;
+        incremental = true;
     }
 
     /// <summary>Gets the materialised token stream the parser indexes into.</summary>
@@ -90,73 +124,39 @@ public sealed class TurtleParser
         ImmutableArray<VersionDeclaration>.Builder versions = ImmutableArray.CreateBuilder<VersionDeclaration>();
         ImmutableArray<Statement>.Builder statements = ImmutableArray.CreateBuilder<Statement>();
 
-        while(Current.Kind != TurtleTokenKind.EndOfInput)
+        //The whole token stream is present, so TryParseStatement never reports NeedMore.
+        while(TryParseStatement(out Statement? statement) == ParseStatus.Produced)
         {
-            switch(Current.Kind)
+            switch(statement)
             {
-                case TurtleTokenKind.PrefixKeyword:
+                case PrefixDeclaration prefix:
                 {
-                    PrefixDeclaration decl = ParsePrefixDeclaration();
-                    prefixes.Add(decl);
-                    statements.Add(decl);
+                    prefixes.Add(prefix);
 
                     break;
                 }
 
-                case TurtleTokenKind.BaseKeyword:
+                case BaseDeclaration baseDecl:
                 {
-                    BaseDeclaration decl = ParseBaseDeclaration();
-                    baseDeclarations.Add(decl);
-                    statements.Add(decl);
+                    baseDeclarations.Add(baseDecl);
 
                     break;
                 }
 
-                case TurtleTokenKind.VersionKeyword:
+                case VersionDeclaration version:
                 {
-                    VersionDeclaration decl = ParseVersionDeclaration();
-                    versions.Add(decl);
-                    statements.Add(decl);
-
-                    break;
-                }
-
-                case TurtleTokenKind.GraphKeyword:
-                {
-                    if(Syntax != TurtleSyntax.TriG)
-                    {
-                        throw new TurtleParseException(
-                            "GRAPH keyword is only valid in TriG syntax.",
-                            Current.Span);
-                    }
-
-                    statements.Add(ParseGraphBlockWithKeyword());
-
-                    break;
-                }
-
-                case TurtleTokenKind.OpenBrace:
-                {
-                    if(Syntax != TurtleSyntax.TriG)
-                    {
-                        throw new TurtleParseException(
-                            "Graph block '{' is only valid in TriG syntax.",
-                            Current.Span);
-                    }
-
-                    statements.Add(ParseGraphBlockBody(Current.Span, label: null, hasKeyword: false));
+                    versions.Add(version);
 
                     break;
                 }
 
                 default:
                 {
-                    Statement parsed = ParseSubjectStartingStatement();
-                    statements.Add(parsed);
-
                     break;
                 }
             }
+
+            statements.Add(statement!);
         }
 
         return new TurtleDocument(
@@ -167,6 +167,73 @@ public sealed class TurtleParser
             statements.ToImmutable(),
             Nodes);
     }
+
+    /// <summary>
+    /// Appends one lexed token to the parser's buffer. The terminating
+    /// <see cref="TurtleTokenKind.EndOfInput"/> token marks the stream complete.
+    /// </summary>
+    /// <param name="token">The next token in source order.</param>
+    internal void FeedToken(TurtleToken token)
+    {
+        Tokens.Add(token);
+
+        if(token.Kind == TurtleTokenKind.EndOfInput)
+        {
+            tokensComplete = true;
+        }
+    }
+
+    /// <summary>
+    /// Attempts to parse the next top-level statement from the buffered tokens.
+    /// </summary>
+    /// <param name="statement">The parsed statement when the result is <see cref="ParseStatus.Produced"/>; otherwise <see langword="null"/>.</param>
+    /// <returns>
+    /// <see cref="ParseStatus.Produced"/> with a statement; <see cref="ParseStatus.NeedMore"/> when the
+    /// current statement needs tokens that have not been fed yet; <see cref="ParseStatus.Completed"/>
+    /// once the end-of-input token has been reached at a statement boundary.
+    /// </returns>
+    internal ParseStatus TryParseStatement(out Statement? statement)
+    {
+        statement = null;
+
+        if(frames.Count == 0)
+        {
+            //Between statements every token before the cursor is consumed and unreferenced, so the
+            //incremental buffer is trimmed here to keep peak memory near a single statement.
+            if(incremental && index > 0)
+            {
+                Tokens.RemoveRange(0, index);
+                index = 0;
+            }
+
+            if(!HasLookahead)
+            {
+                return ParseStatus.NeedMore;
+            }
+
+            if(Current.Kind == TurtleTokenKind.EndOfInput)
+            {
+                return ParseStatus.Completed;
+            }
+
+            frames.Push(new ParseFrame { Kind = ParseFrameKind.Statement, StartSpan = Current.Span });
+        }
+
+        if(Drive() == DriveOutcome.NeedMore)
+        {
+            return ParseStatus.NeedMore;
+        }
+
+        statement = (Statement)completed!;
+        completed = null;
+
+        return ParseStatus.Produced;
+    }
+
+    //A Step never reads past MaxStepLookahead tokens ahead of the cursor, so it is safe to run once
+    //that many tokens are buffered. When the stream is complete the buffer ends with EndOfInput and
+    //the cursor clamps to it, so the remaining short tail is read without further input.
+    private bool HasLookahead => tokensComplete || index + MaxStepLookahead < Tokens.Count;
 
     private TurtleToken Current => Tokens[index];
 
@@ -295,86 +362,6 @@ public sealed class TurtleParser
         return NewNode(id => new VersionDeclaration(id, totalSpan, versionValue));
     }
 
-    private GraphBlockStatement ParseGraphBlockWithKeyword()
-    {
-        SourceSpan startSpan = Current.Span;
-        Advance();
-
-        Term label = ConsumeLeafTermFor("graph label");
-
-        return ParseGraphBlockBody(startSpan, label, hasKeyword: true);
-    }
-
-    private GraphBlockStatement ParseGraphBlockBody(SourceSpan startSpan, Term? label, bool hasKeyword)
-    {
-        if(Current.Kind != TurtleTokenKind.OpenBrace)
-        {
-            throw Expected("'{' to begin graph block", Current);
-        }
-
-        Advance();
-
-        //Inside a graph block the trailing '.' of the final triple is optional, so a triple may
-        //be terminated by the closing '}'. The flag lets ParseTripleBody accept that.
-        bool wasInGraphBlock = inGraphBlock;
-        inGraphBlock = true;
-
-        ImmutableArray<TripleStatement>.Builder inner = ImmutableArray.CreateBuilder<TripleStatement>();
-        while(Current.Kind != TurtleTokenKind.CloseBrace)
-        {
-            if(Current.Kind == TurtleTokenKind.EndOfInput)
-            {
-                throw Expected("'}' to close graph block", Current);
-            }
-
-            Statement parsed = ParseSubjectStartingStatement();
-            if(parsed is not TripleStatement triple)
-            {
-                throw new TurtleParseException(
-                    "Only triple statements are permitted inside a graph block.",
-                    parsed.Span);
-            }
-
-            inner.Add(triple);
-        }
-
-        inGraphBlock = wasInGraphBlock;
-
-        SourceSpan endSpan = Current.Span;
-        Advance();
-
-        SourceSpan totalSpan = CombineSpans(startSpan, endSpan);
-
-        return NewNode(id => new GraphBlockStatement(id, totalSpan, label, hasKeyword, inner.ToImmutable()));
-    }
-
-    private Statement ParseSubjectStartingStatement()
-    {
-        SourceSpan startSpan = Current.Span;
-
-        //In TriG, an IRI / prefixed-name / blank-node-label followed by '{' is a graph block label.
-        if(Syntax == TurtleSyntax.TriG && IsGraphLabelLookahead())
-        {
-            Term label = ConsumeLeafTermFor("graph label");
-
-            return ParseGraphBlockBody(startSpan, label, hasKeyword: false);
-        }
-
-        Term subject = ParseTerm();
-
-        //A triple term is a term that denotes a triple; it may stand only in object position,
-        //never as the subject of an asserted statement. A reified triple, by contrast, yields a
-        //reifier and may begin a statement.
-        if(subject is TripleTermTerm)
-        {
-            throw new TurtleParseException(
-                "A triple term may not be the subject of a statement.",
-                subject.Span);
-        }
-
-        return ParseTripleBody(subject, startSpan, allowEmptyPredicates: SubjectAllowsEmptyPredicateList(subject));
-    }
-
     private bool IsGraphLabelLookahead()
     {
         if(Current.Kind is TurtleTokenKind.Iri or TurtleTokenKind.PrefixedName or TurtleTokenKind.BlankNodeLabel
@@ -392,73 +379,19 @@ public sealed class TurtleParser
         return subject is BlankNodePropertyListTerm or ReifiedTripleTerm;
     }
 
-    private TripleStatement ParseTripleBody(Term subject, SourceSpan startSpan, bool allowEmptyPredicates)
+    //Drives the instance work stack until the bottom frame pops with a completed statement, or until
+    //the next Step needs tokens that have not been fed yet. The stack and the inter-step carry value
+    //are instance state, so a NeedMore outcome leaves the parser suspended mid-statement and a later
+    //call resumes from the same frame and stage without re-parsing or unwinding.
+    private DriveOutcome Drive()
     {
-        if(allowEmptyPredicates && Current.Kind == TurtleTokenKind.Period)
-        {
-            SourceSpan endSpan = Current.Span;
-            Advance();
-            SourceSpan totalSpan = CombineSpans(startSpan, endSpan);
-
-            return NewNode(id => new TripleStatement(id, totalSpan, subject, ImmutableArray<PredicateObject>.Empty));
-        }
-
-        ImmutableArray<PredicateObject> predicates = ParsePredicateObjectList();
-
-        //Inside a graph block the final triple's terminating '.' is optional; a closing '}'
-        //ends it instead and is left for the graph-block parser to consume.
-        if(inGraphBlock && Current.Kind == TurtleTokenKind.CloseBrace)
-        {
-            SourceSpan braceEnd = predicates[^1].Span;
-            SourceSpan braceTotal = CombineSpans(startSpan, braceEnd);
-
-            return NewNode(id => new TripleStatement(id, braceTotal, subject, predicates));
-        }
-
-        if(Current.Kind != TurtleTokenKind.Period)
-        {
-            throw Expected("'.' to terminate triple", Current);
-        }
-
-        SourceSpan periodSpan = Current.Span;
-        Advance();
-
-        SourceSpan total = CombineSpans(startSpan, periodSpan);
-
-        return NewNode(id => new TripleStatement(id, total, subject, predicates));
-    }
-
-    /// <summary>
-    /// Parses one term — leaf or compound — by driving the work stack.
-    /// Returns the completed term once all pushed sub-frames have
-    /// resolved.
-    /// </summary>
-    private Term ParseTerm()
-    {
-        return (Term)ParseWithStack(ParseFrameKind.Term);
-    }
-
-    /// <summary>
-    /// Parses one predicate-object list at top level (inside a triple
-    /// statement). Returns the completed list once all pushed
-    /// sub-frames have resolved.
-    /// </summary>
-    private ImmutableArray<PredicateObject> ParsePredicateObjectList()
-    {
-        object result = ParseWithStack(ParseFrameKind.PredicateObjectList);
-
-        return (ImmutableArray<PredicateObject>)result;
-    }
-
-    private object ParseWithStack(ParseFrameKind startKind)
-    {
-        Stack<ParseFrame> frames = new();
-        frames.Push(new ParseFrame { Kind = startKind, StartSpan = Current.Span });
-
-        object? completed = null;
-
         while(frames.Count > 0)
         {
+            if(!HasLookahead)
+            {
+                return DriveOutcome.NeedMore;
+            }
+
             ParseFrame top = frames.Peek();
             StepResult step = Step(top, completed);
             completed = null;
@@ -492,13 +425,16 @@ public sealed class TurtleParser
             }
         }
 
-        return completed!;
+        return DriveOutcome.Produced;
     }
 
     private StepResult Step(ParseFrame frame, object? incoming)
     {
         return frame.Kind switch
         {
+            ParseFrameKind.Statement => StepStatement(frame, incoming),
+            ParseFrameKind.SubjectStatement => StepSubjectStatement(frame, incoming),
+            ParseFrameKind.GraphBlock => StepGraphBlock(frame, incoming),
             ParseFrameKind.Term => StepTerm(frame, incoming),
             ParseFrameKind.Collection => StepCollection(frame, incoming),
             ParseFrameKind.BlankNodePropertyList => StepBlankNodePropertyList(frame, incoming),
@@ -512,6 +448,229 @@ public sealed class TurtleParser
             ParseFrameKind.Reifier => StepReifier(frame, incoming),
             _ => throw new TurtleParseException($"Unhandled frame kind {frame.Kind}.", frame.StartSpan)
         };
+    }
+
+    private StepResult StepStatement(ParseFrame frame, object? incoming)
+    {
+        //A pushed graph block or subject-starting statement completed; it is this statement's result.
+        if(incoming is not null)
+        {
+            return StepResult.Done(incoming);
+        }
+
+        switch(Current.Kind)
+        {
+            case TurtleTokenKind.PrefixKeyword:
+            {
+                return StepResult.Done(ParsePrefixDeclaration());
+            }
+
+            case TurtleTokenKind.BaseKeyword:
+            {
+                return StepResult.Done(ParseBaseDeclaration());
+            }
+
+            case TurtleTokenKind.VersionKeyword:
+            {
+                return StepResult.Done(ParseVersionDeclaration());
+            }
+
+            case TurtleTokenKind.GraphKeyword:
+            {
+                if(Syntax != TurtleSyntax.TriG)
+                {
+                    throw new TurtleParseException(
+                        "GRAPH keyword is only valid in TriG syntax.",
+                        Current.Span);
+                }
+
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GraphBlock, StartSpan = Current.Span, HasKeyword = true });
+            }
+
+            case TurtleTokenKind.OpenBrace:
+            {
+                if(Syntax != TurtleSyntax.TriG)
+                {
+                    throw new TurtleParseException(
+                        "Graph block '{' is only valid in TriG syntax.",
+                        Current.Span);
+                }
+
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GraphBlock, StartSpan = Current.Span });
+            }
+
+            default:
+            {
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.SubjectStatement, StartSpan = Current.Span });
+            }
+        }
+    }
+
+    private StepResult StepSubjectStatement(ParseFrame frame, object? incoming)
+    {
+        switch(frame.Stage)
+        {
+            case 0:
+            {
+                //In TriG, an IRI / prefixed-name / blank-node-label followed by '{' is a graph block label.
+                if(Syntax == TurtleSyntax.TriG && IsGraphLabelLookahead())
+                {
+                    frame.Stage = 3;
+
+                    return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GraphBlock, StartSpan = frame.StartSpan, HasLabel = true });
+                }
+
+                frame.Stage = 1;
+
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Term, StartSpan = Current.Span });
+            }
+
+            case 1:
+            {
+                Term subject = (Term)incoming!;
+
+                //A triple term is a term that denotes a triple; it may stand only in object position,
+                //never as the subject of an asserted statement. A reified triple, by contrast, yields a
+                //reifier and may begin a statement.
+                if(subject is TripleTermTerm)
+                {
+                    throw new TurtleParseException(
+                        "A triple term may not be the subject of a statement.",
+                        subject.Span);
+                }
+
+                frame.Subject = subject;
+
+                if(SubjectAllowsEmptyPredicateList(subject) && Current.Kind == TurtleTokenKind.Period)
+                {
+                    SourceSpan endSpan = Current.Span;
+                    Advance();
+                    SourceSpan totalSpan = CombineSpans(frame.StartSpan, endSpan);
+
+                    return StepResult.Done(NewNode(id => new TripleStatement(id, totalSpan, subject, ImmutableArray<PredicateObject>.Empty)));
+                }
+
+                frame.Stage = 2;
+
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PredicateObjectList, StartSpan = Current.Span });
+            }
+
+            case 2:
+            {
+                ImmutableArray<PredicateObject> predicates = (ImmutableArray<PredicateObject>)incoming!;
+                Term subject = frame.Subject!;
+
+                //Inside a graph block the final triple's terminating '.' is optional; a closing '}'
+                //ends it instead and is left for the graph-block frame to consume.
+                if(inGraphBlock && Current.Kind == TurtleTokenKind.CloseBrace)
+                {
+                    SourceSpan braceEnd = predicates[^1].Span;
+                    SourceSpan braceTotal = CombineSpans(frame.StartSpan, braceEnd);
+
+                    return StepResult.Done(NewNode(id => new TripleStatement(id, braceTotal, subject, predicates)));
+                }
+
+                if(Current.Kind != TurtleTokenKind.Period)
+                {
+                    throw Expected("'.' to terminate triple", Current);
+                }
+
+                SourceSpan periodSpan = Current.Span;
+                Advance();
+                SourceSpan total = CombineSpans(frame.StartSpan, periodSpan);
+
+                return StepResult.Done(NewNode(id => new TripleStatement(id, total, subject, predicates)));
+            }
+
+            case 3:
+            {
+                //The label-introduced graph block is itself the statement.
+                return StepResult.Done(incoming!);
+            }
+
+            default:
+            {
+                throw new TurtleParseException("Subject-starting statement reached unknown stage.", frame.StartSpan);
+            }
+        }
+    }
+
+    private StepResult StepGraphBlock(ParseFrame frame, object? incoming)
+    {
+        switch(frame.Stage)
+        {
+            case 0:
+            {
+                if(frame.HasKeyword)
+                {
+                    Advance();
+                    frame.Label = ConsumeLeafTermFor("graph label");
+                }
+                else if(frame.HasLabel)
+                {
+                    frame.Label = ConsumeLeafTermFor("graph label");
+                }
+
+                if(Current.Kind != TurtleTokenKind.OpenBrace)
+                {
+                    throw Expected("'{' to begin graph block", Current);
+                }
+
+                Advance();
+
+                //Inside a graph block the trailing '.' of the final triple is optional, so a triple may
+                //be terminated by the closing '}'. The flag lets a subject statement accept that.
+                frame.SavedInGraphBlock = inGraphBlock;
+                inGraphBlock = true;
+                frame.Triples = [];
+                frame.Stage = 1;
+
+                return ContinueGraphBlock(frame);
+            }
+
+            case 1:
+            {
+                Statement parsed = (Statement)incoming!;
+                if(parsed is not TripleStatement triple)
+                {
+                    throw new TurtleParseException(
+                        "Only triple statements are permitted inside a graph block.",
+                        parsed.Span);
+                }
+
+                frame.Triples!.Add(triple);
+
+                return ContinueGraphBlock(frame);
+            }
+
+            default:
+            {
+                throw new TurtleParseException("Graph block reached unknown stage.", frame.StartSpan);
+            }
+        }
+    }
+
+    private StepResult ContinueGraphBlock(ParseFrame frame)
+    {
+        if(Current.Kind == TurtleTokenKind.CloseBrace)
+        {
+            inGraphBlock = frame.SavedInGraphBlock;
+            SourceSpan endSpan = Current.Span;
+            Advance();
+            SourceSpan totalSpan = CombineSpans(frame.StartSpan, endSpan);
+            Term? label = frame.Label;
+            bool hasKeyword = frame.HasKeyword;
+            ImmutableArray<TripleStatement> triples = ToImmutable(frame.Triples!);
+
+            return StepResult.Done(NewNode(id => new GraphBlockStatement(id, totalSpan, label, hasKeyword, triples)));
+        }
+
+        if(Current.Kind == TurtleTokenKind.EndOfInput)
+        {
+            throw Expected("'}' to close graph block", Current);
+        }
+
+        return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.SubjectStatement, StartSpan = Current.Span });
     }
 
     private StepResult StepTerm(ParseFrame frame, object? incoming)
@@ -1426,5 +1585,11 @@ public sealed class TurtleParser
         Pop,
         Push,
         Continue
+    }
+
+    private enum DriveOutcome
+    {
+        Produced,
+        NeedMore
     }
 }

@@ -9,6 +9,15 @@ namespace Lumoin.Veritas.Turtle.Parser;
 /// </summary>
 internal enum ParseFrameKind
 {
+    /// <summary>A top-level statement dispatch: a directive, a TriG graph block, or a subject-starting statement.</summary>
+    Statement,
+
+    /// <summary>A subject-starting statement: a subject term followed by a predicate-object list and terminator, or — in TriG — a labelled graph block.</summary>
+    SubjectStatement,
+
+    /// <summary>A TriG graph block <c>label? { triples }</c>: accumulates the inner triple statements until the close brace.</summary>
+    GraphBlock,
+
     /// <summary>A term-position dispatch: reads the current token and either produces a leaf or pushes a sub-frame for a complex form.</summary>
     Term,
 
