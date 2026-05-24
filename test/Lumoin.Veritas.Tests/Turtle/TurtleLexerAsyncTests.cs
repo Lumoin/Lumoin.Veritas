@@ -84,6 +84,50 @@ internal sealed class TurtleLexerAsyncTests
         }).ConfigureAwait(false);
     }
 
+    [TestMethod]
+    public async Task RecoveryCollectsEachErrorAndKeepsLexing()
+    {
+        //A lone '>' and a lone '^' are both lexical faults; recovery should skip each and still
+        //deliver the three IRIs around them, with one diagnostic per fault, regardless of how the
+        //pipe chunks the input.
+        byte[] bytes = Encoding.UTF8.GetBytes("<s> > <o> ^ <p>");
+
+        foreach(int chunkSize in (int[])[1, 4, 64])
+        {
+            using Utf8StringPool pool = new();
+            TurtleLexer lexer = new(pool);
+            int iriCount = 0;
+            await foreach(TurtleToken token in lexer.TokenizeWithRecoveryAsync(CreatePipe(bytes, chunkSize), TestContext.CancellationToken).ConfigureAwait(false))
+            {
+                if(token.Kind == TurtleTokenKind.Iri)
+                {
+                    iriCount++;
+                }
+            }
+
+            string where = string.Create(CultureInfo.InvariantCulture, $"chunk size {chunkSize}");
+            Assert.AreEqual(3, iriCount, where);
+            Assert.HasCount(2, lexer.Diagnostics, where);
+            Assert.AreEqual(TurtleLexErrorCode.UnexpectedGreaterThan, lexer.Diagnostics[0].Code, where);
+            Assert.AreEqual(TurtleLexErrorCode.ExpectedTypeMarker, lexer.Diagnostics[1].Code, where);
+        }
+    }
+
+    [TestMethod]
+    public async Task RecoveryYieldsOnlyEndOfInputWhenAllValid()
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes("ex:s ex:p \"o\" .");
+
+        using Utf8StringPool pool = new();
+        TurtleLexer lexer = new(pool);
+        await foreach(TurtleToken token in lexer.TokenizeWithRecoveryAsync(CreatePipe(bytes, 3), TestContext.CancellationToken).ConfigureAwait(false))
+        {
+            _ = token;
+        }
+
+        Assert.IsEmpty(lexer.Diagnostics);
+    }
+
     private static async Task AssertAsyncMatchesSync(string source, int[] chunkSizes, CancellationToken cancellationToken)
     {
         byte[] bytes = Encoding.UTF8.GetBytes(source);
