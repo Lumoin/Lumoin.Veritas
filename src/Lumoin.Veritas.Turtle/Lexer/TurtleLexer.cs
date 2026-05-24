@@ -13,30 +13,29 @@ namespace Lumoin.Veritas.Turtle.Lexer;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The lexer is iterative — no recursion — and yields tokens lazily
-/// through <see cref="Tokenize"/>. State is local to the instance:
-/// one lexer per document.
+/// The lexer is iterative — no recursion. Its core is resumable: each step returns a
+/// <see cref="LexStatus"/> rather than throwing or blocking, so the same code serves a synchronous
+/// whole-buffer pass (<see cref="Tokenize"/>) and an asynchronous pull over a pipe. A
+/// <see cref="LexStatus.NeedMore"/> asks the driver for more bytes; a <see cref="LexStatus.Error"/>
+/// reports a recorded <see cref="LexDiagnostic"/> without unwinding the stack, leaving the driver
+/// free to throw or to recover and continue.
 /// </para>
 /// <para>
-/// Byte access is through <see cref="SequenceReader{T}"/> over a
-/// <see cref="ReadOnlySequence{T}"/>, so a token that straddles two
-/// buffer segments is read without first gathering the whole source
-/// into one contiguous block. A <see cref="ReadOnlyMemory{T}"/> source
-/// is wrapped as a single-segment sequence.
+/// Byte access is through <see cref="SequenceReader{T}"/> over a <see cref="ReadOnlySequence{T}"/>,
+/// so a token that straddles two buffer segments is read without first gathering the whole source
+/// into one contiguous block. A <see cref="ReadOnlyMemory{T}"/> source is wrapped as a
+/// single-segment sequence.
 /// </para>
 /// <para>
-/// Position tracking is byte-accurate. Line and column counts are
-/// zero-based; columns advance one per byte rather than per Unicode
-/// code point because the project's pipeline works in UTF-8 throughout
-/// and editor surfaces convert on the boundary.
+/// Position tracking is byte-accurate. Line and column counts are zero-based; columns advance one
+/// per byte rather than per Unicode code point because the project's pipeline works in UTF-8
+/// throughout and editor surfaces convert on the boundary.
 /// </para>
 /// <para>
-/// String interning is the caller's responsibility through the supplied
-/// <see cref="Utf8StringPool"/>. The lexer interns every payload — IRI
-/// bytes, prefixed-name bytes, blank-node labels, language tags, decoded
-/// string-literal values — so the parser receives stable
-/// <see cref="Utf8String"/> handles that compare and hash without
-/// touching the underlying source memory.
+/// String interning is the caller's responsibility through the supplied <see cref="Utf8StringPool"/>.
+/// The lexer interns every payload — IRI bytes, prefixed-name bytes, blank-node labels, language
+/// tags, decoded string-literal values — so the parser receives stable <see cref="Utf8String"/>
+/// handles that compare and hash without touching the underlying source memory.
 /// </para>
 /// </remarks>
 public sealed class TurtleLexer
@@ -45,6 +44,8 @@ public sealed class TurtleLexer
     private int line;
     private int column;
     private bool pendingCarriageReturn;
+    private bool atFinalBuffer = true;
+    private LexDiagnostic pendingDiagnostic;
     private TokenGrowthContext scratchToken;
 
     /// <summary>
@@ -86,9 +87,9 @@ public sealed class TurtleLexer
     /// Iterates the source document producing tokens until end of input.
     /// </summary>
     /// <remarks>
-    /// The iterator yields an <see cref="TurtleTokenKind.EndOfInput"/>
-    /// token as its final element so the parser can drive its loop
-    /// without checking the source position separately.
+    /// The iterator yields an <see cref="TurtleTokenKind.EndOfInput"/> token as its final element
+    /// so the parser can drive its loop without checking the source position separately. The whole
+    /// source is present, so a lexical error throws <see cref="TurtleParseException"/>.
     /// </remarks>
     /// <returns>An iterator over the source tokens.</returns>
     public IEnumerable<TurtleToken> Tokenize()
@@ -107,155 +108,303 @@ public sealed class TurtleLexer
 
     private TurtleToken LexNextToken()
     {
-        //A SequenceReader is a ref struct and cannot live across a yield, so each token
-        //positions a fresh reader at the running offset. For the single-segment whole-buffer
-        //feed this advance is constant-time.
+        //A SequenceReader is a ref struct and cannot live across a yield, so each token positions a
+        //fresh reader at the running offset. For the single-segment whole-buffer feed this advance
+        //is constant-time, and atFinalBuffer is true so NeedMore never arises.
         SequenceReader<byte> reader = new(Source);
         reader.Advance(consumed);
 
-        SkipWhitespaceAndComments(ref reader);
-
-        TurtleToken token;
-        if(reader.End)
-        {
-            int offset = (int)reader.Consumed;
-            token = new TurtleToken(
-                TurtleTokenKind.EndOfInput,
-                CaptureSpan(offset, offset, line, column, line, column),
-                Pool.Intern(ReadOnlySpan<byte>.Empty));
-        }
-        else
-        {
-            token = LexNext(ref reader);
-        }
-
+        LexStatus status = TryLexToken(ref reader, out TurtleToken token);
         consumed = reader.Consumed;
+
+        if(status == LexStatus.Error)
+        {
+            throw new TurtleParseException(pendingDiagnostic.GetMessage(), pendingDiagnostic.Span);
+        }
 
         return token;
     }
 
-    private TurtleToken LexNext(ref SequenceReader<byte> reader)
+    private LexStatus TryLexToken(ref SequenceReader<byte> reader, out TurtleToken token)
+    {
+        token = default;
+
+        SkipWhitespaceAndComments(ref reader);
+
+        if(reader.End)
+        {
+            if(!atFinalBuffer)
+            {
+                return LexStatus.NeedMore;
+            }
+
+            int offset = Offset(reader.Consumed);
+            token = new TurtleToken(
+                TurtleTokenKind.EndOfInput,
+                CaptureSpan(offset, offset, line, column, line, column),
+                Pool.Intern(ReadOnlySpan<byte>.Empty));
+
+            return LexStatus.Complete;
+        }
+
+        return LexNext(ref reader, out token);
+    }
+
+    private LexStatus LexNext(ref SequenceReader<byte> reader, out TurtleToken token)
     {
         reader.TryPeek(out byte current);
 
-        return current switch
+        switch(current)
         {
-            (byte)'<' => LexLessThan(ref reader),
-            (byte)'>' => LexGreaterThan(ref reader),
-            (byte)'"' => LexShortString(ref reader, (byte)'"'),
-            (byte)'\'' => LexShortString(ref reader, (byte)'\''),
-            (byte)'_' => LexBlankNodeLabel(ref reader),
-            (byte)'[' => LexOpenBracket(ref reader),
-            (byte)']' => LexSinglePunctuation(ref reader, TurtleTokenKind.CloseBracket),
-            (byte)'(' => LexSinglePunctuation(ref reader, TurtleTokenKind.OpenParen),
-            (byte)')' => LexCloseParen(ref reader),
-            (byte)'{' => LexOpenBrace(ref reader),
-            (byte)'}' => LexSinglePunctuation(ref reader, TurtleTokenKind.CloseBrace),
-            (byte)'|' => LexPipe(ref reader),
-            (byte)',' => LexSinglePunctuation(ref reader, TurtleTokenKind.Comma),
-            (byte)';' => LexSinglePunctuation(ref reader, TurtleTokenKind.Semicolon),
-            (byte)'.' => LexPeriodOrDecimal(ref reader),
-            (byte)'~' => LexSinglePunctuation(ref reader, TurtleTokenKind.Tilde),
-            (byte)'^' => LexTypeMarker(ref reader),
-            (byte)'@' => LexAtDirective(ref reader),
-            (byte)'+' or (byte)'-' => LexNumericSigned(ref reader),
-            >= (byte)'0' and <= (byte)'9' => LexNumericUnsigned(ref reader),
-            _ => LexIdentifierLike(ref reader)
-        };
+            case (byte)'<':
+            {
+                return LexLessThan(ref reader, out token);
+            }
+
+            case (byte)'>':
+            {
+                return LexGreaterThan(ref reader, out token);
+            }
+
+            case (byte)'"':
+            {
+                return LexShortString(ref reader, (byte)'"', out token);
+            }
+
+            case (byte)'\'':
+            {
+                return LexShortString(ref reader, (byte)'\'', out token);
+            }
+
+            case (byte)'_':
+            {
+                return LexBlankNodeLabel(ref reader, out token);
+            }
+
+            case (byte)'[':
+            {
+                return LexOpenBracket(ref reader, out token);
+            }
+
+            case (byte)']':
+            {
+                return LexSinglePunctuation(ref reader, TurtleTokenKind.CloseBracket, out token);
+            }
+
+            case (byte)'(':
+            {
+                return LexSinglePunctuation(ref reader, TurtleTokenKind.OpenParen, out token);
+            }
+
+            case (byte)')':
+            {
+                return LexCloseParen(ref reader, out token);
+            }
+
+            case (byte)'{':
+            {
+                return LexOpenBrace(ref reader, out token);
+            }
+
+            case (byte)'}':
+            {
+                return LexSinglePunctuation(ref reader, TurtleTokenKind.CloseBrace, out token);
+            }
+
+            case (byte)'|':
+            {
+                return LexPipe(ref reader, out token);
+            }
+
+            case (byte)',':
+            {
+                return LexSinglePunctuation(ref reader, TurtleTokenKind.Comma, out token);
+            }
+
+            case (byte)';':
+            {
+                return LexSinglePunctuation(ref reader, TurtleTokenKind.Semicolon, out token);
+            }
+
+            case (byte)'.':
+            {
+                return LexPeriodOrDecimal(ref reader, out token);
+            }
+
+            case (byte)'~':
+            {
+                return LexSinglePunctuation(ref reader, TurtleTokenKind.Tilde, out token);
+            }
+
+            case (byte)'^':
+            {
+                return LexTypeMarker(ref reader, out token);
+            }
+
+            case (byte)'@':
+            {
+                return LexAtDirective(ref reader, out token);
+            }
+
+            case (byte)'+' or (byte)'-':
+            {
+                return LexNumericSigned(ref reader, out token);
+            }
+
+            case >= (byte)'0' and <= (byte)'9':
+            {
+                return LexNumericUnsigned(ref reader, out token);
+            }
+
+            default:
+            {
+                return LexIdentifierLike(ref reader, out token);
+            }
+        }
     }
 
-    private TurtleToken LexLessThan(ref SequenceReader<byte> reader)
+    private LexStatus LexLessThan(ref SequenceReader<byte> reader, out TurtleToken token)
     {
+        token = default;
+
         //Distinguish '<' (IRI), '<<' (reified triple), '<<(' (triple term).
-        if(reader.TryPeek(1, out byte second) && second == (byte)'<' && reader.TryPeek(2, out byte third) && third == (byte)'(')
+        if(!reader.TryPeek(1, out byte second))
         {
-            int startByte = (int)reader.Consumed;
-            int startLine = line;
-            int startColumn = column;
-            AdvanceCount(ref reader, 3);
-
-            return new TurtleToken(
-                TurtleTokenKind.OpenTripleTerm,
-                CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
-                Pool.Intern("<<("u8));
+            if(!atFinalBuffer)
+            {
+                return LexStatus.NeedMore;
+            }
         }
-
-        if(reader.TryPeek(1, out byte angle) && angle == (byte)'<')
+        else if(second == (byte)'<')
         {
-            int startByte = (int)reader.Consumed;
+            bool haveThird = reader.TryPeek(2, out byte third);
+            if(!haveThird && !atFinalBuffer)
+            {
+                return LexStatus.NeedMore;
+            }
+
+            int startByte = Offset(reader.Consumed);
             int startLine = line;
             int startColumn = column;
-            AdvanceCount(ref reader, 2);
 
-            return new TurtleToken(
+            if(haveThird && third == (byte)'(')
+            {
+                AdvanceCount(ref reader, 3);
+                token = new TurtleToken(
+                    TurtleTokenKind.OpenTripleTerm,
+                    CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
+                    Pool.Intern("<<("u8));
+
+                return LexStatus.Complete;
+            }
+
+            AdvanceCount(ref reader, 2);
+            token = new TurtleToken(
                 TurtleTokenKind.OpenReifiedTriple,
-                CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
+                CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
                 Pool.Intern("<<"u8));
+
+            return LexStatus.Complete;
         }
 
-        return LexIri(ref reader);
+        return LexIri(ref reader, out token);
     }
 
-    private TurtleToken LexGreaterThan(ref SequenceReader<byte> reader)
+    private LexStatus LexGreaterThan(ref SequenceReader<byte> reader, out TurtleToken token)
     {
-        if(reader.TryPeek(1, out byte angle) && angle == (byte)'>')
+        token = default;
+
+        if(!reader.TryPeek(1, out byte angle))
         {
-            int startByte = (int)reader.Consumed;
+            if(!atFinalBuffer)
+            {
+                return LexStatus.NeedMore;
+            }
+        }
+        else if(angle == (byte)'>')
+        {
+            int startByte = Offset(reader.Consumed);
             int startLine = line;
             int startColumn = column;
             AdvanceCount(ref reader, 2);
 
-            return new TurtleToken(
+            token = new TurtleToken(
                 TurtleTokenKind.CloseReifiedTriple,
-                CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
+                CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
                 Pool.Intern(">>"u8));
+
+            return LexStatus.Complete;
         }
 
-        throw new TurtleParseException(
-            $"Unexpected '>' at line {line + 1} column {column + 1}.",
-            SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Consumed + 1, line, column, column + 1));
+        return Fail(
+            TurtleLexErrorCode.UnexpectedGreaterThan,
+            SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 1, line, column, column + 1));
     }
 
-    private TurtleToken LexOpenBrace(ref SequenceReader<byte> reader)
+    private LexStatus LexOpenBrace(ref SequenceReader<byte> reader, out TurtleToken token)
     {
-        if(reader.TryPeek(1, out byte bar) && bar == (byte)'|')
+        token = default;
+
+        if(!reader.TryPeek(1, out byte bar))
         {
-            int startByte = (int)reader.Consumed;
+            if(!atFinalBuffer)
+            {
+                return LexStatus.NeedMore;
+            }
+        }
+        else if(bar == (byte)'|')
+        {
+            int startByte = Offset(reader.Consumed);
             int startLine = line;
             int startColumn = column;
             AdvanceCount(ref reader, 2);
 
-            return new TurtleToken(
+            token = new TurtleToken(
                 TurtleTokenKind.OpenAnnotation,
-                CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
+                CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
                 Pool.Intern("{|"u8));
+
+            return LexStatus.Complete;
         }
 
-        return LexSinglePunctuation(ref reader, TurtleTokenKind.OpenBrace);
+        return LexSinglePunctuation(ref reader, TurtleTokenKind.OpenBrace, out token);
     }
 
-    private TurtleToken LexPipe(ref SequenceReader<byte> reader)
+    private LexStatus LexPipe(ref SequenceReader<byte> reader, out TurtleToken token)
     {
-        if(reader.TryPeek(1, out byte brace) && brace == (byte)'}')
+        token = default;
+
+        if(!reader.TryPeek(1, out byte brace))
         {
-            int startByte = (int)reader.Consumed;
+            if(!atFinalBuffer)
+            {
+                return LexStatus.NeedMore;
+            }
+        }
+        else if(brace == (byte)'}')
+        {
+            int startByte = Offset(reader.Consumed);
             int startLine = line;
             int startColumn = column;
             AdvanceCount(ref reader, 2);
 
-            return new TurtleToken(
+            token = new TurtleToken(
                 TurtleTokenKind.CloseAnnotation,
-                CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
+                CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
                 Pool.Intern("|}"u8));
+
+            return LexStatus.Complete;
         }
 
-        throw new TurtleParseException(
-            $"Unexpected '|' at line {line + 1} column {column + 1}.",
-            SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Consumed + 1, line, column, column + 1));
+        return Fail(
+            TurtleLexErrorCode.UnexpectedPipe,
+            SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 1, line, column, column + 1));
     }
 
-    private TurtleToken LexOpenBracket(ref SequenceReader<byte> reader)
+    private LexStatus LexOpenBracket(ref SequenceReader<byte> reader, out TurtleToken token)
     {
+        token = default;
+
         //Detect the ANON form '[' WS* ']' so the parser can produce a single anonymous-blank-node term.
         long probeOffset = 1;
         while(reader.TryPeek(probeOffset, out byte whitespace) && IsWhitespaceByte(whitespace))
@@ -263,9 +412,16 @@ public sealed class TurtleLexer
             probeOffset++;
         }
 
-        if(reader.TryPeek(probeOffset, out byte close) && close == (byte)']')
+        bool sawClose = reader.TryPeek(probeOffset, out byte close);
+        if(!sawClose && !atFinalBuffer)
         {
-            int startByte = (int)reader.Consumed;
+            //The whitespace run reached the buffer end; a ']' might still follow.
+            return LexStatus.NeedMore;
+        }
+
+        if(sawClose && close == (byte)']')
+        {
+            int startByte = Offset(reader.Consumed);
             int startLine = line;
             int startColumn = column;
 
@@ -275,139 +431,190 @@ public sealed class TurtleLexer
                 Advance(ref reader);
             }
 
-            return new TurtleToken(
+            token = new TurtleToken(
                 TurtleTokenKind.AnonymousBlankNode,
-                CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
+                CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
                 Pool.Intern("[]"u8));
+
+            return LexStatus.Complete;
         }
 
-        return LexSinglePunctuation(ref reader, TurtleTokenKind.OpenBracket);
+        return LexSinglePunctuation(ref reader, TurtleTokenKind.OpenBracket, out token);
     }
 
-    private TurtleToken LexCloseParen(ref SequenceReader<byte> reader)
+    private LexStatus LexCloseParen(ref SequenceReader<byte> reader, out TurtleToken token)
     {
+        token = default;
+
         //RDF 1.2 triple-term close is the three-byte sequence ')>>'.
-        if(reader.TryPeek(1, out byte first) && first == (byte)'>' && reader.TryPeek(2, out byte second) && second == (byte)'>')
+        bool first = reader.TryPeek(1, out byte firstAngle);
+        bool secondAvailable = reader.TryPeek(2, out byte secondAngle);
+        if((!first || !secondAvailable) && !atFinalBuffer)
         {
-            int startByte = (int)reader.Consumed;
+            return LexStatus.NeedMore;
+        }
+
+        if(first && firstAngle == (byte)'>' && secondAvailable && secondAngle == (byte)'>')
+        {
+            int startByte = Offset(reader.Consumed);
             int startLine = line;
             int startColumn = column;
             AdvanceCount(ref reader, 3);
 
-            return new TurtleToken(
+            token = new TurtleToken(
                 TurtleTokenKind.CloseTripleTerm,
-                CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
+                CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
                 Pool.Intern(")>>"u8));
+
+            return LexStatus.Complete;
         }
 
-        return LexSinglePunctuation(ref reader, TurtleTokenKind.CloseParen);
+        return LexSinglePunctuation(ref reader, TurtleTokenKind.CloseParen, out token);
     }
 
-    private TurtleToken LexSinglePunctuation(ref SequenceReader<byte> reader, TurtleTokenKind kind)
+    private LexStatus LexSinglePunctuation(ref SequenceReader<byte> reader, TurtleTokenKind kind, out TurtleToken token)
     {
-        int startByte = (int)reader.Consumed;
+        int startByte = Offset(reader.Consumed);
         SequencePosition startPosition = reader.Position;
         int startLine = line;
         int startColumn = column;
 
         Advance(ref reader);
 
-        return new TurtleToken(
+        token = new TurtleToken(
             kind,
-            CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
+            CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
             Pool.Intern(reader.Sequence.Slice(startPosition, reader.Position)));
+
+        return LexStatus.Complete;
     }
 
-    private TurtleToken LexPeriodOrDecimal(ref SequenceReader<byte> reader)
+    private LexStatus LexPeriodOrDecimal(ref SequenceReader<byte> reader, out TurtleToken token)
     {
+        token = default;
+
         //A leading period followed by a digit begins a numeric literal: ".5", ".5e10".
-        if(reader.TryPeek(1, out byte next) && IsDigit(next))
+        if(!reader.TryPeek(1, out byte next))
         {
-            return LexNumericUnsigned(ref reader);
+            if(!atFinalBuffer)
+            {
+                return LexStatus.NeedMore;
+            }
+        }
+        else if(IsDigit(next))
+        {
+            return LexNumericUnsigned(ref reader, out token);
         }
 
-        return LexSinglePunctuation(ref reader, TurtleTokenKind.Period);
+        return LexSinglePunctuation(ref reader, TurtleTokenKind.Period, out token);
     }
 
-    private TurtleToken LexTypeMarker(ref SequenceReader<byte> reader)
+    private LexStatus LexTypeMarker(ref SequenceReader<byte> reader, out TurtleToken token)
     {
-        if(reader.TryPeek(1, out byte caret) && caret == (byte)'^')
+        token = default;
+
+        if(!reader.TryPeek(1, out byte caret))
         {
-            int startByte = (int)reader.Consumed;
+            if(!atFinalBuffer)
+            {
+                return LexStatus.NeedMore;
+            }
+        }
+        else if(caret == (byte)'^')
+        {
+            int startByte = Offset(reader.Consumed);
             int startLine = line;
             int startColumn = column;
             AdvanceCount(ref reader, 2);
 
-            return new TurtleToken(
+            token = new TurtleToken(
                 TurtleTokenKind.TypeMarker,
-                CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
+                CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
                 Pool.Intern("^^"u8));
+
+            return LexStatus.Complete;
         }
 
-        throw new TurtleParseException(
-            $"Expected '^^' at line {line + 1} column {column + 1}.",
-            SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Consumed + 1, line, column, column + 1));
+        return Fail(
+            TurtleLexErrorCode.ExpectedTypeMarker,
+            SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 1, line, column, column + 1));
     }
 
-    private TurtleToken LexAtDirective(ref SequenceReader<byte> reader)
+    private LexStatus LexAtDirective(ref SequenceReader<byte> reader, out TurtleToken token)
     {
-        int startByte = (int)reader.Consumed;
+        token = default;
+
+        int startByte = Offset(reader.Consumed);
         int startLine = line;
         int startColumn = column;
 
         Advance(ref reader);
 
         SequencePosition identifierStartPosition = reader.Position;
-        int identifierStartByte = (int)reader.Consumed;
+        int identifierStartByte = Offset(reader.Consumed);
         while(reader.TryPeek(out byte letter) && IsAsciiLetter(letter))
         {
             Advance(ref reader);
         }
 
-        if((int)reader.Consumed == identifierStartByte)
+        //The keyword or language primary subtag may extend past the buffer end.
+        if(reader.End && !atFinalBuffer)
         {
-            throw new TurtleParseException(
-                $"Expected identifier after '@' at line {startLine + 1} column {startColumn + 1}.",
-                SourceSpan.SingleLine(startByte, (int)reader.Consumed, startLine, startColumn, column));
+            return LexStatus.NeedMore;
+        }
+
+        if(Offset(reader.Consumed) == identifierStartByte)
+        {
+            return Fail(
+                TurtleLexErrorCode.ExpectedIdentifierAfterAt,
+                SourceSpan.SingleLine(startByte, Offset(reader.Consumed), startLine, startColumn, column));
         }
 
         ReadOnlySequence<byte> identifier = reader.Sequence.Slice(identifierStartPosition, reader.Position);
 
         if(SequenceEquals(identifier, "prefix"u8))
         {
-            return new TurtleToken(
+            token = new TurtleToken(
                 TurtleTokenKind.PrefixKeyword,
-                CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
+                CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
                 Pool.Intern("@prefix"u8));
+
+            return LexStatus.Complete;
         }
 
         if(SequenceEquals(identifier, "base"u8))
         {
-            return new TurtleToken(
+            token = new TurtleToken(
                 TurtleTokenKind.BaseKeyword,
-                CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
+                CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
                 Pool.Intern("@base"u8));
+
+            return LexStatus.Complete;
         }
 
         if(SequenceEquals(identifier, "version"u8))
         {
-            return new TurtleToken(
+            token = new TurtleToken(
                 TurtleTokenKind.VersionKeyword,
-                CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
+                CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
                 Pool.Intern("@version"u8));
+
+            return LexStatus.Complete;
         }
 
         //Otherwise this is a language tag attached to the preceding literal: continue reading subtags and an optional direction.
-        return LexLanguageTagBody(ref reader, startByte, startLine, startColumn, identifierStartPosition);
+        return LexLanguageTagBody(ref reader, startByte, startLine, startColumn, identifierStartPosition, out token);
     }
 
-    private TurtleToken LexLanguageTagBody(
+    private LexStatus LexLanguageTagBody(
         ref SequenceReader<byte> reader,
         int startByte,
         int startLine,
         int startColumn,
-        SequencePosition identifierStartPosition)
+        SequencePosition identifierStartPosition,
+        out TurtleToken token)
     {
+        token = default;
         bool sawDirection = false;
 
         while(reader.TryPeek(out byte dash) && dash == (byte)'-')
@@ -417,50 +624,76 @@ public sealed class TurtleLexer
             {
                 AdvanceCount(ref reader, 2);
                 sawDirection = true;
-                int dirStart = (int)reader.Consumed;
+                int dirStart = Offset(reader.Consumed);
 
                 while(reader.TryPeek(out byte letter) && IsAsciiLetter(letter))
                 {
                     Advance(ref reader);
                 }
 
-                if((int)reader.Consumed == dirStart)
+                if(reader.End && !atFinalBuffer)
                 {
-                    throw new TurtleParseException(
-                        $"Expected direction tag after '--' at line {line + 1} column {column + 1}.",
-                        SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Consumed + 1, line, column, column + 1));
+                    return LexStatus.NeedMore;
+                }
+
+                if(Offset(reader.Consumed) == dirStart)
+                {
+                    return Fail(
+                        TurtleLexErrorCode.ExpectedDirectionTag,
+                        SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 1, line, column, column + 1));
                 }
 
                 break;
             }
 
+            //A lone trailing '-' may be completed by a subtag in the next buffer.
+            if(!reader.TryPeek(1, out _) && !atFinalBuffer)
+            {
+                return LexStatus.NeedMore;
+            }
+
             Advance(ref reader);
-            int subtagStart = (int)reader.Consumed;
+            int subtagStart = Offset(reader.Consumed);
             while(reader.TryPeek(out byte alnum) && IsAsciiLetterOrDigit(alnum))
             {
                 Advance(ref reader);
             }
 
-            if((int)reader.Consumed == subtagStart)
+            if(reader.End && !atFinalBuffer)
             {
-                throw new TurtleParseException(
-                    $"Expected language subtag after '-' at line {line + 1} column {column + 1}.",
-                    SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Consumed + 1, line, column, column + 1));
+                return LexStatus.NeedMore;
             }
+
+            if(Offset(reader.Consumed) == subtagStart)
+            {
+                return Fail(
+                    TurtleLexErrorCode.ExpectedLanguageSubtag,
+                    SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 1, line, column, column + 1));
+            }
+        }
+
+        //Another '-subtag' may follow in the next buffer.
+        if(reader.End && !atFinalBuffer)
+        {
+            return LexStatus.NeedMore;
         }
 
         Utf8String value = Pool.Intern(reader.Sequence.Slice(identifierStartPosition, reader.Position));
         TurtleTokenKind kind = sawDirection ? TurtleTokenKind.DirLangTag : TurtleTokenKind.LangTag;
 
-        return new TurtleToken(
+        token = new TurtleToken(
             kind,
-            CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
+            CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
             value);
+
+        return LexStatus.Complete;
     }
 
-    private TurtleToken LexIri(ref SequenceReader<byte> reader)
+    private LexStatus LexIri(ref SequenceReader<byte> reader, out TurtleToken token)
     {
-        int startByte = (int)reader.Consumed;
+        token = default;
+
+        int startByte = Offset(reader.Consumed);
         int startLine = line;
         int startColumn = column;
         scratchToken = new TokenGrowthContext(TurtleTokenKind.Iri, 0, startByte, startLine, startColumn);
@@ -476,49 +709,72 @@ public sealed class TurtleLexer
             {
                 if(!reader.TryPeek(out byte b))
                 {
-                    throw new TurtleParseException(
-                        $"Unterminated IRI starting at line {startLine + 1} column {startColumn + 1}.",
-                        SourceSpan.SingleLine(startByte, (int)reader.Consumed, startLine, startColumn, column));
+                    if(!atFinalBuffer)
+                    {
+                        return LexStatus.NeedMore;
+                    }
+
+                    return Fail(
+                        TurtleLexErrorCode.UnterminatedIri,
+                        SourceSpan.SingleLine(startByte, Offset(reader.Consumed), startLine, startColumn, column));
                 }
 
                 if(b == (byte)'>')
                 {
                     Advance(ref reader);
 
-                    Utf8String iriValue = Pool.Intern(scratch.Memory.Span[..written]);
-
-                    return new TurtleToken(
+                    token = new TurtleToken(
                         TurtleTokenKind.Iri,
-                        CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
-                        iriValue);
+                        CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
+                        Pool.Intern(scratch.Memory.Span[..written]));
+
+                    return LexStatus.Complete;
                 }
 
                 if(b == (byte)'\\')
                 {
-                    int escapeStart = (int)reader.Consumed;
+                    int escapeStart = Offset(reader.Consumed);
                     int escapeLine = line;
                     int escapeColumn = column;
 
-                    uint decoded = ReadUcharEscape(ref reader, escapeStart, escapeLine, escapeColumn);
+                    LexStatus escapeStatus = ReadUcharEscape(ref reader, escapeStart, escapeLine, escapeColumn, out uint decoded);
+                    if(escapeStatus != LexStatus.Complete)
+                    {
+                        return escapeStatus;
+                    }
+
                     written = AppendCodepoint(decoded, ref scratch, written);
                     continue;
                 }
 
                 if(b < 0x21 || b == (byte)'"' || b == (byte)'<' || b == (byte)'{' || b == (byte)'}' || b == (byte)'|' || b == (byte)'^' || b == (byte)'`')
                 {
-                    throw new TurtleParseException(
-                        $"Invalid byte 0x{b:X2} inside IRI at line {line + 1} column {column + 1}.",
-                        SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Consumed + 1, line, column, column + 1));
+                    return Fail(
+                        TurtleLexErrorCode.InvalidIriByte,
+                        SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 1, line, column, column + 1),
+                        FormatByte(b));
                 }
 
-                int byteCount = Utf8ByteLength(b);
+                if(!TryUtf8ByteLength(b, out int byteCount))
+                {
+                    return Fail(
+                        TurtleLexErrorCode.InvalidUtf8LeadByte,
+                        SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 1, line, column, column + 1),
+                        FormatByte(b));
+                }
+
                 EnsureScratchCapacity(ref scratch, written + byteCount);
 
                 if(reader.Remaining < byteCount)
                 {
-                    throw new TurtleParseException(
-                        $"Truncated UTF-8 sequence inside IRI at line {line + 1} column {column + 1}.",
-                        SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Length, line, column, column));
+                    if(!atFinalBuffer)
+                    {
+                        return LexStatus.NeedMore;
+                    }
+
+                    return Fail(
+                        TurtleLexErrorCode.TruncatedUtf8,
+                        SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Length), line, column, column));
                 }
 
                 Span<byte> buffer = scratch.Memory.Span;
@@ -536,17 +792,24 @@ public sealed class TurtleLexer
         }
     }
 
-    private uint ReadUcharEscape(ref SequenceReader<byte> reader, int escapeStart, int escapeLine, int escapeColumn)
+    private LexStatus ReadUcharEscape(ref SequenceReader<byte> reader, int escapeStart, int escapeLine, int escapeColumn, out uint codepoint)
     {
         //Decodes a \uXXXX or \UXXXXXXXX escape to a full Unicode scalar value. Each escape stands
         //for one scalar value: surrogate code points (U+D800..U+DFFF) are rejected — Turtle does
         //not encode astral characters as \u surrogate pairs, only as a single \U escape — and code
         //points beyond U+10FFFF are rejected as out of range.
+        codepoint = 0;
+
         if(!reader.TryPeek(1, out byte marker))
         {
-            throw new TurtleParseException(
-                $"Truncated escape sequence at line {escapeLine + 1} column {escapeColumn + 1}.",
-                SourceSpan.SingleLine(escapeStart, (int)reader.Consumed, escapeLine, escapeColumn, column));
+            if(!atFinalBuffer)
+            {
+                return LexStatus.NeedMore;
+            }
+
+            return Fail(
+                TurtleLexErrorCode.TruncatedEscape,
+                SourceSpan.SingleLine(escapeStart, Offset(reader.Consumed), escapeLine, escapeColumn, column));
         }
 
         int hexCount = marker switch
@@ -558,29 +821,35 @@ public sealed class TurtleLexer
 
         if(hexCount < 0)
         {
-            throw new TurtleParseException(
-                $"Invalid escape '\\{(char)marker}' inside IRI at line {escapeLine + 1} column {escapeColumn + 1}.",
-                SourceSpan.SingleLine(escapeStart, (int)reader.Consumed + 2, escapeLine, escapeColumn, column + 2));
+            return Fail(
+                TurtleLexErrorCode.InvalidEscape,
+                SourceSpan.SingleLine(escapeStart, Offset(reader.Consumed) + 2, escapeLine, escapeColumn, column + 2),
+                FormatEscape(marker));
         }
 
         if(reader.Remaining < 2 + hexCount)
         {
-            throw new TurtleParseException(
-                $"Truncated \\{(char)marker} escape at line {escapeLine + 1} column {escapeColumn + 1}.",
-                SourceSpan.SingleLine(escapeStart, (int)reader.Length, escapeLine, escapeColumn, column));
+            if(!atFinalBuffer)
+            {
+                return LexStatus.NeedMore;
+            }
+
+            return Fail(
+                TurtleLexErrorCode.TruncatedEscape,
+                SourceSpan.SingleLine(escapeStart, Offset(reader.Length), escapeLine, escapeColumn, column));
         }
 
         AdvanceCount(ref reader, 2);
 
-        uint codepoint = 0;
         for(int i = 0; i < hexCount; i++)
         {
             reader.TryPeek(out byte hex);
             if(!TryHexValue(hex, out uint digit))
             {
-                throw new TurtleParseException(
-                    $"Invalid hex digit '{(char)hex}' in escape at line {line + 1} column {column + 1}.",
-                    SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Consumed + 1, line, column, column + 1));
+                return Fail(
+                    TurtleLexErrorCode.InvalidHexDigit,
+                    SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 1, line, column, column + 1),
+                    ((char)hex).ToString());
             }
 
             codepoint = (codepoint << 4) | digit;
@@ -589,31 +858,52 @@ public sealed class TurtleLexer
 
         if(codepoint >= (uint)UnicodeConstants.SurrogateRangeFirst && codepoint <= (uint)UnicodeConstants.SurrogateRangeLast)
         {
-            throw new TurtleParseException(
-                $"Surrogate code point U+{codepoint:X4} is not a valid Unicode scalar value at line {escapeLine + 1} column {escapeColumn + 1}.",
-                SourceSpan.SingleLine(escapeStart, (int)reader.Consumed, escapeLine, escapeColumn, column));
+            return Fail(
+                TurtleLexErrorCode.SurrogateCodePoint,
+                SourceSpan.SingleLine(escapeStart, Offset(reader.Consumed), escapeLine, escapeColumn, column),
+                FormatCodePoint(codepoint));
         }
 
         if(codepoint > (uint)UnicodeConstants.MaximumCodePoint)
         {
-            throw new TurtleParseException(
-                $"Code point U+{codepoint:X} exceeds the Unicode range at line {escapeLine + 1} column {escapeColumn + 1}.",
-                SourceSpan.SingleLine(escapeStart, (int)reader.Consumed, escapeLine, escapeColumn, column));
+            return Fail(
+                TurtleLexErrorCode.CodePointOutOfRange,
+                SourceSpan.SingleLine(escapeStart, Offset(reader.Consumed), escapeLine, escapeColumn, column),
+                FormatCodePoint(codepoint));
         }
 
-        return codepoint;
+        return LexStatus.Complete;
     }
 
-    private TurtleToken LexShortString(ref SequenceReader<byte> reader, byte quote)
+    private LexStatus LexShortString(ref SequenceReader<byte> reader, byte quote, out TurtleToken token)
     {
-        int startByte = (int)reader.Consumed;
+        token = default;
+
+        int startByte = Offset(reader.Consumed);
         int startLine = line;
         int startColumn = column;
 
-        //Detect the three-quote long-string form.
-        if(reader.TryPeek(1, out byte secondQuote) && secondQuote == quote && reader.TryPeek(2, out byte thirdQuote) && thirdQuote == quote)
+        //Deciding short vs long needs two bytes of lookahead past the opening quote.
+        if(!reader.TryPeek(1, out byte secondQuote))
         {
-            return LexLongString(ref reader, quote);
+            if(!atFinalBuffer)
+            {
+                return LexStatus.NeedMore;
+            }
+        }
+        else if(secondQuote == quote)
+        {
+            if(!reader.TryPeek(2, out byte thirdQuote))
+            {
+                if(!atFinalBuffer)
+                {
+                    return LexStatus.NeedMore;
+                }
+            }
+            else if(thirdQuote == quote)
+            {
+                return LexLongString(ref reader, quote, out token);
+            }
         }
 
         scratchToken = new TokenGrowthContext(TurtleTokenKind.StringLiteral, 0, startByte, startLine, startColumn);
@@ -629,41 +919,64 @@ public sealed class TurtleLexer
             {
                 if(!reader.TryPeek(out byte b))
                 {
-                    throw new TurtleParseException(
-                        $"Unterminated string literal starting at line {startLine + 1} column {startColumn + 1}.",
-                        SourceSpan.SingleLine(startByte, (int)reader.Consumed, startLine, startColumn, column));
+                    if(!atFinalBuffer)
+                    {
+                        return LexStatus.NeedMore;
+                    }
+
+                    return Fail(
+                        TurtleLexErrorCode.UnterminatedString,
+                        SourceSpan.SingleLine(startByte, Offset(reader.Consumed), startLine, startColumn, column));
                 }
 
                 if(b == quote)
                 {
                     Advance(ref reader);
-                    Utf8String value = Pool.Intern(scratch.Memory.Span[..written]);
 
-                    return new TurtleToken(
+                    token = new TurtleToken(
                         TurtleTokenKind.StringLiteral,
-                        CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
-                        value);
+                        CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
+                        Pool.Intern(scratch.Memory.Span[..written]));
+
+                    return LexStatus.Complete;
                 }
 
                 if(b == (byte)'\n' || b == (byte)'\r')
                 {
-                    throw new TurtleParseException(
-                        $"Unescaped line break inside short string literal at line {line + 1} column {column + 1}.",
-                        SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Consumed + 1, line, column, column + 1));
+                    return Fail(
+                        TurtleLexErrorCode.UnescapedLineBreak,
+                        SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 1, line, column, column + 1));
                 }
 
                 if(b == (byte)'\\')
                 {
-                    written = DecodeEscape(ref reader, ref scratch, written);
+                    LexStatus escapeStatus = DecodeEscape(ref reader, ref scratch, ref written);
+                    if(escapeStatus != LexStatus.Complete)
+                    {
+                        return escapeStatus;
+                    }
+
                     continue;
                 }
 
-                int byteCount = Utf8ByteLength(b);
+                if(!TryUtf8ByteLength(b, out int byteCount))
+                {
+                    return Fail(
+                        TurtleLexErrorCode.InvalidUtf8LeadByte,
+                        SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 1, line, column, column + 1),
+                        FormatByte(b));
+                }
+
                 if(reader.Remaining < byteCount)
                 {
-                    throw new TurtleParseException(
-                        $"Truncated UTF-8 sequence inside string literal at line {line + 1} column {column + 1}.",
-                        SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Length, line, column, column));
+                    if(!atFinalBuffer)
+                    {
+                        return LexStatus.NeedMore;
+                    }
+
+                    return Fail(
+                        TurtleLexErrorCode.TruncatedUtf8,
+                        SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Length), line, column, column));
                 }
 
                 EnsureScratchCapacity(ref scratch, written + byteCount);
@@ -683,9 +996,11 @@ public sealed class TurtleLexer
         }
     }
 
-    private TurtleToken LexLongString(ref SequenceReader<byte> reader, byte quote)
+    private LexStatus LexLongString(ref SequenceReader<byte> reader, byte quote, out TurtleToken token)
     {
-        int startByte = (int)reader.Consumed;
+        token = default;
+
+        int startByte = Offset(reader.Consumed);
         int startLine = line;
         int startColumn = column;
         scratchToken = new TokenGrowthContext(TurtleTokenKind.LongStringLiteral, 0, startByte, startLine, startColumn);
@@ -701,34 +1016,79 @@ public sealed class TurtleLexer
             {
                 if(!reader.TryPeek(out byte b))
                 {
-                    throw new TurtleParseException(
-                        $"Unterminated long string literal starting at line {startLine + 1} column {startColumn + 1}.",
-                        SourceSpan.SingleLine(startByte, (int)reader.Consumed, startLine, startColumn, column));
+                    if(!atFinalBuffer)
+                    {
+                        return LexStatus.NeedMore;
+                    }
+
+                    return Fail(
+                        TurtleLexErrorCode.UnterminatedLongString,
+                        SourceSpan.SingleLine(startByte, Offset(reader.Consumed), startLine, startColumn, column));
                 }
 
-                if(b == quote && reader.TryPeek(1, out byte secondQuote) && secondQuote == quote && reader.TryPeek(2, out byte thirdQuote) && thirdQuote == quote)
+                if(b == quote)
                 {
-                    AdvanceCount(ref reader, 3);
-                    Utf8String value = Pool.Intern(scratch.Memory.Span[..written]);
+                    //A closing triple needs two more quotes; without them in this buffer the bytes
+                    //may be content or the close, so wait for more before deciding.
+                    if(!reader.TryPeek(1, out byte secondQuote))
+                    {
+                        if(!atFinalBuffer)
+                        {
+                            return LexStatus.NeedMore;
+                        }
+                    }
+                    else if(secondQuote == quote)
+                    {
+                        if(!reader.TryPeek(2, out byte thirdQuote))
+                        {
+                            if(!atFinalBuffer)
+                            {
+                                return LexStatus.NeedMore;
+                            }
+                        }
+                        else if(thirdQuote == quote)
+                        {
+                            AdvanceCount(ref reader, 3);
 
-                    return new TurtleToken(
-                        TurtleTokenKind.LongStringLiteral,
-                        CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
-                        value);
+                            token = new TurtleToken(
+                                TurtleTokenKind.LongStringLiteral,
+                                CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
+                                Pool.Intern(scratch.Memory.Span[..written]));
+
+                            return LexStatus.Complete;
+                        }
+                    }
                 }
 
                 if(b == (byte)'\\')
                 {
-                    written = DecodeEscape(ref reader, ref scratch, written);
+                    LexStatus escapeStatus = DecodeEscape(ref reader, ref scratch, ref written);
+                    if(escapeStatus != LexStatus.Complete)
+                    {
+                        return escapeStatus;
+                    }
+
                     continue;
                 }
 
-                int byteCount = Utf8ByteLength(b);
+                if(!TryUtf8ByteLength(b, out int byteCount))
+                {
+                    return Fail(
+                        TurtleLexErrorCode.InvalidUtf8LeadByte,
+                        SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 1, line, column, column + 1),
+                        FormatByte(b));
+                }
+
                 if(reader.Remaining < byteCount)
                 {
-                    throw new TurtleParseException(
-                        $"Truncated UTF-8 sequence inside long string literal at line {line + 1} column {column + 1}.",
-                        SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Length, line, column, column));
+                    if(!atFinalBuffer)
+                    {
+                        return LexStatus.NeedMore;
+                    }
+
+                    return Fail(
+                        TurtleLexErrorCode.TruncatedUtf8,
+                        SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Length), line, column, column));
                 }
 
                 EnsureScratchCapacity(ref scratch, written + byteCount);
@@ -748,13 +1108,18 @@ public sealed class TurtleLexer
         }
     }
 
-    private int DecodeEscape(ref SequenceReader<byte> reader, ref IMemoryOwner<byte> owner, int written)
+    private LexStatus DecodeEscape(ref SequenceReader<byte> reader, ref IMemoryOwner<byte> owner, ref int written)
     {
         if(!reader.TryPeek(1, out byte marker))
         {
-            throw new TurtleParseException(
-                $"Truncated escape sequence at line {line + 1} column {column + 1}.",
-                SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Length, line, column, column));
+            if(!atFinalBuffer)
+            {
+                return LexStatus.NeedMore;
+            }
+
+            return Fail(
+                TurtleLexErrorCode.TruncatedEscape,
+                SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Length), line, column, column));
         }
 
         switch(marker)
@@ -765,7 +1130,7 @@ public sealed class TurtleLexer
                 owner.Memory.Span[written++] = (byte)'\t';
                 AdvanceCount(ref reader, 2);
 
-                return written;
+                return LexStatus.Complete;
             }
 
             case (byte)'b':
@@ -774,7 +1139,7 @@ public sealed class TurtleLexer
                 owner.Memory.Span[written++] = 0x08;
                 AdvanceCount(ref reader, 2);
 
-                return written;
+                return LexStatus.Complete;
             }
 
             case (byte)'n':
@@ -783,7 +1148,7 @@ public sealed class TurtleLexer
                 owner.Memory.Span[written++] = (byte)'\n';
                 AdvanceCount(ref reader, 2);
 
-                return written;
+                return LexStatus.Complete;
             }
 
             case (byte)'r':
@@ -792,7 +1157,7 @@ public sealed class TurtleLexer
                 owner.Memory.Span[written++] = (byte)'\r';
                 AdvanceCount(ref reader, 2);
 
-                return written;
+                return LexStatus.Complete;
             }
 
             case (byte)'f':
@@ -801,7 +1166,7 @@ public sealed class TurtleLexer
                 owner.Memory.Span[written++] = 0x0C;
                 AdvanceCount(ref reader, 2);
 
-                return written;
+                return LexStatus.Complete;
             }
 
             case (byte)'"':
@@ -810,7 +1175,7 @@ public sealed class TurtleLexer
                 owner.Memory.Span[written++] = (byte)'"';
                 AdvanceCount(ref reader, 2);
 
-                return written;
+                return LexStatus.Complete;
             }
 
             case (byte)'\'':
@@ -819,7 +1184,7 @@ public sealed class TurtleLexer
                 owner.Memory.Span[written++] = (byte)'\'';
                 AdvanceCount(ref reader, 2);
 
-                return written;
+                return LexStatus.Complete;
             }
 
             case (byte)'\\':
@@ -828,25 +1193,33 @@ public sealed class TurtleLexer
                 owner.Memory.Span[written++] = (byte)'\\';
                 AdvanceCount(ref reader, 2);
 
-                return written;
+                return LexStatus.Complete;
             }
 
             case (byte)'u':
             case (byte)'U':
             {
-                int escapeStart = (int)reader.Consumed;
+                int escapeStart = Offset(reader.Consumed);
                 int escapeLine = line;
                 int escapeColumn = column;
-                uint decoded = ReadUcharEscape(ref reader, escapeStart, escapeLine, escapeColumn);
 
-                return AppendCodepoint(decoded, ref owner, written);
+                LexStatus status = ReadUcharEscape(ref reader, escapeStart, escapeLine, escapeColumn, out uint decoded);
+                if(status != LexStatus.Complete)
+                {
+                    return status;
+                }
+
+                written = AppendCodepoint(decoded, ref owner, written);
+
+                return LexStatus.Complete;
             }
 
             default:
             {
-                throw new TurtleParseException(
-                    $"Invalid escape sequence '\\{(char)marker}' at line {line + 1} column {column + 1}.",
-                    SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Consumed + 2, line, column, column + 2));
+                return Fail(
+                    TurtleLexErrorCode.InvalidEscape,
+                    SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 2, line, column, column + 2),
+                    FormatEscape(marker));
             }
         }
     }
@@ -862,27 +1235,53 @@ public sealed class TurtleLexer
         return written + encoded;
     }
 
-    private TurtleToken LexBlankNodeLabel(ref SequenceReader<byte> reader)
+    private LexStatus LexBlankNodeLabel(ref SequenceReader<byte> reader, out TurtleToken token)
     {
-        if(!reader.TryPeek(1, out byte colon) || colon != (byte)':')
+        token = default;
+
+        if(!reader.TryPeek(1, out byte colon))
         {
-            throw new TurtleParseException(
-                $"Expected ':' after '_' at line {line + 1} column {column + 1}.",
-                SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Consumed + 1, line, column, column + 1));
+            if(!atFinalBuffer)
+            {
+                return LexStatus.NeedMore;
+            }
+
+            return Fail(
+                TurtleLexErrorCode.ExpectedColonAfterUnderscore,
+                SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 1, line, column, column + 1));
         }
 
-        int startByte = (int)reader.Consumed;
+        if(colon != (byte)':')
+        {
+            return Fail(
+                TurtleLexErrorCode.ExpectedColonAfterUnderscore,
+                SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 1, line, column, column + 1));
+        }
+
+        int startByte = Offset(reader.Consumed);
         int startLine = line;
         int startColumn = column;
 
         AdvanceCount(ref reader, 2);
 
         SequencePosition labelStartPosition = reader.Position;
-        if(!reader.TryPeek(out byte first) || !IsPnCharsUOrDigit(first))
+        if(!reader.TryPeek(out byte first))
         {
-            throw new TurtleParseException(
-                $"Expected blank-node label after '_:' at line {line + 1} column {column + 1}.",
-                SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Consumed + 1, line, column, column + 1));
+            if(!atFinalBuffer)
+            {
+                return LexStatus.NeedMore;
+            }
+
+            return Fail(
+                TurtleLexErrorCode.ExpectedBlankNodeLabel,
+                SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 1, line, column, column + 1));
+        }
+
+        if(!IsPnCharsUOrDigit(first))
+        {
+            return Fail(
+                TurtleLexErrorCode.ExpectedBlankNodeLabel,
+                SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 1, line, column, column + 1));
         }
 
         Advance(ref reader);
@@ -902,22 +1301,30 @@ public sealed class TurtleLexer
             }
         }
 
+        //The label, or a trailing '.' whose role depends on the next byte, may extend.
+        if(reader.End && !atFinalBuffer)
+        {
+            return LexStatus.NeedMore;
+        }
+
         StripToLastSignificant(ref reader, lastSignificantConsumed, lastSignificantColumn);
 
-        Utf8String label = Pool.Intern(reader.Sequence.Slice(labelStartPosition, reader.Position));
-
-        return new TurtleToken(
+        token = new TurtleToken(
             TurtleTokenKind.BlankNodeLabel,
-            CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
-            label);
+            CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
+            Pool.Intern(reader.Sequence.Slice(labelStartPosition, reader.Position)));
+
+        return LexStatus.Complete;
     }
 
-    private TurtleToken LexIdentifierLike(ref SequenceReader<byte> reader)
+    private LexStatus LexIdentifierLike(ref SequenceReader<byte> reader, out TurtleToken token)
     {
+        token = default;
+
         //Identifier-like tokens include: prefixed names (with or without an explicit prefix),
         //the rdf:type shorthand 'a', the boolean keywords, the SPARQL-style PREFIX / BASE / VERSION
         //keywords, and TriG's GRAPH keyword.
-        int startByte = (int)reader.Consumed;
+        int startByte = Offset(reader.Consumed);
         SequencePosition startPosition = reader.Position;
         int startLine = line;
         int startColumn = column;
@@ -925,14 +1332,15 @@ public sealed class TurtleLexer
 
         if(first == (byte)':')
         {
-            return LexPrefixedNameStartingWithColon(ref reader, startByte, startLine, startColumn, startPosition);
+            return LexPrefixedNameStartingWithColon(ref reader, startByte, startLine, startColumn, startPosition, out token);
         }
 
         if(!IsPnCharsBase(first))
         {
-            throw new TurtleParseException(
-                $"Unexpected byte 0x{first:X2} at line {line + 1} column {column + 1}.",
-                SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Consumed + 1, line, column, column + 1));
+            return Fail(
+                TurtleLexErrorCode.UnexpectedByte,
+                SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 1, line, column, column + 1),
+                FormatByte(first));
         }
 
         //Scan a PN_PREFIX-like identifier.
@@ -952,6 +1360,12 @@ public sealed class TurtleLexer
             }
         }
 
+        //The identifier, the ':' that would make it a prefix, or a trailing '.' may extend.
+        if(reader.End && !atFinalBuffer)
+        {
+            return LexStatus.NeedMore;
+        }
+
         StripToLastSignificant(ref reader, lastSignificantConsumed, lastSignificantColumn);
 
         ReadOnlySequence<byte> identifierSpan = reader.Sequence.Slice(startPosition, reader.Position);
@@ -961,81 +1375,98 @@ public sealed class TurtleLexer
         {
             Advance(ref reader);
 
-            return LexPrefixedNameOrNamespace(ref reader, startByte, startLine, startColumn, startPosition);
+            return LexPrefixedNameOrNamespace(ref reader, startByte, startLine, startColumn, startPosition, out token);
         }
 
         if(SequenceEquals(identifierSpan, "a"u8))
         {
-            return new TurtleToken(
+            token = new TurtleToken(
                 TurtleTokenKind.A,
-                CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
+                CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
                 Pool.Intern("a"u8));
+
+            return LexStatus.Complete;
         }
 
         if(SequenceEquals(identifierSpan, "true"u8) || SequenceEquals(identifierSpan, "false"u8))
         {
-            return new TurtleToken(
+            token = new TurtleToken(
                 TurtleTokenKind.BooleanLiteral,
-                CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
+                CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
                 Pool.Intern(identifierSpan));
+
+            return LexStatus.Complete;
         }
 
         if(SequenceEqualsIgnoreAsciiCase(identifierSpan, "PREFIX"u8))
         {
-            return new TurtleToken(
+            token = new TurtleToken(
                 TurtleTokenKind.PrefixKeyword,
-                CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
+                CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
                 Pool.Intern("PREFIX"u8));
+
+            return LexStatus.Complete;
         }
 
         if(SequenceEqualsIgnoreAsciiCase(identifierSpan, "BASE"u8))
         {
-            return new TurtleToken(
+            token = new TurtleToken(
                 TurtleTokenKind.BaseKeyword,
-                CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
+                CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
                 Pool.Intern("BASE"u8));
+
+            return LexStatus.Complete;
         }
 
         if(SequenceEqualsIgnoreAsciiCase(identifierSpan, "VERSION"u8))
         {
-            return new TurtleToken(
+            token = new TurtleToken(
                 TurtleTokenKind.VersionKeyword,
-                CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
+                CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
                 Pool.Intern("VERSION"u8));
+
+            return LexStatus.Complete;
         }
 
         if(SequenceEquals(identifierSpan, "GRAPH"u8))
         {
-            return new TurtleToken(
+            token = new TurtleToken(
                 TurtleTokenKind.GraphKeyword,
-                CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
+                CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
                 Pool.Intern("GRAPH"u8));
+
+            return LexStatus.Complete;
         }
 
-        throw new TurtleParseException(
-            $"Unrecognised identifier '{DecodeForMessage(identifierSpan)}' at line {startLine + 1} column {startColumn + 1}.",
-            CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column));
+        return Fail(
+            TurtleLexErrorCode.UnrecognisedIdentifier,
+            CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
+            DecodeForMessage(identifierSpan));
     }
 
-    private TurtleToken LexPrefixedNameStartingWithColon(
+    private LexStatus LexPrefixedNameStartingWithColon(
         ref SequenceReader<byte> reader,
         int startByte,
         int startLine,
         int startColumn,
-        SequencePosition startPosition)
+        SequencePosition startPosition,
+        out TurtleToken token)
     {
         Advance(ref reader);
 
-        return LexPrefixedNameOrNamespace(ref reader, startByte, startLine, startColumn, startPosition);
+        return LexPrefixedNameOrNamespace(ref reader, startByte, startLine, startColumn, startPosition, out token);
     }
 
-    private TurtleToken LexPrefixedNameOrNamespace(
+    private LexStatus LexPrefixedNameOrNamespace(
         ref SequenceReader<byte> reader,
         int startByte,
         int startLine,
         int startColumn,
-        SequencePosition startPosition)
+        SequencePosition startPosition,
+        out TurtleToken token)
     {
+        token = default;
+
         long localStartConsumed = reader.Consumed;
         long lastSignificantConsumed = reader.Consumed;
         int lastSignificantColumn = column;
@@ -1064,9 +1495,14 @@ public sealed class TurtleLexer
             {
                 if(!reader.TryPeek(1, out _))
                 {
-                    throw new TurtleParseException(
-                        $"Truncated escape inside prefixed name at line {line + 1} column {column + 1}.",
-                        SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Consumed + 1, line, column, column + 1));
+                    if(!atFinalBuffer)
+                    {
+                        return LexStatus.NeedMore;
+                    }
+
+                    return Fail(
+                        TurtleLexErrorCode.TruncatedPrefixedNameEscape,
+                        SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 1, line, column, column + 1));
                 }
 
                 AdvanceCount(ref reader, 2);
@@ -1079,14 +1515,18 @@ public sealed class TurtleLexer
             if(b == (byte)'%')
             {
                 //Percent-encoded byte: '%' HEX HEX.
-                if(!reader.TryPeek(1, out byte highHex)
-                   || !reader.TryPeek(2, out byte lowHex)
-                   || !TryHexValue(highHex, out _)
-                   || !TryHexValue(lowHex, out _))
+                bool highAvailable = reader.TryPeek(1, out byte highHex);
+                bool lowAvailable = reader.TryPeek(2, out byte lowHex);
+                if((!highAvailable || !lowAvailable) && !atFinalBuffer)
                 {
-                    throw new TurtleParseException(
-                        $"Malformed percent escape inside prefixed name at line {line + 1} column {column + 1}.",
-                        SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Consumed + 3, line, column, column + 3));
+                    return LexStatus.NeedMore;
+                }
+
+                if(!highAvailable || !lowAvailable || !TryHexValue(highHex, out _) || !TryHexValue(lowHex, out _))
+                {
+                    return Fail(
+                        TurtleLexErrorCode.MalformedPercentEscape,
+                        SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 3, line, column, column + 3));
                 }
 
                 AdvanceCount(ref reader, 3);
@@ -1106,60 +1546,83 @@ public sealed class TurtleLexer
             }
         }
 
+        //The local name, or a trailing '.' whose role depends on the next byte, may extend.
+        if(reader.End && !atFinalBuffer)
+        {
+            return LexStatus.NeedMore;
+        }
+
         //A trailing '.' is part of the statement terminator, not the local name.
         StripToLastSignificant(ref reader, lastSignificantConsumed, lastSignificantColumn);
 
         ReadOnlySequence<byte> fullSpan = reader.Sequence.Slice(startPosition, reader.Position);
 
         //If nothing followed the colon, this is a PNAME_NS (prefix declaration form).
-        if(reader.Consumed == localStartConsumed)
-        {
-            return new TurtleToken(
-                TurtleTokenKind.PrefixNamespace,
-                CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
-                Pool.Intern(fullSpan));
-        }
+        TurtleTokenKind kind = reader.Consumed == localStartConsumed
+            ? TurtleTokenKind.PrefixNamespace
+            : TurtleTokenKind.PrefixedName;
 
-        return new TurtleToken(
-            TurtleTokenKind.PrefixedName,
-            CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
+        token = new TurtleToken(
+            kind,
+            CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
             Pool.Intern(fullSpan));
+
+        return LexStatus.Complete;
     }
 
-    private TurtleToken LexNumericSigned(ref SequenceReader<byte> reader)
+    private LexStatus LexNumericSigned(ref SequenceReader<byte> reader, out TurtleToken token)
     {
-        int startByte = (int)reader.Consumed;
+        token = default;
+
+        int startByte = Offset(reader.Consumed);
         int startLine = line;
         int startColumn = column;
 
         reader.TryPeek(out byte sign);
         Advance(ref reader);
 
-        if(!reader.TryPeek(out byte after) || (!IsDigit(after) && after != (byte)'.'))
+        if(!reader.TryPeek(out byte after))
         {
-            throw new TurtleParseException(
-                $"Expected digit after '{(char)sign}' at line {line + 1} column {column + 1}.",
-                SourceSpan.SingleLine(startByte, (int)reader.Consumed, startLine, startColumn, column));
+            if(!atFinalBuffer)
+            {
+                return LexStatus.NeedMore;
+            }
+
+            return Fail(
+                TurtleLexErrorCode.ExpectedDigit,
+                SourceSpan.SingleLine(startByte, Offset(reader.Consumed), startLine, startColumn, column),
+                ((char)sign).ToString());
         }
 
-        return ContinueNumeric(ref reader, startByte, startLine, startColumn);
+        if(!IsDigit(after) && after != (byte)'.')
+        {
+            return Fail(
+                TurtleLexErrorCode.ExpectedDigit,
+                SourceSpan.SingleLine(startByte, Offset(reader.Consumed), startLine, startColumn, column),
+                ((char)sign).ToString());
+        }
+
+        return ContinueNumeric(ref reader, startByte, startLine, startColumn, out token);
     }
 
-    private TurtleToken LexNumericUnsigned(ref SequenceReader<byte> reader)
+    private LexStatus LexNumericUnsigned(ref SequenceReader<byte> reader, out TurtleToken token)
     {
-        int startByte = (int)reader.Consumed;
+        int startByte = Offset(reader.Consumed);
         int startLine = line;
         int startColumn = column;
 
-        return ContinueNumeric(ref reader, startByte, startLine, startColumn);
+        return ContinueNumeric(ref reader, startByte, startLine, startColumn, out token);
     }
 
-    private TurtleToken ContinueNumeric(
+    private LexStatus ContinueNumeric(
         ref SequenceReader<byte> reader,
         int startByte,
         int startLine,
-        int startColumn)
+        int startColumn,
+        out TurtleToken token)
     {
+        token = default;
+
         SequencePosition startPosition = reader.Sequence.GetPosition(startByte);
         bool sawDecimal = false;
         bool sawExponent = false;
@@ -1171,10 +1634,23 @@ public sealed class TurtleLexer
             Advance(ref reader);
         }
 
+        //More digits, a fraction, or an exponent may follow in the next buffer.
+        if(reader.End && !atFinalBuffer)
+        {
+            return LexStatus.NeedMore;
+        }
+
         if(reader.TryPeek(out byte dot) && dot == (byte)'.')
         {
             //A '.' that does not precede a digit belongs to the statement terminator.
-            if(reader.TryPeek(1, out byte afterDot) && IsDigit(afterDot))
+            if(!reader.TryPeek(1, out byte afterDot))
+            {
+                if(!atFinalBuffer)
+                {
+                    return LexStatus.NeedMore;
+                }
+            }
+            else if(IsDigit(afterDot))
             {
                 sawDecimal = true;
                 Advance(ref reader);
@@ -1184,11 +1660,22 @@ public sealed class TurtleLexer
                     sawDigit = true;
                     Advance(ref reader);
                 }
+
+                if(reader.End && !atFinalBuffer)
+                {
+                    return LexStatus.NeedMore;
+                }
             }
         }
 
         if(reader.TryPeek(out byte exponent) && (exponent == (byte)'e' || exponent == (byte)'E'))
         {
+            //The exponent's sign and digits may extend past the buffer end.
+            if(reader.Remaining < 2 && !atFinalBuffer)
+            {
+                return LexStatus.NeedMore;
+            }
+
             sawExponent = true;
             Advance(ref reader);
 
@@ -1197,25 +1684,30 @@ public sealed class TurtleLexer
                 Advance(ref reader);
             }
 
-            int expStart = (int)reader.Consumed;
+            int expStart = Offset(reader.Consumed);
             while(reader.TryPeek(out byte expDigit) && IsDigit(expDigit))
             {
                 Advance(ref reader);
             }
 
-            if((int)reader.Consumed == expStart)
+            if(reader.End && !atFinalBuffer)
             {
-                throw new TurtleParseException(
-                    $"Expected exponent digits at line {line + 1} column {column + 1}.",
-                    SourceSpan.SingleLine(startByte, (int)reader.Consumed, startLine, startColumn, column));
+                return LexStatus.NeedMore;
+            }
+
+            if(Offset(reader.Consumed) == expStart)
+            {
+                return Fail(
+                    TurtleLexErrorCode.ExpectedExponentDigits,
+                    SourceSpan.SingleLine(startByte, Offset(reader.Consumed), startLine, startColumn, column));
             }
         }
 
         if(!sawDigit)
         {
-            throw new TurtleParseException(
-                $"Invalid numeric literal at line {startLine + 1} column {startColumn + 1}.",
-                CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column));
+            return Fail(
+                TurtleLexErrorCode.InvalidNumericLiteral,
+                CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column));
         }
 
         TurtleTokenKind kind = (sawExponent, sawDecimal) switch
@@ -1225,12 +1717,12 @@ public sealed class TurtleLexer
             (false, false) => TurtleTokenKind.IntegerLiteral
         };
 
-        Utf8String value = Pool.Intern(reader.Sequence.Slice(startPosition, reader.Position));
-
-        return new TurtleToken(
+        token = new TurtleToken(
             kind,
-            CaptureSpan(startByte, (int)reader.Consumed, startLine, startColumn, line, column),
-            value);
+            CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
+            Pool.Intern(reader.Sequence.Slice(startPosition, reader.Position)));
+
+        return LexStatus.Complete;
     }
 
     private void SkipWhitespaceAndComments(ref SequenceReader<byte> reader)
@@ -1310,9 +1802,36 @@ public sealed class TurtleLexer
         }
     }
 
+    private LexStatus Fail(TurtleLexErrorCode code, SourceSpan span, string? detail = null)
+    {
+        pendingDiagnostic = new LexDiagnostic(code, span, detail);
+
+        return LexStatus.Error;
+    }
+
+    private static int Offset(long consumedInReader)
+    {
+        return (int)consumedInReader;
+    }
+
     private static SourceSpan CaptureSpan(int startByte, int endByte, int startLine, int startColumn, int endLine, int endColumn)
     {
         return new SourceSpan(startByte, endByte, startLine, startColumn, endLine, endColumn);
+    }
+
+    private static string FormatByte(byte value)
+    {
+        return string.Concat("0x", value.ToString("X2", System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    private static string FormatEscape(byte marker)
+    {
+        return string.Concat("\\", ((char)marker).ToString());
+    }
+
+    private static string FormatCodePoint(uint codepoint)
+    {
+        return string.Concat("U+", codepoint.ToString("X4", System.Globalization.CultureInfo.InvariantCulture));
     }
 
     private static bool IsWhitespaceByte(byte b)
@@ -1352,30 +1871,39 @@ public sealed class TurtleLexer
         return IsPnCharsUOrDigit(b) || b == (byte)'-' || b == 0xB7;
     }
 
-    private static int Utf8ByteLength(byte leadByte)
+    private static bool TryUtf8ByteLength(byte leadByte, out int length)
     {
         if(leadByte < 0x80)
         {
-            return 1;
+            length = 1;
+
+            return true;
         }
 
         if((leadByte & 0xE0) == 0xC0)
         {
-            return 2;
+            length = 2;
+
+            return true;
         }
 
         if((leadByte & 0xF0) == 0xE0)
         {
-            return 3;
+            length = 3;
+
+            return true;
         }
 
         if((leadByte & 0xF8) == 0xF0)
         {
-            return 4;
+            length = 4;
+
+            return true;
         }
 
-        throw new TurtleParseException(
-            $"Invalid UTF-8 lead byte 0x{leadByte:X2}.");
+        length = 0;
+
+        return false;
     }
 
     private static bool TryHexValue(byte b, out uint value)
@@ -1499,9 +2027,8 @@ public sealed class TurtleLexer
     }
 
     /// <summary>
-    /// Gets the current zero-based byte position of the lexer. Exposed
-    /// for diagnostic and test code; the public iteration surface is
-    /// <see cref="Tokenize"/>.
+    /// Gets the current zero-based byte position of the lexer. Exposed for diagnostic and test
+    /// code; the public iteration surface is <see cref="Tokenize"/>.
     /// </summary>
     [DebuggerBrowsable(DebuggerBrowsableState.Never)]
     internal int Position => (int)consumed;
