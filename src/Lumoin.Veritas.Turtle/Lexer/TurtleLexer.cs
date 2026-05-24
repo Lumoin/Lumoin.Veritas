@@ -2,7 +2,10 @@ using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO.Pipelines;
+using System.Runtime.CompilerServices;
 using System.Text;
+using System.Threading;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Sourcing;
 
@@ -45,8 +48,10 @@ public sealed class TurtleLexer
     private int column;
     private bool pendingCarriageReturn;
     private bool atFinalBuffer = true;
+    private long byteOffsetBase;
     private LexDiagnostic pendingDiagnostic;
     private TokenGrowthContext scratchToken;
+    private readonly List<TurtleToken> pendingTokens = [];
 
     /// <summary>
     /// Initialises a new <see cref="TurtleLexer"/> for the supplied UTF-8 source bytes.
@@ -56,6 +61,17 @@ public sealed class TurtleLexer
     /// <param name="limits">Resource limits applied while lexing; defaults to <see cref="TurtleReaderLimits.Default"/>.</param>
     public TurtleLexer(ReadOnlyMemory<byte> source, Utf8StringPool pool, TurtleReaderLimits? limits = null)
         : this(new ReadOnlySequence<byte>(source), pool, limits)
+    {
+    }
+
+    /// <summary>
+    /// Initialises a new <see cref="TurtleLexer"/> for the pipe-driven path, where source bytes are
+    /// supplied to <see cref="TokenizeAsync"/> rather than held up front.
+    /// </summary>
+    /// <param name="pool">The pool used to intern token payloads.</param>
+    /// <param name="limits">Resource limits applied while lexing; defaults to <see cref="TurtleReaderLimits.Default"/>.</param>
+    public TurtleLexer(Utf8StringPool pool, TurtleReaderLimits? limits = null)
+        : this(ReadOnlySequence<byte>.Empty, pool, limits)
     {
     }
 
@@ -123,6 +139,109 @@ public sealed class TurtleLexer
         }
 
         return token;
+    }
+
+    /// <summary>
+    /// Pulls UTF-8 bytes from a <see cref="PipeReader"/> and yields tokens as they complete,
+    /// without buffering the whole document.
+    /// </summary>
+    /// <remarks>
+    /// Each <see cref="PipeReader.ReadAsync"/> is the genuine asynchronous suspension; between reads
+    /// the resumable core lexes synchronously over the buffered <see cref="ReadOnlySequence{T}"/>.
+    /// A token that straddles a read is retained — the reader advances only to the last completed
+    /// token and examines to the buffer end — and re-lexed once more bytes arrive, so peak memory
+    /// tracks the largest single token rather than the document. A lexical error throws
+    /// <see cref="TurtleParseException"/>.
+    /// </remarks>
+    /// <param name="pipeReader">The pipe delivering UTF-8 source bytes.</param>
+    /// <param name="cancellationToken">Cancels between reads.</param>
+    /// <returns>An asynchronous stream of tokens ending with <see cref="TurtleTokenKind.EndOfInput"/>.</returns>
+    public async IAsyncEnumerable<TurtleToken> TokenizeAsync(
+        PipeReader pipeReader,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(pipeReader);
+
+        while(true)
+        {
+            ReadResult result = await pipeReader.ReadAsync(cancellationToken).ConfigureAwait(false);
+
+            if(result.IsCanceled)
+            {
+                pipeReader.AdvanceTo(result.Buffer.Start, result.Buffer.End);
+
+                yield break;
+            }
+
+            atFinalBuffer = result.IsCompleted;
+
+            DrainResult drained = DrainBuffer(result.Buffer);
+
+            foreach(TurtleToken token in pendingTokens)
+            {
+                yield return token;
+            }
+
+            pipeReader.AdvanceTo(drained.Consumed, drained.Examined);
+
+            if(drained.ReachedEnd)
+            {
+                yield break;
+            }
+        }
+    }
+
+    private DrainResult DrainBuffer(ReadOnlySequence<byte> buffer)
+    {
+        pendingTokens.Clear();
+
+        SequenceReader<byte> reader = new(buffer);
+
+        int committedLine = line;
+        int committedColumn = column;
+        bool committedPending = pendingCarriageReturn;
+        SequencePosition committedPosition = reader.Position;
+        long committedConsumed = 0;
+
+        while(true)
+        {
+            LexStatus status = TryLexToken(ref reader, out TurtleToken token);
+
+            if(status == LexStatus.Complete)
+            {
+                pendingTokens.Add(token);
+
+                committedLine = line;
+                committedColumn = column;
+                committedPending = pendingCarriageReturn;
+                committedPosition = reader.Position;
+                committedConsumed = reader.Consumed;
+
+                if(token.Kind == TurtleTokenKind.EndOfInput)
+                {
+                    byteOffsetBase += committedConsumed;
+
+                    return new DrainResult(committedPosition, committedPosition, reachedEnd: true);
+                }
+
+                continue;
+            }
+
+            if(status == LexStatus.Error)
+            {
+                throw new TurtleParseException(pendingDiagnostic.GetMessage(), pendingDiagnostic.Span);
+            }
+
+            //NeedMore: discard the partial token by restoring the committed boundary; the driver
+            //reads more bytes and re-lexes from there. The examined position is the buffer end so
+            //the pipe knows the whole buffer was inspected and must grow before the next read.
+            line = committedLine;
+            column = committedColumn;
+            pendingCarriageReturn = committedPending;
+            byteOffsetBase += committedConsumed;
+
+            return new DrainResult(committedPosition, buffer.End, reachedEnd: false);
+        }
     }
 
     private LexStatus TryLexToken(ref SequenceReader<byte> reader, out TurtleToken token)
@@ -1623,7 +1742,7 @@ public sealed class TurtleLexer
     {
         token = default;
 
-        SequencePosition startPosition = reader.Sequence.GetPosition(startByte);
+        SequencePosition startPosition = reader.Sequence.GetPosition(startByte - (int)byteOffsetBase);
         bool sawDecimal = false;
         bool sawExponent = false;
         bool sawDigit = false;
@@ -1809,9 +1928,9 @@ public sealed class TurtleLexer
         return LexStatus.Error;
     }
 
-    private static int Offset(long consumedInReader)
+    private int Offset(long consumedInReader)
     {
-        return (int)consumedInReader;
+        return (int)(byteOffsetBase + consumedInReader);
     }
 
     private static SourceSpan CaptureSpan(int startByte, int endByte, int startLine, int startColumn, int endLine, int endColumn)
@@ -2032,4 +2151,18 @@ public sealed class TurtleLexer
     /// </summary>
     [DebuggerBrowsable(DebuggerBrowsableState.Never)]
     internal int Position => (int)consumed;
+
+    /// <summary>
+    /// The result of draining one pipe buffer: where the pipe should resume (the last completed
+    /// token boundary), how far it was examined (the buffer end), and whether end of input was
+    /// reached.
+    /// </summary>
+    private readonly struct DrainResult(SequencePosition consumed, SequencePosition examined, bool reachedEnd)
+    {
+        public SequencePosition Consumed { get; } = consumed;
+
+        public SequencePosition Examined { get; } = examined;
+
+        public bool ReachedEnd { get; } = reachedEnd;
+    }
 }
