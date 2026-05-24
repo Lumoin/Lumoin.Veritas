@@ -69,64 +69,83 @@ public sealed class TurtleQuadEmitter
     {
         foreach(Statement statement in Document.Statements)
         {
-            switch(statement)
+            foreach(EmittedQuad emitted in EmitStatement(statement))
             {
-                case PrefixDeclaration prefix:
-                {
-                    PrefixMap[prefix.Prefix] = prefix.Iri;
+                yield return emitted;
+            }
+        }
+    }
 
-                    break;
+    /// <summary>
+    /// Emits the quads of a single statement, updating the accumulating prefix-map and base-IRI
+    /// context so a streaming driver can feed statements one at a time as they are parsed.
+    /// </summary>
+    /// <remarks>
+    /// A prefix or base declaration yields no quads but updates the context that later statements
+    /// resolve against; a version declaration is informational. Call statements in source order:
+    /// the context is stateful, so a prefixed name resolves only against prefixes declared before it.
+    /// </remarks>
+    /// <param name="statement">The statement to emit.</param>
+    /// <returns>The quads the statement expresses, in source order.</returns>
+    internal IEnumerable<EmittedQuad> EmitStatement(Statement statement)
+    {
+        switch(statement)
+        {
+            case PrefixDeclaration prefix:
+            {
+                PrefixMap[prefix.Prefix] = prefix.Iri;
+
+                break;
+            }
+
+            case BaseDeclaration baseDecl:
+            {
+                //A @base directive may itself be a relative reference; it resolves against the
+                //base already in scope per RFC 3986 §5, so chained directives compose.
+                string declared = baseDecl.Iri.Value.ToString();
+                baseIri = baseIri is null
+                    ? declared
+                    : IriResolver.ResolveIri(baseIri, declared);
+
+                break;
+            }
+
+            case VersionDeclaration:
+            {
+                //Informational only; not surfaced as a quad.
+                break;
+            }
+
+            case TripleStatement triple:
+            {
+                foreach(EmittedQuad q in EmitTriple(triple, graph: null))
+                {
+                    yield return q;
                 }
 
-                case BaseDeclaration baseDecl:
-                {
-                    //A @base directive may itself be a relative reference; it resolves against the
-                    //base already in scope per RFC 3986 §5, so chained directives compose.
-                    string declared = baseDecl.Iri.Value.ToString();
-                    baseIri = baseIri is null
-                        ? declared
-                        : IriResolver.ResolveIri(baseIri, declared);
+                break;
+            }
 
-                    break;
-                }
+            case GraphBlockStatement graphBlock:
+            {
+                RdfTerm? graphTerm = graphBlock.Label is null
+                    ? null
+                    : ResolveTermAsSimple(graphBlock.Label);
 
-                case VersionDeclaration:
+                foreach(TripleStatement inner in graphBlock.Triples)
                 {
-                    //Informational only; not surfaced as a quad.
-                    break;
-                }
-
-                case TripleStatement triple:
-                {
-                    foreach(EmittedQuad q in EmitTriple(triple, graph: null))
+                    foreach(EmittedQuad q in EmitTriple(inner, graphTerm))
                     {
                         yield return q;
                     }
-
-                    break;
                 }
 
-                case GraphBlockStatement graphBlock:
-                {
-                    RdfTerm? graphTerm = graphBlock.Label is null
-                        ? null
-                        : ResolveTermAsSimple(graphBlock.Label);
+                break;
+            }
 
-                    foreach(TripleStatement inner in graphBlock.Triples)
-                    {
-                        foreach(EmittedQuad q in EmitTriple(inner, graphTerm))
-                        {
-                            yield return q;
-                        }
-                    }
-
-                    break;
-                }
-
-                default:
-                {
-                    break;
-                }
+            default:
+            {
+                break;
             }
         }
     }
