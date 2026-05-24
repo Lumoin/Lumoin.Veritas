@@ -98,13 +98,15 @@ internal sealed class TurtleParserIncrementalTests
         TurtleDocument whole = new TurtleParser(tokens, pool, documentId, syntax).Parse();
         List<Statement> produced = DriveOneTokenAtATime(tokens, pool, documentId, syntax);
 
+        //The incremental parser resets node ids per statement (statement-local, bounded memory), so
+        //node ids are not compared to the whole-stream parser's monotonic ids; type, span, and the
+        //emitted quads are what must match.
         Assert.HasCount(whole.Statements.Length, produced, "statement count differs");
         for(int i = 0; i < produced.Count; i++)
         {
             string where = string.Create(CultureInfo.InvariantCulture, $"statement {i}");
 
             Assert.AreEqual(whole.Statements[i].GetType(), produced[i].GetType(), where);
-            Assert.AreEqual(whole.Statements[i].NodeId, produced[i].NodeId, where);
             Assert.AreEqual(whole.Statements[i].Span, produced[i].Span, where);
         }
 

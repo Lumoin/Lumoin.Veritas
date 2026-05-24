@@ -198,12 +198,20 @@ public sealed class TurtleParser
 
         if(frames.Count == 0)
         {
-            //Between statements every token before the cursor is consumed and unreferenced, so the
-            //incremental buffer is trimmed here to keep peak memory near a single statement.
-            if(incremental && index > 0)
+            //Between statements every consumed token and every node is unreferenced by a streaming
+            //consumer — the returned statement holds its own nodes directly, not through the table —
+            //so both are released here. Peak memory stays near a single statement and the node id never
+            //grows without bound across a long document. The materialised path keeps both for the AST.
+            if(incremental)
             {
-                Tokens.RemoveRange(0, index);
-                index = 0;
+                if(index > 0)
+                {
+                    Tokens.RemoveRange(0, index);
+                    index = 0;
+                }
+
+                Nodes.Clear();
+                nextNodeId = 0;
             }
 
             if(!HasLookahead)

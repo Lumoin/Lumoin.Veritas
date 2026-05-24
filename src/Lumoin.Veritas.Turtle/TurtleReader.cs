@@ -1,11 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.IO;
 using System.IO.Pipelines;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
-using Lumoin.Veritas.Core.Hypertrie.Storage;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Turtle.Ast;
 using Lumoin.Veritas.Turtle.Emission;
@@ -30,8 +31,13 @@ namespace Lumoin.Veritas.Turtle;
 /// async iterator so editor consumers can resolve those references.
 /// </para>
 /// <para>
-/// The reader is single-shot per call: each invocation materialises
-/// the token stream, builds the AST, and walks the emitter once.
+/// The bare <c>ReadAsync</c> methods are statement-incremental: tokens
+/// are lexed, parsed, and emitted one statement at a time, so neither
+/// the token buffer nor the AST grows with the document — peak memory
+/// tracks the largest single statement. The <c>ReadWithSourceAsync</c>
+/// methods are whole-document: the source is parsed into a complete AST
+/// before the first quad is yielded, because the returned document must
+/// resolve every <see cref="DocumentNodeRef"/> back to its node.
 /// Cancellation observed via <paramref name="cancellationToken"/>
 /// terminates emission at the next yield point.
 /// </para>
@@ -48,9 +54,9 @@ public static class TurtleReader
     /// <param name="cancellationToken">A token to cancel iteration.</param>
     /// <returns>An async sequence of parsed quads.</returns>
     /// <remarks>
-    /// Turtle is parsed whole-document: the pipe is drained to a contiguous buffer before the
-    /// lexer and parser run. Memory is bounded by document size, not by the longest token.
-    /// Statement-incremental streaming is a separate future effort.
+    /// The pipe is consumed statement by statement: each <see cref="PipeReader.ReadAsync"/> feeds the
+    /// lexer, completed tokens feed the parser, and a completed statement is emitted and released before
+    /// more bytes are pulled. Peak memory tracks the largest single statement, not the document.
     /// </remarks>
     public static IAsyncEnumerable<Quad> ReadAsync(
         PipeReader input,
@@ -161,13 +167,20 @@ public static class TurtleReader
         Utf8StringPool ownedPool = pool ?? new Utf8StringPool();
         try
         {
-            byte[] bytes = await DrainAsync(input, cancellationToken).ConfigureAwait(false);
-            TurtleDocument document = ParseDocument(bytes, syntax, MintDocumentId(bytes), ownedPool);
-            TurtleQuadEmitter emitter = new(document, ownedPool, baseIri);
-            foreach(EmittedQuad emitted in emitter.Emit())
+            TurtleLexer lexer = new(ownedPool);
+            TurtleParser parser = new(ownedPool, default, syntax);
+            TurtleQuadEmitter emitter = new(EmptyStreamingDocument(), ownedPool, baseIri);
+
+            await foreach(TurtleToken token in lexer.TokenizeAsync(input, cancellationToken).ConfigureAwait(false))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                yield return emitted.Quad;
+                parser.FeedToken(token);
+
+                foreach(Quad quad in DrainStatements(parser, emitter))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    yield return quad;
+                }
             }
         }
         finally
@@ -191,13 +204,20 @@ public static class TurtleReader
         Utf8StringPool ownedPool = pool ?? new Utf8StringPool();
         try
         {
-            byte[] bytes = source.ToArray();
-            TurtleDocument document = ParseDocument(bytes, syntax, MintDocumentId(bytes), ownedPool);
-            TurtleQuadEmitter emitter = new(document, ownedPool, baseIri);
-            foreach(EmittedQuad emitted in emitter.Emit())
+            TurtleLexer lexer = new(source, ownedPool);
+            TurtleParser parser = new(ownedPool, default, syntax);
+            TurtleQuadEmitter emitter = new(EmptyStreamingDocument(), ownedPool, baseIri);
+
+            foreach(TurtleToken token in lexer.Tokenize())
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                yield return emitted.Quad;
+                parser.FeedToken(token);
+
+                foreach(Quad quad in DrainStatements(parser, emitter))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    yield return quad;
+                }
             }
 
             await System.Threading.Tasks.Task.CompletedTask.ConfigureAwait(false);
@@ -209,6 +229,35 @@ public static class TurtleReader
                 ownedPool.Dispose();
             }
         }
+    }
+
+    //Drives the suspendable parser to completion over the tokens fed so far, emitting each finished
+    //statement's quads. Returns when the parser needs more tokens; the caller feeds the next token and
+    //calls again. The statement and its nodes are released as soon as its quads are produced.
+    private static IEnumerable<Quad> DrainStatements(TurtleParser parser, TurtleQuadEmitter emitter)
+    {
+        while(parser.TryParseStatement(out Statement? statement) == ParseStatus.Produced)
+        {
+            foreach(EmittedQuad emitted in emitter.EmitStatement(statement!))
+            {
+                yield return emitted.Quad;
+            }
+        }
+    }
+
+    private static TurtleDocument EmptyStreamingDocument()
+    {
+        //The bare quad stream carries no provenance, so the emitter's per-quad DocumentNodeRef is
+        //discarded and document identity is immaterial — ReadWithSourceAsync is the path that returns a
+        //navigable AST and a content-addressed DocumentId. An empty document satisfies the emitter
+        //(which reads only its DocumentId) without retaining anything about the source.
+        return new TurtleDocument(
+            default,
+            ImmutableArray<PrefixDeclaration>.Empty,
+            ImmutableArray<BaseDeclaration>.Empty,
+            ImmutableArray<VersionDeclaration>.Empty,
+            ImmutableArray<Statement>.Empty,
+            ImmutableDictionary<int, TurtleAstNode>.Empty);
     }
 
     private static async IAsyncEnumerable<EmittedQuad> IterateWithSourceAsync(
@@ -236,12 +285,6 @@ public static class TurtleReader
         TurtleLexer lexer = new(bytes, pool);
         TurtleParser parser = new(lexer.Tokenize(), pool, documentId, syntax);
         return parser.Parse();
-    }
-
-    private static DocumentId MintDocumentId(byte[] bytes)
-    {
-        ulong hash = VeritasHashing.Default(bytes);
-        return new DocumentId(hash);
     }
 
     private static async System.Threading.Tasks.Task<byte[]> DrainAsync(PipeReader input, CancellationToken cancellationToken)
