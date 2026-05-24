@@ -1,3 +1,6 @@
+using System;
+using System.Buffers;
+using System.Text;
 using Lumoin.Veritas.Core;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -82,5 +85,77 @@ internal sealed class Utf8StringPoolTests
         Utf8StringPool pool = new();
         pool.Dispose();
         pool.Dispose();
+    }
+
+    [TestMethod]
+    public void InternSingleSegmentSequenceMatchesSpan()
+    {
+        using Utf8StringPool pool = new();
+        byte[] bytes = Encoding.UTF8.GetBytes("http://example.org/resource");
+
+        Utf8String fromSpan = pool.Intern(bytes);
+        Utf8String fromSequence = pool.Intern(new ReadOnlySequence<byte>(bytes));
+
+        Assert.AreEqual(fromSpan, fromSequence);
+        Assert.AreEqual(1, pool.Count);
+    }
+
+    [TestMethod]
+    public void InternMultiSegmentSequenceDeduplicatesWithSpan()
+    {
+        using Utf8StringPool pool = new();
+        byte[] bytes = Encoding.UTF8.GetBytes("http://example.org/resource");
+
+        Utf8String fromSpan = pool.Intern(bytes);
+        Utf8String fromSegments = pool.Intern(MultiSegment(bytes, chunkSize: 4));
+
+        //The spanning gather must produce the identical contiguous bytes, so interning the
+        //fragmented form returns the same interned value rather than a duplicate.
+        Assert.AreEqual(fromSpan, fromSegments);
+        Assert.AreEqual(1, pool.Count);
+    }
+
+    [TestMethod]
+    public void InternMultiSegmentSequencePreservesContent()
+    {
+        using Utf8StringPool pool = new();
+        byte[] bytes = Encoding.UTF8.GetBytes("a value that is split across several buffer segments");
+
+        Utf8String interned = pool.Intern(MultiSegment(bytes, chunkSize: 7));
+
+        Assert.AreEqual("a value that is split across several buffer segments", interned.ToString());
+    }
+
+    private static ReadOnlySequence<byte> MultiSegment(ReadOnlyMemory<byte> data, int chunkSize)
+    {
+        BufferSegment first = new(data.Slice(0, Math.Min(chunkSize, data.Length)));
+        BufferSegment last = first;
+        for(int offset = chunkSize; offset < data.Length; offset += chunkSize)
+        {
+            int length = Math.Min(chunkSize, data.Length - offset);
+            last = last.Append(data.Slice(offset, length));
+        }
+
+        return new ReadOnlySequence<byte>(first, 0, last, last.Memory.Length);
+    }
+
+    private sealed class BufferSegment: ReadOnlySequenceSegment<byte>
+    {
+        public BufferSegment(ReadOnlyMemory<byte> memory)
+        {
+            Memory = memory;
+        }
+
+        public BufferSegment Append(ReadOnlyMemory<byte> memory)
+        {
+            BufferSegment next = new(memory)
+            {
+                RunningIndex = RunningIndex + Memory.Length
+            };
+
+            Next = next;
+
+            return next;
+        }
     }
 }

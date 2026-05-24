@@ -221,6 +221,38 @@ public sealed class Utf8StringPool: IDisposable
     }
 
     /// <summary>
+    /// Interns a UTF-8 byte sequence that may span multiple segments, returning a
+    /// <see cref="Utf8String"/> backed by pool memory.
+    /// </summary>
+    /// <remarks>
+    /// A single-segment sequence is interned in place. A multi-segment sequence — a token that
+    /// straddles pipe-buffer boundaries — is gathered into a pooled scratch buffer first, because
+    /// interning hashes and compares over a contiguous span.
+    /// </remarks>
+    /// <param name="utf8Bytes">The UTF-8 bytes to intern.</param>
+    /// <returns>An interned <see cref="Utf8String"/> over pool-managed memory.</returns>
+    /// <exception cref="ObjectDisposedException">The pool has been disposed.</exception>
+    public Utf8String Intern(ReadOnlySequence<byte> utf8Bytes)
+    {
+        ObjectDisposedException.ThrowIf(Disposed, this);
+
+        if(utf8Bytes.IsSingleSegment)
+        {
+            return Intern(utf8Bytes.FirstSpan);
+        }
+
+        //Gather the spanning bytes into a transient exact-size buffer from this pool's own
+        //VeritasMemoryPool — never ArrayPool<byte>.Shared, whose over-allocation and process-wide
+        //retention are exactly what the project pool exists to avoid in the interning path.
+        int length = (int)utf8Bytes.Length;
+        using IMemoryOwner<byte> scratch = MemoryPool.Rent(length);
+        Span<byte> span = scratch.Memory.Span[..length];
+        utf8Bytes.CopyTo(span);
+
+        return Intern(span);
+    }
+
+    /// <summary>
     /// Interns a .NET string by encoding it as UTF-8.
     /// </summary>
     /// <param name="value">The string to intern.</param>
