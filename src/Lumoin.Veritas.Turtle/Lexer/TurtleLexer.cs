@@ -458,7 +458,7 @@ public sealed class TurtleLexer
 
         Advance(ref reader);
 
-        byte[] rented = ArrayPool<byte>.Shared.Rent(64);
+        IMemoryOwner<byte> scratch = Pool.RentScratch(64);
         int written = 0;
 
         try
@@ -476,7 +476,7 @@ public sealed class TurtleLexer
                 {
                     Advance(ref reader);
 
-                    Utf8String iriValue = Pool.Intern(rented.AsSpan(0, written));
+                    Utf8String iriValue = Pool.Intern(scratch.Memory.Span[..written]);
 
                     return new TurtleToken(
                         TurtleTokenKind.Iri,
@@ -491,7 +491,7 @@ public sealed class TurtleLexer
                     int escapeColumn = column;
 
                     uint decoded = ReadUcharEscape(ref reader, escapeStart, escapeLine, escapeColumn);
-                    written = AppendCodepoint(decoded, ref rented, written);
+                    written = AppendCodepoint(decoded, ref scratch, written);
                     continue;
                 }
 
@@ -503,7 +503,7 @@ public sealed class TurtleLexer
                 }
 
                 int byteCount = Utf8ByteLength(b);
-                EnsureCapacity(ref rented, written + byteCount);
+                EnsureScratchCapacity(ref scratch, written + byteCount);
 
                 if(reader.Remaining < byteCount)
                 {
@@ -512,17 +512,18 @@ public sealed class TurtleLexer
                         SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Length, line, column, column));
                 }
 
+                Span<byte> buffer = scratch.Memory.Span;
                 for(int i = 0; i < byteCount; i++)
                 {
                     reader.TryPeek(out byte continuation);
-                    rented[written++] = continuation;
+                    buffer[written++] = continuation;
                     Advance(ref reader);
                 }
             }
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(rented);
+            scratch.Dispose();
         }
     }
 
@@ -608,7 +609,7 @@ public sealed class TurtleLexer
 
         Advance(ref reader);
 
-        byte[] rented = ArrayPool<byte>.Shared.Rent(64);
+        IMemoryOwner<byte> scratch = Pool.RentScratch(64);
         int written = 0;
 
         try
@@ -625,7 +626,7 @@ public sealed class TurtleLexer
                 if(b == quote)
                 {
                     Advance(ref reader);
-                    Utf8String value = Pool.Intern(rented.AsSpan(0, written));
+                    Utf8String value = Pool.Intern(scratch.Memory.Span[..written]);
 
                     return new TurtleToken(
                         TurtleTokenKind.StringLiteral,
@@ -642,7 +643,7 @@ public sealed class TurtleLexer
 
                 if(b == (byte)'\\')
                 {
-                    written = DecodeEscape(ref reader, ref rented, written);
+                    written = DecodeEscape(ref reader, ref scratch, written);
                     continue;
                 }
 
@@ -654,19 +655,20 @@ public sealed class TurtleLexer
                         SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Length, line, column, column));
                 }
 
-                EnsureCapacity(ref rented, written + byteCount);
+                EnsureScratchCapacity(ref scratch, written + byteCount);
 
+                Span<byte> buffer = scratch.Memory.Span;
                 for(int i = 0; i < byteCount; i++)
                 {
                     reader.TryPeek(out byte continuation);
-                    rented[written++] = continuation;
+                    buffer[written++] = continuation;
                     Advance(ref reader);
                 }
             }
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(rented);
+            scratch.Dispose();
         }
     }
 
@@ -678,7 +680,7 @@ public sealed class TurtleLexer
 
         AdvanceCount(ref reader, 3);
 
-        byte[] rented = ArrayPool<byte>.Shared.Rent(128);
+        IMemoryOwner<byte> scratch = Pool.RentScratch(128);
         int written = 0;
 
         try
@@ -695,7 +697,7 @@ public sealed class TurtleLexer
                 if(b == quote && reader.TryPeek(1, out byte secondQuote) && secondQuote == quote && reader.TryPeek(2, out byte thirdQuote) && thirdQuote == quote)
                 {
                     AdvanceCount(ref reader, 3);
-                    Utf8String value = Pool.Intern(rented.AsSpan(0, written));
+                    Utf8String value = Pool.Intern(scratch.Memory.Span[..written]);
 
                     return new TurtleToken(
                         TurtleTokenKind.LongStringLiteral,
@@ -705,7 +707,7 @@ public sealed class TurtleLexer
 
                 if(b == (byte)'\\')
                 {
-                    written = DecodeEscape(ref reader, ref rented, written);
+                    written = DecodeEscape(ref reader, ref scratch, written);
                     continue;
                 }
 
@@ -717,23 +719,24 @@ public sealed class TurtleLexer
                         SourceSpan.SingleLine((int)reader.Consumed, (int)reader.Length, line, column, column));
                 }
 
-                EnsureCapacity(ref rented, written + byteCount);
+                EnsureScratchCapacity(ref scratch, written + byteCount);
 
+                Span<byte> buffer = scratch.Memory.Span;
                 for(int i = 0; i < byteCount; i++)
                 {
                     reader.TryPeek(out byte continuation);
-                    rented[written++] = continuation;
+                    buffer[written++] = continuation;
                     Advance(ref reader);
                 }
             }
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(rented);
+            scratch.Dispose();
         }
     }
 
-    private int DecodeEscape(ref SequenceReader<byte> reader, ref byte[] rented, int written)
+    private int DecodeEscape(ref SequenceReader<byte> reader, ref IMemoryOwner<byte> owner, int written)
     {
         if(!reader.TryPeek(1, out byte marker))
         {
@@ -746,8 +749,8 @@ public sealed class TurtleLexer
         {
             case (byte)'t':
             {
-                EnsureCapacity(ref rented, written + 1);
-                rented[written++] = (byte)'\t';
+                EnsureScratchCapacity(ref owner, written + 1);
+                owner.Memory.Span[written++] = (byte)'\t';
                 AdvanceCount(ref reader, 2);
 
                 return written;
@@ -755,8 +758,8 @@ public sealed class TurtleLexer
 
             case (byte)'b':
             {
-                EnsureCapacity(ref rented, written + 1);
-                rented[written++] = 0x08;
+                EnsureScratchCapacity(ref owner, written + 1);
+                owner.Memory.Span[written++] = 0x08;
                 AdvanceCount(ref reader, 2);
 
                 return written;
@@ -764,8 +767,8 @@ public sealed class TurtleLexer
 
             case (byte)'n':
             {
-                EnsureCapacity(ref rented, written + 1);
-                rented[written++] = (byte)'\n';
+                EnsureScratchCapacity(ref owner, written + 1);
+                owner.Memory.Span[written++] = (byte)'\n';
                 AdvanceCount(ref reader, 2);
 
                 return written;
@@ -773,8 +776,8 @@ public sealed class TurtleLexer
 
             case (byte)'r':
             {
-                EnsureCapacity(ref rented, written + 1);
-                rented[written++] = (byte)'\r';
+                EnsureScratchCapacity(ref owner, written + 1);
+                owner.Memory.Span[written++] = (byte)'\r';
                 AdvanceCount(ref reader, 2);
 
                 return written;
@@ -782,8 +785,8 @@ public sealed class TurtleLexer
 
             case (byte)'f':
             {
-                EnsureCapacity(ref rented, written + 1);
-                rented[written++] = 0x0C;
+                EnsureScratchCapacity(ref owner, written + 1);
+                owner.Memory.Span[written++] = 0x0C;
                 AdvanceCount(ref reader, 2);
 
                 return written;
@@ -791,8 +794,8 @@ public sealed class TurtleLexer
 
             case (byte)'"':
             {
-                EnsureCapacity(ref rented, written + 1);
-                rented[written++] = (byte)'"';
+                EnsureScratchCapacity(ref owner, written + 1);
+                owner.Memory.Span[written++] = (byte)'"';
                 AdvanceCount(ref reader, 2);
 
                 return written;
@@ -800,8 +803,8 @@ public sealed class TurtleLexer
 
             case (byte)'\'':
             {
-                EnsureCapacity(ref rented, written + 1);
-                rented[written++] = (byte)'\'';
+                EnsureScratchCapacity(ref owner, written + 1);
+                owner.Memory.Span[written++] = (byte)'\'';
                 AdvanceCount(ref reader, 2);
 
                 return written;
@@ -809,8 +812,8 @@ public sealed class TurtleLexer
 
             case (byte)'\\':
             {
-                EnsureCapacity(ref rented, written + 1);
-                rented[written++] = (byte)'\\';
+                EnsureScratchCapacity(ref owner, written + 1);
+                owner.Memory.Span[written++] = (byte)'\\';
                 AdvanceCount(ref reader, 2);
 
                 return written;
@@ -824,7 +827,7 @@ public sealed class TurtleLexer
                 int escapeColumn = column;
                 uint decoded = ReadUcharEscape(ref reader, escapeStart, escapeLine, escapeColumn);
 
-                return AppendCodepoint(decoded, ref rented, written);
+                return AppendCodepoint(decoded, ref owner, written);
             }
 
             default:
@@ -836,13 +839,13 @@ public sealed class TurtleLexer
         }
     }
 
-    private static int AppendCodepoint(uint codepoint, ref byte[] rented, int written)
+    private int AppendCodepoint(uint codepoint, ref IMemoryOwner<byte> owner, int written)
     {
         Span<char> chars = stackalloc char[2];
         int charCount = new System.Text.Rune((int)codepoint).EncodeToUtf16(chars);
         int maxBytes = Encoding.UTF8.GetMaxByteCount(charCount);
-        EnsureCapacity(ref rented, written + maxBytes);
-        int encoded = Encoding.UTF8.GetBytes(chars[..charCount], rented.AsSpan(written));
+        EnsureScratchCapacity(ref owner, written + maxBytes);
+        int encoded = Encoding.UTF8.GetBytes(chars[..charCount], owner.Memory.Span[written..]);
 
         return written + encoded;
     }
@@ -1443,25 +1446,33 @@ public sealed class TurtleLexer
         return true;
     }
 
-    private static string DecodeForMessage(in ReadOnlySequence<byte> sequence)
+    private string DecodeForMessage(in ReadOnlySequence<byte> sequence)
     {
-        return sequence.IsSingleSegment
-            ? Encoding.UTF8.GetString(sequence.FirstSpan)
-            : Encoding.UTF8.GetString(sequence.ToArray());
+        if(sequence.IsSingleSegment)
+        {
+            return Encoding.UTF8.GetString(sequence.FirstSpan);
+        }
+
+        int length = (int)sequence.Length;
+        using IMemoryOwner<byte> owner = Pool.RentScratch(length);
+        Span<byte> buffer = owner.Memory.Span[..length];
+        sequence.CopyTo(buffer);
+
+        return Encoding.UTF8.GetString(buffer);
     }
 
-    private static void EnsureCapacity(ref byte[] rented, int required)
+    private void EnsureScratchCapacity(ref IMemoryOwner<byte> owner, int required)
     {
-        if(required <= rented.Length)
+        if(required <= owner.Memory.Length)
         {
             return;
         }
 
-        int newSize = Math.Max(required, rented.Length * 2);
-        byte[] replacement = ArrayPool<byte>.Shared.Rent(newSize);
-        Array.Copy(rented, replacement, rented.Length);
-        ArrayPool<byte>.Shared.Return(rented);
-        rented = replacement;
+        int newSize = Math.Max(required, owner.Memory.Length * 2);
+        IMemoryOwner<byte> replacement = Pool.RentScratch(newSize);
+        owner.Memory.Span.CopyTo(replacement.Memory.Span);
+        owner.Dispose();
+        owner = replacement;
     }
 
     /// <summary>

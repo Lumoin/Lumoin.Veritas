@@ -273,6 +273,28 @@ public sealed class Utf8StringPool: IDisposable
         return Intern(tempBuffer[..written]);
     }
 
+    /// <summary>
+    /// Rents a transient, exact-size scratch buffer from this pool's underlying
+    /// <see cref="VeritasMemoryPool{T}"/>.
+    /// </summary>
+    /// <remarks>
+    /// Lexers and serializers decode escape sequences and gather spanning tokens into a
+    /// short-lived buffer before interning. Renting that buffer here keeps all of a document's
+    /// byte memory in the one pool rather than reaching for a process-wide
+    /// <see cref="ArrayPool{T}.Shared"/>, whose over-allocation and retention the project pool
+    /// exists to avoid. The caller owns the returned buffer and must dispose it to return the
+    /// memory to the pool.
+    /// </remarks>
+    /// <param name="length">The exact buffer length in bytes; must be greater than zero.</param>
+    /// <returns>An <see cref="IMemoryOwner{T}"/> over a buffer of exactly <paramref name="length"/> bytes.</returns>
+    /// <exception cref="ObjectDisposedException">The pool has been disposed.</exception>
+    public IMemoryOwner<byte> RentScratch(int length)
+    {
+        ObjectDisposedException.ThrowIf(Disposed, this);
+
+        return MemoryPool.Rent(length);
+    }
+
     /// <inheritdoc/>
     public void Dispose()
     {
