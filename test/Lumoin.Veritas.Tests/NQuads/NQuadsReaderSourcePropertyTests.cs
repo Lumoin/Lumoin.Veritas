@@ -1,4 +1,5 @@
 using CsCheck;
+using System.IO.Pipelines;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.NQuads;
@@ -41,7 +42,7 @@ internal sealed class NQuadsReaderSourcePropertyTests
         {
             using MemoryStream stream = new();
 
-            NQuadsWriter.WriteAsync(quads, stream, TestContext.CancellationToken)
+            NQuadsWriter.WriteAsync(quads, PipeWriter.Create(stream, new StreamPipeWriterOptions(leaveOpen: true)), TestContext.CancellationToken)
                 .AsTask().GetAwaiter().GetResult();
 
             byte[] bytes = stream.ToArray();

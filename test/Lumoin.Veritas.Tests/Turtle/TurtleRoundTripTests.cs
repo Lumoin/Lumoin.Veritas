@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Pipelines;
 using System.Text;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
@@ -147,11 +148,15 @@ internal sealed class TurtleRoundTripTests
     private static async Task<List<Quad>> RoundTripAsync(Quad[] input, TurtleSyntax syntax, System.Threading.CancellationToken cancellationToken)
     {
         using MemoryStream encoded = new();
-        TurtleWriter.Write(input, encoded, syntax);
+        TurtleWriter.Write(input, PipeWriter.Create(encoded, new StreamPipeWriterOptions(leaveOpen: true)), syntax);
         encoded.Position = 0;
 
         List<Quad> result = [];
-        await foreach(Quad quad in TurtleReader.ReadAsync(encoded, syntax, pool: null, cancellationToken: cancellationToken).ConfigureAwait(false))
+        await foreach(Quad quad in TurtleReader.ReadAsync(
+            PipeReader.Create(encoded, new StreamPipeReaderOptions(leaveOpen: true)),
+            syntax,
+            pool: null,
+            cancellationToken: cancellationToken).ConfigureAwait(false))
         {
             result.Add(quad);
         }

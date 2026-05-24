@@ -2,6 +2,7 @@ using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.NQuads;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using System.IO.Pipelines;
 using System.Text;
 
 namespace Lumoin.Veritas.Tests.NQuads;
@@ -164,7 +165,10 @@ internal sealed class NQuadsRoundTripTests
         ];
 
         using MemoryStream output = new();
-        await NQuadsWriter.WriteAsync(original, output, TestContext.CancellationToken).ConfigureAwait(false);
+        await NQuadsWriter.WriteAsync(
+            original,
+            PipeWriter.Create(output, new StreamPipeWriterOptions(leaveOpen: true)),
+            TestContext.CancellationToken).ConfigureAwait(false);
 
         DocumentId documentId = new(0xCAFEBABE);
         using Utf8StringPool readPool = new();
@@ -189,12 +193,17 @@ internal sealed class NQuadsRoundTripTests
     private static async Task<List<Quad>> RoundTripAsync(IEnumerable<Quad> quads, CancellationToken cancellationToken)
     {
         using MemoryStream stream = new();
-        await NQuadsWriter.WriteAsync(quads, stream, cancellationToken).ConfigureAwait(false);
+        await NQuadsWriter.WriteAsync(
+            quads,
+            PipeWriter.Create(stream, new StreamPipeWriterOptions(leaveOpen: true)),
+            cancellationToken).ConfigureAwait(false);
 
         stream.Position = 0;
         List<Quad> results = [];
 
-        await foreach(Quad quad in NQuadsReader.ReadAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false))
+        await foreach(Quad quad in NQuadsReader.ReadAsync(
+            PipeReader.Create(stream, new StreamPipeReaderOptions(leaveOpen: true)),
+            cancellationToken: cancellationToken).ConfigureAwait(false))
         {
             results.Add(quad);
         }

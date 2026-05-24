@@ -1,6 +1,7 @@
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.NQuads;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using System.IO.Pipelines;
 using System.Text;
 
 namespace Lumoin.Veritas.Tests.NQuads;
@@ -210,7 +211,7 @@ internal sealed class NQuadsReaderTests
         using MemoryStream stream = new(Encoding.UTF8.GetBytes(input));
         List<Quad> results = [];
 
-        await foreach(Quad quad in NQuadsReader.ReadAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false))
+        await foreach(Quad quad in NQuadsReader.ReadAsync(PipeReader.Create(stream), cancellationToken: cancellationToken).ConfigureAwait(false))
         {
             results.Add(quad);
         }
@@ -223,7 +224,7 @@ internal sealed class NQuadsReaderTests
         using MemoryStream stream = new(Encoding.UTF8.GetBytes(input));
         List<Quad> results = [];
 
-        await foreach(Quad quad in NQuadsReader.ReadAsync(stream, pool, cancellationToken).ConfigureAwait(false))
+        await foreach(Quad quad in NQuadsReader.ReadAsync(PipeReader.Create(stream), pool, cancellationToken).ConfigureAwait(false))
         {
             results.Add(quad);
         }

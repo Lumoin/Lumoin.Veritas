@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Pipelines;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
@@ -38,10 +39,10 @@ internal static class W3cTestRunner
     /// Reads a stream of UTF-8 input bytes into a quad stream.
     /// The runner supplies the input and observes any exception.
     /// </summary>
-    /// <param name="input">The input bytes from the fixture file.</param>
+    /// <param name="input">The input pipe over the fixture file's bytes.</param>
     /// <param name="cancellationToken">A token to cancel reading.</param>
     /// <returns>The parsed quads.</returns>
-    internal delegate IAsyncEnumerable<Quad> InputReader(Stream input, CancellationToken cancellationToken);
+    internal delegate IAsyncEnumerable<Quad> InputReader(PipeReader input, CancellationToken cancellationToken);
 
     /// <summary>
     /// Runs the test case.
@@ -258,8 +259,9 @@ internal static class W3cTestRunner
     private static async Task<int> DrainAsync(string path, InputReader reader, CancellationToken cancellationToken)
     {
         using FileStream stream = File.OpenRead(path);
+        PipeReader pipe = PipeReader.Create(stream, new StreamPipeReaderOptions(leaveOpen: true));
         int count = 0;
-        await foreach(Quad q in reader(stream, cancellationToken).ConfigureAwait(false))
+        await foreach(Quad q in reader(pipe, cancellationToken).ConfigureAwait(false))
         {
             _ = q;
             count++;
@@ -271,8 +273,9 @@ internal static class W3cTestRunner
     private static async Task<List<Quad>> CollectAsync(string path, InputReader reader, CancellationToken cancellationToken)
     {
         using FileStream stream = File.OpenRead(path);
+        PipeReader pipe = PipeReader.Create(stream, new StreamPipeReaderOptions(leaveOpen: true));
         List<Quad> result = [];
-        await foreach(Quad q in reader(stream, cancellationToken).ConfigureAwait(false))
+        await foreach(Quad q in reader(pipe, cancellationToken).ConfigureAwait(false))
         {
             result.Add(q);
         }

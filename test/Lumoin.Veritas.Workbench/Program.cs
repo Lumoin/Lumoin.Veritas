@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.IO.Pipelines;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
@@ -307,7 +308,8 @@ internal static class Program
         FileStream stream = File.OpenRead(corpusPath);
         try
         {
-            await foreach(Quad quad in NQuadsReader.ReadAsync(stream, pool: null, cancellationToken).ConfigureAwait(false))
+            PipeReader pipe = PipeReader.Create(stream, new StreamPipeReaderOptions(leaveOpen: true));
+            await foreach(Quad quad in NQuadsReader.ReadAsync(pipe, pool: null, cancellationToken).ConfigureAwait(false))
             {
                 TermId subject = dictionary.GetOrAdd(quad.Subject);
                 TermId predicate = dictionary.GetOrAdd(quad.Predicate);

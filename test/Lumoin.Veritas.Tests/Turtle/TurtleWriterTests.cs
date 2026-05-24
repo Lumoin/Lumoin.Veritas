@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Pipelines;
 using System.Text;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Turtle;
@@ -90,8 +91,9 @@ internal sealed class TurtleWriterTests
     private static string WriteQuads(IReadOnlyList<Quad> quads, TurtleSyntax syntax)
     {
         using MemoryStream stream = new();
-        TurtleWriter.Write(quads, stream, syntax);
+        TurtleWriter.Write(quads, PipeWriter.Create(stream, new StreamPipeWriterOptions(leaveOpen: true)), syntax);
         stream.Position = 0;
+
         return Encoding.UTF8.GetString(stream.ToArray());
     }
 }

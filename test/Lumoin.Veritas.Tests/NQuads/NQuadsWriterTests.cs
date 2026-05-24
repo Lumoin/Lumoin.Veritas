@@ -1,6 +1,7 @@
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.NQuads;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using System.IO.Pipelines;
 using System.Text;
 
 namespace Lumoin.Veritas.Tests.NQuads;
@@ -177,7 +178,11 @@ internal sealed class NQuadsWriterTests
     private static async Task<string> SerializeAsync(IEnumerable<Quad> quads, CancellationToken cancellationToken)
     {
         using MemoryStream stream = new();
-        await NQuadsWriter.WriteAsync(quads, stream, cancellationToken).ConfigureAwait(false);
+        await NQuadsWriter.WriteAsync(
+            quads,
+            PipeWriter.Create(stream, new StreamPipeWriterOptions(leaveOpen: true)),
+            cancellationToken).ConfigureAwait(false);
+
         return Encoding.UTF8.GetString(stream.ToArray());
     }
 }

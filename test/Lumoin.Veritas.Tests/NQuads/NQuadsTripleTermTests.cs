@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Pipelines;
 using System.Text;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
@@ -101,7 +102,10 @@ internal sealed class NQuadsTripleTermTests
             tripleTerm);
 
         using MemoryStream stream = new();
-        await NQuadsWriter.WriteAsync([original], stream, TestContext.CancellationToken).ConfigureAwait(false);
+        await NQuadsWriter.WriteAsync(
+            [original],
+            PipeWriter.Create(stream, new StreamPipeWriterOptions(leaveOpen: true)),
+            TestContext.CancellationToken).ConfigureAwait(false);
         stream.Position = 0;
         List<Quad> readBack = await ReadAllFromStreamAsync(stream, TestContext.CancellationToken).ConfigureAwait(false);
 
@@ -120,7 +124,7 @@ internal sealed class NQuadsTripleTermTests
     private static async Task<List<Quad>> ReadAllFromStreamAsync(Stream stream, System.Threading.CancellationToken cancellationToken)
     {
         List<Quad> result = [];
-        await foreach(Quad quad in NQuadsReader.ReadAsync(stream, pool: null, cancellationToken).ConfigureAwait(false))
+        await foreach(Quad quad in NQuadsReader.ReadAsync(PipeReader.Create(stream), pool: null, cancellationToken).ConfigureAwait(false))
         {
             result.Add(quad);
         }

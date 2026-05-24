@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Pipelines;
 using System.Text;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
@@ -53,7 +54,7 @@ internal sealed class NQuadsWhitespaceToleranceTests
         using MemoryStream stream = new(Encoding.UTF8.GetBytes(line));
 
         List<Quad> quads = [];
-        await foreach(Quad quad in NQuadsReader.ReadAsync(stream, pool: null, cancellationToken).ConfigureAwait(false))
+        await foreach(Quad quad in NQuadsReader.ReadAsync(PipeReader.Create(stream), pool: null, cancellationToken).ConfigureAwait(false))
         {
             quads.Add(quad);
         }
