@@ -135,18 +135,35 @@ internal static class QualifiedValueShapeCounting
         return new CountResult(WasEvaluable: true, ConformingCount: conformingCount);
     }
 
-    //Discovers the inner-shape ids of every sibling qualified value
-    //shape per SHACL Core §4.7.4. The search is bounded to three
-    //levels and uses a linear scan; see the type-level remarks for
-    //the future-index path.
-    //
-    //Implementation: walk all shapes; for each that has a
-    //PropertyConstraint pointing at containingShape, look at every
-    //other PropertyConstraint on that parent and follow each to a
-    //property shape whose constraints include qualified-value-shape
-    //references; collect those references' value-shape ids. Exclude
-    //the constraint's own valueShapeId.
-    private static ImmutableArray<Shape> CollectSiblingValueShapes(
+    /// <summary>
+    /// Collects the sibling qualified value shapes of the constraint declared
+    /// on <paramref name="containingShape"/>, for the sibling-disjoint
+    /// subtraction of SHACL 1.2 Core §4.7.4.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A sibling is another <c>sh:qualifiedValueShape</c> on a property shape
+    /// that shares a parent node shape — linked via <c>sh:property</c> — with
+    /// the containing shape. The search is bounded to three levels (parents
+    /// referencing the containing shape, their other property-shape
+    /// references, and those shapes' qualified-value-shape ids) and locates
+    /// them by linear scan of the registry; <paramref name="ownValueShapeId"/>
+    /// is excluded. At very large scale the registry could expose an inverse
+    /// <c>sh:property</c> index to make level one <c>O(1)</c>; this helper
+    /// would consume that index without changing its semantics.
+    /// </para>
+    /// <para>
+    /// Exposed as <c>internal</c> rather than <c>private</c> so the validator's
+    /// dependency-discovery pass reuses the exact sibling set this counting
+    /// helper consumes — a single source of truth that keeps discovery and
+    /// counting from disagreeing about which siblings exist.
+    /// </para>
+    /// </remarks>
+    /// <param name="containingShape">The shape the qualified-cardinality constraint is declared on.</param>
+    /// <param name="ownValueShapeId">The constraint's own value-shape id, excluded from the result.</param>
+    /// <param name="context">Validation context providing the shape registry.</param>
+    /// <returns>The sibling qualified value shapes, empty when there are none.</returns>
+    internal static ImmutableArray<Shape> CollectSiblingValueShapes(
         Shape containingShape,
         TermId ownValueShapeId,
         ValidationContext context)
@@ -217,9 +234,17 @@ internal static class QualifiedValueShapeCounting
         return builder.ToImmutable();
     }
 
-    //Returns true if shape has any sh:property pointing at targetId.
-    //Linear scan of the shape's constraints; constraint counts are
-    //small in practice.
+    /// <summary>
+    /// Returns <c>true</c> when <paramref name="shape"/> has any
+    /// <c>sh:property</c> constraint pointing at <paramref name="targetId"/>.
+    /// </summary>
+    /// <remarks>
+    /// Linear scan of the shape's constraints; constraint counts are small in
+    /// practice.
+    /// </remarks>
+    /// <param name="shape">The candidate parent shape.</param>
+    /// <param name="targetId">The property-shape id to look for.</param>
+    /// <returns><c>true</c> when a matching <c>sh:property</c> reference exists.</returns>
     private static bool HasPropertyReferenceTo(Shape shape, TermId targetId)
     {
         foreach(ConstraintComponent constraint in shape.Constraints)
@@ -234,8 +259,15 @@ internal static class QualifiedValueShapeCounting
         return false;
     }
 
-    //Returns true if value conforms to at least one of the sibling
-    //inner shapes. Short-circuits on the first match.
+    /// <summary>
+    /// Returns <c>true</c> when <paramref name="value"/> conforms to at least
+    /// one of the sibling inner shapes, short-circuiting on the first match.
+    /// </summary>
+    /// <param name="value">The value node tested against the siblings.</param>
+    /// <param name="siblings">The sibling shapes to test conformance against.</param>
+    /// <param name="recurse">The shape-validation delegate used to test each sibling.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <returns><c>true</c> when the value conforms to any sibling.</returns>
     private static async ValueTask<bool> ConformsToAnySiblingAsync(
         TermId value,
         ImmutableArray<Shape> siblings,
