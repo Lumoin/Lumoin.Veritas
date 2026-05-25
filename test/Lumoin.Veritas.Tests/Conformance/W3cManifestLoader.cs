@@ -45,6 +45,7 @@ internal static class W3cManifestLoader
     private const string MfNamespace = "http://www.w3.org/2001/sw/DataAccess/tests/test-manifest#";
     private const string RdfNamespace = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
     private const string RdfsNamespace = "http://www.w3.org/2000/01/rdf-schema#";
+    private const string ShtNamespace = "http://www.w3.org/ns/shacl-test#";
 
     /// <summary>
     /// Loads a manifest synchronously, suitable for use from
@@ -115,14 +116,21 @@ internal static class W3cManifestLoader
         //helpers below map straight back to disk. The base is harness bookkeeping and never reaches
         //test output, so a file:// base is the right choice here.
         List<Quad> quads = [];
-        await foreach(Quad q in TurtleReader.ReadAsync(
-            bytes,
-            TurtleSyntax.Turtle,
-            pool: null,
-            baseIri: manifestUri.AbsoluteUri,
-            cancellationToken: cancellationToken).ConfigureAwait(false))
+        try
         {
-            quads.Add(q);
+            await foreach(Quad q in TurtleReader.ReadAsync(
+                bytes,
+                TurtleSyntax.Turtle,
+                pool: null,
+                baseIri: manifestUri.AbsoluteUri,
+                cancellationToken: cancellationToken).ConfigureAwait(false))
+            {
+                quads.Add(q);
+            }
+        }
+        catch(TurtleParseException ex)
+        {
+            throw new InvalidOperationException($"Failed to parse manifest or test file '{path}': {ex.Message}", ex);
         }
 
         Dictionary<string, List<Quad>> bySubject = IndexBySubject(quads);
@@ -139,19 +147,11 @@ internal static class W3cManifestLoader
 
         if(bySubject.TryGetValue(manifestSubject, out List<Quad>? manifestProperties))
         {
-            string? entriesHead = FindObject(manifestProperties, MfNamespace + "entries");
-            if(entriesHead is not null)
-            {
-                List<string> entrySubjects = WalkRdfList(entriesHead, bySubject);
-                tests = BuildTests(entrySubjects, bySubject, manifestUri);
-            }
+            List<string> entrySubjects = ResolveListOrDirect(FindObjects(manifestProperties, MfNamespace + "entries"), bySubject);
+            tests = BuildTests(entrySubjects, bySubject, manifestUri, manifestUri.LocalPath);
 
-            string? includeHead = FindObject(manifestProperties, MfNamespace + "include");
-            if(includeHead is not null)
-            {
-                List<string> rawIncludes = WalkRdfList(includeHead, bySubject);
-                includes = ResolveIncludesToPaths(rawIncludes, manifestUri);
-            }
+            List<string> rawIncludes = ResolveListOrDirect(FindObjects(manifestProperties, MfNamespace + "include"), bySubject);
+            includes = ResolveIncludesToPaths(rawIncludes, manifestUri);
         }
 
         return new ManifestParse(tests, includes);
@@ -254,10 +254,55 @@ internal static class W3cManifestLoader
         return result;
     }
 
+    /// <summary>
+    /// Resolves the objects of a manifest list-or-direct predicate. Each raw
+    /// object is either an RDF-list head — walked via
+    /// <c>rdf:first</c>/<c>rdf:rest</c> — or a direct reference.
+    /// </summary>
+    /// <remarks>
+    /// The two forms appear interchangeably for <c>mf:entries</c> and
+    /// <c>mf:include</c> across the vendored corpora: some manifests state a
+    /// single RDF list, others repeat the predicate once per member. Probing
+    /// each raw object for an <c>rdf:first</c> edge and walking or taking it
+    /// as-is handles both uniformly.
+    /// </remarks>
+    /// <param name="rawObjects">The objects of the predicate, one per assertion.</param>
+    /// <param name="bySubject">The per-subject quad index.</param>
+    /// <returns>The flattened list of referenced subject keys.</returns>
+    private static List<string> ResolveListOrDirect(List<string> rawObjects, Dictionary<string, List<Quad>> bySubject)
+    {
+        List<string> result = [];
+        foreach(string raw in rawObjects)
+        {
+            if(bySubject.TryGetValue(raw, out List<Quad>? properties) && FindObject(properties, RdfNamespace + "first") is not null)
+            {
+                result.AddRange(WalkRdfList(raw, bySubject));
+            }
+            else
+            {
+                result.Add(raw);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Builds the test cases for one manifest's entry subjects, dispatching
+    /// SHACL <c>sht:Validate</c> entries to <see cref="BuildShaclTest"/> and
+    /// the syntax, evaluation, and canonicalization entries to the
+    /// sibling-file resolution path.
+    /// </summary>
+    /// <param name="entrySubjects">The entry subject keys declared by the manifest.</param>
+    /// <param name="bySubject">The per-subject quad index.</param>
+    /// <param name="manifestUri">The manifest's absolute file URI, the base for resolving references.</param>
+    /// <param name="originManifest">The manifest's local path, recorded on each test for sub-suite grouping.</param>
+    /// <returns>The built test cases.</returns>
     private static ImmutableArray<W3cTestCase> BuildTests(
         List<string> entrySubjects,
         Dictionary<string, List<Quad>> bySubject,
-        Uri manifestUri)
+        Uri manifestUri,
+        string originManifest)
     {
         ImmutableArray<W3cTestCase>.Builder builder = ImmutableArray.CreateBuilder<W3cTestCase>(entrySubjects.Count);
 
@@ -275,8 +320,26 @@ internal static class W3cManifestLoader
                 _ => string.Empty
             };
 
-            string name = ResolveStringLiteral(properties, MfNamespace + "name") ?? string.Empty;
+            //SHACL manifests name their entries with rdfs:label; the RDF/Turtle
+            //suites use mf:name. Prefer mf:name and fall back to rdfs:label so
+            //both corpora yield a populated name.
+            string name = ResolveStringLiteral(properties, MfNamespace + "name")
+                ?? ResolveStringLiteral(properties, RdfsNamespace + "label")
+                ?? string.Empty;
             string comment = ResolveStringLiteral(properties, RdfsNamespace + "comment") ?? string.Empty;
+            W3cTestType type = ClassifyTestType(typeIri);
+
+            if(type == W3cTestType.ShaclValidate)
+            {
+                W3cTestCase? shaclTest = BuildShaclTest(entry, properties, bySubject, manifestUri, typeIri, name, comment, originManifest);
+                if(shaclTest is not null)
+                {
+                    builder.Add(shaclTest);
+                }
+
+                continue;
+            }
+
             string? actionTerm = FindObject(properties, MfNamespace + "action");
             string? resultTerm = FindObject(properties, MfNamespace + "result");
 
@@ -294,12 +357,81 @@ internal static class W3cManifestLoader
             string? expectedPath = resultTerm is null ? null : ResolveSiblingPath(resultTerm, manifestUri);
 
             Uri testUri = TryBuildAbsoluteUri(entry) ?? new Uri(manifestUri, "#" + entry);
-            W3cTestType type = ClassifyTestType(typeIri);
-            W3cTestCase testCase = new(testUri, type, typeIri, name, comment, inputPath, expectedPath);
+            W3cTestCase testCase = new(testUri, type, typeIri, name, comment, inputPath, expectedPath, originManifest);
             builder.Add(testCase);
         }
 
         return builder.ToImmutable();
+    }
+
+    /// <summary>
+    /// Builds one SHACL <c>sht:Validate</c> test case from its blank-node
+    /// action and inline expected report.
+    /// </summary>
+    /// <remarks>
+    /// The action is a blank node carrying <c>sht:dataGraph</c> and
+    /// <c>sht:shapesGraph</c> — frequently the empty IRI <c>&lt;&gt;</c>, which
+    /// resolves to the leaf file's own URL so both graphs are the test file
+    /// itself. The result is a blank node naming the inline expected
+    /// <c>sh:ValidationReport</c>; its term key is preserved on
+    /// <see cref="W3cTestCase.ExpectedReportTerm"/> for the runner to extract
+    /// the rooted report subgraph, rather than resolved to a sibling path.
+    /// Returns <c>null</c> when the action or its graph references are absent
+    /// or unresolvable.
+    /// </remarks>
+    /// <param name="entry">The test entry subject key.</param>
+    /// <param name="properties">The entry subject's quads.</param>
+    /// <param name="bySubject">The per-subject quad index.</param>
+    /// <param name="manifestUri">The manifest's absolute file URI.</param>
+    /// <param name="typeIri">The raw <c>rdf:type</c> IRI.</param>
+    /// <param name="name">The test name.</param>
+    /// <param name="comment">The test comment.</param>
+    /// <param name="originManifest">The declaring manifest's local path.</param>
+    /// <returns>The SHACL test case, or <c>null</c> when it cannot be built.</returns>
+    private static W3cTestCase? BuildShaclTest(
+        string entry,
+        List<Quad> properties,
+        Dictionary<string, List<Quad>> bySubject,
+        Uri manifestUri,
+        string typeIri,
+        string name,
+        string comment,
+        string originManifest)
+    {
+        string? actionTerm = FindObject(properties, MfNamespace + "action");
+        if(actionTerm is null || !bySubject.TryGetValue(actionTerm, out List<Quad>? actionProperties))
+        {
+            return null;
+        }
+
+        string? dataGraphTerm = FindObject(actionProperties, ShtNamespace + "dataGraph");
+        string? shapesGraphTerm = FindObject(actionProperties, ShtNamespace + "shapesGraph");
+        if(dataGraphTerm is null || shapesGraphTerm is null)
+        {
+            return null;
+        }
+
+        string? dataPath = ResolveSiblingPath(dataGraphTerm, manifestUri);
+        string? shapesPath = ResolveSiblingPath(shapesGraphTerm, manifestUri);
+        if(dataPath is null || shapesPath is null)
+        {
+            return null;
+        }
+
+        string? expectedReportTerm = FindObject(properties, MfNamespace + "result");
+        Uri testUri = TryBuildAbsoluteUri(entry) ?? new Uri(manifestUri, "#" + entry);
+
+        return new W3cTestCase(
+            testUri,
+            W3cTestType.ShaclValidate,
+            typeIri,
+            name,
+            comment,
+            InputPath: dataPath,
+            ExpectedPath: null,
+            OriginManifest: originManifest,
+            ShapesGraphPath: shapesPath,
+            ExpectedReportTerm: expectedReportTerm);
     }
 
     private static ImmutableArray<string> ResolveIncludesToPaths(List<string> rawIncludes, Uri manifestUri)
@@ -378,6 +510,12 @@ internal static class W3cManifestLoader
         //All evaluation variants — TestTurtleEval, TestTrigEval, etc. — share an "Eval" suffix and produce an expected file.
         //Negative evaluations share a "NegativeEval" suffix. Syntax tests share PositiveSyntax / NegativeSyntax.
         //Canonicalisation tests share a PositiveC14N suffix (TestNTriplesPositiveC14N, TestNQuadsPositiveC14N).
+        //SHACL validation tests are an exact IRI (sht:Validate), matched before the suffix arms.
+        if(typeIri == ShtNamespace + "Validate")
+        {
+            return W3cTestType.ShaclValidate;
+        }
+
         if(typeIri.EndsWith("PositiveSyntax", StringComparison.Ordinal))
         {
             return W3cTestType.PositiveSyntax;

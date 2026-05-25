@@ -52,6 +52,14 @@ internal enum W3cTestType
     PositiveC14N,
 
     /// <summary>
+    /// A SHACL validation test: the data graph is validated against the
+    /// shapes graph, and the produced <c>sh:ValidationReport</c> is compared
+    /// to the manifest's inline expected report under blank-node isomorphism,
+    /// ignoring <c>sh:resultMessage</c>.
+    /// </summary>
+    ShaclValidate,
+
+    /// <summary>
     /// The manifest used a test type the harness does not know
     /// how to dispatch. The runner reports
     /// <see cref="W3cOutcomeStatus.Skipped"/> with the original

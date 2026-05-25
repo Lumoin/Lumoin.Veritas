@@ -114,4 +114,23 @@ internal sealed class W3cManifestLoaderTests
         W3cTestCase positive = manifest.Tests.Single(t => t.Name == "positive syntax one");
         Assert.IsNull(positive.ExpectedPath);
     }
+
+    [TestMethod]
+    public void LoadsShaclCorpusThroughRepeatedIncludes()
+    {
+        string path = W3cCorpusPath.For("Shacl", "data-shapes-test-suite/tests", "manifest.ttl");
+
+        W3cManifest manifest = W3cManifestLoader.Load(path);
+
+        //The corpus declares its leaves only through repeated mf:include
+        //predicates down the per-directory manifests to each leaf's own
+        //manifest; this guards against the manifest-driven suite silently
+        //discovering nothing. Every sht:Validate entry must classify, name
+        //itself (the leaves carry rdfs:label, not mf:name), and resolve a
+        //shapes graph the runner can read.
+        Assert.IsGreaterThan(100, manifest.Tests.Length);
+        Assert.IsTrue(manifest.Tests.All(t => t.Type == W3cTestType.ShaclValidate), "Every vendored SHACL test should classify as ShaclValidate.");
+        Assert.IsTrue(manifest.Tests.All(t => t.Name.Length > 0), "Every SHACL test should carry a name from rdfs:label.");
+        Assert.IsTrue(manifest.Tests.All(t => t.ShapesGraphPath is not null), "Every SHACL test should carry a shapes graph.");
+    }
 }
