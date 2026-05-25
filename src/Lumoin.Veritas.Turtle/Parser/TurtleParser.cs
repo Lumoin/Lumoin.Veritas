@@ -372,7 +372,7 @@ public sealed class TurtleParser
 
     private bool IsGraphLabelLookahead()
     {
-        if(Current.Kind is TurtleTokenKind.Iri or TurtleTokenKind.PrefixedName or TurtleTokenKind.BlankNodeLabel
+        if(Current.Kind is TurtleTokenKind.Iri or TurtleTokenKind.PrefixedName or TurtleTokenKind.PrefixNamespace or TurtleTokenKind.BlankNodeLabel
             && Peek(1).Kind == TurtleTokenKind.OpenBrace)
         {
             return true;
@@ -698,7 +698,9 @@ public sealed class TurtleParser
             }
 
             case TurtleTokenKind.PrefixedName:
+            case TurtleTokenKind.PrefixNamespace:
             {
+                //PrefixNamespace is an empty-local prefixed name (ex:), a valid iri term.
                 return StepResult.Done(ConsumePrefixedName());
             }
 
@@ -951,7 +953,7 @@ public sealed class TurtleParser
                 if(Current.Kind == TurtleTokenKind.Tilde)
                 {
                     Advance();
-                    if(Current.Kind is TurtleTokenKind.Iri or TurtleTokenKind.PrefixedName or TurtleTokenKind.BlankNodeLabel)
+                    if(Current.Kind is TurtleTokenKind.Iri or TurtleTokenKind.PrefixedName or TurtleTokenKind.PrefixNamespace or TurtleTokenKind.BlankNodeLabel)
                     {
                         frame.Reifier = ConsumeLeafTermFor("reifier identifier");
                     }
@@ -1217,6 +1219,7 @@ public sealed class TurtleParser
         {
             TurtleTokenKind.Iri => ConsumeIri(),
             TurtleTokenKind.PrefixedName => ConsumePrefixedName(),
+            TurtleTokenKind.PrefixNamespace => ConsumePrefixedName(),
             TurtleTokenKind.BlankNodeLabel => ConsumeBlankNodeLabel(),
             _ => null
         };
@@ -1234,6 +1237,7 @@ public sealed class TurtleParser
         {
             TurtleTokenKind.Iri => ConsumeIri(),
             TurtleTokenKind.PrefixedName => ConsumePrefixedName(),
+            TurtleTokenKind.PrefixNamespace => ConsumePrefixedName(),
             TurtleTokenKind.BlankNodeLabel => ConsumeBlankNodeLabel(),
             _ => throw Expected(what, Current)
         };
@@ -1246,6 +1250,7 @@ public sealed class TurtleParser
         {
             TurtleTokenKind.Iri => ConsumeIri(),
             TurtleTokenKind.PrefixedName => ConsumePrefixedName(),
+            TurtleTokenKind.PrefixNamespace => ConsumePrefixedName(),
             TurtleTokenKind.A => ConsumeAKeyword(),
             _ => throw Expected("predicate", Current)
         };
@@ -1253,7 +1258,7 @@ public sealed class TurtleParser
 
     private static bool CanStartVerb(TurtleTokenKind kind)
     {
-        return kind is TurtleTokenKind.Iri or TurtleTokenKind.PrefixedName or TurtleTokenKind.A;
+        return kind is TurtleTokenKind.Iri or TurtleTokenKind.PrefixedName or TurtleTokenKind.PrefixNamespace or TurtleTokenKind.A;
     }
 
     private static bool IsIriOrBlank(Term term)
@@ -1417,6 +1422,7 @@ public sealed class TurtleParser
                     }
 
                     case TurtleTokenKind.PrefixedName:
+                    case TurtleTokenKind.PrefixNamespace:
                     {
                         datatype = ConsumePrefixedName();
                         endSpan = datatype.Span;
