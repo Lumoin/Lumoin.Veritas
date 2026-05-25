@@ -277,13 +277,15 @@ internal static class ShapePopulation
     {
         if(dictionary.Resolve(value) is Literal literal)
         {
-            string text = literal.Value.ToString();
-            if(text == "true")
+            //The xsd:boolean lexical space is exactly {true, false, 1, 0},
+            //case-sensitive.
+            ReadOnlySpan<byte> lexical = literal.Value.Span;
+            if(lexical.SequenceEqual("true"u8) || lexical.SequenceEqual("1"u8))
             {
                 return true;
             }
 
-            if(text == "false")
+            if(lexical.SequenceEqual("false"u8) || lexical.SequenceEqual("0"u8))
             {
                 return false;
             }

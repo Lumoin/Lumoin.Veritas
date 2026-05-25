@@ -709,14 +709,22 @@ public readonly struct ParameterBag: IEquatable<ParameterBag>
                 $"Expected boolean literal for parameter '{forParameter}', got {Dictionary.Resolve(value)}.");
         }
 
-        if(!Utf8Parser.TryParse(literal.Value.Span, out bool parsed, out int consumed)
-            || consumed != literal.Value.Span.Length)
+        //The xsd:boolean lexical space is exactly {true, false, 1, 0}, case-
+        //sensitive — broader than Utf8Parser's bool grammar (which omits 1/0)
+        //and narrower (it would accept "True").
+        ReadOnlySpan<byte> lexical = literal.Value.Span;
+        if(lexical.SequenceEqual("true"u8) || lexical.SequenceEqual("1"u8))
         {
-            throw new FormatException(
-                $"Value '{literal.Value}' for parameter '{forParameter}' is not a valid boolean.");
+            return true;
         }
 
-        return parsed;
+        if(lexical.SequenceEqual("false"u8) || lexical.SequenceEqual("0"u8))
+        {
+            return false;
+        }
+
+        throw new FormatException(
+            $"Value '{literal.Value}' for parameter '{forParameter}' is not a valid boolean.");
     }
 
     private IriId ParseIri(TermId value, IriId forParameter)
