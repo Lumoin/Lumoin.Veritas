@@ -418,8 +418,8 @@ public sealed class NodeStore: IDisposable
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="handle"/> is <see cref="NodeHandle.None"/> or out of range.</exception>
     public HypertrieNode GetByHandle(NodeHandle handle)
     {
-        Debug.Assert(!handle.IsNone, "GetByHandle called with NodeHandle.None.");
-
+        //NodeHandle.None encodes as 0 and is rejected by the range check below
+        //with ArgumentOutOfRangeException — the documented, observable contract.
         uint encoded = handle.Encoded;
         if(encoded == 0 || encoded >= Volatile.Read(ref nextHandle))
         {
