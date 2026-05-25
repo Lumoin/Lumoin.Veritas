@@ -512,10 +512,13 @@ public static class RdfCanonicalizer
         //The first-degree hashing and blank-node discovery recurse into triple terms; this
         //n-degree related-node extraction inspects only the top-level positions. That suffices
         //for every current test because blank nodes nested in triple terms there are uniquely
-        //identified by their first-degree hash and never reach the n-degree disambiguation. A
-        //dataset that both nests a blank node in a triple term and needs n-degree to distinguish
-        //it would require recursing here with a position semantics the RDF-star canonicalization
-        //rules have not yet pinned down; that is left for a follow-up.
+        //identified by their first-degree hash and never reach the n-degree disambiguation. The
+        //spec's resolution for a dataset that both nests a blank node in a triple term and needs
+        //n-degree to distinguish it is to basic-encode the triple terms away first (RDF 1.2
+        //Interoperability §3, available as a composable step in BasicEncoder) and then run RDFC-1.0
+        //on the triple-term-free result, where the nested blank node becomes a top-level position
+        //this extraction already handles. That pre-pass is not applied here by default because no
+        //published conformance corpus pins the basic-encoded canonical output.
         if(quad.Subject is BlankNode subjectBlank)
         {
             AddRelated(subjectBlank, "s");

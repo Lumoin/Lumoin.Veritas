@@ -56,7 +56,16 @@ vendored snapshot and passes, so all 301 cases pass with no skips.
   position semantics here would invent non-standard, untestable hashes
   and risk regressing the working RDFC cases. Revisit when RDF 1.2
   canonicalization is specified. Documented at the call site in
-  `RdfCanonicalizer`.
+  `RdfCanonicalizer`. The spec's resolution — basic-encode the triple
+  terms away (RDF 1.2 Interoperability §3), then run RDFC-1.0 — is
+  implemented as the composable `BasicEncoder` (`Encode`/`Decode`,
+  verified against the §3 algorithm), but is not wired into
+  `Canonicalize` by default: no published corpus pins the basic-encoded
+  canonical output, so conformance is unaffected (still 301/301). The
+  only RDF 1.2 canonicalization fixtures that exist — the vendored
+  N-Quads/N-Triples `c14n` `triple-term-*` cases — are *lexical*
+  (`rdft:TestNQuadsPositiveC14N`) and preserve `<<( … )>>` rather than
+  basic-encoding it; they pass via `SerializeStatements`.
 - **Turtle relative-IRI resolution is RFC 3986 §5** via
   `Lumoin.Veritas.Core.Iris.IriResolver` (shared with JSON-LD and
   CBOR-LD, backed by `System.Uri`); chained `@base` directives compose,

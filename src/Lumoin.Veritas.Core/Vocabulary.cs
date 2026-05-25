@@ -165,7 +165,9 @@ public static class Vocabulary
     /// <para>
     /// Contains <c>rdf:type</c>, the RDF-defined datatype IRIs (<c>rdf:langString</c>,
     /// <c>rdf:dirLangString</c>, <c>rdf:JSON</c>, <c>rdf:HTML</c>, <c>rdf:XMLLiteral</c>),
-    /// and <c>rdf:reifies</c> which is paired with <see cref="TripleTerm"/>.
+    /// <c>rdf:reifies</c> which is paired with <see cref="TripleTerm"/>, and the
+    /// <c>rdf:PropositionForm</c> / <c>rdf:propositionForm*</c> terms that basic-encode a triple term
+    /// into a triple-term-free form per RDF 1.2 Interoperability §3.
     /// </para>
     /// <para>
     /// All other RDF terms (list vocabulary, classic reification, <c>rdf:Property</c>,
@@ -190,6 +192,10 @@ public static class Vocabulary
         private static byte[] HtmlBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#HTML"u8.ToArray();
         private static byte[] XmlLiteralBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#XMLLiteral"u8.ToArray();
         private static byte[] ReifiesBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies"u8.ToArray();
+        private static byte[] PropositionFormBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#PropositionForm"u8.ToArray();
+        private static byte[] PropositionFormSubjectBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#propositionFormSubject"u8.ToArray();
+        private static byte[] PropositionFormPredicateBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#propositionFormPredicate"u8.ToArray();
+        private static byte[] PropositionFormObjectBytes { get; } = "http://www.w3.org/1999/02/22-rdf-syntax-ns#propositionFormObject"u8.ToArray();
 
         /// <summary>The <c>rdf:type</c> predicate IRI.</summary>
         public static Utf8String Type { get; } = new(TypeBytes);
@@ -211,5 +217,17 @@ public static class Vocabulary
 
         /// <summary>The <c>rdf:reifies</c> predicate for RDF 1.2 triple term reification.</summary>
         public static Utf8String Reifies { get; } = new(ReifiesBytes);
+
+        /// <summary>The <c>rdf:PropositionForm</c> class that marks a blank node standing for a basic-encoded triple term (RDF 1.2 Interoperability §3).</summary>
+        public static Utf8String PropositionForm { get; } = new(PropositionFormBytes);
+
+        /// <summary>The <c>rdf:propositionFormSubject</c> predicate carrying the subject of a basic-encoded triple term (RDF 1.2 Interoperability §3).</summary>
+        public static Utf8String PropositionFormSubject { get; } = new(PropositionFormSubjectBytes);
+
+        /// <summary>The <c>rdf:propositionFormPredicate</c> predicate carrying the predicate of a basic-encoded triple term (RDF 1.2 Interoperability §3).</summary>
+        public static Utf8String PropositionFormPredicate { get; } = new(PropositionFormPredicateBytes);
+
+        /// <summary>The <c>rdf:propositionFormObject</c> predicate carrying the object of a basic-encoded triple term (RDF 1.2 Interoperability §3).</summary>
+        public static Utf8String PropositionFormObject { get; } = new(PropositionFormObjectBytes);
     }
 }
