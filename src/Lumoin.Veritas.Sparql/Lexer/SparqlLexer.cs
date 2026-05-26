@@ -375,7 +375,12 @@ public sealed class SparqlLexer
 
             case (byte)'{':
             {
-                return LexSinglePunctuation(ref reader, SparqlTokenKind.OpenBrace, out token);
+                return LexOpenBrace(ref reader, out token);
+            }
+
+            case (byte)'~':
+            {
+                return LexSinglePunctuation(ref reader, SparqlTokenKind.Tilde, out token);
             }
 
             case (byte)'}':
@@ -652,7 +657,54 @@ public sealed class SparqlLexer
             return SparqlLexStatus.Complete;
         }
 
+        if(second == (byte)'}')
+        {
+            int startByte = Offset(reader.Consumed);
+            int startLine = line;
+            int startColumn = column;
+            AdvanceCount(ref reader, 2);
+
+            token = new SparqlToken(
+                SparqlTokenKind.CloseAnnotation,
+                CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
+                Pool.Intern("|}"u8));
+
+            return SparqlLexStatus.Complete;
+        }
+
         return LexSinglePunctuation(ref reader, SparqlTokenKind.Pipe, out token);
+    }
+
+    private SparqlLexStatus LexOpenBrace(ref SequenceReader<byte> reader, out SparqlToken token)
+    {
+        token = default;
+
+        if(!reader.TryPeek(1, out byte second))
+        {
+            if(!atFinalBuffer)
+            {
+                return SparqlLexStatus.NeedMore;
+            }
+
+            return LexSinglePunctuation(ref reader, SparqlTokenKind.OpenBrace, out token);
+        }
+
+        if(second == (byte)'|')
+        {
+            int startByte = Offset(reader.Consumed);
+            int startLine = line;
+            int startColumn = column;
+            AdvanceCount(ref reader, 2);
+
+            token = new SparqlToken(
+                SparqlTokenKind.OpenAnnotation,
+                CaptureSpan(startByte, Offset(reader.Consumed), startLine, startColumn, line, column),
+                Pool.Intern("{|"u8));
+
+            return SparqlLexStatus.Complete;
+        }
+
+        return LexSinglePunctuation(ref reader, SparqlTokenKind.OpenBrace, out token);
     }
 
     private SparqlLexStatus LexAmpersand(ref SequenceReader<byte> reader, out SparqlToken token)

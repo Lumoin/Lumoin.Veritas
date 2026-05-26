@@ -70,6 +70,7 @@ internal static class SparqlKeywords
     {
         if(Ci(id, "BASE"u8)) { return Yield(SparqlTokenKind.BaseKeyword, "BASE"u8, out kind, out canonical); }
         if(Ci(id, "PREFIX"u8)) { return Yield(SparqlTokenKind.PrefixKeyword, "PREFIX"u8, out kind, out canonical); }
+        if(Ci(id, "VERSION"u8)) { return Yield(SparqlTokenKind.VersionKeyword, "VERSION"u8, out kind, out canonical); }
         if(Ci(id, "SELECT"u8)) { return Yield(SparqlTokenKind.SelectKeyword, "SELECT"u8, out kind, out canonical); }
         if(Ci(id, "CONSTRUCT"u8)) { return Yield(SparqlTokenKind.ConstructKeyword, "CONSTRUCT"u8, out kind, out canonical); }
         if(Ci(id, "ASK"u8)) { return Yield(SparqlTokenKind.AskKeyword, "ASK"u8, out kind, out canonical); }

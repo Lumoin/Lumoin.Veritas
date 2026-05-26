@@ -114,6 +114,34 @@ internal sealed class SparqlLexerTests
         Assert.AreEqual("ISIRI", tokens[8].Value.ToString());
     }
 
+    /// <summary>
+    /// The RDF 1.2 reification delimiters (<c>&lt;&lt;</c>, <c>&lt;&lt;(</c>, <c>)&gt;&gt;</c>,
+    /// <c>&gt;&gt;</c>), the reifier marker <c>~</c>, the annotation brackets <c>{|</c> / <c>|}</c>,
+    /// and the <c>VERSION</c> keyword lex as their dedicated kinds.
+    /// </summary>
+    [TestMethod]
+    public void LexesRdf12ReificationTerminals()
+    {
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                SparqlTokenKind.OpenReifiedTriple, SparqlTokenKind.OpenTripleTerm,
+                SparqlTokenKind.CloseTripleTerm, SparqlTokenKind.CloseReifiedTriple,
+                SparqlTokenKind.Tilde, SparqlTokenKind.OpenAnnotation, SparqlTokenKind.CloseAnnotation,
+                SparqlTokenKind.VersionKeyword,
+            },
+            Kinds(Lex("<< <<( )>> >> ~ {| |} VERSION")));
+    }
+
+    /// <summary>A lone <c>{</c> and a lone <c>|</c> still lex as brace and pipe, not annotation brackets.</summary>
+    [TestMethod]
+    public void LexesLoneBraceAndPipeWithoutAnnotation()
+    {
+        CollectionAssert.AreEqual(
+            new[] { SparqlTokenKind.OpenBrace, SparqlTokenKind.Pipe, SparqlTokenKind.CloseBrace },
+            Kinds(Lex("{ | }")));
+    }
+
     /// <summary>String literals and the three numeric literal forms lex distinctly.</summary>
     [TestMethod]
     public void LexesStringAndNumericLiterals()

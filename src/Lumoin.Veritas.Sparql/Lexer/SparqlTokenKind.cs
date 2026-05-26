@@ -158,6 +158,18 @@ public enum SparqlTokenKind
     /// <summary>The triple-term end <c>)&gt;&gt;</c> (RDF 1.2).</summary>
     CloseTripleTerm,
 
+    /// <summary>The reifier marker <c>~</c> (RDF 1.2).</summary>
+    Tilde,
+
+    /// <summary>The annotation-block start <c>{|</c> (RDF 1.2).</summary>
+    OpenAnnotation,
+
+    /// <summary>The annotation-block end <c>|}</c> (RDF 1.2).</summary>
+    CloseAnnotation,
+
+    /// <summary>The <c>VERSION</c> prologue keyword (RDF 1.2).</summary>
+    VersionKeyword,
+
     /// <summary>The <c>BASE</c> keyword.</summary>
     BaseKeyword,
 
