@@ -54,6 +54,7 @@
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Rdf\Lumoin.Veritas.Rdf.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Shacl\Lumoin.Veritas.Shacl.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Skos\Lumoin.Veritas.Skos.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Sparql\Lumoin.Veritas.Sparql.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Turtle\Lumoin.Veritas.Turtle.csproj" />
   </ItemGroup>
 

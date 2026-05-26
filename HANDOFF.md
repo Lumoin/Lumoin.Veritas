@@ -8,7 +8,12 @@ DESCRIBE/JSON results, conformance push).
 
 ## Status
 
-- Milestone A: **in progress.** Project skeleton created and builds clean.
+- Milestone A: **in progress.** Project skeleton builds. **Lexer complete and
+  tested** — full byte-resumable `SparqlLexer` (sync `Tokenize()` + pipe-fed
+  `TokenizeAsync`/`TokenizeWithRecoveryAsync`, `NeedMore` resumability, recovery,
+  limits), allocation-free `SparqlKeywords` classifier, 13 `SparqlLexerTests`
+  green. Next: AST records → iterative parser → `SparqlParser.ParseRequest` →
+  vendor the W3C syntax suite and measure.
 - Milestones B–F: not started.
 
 ## Verified against the codebase (so the spec's §22 assumptions are grounded)
@@ -61,6 +66,17 @@ DESCRIBE/JSON results, conformance push).
 - **`ImplicitUsings` is OFF** for src projects (only the test project enables it).
   Every src file needs explicit `using` directives — e.g. `using System;` for
   `FormattableString`.
+- **Full final form, no consumer-driven subsets (user directive).** The lexer is
+  the complete byte-resumable implementation per §3 — `SequenceReader<byte>`,
+  `NeedMore`/`atFinalBuffer`, the synchronous `Tokenize()` AND the pipe-fed async
+  `TokenizeAsync` / `TokenizeWithRecoveryAsync` paths, recovery, limits — even
+  though SHACL-SPARQL only needs synchronous whole-buffer tokenisation. A
+  whole-buffer-only lexer was explicitly rejected. This principle applies to every
+  component in the batch.
+- **Verified Core APIs for the lexer:** `UnicodeConstants.{SurrogateRangeFirst
+  =0xD800, SurrogateRangeLast=0xDFFF, MaximumCodePoint=0x10FFFF}` (public);
+  `Utf8StringPool.Intern(ReadOnlySpan<byte>)` / `Intern(ReadOnlySequence<byte>)` /
+  `Intern(string)` / `RentScratch(int)→IMemoryOwner<byte>` (public).
 
 ## Open verification to do at the consuming milestone
 

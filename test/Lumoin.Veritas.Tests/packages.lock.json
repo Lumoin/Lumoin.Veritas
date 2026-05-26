@@ -453,6 +453,13 @@
           "Lumoin.Veritas.Core": "[0.0.0, )"
         }
       },
+      "lumoin.veritas.sparql": {
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Veritas.Core": "[0.0.0, )",
+          "Lumoin.Veritas.Rdf": "[0.0.0, )"
+        }
+      },
       "lumoin.veritas.turtle": {
         "type": "Project",
         "dependencies": {
