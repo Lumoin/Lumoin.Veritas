@@ -542,6 +542,130 @@ internal sealed class SparqlParserTests
         Assert.AreEqual("o", ((VariableExpression)bind.Expression).Variable.Name.ToString());
     }
 
+    /// <summary>A built-in call carries its canonical name and arguments.</summary>
+    [TestMethod]
+    public void ParsesBuiltInCall()
+    {
+        using Utf8StringPool pool = new();
+        BuiltInCallExpression call = (BuiltInCallExpression)FilterExpression("ASK { FILTER(STR(?x)) }", pool);
+
+        Assert.AreEqual("STR", call.FunctionName.ToString());
+        Assert.HasCount(1, call.Arguments);
+        Assert.AreEqual("x", ((VariableExpression)call.Arguments[0]).Variable.Name.ToString());
+    }
+
+    /// <summary>An empty-argument built-in (for example <c>NOW()</c>) yields no arguments.</summary>
+    [TestMethod]
+    public void ParsesEmptyArgumentBuiltIn()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("SELECT * WHERE { ?s ?p ?o BIND(NOW() AS ?t) }", pool);
+
+        BuiltInCallExpression call = (BuiltInCallExpression)((BindPattern)Members(query)[1]).Expression;
+        Assert.AreEqual("NOW", call.FunctionName.ToString());
+        Assert.IsEmpty(call.Arguments);
+    }
+
+    /// <summary>An IRI followed by an argument list is a function call.</summary>
+    [TestMethod]
+    public void ParsesFunctionCall()
+    {
+        using Utf8StringPool pool = new();
+        FunctionCallExpression call = (FunctionCallExpression)FilterExpression("ASK { FILTER(<http://f/>(?x, ?y)) }", pool);
+
+        Assert.AreEqual("http://f/", call.Function.Value.ToString());
+        Assert.HasCount(2, call.Arguments);
+    }
+
+    /// <summary>The <c>IN</c> test carries its value and candidate set.</summary>
+    [TestMethod]
+    public void ParsesIn()
+    {
+        using Utf8StringPool pool = new();
+        InExpression membership = (InExpression)FilterExpression("ASK { FILTER(?x IN (1, 2, 3)) }", pool);
+
+        Assert.AreEqual("x", ((VariableExpression)membership.Value).Variable.Name.ToString());
+        Assert.HasCount(3, membership.Set);
+    }
+
+    /// <summary>The <c>NOT IN</c> test is its own node.</summary>
+    [TestMethod]
+    public void ParsesNotIn()
+    {
+        using Utf8StringPool pool = new();
+        Assert.IsInstanceOfType<NotInExpression>(FilterExpression("ASK { FILTER(?x NOT IN (1)) }", pool));
+    }
+
+    /// <summary>The <c>IF</c>, <c>COALESCE</c>, and <c>BOUND</c> special forms build their dedicated nodes.</summary>
+    [TestMethod]
+    public void ParsesConditionalBuiltIns()
+    {
+        using Utf8StringPool pool = new();
+        Assert.IsInstanceOfType<IfExpression>(FilterExpression("ASK { FILTER(IF(?a, ?b, ?c)) }", pool));
+        Assert.HasCount(2, ((CoalesceExpression)FilterExpression("ASK { FILTER(COALESCE(?a, ?b)) }", pool)).Alternatives);
+        Assert.AreEqual("x", ((BoundExpression)FilterExpression("ASK { FILTER(BOUND(?x)) }", pool)).Variable.Name.ToString());
+    }
+
+    /// <summary>An <c>EXISTS { }</c> and a <c>NOT EXISTS { }</c> wrap an inner graph pattern.</summary>
+    [TestMethod]
+    public void ParsesExistsAndNotExists()
+    {
+        using Utf8StringPool pool = new();
+        ExistsExpression exists = (ExistsExpression)FilterExpression("ASK { FILTER(EXISTS { ?s ?p ?o }) }", pool);
+        Assert.IsInstanceOfType<GroupGraphPattern>(exists.Inner);
+        Assert.IsInstanceOfType<NotExistsExpression>(FilterExpression("ASK { FILTER(NOT EXISTS { ?s ?p ?o }) }", pool));
+    }
+
+    /// <summary>An <c>(expr AS ?var)</c> projection records the expression and target variable.</summary>
+    [TestMethod]
+    public void ParsesSelectExpressionAs()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("SELECT (?x + 1 AS ?y) WHERE { ?a ?b ?x }", pool);
+
+        SelectExpressionAs projection = (SelectExpressionAs)((SelectQuery)query.Form).Projections[0];
+        Assert.AreEqual("y", projection.AsVariable.Name.ToString());
+        Assert.IsInstanceOfType<ArithmeticExpression>(projection.Expression);
+    }
+
+    /// <summary><c>COUNT(*)</c> is flagged as a count-star aggregate.</summary>
+    [TestMethod]
+    public void ParsesCountStar()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("SELECT (COUNT(*) AS ?n) WHERE { ?s ?p ?o }", pool);
+
+        AggregateExpression aggregate = (AggregateExpression)((SelectExpressionAs)((SelectQuery)query.Form).Projections[0]).Expression;
+        Assert.AreEqual("COUNT", aggregate.FunctionName.ToString());
+        Assert.IsTrue(aggregate.IsCountStar);
+        Assert.IsNull(aggregate.Argument);
+    }
+
+    /// <summary>A <c>DISTINCT</c> aggregate records the flag and its argument.</summary>
+    [TestMethod]
+    public void ParsesDistinctAggregate()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("SELECT (SUM(DISTINCT ?x) AS ?s) WHERE { ?a ?b ?x }", pool);
+
+        AggregateExpression aggregate = (AggregateExpression)((SelectExpressionAs)((SelectQuery)query.Form).Projections[0]).Expression;
+        Assert.AreEqual("SUM", aggregate.FunctionName.ToString());
+        Assert.IsTrue(aggregate.IsDistinct);
+        Assert.IsFalse(aggregate.IsCountStar);
+    }
+
+    /// <summary><c>GROUP_CONCAT</c> records its separator string.</summary>
+    [TestMethod]
+    public void ParsesGroupConcatSeparator()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("SELECT (GROUP_CONCAT(?x ; SEPARATOR=\", \") AS ?g) WHERE { ?a ?b ?x }", pool);
+
+        AggregateExpression aggregate = (AggregateExpression)((SelectExpressionAs)((SelectQuery)query.Form).Projections[0]).Expression;
+        Assert.AreEqual("GROUP_CONCAT", aggregate.FunctionName.ToString());
+        Assert.AreEqual(", ", aggregate.GroupConcatSeparator!.Value.ToString());
+    }
+
     /// <summary>
     /// Feeding tokens one at a time, the parser suspends with <see cref="ParseStatus.NeedMore"/>
     /// before the stream completes and resumes to the same AST a whole-buffer parse produces — proof

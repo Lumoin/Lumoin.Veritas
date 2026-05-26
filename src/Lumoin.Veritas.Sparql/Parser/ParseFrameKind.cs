@@ -94,5 +94,8 @@ internal enum ParseFrameKind
     ReifiedTriple,
 
     /// <summary>An RDF 1.2 triple term <c>&lt;&lt;( ... )&gt;&gt;</c>.</summary>
-    TripleTerm
+    TripleTerm,
+
+    /// <summary>A parenthesised, comma-separated argument or expression list: built-in / function call arguments, a <c>COALESCE</c> / <c>IF</c> list, or an <c>IN</c> set.</summary>
+    ArgumentList
 }

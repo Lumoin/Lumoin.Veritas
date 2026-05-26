@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Diagnostics;
+using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Lexer;
@@ -112,4 +113,44 @@ internal sealed class ParseFrame
 
     /// <summary>Gets or sets whether an <see cref="ParseFrameKind.Expression"/> frame has already combined a comparison, so a further comparison at the same level (which the grammar forbids) is rejected.</summary>
     public bool SawComparison { get; set; }
+
+    /// <summary>Gets or sets the kind of call an <see cref="ParseFrameKind.Expression"/> frame is assembling once its argument list returns.</summary>
+    public PendingCall Pending { get; set; }
+
+    /// <summary>Gets or sets the canonical built-in or aggregate name an <see cref="ParseFrameKind.Expression"/> frame is assembling.</summary>
+    public Utf8String? CallName { get; set; }
+
+    /// <summary>Gets or sets the resolved function IRI an <see cref="ParseFrameKind.Expression"/> frame is assembling into a function call.</summary>
+    public IriRef? FunctionIri { get; set; }
+
+    /// <summary>Gets or sets the accumulated arguments of an <see cref="ParseFrameKind.ArgumentList"/> frame.</summary>
+    public List<ExpressionNode>? Arguments { get; set; }
+}
+
+/// <summary>
+/// The kind of call an <see cref="ParseFrameKind.Expression"/> frame assembles once a pushed
+/// <see cref="ParseFrameKind.ArgumentList"/> hands back its arguments.
+/// </summary>
+internal enum PendingCall
+{
+    /// <summary>No pending call.</summary>
+    None,
+
+    /// <summary>A reserved built-in function call.</summary>
+    BuiltIn,
+
+    /// <summary>An IRI-named (user-defined or constructor) function call.</summary>
+    Function,
+
+    /// <summary>A <c>COALESCE</c> call.</summary>
+    Coalesce,
+
+    /// <summary>An <c>IF</c> call.</summary>
+    If,
+
+    /// <summary>An <c>IN</c> membership test over the left operand.</summary>
+    In,
+
+    /// <summary>A <c>NOT IN</c> membership test over the left operand.</summary>
+    NotIn
 }
