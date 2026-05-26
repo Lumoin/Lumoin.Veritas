@@ -11,7 +11,7 @@ DESCRIBE/JSON results, conformance push).
 - Milestone A: **in progress.** Project skeleton builds. **Lexer complete and
   tested** (13 `SparqlLexerTests` green). **AST complete** — ~60 record types
   across 12 files in `Ast/`. **Parser: the bulk is built and tested**
-  (66 `SparqlParserTests` green), and it is **resumable/streaming** — incremental
+  (75 `SparqlParserTests` green), and it is **resumable/streaming** — incremental
   `FeedToken` + `TryParseRequest`(`ParseStatus`), a `Drive()` that suspends on
   `NeedMore` with the work stack intact, bounded `MaxStepLookahead=4`, every
   unbounded production driven one bounded item per step. Materialised
@@ -31,34 +31,31 @@ DESCRIBE/JSON results, conformance push).
     - Property paths: alt `|`, seq `/`, inverse `^`, quantifiers `?*+`, grouped
       `( )`, negated property sets `!(...)`; a bare predicate unwraps to a
       constant term.
+    - Collections `( ... )` and blank-node property lists `[ p o ; ... ]` as
+      faithful un-expanded AST term nodes (Slice 4b-i), nesting recursively in
+      subject and object position. Term-layer **source spans** are collected
+      (full extents via `lastConsumedSpan` + `CombineSpans`); the heterogeneous
+      work-stack hand-up reads through a documented `Pop<T>(incoming)` helper.
   - **Style decisions recorded** (apply going forward): the parser uses C# switch
     *expressions* for all dispatch (state + token kind), per user preference; and
     no `Co-Authored-By` trailers on commits/PRs (user directive — branch history
     was rewritten to strip them).
   - **Remaining for Milestone A:**
-    - Slice 4b — unbounded term sugar in subject/object position: RDF collections
-      `( ... )`, blank-node property lists `[ p o ]`, and RDF 1.2 reified triples
-      `<< s p o >>` / triple terms `<<( s p o )>>`. **DECISIONS MADE** (see
-      [[project_sparql_ast_faithful]]): the AST is a *faithful tooling/editor
-      surface*, so (a) **add AST term nodes** — `CollectionTerm` and
-      `BlankNodePropertyListTerm` on `TriplePatternTerm` (plus a `PropertyListPath`
-      record for `[ verb objects ; ... ]`) — kept un-expanded; the translator
-      lowers them later. `<<( )>>` stays as the existing `TripleTerm`. And (b)
-      **collect source spans**: add a full-extent `SourceSpan Span` to every
-      `TriplePatternTerm` subtype and to `TriplePattern`. Implementation notes:
-      track a `lastConsumedSpan` (set in `Advance()` to the token being consumed),
-      add a `CombineSpans(start, lastConsumed)` helper, and build each term as
-      *consume-then-construct* so the span is the real `start..end` extent — this
-      does not fit the inline `Current.Kind switch => new Term(...)` arms (arg
-      evaluation would capture the span before consuming), so `ParseVarOrTerm` and
-      the term builders become capture-start → parse → construct-with-span.
-      Frames: a `Collection` frame (space-separated items, one per step), a
-      `BlankNodePropertyList` frame (verb + object-list loop, mirroring the Triple
-      frame's pred-obj logic but emitting `PropertyListPath` not `TriplePattern`),
-      both reached from a compound-term check in `TripleSubject`/`TripleObject`
-      (and from collection items / bnode-list objects, recursively). Span coverage
-      for the wider layers (graph-pattern members, expressions, clauses) is a
-      separate focused follow-up so coverage stays uniform.
+    - Slice 4b-ii — RDF 1.2 reified triples `<< s p o >>` and triple terms
+      `<<( s p o )>>` in subject/object position (with spans), wired into the
+      compound-term check. `TripleTerm` AST node exists; decide whether the
+      reified-triple shorthand keeps its own node or expands to a blank node +
+      `rdf:reifies` triple term per RDF 1.2.
+    - Slice S — **spans on the remaining AST layers** (graph-pattern members,
+      expressions, property-path nodes, clauses, query forms, request), applying
+      the same `frame.StartSpan` + `lastConsumedSpan` + `CombineSpans` mechanism,
+      so coverage is uniform across the whole AST (per user: spans apply to
+      everything; the Turtle AST already spans every node via `TurtleAstNode`).
+    - Early-expansion normalization pass — **"have both"**: lower
+      `CollectionTerm`/`BlankNodePropertyListTerm` (and reified-triple shorthand)
+      into fresh blank nodes + `rdf:first`/`rest`/`nil` and `[ ]` triples once, so
+      the translator/backend see plain triples and don't each special-case the
+      sugar. Likely lands with the algebra translator (Milestone B).
     - Slice 5 — CONSTRUCT template, DESCRIBE targets, trailing + inline VALUES,
       sub-SELECT pattern; then vendor the W3C SPARQL 1.2 syntax suite and wire
       `SparqlPositiveSyntax`/`SparqlNegativeSyntax` into the conformance harness.
