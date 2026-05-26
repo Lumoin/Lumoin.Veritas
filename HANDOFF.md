@@ -10,16 +10,19 @@ DESCRIBE/JSON results, conformance push).
 
 - Milestone A: **in progress.** Project skeleton builds. **Lexer complete and
   tested** (13 `SparqlLexerTests` green). **AST complete** — ~60 record types
-  across 12 files in `Ast/`. **Parser: the bulk is built and tested**
-  (75 `SparqlParserTests` green), and it is **resumable/streaming** — incremental
+  across 12 files in `Ast/`. **Parser: the full SPARQL 1.1 query grammar is built
+  and tested** (`SparqlParserTests` plus the W3C query-syntax conformance suites —
+  198 Sparql tests, 185 green, 13 known-gap skips, 0 fail), and it is
+  **resumable/streaming** — incremental
   `FeedToken` + `TryParseRequest`(`ParseStatus`), a `Drive()` that suspends on
   `NeedMore` with the work stack intact, bounded `MaxStepLookahead=4`, every
   unbounded production driven one bounded item per step. Materialised
   `ParseRequest` is a convenience on top. Built so far (each its own commit):
     - Prologue (BASE/PREFIX with prefix-map + base IRI resolution via Core
       `IriResolver`; unbound prefix throws).
-    - Forms: SELECT (DISTINCT/REDUCED, `*` or projection list incl.
-      `(expr AS ?v)`) and ASK. CONSTRUCT/DESCRIBE recognised + throw "not yet".
+    - All four forms: SELECT (DISTINCT/REDUCED, `*` or projection list incl.
+      `(expr AS ?v)`), ASK, CONSTRUCT (`{ template }` and the `CONSTRUCT WHERE`
+      short form), and DESCRIBE (`VarOrIri+` / `*`, optional WHERE).
     - Dataset FROM / FROM NAMED.
     - WHERE group graph pattern + all members: nested groups, OPTIONAL, MINUS,
       `{ } UNION { }`, GRAPH, SERVICE [SILENT], FILTER(expr), BIND(expr AS ?v).
@@ -36,6 +39,16 @@ DESCRIBE/JSON results, conformance push).
       subject and object position. Term-layer **source spans** are collected
       (full extents via `lastConsumedSpan` + `CombineSpans`); the heterogeneous
       work-stack hand-up reads through a documented `Pop<T>(incoming)` helper.
+    - VALUES (inline member + trailing block, one-var and full tuple forms, UNDEF,
+      with row-arity and distinct-variable checks) and sub-SELECT (a `{ SELECT ... }`
+      group reusing the request frame, finalising at the enclosing `}`).
+    - **W3C query-syntax conformance wired** (Slice 5c): the SPARQL 1.1
+      `syntax-query` (94) and SPARQL 1.2 `syntax` (6) suites are vendored
+      (`Material/Sparql/`, pinned commit `674da26`) and run through the
+      manifest-driven harness — **87/100 pass**, 13 self-correcting known-gap skips
+      (see `W3cSparqlSyntaxTests.KnownGaps`: scope analysis, nested aggregates, a
+      PN_LOCAL-escape refinement, and the standalone blank-node list awaiting the
+      expansion pass).
   - **Style decisions recorded** (apply going forward): the parser uses C# switch
     *expressions* for all dispatch (state + token kind), per user preference; and
     no `Co-Authored-By` trailers on commits/PRs (user directive — branch history
@@ -55,10 +68,11 @@ DESCRIBE/JSON results, conformance push).
       `CollectionTerm`/`BlankNodePropertyListTerm` (and reified-triple shorthand)
       into fresh blank nodes + `rdf:first`/`rest`/`nil` and `[ ]` triples once, so
       the translator/backend see plain triples and don't each special-case the
-      sugar. Likely lands with the algebra translator (Milestone B).
-    - Slice 5 — CONSTRUCT template, DESCRIBE targets, trailing + inline VALUES,
-      sub-SELECT pattern; then vendor the W3C SPARQL 1.2 syntax suite and wire
-      `SparqlPositiveSyntax`/`SparqlNegativeSyntax` into the conformance harness.
+      sugar. Likely lands with the algebra translator (Milestone B). Closing this
+      also fixes the `syntax-propertyPaths-01` known gap (standalone bnode list).
+    - When 4b-ii lands, vendor the SPARQL 1.2 triple-term syntax suites
+      (`sparql/sparql12/syntax-triple-terms-{positive,negative}/`) and drop their
+      query-only tests' Update entries.
 - Milestones B–F: not started.
 
 ## Verified against the codebase (so the spec's §22 assumptions are grounded)
