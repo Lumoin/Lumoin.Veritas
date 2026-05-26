@@ -462,14 +462,20 @@ public sealed class SparqlParser
     private StepResult RequestConstruct(ParseFrame frame)
     {
         Advance();
-        if(Current.Kind != SparqlTokenKind.OpenBrace)
+
+        //CONSTRUCT { template } ... : parse the explicit template. CONSTRUCT [dataset] WHERE { triples }:
+        //the short form, where the WHERE triples are also the template — deferred to the WHERE stage.
+        if(Current.Kind == SparqlTokenKind.OpenBrace)
         {
-            throw new SparqlParseException("The CONSTRUCT WHERE short form is not yet implemented in this build.", Current.Span);
+            frame.Stage = 14;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.ConstructTemplate, StartSpan = Current.Span });
         }
 
-        frame.Stage = 14;
+        frame.IsConstructShort = true;
+        frame.Stage = 3;
 
-        return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.ConstructTemplate, StartSpan = Current.Span });
+        return StepResult.Continue();
     }
 
     /// <summary>Adopts the popped CONSTRUCT template and advances to the dataset clauses.</summary>
@@ -611,10 +617,42 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private static StepResult RequestWherePattern(ParseFrame frame, object? incoming)
     {
-        frame.Where = new WhereClause(Pop<GraphPattern>(incoming));
+        GraphPattern pattern = Pop<GraphPattern>(incoming);
+        frame.Where = new WhereClause(pattern);
+
+        //In the CONSTRUCT WHERE short form the WHERE triples double as the template.
+        if(frame.IsConstructShort)
+        {
+            frame.Form = new ConstructQuery(ExtractTemplateTriples(pattern));
+        }
+
         frame.Stage = 6;
 
         return StepResult.Continue();
+    }
+
+    /// <summary>
+    /// Collects the triples of a pattern's basic graph pattern blocks, for the CONSTRUCT WHERE short
+    /// form whose WHERE triples are also the construct template.
+    /// </summary>
+    /// <param name="pattern">The WHERE pattern.</param>
+    /// <returns>The flattened template triples.</returns>
+    private static List<TriplePattern> ExtractTemplateTriples(GraphPattern pattern)
+    {
+        List<TriplePattern> triples = [];
+
+        if(pattern is GroupGraphPattern group)
+        {
+            foreach(GraphPattern member in group.Members)
+            {
+                if(member is BasicGraphPatternBlock block)
+                {
+                    triples.AddRange(block.Triples);
+                }
+            }
+        }
+
+        return triples;
     }
 
     /// <summary>Pushes the <c>GROUP BY</c> clause when present, otherwise advances to the having stage.</summary>
@@ -1569,6 +1607,14 @@ public sealed class SparqlParser
         Advance();
         frame.CallName = name;
 
+        frame.IsDistinct = false;
+        if(Current.Kind == SparqlTokenKind.DistinctKeyword)
+        {
+            frame.IsDistinct = true;
+            Advance();
+        }
+
+        //COUNT(*) and COUNT(DISTINCT *) take the star rather than an argument expression.
         if(name.Span.SequenceEqual("COUNT"u8) && Current.Kind == SparqlTokenKind.Star)
         {
             Advance();
@@ -1578,17 +1624,10 @@ public sealed class SparqlParser
             }
 
             Advance();
-            frame.Left = new AggregateExpression(name, Argument: null, IsDistinct: false, IsCountStar: true, GroupConcatSeparator: null);
+            frame.Left = new AggregateExpression(name, Argument: null, frame.IsDistinct, IsCountStar: true, GroupConcatSeparator: null);
             frame.Stage = 1;
 
             return StepResult.Continue();
-        }
-
-        frame.IsDistinct = false;
-        if(Current.Kind == SparqlTokenKind.DistinctKeyword)
-        {
-            frame.IsDistinct = true;
-            Advance();
         }
 
         frame.Stage = 7;
@@ -1605,26 +1644,17 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private StepResult StepFilter(ParseFrame frame, object? incoming)
     {
+        //FILTER takes a Constraint: a bracketed expression, a built-in call, or a function call.
+        //All three are expression primaries, so the expression frame parses each form — including a
+        //bare EXISTS / NOT EXISTS / regex(...) constraint, where the parentheses (if any) belong to the
+        //call, not to FILTER.
         if(frame.Stage == 0)
         {
-            Advance();
-            if(Current.Kind != SparqlTokenKind.OpenParen)
-            {
-                throw Expected("'(' after FILTER", Current);
-            }
-
             Advance();
             frame.Stage = 1;
 
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Expression, MinPrecedence = PrecExpression, StartSpan = Current.Span });
         }
-
-        if(Current.Kind != SparqlTokenKind.CloseParen)
-        {
-            throw Expected("')' to close FILTER", Current);
-        }
-
-        Advance();
 
         return StepResult.Done(new FilterPattern(Pop<ExpressionNode>(incoming)));
     }
@@ -2963,6 +2993,7 @@ public sealed class SparqlParser
         if(Current.Kind == SparqlTokenKind.CloseParen)
         {
             Advance();
+            EnsureDistinctValuesVariables(frame);
             ConsumeValuesOpenBrace();
             frame.Stage = 2;
 
@@ -3022,7 +3053,14 @@ public sealed class SparqlParser
         if(Current.Kind == SparqlTokenKind.CloseParen)
         {
             Advance();
-            frame.ValuesRows!.Add(frame.CurrentRow!);
+            if(frame.CurrentRow!.Count != frame.ValuesVariables!.Count)
+            {
+                throw new SparqlParseException(
+                    $"A VALUES row has {frame.CurrentRow.Count} value(s) but the block declares {frame.ValuesVariables.Count} variable(s).",
+                    frame.StartSpan);
+            }
+
+            frame.ValuesRows!.Add(frame.CurrentRow);
             frame.Stage = 2;
 
             return StepResult.Continue();
@@ -3031,6 +3069,22 @@ public sealed class SparqlParser
         frame.CurrentRow!.Add(ParseDataBlockValue());
 
         return StepResult.Continue();
+    }
+
+    /// <summary>Rejects a VALUES variable list that repeats a variable.</summary>
+    /// <param name="frame">The values frame.</param>
+    private static void EnsureDistinctValuesVariables(ParseFrame frame)
+    {
+        HashSet<Utf8String> seen = [];
+        foreach(SparqlVariable variable in frame.ValuesVariables!)
+        {
+            if(!seen.Add(variable.Name))
+            {
+                throw new SparqlParseException(
+                    $"The variable ?{variable.Name} appears more than once in the VALUES variable list.",
+                    frame.StartSpan);
+            }
+        }
     }
 
     /// <summary>Consumes the opening brace of a VALUES data block.</summary>

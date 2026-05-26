@@ -508,20 +508,26 @@ internal static class W3cManifestLoader
     private static W3cTestType ClassifyTestType(string typeIri)
     {
         //All evaluation variants — TestTurtleEval, TestTrigEval, etc. — share an "Eval" suffix and produce an expected file.
-        //Negative evaluations share a "NegativeEval" suffix. Syntax tests share PositiveSyntax / NegativeSyntax.
-        //Canonicalisation tests share a PositiveC14N suffix (TestNTriplesPositiveC14N, TestNQuadsPositiveC14N).
-        //SHACL validation tests are an exact IRI (sht:Validate), matched before the suffix arms.
+        //Negative evaluations share a "NegativeEval" suffix. Canonicalisation tests share a PositiveC14N suffix
+        //(TestNTriplesPositiveC14N, TestNQuadsPositiveC14N). SHACL validation tests are an exact IRI (sht:Validate),
+        //matched before the suffix arms.
+        //
+        //Syntax tests are matched by substring rather than suffix because the SPARQL suites name them
+        //mf:PositiveSyntaxTest11 / mf:NegativeSyntaxTest (a "Test"/"Test11" suffix), while the RDF suites use a
+        //...PositiveSyntax suffix; both contain the substring. The Update-syntax markers (PositiveUpdateSyntaxTest)
+        //deliberately do NOT contain "PositiveSyntax"/"NegativeSyntax", so they fall through to Unknown and are
+        //skipped — this build parses queries, not update requests.
         if(typeIri == ShtNamespace + "Validate")
         {
             return W3cTestType.ShaclValidate;
         }
 
-        if(typeIri.EndsWith("PositiveSyntax", StringComparison.Ordinal))
+        if(typeIri.Contains("PositiveSyntax", StringComparison.Ordinal))
         {
             return W3cTestType.PositiveSyntax;
         }
 
-        if(typeIri.EndsWith("NegativeSyntax", StringComparison.Ordinal))
+        if(typeIri.Contains("NegativeSyntax", StringComparison.Ordinal))
         {
             return W3cTestType.NegativeSyntax;
         }

@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Lumoin.Veritas.Canonicalization;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.NQuads;
+using Lumoin.Veritas.Sparql;
 using Lumoin.Veritas.Turtle;
 
 namespace Lumoin.Veritas.Tests.Conformance;
@@ -289,6 +290,7 @@ internal static class W3cTestRunner
         //the readers raise (UTF-8 decoding errors, etc.). Any exception not in this set is reported as unexpected.
         return ex is TurtleParseException
             || ex is NQuadsParseException
+            || ex is SparqlParseException
             || ex is FormatException
             || ex is ArgumentException
             || ex is InvalidOperationException

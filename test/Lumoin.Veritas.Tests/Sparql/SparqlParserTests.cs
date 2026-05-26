@@ -322,12 +322,17 @@ internal sealed class SparqlParserTests
         Assert.IsInstanceOfType<CollectionTerm>(construct.Template[0].Object);
     }
 
-    /// <summary>The CONSTRUCT WHERE short form is recognised but not yet implemented in this build.</summary>
+    /// <summary>The CONSTRUCT WHERE short form uses the WHERE triples as the template.</summary>
     [TestMethod]
-    public void ConstructShortFormNotYetImplementedThrows()
+    public void ParsesConstructWhereShortForm()
     {
         using Utf8StringPool pool = new();
-        Assert.Throws<SparqlParseException>(() => ParseQuery("CONSTRUCT WHERE { ?s ?p ?o }", pool));
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> CONSTRUCT WHERE { ?s :p ?o }", pool);
+
+        ConstructQuery construct = (ConstructQuery)query.Form;
+        Assert.HasCount(1, construct.Template);
+        Assert.AreEqual("http://e/p", ((NamedNode)((ConstantTerm)construct.Template[0].Predicate).Term).Iri.ToString());
+        Assert.HasCount(1, ((BasicGraphPatternBlock)((GroupGraphPattern)query.Where.Pattern).Members[0]).Triples);
     }
 
     /// <summary>A DESCRIBE query records its IRI and variable targets.</summary>
