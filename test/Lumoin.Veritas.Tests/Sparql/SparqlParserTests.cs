@@ -439,12 +439,107 @@ internal sealed class SparqlParserTests
         Assert.IsInstanceOfType<BasicGraphPatternBlock>(members[2]);
     }
 
-    /// <summary>A FILTER member is recognised but not yet implemented in this build.</summary>
+    /// <summary>An inline VALUES member is recognised but not yet implemented in this build.</summary>
     [TestMethod]
-    public void FilterMemberNotYetImplementedThrows()
+    public void ValuesMemberNotYetImplementedThrows()
     {
         using Utf8StringPool pool = new();
-        Assert.Throws<SparqlParseException>(() => ParseQuery("ASK { ?s ?p ?o FILTER(?o) }", pool));
+        Assert.Throws<SparqlParseException>(() => ParseQuery("ASK { VALUES ?x { 1 2 } }", pool));
+    }
+
+    /// <summary>A FILTER member carries its constraint expression with comparison operands.</summary>
+    [TestMethod]
+    public void ParsesFilterComparison()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("ASK { ?s ?p ?o FILTER(?o > 5) }", pool);
+
+        IReadOnlyList<GraphPattern> members = Members(query);
+        Assert.IsInstanceOfType<BasicGraphPatternBlock>(members[0]);
+        ComparisonExpression comparison = (ComparisonExpression)((FilterPattern)members[1]).Expression;
+        Assert.AreEqual(ComparisonOp.GreaterThan, comparison.Op);
+        Assert.AreEqual("o", ((VariableExpression)comparison.Left).Variable.Name.ToString());
+        Assert.AreEqual("5", ((Literal)((ConstantExpression)comparison.Right).Value).Value.ToString());
+    }
+
+    /// <summary>Multiplication binds tighter than addition, and arithmetic binds tighter than comparison.</summary>
+    [TestMethod]
+    public void RespectsArithmeticPrecedence()
+    {
+        using Utf8StringPool pool = new();
+        ComparisonExpression comparison = (ComparisonExpression)FilterExpression("ASK { FILTER(?a + ?b * ?c = ?d) }", pool);
+
+        Assert.AreEqual(ComparisonOp.Equal, comparison.Op);
+        ArithmeticExpression addition = (ArithmeticExpression)comparison.Left;
+        Assert.AreEqual(ArithmeticOp.Add, addition.Op);
+        Assert.AreEqual("a", ((VariableExpression)addition.Left).Variable.Name.ToString());
+        ArithmeticExpression product = (ArithmeticExpression)addition.Right!;
+        Assert.AreEqual(ArithmeticOp.Multiply, product.Op);
+    }
+
+    /// <summary>Conjunction binds tighter than disjunction.</summary>
+    [TestMethod]
+    public void RespectsLogicalPrecedence()
+    {
+        using Utf8StringPool pool = new();
+        OrExpression disjunction = (OrExpression)FilterExpression("ASK { FILTER(?a && ?b || ?c) }", pool);
+
+        Assert.IsInstanceOfType<AndExpression>(disjunction.Left);
+        Assert.AreEqual("c", ((VariableExpression)disjunction.Right).Variable.Name.ToString());
+    }
+
+    /// <summary>A bracketed sub-expression overrides operator precedence.</summary>
+    [TestMethod]
+    public void BracketsOverridePrecedence()
+    {
+        using Utf8StringPool pool = new();
+        ComparisonExpression comparison = (ComparisonExpression)FilterExpression("ASK { FILTER((?a + ?b) * ?c = ?d) }", pool);
+
+        ArithmeticExpression product = (ArithmeticExpression)comparison.Left;
+        Assert.AreEqual(ArithmeticOp.Multiply, product.Op);
+        Assert.AreEqual(ArithmeticOp.Add, ((ArithmeticExpression)product.Left).Op);
+    }
+
+    /// <summary>The logical-negation unary operator wraps its operand.</summary>
+    [TestMethod]
+    public void ParsesUnaryNot()
+    {
+        using Utf8StringPool pool = new();
+        ExpressionNode expression = FilterExpression("ASK { FILTER(!?a) }", pool);
+
+        Assert.IsInstanceOfType<NotExpression>(expression);
+    }
+
+    /// <summary>Unary minus binds tighter than the surrounding comparison and carries no right operand.</summary>
+    [TestMethod]
+    public void ParsesUnaryMinus()
+    {
+        using Utf8StringPool pool = new();
+        ComparisonExpression comparison = (ComparisonExpression)FilterExpression("ASK { FILTER(-?x = ?y) }", pool);
+
+        ArithmeticExpression negation = (ArithmeticExpression)comparison.Left;
+        Assert.AreEqual(ArithmeticOp.UnaryMinus, negation.Op);
+        Assert.IsNull(negation.Right);
+    }
+
+    /// <summary>SPARQL comparison operators do not chain.</summary>
+    [TestMethod]
+    public void ChainedComparisonThrows()
+    {
+        using Utf8StringPool pool = new();
+        Assert.Throws<SparqlParseException>(() => ParseQuery("ASK { FILTER(?a < ?b < ?c) }", pool));
+    }
+
+    /// <summary>A BIND member binds an expression to a variable.</summary>
+    [TestMethod]
+    public void ParsesBind()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("SELECT * WHERE { ?s ?p ?o BIND(?o AS ?x) }", pool);
+
+        BindPattern bind = (BindPattern)Members(query)[1];
+        Assert.AreEqual("x", bind.AsVariable.Name.ToString());
+        Assert.AreEqual("o", ((VariableExpression)bind.Expression).Variable.Name.ToString());
     }
 
     /// <summary>
@@ -528,6 +623,19 @@ internal sealed class SparqlParserTests
     private static IReadOnlyList<GraphPattern> Members(SparqlQuery query)
     {
         return ((GroupGraphPattern)query.Where.Pattern).Members;
+    }
+
+    /// <summary>
+    /// Parses a query whose WHERE group's last member is a FILTER, and returns that constraint expression.
+    /// </summary>
+    /// <param name="text">The SPARQL query text.</param>
+    /// <param name="pool">The pool keeping the parsed handles alive.</param>
+    /// <returns>The filter constraint expression.</returns>
+    private static ExpressionNode FilterExpression(string text, Utf8StringPool pool)
+    {
+        IReadOnlyList<GraphPattern> members = Members(ParseQuery(text, pool));
+
+        return ((FilterPattern)members[^1]).Expression;
     }
 
     /// <summary>

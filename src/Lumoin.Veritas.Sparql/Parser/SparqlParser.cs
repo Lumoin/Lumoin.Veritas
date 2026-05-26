@@ -48,6 +48,19 @@ public sealed class SparqlParser
     //so a step never reads an unbuffered token.
     private const int MaxStepLookahead = 4;
 
+    //Operator precedence for the expression climber, low (binds loosest) to high. A frame at
+    //MinPrecedence absorbs operators whose precedence is at least its own; the right operand of an
+    //operator is parsed at the operator's precedence plus one, so same-level chains stay left-associative
+    //and the outer frame keeps the chain. The unary-operand level is above every binary operator, so a
+    //unary applies to a single primary and binds tighter than multiplication.
+    private const int PrecExpression = 1;
+    private const int PrecConditionalOr = 1;
+    private const int PrecConditionalAnd = 2;
+    private const int PrecComparison = 3;
+    private const int PrecAdditive = 4;
+    private const int PrecMultiplicative = 5;
+    private const int PrecUnaryOperand = 6;
+
     private readonly Stack<ParseFrame> frames = new();
     private readonly Dictionary<Utf8String, Utf8String> prefixMap = [];
     private readonly Utf8String xsdString;
@@ -288,6 +301,9 @@ public sealed class SparqlParser
             ParseFrameKind.MinusPattern => StepMinus(frame, incoming),
             ParseFrameKind.GraphPattern => StepGraph(frame, incoming),
             ParseFrameKind.ServicePattern => StepService(frame, incoming),
+            ParseFrameKind.Expression => StepExpression(frame, incoming),
+            ParseFrameKind.Filter => StepFilter(frame, incoming),
+            ParseFrameKind.Bind => StepBind(frame, incoming),
             _ => throw new SparqlParseException($"Parser production '{frame.Kind}' is not yet implemented in this build.", frame.StartSpan)
         };
     }
@@ -598,6 +614,8 @@ public sealed class SparqlParser
             SparqlTokenKind.MinusKeyword => ParseFrameKind.MinusPattern,
             SparqlTokenKind.GraphKeyword => ParseFrameKind.GraphPattern,
             SparqlTokenKind.ServiceKeyword => ParseFrameKind.ServicePattern,
+            SparqlTokenKind.FilterKeyword => ParseFrameKind.Filter,
+            SparqlTokenKind.BindKeyword => ParseFrameKind.Bind,
             _ => null
         };
 
@@ -606,10 +624,10 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = kind, StartSpan = Current.Span });
         }
 
-        if(Current.Kind is SparqlTokenKind.FilterKeyword or SparqlTokenKind.BindKeyword or SparqlTokenKind.ValuesKeyword)
+        if(Current.Kind == SparqlTokenKind.ValuesKeyword)
         {
             throw new SparqlParseException(
-                $"The {Current.Kind} group member is not yet implemented in this build.",
+                "The inline VALUES group member is not yet implemented in this build.",
                 Current.Span);
         }
 
@@ -774,6 +792,322 @@ public sealed class SparqlParser
         }
 
         return StepResult.Done(new ServicePattern(frame.GraphDesignator!, frame.IsSilent, (GraphPattern)incoming!));
+    }
+
+    /// <summary>
+    /// Advances an expression by precedence climbing: it parses a first operand (an optional unary
+    /// applied to a primary), then absorbs binary operators whose precedence is at least the frame's
+    /// <see cref="ParseFrame.MinPrecedence"/>, parsing each right operand in a child frame one level up
+    /// so same-level chains stay left-associative.
+    /// </summary>
+    /// <param name="frame">The expression frame.</param>
+    /// <param name="incoming">A popped operand on resume.</param>
+    /// <returns>The instruction for the driver; the popped result is the built <see cref="ExpressionNode"/>.</returns>
+    private StepResult StepExpression(ParseFrame frame, object? incoming)
+    {
+        switch(frame.Stage)
+        {
+            case 0:
+            {
+                if(Current.Kind is SparqlTokenKind.Bang or SparqlTokenKind.Plus or SparqlTokenKind.Minus)
+                {
+                    frame.OperatorKind = Current.Kind;
+                    Advance();
+                    frame.Stage = 3;
+
+                    return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Expression, MinPrecedence = PrecUnaryOperand, StartSpan = Current.Span });
+                }
+
+                return DispatchPrimaryExpression(frame);
+            }
+
+            case 1:
+            {
+                int precedence = BinaryPrecedence(Current.Kind);
+                if(precedence < frame.MinPrecedence)
+                {
+                    return StepResult.Done(frame.Left!);
+                }
+
+                if(IsComparison(Current.Kind) && frame.SawComparison)
+                {
+                    throw new SparqlParseException("SPARQL comparison operators do not chain.", Current.Span);
+                }
+
+                frame.OperatorKind = Current.Kind;
+                Advance();
+                frame.Stage = 2;
+
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Expression, MinPrecedence = precedence + 1, StartSpan = Current.Span });
+            }
+
+            case 2:
+            {
+                frame.Left = CombineBinary(frame.OperatorKind, frame.Left!, (ExpressionNode)incoming!);
+                if(IsComparison(frame.OperatorKind))
+                {
+                    frame.SawComparison = true;
+                }
+
+                frame.Stage = 1;
+
+                return StepResult.Continue();
+            }
+
+            case 3:
+            {
+                frame.Left = WrapUnary(frame.OperatorKind, (ExpressionNode)incoming!);
+                frame.Stage = 1;
+
+                return StepResult.Continue();
+            }
+
+            case 4:
+            {
+                if(Current.Kind != SparqlTokenKind.CloseParen)
+                {
+                    throw Expected("')' to close the bracketed expression", Current);
+                }
+
+                Advance();
+                frame.Left = (ExpressionNode)incoming!;
+                frame.Stage = 1;
+
+                return StepResult.Continue();
+            }
+
+            default:
+            {
+                throw new SparqlParseException("Expression reached an unknown stage.", frame.StartSpan);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Parses a primary expression at the cursor into the frame's left slot: a variable, an RDF
+    /// literal, an IRI or prefixed-name constant, or a bracketed expression. Built-in calls, function
+    /// calls, aggregates, and <c>EXISTS</c> arrive in a later slice.
+    /// </summary>
+    /// <param name="frame">The expression frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult DispatchPrimaryExpression(ParseFrame frame)
+    {
+        switch(Current.Kind)
+        {
+            case SparqlTokenKind.Variable:
+            {
+                frame.Left = new VariableExpression(new SparqlVariable(Current.Value));
+                Advance();
+                frame.Stage = 1;
+
+                return StepResult.Continue();
+            }
+
+            case SparqlTokenKind.StringLiteral:
+            case SparqlTokenKind.LongStringLiteral:
+            case SparqlTokenKind.IntegerLiteral:
+            case SparqlTokenKind.DecimalLiteral:
+            case SparqlTokenKind.DoubleLiteral:
+            case SparqlTokenKind.BooleanLiteral:
+            {
+                frame.Left = new ConstantExpression(ParseRdfLiteral());
+                frame.Stage = 1;
+
+                return StepResult.Continue();
+            }
+
+            case SparqlTokenKind.Iri:
+            {
+                frame.Left = new ConstantExpression(new NamedNode(ConsumeIriRef().Value));
+                frame.Stage = 1;
+
+                return StepResult.Continue();
+            }
+
+            case SparqlTokenKind.PrefixedName:
+            {
+                frame.Left = new ConstantExpression(new NamedNode(ConsumePrefixedName().Value));
+                frame.Stage = 1;
+
+                return StepResult.Continue();
+            }
+
+            case SparqlTokenKind.OpenParen:
+            {
+                Advance();
+                frame.Stage = 4;
+
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Expression, MinPrecedence = PrecExpression, StartSpan = Current.Span });
+            }
+
+            default:
+            {
+                throw Expected("an expression", Current);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Advances a <c>FILTER ( expr )</c> member. The built-in-call and function-call constraint forms
+    /// arrive in a later slice.
+    /// </summary>
+    /// <param name="frame">The filter frame.</param>
+    /// <param name="incoming">The popped constraint expression on resume.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult StepFilter(ParseFrame frame, object? incoming)
+    {
+        if(frame.Stage == 0)
+        {
+            Advance();
+            if(Current.Kind != SparqlTokenKind.OpenParen)
+            {
+                throw Expected("'(' after FILTER", Current);
+            }
+
+            Advance();
+            frame.Stage = 1;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Expression, MinPrecedence = PrecExpression, StartSpan = Current.Span });
+        }
+
+        if(Current.Kind != SparqlTokenKind.CloseParen)
+        {
+            throw Expected("')' to close FILTER", Current);
+        }
+
+        Advance();
+
+        return StepResult.Done(new FilterPattern((ExpressionNode)incoming!));
+    }
+
+    /// <summary>
+    /// Advances a <c>BIND ( expr AS ?var )</c> member.
+    /// </summary>
+    /// <param name="frame">The bind frame.</param>
+    /// <param name="incoming">The popped bound expression on resume.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult StepBind(ParseFrame frame, object? incoming)
+    {
+        if(frame.Stage == 0)
+        {
+            Advance();
+            if(Current.Kind != SparqlTokenKind.OpenParen)
+            {
+                throw Expected("'(' after BIND", Current);
+            }
+
+            Advance();
+            frame.Stage = 1;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Expression, MinPrecedence = PrecExpression, StartSpan = Current.Span });
+        }
+
+        if(Current.Kind != SparqlTokenKind.AsKeyword)
+        {
+            throw Expected("AS in BIND", Current);
+        }
+
+        Advance();
+        if(Current.Kind != SparqlTokenKind.Variable)
+        {
+            throw Expected("a variable after AS in BIND", Current);
+        }
+
+        SparqlVariable variable = new(Current.Value);
+        Advance();
+        if(Current.Kind != SparqlTokenKind.CloseParen)
+        {
+            throw Expected("')' to close BIND", Current);
+        }
+
+        Advance();
+
+        return StepResult.Done(new BindPattern((ExpressionNode)incoming!, variable));
+    }
+
+    /// <summary>
+    /// Returns the precedence of a binary operator token, or zero for a token that is not a binary
+    /// operator (which therefore ends an operand chain).
+    /// </summary>
+    /// <param name="kind">The token kind at the cursor.</param>
+    /// <returns>The operator precedence, or zero.</returns>
+    private static int BinaryPrecedence(SparqlTokenKind kind)
+    {
+        return kind switch
+        {
+            SparqlTokenKind.LogicalOr => PrecConditionalOr,
+            SparqlTokenKind.LogicalAnd => PrecConditionalAnd,
+            SparqlTokenKind.Equals => PrecComparison,
+            SparqlTokenKind.NotEquals => PrecComparison,
+            SparqlTokenKind.LessThan => PrecComparison,
+            SparqlTokenKind.LessOrEqual => PrecComparison,
+            SparqlTokenKind.GreaterThan => PrecComparison,
+            SparqlTokenKind.GreaterOrEqual => PrecComparison,
+            SparqlTokenKind.Plus => PrecAdditive,
+            SparqlTokenKind.Minus => PrecAdditive,
+            SparqlTokenKind.Star => PrecMultiplicative,
+            SparqlTokenKind.Slash => PrecMultiplicative,
+            _ => 0
+        };
+    }
+
+    /// <summary>
+    /// Determines whether a token kind is one of the six relational comparison operators.
+    /// </summary>
+    /// <param name="kind">The token kind to test.</param>
+    /// <returns><see langword="true"/> for a comparison operator.</returns>
+    private static bool IsComparison(SparqlTokenKind kind)
+    {
+        return kind is SparqlTokenKind.Equals
+            or SparqlTokenKind.NotEquals
+            or SparqlTokenKind.LessThan
+            or SparqlTokenKind.LessOrEqual
+            or SparqlTokenKind.GreaterThan
+            or SparqlTokenKind.GreaterOrEqual;
+    }
+
+    /// <summary>
+    /// Combines a left and right operand under a binary operator into the matching expression node.
+    /// </summary>
+    /// <param name="operatorKind">The binary operator token kind.</param>
+    /// <param name="left">The left operand.</param>
+    /// <param name="right">The right operand.</param>
+    /// <returns>The combined expression.</returns>
+    private static ExpressionNode CombineBinary(SparqlTokenKind operatorKind, ExpressionNode left, ExpressionNode right)
+    {
+        return operatorKind switch
+        {
+            SparqlTokenKind.LogicalOr => new OrExpression(left, right),
+            SparqlTokenKind.LogicalAnd => new AndExpression(left, right),
+            SparqlTokenKind.Equals => new ComparisonExpression(left, ComparisonOp.Equal, right),
+            SparqlTokenKind.NotEquals => new ComparisonExpression(left, ComparisonOp.NotEqual, right),
+            SparqlTokenKind.LessThan => new ComparisonExpression(left, ComparisonOp.LessThan, right),
+            SparqlTokenKind.LessOrEqual => new ComparisonExpression(left, ComparisonOp.LessOrEqual, right),
+            SparqlTokenKind.GreaterThan => new ComparisonExpression(left, ComparisonOp.GreaterThan, right),
+            SparqlTokenKind.GreaterOrEqual => new ComparisonExpression(left, ComparisonOp.GreaterOrEqual, right),
+            SparqlTokenKind.Plus => new ArithmeticExpression(left, ArithmeticOp.Add, right),
+            SparqlTokenKind.Minus => new ArithmeticExpression(left, ArithmeticOp.Subtract, right),
+            SparqlTokenKind.Star => new ArithmeticExpression(left, ArithmeticOp.Multiply, right),
+            SparqlTokenKind.Slash => new ArithmeticExpression(left, ArithmeticOp.Divide, right),
+            _ => throw new SparqlParseException($"Token {operatorKind} is not a binary operator.")
+        };
+    }
+
+    /// <summary>
+    /// Wraps an operand under a unary operator into the matching expression node.
+    /// </summary>
+    /// <param name="operatorKind">The unary operator token kind.</param>
+    /// <param name="operand">The operand.</param>
+    /// <returns>The unary expression.</returns>
+    private static ExpressionNode WrapUnary(SparqlTokenKind operatorKind, ExpressionNode operand)
+    {
+        return operatorKind switch
+        {
+            SparqlTokenKind.Bang => new NotExpression(operand),
+            SparqlTokenKind.Minus => new ArithmeticExpression(operand, ArithmeticOp.UnaryMinus, Right: null),
+            SparqlTokenKind.Plus => new ArithmeticExpression(operand, ArithmeticOp.UnaryPlus, Right: null),
+            _ => throw new SparqlParseException($"Token {operatorKind} is not a unary operator.")
+        };
     }
 
     /// <summary>

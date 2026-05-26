@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Sparql.Ast;
+using Lumoin.Veritas.Sparql.Lexer;
 
 namespace Lumoin.Veritas.Sparql.Parser;
 
@@ -99,4 +100,16 @@ internal sealed class ParseFrame
 
     /// <summary>Gets or sets whether a <c>SERVICE</c> member carried <c>SILENT</c>.</summary>
     public bool IsSilent { get; set; }
+
+    /// <summary>Gets or sets the minimum operator precedence an <see cref="ParseFrameKind.Expression"/> frame absorbs (the precedence-climbing bound).</summary>
+    public int MinPrecedence { get; set; }
+
+    /// <summary>Gets or sets the left-hand expression an <see cref="ParseFrameKind.Expression"/> frame has built so far.</summary>
+    public ExpressionNode? Left { get; set; }
+
+    /// <summary>Gets or sets the pending operator (binary or unary) token kind an <see cref="ParseFrameKind.Expression"/> frame is combining.</summary>
+    public SparqlTokenKind OperatorKind { get; set; }
+
+    /// <summary>Gets or sets whether an <see cref="ParseFrameKind.Expression"/> frame has already combined a comparison, so a further comparison at the same level (which the grammar forbids) is rejected.</summary>
+    public bool SawComparison { get; set; }
 }
