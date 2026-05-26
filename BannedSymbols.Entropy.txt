@@ -1,0 +1,5 @@
+M:System.Random.#ctor;Randomness must be injected via RandomnessDelegate (see VeritasRandomness) so it is observable and deterministic-when-wanted. The Core RandomSources synthetic-graph seam suppresses RS0030 with justification.
+M:System.Random.#ctor(System.Int32);Randomness must be injected via RandomnessDelegate (see VeritasRandomness). The Core RandomSources synthetic-graph seam suppresses RS0030 with justification.
+P:System.Random.Shared;Randomness must be injected via RandomnessDelegate (see VeritasRandomness).
+T:System.Security.Cryptography.RandomNumberGenerator;Raw entropy belongs only in VeritasRandomness; every other component consumes a RandomnessDelegate.
+M:System.Guid.NewGuid;Identities must be injected via IdentifierDelegate (see VeritasIdentifiers); the UUID path of VeritasRandomness is the only other sanctioned site.

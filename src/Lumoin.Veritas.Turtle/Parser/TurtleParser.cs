@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.Globalization;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Turtle.Ast;
@@ -47,7 +46,7 @@ public sealed class TurtleParser
     private bool tokensComplete;
     private int index;
     private int nextNodeId;
-    private int nextSyntheticBlankNode;
+    private readonly BlankNodeDelegate blankNodes;
     private bool inGraphBlock;
 
     /// <summary>
@@ -57,7 +56,8 @@ public sealed class TurtleParser
     /// <param name="pool">The pool used to intern parser-allocated identifiers.</param>
     /// <param name="documentId">The content-addressed identifier for the source document.</param>
     /// <param name="syntax">The syntax flavour to accept.</param>
-    public TurtleParser(IEnumerable<TurtleToken> tokens, Utf8StringPool pool, DocumentId documentId, TurtleSyntax syntax)
+    /// <param name="blankNodes">Allocates labels for anonymous <c>[]</c> blank nodes; defaults to <see cref="VeritasBlankNodes.System"/>.</param>
+    public TurtleParser(IEnumerable<TurtleToken> tokens, Utf8StringPool pool, DocumentId documentId, TurtleSyntax syntax, BlankNodeDelegate? blankNodes = null)
     {
         ArgumentNullException.ThrowIfNull(tokens);
         ArgumentNullException.ThrowIfNull(pool);
@@ -71,6 +71,7 @@ public sealed class TurtleParser
         Pool = pool;
         DocumentId = documentId;
         Syntax = syntax;
+        this.blankNodes = blankNodes ?? VeritasBlankNodes.System;
         tokensComplete = true;
     }
 
@@ -82,12 +83,13 @@ public sealed class TurtleParser
     /// <param name="pool">The pool used to intern parser-allocated identifiers.</param>
     /// <param name="documentId">The content-addressed identifier for the source document.</param>
     /// <param name="syntax">The syntax flavour to accept.</param>
+    /// <param name="blankNodes">Allocates labels for anonymous <c>[]</c> blank nodes; defaults to <see cref="VeritasBlankNodes.System"/>.</param>
     /// <remarks>
     /// The parser suspends — preserving its work stack — when a statement needs tokens that have not
     /// arrived yet, and resumes when more are fed, so neither the token buffer nor the parse state
     /// grows with the document. Consumed tokens are trimmed at each statement boundary.
     /// </remarks>
-    internal TurtleParser(Utf8StringPool pool, DocumentId documentId, TurtleSyntax syntax)
+    internal TurtleParser(Utf8StringPool pool, DocumentId documentId, TurtleSyntax syntax, BlankNodeDelegate? blankNodes = null)
     {
         ArgumentNullException.ThrowIfNull(pool);
 
@@ -95,6 +97,7 @@ public sealed class TurtleParser
         Pool = pool;
         DocumentId = documentId;
         Syntax = syntax;
+        this.blankNodes = blankNodes ?? VeritasBlankNodes.System;
         incremental = true;
     }
 
@@ -1361,7 +1364,7 @@ public sealed class TurtleParser
         SourceSpan span = Current.Span;
         Advance();
 
-        Utf8String label = AllocateSyntheticBlankNodeLabel();
+        Utf8String label = AllocateSyntheticBlankNodeLabel(span);
 
         return NewNode(id => new BlankNodeTerm(id, span, label));
     }
@@ -1498,12 +1501,11 @@ public sealed class TurtleParser
         return NewNode(id => new LiteralTerm(id, span, text, datatype, language: null, direction: null));
     }
 
-    private Utf8String AllocateSyntheticBlankNodeLabel()
+    private Utf8String AllocateSyntheticBlankNodeLabel(SourceSpan span)
     {
-        string raw = string.Create(CultureInfo.InvariantCulture, $"b{nextSyntheticBlankNode}");
-        nextSyntheticBlankNode++;
+        BlankNodeRequest request = new(Guid.Empty, ReadOnlyMemory<byte>.Empty, span, Pool);
 
-        return Pool.Intern(raw);
+        return blankNodes(in request);
     }
 
     private TNode NewNode<TNode>(Func<int, TNode> factory)

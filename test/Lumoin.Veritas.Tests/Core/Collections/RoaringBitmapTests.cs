@@ -15,6 +15,10 @@ namespace Lumoin.Veritas.Tests.Core.Collections;
 /// deterministic random sequence.
 /// </summary>
 [TestClass]
+[System.Diagnostics.CodeAnalysis.SuppressMessage(
+    "ApiDesign",
+    "RS0030:Do not use banned APIs",
+    Justification = "Seeded System.Random generates the deterministic 100 000-operation fixture sequence — not query randomness or identities. The entropy ban's purpose (injecting engine randomness via RandomnessDelegate) does not apply to synthetic test data.")]
 internal sealed class RoaringBitmapTests
 {
     public TestContext TestContext { get; set; } = null!;

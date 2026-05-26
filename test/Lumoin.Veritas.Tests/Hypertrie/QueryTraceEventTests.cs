@@ -1,3 +1,4 @@
+using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Hypertrie.Query;
 using Lumoin.Veritas.Core.Hypertrie.Tracing;
 
@@ -11,7 +12,7 @@ internal sealed class QueryTraceEventTests
     [TestMethod]
     public void QueryStartedFactoryProducesQueryStartedKind()
     {
-        Guid correlation = Guid.NewGuid();
+        Guid correlation = VeritasIdentifiers.System(new IdentifierRequest(IdentifierPurpose.Correlation, default));
 
         QueryTraceEvent evt = QueryTraceEvent.QueryStarted(
             sequenceNumber: 1,
@@ -163,7 +164,7 @@ internal sealed class QueryTraceEventTests
     [TestMethod]
     public void EventsOfDifferentKindsCompareUnequal()
     {
-        Guid correlation = Guid.NewGuid();
+        Guid correlation = VeritasIdentifiers.System(new IdentifierRequest(IdentifierPurpose.Correlation, default));
         QueryTraceEvent started = QueryTraceEvent.QueryStarted(1, 1000, correlation, 0);
         QueryTraceEvent completed = QueryTraceEvent.QueryCompleted(1, 1000, correlation, 0);
 

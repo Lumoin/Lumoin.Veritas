@@ -339,6 +339,7 @@ public sealed class HypertrieGraphStore
     /// <param name="accessContext">Caller-supplied access context. Required when <paramref name="accessControl"/> is non-<c>null</c>.</param>
     /// <param name="traceHandler">Optional trace handler for query-execution events.</param>
     /// <param name="correlationId">Correlation id stamped on emitted trace events. Pass <see cref="Guid.Empty"/> to generate a fresh one.</param>
+    /// <param name="identifiers">The identifier source used to mint a fresh correlation id when <paramref name="correlationId"/> is <see cref="Guid.Empty"/>; defaults to <see cref="VeritasIdentifiers.System"/>.</param>
     /// <param name="cancellationToken">Cancellation token threaded into iterator operations and the access-control consultation.</param>
     /// <returns>An async sequence of solutions.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="query"/> or <paramref name="timeProvider"/> is <c>null</c>.</exception>
@@ -350,13 +351,16 @@ public sealed class HypertrieGraphStore
         AccessContext? accessContext = null,
         TraceHandler<QueryTraceEvent>? traceHandler = null,
         Guid correlationId = default,
+        IdentifierDelegate? identifiers = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(query);
         ArgumentNullException.ThrowIfNull(timeProvider);
 
         Planner effectivePlanner = planner ?? Planners.FirstOccurrence(query);
-        Guid effectiveCorrelationId = correlationId == Guid.Empty ? Guid.NewGuid() : correlationId;
+        Guid effectiveCorrelationId = correlationId == Guid.Empty
+            ? (identifiers ?? VeritasIdentifiers.System)(new IdentifierRequest(IdentifierPurpose.Correlation, default))
+            : correlationId;
 
         BasicGraphPatternEvaluator evaluator = new(
             Snapshot,

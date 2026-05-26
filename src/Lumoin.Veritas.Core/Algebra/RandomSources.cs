@@ -52,6 +52,10 @@ public static class RandomSources
         "Security",
         "CA5394:Do not use insecure randomness",
         Justification = "Graph generation is not security-sensitive. Using System.Random is the correct choice — graphs are synthetic test data and benchmark fixtures, not security tokens. A cryptographic RNG would be wasteful and would prevent reproducibility from a seed, which is the entire point of this method.")]
+    [SuppressMessage(
+        "ApiDesign",
+        "RS0030:Do not use banned APIs",
+        Justification = "RandomSources is synthetic-graph generation, not query randomness, and exposes its own RandomSourceDelegate seam. System.Random here produces graph salt reproducible from the seed; routing it through the entropy ban would defeat the seed-reproducibility this method exists for.")]
     public static RandomSourceDelegate FromSeed(int seed)
     {
         Random rng = new(seed);
@@ -68,5 +72,9 @@ public static class RandomSources
         "Security",
         "CA5394:Do not use insecure randomness",
         Justification = "Graph generation is not security-sensitive. Random.Shared is the standard non-cryptographic RNG and is the correct choice for synthetic graph data.")]
+    [SuppressMessage(
+        "ApiDesign",
+        "RS0030:Do not use banned APIs",
+        Justification = "RandomSources is synthetic-graph generation, not query randomness, and exposes its own RandomSourceDelegate seam. Random.Shared here produces graph salt, not identities or security tokens.")]
     public static RandomSourceDelegate Shared() => () => unchecked((ulong)Random.Shared.NextInt64());
 }

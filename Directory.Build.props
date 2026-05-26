@@ -109,6 +109,18 @@ See full changelog at https://github.com/lumoin/Veritas/blob/main/CHANGELOG.md.]
     CBOR codec can be exercised against the BCL CBOR codec in
     differential property tests; library projects, the serialization
     projects, and benchmark projects remain bound by the ban.
+
+    BannedSymbols.Entropy.txt bans System.Random, RandomNumberGenerator,
+    and Guid.NewGuid so randomness and identities flow through the
+    injected RandomnessDelegate / IdentifierDelegate seams (see
+    VeritasRandomness / VeritasIdentifiers). It is added to every project
+    except the perf/exploration harnesses (Lumoin.Veritas.Benchmarks and
+    Lumoin.Veritas.Workbench), where seeded System.Random is the idiomatic
+    choice for reproducible synthetic fixtures and the ban's purpose does
+    not apply. Production code that legitimately needs raw entropy (the
+    Core RandomSources synthetic-graph seam, and the sanctioned
+    VeritasRandomness / VeritasIdentifiers producers) suppresses RS0030
+    with justification.
   -->
   <ItemGroup>
     <PackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers">
@@ -127,6 +139,10 @@ See full changelog at https://github.com/lumoin/Veritas/blob/main/CHANGELOG.md.]
 
   <ItemGroup Condition="'$(MSBuildProjectName)' != 'Lumoin.Veritas.Cbor' AND !$(MSBuildProjectName.EndsWith('.Tests'))">
     <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.Cbor.txt" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(MSBuildProjectName)' != 'Lumoin.Veritas.Benchmarks' AND '$(MSBuildProjectName)' != 'Lumoin.Veritas.Workbench'">
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.Entropy.txt" />
   </ItemGroup>
 
   <!-- As this file is used in project file locations, the path is relative to them. -->

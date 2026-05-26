@@ -35,7 +35,7 @@ internal sealed class JournalEntryTests
         DateTimeOffset timestamp = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
         NodeIdentifier parent = new(0xAAAA);
         NodeIdentifier child = new(0xBBBB);
-        SessionId sessionId = new(Guid.NewGuid());
+        SessionId sessionId = SessionId.NewId();
         NodeIdentifier commitment = new(0xCCCC);
 
         JournalEntry left = new(parent, child, EditSessionEntryKind.Committed, sessionId, commitment, additions, removals, timestamp, 7);

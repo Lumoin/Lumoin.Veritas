@@ -27,28 +27,66 @@ algebra/executor milestones build on the AST.
 - Spans on every AST node (the "spans apply to everything" decision; Slice S).
 - Namespace/folder layout per §5.1 (`Algebra/`, `Translation/`, `Execution/`, …).
 
-**Open questions — conflict between the spec body and decisions taken mid-session
-(§3 says locked decisions are not relitigated, so these are not picked silently):**
+**Resolutions (confirmed by the user; all three instincts upheld):**
 
-1. **Collections / blank-node property lists.** Spec §8.5 lists `TriplePatternTerm`
-   as only Constant / Variable / PropertyPath / TripleTerm — implying collections
-   and `[ ]` lists are *expanded at parse*. The mid-session decision
-   ([[project_sparql_ast_faithful]]) was the **faithful AST**: keep `CollectionTerm`
-   / `BlankNodePropertyListTerm` nodes and expand *early* in a normalization pass.
-   Built faithful. Which holds?
-2. **Built-in / aggregate identity.** Spec §8.7 / §8.13 / §14.2 want
-   `BuiltInFunction` / `AggregateFunction` **enums**; built with canonical-name
-   `Utf8String` payloads (recorded refinement — "the closed dispatch set belongs to
-   the evaluator"). Enum or canonical-name string?
-3. **Pre-A ordering / `BlankNodeDelegate`.** Spec wants a standalone PR adding
-   `BlankNodeDelegate` / `RandomnessDelegate` to `Core` and retrofitting the Turtle
-   parser *before* the SPARQL project. Built ahead of that, with an ad-hoc
-   `nextBlankNode` counter in `SparqlParser` instead of the delegate. Pre-A is a
-   real dependency of the executor (BNODE/UUID/RAND/NOW, §4.3). Do Pre-A now and
-   retrofit the parser's anonymous-blank-node allocation to the delegate?
+1. **Collections / blank-node property lists — faithful AST holds.** Keep
+   `CollectionTerm`, `BlankNodePropertyListTerm`, and the reified-triple shorthand
+   as faithful AST nodes with source spans. Sugar lowering is a **dedicated
+   normalization pass between parsing and algebra translation** — not in the parser,
+   not in the translator. It uses `BlankNodeDelegate` for fresh blank nodes and
+   preserves spans onto the lowered triples. After normalization the
+   translator-input term set is the four core cases (`ConstantTerm`,
+   `VariableTerm`, `PropertyPathTerm`, `TripleTermTerm`). **Spec §8.5 was updated**
+   to describe this post-normalization shape; take the updated §8.5 as authoritative.
+2. **Built-in / aggregate identity — enums.** Two parallel representations: the
+   lexer still interns the canonical name as a `Utf8String` token payload (keep);
+   the **parser maps payload-name → enum value at the AST construction site**. The
+   enum is the AST-level identity. Exhaustive `switch` for dispatch; the algebra-JSON
+   contract gets a deterministic lexical form per enum value, deserializer rejects
+   unknown values. Mapping table is one source file.
+3. **Pre-A now — standalone PR (§4.4).** `Core` gets `BlankNodeDelegate`,
+   `BlankNodeRequest`, `VeritasBlankNodes`, `RandomnessDelegate`, `RandomnessRequest`,
+   `RandomnessValue`, `VeritasRandomness` + the four banned-symbols entries. Same PR
+   retrofits the Turtle parser (delete `nextSyntheticBlankNode` /
+   `AllocateSyntheticBlankNodeLabel`) and the SPARQL parser's `nextBlankNode`; both
+   take `BlankNodeDelegate` (default `VeritasBlankNodes.System`). Green-criterion:
+   existing Turtle tests pass under both no-delegate and explicit-`System` forms;
+   SPARQL parser tests pass after the substitution.
+
+**Execution order (then Milestones B, C):**
+1. Pre-A (standalone PR). **DONE** — committed on `sparql-query-engine`.
+2. Built-in/aggregate enum realignment in the SPARQL AST (lexer payloads unchanged).
+3. §7.0 documentation-convention pass (every terminal/production cites its §19.8
+   anchor; grep audit at end of Milestone A).
+4. Slice 4b-ii — RDF 1.2 lexical completeness: `~` (Tilde) reifier token, `VERSION`
+   keyword + version-label, any §19.8 annotation brackets (audit terminal-by-terminal,
+   no skips); then vendor `sparql12/syntax-triple-terms-{positive,negative}/`.
+5. Early-expansion normalization pass (§8.5; uses Core's `BlankNodeDelegate`; closes
+   the standalone-bnode known gap).
+Slice S (spans on remaining AST layers) is non-blocking; interleave with 2–5.
+Then B (algebra + translator, §10–§11) and C (hypertrie backend + executor subset,
+§16–§17) — C runs against the Core delegates from Pre-A, no mid-batch Core round-trip.
 
 ## Status
 
+- **Pre-A (Core injection seams): DONE.** `Lumoin.Veritas.Core/Injection/` adds the
+  `BlankNodeDelegate` (→ `Utf8String`; `BlankNodeRequest` carries the interning pool
+  and a correlation key for `BNODE(literal)` per-solution semantics),
+  `RandomnessDelegate` (`RandomnessKind`/`Request`/`Value`), and `IdentifierDelegate`
+  (→ `Guid`; `IdentifierPurpose`/`Request` — the abstract identifier type is deferred,
+  YAGNI) seams, each with a `Veritas*` defaults static (`System`/`Zero`/`Seeded`|
+  `Sequential`, plus `VeritasBlankNodes.ByCallSite`). The entropy/identity bans
+  (`Random` ctors + `Random.Shared`, `RandomNumberGenerator`, `Guid.NewGuid`) live in
+  a dedicated `BannedSymbols.Entropy.txt` applied to every project **except** the
+  Benchmarks/Workbench harnesses (where seeded `Random` for synthetic fixtures is
+  idiomatic — mirrors the existing `BannedSymbols.Cbor.txt` carve-out); the Core
+  `RandomSources` seam, the `Veritas*` producers, and two synthetic-data test classes
+  suppress RS0030 with justification. Retrofitted producers: Turtle + SPARQL parsers
+  take an optional `BlankNodeDelegate` (default `System`; the per-parser
+  `nextBlankNode`/`AllocateSyntheticBlankNodeLabel` counters are gone);
+  `SessionId.NewId`, `HypertrieGraphStore.Query`, and `ShaclValidatorOptions` take an
+  `IdentifierDelegate`. 10 new `VeritasInjectionSeamsTests`; full suite green — the
+  50 failures are the pre-existing SHACL-conformance baseline, unchanged by this work.
 - Milestone A: **in progress.** Project skeleton builds. **Lexer complete and
   tested** (13 `SparqlLexerTests` green). **AST complete** — ~60 record types
   across 12 files in `Ast/`. **Parser: the full SPARQL 1.1 query grammar is built

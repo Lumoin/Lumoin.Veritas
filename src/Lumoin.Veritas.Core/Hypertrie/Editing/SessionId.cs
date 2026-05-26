@@ -44,7 +44,14 @@ public readonly record struct SessionId(Guid Value)
     /// a distinct value with overwhelmingly negligible collision
     /// probability across realistic horizons.
     /// </summary>
-    public static SessionId NewId() => new(Guid.NewGuid());
+    /// <param name="identifiers">The identifier source; defaults to <see cref="VeritasIdentifiers.System"/>, a fresh <see cref="Guid"/> per call. Pass <see cref="VeritasIdentifiers.Sequential"/> for deterministic session ids in tests.</param>
+    /// <returns>A fresh session identifier.</returns>
+    public static SessionId NewId(IdentifierDelegate? identifiers = null)
+    {
+        IdentifierRequest request = new(IdentifierPurpose.Session, default);
+
+        return new SessionId((identifiers ?? VeritasIdentifiers.System)(in request));
+    }
 
     /// <summary>
     /// Returns <c>true</c> when this identifier equals

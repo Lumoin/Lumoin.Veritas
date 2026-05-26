@@ -206,7 +206,7 @@ public static class ShaclValidator
             Options = effectiveOptions,
             TraceHandler = effectiveOptions.TraceHandler,
             TimeProvider = timeProvider,
-            CorrelationId = Guid.NewGuid(),
+            CorrelationId = (effectiveOptions.Identifiers ?? VeritasIdentifiers.System)(new IdentifierRequest(IdentifierPurpose.Correlation, default)),
             RdfFirstId = rdfFirstId,
             RdfRestId = rdfRestId,
             RdfNilId = rdfNilId,

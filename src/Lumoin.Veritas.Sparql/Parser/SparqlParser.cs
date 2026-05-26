@@ -77,7 +77,7 @@ public sealed class SparqlParser
     private bool tokensComplete;
     private bool started;
     private int index;
-    private int nextBlankNode;
+    private readonly BlankNodeDelegate blankNodes;
     private SourceSpan lastConsumedSpan;
 
     /// <summary>
@@ -86,8 +86,9 @@ public sealed class SparqlParser
     /// <param name="tokens">The lexed token stream, ending with <see cref="SparqlTokenKind.EndOfInput"/>.</param>
     /// <param name="pool">The pool used to intern parser-allocated identifiers (resolved IRIs, blank-node labels).</param>
     /// <param name="baseIri">The external base IRI relative references resolve against before any in-query <c>BASE</c>, or <see langword="null"/>.</param>
-    public SparqlParser(IEnumerable<SparqlToken> tokens, Utf8StringPool pool, Utf8String? baseIri = null)
-        : this(pool, baseIri)
+    /// <param name="blankNodes">Allocates labels for anonymous <c>[]</c> blank nodes; defaults to <see cref="VeritasBlankNodes.System"/>.</param>
+    public SparqlParser(IEnumerable<SparqlToken> tokens, Utf8StringPool pool, Utf8String? baseIri = null, BlankNodeDelegate? blankNodes = null)
+        : this(pool, baseIri, blankNodes)
     {
         ArgumentNullException.ThrowIfNull(tokens);
 
@@ -105,17 +106,19 @@ public sealed class SparqlParser
     /// </summary>
     /// <param name="pool">The pool used to intern parser-allocated identifiers.</param>
     /// <param name="baseIri">The external base IRI relative references resolve against before any in-query <c>BASE</c>, or <see langword="null"/>.</param>
+    /// <param name="blankNodes">Allocates labels for anonymous <c>[]</c> blank nodes; defaults to <see cref="VeritasBlankNodes.System"/>.</param>
     /// <remarks>
     /// The parser suspends — preserving its work stack — when the request needs tokens that have not
     /// arrived yet, and resumes when more are fed, so the token buffer need not hold the whole query.
     /// </remarks>
-    internal SparqlParser(Utf8StringPool pool, Utf8String? baseIri = null)
+    internal SparqlParser(Utf8StringPool pool, Utf8String? baseIri = null, BlankNodeDelegate? blankNodes = null)
     {
         ArgumentNullException.ThrowIfNull(pool);
 
         Tokens = [];
         Pool = pool;
         this.baseIri = baseIri;
+        this.blankNodes = blankNodes ?? VeritasBlankNodes.System;
 
         xsdString = pool.Intern("http://www.w3.org/2001/XMLSchema#string"u8);
         xsdInteger = pool.Intern("http://www.w3.org/2001/XMLSchema#integer"u8);
@@ -3283,7 +3286,7 @@ public sealed class SparqlParser
         SourceSpan span = Current.Span;
         Advance();
 
-        return new ConstantTerm(span, new BlankNode(FreshBlankNodeLabel()));
+        return new ConstantTerm(span, new BlankNode(FreshBlankNodeLabel(span)));
     }
 
     /// <summary>
@@ -3588,13 +3591,13 @@ public sealed class SparqlParser
     /// <summary>
     /// Allocates a fresh synthetic blank-node label for an anonymous <c>[]</c> node.
     /// </summary>
+    /// <param name="span">The source span of the anonymous blank node occurrence.</param>
     /// <returns>The interned label, without the <c>_:</c> prefix.</returns>
-    private Utf8String FreshBlankNodeLabel()
+    private Utf8String FreshBlankNodeLabel(SourceSpan span)
     {
-        string raw = string.Create(CultureInfo.InvariantCulture, $"b{nextBlankNode}");
-        nextBlankNode++;
+        BlankNodeRequest request = new(Guid.Empty, ReadOnlyMemory<byte>.Empty, span, Pool);
 
-        return Pool.Intern(raw);
+        return blankNodes(in request);
     }
 
     /// <summary>

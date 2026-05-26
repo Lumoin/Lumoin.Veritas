@@ -1,3 +1,4 @@
+using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Shacl.Diagnostics;
 
@@ -57,6 +58,15 @@ public sealed record ShaclValidatorOptions
     /// </para>
     /// </remarks>
     public TraceHandler<ShaclTraceEvent>? TraceHandler { get; init; }
+
+    /// <summary>
+    /// The identifier source used to mint the per-run correlation id shared by
+    /// every trace event in the run. <c>null</c> uses
+    /// <see cref="VeritasIdentifiers.System"/> (a fresh <see cref="System.Guid"/>
+    /// per run). Pass <see cref="VeritasIdentifiers.Sequential"/> or a constant
+    /// source for deterministic correlation ids in tests.
+    /// </summary>
+    public IdentifierDelegate? Identifiers { get; init; }
 
     /// <summary>The default options — no limit, no fail-fast, no tracing.</summary>
     public static ShaclValidatorOptions Default { get; } = new();
