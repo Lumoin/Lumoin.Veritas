@@ -7,6 +7,7 @@ using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Lexer;
 using Lumoin.Veritas.Sparql.Parser;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using AstTripleTerm = Lumoin.Veritas.Sparql.Ast.TripleTerm;
 
 namespace Lumoin.Veritas.Tests.Sparql;
 
@@ -1082,6 +1083,103 @@ internal sealed class SparqlParserTests
     /// <param name="text">The SPARQL query text.</param>
     /// <param name="pool">The pool keeping the parsed term handles alive for the test's assertions.</param>
     /// <returns>The parsed query.</returns>
+    /// <summary>A triple term in subject position parses to an un-expanded triple-term node over its inner triple.</summary>
+    [TestMethod]
+    public void ParsesTripleTermAsSubject()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * { <<( :a :b :c )>> :p1 :o1 }", pool);
+
+        TriplePattern triple = SingleBlockTriples(query)[0];
+        AstTripleTerm tripleTerm = (AstTripleTerm)triple.Subject;
+        Assert.AreEqual("http://e/a", IriValue(tripleTerm.Inner.Subject));
+        Assert.AreEqual("http://e/b", IriValue(tripleTerm.Inner.Predicate));
+        Assert.AreEqual("http://e/c", IriValue(tripleTerm.Inner.Object));
+        Assert.AreEqual("http://e/p1", IriValue(triple.Predicate));
+    }
+
+    /// <summary>A triple term in object position parses, carrying a variable inner subject.</summary>
+    [TestMethod]
+    public void ParsesTripleTermAsObject()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * { :s :r <<( ?x :p :o )>> }", pool);
+
+        AstTripleTerm tripleTerm = (AstTripleTerm)SingleBlockTriples(query)[0].Object;
+        Assert.AreEqual("x", VariableName(tripleTerm.Inner.Subject));
+        Assert.AreEqual("http://e/o", IriValue(tripleTerm.Inner.Object));
+    }
+
+    /// <summary>A triple term nests in the object position of another triple term.</summary>
+    [TestMethod]
+    public void ParsesNestedTripleTermInObject()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * { :s :q <<( :s1 :r <<( ?x :p :o )>> )>> }", pool);
+
+        AstTripleTerm outer = (AstTripleTerm)SingleBlockTriples(query)[0].Object;
+        Assert.IsInstanceOfType<AstTripleTerm>(outer.Inner.Object);
+        Assert.AreEqual("x", VariableName(((AstTripleTerm)outer.Inner.Object).Inner.Subject));
+    }
+
+    /// <summary>The <c>a</c> shorthand is accepted as a triple term's verb, resolving to <c>rdf:type</c>.</summary>
+    [TestMethod]
+    public void ParsesTripleTermWithAVerb()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * { :s :p <<( :x a :C )>> }", pool);
+
+        AstTripleTerm tripleTerm = (AstTripleTerm)SingleBlockTriples(query)[0].Object;
+        Assert.AreEqual("http://www.w3.org/1999/02/22-rdf-syntax-ns#type", IriValue(tripleTerm.Inner.Predicate));
+    }
+
+    /// <summary>A triple term is accepted as an object inside a blank-node property list.</summary>
+    [TestMethod]
+    public void ParsesTripleTermInsideBlankNodePropertyList()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * { [ :q <<( :s :p :o )>> ] :b :c }", pool);
+
+        BlankNodePropertyListTerm list = (BlankNodePropertyListTerm)SingleBlockTriples(query)[0].Subject;
+        Assert.IsInstanceOfType<AstTripleTerm>(list.Properties[0].Objects[0]);
+    }
+
+    /// <summary>A bare triple term with no following predicate-object is rejected (a triple term cannot stand alone).</summary>
+    [TestMethod]
+    public void TripleTermStandaloneThrows()
+    {
+        using Utf8StringPool pool = new();
+
+        Assert.Throws<SparqlParseException>(() => ParseQuery("PREFIX : <http://e/> SELECT * WHERE { <<( ?s ?p ?o )>> . }", pool));
+    }
+
+    /// <summary>A triple term whose subject is itself a triple term is rejected (subjects cannot nest).</summary>
+    [TestMethod]
+    public void TripleTermNestedSubjectThrows()
+    {
+        using Utf8StringPool pool = new();
+
+        Assert.Throws<SparqlParseException>(() => ParseQuery("PREFIX : <http://e/> SELECT * { <<( <<( :s :p :o )>> :q :z )>> :p :o }", pool));
+    }
+
+    /// <summary>A property path is rejected as a triple term's verb.</summary>
+    [TestMethod]
+    public void TripleTermPathVerbThrows()
+    {
+        using Utf8StringPool pool = new();
+
+        Assert.Throws<SparqlParseException>(() => ParseQuery("PREFIX : <http://e/> SELECT * { <<( ?s :p/:q ?o )>> :a :b }", pool));
+    }
+
+    /// <summary>A blank node is rejected as a triple term's predicate.</summary>
+    [TestMethod]
+    public void TripleTermBlankNodePredicateThrows()
+    {
+        using Utf8StringPool pool = new();
+
+        Assert.Throws<SparqlParseException>(() => ParseQuery("PREFIX : <http://e/> SELECT * { <<( ?s [] ?o )>> :a :b }", pool));
+    }
+
     private static SparqlQuery ParseQuery(string text, Utf8StringPool pool)
     {
         SparqlLexer lexer = new(Encoding.UTF8.GetBytes(text), pool);

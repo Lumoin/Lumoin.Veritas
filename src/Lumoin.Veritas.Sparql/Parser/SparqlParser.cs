@@ -355,6 +355,7 @@ public sealed class SparqlParser
             ParseFrameKind.PathNegatedSet => StepPathNegatedSet(frame),
             ParseFrameKind.Collection => StepCollection(frame, incoming),
             ParseFrameKind.BlankNodePropertyList => StepBlankNodePropertyList(frame, incoming),
+            ParseFrameKind.TripleTerm => StepTripleTerm(frame, incoming),
             ParseFrameKind.Values => StepValues(frame),
             ParseFrameKind.ArgumentList => StepArgumentList(frame, incoming),
             ParseFrameKind.GroupBy => StepGroupBy(frame, incoming),
@@ -2668,22 +2669,151 @@ public sealed class SparqlParser
     /// <returns>The compound-term frame to push.</returns>
     private ParseFrame CompoundTermFrame()
     {
-        ParseFrameKind kind = Current.Kind == SparqlTokenKind.OpenParen
-            ? ParseFrameKind.Collection
-            : ParseFrameKind.BlankNodePropertyList;
+        ParseFrameKind kind = Current.Kind switch
+        {
+            SparqlTokenKind.OpenParen => ParseFrameKind.Collection,
+            SparqlTokenKind.OpenTripleTerm => ParseFrameKind.TripleTerm,
+            _ => ParseFrameKind.BlankNodePropertyList
+        };
 
         return new ParseFrame { Kind = kind, StartSpan = Current.Span };
     }
 
     /// <summary>
-    /// Determines whether a token kind begins a compound (frame-parsed) term: a collection or a
-    /// blank-node property list.
+    /// Determines whether a token kind begins a compound (frame-parsed) term: a collection, a
+    /// blank-node property list, or an RDF 1.2 triple term.
     /// </summary>
     /// <param name="kind">The token kind to test.</param>
     /// <returns><see langword="true"/> when the kind begins a compound term.</returns>
     private static bool CanStartCompoundTerm(SparqlTokenKind kind)
     {
-        return kind is SparqlTokenKind.OpenParen or SparqlTokenKind.OpenBracket;
+        return kind is SparqlTokenKind.OpenParen or SparqlTokenKind.OpenBracket or SparqlTokenKind.OpenTripleTerm;
+    }
+
+    /// <summary>
+    /// Advances an RDF 1.2 triple term <c>&lt;&lt;( s verb o )&gt;&gt;</c>, parsing the inner subject,
+    /// verb, and object one step each. The inner subject is a leaf term (no nesting), the verb is an
+    /// IRI / <c>a</c> / variable (no property paths), and the object is a leaf term or a nested triple
+    /// term. Collections, blank-node property lists, and reified triples are rejected inside.
+    /// </summary>
+    /// <param name="frame">The triple-term frame.</param>
+    /// <param name="incoming">A popped nested triple-term object on resume.</param>
+    /// <returns>The instruction for the driver; the popped result is the <see cref="Ast.TripleTerm"/>.</returns>
+    private StepResult StepTripleTerm(ParseFrame frame, object? incoming)
+        => frame.Stage switch
+        {
+            0 => TripleTermOpen(frame),
+            1 => TripleTermSubject(frame),
+            2 => TripleTermVerb(frame),
+            3 => TripleTermObject(frame),
+            4 => TripleTermObjectReceived(frame, incoming),
+            5 => TripleTermClose(frame),
+            _ => throw new SparqlParseException("Triple term reached an unknown stage.", frame.StartSpan)
+        };
+
+    /// <summary>Consumes the opening <c>&lt;&lt;(</c> and moves to the inner subject.</summary>
+    /// <param name="frame">The triple-term frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult TripleTermOpen(ParseFrame frame)
+    {
+        Advance();
+        frame.Stage = 1;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Parses the inner subject (a leaf term; nesting is rejected) and moves to the verb.</summary>
+    /// <param name="frame">The triple-term frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult TripleTermSubject(ParseFrame frame)
+    {
+        frame.Subject = ParseVarOrTerm();
+        frame.Stage = 2;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Parses the inner verb (IRI, <c>a</c>, or variable; no property paths) and moves to the object.</summary>
+    /// <param name="frame">The triple-term frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult TripleTermVerb(ParseFrame frame)
+    {
+        frame.Verb = ParseTripleVerb();
+        frame.Stage = 3;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Parses the inner object: a nested triple term (pushed) or a leaf term, then moves to the close.</summary>
+    /// <param name="frame">The triple-term frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult TripleTermObject(ParseFrame frame)
+    {
+        if(Current.Kind == SparqlTokenKind.OpenTripleTerm)
+        {
+            frame.Stage = 4;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.TripleTerm, StartSpan = Current.Span });
+        }
+
+        frame.ObjectTerm = ParseVarOrTerm();
+        frame.Stage = 5;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Adopts a popped nested triple-term object and moves to the close.</summary>
+    /// <param name="frame">The triple-term frame.</param>
+    /// <param name="incoming">The popped object term.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult TripleTermObjectReceived(ParseFrame frame, object? incoming)
+    {
+        frame.ObjectTerm = Pop<TriplePatternTerm>(incoming);
+        frame.Stage = 5;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Consumes the closing <c>)&gt;&gt;</c> and emits the triple term over its inner triple.</summary>
+    /// <param name="frame">The triple-term frame.</param>
+    /// <returns>The instruction for the driver; the result is the <see cref="Ast.TripleTerm"/>.</returns>
+    private StepResult TripleTermClose(ParseFrame frame)
+    {
+        if(Current.Kind != SparqlTokenKind.CloseTripleTerm)
+        {
+            throw Expected("')>>' to close the triple term", Current);
+        }
+
+        Advance();
+        SourceSpan span = CombineSpans(frame.StartSpan, lastConsumedSpan);
+        TriplePattern inner = new(span, frame.Subject!, frame.Verb!, frame.ObjectTerm!);
+
+        return StepResult.Done(new Ast.TripleTerm(span, inner));
+    }
+
+    /// <summary>
+    /// Parses the verb inside a triple term or reified triple: an IRI, the <c>a</c> shorthand, or a
+    /// variable. Property paths and blank-node predicates are not permitted here.
+    /// </summary>
+    /// <returns>The verb term.</returns>
+    private TriplePatternTerm ParseTripleVerb()
+        => Current.Kind switch
+        {
+            SparqlTokenKind.A => ConsumeAVerbTerm(),
+            SparqlTokenKind.Iri => ConsumeIriConstantTerm(),
+            SparqlTokenKind.PrefixedName => ConsumePrefixedNameConstantTerm(),
+            SparqlTokenKind.Variable => ConsumeVariable(),
+            _ => throw Expected("an IRI, 'a', or variable as the verb", Current)
+        };
+
+    /// <summary>Consumes the <c>a</c> shorthand as the <c>rdf:type</c> constant term and advances.</summary>
+    /// <returns>The <c>rdf:type</c> constant term.</returns>
+    private ConstantTerm ConsumeAVerbTerm()
+    {
+        SourceSpan span = Current.Span;
+        Advance();
+
+        return new ConstantTerm(span, new NamedNode(rdfType));
     }
 
     /// <summary>Advances a collection term <c>( ... )</c>, parsing one item per step.</summary>
@@ -3619,7 +3749,8 @@ public sealed class SparqlParser
             or SparqlTokenKind.DoubleLiteral
             or SparqlTokenKind.BooleanLiteral
             or SparqlTokenKind.OpenParen
-            or SparqlTokenKind.OpenBracket;
+            or SparqlTokenKind.OpenBracket
+            or SparqlTokenKind.OpenTripleTerm;
     }
 
     /// <summary>

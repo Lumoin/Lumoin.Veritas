@@ -90,6 +90,12 @@ internal sealed class ParseFrame
     /// <summary>Gets or sets the verb (predicate) of the object list a <see cref="ParseFrameKind.Triple"/> frame is currently reading.</summary>
     public TriplePatternTerm? Verb { get; set; }
 
+    /// <summary>Gets or sets the inner object term a <see cref="ParseFrameKind.TripleTerm"/> or <see cref="ParseFrameKind.ReifiedTriple"/> frame has parsed.</summary>
+    public TriplePatternTerm? ObjectTerm { get; set; }
+
+    /// <summary>Gets or sets the reifier identity a <see cref="ParseFrameKind.ReifiedTriple"/> frame parsed after <c>~</c>, or <see langword="null"/> for an anonymous reifier.</summary>
+    public TriplePatternTerm? Reifier { get; set; }
+
     /// <summary>Gets or sets the triples accumulated by a <see cref="ParseFrameKind.Triple"/> frame across its predicate-object list.</summary>
     public List<TriplePattern>? TripleAccumulator { get; set; }
 
