@@ -125,6 +125,27 @@ internal sealed class ParseFrame
 
     /// <summary>Gets or sets the accumulated arguments of an <see cref="ParseFrameKind.ArgumentList"/> frame.</summary>
     public List<ExpressionNode>? Arguments { get; set; }
+
+    /// <summary>Gets or sets the accumulated conditions of a <see cref="ParseFrameKind.GroupBy"/> frame.</summary>
+    public List<GroupCondition>? GroupConditions { get; set; }
+
+    /// <summary>Gets or sets the accumulated conditions of a <see cref="ParseFrameKind.Having"/> frame.</summary>
+    public List<ExpressionNode>? HavingConditions { get; set; }
+
+    /// <summary>Gets or sets the accumulated conditions of an <see cref="ParseFrameKind.OrderBy"/> frame.</summary>
+    public List<OrderCondition>? OrderConditions { get; set; }
+
+    /// <summary>Gets or sets whether the <c>ORDER BY</c> condition currently being parsed is descending.</summary>
+    public bool DescendingOrder { get; set; }
+
+    /// <summary>Gets or sets the parsed <c>GROUP BY</c> clause on the request frame.</summary>
+    public GroupClause? Group { get; set; }
+
+    /// <summary>Gets or sets the parsed <c>HAVING</c> clause on the request frame.</summary>
+    public HavingClause? Having { get; set; }
+
+    /// <summary>Gets or sets the parsed <c>ORDER BY</c> clause on the request frame.</summary>
+    public OrderClause? Order { get; set; }
 }
 
 /// <summary>

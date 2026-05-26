@@ -666,6 +666,68 @@ internal sealed class SparqlParserTests
         Assert.AreEqual(", ", aggregate.GroupConcatSeparator!.Value.ToString());
     }
 
+    /// <summary>A <c>GROUP BY</c> clause records variable, parenthesised-binding, and bare conditions.</summary>
+    [TestMethod]
+    public void ParsesGroupBy()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery(
+            "SELECT * WHERE { ?s ?p ?o } GROUP BY ?s (?o + 1 AS ?x) STR(?o)",
+            pool);
+
+        GroupClause group = query.Modifier.Group!;
+        Assert.HasCount(3, group.Conditions);
+        Assert.AreEqual("s", ((GroupVariable)group.Conditions[0]).Variable.Name.ToString());
+        Assert.AreEqual("x", ((GroupExpressionAs)group.Conditions[1]).AsVariable.Name.ToString());
+        Assert.IsInstanceOfType<GroupExpression>(group.Conditions[2]);
+    }
+
+    /// <summary>A <c>HAVING</c> clause records its constraint expressions.</summary>
+    [TestMethod]
+    public void ParsesHaving()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery(
+            "SELECT * WHERE { ?s ?p ?o } GROUP BY ?s HAVING (COUNT(?o) > 1)",
+            pool);
+
+        HavingClause having = query.Modifier.Having!;
+        Assert.HasCount(1, having.Conditions);
+        Assert.IsInstanceOfType<ComparisonExpression>(having.Conditions[0]);
+    }
+
+    /// <summary>An <c>ORDER BY</c> clause records ascending defaults, explicit ASC, and DESC directions.</summary>
+    [TestMethod]
+    public void ParsesOrderBy()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery(
+            "SELECT * WHERE { ?s ?p ?o } ORDER BY ?s ASC(?o) DESC(?p)",
+            pool);
+
+        OrderClause order = query.Modifier.Order!;
+        Assert.HasCount(3, order.Conditions);
+        Assert.IsInstanceOfType<OrderAscending>(order.Conditions[0]);
+        Assert.IsInstanceOfType<OrderAscending>(order.Conditions[1]);
+        Assert.IsInstanceOfType<OrderDescending>(order.Conditions[2]);
+    }
+
+    /// <summary>The modifiers compose in grammar order with the LIMIT/OFFSET slice.</summary>
+    [TestMethod]
+    public void ParsesAllModifiersTogether()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery(
+            "SELECT * WHERE { ?s ?p ?o } GROUP BY ?s HAVING (COUNT(?o) > 1) ORDER BY DESC(?s) LIMIT 10 OFFSET 5",
+            pool);
+
+        Assert.IsNotNull(query.Modifier.Group);
+        Assert.IsNotNull(query.Modifier.Having);
+        Assert.IsNotNull(query.Modifier.Order);
+        Assert.AreEqual(10, query.Modifier.Limit);
+        Assert.AreEqual(5, query.Modifier.Offset);
+    }
+
     /// <summary>
     /// Feeding tokens one at a time, the parser suspends with <see cref="ParseStatus.NeedMore"/>
     /// before the stream completes and resumes to the same AST a whole-buffer parse produces — proof

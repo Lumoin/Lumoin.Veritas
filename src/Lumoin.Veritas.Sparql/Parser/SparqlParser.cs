@@ -316,6 +316,9 @@ public sealed class SparqlParser
             ParseFrameKind.ServicePattern => StepService(frame, incoming),
             ParseFrameKind.Expression => StepExpression(frame, incoming),
             ParseFrameKind.ArgumentList => StepArgumentList(frame, incoming),
+            ParseFrameKind.GroupBy => StepGroupBy(frame, incoming),
+            ParseFrameKind.Having => StepHaving(frame, incoming),
+            ParseFrameKind.OrderBy => StepOrderBy(frame, incoming),
             ParseFrameKind.Filter => StepFilter(frame, incoming),
             ParseFrameKind.Bind => StepBind(frame, incoming),
             _ => throw new SparqlParseException($"Parser production '{frame.Kind}' is not yet implemented in this build.", frame.StartSpan)
@@ -338,8 +341,14 @@ public sealed class SparqlParser
             3 => RequestDataset(frame),
             4 => RequestWhere(frame),
             5 => RequestWherePattern(frame, incoming),
-            6 => RequestModifier(frame),
-            7 => RequestFinalize(frame),
+            6 => RequestGroupBy(frame),
+            7 => RequestGroupReceived(frame, incoming),
+            8 => RequestHaving(frame),
+            9 => RequestHavingReceived(frame, incoming),
+            10 => RequestOrderBy(frame),
+            11 => RequestOrderReceived(frame, incoming),
+            12 => RequestModifier(frame),
+            13 => RequestFinalize(frame),
             _ => throw new SparqlParseException("Request reached an unknown stage.", frame.StartSpan)
         };
 
@@ -470,18 +479,98 @@ public sealed class SparqlParser
         return StepResult.Continue();
     }
 
+    /// <summary>Pushes the <c>GROUP BY</c> clause when present, otherwise advances to the having stage.</summary>
+    /// <param name="frame">The request frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult RequestGroupBy(ParseFrame frame)
+    {
+        if(Current.Kind == SparqlTokenKind.GroupKeyword)
+        {
+            frame.Stage = 7;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GroupBy, StartSpan = Current.Span });
+        }
+
+        frame.Stage = 8;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Adopts the popped <c>GROUP BY</c> clause and advances to the having stage.</summary>
+    /// <param name="frame">The request frame.</param>
+    /// <param name="incoming">The popped group clause.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult RequestGroupReceived(ParseFrame frame, object? incoming)
+    {
+        frame.Group = (GroupClause)incoming!;
+        frame.Stage = 8;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Pushes the <c>HAVING</c> clause when present, otherwise advances to the order stage.</summary>
+    /// <param name="frame">The request frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult RequestHaving(ParseFrame frame)
+    {
+        if(Current.Kind == SparqlTokenKind.HavingKeyword)
+        {
+            frame.Stage = 9;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Having, StartSpan = Current.Span });
+        }
+
+        frame.Stage = 10;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Adopts the popped <c>HAVING</c> clause and advances to the order stage.</summary>
+    /// <param name="frame">The request frame.</param>
+    /// <param name="incoming">The popped having clause.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult RequestHavingReceived(ParseFrame frame, object? incoming)
+    {
+        frame.Having = (HavingClause)incoming!;
+        frame.Stage = 10;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Pushes the <c>ORDER BY</c> clause when present, otherwise advances to the slice stage.</summary>
+    /// <param name="frame">The request frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult RequestOrderBy(ParseFrame frame)
+    {
+        if(Current.Kind == SparqlTokenKind.OrderKeyword)
+        {
+            frame.Stage = 11;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.OrderBy, StartSpan = Current.Span });
+        }
+
+        frame.Stage = 12;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Adopts the popped <c>ORDER BY</c> clause and advances to the slice stage.</summary>
+    /// <param name="frame">The request frame.</param>
+    /// <param name="incoming">The popped order clause.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult RequestOrderReceived(ParseFrame frame, object? incoming)
+    {
+        frame.Order = (OrderClause)incoming!;
+        frame.Stage = 12;
+
+        return StepResult.Continue();
+    }
+
     /// <summary>Parses one LIMIT/OFFSET clause, or moves to finalisation when no slice clause remains.</summary>
     /// <param name="frame">The request frame.</param>
     /// <returns>The instruction for the driver.</returns>
     private StepResult RequestModifier(ParseFrame frame)
     {
-        if(Current.Kind is SparqlTokenKind.GroupKeyword or SparqlTokenKind.HavingKeyword or SparqlTokenKind.OrderKeyword)
-        {
-            throw new SparqlParseException(
-                $"The {Current.Kind} solution modifier is not yet implemented in this build.",
-                Current.Span);
-        }
-
         if(Current.Kind == SparqlTokenKind.LimitKeyword && frame.Limit is null)
         {
             Advance();
@@ -498,7 +587,7 @@ public sealed class SparqlParser
             return StepResult.Continue();
         }
 
-        frame.Stage = 7;
+        frame.Stage = 13;
 
         return StepResult.Continue();
     }
@@ -518,7 +607,7 @@ public sealed class SparqlParser
             frame.Form!,
             frame.Dataset!,
             frame.Where!,
-            new SolutionModifier(Group: null, Having: null, Order: null, frame.Offset, frame.Limit),
+            new SolutionModifier(frame.Group, frame.Having, frame.Order, frame.Offset, frame.Limit),
             Values: null);
 
         return StepResult.Done(query);
@@ -1500,6 +1589,299 @@ public sealed class SparqlParser
         Advance();
 
         return new AggregateExpression(name, argument, frame.IsDistinct, IsCountStar: false, separator);
+    }
+
+    /// <summary>Advances a <c>GROUP BY</c> clause, parsing one grouping condition per step.</summary>
+    /// <param name="frame">The group-by frame.</param>
+    /// <param name="incoming">A popped condition expression on resume.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult StepGroupBy(ParseFrame frame, object? incoming)
+        => frame.Stage switch
+        {
+            0 => GroupByStart(frame),
+            1 => GroupByCondition(frame),
+            2 => GroupByParenReceived(frame, incoming),
+            3 => GroupByBareReceived(frame, incoming),
+            _ => throw new SparqlParseException("GROUP BY reached an unknown stage.", frame.StartSpan)
+        };
+
+    /// <summary>Consumes <c>GROUP BY</c> and begins the condition list.</summary>
+    /// <param name="frame">The group-by frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult GroupByStart(ParseFrame frame)
+    {
+        Advance();
+        if(Current.Kind != SparqlTokenKind.ByKeyword)
+        {
+            throw Expected("BY after GROUP", Current);
+        }
+
+        Advance();
+        frame.GroupConditions = [];
+        frame.Stage = 1;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>
+    /// Parses one grouping condition: a bare variable, a parenthesised expression (optionally bound with
+    /// <c>AS</c>), or a bare built-in / function expression; completes when no further condition follows.
+    /// </summary>
+    /// <param name="frame">The group-by frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult GroupByCondition(ParseFrame frame)
+    {
+        if(Current.Kind == SparqlTokenKind.Variable)
+        {
+            frame.GroupConditions!.Add(new GroupVariable(new SparqlVariable(Current.Value)));
+            Advance();
+
+            return StepResult.Continue();
+        }
+
+        if(Current.Kind == SparqlTokenKind.OpenParen)
+        {
+            Advance();
+            frame.Stage = 2;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Expression, MinPrecedence = PrecExpression, StartSpan = Current.Span });
+        }
+
+        if(CanStartBareExpressionCondition(Current.Kind))
+        {
+            frame.Stage = 3;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Expression, MinPrecedence = PrecExpression, StartSpan = Current.Span });
+        }
+
+        if(frame.GroupConditions!.Count == 0)
+        {
+            throw Expected("a GROUP BY condition", Current);
+        }
+
+        return StepResult.Done(new GroupClause(frame.GroupConditions));
+    }
+
+    /// <summary>Completes a parenthesised grouping condition, with or without an <c>AS</c> binding.</summary>
+    /// <param name="frame">The group-by frame.</param>
+    /// <param name="incoming">The popped grouping expression.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult GroupByParenReceived(ParseFrame frame, object? incoming)
+    {
+        ExpressionNode expression = (ExpressionNode)incoming!;
+
+        if(Current.Kind == SparqlTokenKind.AsKeyword)
+        {
+            Advance();
+            if(Current.Kind != SparqlTokenKind.Variable)
+            {
+                throw Expected("a variable after AS", Current);
+            }
+
+            SparqlVariable variable = new(Current.Value);
+            Advance();
+            if(Current.Kind != SparqlTokenKind.CloseParen)
+            {
+                throw Expected("')' to close the GROUP BY expression", Current);
+            }
+
+            Advance();
+            frame.GroupConditions!.Add(new GroupExpressionAs(expression, variable));
+            frame.Stage = 1;
+
+            return StepResult.Continue();
+        }
+
+        if(Current.Kind != SparqlTokenKind.CloseParen)
+        {
+            throw Expected("')' to close the GROUP BY expression", Current);
+        }
+
+        Advance();
+        frame.GroupConditions!.Add(new GroupExpression(expression));
+        frame.Stage = 1;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Adds a popped bare-expression grouping condition.</summary>
+    /// <param name="frame">The group-by frame.</param>
+    /// <param name="incoming">The popped grouping expression.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult GroupByBareReceived(ParseFrame frame, object? incoming)
+    {
+        frame.GroupConditions!.Add(new GroupExpression((ExpressionNode)incoming!));
+        frame.Stage = 1;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Advances a <c>HAVING</c> clause, parsing one constraint per step.</summary>
+    /// <param name="frame">The having frame.</param>
+    /// <param name="incoming">A popped constraint expression on resume.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult StepHaving(ParseFrame frame, object? incoming)
+        => frame.Stage switch
+        {
+            0 => HavingStart(frame),
+            1 => HavingConstraint(frame),
+            2 => HavingReceived(frame, incoming),
+            _ => throw new SparqlParseException("HAVING reached an unknown stage.", frame.StartSpan)
+        };
+
+    /// <summary>Consumes <c>HAVING</c> and begins the constraint list.</summary>
+    /// <param name="frame">The having frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult HavingStart(ParseFrame frame)
+    {
+        Advance();
+        frame.HavingConditions = [];
+        frame.Stage = 1;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Parses one constraint (a bracketed or bare built-in / function expression), or completes the clause.</summary>
+    /// <param name="frame">The having frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult HavingConstraint(ParseFrame frame)
+    {
+        if(Current.Kind == SparqlTokenKind.OpenParen || CanStartBareExpressionCondition(Current.Kind))
+        {
+            frame.Stage = 2;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Expression, MinPrecedence = PrecExpression, StartSpan = Current.Span });
+        }
+
+        if(frame.HavingConditions!.Count == 0)
+        {
+            throw Expected("a HAVING constraint", Current);
+        }
+
+        return StepResult.Done(new HavingClause(frame.HavingConditions));
+    }
+
+    /// <summary>Adds a popped HAVING constraint expression.</summary>
+    /// <param name="frame">The having frame.</param>
+    /// <param name="incoming">The popped constraint expression.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult HavingReceived(ParseFrame frame, object? incoming)
+    {
+        frame.HavingConditions!.Add((ExpressionNode)incoming!);
+        frame.Stage = 1;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Advances an <c>ORDER BY</c> clause, parsing one ordering condition per step.</summary>
+    /// <param name="frame">The order-by frame.</param>
+    /// <param name="incoming">A popped ordering-key expression on resume.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult StepOrderBy(ParseFrame frame, object? incoming)
+        => frame.Stage switch
+        {
+            0 => OrderByStart(frame),
+            1 => OrderByCondition(frame),
+            2 => OrderByDirectedReceived(frame, incoming),
+            3 => OrderByBareReceived(frame, incoming),
+            _ => throw new SparqlParseException("ORDER BY reached an unknown stage.", frame.StartSpan)
+        };
+
+    /// <summary>Consumes <c>ORDER BY</c> and begins the condition list.</summary>
+    /// <param name="frame">The order-by frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult OrderByStart(ParseFrame frame)
+    {
+        Advance();
+        if(Current.Kind != SparqlTokenKind.ByKeyword)
+        {
+            throw Expected("BY after ORDER", Current);
+        }
+
+        Advance();
+        frame.OrderConditions = [];
+        frame.Stage = 1;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>
+    /// Parses one ordering condition: an <c>ASC</c> / <c>DESC</c> bracketed key, a bare variable (ascending),
+    /// or a bare constraint (ascending); completes when no further condition follows.
+    /// </summary>
+    /// <param name="frame">The order-by frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult OrderByCondition(ParseFrame frame)
+    {
+        if(Current.Kind is SparqlTokenKind.AscKeyword or SparqlTokenKind.DescKeyword)
+        {
+            frame.DescendingOrder = Current.Kind == SparqlTokenKind.DescKeyword;
+            Advance();
+            frame.Stage = 2;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Expression, MinPrecedence = PrecExpression, StartSpan = Current.Span });
+        }
+
+        if(Current.Kind == SparqlTokenKind.Variable)
+        {
+            frame.OrderConditions!.Add(new OrderAscending(new VariableExpression(new SparqlVariable(Current.Value))));
+            Advance();
+
+            return StepResult.Continue();
+        }
+
+        if(Current.Kind == SparqlTokenKind.OpenParen || CanStartBareExpressionCondition(Current.Kind))
+        {
+            frame.Stage = 3;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Expression, MinPrecedence = PrecExpression, StartSpan = Current.Span });
+        }
+
+        if(frame.OrderConditions!.Count == 0)
+        {
+            throw Expected("an ORDER BY condition", Current);
+        }
+
+        return StepResult.Done(new OrderClause(frame.OrderConditions));
+    }
+
+    /// <summary>Adds a popped <c>ASC</c> / <c>DESC</c> ordering condition with its recorded direction.</summary>
+    /// <param name="frame">The order-by frame.</param>
+    /// <param name="incoming">The popped ordering-key expression.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult OrderByDirectedReceived(ParseFrame frame, object? incoming)
+    {
+        ExpressionNode expression = (ExpressionNode)incoming!;
+        frame.OrderConditions!.Add(frame.DescendingOrder ? new OrderDescending(expression) : new OrderAscending(expression));
+        frame.Stage = 1;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Adds a popped bare ordering condition as ascending (the default direction).</summary>
+    /// <param name="frame">The order-by frame.</param>
+    /// <param name="incoming">The popped ordering-key expression.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult OrderByBareReceived(ParseFrame frame, object? incoming)
+    {
+        frame.OrderConditions!.Add(new OrderAscending((ExpressionNode)incoming!));
+        frame.Stage = 1;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>
+    /// Determines whether a token kind can begin a bare (unparenthesised) expression condition — a
+    /// built-in call, aggregate, or function — as <c>GROUP BY</c> / <c>HAVING</c> / <c>ORDER BY</c> allow.
+    /// </summary>
+    /// <param name="kind">The token kind to test.</param>
+    /// <returns><see langword="true"/> when the kind begins such an expression.</returns>
+    private static bool CanStartBareExpressionCondition(SparqlTokenKind kind)
+    {
+        return kind is SparqlTokenKind.BuiltInFunctionName
+            or SparqlTokenKind.AggregateFunctionName
+            or SparqlTokenKind.Iri
+            or SparqlTokenKind.PrefixedName;
     }
 
     /// <summary>
