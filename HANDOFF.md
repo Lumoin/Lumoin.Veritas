@@ -6,6 +6,47 @@ AST → algebra → translator → hypertrie backend + executor subset → SHACL
 unlock). **Batch 2 = Milestones D–F** (full algebra/aggregation, CONSTRUCT/
 DESCRIBE/JSON results, conformance push).
 
+## Spec reconciliation — the full implementation spec arrived after Milestone A was built
+
+The authoritative implementation spec was provided after the lexer/parser/AST and
+the query-syntax conformance harness were already built this session. The built
+work is essentially the spec's **Milestone A and beyond** and aligns with the
+locked decisions (byte-resumable lexer, iterative frame-stack parser, algebra as
+the future public contract, no co-author trailers, switch-expression dispatch).
+The following diverge from the spec body and must be reconciled before the
+algebra/executor milestones build on the AST.
+
+**Will align to the spec (no decision needed):**
+- A static `SparqlParser.ParseRequest(text/bytes, pool?, documentId?, baseIri?)`
+  facade over the existing resumable instance machinery (§6, §9.1).
+- The §7.0 documentation convention: every token kind and grammar-production AST
+  record carries a `<remarks>` block citing its SPARQL 1.2 §19.8 anchor. Retrofit
+  across lexer / AST / parser; verify by the grep-the-anchors audit.
+- `VERSION` prologue declaration (`VersionKeyword` + `VersionDecl`, §4.3 / §7.0) —
+  currently absent from the lexer and parser.
+- Spans on every AST node (the "spans apply to everything" decision; Slice S).
+- Namespace/folder layout per §5.1 (`Algebra/`, `Translation/`, `Execution/`, …).
+
+**Open questions — conflict between the spec body and decisions taken mid-session
+(§3 says locked decisions are not relitigated, so these are not picked silently):**
+
+1. **Collections / blank-node property lists.** Spec §8.5 lists `TriplePatternTerm`
+   as only Constant / Variable / PropertyPath / TripleTerm — implying collections
+   and `[ ]` lists are *expanded at parse*. The mid-session decision
+   ([[project_sparql_ast_faithful]]) was the **faithful AST**: keep `CollectionTerm`
+   / `BlankNodePropertyListTerm` nodes and expand *early* in a normalization pass.
+   Built faithful. Which holds?
+2. **Built-in / aggregate identity.** Spec §8.7 / §8.13 / §14.2 want
+   `BuiltInFunction` / `AggregateFunction` **enums**; built with canonical-name
+   `Utf8String` payloads (recorded refinement — "the closed dispatch set belongs to
+   the evaluator"). Enum or canonical-name string?
+3. **Pre-A ordering / `BlankNodeDelegate`.** Spec wants a standalone PR adding
+   `BlankNodeDelegate` / `RandomnessDelegate` to `Core` and retrofitting the Turtle
+   parser *before* the SPARQL project. Built ahead of that, with an ad-hoc
+   `nextBlankNode` counter in `SparqlParser` instead of the delegate. Pre-A is a
+   real dependency of the executor (BNODE/UUID/RAND/NOW, §4.3). Do Pre-A now and
+   retrofit the parser's anonymous-blank-node allocation to the delegate?
+
 ## Status
 
 - Milestone A: **in progress.** Project skeleton builds. **Lexer complete and
