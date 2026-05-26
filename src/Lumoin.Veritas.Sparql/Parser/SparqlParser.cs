@@ -308,13 +308,17 @@ public sealed class SparqlParser
             ParseFrameKind.Request => StepRequest(frame, incoming),
             ParseFrameKind.SelectClause => StepSelectClause(frame, incoming),
             ParseFrameKind.GroupGraphPattern => StepGroupGraphPattern(frame, incoming),
-            ParseFrameKind.Triple => StepTriple(frame),
+            ParseFrameKind.Triple => StepTriple(frame, incoming),
             ParseFrameKind.UnionPattern => StepGroupOrUnion(frame, incoming),
             ParseFrameKind.OptionalPattern => StepOptional(frame, incoming),
             ParseFrameKind.MinusPattern => StepMinus(frame, incoming),
             ParseFrameKind.GraphPattern => StepGraph(frame, incoming),
             ParseFrameKind.ServicePattern => StepService(frame, incoming),
             ParseFrameKind.Expression => StepExpression(frame, incoming),
+            ParseFrameKind.PropertyPath => StepPropertyPath(frame, incoming),
+            ParseFrameKind.PathSequence => StepPathSequence(frame, incoming),
+            ParseFrameKind.PathElement => StepPathElement(frame, incoming),
+            ParseFrameKind.PathNegatedSet => StepPathNegatedSet(frame),
             ParseFrameKind.ArgumentList => StepArgumentList(frame, incoming),
             ParseFrameKind.GroupBy => StepGroupBy(frame, incoming),
             ParseFrameKind.Having => StepHaving(frame, incoming),
@@ -1884,6 +1888,316 @@ public sealed class SparqlParser
             or SparqlTokenKind.PrefixedName;
     }
 
+    /// <summary>Advances a property path's alternative level: <c>seq ( '|' seq )*</c>.</summary>
+    /// <param name="frame">The property-path frame.</param>
+    /// <param name="incoming">A popped sequence on resume.</param>
+    /// <returns>The instruction for the driver; the popped result is the <see cref="PropertyPathExpression"/>.</returns>
+    private StepResult StepPropertyPath(ParseFrame frame, object? incoming)
+        => frame.Stage switch
+        {
+            0 => PathAlternativeStart(frame),
+            1 => PathAlternativeNext(frame, incoming),
+            _ => throw new SparqlParseException("Property path reached an unknown stage.", frame.StartSpan)
+        };
+
+    /// <summary>Begins the alternative list by pushing the first sequence.</summary>
+    /// <param name="frame">The property-path frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult PathAlternativeStart(ParseFrame frame)
+    {
+        frame.PathItems = [];
+        frame.Stage = 1;
+
+        return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PathSequence, StartSpan = Current.Span });
+    }
+
+    /// <summary>Adds a popped sequence, then pushes the next alternative or completes the path.</summary>
+    /// <param name="frame">The property-path frame.</param>
+    /// <param name="incoming">The popped sequence.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult PathAlternativeNext(ParseFrame frame, object? incoming)
+    {
+        frame.PathItems!.Add((PropertyPathExpression)incoming!);
+
+        if(Current.Kind == SparqlTokenKind.Pipe)
+        {
+            Advance();
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PathSequence, StartSpan = Current.Span });
+        }
+
+        return StepResult.Done(frame.PathItems.Count == 1 ? frame.PathItems[0] : new PathAlternative(frame.PathItems));
+    }
+
+    /// <summary>Advances a path sequence: <c>elt ( '/' elt )*</c>.</summary>
+    /// <param name="frame">The path-sequence frame.</param>
+    /// <param name="incoming">A popped element on resume.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult StepPathSequence(ParseFrame frame, object? incoming)
+        => frame.Stage switch
+        {
+            0 => PathSequenceStart(frame),
+            1 => PathSequenceNext(frame, incoming),
+            _ => throw new SparqlParseException("Path sequence reached an unknown stage.", frame.StartSpan)
+        };
+
+    /// <summary>Begins the sequence by pushing the first element.</summary>
+    /// <param name="frame">The path-sequence frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult PathSequenceStart(ParseFrame frame)
+    {
+        frame.PathItems = [];
+        frame.Stage = 1;
+
+        return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PathElement, StartSpan = Current.Span });
+    }
+
+    /// <summary>Adds a popped element, then pushes the next step or completes the sequence.</summary>
+    /// <param name="frame">The path-sequence frame.</param>
+    /// <param name="incoming">The popped element.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult PathSequenceNext(ParseFrame frame, object? incoming)
+    {
+        frame.PathItems!.Add((PropertyPathExpression)incoming!);
+
+        if(Current.Kind == SparqlTokenKind.Slash)
+        {
+            Advance();
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PathElement, StartSpan = Current.Span });
+        }
+
+        return StepResult.Done(frame.PathItems.Count == 1 ? frame.PathItems[0] : new PathSequence(frame.PathItems));
+    }
+
+    /// <summary>Advances a single path element: an optional inverse, a primary, and an optional quantifier.</summary>
+    /// <param name="frame">The path-element frame.</param>
+    /// <param name="incoming">A popped negated set or grouped path on resume.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult StepPathElement(ParseFrame frame, object? incoming)
+        => frame.Stage switch
+        {
+            0 => PathElementPrimary(frame),
+            1 => PathElementNegatedReceived(frame, incoming),
+            2 => PathElementGroupReceived(frame, incoming),
+            _ => throw new SparqlParseException("Path element reached an unknown stage.", frame.StartSpan)
+        };
+
+    /// <summary>
+    /// Reads the optional inverse marker and dispatches on the path primary: an IRI, <c>a</c>, a
+    /// negated property set, or a grouped path.
+    /// </summary>
+    /// <param name="frame">The path-element frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult PathElementPrimary(ParseFrame frame)
+    {
+        frame.PathInverted = Current.Kind == SparqlTokenKind.Caret;
+        if(frame.PathInverted)
+        {
+            Advance();
+        }
+
+        return Current.Kind switch
+        {
+            SparqlTokenKind.Iri => FinishPathElement(frame, new PathPredicate(ConsumeIriRef())),
+            SparqlTokenKind.PrefixedName => FinishPathElement(frame, new PathPredicate(ConsumePrefixedName())),
+            SparqlTokenKind.A => FinishPathElement(frame, new PathPredicate(ConsumeRdfTypeIriRef())),
+            SparqlTokenKind.Bang => PushNegatedSet(frame),
+            SparqlTokenKind.OpenParen => PushGroupedPath(frame),
+            _ => throw Expected("a path primary (an IRI, 'a', '!', or '(')", Current)
+        };
+    }
+
+    /// <summary>Pushes a negated property set, to be completed when it returns.</summary>
+    /// <param name="frame">The path-element frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult PushNegatedSet(ParseFrame frame)
+    {
+        frame.Stage = 1;
+
+        return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PathNegatedSet, StartSpan = Current.Span });
+    }
+
+    /// <summary>Consumes the opening parenthesis and pushes a grouped path, to be closed when it returns.</summary>
+    /// <param name="frame">The path-element frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult PushGroupedPath(ParseFrame frame)
+    {
+        Advance();
+        frame.Stage = 2;
+
+        return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PropertyPath, StartSpan = Current.Span });
+    }
+
+    /// <summary>Completes the element from a popped negated property set.</summary>
+    /// <param name="frame">The path-element frame.</param>
+    /// <param name="incoming">The popped negated property set.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult PathElementNegatedReceived(ParseFrame frame, object? incoming)
+    {
+        return FinishPathElement(frame, (PropertyPathExpression)incoming!);
+    }
+
+    /// <summary>Consumes the closing parenthesis and completes the element from a popped grouped path.</summary>
+    /// <param name="frame">The path-element frame.</param>
+    /// <param name="incoming">The popped grouped path.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult PathElementGroupReceived(ParseFrame frame, object? incoming)
+    {
+        if(Current.Kind != SparqlTokenKind.CloseParen)
+        {
+            throw Expected("')' to close the grouped path", Current);
+        }
+
+        Advance();
+
+        return FinishPathElement(frame, (PropertyPathExpression)incoming!);
+    }
+
+    /// <summary>Applies the optional quantifier and inverse to a path primary and completes the element.</summary>
+    /// <param name="frame">The path-element frame carrying the inverse flag.</param>
+    /// <param name="primary">The parsed path primary.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult FinishPathElement(ParseFrame frame, PropertyPathExpression primary)
+    {
+        PropertyPathExpression quantified = ApplyPathModifier(primary);
+        PropertyPathExpression element = frame.PathInverted ? new PathInverse(quantified) : quantified;
+
+        return StepResult.Done(element);
+    }
+
+    /// <summary>Applies the trailing <c>?</c> / <c>*</c> / <c>+</c> quantifier at the cursor, if any.</summary>
+    /// <param name="primary">The path primary to quantify.</param>
+    /// <returns>The quantified path, or the primary unchanged.</returns>
+    private PropertyPathExpression ApplyPathModifier(PropertyPathExpression primary)
+        => Current.Kind switch
+        {
+            SparqlTokenKind.Question => ConsumePathModifier(new PathZeroOrOne(primary)),
+            SparqlTokenKind.Star => ConsumePathModifier(new PathZeroOrMore(primary)),
+            SparqlTokenKind.Plus => ConsumePathModifier(new PathOneOrMore(primary)),
+            _ => primary
+        };
+
+    /// <summary>Consumes the quantifier token at the cursor and returns the already-built quantified path.</summary>
+    /// <param name="quantified">The quantified path node.</param>
+    /// <returns>The quantified path.</returns>
+    private PropertyPathExpression ConsumePathModifier(PropertyPathExpression quantified)
+    {
+        Advance();
+
+        return quantified;
+    }
+
+    /// <summary>Advances a negated property set: <c>!iri</c>, <c>!a</c>, <c>!^iri</c>, or <c>!( ... )</c>.</summary>
+    /// <param name="frame">The negated-set frame.</param>
+    /// <returns>The instruction for the driver; the popped result is the <see cref="PathNegatedSet"/>.</returns>
+    private StepResult StepPathNegatedSet(ParseFrame frame)
+        => frame.Stage switch
+        {
+            0 => PathNegatedSetStart(frame),
+            1 => PathNegatedSetNext(frame),
+            _ => throw new SparqlParseException("Negated property set reached an unknown stage.", frame.StartSpan)
+        };
+
+    /// <summary>Consumes <c>!</c> and the first element, opening the parenthesised list when present.</summary>
+    /// <param name="frame">The negated-set frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult PathNegatedSetStart(ParseFrame frame)
+    {
+        Advance();
+        frame.NegatedElements = [];
+
+        if(Current.Kind == SparqlTokenKind.OpenParen)
+        {
+            Advance();
+            if(Current.Kind == SparqlTokenKind.CloseParen)
+            {
+                Advance();
+
+                return StepResult.Done(new PathNegatedSet(frame.NegatedElements));
+            }
+
+            frame.NegatedElements.Add(ParsePathOneInPropertySet());
+            frame.Stage = 1;
+
+            return StepResult.Continue();
+        }
+
+        frame.NegatedElements.Add(ParsePathOneInPropertySet());
+
+        return StepResult.Done(new PathNegatedSet(frame.NegatedElements));
+    }
+
+    /// <summary>Reads one more <c>|</c>-separated element, or closes the parenthesised list.</summary>
+    /// <param name="frame">The negated-set frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult PathNegatedSetNext(ParseFrame frame)
+    {
+        if(Current.Kind == SparqlTokenKind.Pipe)
+        {
+            Advance();
+            frame.NegatedElements!.Add(ParsePathOneInPropertySet());
+
+            return StepResult.Continue();
+        }
+
+        if(Current.Kind != SparqlTokenKind.CloseParen)
+        {
+            throw Expected("'|' or ')' in the negated property set", Current);
+        }
+
+        Advance();
+
+        return StepResult.Done(new PathNegatedSet(frame.NegatedElements!));
+    }
+
+    /// <summary>Parses one <c>PathOneInPropertySet</c>: an optional inverse and an IRI or <c>a</c>.</summary>
+    /// <returns>The negated forward or inverse element.</returns>
+    private PathNegatedElement ParsePathOneInPropertySet()
+    {
+        bool inverse = Current.Kind == SparqlTokenKind.Caret;
+        if(inverse)
+        {
+            Advance();
+        }
+
+        IriRef iri = Current.Kind switch
+        {
+            SparqlTokenKind.Iri => ConsumeIriRef(),
+            SparqlTokenKind.PrefixedName => ConsumePrefixedName(),
+            SparqlTokenKind.A => ConsumeRdfTypeIriRef(),
+            _ => throw Expected("an IRI or 'a' in the negated property set", Current)
+        };
+
+        return inverse ? new PathNegatedInverse(iri) : new PathNegatedForward(iri);
+    }
+
+    /// <summary>Consumes the <c>a</c> shorthand at the cursor as an <c>rdf:type</c> IRI reference and advances.</summary>
+    /// <returns>The <c>rdf:type</c> IRI reference.</returns>
+    private IriRef ConsumeRdfTypeIriRef()
+    {
+        SourceSpan span = Current.Span;
+        Advance();
+
+        return new IriRef(rdfType, span);
+    }
+
+    /// <summary>
+    /// Determines whether a token kind can begin a property path (an IRI, <c>a</c>, an inverse, a
+    /// negated set, or a group).
+    /// </summary>
+    /// <param name="kind">The token kind to test.</param>
+    /// <returns><see langword="true"/> when the kind begins a path.</returns>
+    private static bool CanStartPath(SparqlTokenKind kind)
+    {
+        return kind is SparqlTokenKind.Iri
+            or SparqlTokenKind.A
+            or SparqlTokenKind.PrefixedName
+            or SparqlTokenKind.Caret
+            or SparqlTokenKind.Bang
+            or SparqlTokenKind.OpenParen;
+    }
+
     /// <summary>
     /// Returns the precedence of a binary operator token, or zero for a token that is not a binary
     /// operator (which therefore ends an operand chain).
@@ -1976,12 +2290,13 @@ public sealed class SparqlParser
     /// </summary>
     /// <param name="frame">The triple frame.</param>
     /// <returns>The instruction for the driver; the popped result is the run of parsed triples.</returns>
-    private StepResult StepTriple(ParseFrame frame)
+    private StepResult StepTriple(ParseFrame frame, object? incoming)
         => frame.Stage switch
         {
             0 => TripleSubject(frame),
             1 => TripleVerb(frame),
             2 => TripleObject(frame),
+            3 => TripleVerbPath(frame, incoming),
             _ => throw new SparqlParseException("Triple reached an unknown stage.", frame.StartSpan)
         };
 
@@ -1997,12 +2312,42 @@ public sealed class SparqlParser
         return StepResult.Continue();
     }
 
-    /// <summary>Parses one verb of the predicate-object list and moves to its objects.</summary>
+    /// <summary>
+    /// Parses one verb of the predicate-object list: a bare variable inline, or a property path pushed
+    /// as a child frame. Moves to the objects (or the path-received stage).
+    /// </summary>
     /// <param name="frame">The triple frame.</param>
     /// <returns>The instruction for the driver.</returns>
     private StepResult TripleVerb(ParseFrame frame)
     {
-        frame.Verb = ParseVerb();
+        if(Current.Kind == SparqlTokenKind.Variable)
+        {
+            frame.Verb = ConsumeVariable();
+            frame.Stage = 2;
+
+            return StepResult.Continue();
+        }
+
+        if(CanStartPath(Current.Kind))
+        {
+            frame.Stage = 3;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PropertyPath, StartSpan = Current.Span });
+        }
+
+        throw Expected("a predicate or property path", Current);
+    }
+
+    /// <summary>Converts the popped property path into a verb term — unwrapping a bare predicate — and moves to the objects.</summary>
+    /// <param name="frame">The triple frame.</param>
+    /// <param name="incoming">The popped property path.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult TripleVerbPath(ParseFrame frame, object? incoming)
+    {
+        PropertyPathExpression path = (PropertyPathExpression)incoming!;
+        frame.Verb = path is PathPredicate predicate
+            ? new ConstantTerm(new NamedNode(predicate.Predicate.Value))
+            : new PropertyPathTerm(path);
         frame.Stage = 2;
 
         return StepResult.Continue();
@@ -2183,32 +2528,6 @@ public sealed class SparqlParser
     private TriplePatternTerm ParseObject()
     {
         return ParseVarOrTerm();
-    }
-
-    /// <summary>
-    /// Parses a verb (predicate): the <c>a</c> shorthand, an IRI, a prefixed name, or a variable.
-    /// Property paths arrive in a later slice.
-    /// </summary>
-    /// <returns>The parsed predicate term.</returns>
-    private TriplePatternTerm ParseVerb()
-        => Current.Kind switch
-        {
-            SparqlTokenKind.A => ConsumeRdfTypeVerb(),
-            SparqlTokenKind.Iri => new ConstantTerm(new NamedNode(ConsumeIriRef().Value)),
-            SparqlTokenKind.PrefixedName => new ConstantTerm(new NamedNode(ConsumePrefixedName().Value)),
-            SparqlTokenKind.Variable => ConsumeVariable(),
-            _ => throw Expected("a predicate", Current)
-        };
-
-    /// <summary>
-    /// Consumes the <c>a</c> shorthand at the cursor as the <c>rdf:type</c> constant term and advances.
-    /// </summary>
-    /// <returns>The <c>rdf:type</c> constant term.</returns>
-    private ConstantTerm ConsumeRdfTypeVerb()
-    {
-        Advance();
-
-        return new ConstantTerm(new NamedNode(rdfType));
     }
 
     /// <summary>
@@ -2552,7 +2871,10 @@ public sealed class SparqlParser
         return kind is SparqlTokenKind.A
             or SparqlTokenKind.Iri
             or SparqlTokenKind.PrefixedName
-            or SparqlTokenKind.Variable;
+            or SparqlTokenKind.Variable
+            or SparqlTokenKind.Caret
+            or SparqlTokenKind.Bang
+            or SparqlTokenKind.OpenParen;
     }
 
     /// <summary>

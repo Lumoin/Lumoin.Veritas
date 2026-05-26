@@ -728,6 +728,91 @@ internal sealed class SparqlParserTests
         Assert.AreEqual(5, query.Modifier.Offset);
     }
 
+    /// <summary>A bare IRI predicate is unwrapped to a constant term, not a property path.</summary>
+    [TestMethod]
+    public void SimpleIriPredicateIsNotAPath()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * WHERE { ?s :p ?o }", pool);
+
+        TriplePatternTerm predicate = SingleBlockTriples(query)[0].Predicate;
+        Assert.IsInstanceOfType<ConstantTerm>(predicate);
+        Assert.AreEqual("http://e/p", ((NamedNode)((ConstantTerm)predicate).Term).Iri.ToString());
+    }
+
+    /// <summary>A sequence path collects its steps in order.</summary>
+    [TestMethod]
+    public void ParsesSequencePath()
+    {
+        using Utf8StringPool pool = new();
+        PathSequence sequence = (PathSequence)PredicatePath("PREFIX : <http://e/> SELECT * WHERE { ?s :a/:b ?o }", pool);
+
+        Assert.HasCount(2, sequence.Steps);
+    }
+
+    /// <summary>An alternative path collects its alternatives.</summary>
+    [TestMethod]
+    public void ParsesAlternativePath()
+    {
+        using Utf8StringPool pool = new();
+        PathAlternative alternative = (PathAlternative)PredicatePath("PREFIX : <http://e/> SELECT * WHERE { ?s :a|:b ?o }", pool);
+
+        Assert.HasCount(2, alternative.Alternatives);
+    }
+
+    /// <summary>An inverse path wraps its inner path.</summary>
+    [TestMethod]
+    public void ParsesInversePath()
+    {
+        using Utf8StringPool pool = new();
+        Assert.IsInstanceOfType<PathInverse>(PredicatePath("PREFIX : <http://e/> SELECT * WHERE { ?s ^:a ?o }", pool));
+    }
+
+    /// <summary>The three path quantifiers map to their dedicated nodes.</summary>
+    [TestMethod]
+    public void ParsesPathQuantifiers()
+    {
+        using Utf8StringPool pool = new();
+        Assert.IsInstanceOfType<PathZeroOrMore>(PredicatePath("PREFIX : <http://e/> SELECT * WHERE { ?s :a* ?o }", pool));
+        Assert.IsInstanceOfType<PathOneOrMore>(PredicatePath("PREFIX : <http://e/> SELECT * WHERE { ?s :a+ ?o }", pool));
+        Assert.IsInstanceOfType<PathZeroOrOne>(PredicatePath("PREFIX : <http://e/> SELECT * WHERE { ?s :a? ?o }", pool));
+    }
+
+    /// <summary>Grouping overrides path precedence: <c>(a|b)/c</c> is a sequence whose first step is an alternative.</summary>
+    [TestMethod]
+    public void ParsesGroupedPathPrecedence()
+    {
+        using Utf8StringPool pool = new();
+        PathSequence sequence = (PathSequence)PredicatePath("PREFIX : <http://e/> SELECT * WHERE { ?s (:a|:b)/:c ?o }", pool);
+
+        Assert.HasCount(2, sequence.Steps);
+        Assert.IsInstanceOfType<PathAlternative>(sequence.Steps[0]);
+    }
+
+    /// <summary>A negated property set records forward and inverse excluded predicates.</summary>
+    [TestMethod]
+    public void ParsesNegatedPropertySet()
+    {
+        using Utf8StringPool pool = new();
+        PathNegatedSet set = (PathNegatedSet)PredicatePath("PREFIX : <http://e/> SELECT * WHERE { ?s !(:a|^:b) ?o }", pool);
+
+        Assert.HasCount(2, set.Elements);
+        Assert.IsInstanceOfType<PathNegatedForward>(set.Elements[0]);
+        Assert.IsInstanceOfType<PathNegatedInverse>(set.Elements[1]);
+    }
+
+    /// <summary>The <c>a</c> shorthand is a path step, here followed by a zero-or-more sequence step.</summary>
+    [TestMethod]
+    public void ParsesAShorthandInPath()
+    {
+        using Utf8StringPool pool = new();
+        PathSequence sequence = (PathSequence)PredicatePath("PREFIX r: <http://r/> SELECT * WHERE { ?s a/r:sub* ?o }", pool);
+
+        PathPredicate first = (PathPredicate)sequence.Steps[0];
+        Assert.AreEqual("http://www.w3.org/1999/02/22-rdf-syntax-ns#type", first.Predicate.Value.ToString());
+        Assert.IsInstanceOfType<PathZeroOrMore>(sequence.Steps[1]);
+    }
+
     /// <summary>
     /// Feeding tokens one at a time, the parser suspends with <see cref="ParseStatus.NeedMore"/>
     /// before the stream completes and resumes to the same AST a whole-buffer parse produces — proof
@@ -822,6 +907,17 @@ internal sealed class SparqlParserTests
         IReadOnlyList<GraphPattern> members = Members(ParseQuery(text, pool));
 
         return ((FilterPattern)members[^1]).Expression;
+    }
+
+    /// <summary>
+    /// Parses a query whose single triple has a property-path predicate, and returns that path.
+    /// </summary>
+    /// <param name="text">The SPARQL query text.</param>
+    /// <param name="pool">The pool keeping the parsed handles alive.</param>
+    /// <returns>The property-path expression of the first triple's predicate.</returns>
+    private static PropertyPathExpression PredicatePath(string text, Utf8StringPool pool)
+    {
+        return ((PropertyPathTerm)SingleBlockTriples(ParseQuery(text, pool))[0].Predicate).Path;
     }
 
     /// <summary>

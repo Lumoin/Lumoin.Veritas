@@ -146,6 +146,15 @@ internal sealed class ParseFrame
 
     /// <summary>Gets or sets the parsed <c>ORDER BY</c> clause on the request frame.</summary>
     public OrderClause? Order { get; set; }
+
+    /// <summary>Gets or sets the accumulated alternatives or sequence steps of a property-path frame.</summary>
+    public List<PropertyPathExpression>? PathItems { get; set; }
+
+    /// <summary>Gets or sets whether a <see cref="ParseFrameKind.PathElement"/> carried a leading inverse <c>^</c>.</summary>
+    public bool PathInverted { get; set; }
+
+    /// <summary>Gets or sets the accumulated elements of a <see cref="ParseFrameKind.PathNegatedSet"/> frame.</summary>
+    public List<PathNegatedElement>? NegatedElements { get; set; }
 }
 
 /// <summary>

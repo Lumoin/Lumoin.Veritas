@@ -97,5 +97,14 @@ internal enum ParseFrameKind
     TripleTerm,
 
     /// <summary>A parenthesised, comma-separated argument or expression list: built-in / function call arguments, a <c>COALESCE</c> / <c>IF</c> list, or an <c>IN</c> set.</summary>
-    ArgumentList
+    ArgumentList,
+
+    /// <summary>A path sequence: <c>p1 / p2 / ...</c> (the <c>/</c>-separated level of a property path).</summary>
+    PathSequence,
+
+    /// <summary>A single path element: an optional inverse <c>^</c>, a path primary, and an optional <c>?</c> / <c>*</c> / <c>+</c> quantifier.</summary>
+    PathElement,
+
+    /// <summary>A negated property set: <c>!iri</c> or <c>!( ... )</c>.</summary>
+    PathNegatedSet
 }
