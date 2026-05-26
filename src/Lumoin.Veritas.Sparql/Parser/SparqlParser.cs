@@ -15,15 +15,23 @@ namespace Lumoin.Veritas.Sparql.Parser;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The parser is iterative for every production that admits unbounded grammar
-/// nesting: group graph patterns (which nest through braces, <c>OPTIONAL</c>,
-/// <c>UNION</c>, <c>GRAPH</c>, sub-<c>SELECT</c>, and the rest) are driven by an
-/// explicit <see cref="Stack{T}"/> of <see cref="ParseFrame"/> values, the same
-/// work-stack model the Turtle parser uses. The CLR call stack carries only the
-/// flat, bounded clause structure — the prologue, the form head, the dataset
-/// clauses, the solution modifiers — and the bounded leaf forms (variables, IRIs,
-/// prefixed names, literals, blank nodes). No production that can recurse without
-/// bound calls back into another via method recursion.
+/// The parser is iterative and resumable, the same production model the Turtle
+/// parser and the lexer use. Every production runs on an explicit
+/// <see cref="Stack{T}"/> of <see cref="ParseFrame"/> values; the driver advances
+/// the top frame one bounded step at a time. No production that can recurse or
+/// repeat without bound — group graph patterns, the prologue, the projection list,
+/// the dataset clauses, predicate-object and object lists — calls back into another
+/// via method recursion or reads an unbounded run of tokens in a single step.
+/// </para>
+/// <para>
+/// Because the driver checks lookahead before each step and a step never reads more
+/// than <see cref="MaxStepLookahead"/> tokens past the cursor, the parser suspends
+/// (returning <see cref="ParseStatus.NeedMore"/>) when the tokens a step needs have
+/// not arrived yet, and resumes from the same frame and stage when more are fed —
+/// without re-parsing. A query can therefore be parsed straight from the pipe-fed
+/// lexer without buffering the whole token stream. The materialised
+/// <see cref="ParseRequest"/> is a convenience over the same machinery for callers
+/// that already hold the full stream.
 /// </para>
 /// <para>
 /// Prefixed names and relative IRIs are resolved at parse time against the running
@@ -31,14 +39,15 @@ namespace Lumoin.Veritas.Sparql.Parser;
 /// <see cref="IriRef"/> values. An unbound prefix raises
 /// <see cref="SparqlParseException"/>.
 /// </para>
-/// <para>
-/// This build buffers the whole token stream up front. The <see cref="ParseStatus"/>
-/// vocabulary leaves room for a future streaming shape, but no production reports
-/// <see cref="ParseStatus.NeedMore"/> here.
-/// </para>
 /// </remarks>
 public sealed class SparqlParser
 {
+    //The most tokens any single step inspects past the cursor. The widest step reads a typed-literal
+    //object ("v" ^^ datatype) and then peeks the following separator, landing three tokens past the
+    //cursor; the driver only runs a step once this many tokens are buffered (or the stream is complete),
+    //so a step never reads an unbuffered token.
+    private const int MaxStepLookahead = 4;
+
     private readonly Stack<ParseFrame> frames = new();
     private readonly Dictionary<Utf8String, Utf8String> prefixMap = [];
     private readonly Utf8String xsdString;
@@ -50,27 +59,47 @@ public sealed class SparqlParser
     private readonly Utf8String rdfDirLangString;
     private readonly Utf8String rdfType;
     private Utf8String? baseIri;
+    private SparqlRequest? produced;
     private object? completed;
+    private bool tokensComplete;
+    private bool started;
     private int index;
     private int nextBlankNode;
 
     /// <summary>
-    /// Initialises a <see cref="SparqlParser"/> over a materialised token stream.
+    /// Initialises a <see cref="SparqlParser"/> over a fully materialised token stream.
     /// </summary>
     /// <param name="tokens">The lexed token stream, ending with <see cref="SparqlTokenKind.EndOfInput"/>.</param>
     /// <param name="pool">The pool used to intern parser-allocated identifiers (resolved IRIs, blank-node labels).</param>
     /// <param name="baseIri">The external base IRI relative references resolve against before any in-query <c>BASE</c>, or <see langword="null"/>.</param>
     public SparqlParser(IEnumerable<SparqlToken> tokens, Utf8StringPool pool, Utf8String? baseIri = null)
+        : this(pool, baseIri)
     {
         ArgumentNullException.ThrowIfNull(tokens);
-        ArgumentNullException.ThrowIfNull(pool);
 
-        Tokens = [];
         foreach(SparqlToken token in tokens)
         {
             Tokens.Add(token);
         }
 
+        tokensComplete = true;
+    }
+
+    /// <summary>
+    /// Initialises a <see cref="SparqlParser"/> that is fed tokens incrementally through
+    /// <see cref="FeedToken(SparqlToken)"/> and pulled through <see cref="TryParseRequest(out SparqlRequest)"/>.
+    /// </summary>
+    /// <param name="pool">The pool used to intern parser-allocated identifiers.</param>
+    /// <param name="baseIri">The external base IRI relative references resolve against before any in-query <c>BASE</c>, or <see langword="null"/>.</param>
+    /// <remarks>
+    /// The parser suspends — preserving its work stack — when the request needs tokens that have not
+    /// arrived yet, and resumes when more are fed, so the token buffer need not hold the whole query.
+    /// </remarks>
+    internal SparqlParser(Utf8StringPool pool, Utf8String? baseIri = null)
+    {
+        ArgumentNullException.ThrowIfNull(pool);
+
+        Tokens = [];
         Pool = pool;
         this.baseIri = baseIri;
 
@@ -84,45 +113,102 @@ public sealed class SparqlParser
         rdfType = pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"u8);
     }
 
-    /// <summary>Gets the materialised token stream the parser indexes into.</summary>
+    /// <summary>Gets the token buffer the parser indexes into.</summary>
     private List<SparqlToken> Tokens { get; }
 
     /// <summary>Gets the pool used to intern parser-allocated identifiers.</summary>
     private Utf8StringPool Pool { get; }
 
+    /// <summary>
+    /// Gets whether enough tokens are buffered for the next step to run without reading past the buffer.
+    /// </summary>
+    /// <remarks>
+    /// A step reads at most <see cref="MaxStepLookahead"/> tokens past the cursor. Once the stream is
+    /// complete the buffer ends with <see cref="SparqlTokenKind.EndOfInput"/> and the cursor clamps to
+    /// it, so the remaining short tail is read without further input.
+    /// </remarks>
+    private bool HasLookahead => tokensComplete || index + MaxStepLookahead < Tokens.Count;
+
     /// <summary>Gets the token at the cursor.</summary>
     private SparqlToken Current => Tokens[index];
 
     /// <summary>
-    /// Parses the buffered token stream into a <see cref="SparqlRequest"/>.
+    /// Parses the token stream into a <see cref="SparqlRequest"/>, assuming the whole stream is present.
     /// </summary>
     /// <returns>The parsed request AST.</returns>
-    /// <exception cref="SparqlParseException">The token stream is not a well-formed SPARQL query this build accepts.</exception>
+    /// <exception cref="SparqlParseException">The token stream is not a well-formed SPARQL query this build accepts, or it ended early.</exception>
     public SparqlRequest ParseRequest()
     {
-        Prologue prologue = ParsePrologue();
-
-        SparqlRequest request = Current.Kind switch
+        ParseStatus status = TryParseRequest(out SparqlRequest? request);
+        if(status != ParseStatus.Produced)
         {
-            SparqlTokenKind.SelectKeyword => ParseSelectQuery(prologue),
-            SparqlTokenKind.AskKeyword => ParseAskQuery(prologue),
-            SparqlTokenKind.ConstructKeyword => throw NotImplemented("CONSTRUCT"),
-            SparqlTokenKind.DescribeKeyword => throw NotImplemented("DESCRIBE"),
-            _ => throw Expected("a query form (SELECT, CONSTRUCT, ASK, or DESCRIBE)", Current)
-        };
-
-        if(Current.Kind != SparqlTokenKind.EndOfInput)
-        {
-            throw Expected("end of query", Current);
+            throw new SparqlParseException("The token stream ended before a complete SPARQL request was parsed.");
         }
 
-        return request;
+        return request!;
+    }
+
+    /// <summary>
+    /// Appends one lexed token to the parser's buffer. The terminating
+    /// <see cref="SparqlTokenKind.EndOfInput"/> token marks the stream complete.
+    /// </summary>
+    /// <param name="token">The next token in source order.</param>
+    internal void FeedToken(SparqlToken token)
+    {
+        Tokens.Add(token);
+
+        if(token.Kind == SparqlTokenKind.EndOfInput)
+        {
+            tokensComplete = true;
+        }
+    }
+
+    /// <summary>
+    /// Attempts to parse the request from the buffered tokens, suspending when more are needed.
+    /// </summary>
+    /// <param name="request">The parsed request when the result is <see cref="ParseStatus.Produced"/>; otherwise <see langword="null"/>.</param>
+    /// <returns>
+    /// <see cref="ParseStatus.Produced"/> once the whole request is parsed, or
+    /// <see cref="ParseStatus.NeedMore"/> when the parser needs tokens that have not been fed yet.
+    /// </returns>
+    internal ParseStatus TryParseRequest(out SparqlRequest? request)
+    {
+        if(produced is not null)
+        {
+            request = produced;
+
+            return ParseStatus.Produced;
+        }
+
+        request = null;
+
+        if(!started)
+        {
+            if(!HasLookahead)
+            {
+                return ParseStatus.NeedMore;
+            }
+
+            frames.Push(new ParseFrame { Kind = ParseFrameKind.Request, StartSpan = Current.Span });
+            started = true;
+        }
+
+        if(Drive() == DriveOutcome.NeedMore)
+        {
+            return ParseStatus.NeedMore;
+        }
+
+        produced = (SparqlRequest)completed!;
+        completed = null;
+        request = produced;
+
+        return ParseStatus.Produced;
     }
 
     /// <summary>
     /// Advances the cursor by one token, clamping at the terminating
-    /// <see cref="SparqlTokenKind.EndOfInput"/> so a step that reads past the end
-    /// keeps seeing the sentinel rather than indexing out of range.
+    /// <see cref="SparqlTokenKind.EndOfInput"/> so a step that reads past the end keeps seeing the
+    /// sentinel rather than indexing out of range.
     /// </summary>
     private void Advance()
     {
@@ -133,266 +219,20 @@ public sealed class SparqlParser
     }
 
     /// <summary>
-    /// Parses the <c>BASE</c> / <c>PREFIX</c> prologue, populating the prefix map
-    /// and base IRI used to resolve subsequent references.
+    /// Runs the work stack until it empties, advancing the top frame one step at a time and threading
+    /// each popped frame's result into the parent's next step. Suspends with the stack intact when the
+    /// next step would read tokens that have not arrived.
     /// </summary>
-    /// <returns>The prologue declarations in source order.</returns>
-    private Prologue ParsePrologue()
-    {
-        List<BaseDecl> bases = [];
-        List<PrefixDecl> prefixes = [];
-
-        while(true)
-        {
-            if(Current.Kind == SparqlTokenKind.BaseKeyword)
-            {
-                Advance();
-                if(Current.Kind != SparqlTokenKind.Iri)
-                {
-                    throw Expected("IRI after BASE", Current);
-                }
-
-                IriRef iri = ConsumeIriRef();
-                baseIri = iri.Value;
-                bases.Add(new BaseDecl(iri));
-
-                continue;
-            }
-
-            if(Current.Kind == SparqlTokenKind.PrefixKeyword)
-            {
-                Advance();
-                if(Current.Kind != SparqlTokenKind.PrefixNamespace)
-                {
-                    throw Expected("namespace prefix after PREFIX", Current);
-                }
-
-                Utf8String prefixLabel = Current.Value;
-                Advance();
-                if(Current.Kind != SparqlTokenKind.Iri)
-                {
-                    throw Expected("IRI in PREFIX declaration", Current);
-                }
-
-                IriRef ns = ConsumeIriRef();
-                prefixMap[prefixLabel] = ns.Value;
-                prefixes.Add(new PrefixDecl(prefixLabel, ns));
-
-                continue;
-            }
-
-            break;
-        }
-
-        return new Prologue(bases, prefixes);
-    }
-
-    /// <summary>
-    /// Parses a <c>SELECT</c> query: the select clause, dataset clauses, the
-    /// <c>WHERE</c> pattern, and the solution modifiers.
-    /// </summary>
-    /// <param name="prologue">The already-parsed prologue.</param>
-    /// <returns>The assembled query.</returns>
-    private SparqlQuery ParseSelectQuery(Prologue prologue)
-    {
-        SelectQuery select = ParseSelectClause();
-        DatasetClause dataset = ParseDatasetClauses();
-        WhereClause where = ParseWhereClause();
-        SolutionModifier modifier = ParseSolutionModifier();
-
-        return new SparqlQuery(prologue, select, dataset, where, modifier, Values: null);
-    }
-
-    /// <summary>
-    /// Parses an <c>ASK</c> query: the dataset clauses, the <c>WHERE</c> pattern,
-    /// and the solution modifiers.
-    /// </summary>
-    /// <param name="prologue">The already-parsed prologue.</param>
-    /// <returns>The assembled query.</returns>
-    private SparqlQuery ParseAskQuery(Prologue prologue)
-    {
-        //The cursor is on the ASK keyword.
-        Advance();
-        DatasetClause dataset = ParseDatasetClauses();
-        WhereClause where = ParseWhereClause();
-        SolutionModifier modifier = ParseSolutionModifier();
-
-        return new SparqlQuery(prologue, new AskQuery(), dataset, where, modifier, Values: null);
-    }
-
-    /// <summary>
-    /// Parses the <c>SELECT</c> clause: the optional <c>DISTINCT</c> / <c>REDUCED</c>
-    /// modifier and either <c>*</c> or a non-empty projection list.
-    /// </summary>
-    /// <returns>The select-query head.</returns>
-    private SelectQuery ParseSelectClause()
-    {
-        //The cursor is on the SELECT keyword.
-        Advance();
-
-        bool distinct = false;
-        bool reduced = false;
-        if(Current.Kind == SparqlTokenKind.DistinctKeyword)
-        {
-            distinct = true;
-            Advance();
-        }
-        else if(Current.Kind == SparqlTokenKind.ReducedKeyword)
-        {
-            reduced = true;
-            Advance();
-        }
-
-        if(Current.Kind == SparqlTokenKind.Star)
-        {
-            Advance();
-
-            return new SelectQuery(distinct, reduced, IsStar: true, Projections: []);
-        }
-
-        List<SelectProjection> projections = [];
-        while(true)
-        {
-            if(Current.Kind == SparqlTokenKind.Variable)
-            {
-                projections.Add(new SelectVariable(new SparqlVariable(Current.Value)));
-                Advance();
-
-                continue;
-            }
-
-            if(Current.Kind == SparqlTokenKind.OpenParen)
-            {
-                throw new SparqlParseException(
-                    "SELECT (expression AS ?var) projections are not yet implemented in this build.",
-                    Current.Span);
-            }
-
-            break;
-        }
-
-        if(projections.Count == 0)
-        {
-            throw Expected("a projected variable or '*'", Current);
-        }
-
-        return new SelectQuery(distinct, reduced, IsStar: false, projections);
-    }
-
-    /// <summary>
-    /// Parses zero or more <c>FROM</c> / <c>FROM NAMED</c> dataset clauses.
-    /// </summary>
-    /// <returns>The dataset clause; both graph lists are empty when no clause is present.</returns>
-    private DatasetClause ParseDatasetClauses()
-    {
-        List<IriRef> defaultGraphs = [];
-        List<IriRef> namedGraphs = [];
-
-        while(Current.Kind == SparqlTokenKind.FromKeyword)
-        {
-            Advance();
-            if(Current.Kind == SparqlTokenKind.NamedKeyword)
-            {
-                Advance();
-                namedGraphs.Add(ConsumeIriOrPrefixedName("IRI after FROM NAMED"));
-
-                continue;
-            }
-
-            defaultGraphs.Add(ConsumeIriOrPrefixedName("IRI after FROM"));
-        }
-
-        return new DatasetClause(defaultGraphs, namedGraphs);
-    }
-
-    /// <summary>
-    /// Parses the <c>WHERE</c> clause: the optional <c>WHERE</c> keyword followed by
-    /// a group graph pattern.
-    /// </summary>
-    /// <returns>The where clause.</returns>
-    private WhereClause ParseWhereClause()
-    {
-        if(Current.Kind == SparqlTokenKind.WhereKeyword)
-        {
-            Advance();
-        }
-
-        if(Current.Kind != SparqlTokenKind.OpenBrace)
-        {
-            throw Expected("'{' to begin the WHERE group graph pattern", Current);
-        }
-
-        GraphPattern pattern = ParseGroupGraphPattern();
-
-        return new WhereClause(pattern);
-    }
-
-    /// <summary>
-    /// Parses the solution modifiers that follow the <c>WHERE</c> pattern. This
-    /// build accepts the <c>LIMIT</c> / <c>OFFSET</c> slice; <c>GROUP BY</c>,
-    /// <c>HAVING</c>, and <c>ORDER BY</c> are deferred until the expression parser
-    /// lands.
-    /// </summary>
-    /// <returns>The solution modifiers.</returns>
-    private SolutionModifier ParseSolutionModifier()
-    {
-        if(Current.Kind is SparqlTokenKind.GroupKeyword or SparqlTokenKind.HavingKeyword or SparqlTokenKind.OrderKeyword)
-        {
-            throw new SparqlParseException(
-                $"The {Current.Kind} solution modifier is not yet implemented in this build.",
-                Current.Span);
-        }
-
-        int? limit = null;
-        int? offset = null;
-        while(true)
-        {
-            if(Current.Kind == SparqlTokenKind.LimitKeyword && limit is null)
-            {
-                Advance();
-                limit = ConsumeInteger("LIMIT value");
-
-                continue;
-            }
-
-            if(Current.Kind == SparqlTokenKind.OffsetKeyword && offset is null)
-            {
-                Advance();
-                offset = ConsumeInteger("OFFSET value");
-
-                continue;
-            }
-
-            break;
-        }
-
-        return new SolutionModifier(Group: null, Having: null, Order: null, offset, limit);
-    }
-
-    /// <summary>
-    /// Drives the explicit work stack to parse a single group graph pattern,
-    /// returning once the frame the pattern pushed has popped with its result.
-    /// </summary>
-    /// <returns>The parsed group graph pattern.</returns>
-    private GraphPattern ParseGroupGraphPattern()
-    {
-        frames.Push(new ParseFrame { Kind = ParseFrameKind.GroupGraphPattern, StartSpan = Current.Span });
-        Drive();
-
-        GraphPattern result = (GraphPattern)completed!;
-        completed = null;
-
-        return result;
-    }
-
-    /// <summary>
-    /// Runs the work stack until it empties, advancing the top frame one step at a
-    /// time and threading each popped frame's result into the parent's next step.
-    /// </summary>
-    private void Drive()
+    /// <returns>Whether the request was produced or the parser needs more tokens.</returns>
+    private DriveOutcome Drive()
     {
         while(frames.Count > 0)
         {
+            if(!HasLookahead)
+            {
+                return DriveOutcome.NeedMore;
+            }
+
             ParseFrame top = frames.Peek();
             StepResult step = Step(top, completed);
             completed = null;
@@ -425,6 +265,8 @@ public sealed class SparqlParser
                 }
             }
         }
+
+        return DriveOutcome.Produced;
     }
 
     /// <summary>
@@ -437,18 +279,270 @@ public sealed class SparqlParser
     {
         return frame.Kind switch
         {
+            ParseFrameKind.Request => StepRequest(frame, incoming),
+            ParseFrameKind.SelectClause => StepSelectClause(frame),
             ParseFrameKind.GroupGraphPattern => StepGroupGraphPattern(frame, incoming),
+            ParseFrameKind.Triple => StepTriple(frame),
             _ => throw new SparqlParseException($"Parser production '{frame.Kind}' is not yet implemented in this build.", frame.StartSpan)
         };
     }
 
     /// <summary>
-    /// Advances a group graph pattern: consumes the opening brace, then loops over
-    /// triple blocks, merging contiguous runs into a single basic graph pattern
-    /// block, until the closing brace.
+    /// Advances the top-level request: the prologue, the form dispatch, the dataset clauses, the
+    /// <c>WHERE</c> pattern, and the solution modifiers, assembling the query when complete.
+    /// </summary>
+    /// <param name="frame">The request frame.</param>
+    /// <param name="incoming">A pushed sub-production's result on resume.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult StepRequest(ParseFrame frame, object? incoming)
+    {
+        switch(frame.Stage)
+        {
+            case 0:
+            {
+                frame.Bases ??= [];
+                frame.Prefixes ??= [];
+
+                if(Current.Kind == SparqlTokenKind.BaseKeyword)
+                {
+                    ParseBaseDeclaration(frame);
+
+                    return StepResult.Continue();
+                }
+
+                if(Current.Kind == SparqlTokenKind.PrefixKeyword)
+                {
+                    ParsePrefixDeclaration(frame);
+
+                    return StepResult.Continue();
+                }
+
+                frame.Stage = 1;
+
+                return StepResult.Continue();
+            }
+
+            case 1:
+            {
+                switch(Current.Kind)
+                {
+                    case SparqlTokenKind.SelectKeyword:
+                    {
+                        frame.Stage = 2;
+
+                        return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.SelectClause, StartSpan = Current.Span });
+                    }
+
+                    case SparqlTokenKind.AskKeyword:
+                    {
+                        Advance();
+                        frame.Form = new AskQuery();
+                        frame.Stage = 3;
+
+                        return StepResult.Continue();
+                    }
+
+                    case SparqlTokenKind.ConstructKeyword:
+                    {
+                        throw NotImplemented("CONSTRUCT");
+                    }
+
+                    case SparqlTokenKind.DescribeKeyword:
+                    {
+                        throw NotImplemented("DESCRIBE");
+                    }
+
+                    default:
+                    {
+                        throw Expected("a query form (SELECT, CONSTRUCT, ASK, or DESCRIBE)", Current);
+                    }
+                }
+            }
+
+            case 2:
+            {
+                frame.Form = (QueryForm)incoming!;
+                frame.Stage = 3;
+
+                return StepResult.Continue();
+            }
+
+            case 3:
+            {
+                frame.DefaultGraphs ??= [];
+                frame.NamedGraphs ??= [];
+
+                if(Current.Kind == SparqlTokenKind.FromKeyword)
+                {
+                    ParseFromClause(frame);
+
+                    return StepResult.Continue();
+                }
+
+                frame.Dataset = new DatasetClause(frame.DefaultGraphs, frame.NamedGraphs);
+                frame.Stage = 4;
+
+                return StepResult.Continue();
+            }
+
+            case 4:
+            {
+                if(Current.Kind == SparqlTokenKind.WhereKeyword)
+                {
+                    Advance();
+                }
+
+                if(Current.Kind != SparqlTokenKind.OpenBrace)
+                {
+                    throw Expected("'{' to begin the WHERE group graph pattern", Current);
+                }
+
+                frame.Stage = 5;
+
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GroupGraphPattern, StartSpan = Current.Span });
+            }
+
+            case 5:
+            {
+                frame.Where = new WhereClause((GraphPattern)incoming!);
+                frame.Stage = 6;
+
+                return StepResult.Continue();
+            }
+
+            case 6:
+            {
+                if(Current.Kind is SparqlTokenKind.GroupKeyword or SparqlTokenKind.HavingKeyword or SparqlTokenKind.OrderKeyword)
+                {
+                    throw new SparqlParseException(
+                        $"The {Current.Kind} solution modifier is not yet implemented in this build.",
+                        Current.Span);
+                }
+
+                if(Current.Kind == SparqlTokenKind.LimitKeyword && frame.Limit is null)
+                {
+                    Advance();
+                    frame.Limit = ConsumeInteger("LIMIT value");
+
+                    return StepResult.Continue();
+                }
+
+                if(Current.Kind == SparqlTokenKind.OffsetKeyword && frame.Offset is null)
+                {
+                    Advance();
+                    frame.Offset = ConsumeInteger("OFFSET value");
+
+                    return StepResult.Continue();
+                }
+
+                frame.Stage = 7;
+
+                return StepResult.Continue();
+            }
+
+            case 7:
+            {
+                if(Current.Kind != SparqlTokenKind.EndOfInput)
+                {
+                    throw Expected("end of query", Current);
+                }
+
+                SparqlQuery query = new(
+                    new Prologue(frame.Bases!, frame.Prefixes!),
+                    frame.Form!,
+                    frame.Dataset!,
+                    frame.Where!,
+                    new SolutionModifier(Group: null, Having: null, Order: null, frame.Offset, frame.Limit),
+                    Values: null);
+
+                return StepResult.Done(query);
+            }
+
+            default:
+            {
+                throw new SparqlParseException("Request reached an unknown stage.", frame.StartSpan);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Advances a <c>SELECT</c> clause: the optional <c>DISTINCT</c> / <c>REDUCED</c> modifier and
+    /// either <c>*</c> or a projection list parsed one variable per step.
+    /// </summary>
+    /// <param name="frame">The select-clause frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult StepSelectClause(ParseFrame frame)
+    {
+        switch(frame.Stage)
+        {
+            case 0:
+            {
+                //The cursor is on the SELECT keyword.
+                Advance();
+
+                if(Current.Kind == SparqlTokenKind.DistinctKeyword)
+                {
+                    frame.IsDistinct = true;
+                    Advance();
+                }
+                else if(Current.Kind == SparqlTokenKind.ReducedKeyword)
+                {
+                    frame.IsReduced = true;
+                    Advance();
+                }
+
+                if(Current.Kind == SparqlTokenKind.Star)
+                {
+                    Advance();
+
+                    return StepResult.Done(new SelectQuery(frame.IsDistinct, frame.IsReduced, IsStar: true, Projections: []));
+                }
+
+                frame.Projections = [];
+                frame.Stage = 1;
+
+                return StepResult.Continue();
+            }
+
+            case 1:
+            {
+                if(Current.Kind == SparqlTokenKind.Variable)
+                {
+                    frame.Projections!.Add(new SelectVariable(new SparqlVariable(Current.Value)));
+                    Advance();
+
+                    return StepResult.Continue();
+                }
+
+                if(Current.Kind == SparqlTokenKind.OpenParen)
+                {
+                    throw new SparqlParseException(
+                        "SELECT (expression AS ?var) projections are not yet implemented in this build.",
+                        Current.Span);
+                }
+
+                if(frame.Projections!.Count == 0)
+                {
+                    throw Expected("a projected variable or '*'", Current);
+                }
+
+                return StepResult.Done(new SelectQuery(frame.IsDistinct, frame.IsReduced, IsStar: false, frame.Projections));
+            }
+
+            default:
+            {
+                throw new SparqlParseException("Select clause reached an unknown stage.", frame.StartSpan);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Advances a group graph pattern: consumes the opening brace, then per step appends a popped
+    /// triple run or member and decides whether to push the next triple, push a member, or finish at
+    /// the closing brace. Contiguous triple runs merge into a single basic graph pattern block.
     /// </summary>
     /// <param name="frame">The group-graph-pattern frame.</param>
-    /// <param name="incoming">A nested member's result on resume (unused in this build's member set).</param>
+    /// <param name="incoming">A popped triple run or member on resume.</param>
     /// <returns>The instruction for the driver.</returns>
     private StepResult StepGroupGraphPattern(ParseFrame frame, object? incoming)
     {
@@ -460,48 +554,121 @@ public sealed class SparqlParser
             frame.PendingTriples = [];
             frame.Stage = 1;
         }
+        else if(incoming is List<TriplePattern> triples)
+        {
+            frame.PendingTriples!.AddRange(triples);
+            ConsumeOptionalDot();
+        }
         else if(incoming is GraphPattern member)
         {
-            //A pushed non-triple member completed; it breaks the current BGP run.
+            //A non-triple member breaks the current basic graph pattern run.
             FlushPendingTriples(frame);
             frame.Members!.Add(member);
+            ConsumeOptionalDot();
         }
 
-        while(true)
+        if(Current.Kind == SparqlTokenKind.CloseBrace)
         {
-            if(Current.Kind == SparqlTokenKind.CloseBrace)
-            {
-                FlushPendingTriples(frame);
-                Advance();
+            FlushPendingTriples(frame);
+            Advance();
 
-                return StepResult.Done(new GroupGraphPattern(frame.Members!));
+            return StepResult.Done(new GroupGraphPattern(frame.Members!));
+        }
+
+        if(Current.Kind == SparqlTokenKind.EndOfInput)
+        {
+            throw Expected("'}' to close the group graph pattern", Current);
+        }
+
+        if(CanStartTriple(Current.Kind))
+        {
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Triple, StartSpan = Current.Span });
+        }
+
+        throw Expected("a triple pattern or '}'", Current);
+    }
+
+    /// <summary>
+    /// Advances one <c>TriplesSameSubject</c>: parses the subject, then walks its predicate-object
+    /// list one object per step, emitting a triple for each object and threading the subject and the
+    /// current verb through the frame.
+    /// </summary>
+    /// <param name="frame">The triple frame.</param>
+    /// <returns>The instruction for the driver; the popped result is the run of parsed triples.</returns>
+    private StepResult StepTriple(ParseFrame frame)
+    {
+        switch(frame.Stage)
+        {
+            case 0:
+            {
+                frame.Subject = ParseVarOrTerm();
+                frame.TripleAccumulator = [];
+                frame.Stage = 1;
+
+                return StepResult.Continue();
             }
 
-            if(Current.Kind == SparqlTokenKind.EndOfInput)
+            case 1:
             {
-                throw Expected("'}' to close the group graph pattern", Current);
+                frame.Verb = ParseVerb();
+                frame.Stage = 2;
+
+                return StepResult.Continue();
             }
 
-            if(CanStartTriple(Current.Kind))
+            case 2:
             {
-                ParseTriplesSameSubject(frame.PendingTriples!);
+                TriplePatternTerm objectTerm = ParseObject();
+                frame.TripleAccumulator!.Add(new TriplePattern(frame.Subject!, frame.Verb!, objectTerm));
 
-                //A '.' terminates or separates triple blocks; consume it.
-                if(Current.Kind == SparqlTokenKind.Period)
+                if(Current.Kind == SparqlTokenKind.Comma)
                 {
                     Advance();
+
+                    return StepResult.Continue();
                 }
 
-                continue;
+                if(Current.Kind == SparqlTokenKind.Semicolon)
+                {
+                    while(Current.Kind == SparqlTokenKind.Semicolon)
+                    {
+                        Advance();
+                    }
+
+                    if(CanStartVerb(Current.Kind))
+                    {
+                        frame.Stage = 1;
+
+                        return StepResult.Continue();
+                    }
+
+                    return StepResult.Done(frame.TripleAccumulator);
+                }
+
+                return StepResult.Done(frame.TripleAccumulator);
             }
 
-            throw Expected("a triple pattern or '}'", Current);
+            default:
+            {
+                throw new SparqlParseException("Triple reached an unknown stage.", frame.StartSpan);
+            }
         }
     }
 
     /// <summary>
-    /// Moves the frame's pending triple run, if any, into the members list as a
-    /// single <see cref="BasicGraphPatternBlock"/> and resets the run.
+    /// Consumes a single optional <c>.</c> that terminates or separates a triple block.
+    /// </summary>
+    private void ConsumeOptionalDot()
+    {
+        if(Current.Kind == SparqlTokenKind.Period)
+        {
+            Advance();
+        }
+    }
+
+    /// <summary>
+    /// Moves the frame's pending triple run, if any, into the members list as a single
+    /// <see cref="BasicGraphPatternBlock"/> and resets the run.
     /// </summary>
     /// <param name="frame">The group-graph-pattern frame.</param>
     private static void FlushPendingTriples(ParseFrame frame)
@@ -514,55 +681,67 @@ public sealed class SparqlParser
     }
 
     /// <summary>
-    /// Parses one <c>TriplesSameSubject</c>: a subject followed by its non-empty
-    /// predicate-object list, appending each resulting triple to
-    /// <paramref name="triples"/>.
+    /// Parses a <c>BASE</c> declaration, recording it and updating the running base IRI.
     /// </summary>
-    /// <param name="triples">The accumulator the parsed triples are appended to.</param>
-    private void ParseTriplesSameSubject(List<TriplePattern> triples)
+    /// <param name="frame">The request frame accumulating the prologue.</param>
+    private void ParseBaseDeclaration(ParseFrame frame)
     {
-        TriplePatternTerm subject = ParseVarOrTerm();
-
-        while(true)
+        Advance();
+        if(Current.Kind != SparqlTokenKind.Iri)
         {
-            TriplePatternTerm verb = ParseVerb();
-
-            while(true)
-            {
-                TriplePatternTerm objectTerm = ParseObject();
-                triples.Add(new TriplePattern(subject, verb, objectTerm));
-
-                if(Current.Kind == SparqlTokenKind.Comma)
-                {
-                    Advance();
-
-                    continue;
-                }
-
-                break;
-            }
-
-            if(Current.Kind != SparqlTokenKind.Semicolon)
-            {
-                break;
-            }
-
-            while(Current.Kind == SparqlTokenKind.Semicolon)
-            {
-                Advance();
-            }
-
-            //A trailing ';' before a terminator ends the list.
-            if(!CanStartVerb(Current.Kind))
-            {
-                break;
-            }
+            throw Expected("IRI after BASE", Current);
         }
+
+        IriRef iri = ConsumeIriRef();
+        baseIri = iri.Value;
+        frame.Bases!.Add(new BaseDecl(iri));
     }
 
     /// <summary>
-    /// Parses a <c>VarOrTerm</c> in subject or object position: a variable, an IRI,
-    /// a prefixed name, a blank node, or an RDF literal.
+    /// Parses a <c>PREFIX</c> declaration, recording it and binding the prefix in the prefix map.
+    /// </summary>
+    /// <param name="frame">The request frame accumulating the prologue.</param>
+    private void ParsePrefixDeclaration(ParseFrame frame)
+    {
+        Advance();
+        if(Current.Kind != SparqlTokenKind.PrefixNamespace)
+        {
+            throw Expected("namespace prefix after PREFIX", Current);
+        }
+
+        Utf8String prefixLabel = Current.Value;
+        Advance();
+        if(Current.Kind != SparqlTokenKind.Iri)
+        {
+            throw Expected("IRI in PREFIX declaration", Current);
+        }
+
+        IriRef ns = ConsumeIriRef();
+        prefixMap[prefixLabel] = ns.Value;
+        frame.Prefixes!.Add(new PrefixDecl(prefixLabel, ns));
+    }
+
+    /// <summary>
+    /// Parses one <c>FROM</c> or <c>FROM NAMED</c> dataset clause into the request frame.
+    /// </summary>
+    /// <param name="frame">The request frame accumulating the dataset.</param>
+    private void ParseFromClause(ParseFrame frame)
+    {
+        Advance();
+        if(Current.Kind == SparqlTokenKind.NamedKeyword)
+        {
+            Advance();
+            frame.NamedGraphs!.Add(ConsumeIriOrPrefixedName("IRI after FROM NAMED"));
+
+            return;
+        }
+
+        frame.DefaultGraphs!.Add(ConsumeIriOrPrefixedName("IRI after FROM"));
+    }
+
+    /// <summary>
+    /// Parses a <c>VarOrTerm</c> in subject or object position: a variable, an IRI, a prefixed name,
+    /// a blank node, or an RDF literal.
     /// </summary>
     /// <returns>The parsed triple-pattern term.</returns>
     private TriplePatternTerm ParseVarOrTerm()
@@ -617,8 +796,8 @@ public sealed class SparqlParser
     }
 
     /// <summary>
-    /// Parses an object term. In this build an object is a <c>VarOrTerm</c>; the
-    /// triple-node and path-augmented object forms arrive in later slices.
+    /// Parses an object term. In this build an object is a <c>VarOrTerm</c>; the triple-node and
+    /// path-augmented object forms arrive in later slices.
     /// </summary>
     /// <returns>The parsed object term.</returns>
     private TriplePatternTerm ParseObject()
@@ -627,8 +806,8 @@ public sealed class SparqlParser
     }
 
     /// <summary>
-    /// Parses a verb (predicate): the <c>a</c> shorthand, an IRI, a prefixed name,
-    /// or a variable. Property paths arrive in a later slice.
+    /// Parses a verb (predicate): the <c>a</c> shorthand, an IRI, a prefixed name, or a variable.
+    /// Property paths arrive in a later slice.
     /// </summary>
     /// <returns>The parsed predicate term.</returns>
     private TriplePatternTerm ParseVerb()
@@ -703,8 +882,8 @@ public sealed class SparqlParser
     }
 
     /// <summary>
-    /// Consumes either an IRI or a prefixed name at the cursor, used where the
-    /// grammar's <c>iri</c> production appears.
+    /// Consumes either an IRI or a prefixed name at the cursor, used where the grammar's <c>iri</c>
+    /// production appears.
     /// </summary>
     /// <param name="what">A description of the expected element for the error message.</param>
     /// <returns>The resolved IRI reference.</returns>
@@ -719,8 +898,8 @@ public sealed class SparqlParser
     }
 
     /// <summary>
-    /// Parses an RDF literal at the cursor: a string with an optional language tag,
-    /// directional language tag, or datatype; or a numeric or boolean literal.
+    /// Parses an RDF literal at the cursor: a string with an optional language tag, directional
+    /// language tag, or datatype; or a numeric or boolean literal.
     /// </summary>
     /// <returns>The literal term.</returns>
     private Literal ParseRdfLiteral()
@@ -794,8 +973,8 @@ public sealed class SparqlParser
     }
 
     /// <summary>
-    /// Consumes the numeric or boolean literal at the cursor, tagging it with the
-    /// given datatype IRI, and advances.
+    /// Consumes the numeric or boolean literal at the cursor, tagging it with the given datatype IRI,
+    /// and advances.
     /// </summary>
     /// <param name="datatype">The interned datatype IRI for the literal's lexical form.</param>
     /// <returns>The literal term.</returns>
@@ -846,8 +1025,8 @@ public sealed class SparqlParser
     }
 
     /// <summary>
-    /// Resolves an IRI reference against the current base, returning the absolute
-    /// form. With no base, the reference is interned unchanged.
+    /// Resolves an IRI reference against the current base, returning the absolute form. With no base,
+    /// the reference is interned unchanged.
     /// </summary>
     /// <param name="iriText">The IRI text, without its angle brackets.</param>
     /// <returns>The resolved, interned IRI.</returns>
@@ -864,8 +1043,8 @@ public sealed class SparqlParser
     }
 
     /// <summary>
-    /// Expands a prefixed name to its absolute IRI by concatenating the bound
-    /// namespace with the local part.
+    /// Expands a prefixed name to its absolute IRI by concatenating the bound namespace with the local
+    /// part.
     /// </summary>
     /// <param name="prefixedName">The prefixed name in <c>prefix:local</c> form.</param>
     /// <param name="span">The source span, for the error message.</param>
@@ -906,8 +1085,8 @@ public sealed class SparqlParser
     }
 
     /// <summary>
-    /// Splits a directional language tag (for example <c>en--ltr</c>) into its
-    /// language subtags and base direction.
+    /// Splits a directional language tag (for example <c>en--ltr</c>) into its language subtags and
+    /// base direction.
     /// </summary>
     /// <param name="tag">The tag value, without the leading <c>@</c>.</param>
     /// <param name="span">The source span, for the error message.</param>
@@ -1026,9 +1205,8 @@ public sealed class SparqlParser
     }
 
     /// <summary>
-    /// The instruction returned by a step method: pop the current frame with a
-    /// completed result, push a new frame to recurse into, or continue the same
-    /// frame on the next iteration.
+    /// The instruction returned by a step method: pop the current frame with a completed result, push
+    /// a new frame to recurse into, or continue the same frame on the next iteration.
     /// </summary>
     private readonly struct StepResult
     {
@@ -1073,6 +1251,15 @@ public sealed class SparqlParser
         {
             return new StepResult(StepAction.Push, null, next);
         }
+
+        /// <summary>
+        /// Creates a continue instruction that re-enters the current frame on the next iteration.
+        /// </summary>
+        /// <returns>The instruction.</returns>
+        public static StepResult Continue()
+        {
+            return new StepResult(StepAction.Continue, null, null);
+        }
     }
 
     /// <summary>The action a <see cref="StepResult"/> directs the driver to take.</summary>
@@ -1086,5 +1273,15 @@ public sealed class SparqlParser
 
         /// <summary>Re-enter the current frame on the next iteration.</summary>
         Continue
+    }
+
+    /// <summary>The outcome of driving the work stack.</summary>
+    private enum DriveOutcome
+    {
+        /// <summary>The request was produced; the stack is empty.</summary>
+        Produced,
+
+        /// <summary>The next step needs tokens that have not been fed yet.</summary>
+        NeedMore
     }
 }

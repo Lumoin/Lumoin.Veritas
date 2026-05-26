@@ -314,6 +314,53 @@ internal sealed class SparqlParserTests
     }
 
     /// <summary>
+    /// Feeding tokens one at a time, the parser suspends with <see cref="ParseStatus.NeedMore"/>
+    /// before the stream completes and resumes to the same AST a whole-buffer parse produces — proof
+    /// the driver is genuinely resumable and does not require the token stream up front.
+    /// </summary>
+    [TestMethod]
+    public void ParsesIncrementallyTokenByToken()
+    {
+        using Utf8StringPool pool = new();
+        const string Text = "PREFIX ex: <http://example.org/> SELECT ?s WHERE { ?s ex:p ?o ; ex:q ?r . ?a ex:b ?c } LIMIT 5";
+
+        List<SparqlToken> tokens = [];
+        foreach(SparqlToken token in new SparqlLexer(Encoding.UTF8.GetBytes(Text), pool).Tokenize())
+        {
+            tokens.Add(token);
+        }
+
+        SparqlParser parser = new(pool);
+        SparqlRequest? request = null;
+        ParseStatus status = ParseStatus.NeedMore;
+        bool suspendedBeforeEnd = false;
+
+        for(int i = 0; i < tokens.Count; i++)
+        {
+            parser.FeedToken(tokens[i]);
+            status = parser.TryParseRequest(out request);
+
+            if(status == ParseStatus.NeedMore && i < tokens.Count - 1)
+            {
+                suspendedBeforeEnd = true;
+            }
+        }
+
+        Assert.IsTrue(suspendedBeforeEnd, "The parser should suspend with NeedMore before the whole stream is fed.");
+        Assert.AreEqual(ParseStatus.Produced, status);
+
+        SparqlQuery query = (SparqlQuery)request!;
+        Assert.HasCount(1, ((SelectQuery)query.Form).Projections);
+        Assert.AreEqual(5, query.Modifier.Limit);
+
+        //"?s ex:p ?o ; ex:q ?r" is two triples; ". ?a ex:b ?c" is a third; the run is contiguous,
+        //so it merges into a single basic graph pattern block of three triples.
+        GroupGraphPattern group = (GroupGraphPattern)query.Where.Pattern;
+        Assert.HasCount(1, group.Members);
+        Assert.HasCount(3, ((BasicGraphPatternBlock)group.Members[0]).Triples);
+    }
+
+    /// <summary>
     /// Lexes and parses <paramref name="text"/> into a <see cref="SparqlQuery"/>.
     /// </summary>
     /// <param name="text">The SPARQL query text.</param>
