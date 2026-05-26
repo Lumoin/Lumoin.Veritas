@@ -38,15 +38,27 @@ DESCRIBE/JSON results, conformance push).
   - **Remaining for Milestone A:**
     - Slice 4b — unbounded term sugar in subject/object position: RDF collections
       `( ... )`, blank-node property lists `[ p o ]`, and RDF 1.2 reified triples
-      `<< s p o >>` / triple terms `<<( s p o )>>`. **OPEN DESIGN DECISION:** the
-      committed `TriplePatternTerm` AST has only ConstantTerm / VariableTerm /
-      PropertyPathTerm / TripleTerm — no Collection or BlankNodePropertyList node.
-      So either (a) **expand at parse time** into fresh blank nodes + extra
-      `rdf:first`/`rest`/`nil` and `[ ]` triples appended to the enclosing BGP run
-      (needs a parser-scoped "side triples" sink tied to the active Triple frame),
-      or (b) **add AST term nodes** and let the translator lower them (matches the
-      Turtle precedent where CollectionTerm/BlankNodePropertyListTerm are AST
-      nodes expanded at emission). Decide before implementing.
+      `<< s p o >>` / triple terms `<<( s p o )>>`. **DECISIONS MADE** (see
+      [[project_sparql_ast_faithful]]): the AST is a *faithful tooling/editor
+      surface*, so (a) **add AST term nodes** — `CollectionTerm` and
+      `BlankNodePropertyListTerm` on `TriplePatternTerm` (plus a `PropertyListPath`
+      record for `[ verb objects ; ... ]`) — kept un-expanded; the translator
+      lowers them later. `<<( )>>` stays as the existing `TripleTerm`. And (b)
+      **collect source spans**: add a full-extent `SourceSpan Span` to every
+      `TriplePatternTerm` subtype and to `TriplePattern`. Implementation notes:
+      track a `lastConsumedSpan` (set in `Advance()` to the token being consumed),
+      add a `CombineSpans(start, lastConsumed)` helper, and build each term as
+      *consume-then-construct* so the span is the real `start..end` extent — this
+      does not fit the inline `Current.Kind switch => new Term(...)` arms (arg
+      evaluation would capture the span before consuming), so `ParseVarOrTerm` and
+      the term builders become capture-start → parse → construct-with-span.
+      Frames: a `Collection` frame (space-separated items, one per step), a
+      `BlankNodePropertyList` frame (verb + object-list loop, mirroring the Triple
+      frame's pred-obj logic but emitting `PropertyListPath` not `TriplePattern`),
+      both reached from a compound-term check in `TripleSubject`/`TripleObject`
+      (and from collection items / bnode-list objects, recursively). Span coverage
+      for the wider layers (graph-pattern members, expressions, clauses) is a
+      separate focused follow-up so coverage stays uniform.
     - Slice 5 — CONSTRUCT template, DESCRIBE targets, trailing + inline VALUES,
       sub-SELECT pattern; then vendor the W3C SPARQL 1.2 syntax suite and wire
       `SparqlPositiveSyntax`/`SparqlNegativeSyntax` into the conformance harness.
