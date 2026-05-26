@@ -133,11 +133,40 @@ Then B (algebra + translator, §10–§11) and C (hypertrie backend + executor s
     no `Co-Authored-By` trailers on commits/PRs (user directive — branch history
     was rewritten to strip them).
   - **Remaining for Milestone A:**
-    - Slice 4b-ii — RDF 1.2 reified triples `<< s p o >>` and triple terms
-      `<<( s p o )>>` in subject/object position (with spans), wired into the
-      compound-term check. `TripleTerm` AST node exists; decide whether the
-      reified-triple shorthand keeps its own node or expands to a blank node +
-      `rdf:reifies` triple term per RDF 1.2.
+    - Slice 4b-ii — RDF 1.2 reification. **In progress, committed incrementally:**
+      - **DONE (lexer):** `~` (Tilde), `{|`/`|}` (Open/CloseAnnotation, NeedMore-aware),
+        `VERSION` keyword; `<< >> <<( )>>` were already lexed. + lexer tests.
+      - **DONE (triple terms):** `<<( s verb o )>>` wired through the compound-term
+        mechanism (so it parses in triple subject/object, collection items, and
+        bnode-list objects). `StepTripleTerm` frame; `Ast.TripleTerm` node (already
+        existed). Inner subject is a leaf (no nesting), verb is IRI/`a`/var (no
+        paths), object is a leaf or nested triple term. + 8 parser tests.
+      - **TODO — reified triples + reifiers** `<< s verb o ~r? >>`. **Grammar learned
+        from the W3C suite** (`sparql12/syntax-triple-terms-{positive,negative}` at the
+        pinned commit): a reified triple's subject may be a leaf, a nested reified
+        triple, or a triple term; its object may also be a triple term; the reifier
+        `~ (var|iri|bnode)?` is optional and a bare `<< s p o >>` still reifies
+        (anonymous reifier). **Asymmetry vs triple terms:** `<<( )>> .` is INVALID
+        (a triple term needs a following predicate) but `<< >> .` is VALID (a reified
+        triple asserts its inner triple as a standalone `TriplesSameSubject`). Reified
+        triples are FORBIDDEN in expressions (BIND) — triple terms are allowed there.
+      - **TODO — annotations** `s p o ~r {| pol |}` after objects (the `( Reifier |
+        '{|' PropertyListNotEmpty '|}' )*` tail). FORBIDDEN when the predicate is a
+        path (`:p/:q ?o ~r` is a negative test) — only attaches to a simple Verb.
+      - **TODO — triple terms in VALUES + expression position** (positive tests
+        `basic-tripleterm-05`, `expr-tripleterm-*`); **VERSION prologue decl**
+        (`version-*`: only a short `"…"` string label; `"""…"""`/`'''…'''` are bad).
+      - **TODO — vendor** `sparql12/syntax-triple-terms-{positive,negative}` + `version`
+        (query `.rq` only; the `.ru` updates stay skipped) and wire into the harness.
+      - **AST modeling decision (load-bearing for B/C — confirm before building):**
+        keep `ReifiedTriple(Span, Inner, Reifier?)` as a `TriplePatternTerm` for
+        reified triples used as subject/object *terms*; give `TriplePattern` an
+        optional `Annotations` list. A standalone `<< s p o ~r >> .` and the
+        annotation form `s p o ~r {| … |}` **converge**: both are a `TriplePattern`
+        (s,p,o) carrying annotations — so the standalone reified triple unwraps to
+        its inner triple + a reifier annotation, while a reified triple with a
+        following predicate stays a `ReifiedTriple` subject term. The early-expansion
+        pass lowers all of it to `rdf:reifies` triples.
     - Slice S — **spans on the remaining AST layers** (graph-pattern members,
       expressions, property-path nodes, clauses, query forms, request), applying
       the same `frame.StartSpan` + `lastConsumedSpan` + `CombineSpans` mechanism,
