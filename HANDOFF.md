@@ -10,18 +10,46 @@ DESCRIBE/JSON results, conformance push).
 
 - Milestone A: **in progress.** Project skeleton builds. **Lexer complete and
   tested** (13 `SparqlLexerTests` green). **AST complete** — ~60 record types
-  across 12 files in `Ast/`, the full mutually-recursive cluster
-  (GraphPattern ↔ Expression ↔ TriplePattern ↔ PropertyPathExpression ↔
-  SparqlQuery) compiling clean. **Parser foundation laid** — `ParseStatus`
-  (Continue/NeedMore/Produced) and `ParseFrameKind` (~28 production kinds) enums,
-  mirroring the Turtle frame model (single mutable `ParseFrame` with Kind+Stage+
-  lazy accumulators; driver dispatches Kind+Stage). Next: the `ParseFrame` class +
-  `SparqlParser` driver + per-production step methods (iterative, Pratt expression
-  sub-driver, path-precedence sub-driver) + `SparqlParser.ParseRequest` → vendor
-  the W3C syntax suite and measure. This is the bulk of the parser and a large
-  multi-turn unit; build it production-by-production, compiling+tested at each
-  commit (start with SELECT/ASK + group graph pattern + triple patterns, then
-  expressions, paths, the other forms, modifiers).
+  across 12 files in `Ast/`. **Parser: the bulk is built and tested**
+  (66 `SparqlParserTests` green), and it is **resumable/streaming** — incremental
+  `FeedToken` + `TryParseRequest`(`ParseStatus`), a `Drive()` that suspends on
+  `NeedMore` with the work stack intact, bounded `MaxStepLookahead=4`, every
+  unbounded production driven one bounded item per step. Materialised
+  `ParseRequest` is a convenience on top. Built so far (each its own commit):
+    - Prologue (BASE/PREFIX with prefix-map + base IRI resolution via Core
+      `IriResolver`; unbound prefix throws).
+    - Forms: SELECT (DISTINCT/REDUCED, `*` or projection list incl.
+      `(expr AS ?v)`) and ASK. CONSTRUCT/DESCRIBE recognised + throw "not yet".
+    - Dataset FROM / FROM NAMED.
+    - WHERE group graph pattern + all members: nested groups, OPTIONAL, MINUS,
+      `{ } UNION { }`, GRAPH, SERVICE [SILENT], FILTER(expr), BIND(expr AS ?v).
+    - Full expression precedence climber: || && comparisons(non-chaining)
+      + - * / , unary ! + -, bracketed; built-in calls, iriOrFunction calls,
+      IN/NOT IN, IF/COALESCE/BOUND, EXISTS/NOT EXISTS, aggregates
+      (COUNT(*)/DISTINCT/GROUP_CONCAT SEPARATOR), via an `ArgumentList` frame.
+    - Solution modifiers: GROUP BY / HAVING / ORDER BY (ASC/DESC) / LIMIT / OFFSET.
+    - Property paths: alt `|`, seq `/`, inverse `^`, quantifiers `?*+`, grouped
+      `( )`, negated property sets `!(...)`; a bare predicate unwraps to a
+      constant term.
+  - **Style decisions recorded** (apply going forward): the parser uses C# switch
+    *expressions* for all dispatch (state + token kind), per user preference; and
+    no `Co-Authored-By` trailers on commits/PRs (user directive — branch history
+    was rewritten to strip them).
+  - **Remaining for Milestone A:**
+    - Slice 4b — unbounded term sugar in subject/object position: RDF collections
+      `( ... )`, blank-node property lists `[ p o ]`, and RDF 1.2 reified triples
+      `<< s p o >>` / triple terms `<<( s p o )>>`. **OPEN DESIGN DECISION:** the
+      committed `TriplePatternTerm` AST has only ConstantTerm / VariableTerm /
+      PropertyPathTerm / TripleTerm — no Collection or BlankNodePropertyList node.
+      So either (a) **expand at parse time** into fresh blank nodes + extra
+      `rdf:first`/`rest`/`nil` and `[ ]` triples appended to the enclosing BGP run
+      (needs a parser-scoped "side triples" sink tied to the active Triple frame),
+      or (b) **add AST term nodes** and let the translator lower them (matches the
+      Turtle precedent where CollectionTerm/BlankNodePropertyListTerm are AST
+      nodes expanded at emission). Decide before implementing.
+    - Slice 5 — CONSTRUCT template, DESCRIBE targets, trailing + inline VALUES,
+      sub-SELECT pattern; then vendor the W3C SPARQL 1.2 syntax suite and wire
+      `SparqlPositiveSyntax`/`SparqlNegativeSyntax` into the conformance harness.
 - Milestones B–F: not started.
 
 ## Verified against the codebase (so the spec's §22 assumptions are grounded)
