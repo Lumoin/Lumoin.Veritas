@@ -53,6 +53,19 @@ public sealed record PropertyPathTerm(SourceSpan Span, PropertyPathExpression Pa
 public sealed record TripleTerm(SourceSpan Span, TriplePattern Inner) : TriplePatternTerm;
 
 /// <summary>
+/// An RDF 1.2 reified triple <c>&lt;&lt; s p o ~r? &gt;&gt;</c> in the subject or object position.
+/// Unlike a <see cref="TripleTerm"/>, a reified triple asserts its inner triple and yields the reifier
+/// as its value. Kept un-expanded for tooling fidelity (mirroring the Turtle parser's
+/// <c>ReifiedTripleTerm</c>); the early normalization pass lowers it to the asserted triple plus the
+/// <c>rdf:reifies</c> reification triple.
+/// </summary>
+/// <param name="Span">The source extent from <c>&lt;&lt;</c> to <c>&gt;&gt;</c>.</param>
+/// <param name="Inner">The asserted inner triple.</param>
+/// <param name="Reifier">The explicit reifier identity (an IRI, variable, or blank node), or <see langword="null"/> for a fresh anonymous reifier.</param>
+[DebuggerDisplay("<< triple >>")]
+public sealed record ReifiedTriple(SourceSpan Span, TriplePattern Inner, TriplePatternTerm? Reifier) : TriplePatternTerm;
+
+/// <summary>
 /// An RDF collection <c>( ... )</c> used as a subject or object term. Kept
 /// un-expanded for tooling fidelity; an early normalization pass lowers it to the
 /// <c>rdf:first</c> / <c>rdf:rest</c> / <c>rdf:nil</c> triples (an empty collection

@@ -1180,6 +1180,84 @@ internal sealed class SparqlParserTests
         Assert.Throws<SparqlParseException>(() => ParseQuery("PREFIX : <http://e/> SELECT * { <<( ?s [] ?o )>> :a :b }", pool));
     }
 
+    /// <summary>A reified triple in subject position parses with an explicit IRI reifier.</summary>
+    [TestMethod]
+    public void ParsesReifiedTripleAsSubjectWithReifier()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * { << :a :b :c ~ :iri >> :p1 :o1 }", pool);
+
+        TriplePattern triple = SingleBlockTriples(query)[0];
+        ReifiedTriple reified = (ReifiedTriple)triple.Subject;
+        Assert.AreEqual("http://e/a", IriValue(reified.Inner.Subject));
+        Assert.AreEqual("http://e/iri", IriValue(reified.Reifier!));
+        Assert.AreEqual("http://e/p1", IriValue(triple.Predicate));
+    }
+
+    /// <summary>A reified triple with no <c>~</c> has a null (anonymous) reifier.</summary>
+    [TestMethod]
+    public void ParsesReifiedTripleAnonymousReifier()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * { << :a :b :c >> :p1 :o1 }", pool);
+
+        ReifiedTriple reified = (ReifiedTriple)SingleBlockTriples(query)[0].Subject;
+        Assert.IsNull(reified.Reifier);
+    }
+
+    /// <summary>A bare <c>~</c> with no following identity also yields a null (anonymous) reifier.</summary>
+    [TestMethod]
+    public void ParsesReifiedTripleBareTilde()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * { << :a :b :c ~ >> :p1 :o1 }", pool);
+
+        ReifiedTriple reified = (ReifiedTriple)SingleBlockTriples(query)[0].Subject;
+        Assert.IsNull(reified.Reifier);
+    }
+
+    /// <summary>A reified triple parses in object position with a blank-node reifier.</summary>
+    [TestMethod]
+    public void ParsesReifiedTripleAsObjectWithBlankNodeReifier()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * { :s :p << :a :b ?c ~ _:r >> }", pool);
+
+        ReifiedTriple reified = (ReifiedTriple)SingleBlockTriples(query)[0].Object;
+        Assert.IsInstanceOfType<BlankNode>(((ConstantTerm)reified.Reifier!).Term);
+    }
+
+    /// <summary>A reified triple nests as the subject of another reified triple.</summary>
+    [TestMethod]
+    public void ParsesNestedReifiedTripleSubject()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * { << << :x :r :z >> :p :o >> :q :z2 }", pool);
+
+        ReifiedTriple outer = (ReifiedTriple)SingleBlockTriples(query)[0].Subject;
+        Assert.IsInstanceOfType<ReifiedTriple>(outer.Inner.Subject);
+    }
+
+    /// <summary>A triple term nests as the subject of a reified triple.</summary>
+    [TestMethod]
+    public void ParsesTripleTermInsideReifiedTriple()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * { << <<( :x :r :z )>> :p :o >> :q :z2 }", pool);
+
+        ReifiedTriple outer = (ReifiedTriple)SingleBlockTriples(query)[0].Subject;
+        Assert.IsInstanceOfType<AstTripleTerm>(outer.Inner.Subject);
+    }
+
+    /// <summary>A reified triple is rejected in an expression position (only triple terms are values).</summary>
+    [TestMethod]
+    public void ReifiedTripleInExpressionThrows()
+    {
+        using Utf8StringPool pool = new();
+
+        Assert.Throws<SparqlParseException>(() => ParseQuery("PREFIX : <http://e/> SELECT * { ?s ?p ?o BIND(<< ?s ?p ?o ~ :iri >> AS ?t) }", pool));
+    }
+
     private static SparqlQuery ParseQuery(string text, Utf8StringPool pool)
     {
         SparqlLexer lexer = new(Encoding.UTF8.GetBytes(text), pool);

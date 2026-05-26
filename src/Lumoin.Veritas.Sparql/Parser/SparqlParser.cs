@@ -356,6 +356,7 @@ public sealed class SparqlParser
             ParseFrameKind.Collection => StepCollection(frame, incoming),
             ParseFrameKind.BlankNodePropertyList => StepBlankNodePropertyList(frame, incoming),
             ParseFrameKind.TripleTerm => StepTripleTerm(frame, incoming),
+            ParseFrameKind.ReifiedTriple => StepReifiedTriple(frame, incoming),
             ParseFrameKind.Values => StepValues(frame),
             ParseFrameKind.ArgumentList => StepArgumentList(frame, incoming),
             ParseFrameKind.GroupBy => StepGroupBy(frame, incoming),
@@ -2673,6 +2674,7 @@ public sealed class SparqlParser
         {
             SparqlTokenKind.OpenParen => ParseFrameKind.Collection,
             SparqlTokenKind.OpenTripleTerm => ParseFrameKind.TripleTerm,
+            SparqlTokenKind.OpenReifiedTriple => ParseFrameKind.ReifiedTriple,
             _ => ParseFrameKind.BlankNodePropertyList
         };
 
@@ -2687,7 +2689,10 @@ public sealed class SparqlParser
     /// <returns><see langword="true"/> when the kind begins a compound term.</returns>
     private static bool CanStartCompoundTerm(SparqlTokenKind kind)
     {
-        return kind is SparqlTokenKind.OpenParen or SparqlTokenKind.OpenBracket or SparqlTokenKind.OpenTripleTerm;
+        return kind is SparqlTokenKind.OpenParen
+            or SparqlTokenKind.OpenBracket
+            or SparqlTokenKind.OpenTripleTerm
+            or SparqlTokenKind.OpenReifiedTriple;
     }
 
     /// <summary>
@@ -2815,6 +2820,159 @@ public sealed class SparqlParser
 
         return new ConstantTerm(span, new NamedNode(rdfType));
     }
+
+    /// <summary>
+    /// Advances an RDF 1.2 reified triple <c>&lt;&lt; s verb o ~r? &gt;&gt;</c>. The inner subject and
+    /// object may each be a leaf term or a nested reified triple / triple term; the verb is an IRI /
+    /// <c>a</c> / variable (no property paths); an optional reifier follows the object as <c>~</c> with
+    /// an optional IRI / variable / blank-node identity (a bare <c>~</c>, or none, means a fresh
+    /// anonymous reifier). Collections and blank-node property lists are rejected inside.
+    /// </summary>
+    /// <param name="frame">The reified-triple frame.</param>
+    /// <param name="incoming">A popped nested subject or object on resume.</param>
+    /// <returns>The instruction for the driver; the popped result is the <see cref="ReifiedTriple"/>.</returns>
+    private StepResult StepReifiedTriple(ParseFrame frame, object? incoming)
+        => frame.Stage switch
+        {
+            0 => ReifiedTripleOpen(frame),
+            1 => ReifiedTripleSubject(frame),
+            2 => ReifiedTripleSubjectReceived(frame, incoming),
+            3 => ReifiedTripleVerb(frame),
+            4 => ReifiedTripleObject(frame),
+            5 => ReifiedTripleObjectReceived(frame, incoming),
+            6 => ReifiedTripleClose(frame),
+            _ => throw new SparqlParseException("Reified triple reached an unknown stage.", frame.StartSpan)
+        };
+
+    /// <summary>Consumes the opening <c>&lt;&lt;</c> and moves to the inner subject.</summary>
+    /// <param name="frame">The reified-triple frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult ReifiedTripleOpen(ParseFrame frame)
+    {
+        Advance();
+        frame.Stage = 1;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Parses the inner subject — a nested reified triple / triple term (pushed) or a leaf term — and moves to the verb.</summary>
+    /// <param name="frame">The reified-triple frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult ReifiedTripleSubject(ParseFrame frame)
+    {
+        if(Current.Kind is SparqlTokenKind.OpenReifiedTriple or SparqlTokenKind.OpenTripleTerm)
+        {
+            frame.Stage = 2;
+
+            return StepResult.Push(CompoundTermFrame());
+        }
+
+        frame.Subject = ParseVarOrTerm();
+        frame.Stage = 3;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Adopts a popped nested subject term and moves to the verb.</summary>
+    /// <param name="frame">The reified-triple frame.</param>
+    /// <param name="incoming">The popped subject term.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult ReifiedTripleSubjectReceived(ParseFrame frame, object? incoming)
+    {
+        frame.Subject = Pop<TriplePatternTerm>(incoming);
+        frame.Stage = 3;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Parses the inner verb (IRI, <c>a</c>, or variable; no property paths) and moves to the object.</summary>
+    /// <param name="frame">The reified-triple frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult ReifiedTripleVerb(ParseFrame frame)
+    {
+        frame.Verb = ParseTripleVerb();
+        frame.Stage = 4;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Parses the inner object — a nested reified triple / triple term (pushed) or a leaf term — and moves to the reifier/close.</summary>
+    /// <param name="frame">The reified-triple frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult ReifiedTripleObject(ParseFrame frame)
+    {
+        if(Current.Kind is SparqlTokenKind.OpenReifiedTriple or SparqlTokenKind.OpenTripleTerm)
+        {
+            frame.Stage = 5;
+
+            return StepResult.Push(CompoundTermFrame());
+        }
+
+        frame.ObjectTerm = ParseVarOrTerm();
+        frame.Stage = 6;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Adopts a popped nested object term and moves to the reifier/close.</summary>
+    /// <param name="frame">The reified-triple frame.</param>
+    /// <param name="incoming">The popped object term.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult ReifiedTripleObjectReceived(ParseFrame frame, object? incoming)
+    {
+        frame.ObjectTerm = Pop<TriplePatternTerm>(incoming);
+        frame.Stage = 6;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Reads the optional <c>~ reifier?</c>, consumes the closing <c>&gt;&gt;</c>, and emits the reified triple.</summary>
+    /// <param name="frame">The reified-triple frame.</param>
+    /// <returns>The instruction for the driver; the result is the <see cref="ReifiedTriple"/>.</returns>
+    private StepResult ReifiedTripleClose(ParseFrame frame)
+    {
+        if(Current.Kind == SparqlTokenKind.Tilde)
+        {
+            Advance();
+            frame.Reifier = CanStartReifierId(Current.Kind) ? ParseReifierId() : null;
+        }
+
+        if(Current.Kind != SparqlTokenKind.CloseReifiedTriple)
+        {
+            throw Expected("'>>' to close the reified triple", Current);
+        }
+
+        Advance();
+        SourceSpan span = CombineSpans(frame.StartSpan, lastConsumedSpan);
+        TriplePattern inner = new(span, frame.Subject!, frame.Verb!, frame.ObjectTerm!);
+
+        return StepResult.Done(new ReifiedTriple(span, inner, frame.Reifier));
+    }
+
+    /// <summary>Determines whether a token kind can begin a reifier identity (IRI, variable, or blank node).</summary>
+    /// <param name="kind">The token kind to test.</param>
+    /// <returns><see langword="true"/> when the kind begins a reifier identity.</returns>
+    private static bool CanStartReifierId(SparqlTokenKind kind)
+    {
+        return kind is SparqlTokenKind.Iri
+            or SparqlTokenKind.PrefixedName
+            or SparqlTokenKind.Variable
+            or SparqlTokenKind.BlankNodeLabel
+            or SparqlTokenKind.AnonymousBlankNode;
+    }
+
+    /// <summary>Parses a reifier identity after <c>~</c>: an IRI, a variable, or a blank node.</summary>
+    /// <returns>The reifier term.</returns>
+    private TriplePatternTerm ParseReifierId()
+        => Current.Kind switch
+        {
+            SparqlTokenKind.Iri => ConsumeIriConstantTerm(),
+            SparqlTokenKind.PrefixedName => ConsumePrefixedNameConstantTerm(),
+            SparqlTokenKind.Variable => ConsumeVariable(),
+            SparqlTokenKind.BlankNodeLabel => ConsumeBlankNodeTerm(),
+            SparqlTokenKind.AnonymousBlankNode => ConsumeAnonymousBlankNodeTerm(),
+            _ => throw Expected("an IRI, variable, or blank node as the reifier", Current)
+        };
 
     /// <summary>Advances a collection term <c>( ... )</c>, parsing one item per step.</summary>
     /// <param name="frame">The collection frame.</param>
@@ -3750,7 +3908,8 @@ public sealed class SparqlParser
             or SparqlTokenKind.BooleanLiteral
             or SparqlTokenKind.OpenParen
             or SparqlTokenKind.OpenBracket
-            or SparqlTokenKind.OpenTripleTerm;
+            or SparqlTokenKind.OpenTripleTerm
+            or SparqlTokenKind.OpenReifiedTriple;
     }
 
     /// <summary>
