@@ -1258,6 +1258,73 @@ internal sealed class SparqlParserTests
         Assert.Throws<SparqlParseException>(() => ParseQuery("PREFIX : <http://e/> SELECT * { ?s ?p ?o BIND(<< ?s ?p ?o ~ :iri >> AS ?t) }", pool));
     }
 
+    /// <summary>An annotation block on an object parses to an <see cref="AnnotatedObject"/> carrying an <see cref="AnnotationBlock"/>.</summary>
+    [TestMethod]
+    public void ParsesAnnotationBlockOnObject()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * { ?s ?p ?o {| :r ?z |} }", pool);
+
+        AnnotatedObject annotated = (AnnotatedObject)SingleBlockTriples(query)[0].Object;
+        Assert.AreEqual("o", VariableName(annotated.Object));
+        Assert.HasCount(1, annotated.Annotations);
+        AnnotationBlock block = (AnnotationBlock)annotated.Annotations[0];
+        Assert.AreEqual("http://e/r", IriValue(block.Properties[0].Verb));
+    }
+
+    /// <summary>A reifier and an annotation block attach to the object in source order.</summary>
+    [TestMethod]
+    public void ParsesReifierThenBlockAnnotation()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * { ?s ?p ?o ~ :iri {| :r ?z |} }", pool);
+
+        AnnotatedObject annotated = (AnnotatedObject)SingleBlockTriples(query)[0].Object;
+        Assert.HasCount(2, annotated.Annotations);
+        Assert.AreEqual("http://e/iri", IriValue(((ReifierAnnotation)annotated.Annotations[0]).Reifier!));
+        Assert.IsInstanceOfType<AnnotationBlock>(annotated.Annotations[1]);
+    }
+
+    /// <summary>A bare reifier annotation (<c>~</c> with no identity) attaches with a null reifier.</summary>
+    [TestMethod]
+    public void ParsesBareTildeAnnotation()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * { ?s ?p ?o ~ }", pool);
+
+        AnnotatedObject annotated = (AnnotatedObject)SingleBlockTriples(query)[0].Object;
+        Assert.IsNull(((ReifierAnnotation)annotated.Annotations[0]).Reifier);
+    }
+
+    /// <summary>Multiple reifier annotations attach to the object in order.</summary>
+    [TestMethod]
+    public void ParsesMultipleReifierAnnotations()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * { ?s ?p ?o ~ :r1 ~ :r2 }", pool);
+
+        AnnotatedObject annotated = (AnnotatedObject)SingleBlockTriples(query)[0].Object;
+        Assert.HasCount(2, annotated.Annotations);
+    }
+
+    /// <summary>An annotation after a property-path predicate is rejected.</summary>
+    [TestMethod]
+    public void AnnotationOnPathVerbThrows()
+    {
+        using Utf8StringPool pool = new();
+
+        Assert.Throws<SparqlParseException>(() => ParseQuery("PREFIX : <http://e/> SELECT * { ?s :p/:q ?o ~ :iri }", pool));
+    }
+
+    /// <summary>An empty annotation block is rejected.</summary>
+    [TestMethod]
+    public void EmptyAnnotationBlockThrows()
+    {
+        using Utf8StringPool pool = new();
+
+        Assert.Throws<SparqlParseException>(() => ParseQuery("PREFIX : <http://e/> SELECT * { ?s ?p ?o {| |} }", pool));
+    }
+
     private static SparqlQuery ParseQuery(string text, Utf8StringPool pool)
     {
         SparqlLexer lexer = new(Encoding.UTF8.GetBytes(text), pool);

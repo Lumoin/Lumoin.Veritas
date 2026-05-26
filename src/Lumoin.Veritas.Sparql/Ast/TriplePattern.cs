@@ -86,6 +86,35 @@ public sealed record CollectionTerm(SourceSpan Span, IReadOnlyList<TriplePattern
 [DebuggerDisplay("[ props={Properties.Count} ]")]
 public sealed record BlankNodePropertyListTerm(SourceSpan Span, IReadOnlyList<PropertyListPath> Properties) : TriplePatternTerm;
 
+/// <summary>
+/// An object together with the RDF 1.2 annotations attached to it in source — reifiers (<c>~ id?</c>)
+/// and/or annotation blocks (<c>{| … |}</c>), in source order. Kept faithful (mirroring the Turtle
+/// parser's <c>AnnotatedObject</c>); the early normalization pass lowers the annotations to the
+/// <c>rdf:reifies</c> triples about the annotated triple's reifier.
+/// </summary>
+/// <param name="Span">The source extent from the object through its last annotation.</param>
+/// <param name="Object">The annotated object term.</param>
+/// <param name="Annotations">The reifiers and annotation blocks attached to the object, in source order; always non-empty.</param>
+[DebuggerDisplay("annotated {Object}")]
+public sealed record AnnotatedObject(SourceSpan Span, TriplePatternTerm Object, IReadOnlyList<Annotation> Annotations) : TriplePatternTerm;
+
+/// <summary>One annotation attached to a triple's object: a reifier or an annotation block.</summary>
+/// <param name="Span">The source extent of the annotation.</param>
+public abstract record Annotation(SourceSpan Span);
+
+/// <summary>
+/// A reifier annotation <c>~ id?</c> on a stated triple. <see cref="Reifier"/> is the explicit
+/// identity (an IRI, variable, or blank node) or <see langword="null"/> for a fresh anonymous reifier.
+/// </summary>
+/// <param name="Span">The source extent of the reifier.</param>
+/// <param name="Reifier">The reifier identity, or <see langword="null"/> for a fresh anonymous reifier.</param>
+public sealed record ReifierAnnotation(SourceSpan Span, TriplePatternTerm? Reifier) : Annotation(Span);
+
+/// <summary>An annotation block <c>{| predicate-object list |}</c> asserting properties about the stated triple's reifier.</summary>
+/// <param name="Span">The source extent from <c>{|</c> to <c>|}</c>.</param>
+/// <param name="Properties">The predicate-object entries inside the block, in order; always non-empty.</param>
+public sealed record AnnotationBlock(SourceSpan Span, IReadOnlyList<PropertyListPath> Properties) : Annotation(Span);
+
 /// <summary>One predicate with its object list inside a blank-node property list.</summary>
 /// <param name="Span">The source extent of the predicate and its objects.</param>
 /// <param name="Verb">The predicate term (an IRI, variable, or property path).</param>

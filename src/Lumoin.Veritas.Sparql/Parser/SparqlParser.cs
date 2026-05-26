@@ -357,6 +357,7 @@ public sealed class SparqlParser
             ParseFrameKind.BlankNodePropertyList => StepBlankNodePropertyList(frame, incoming),
             ParseFrameKind.TripleTerm => StepTripleTerm(frame, incoming),
             ParseFrameKind.ReifiedTriple => StepReifiedTriple(frame, incoming),
+            ParseFrameKind.AnnotationBlock => StepAnnotationBlock(frame, incoming),
             ParseFrameKind.Values => StepValues(frame),
             ParseFrameKind.ArgumentList => StepArgumentList(frame, incoming),
             ParseFrameKind.GroupBy => StepGroupBy(frame, incoming),
@@ -2521,6 +2522,8 @@ public sealed class SparqlParser
             3 => TripleVerbPath(frame, incoming),
             4 => TripleSubjectReceived(frame, incoming),
             5 => TripleObjectReceived(frame, incoming),
+            6 => TripleObjectAnnotations(frame),
+            7 => TripleObjectAnnotationReceived(frame, incoming),
             _ => throw new SparqlParseException("Triple reached an unknown stage.", frame.StartSpan)
         };
 
@@ -2600,8 +2603,8 @@ public sealed class SparqlParser
     }
 
     /// <summary>
-    /// Parses one object, emits the triple, then continues the object list on a comma, restarts the
-    /// verb on a semicolon, or completes the run.
+    /// Parses one object (pushing a frame for a compound term), then moves to its RDF 1.2 annotation
+    /// tail before the triple is emitted.
     /// </summary>
     /// <param name="frame">The triple frame.</param>
     /// <returns>The instruction for the driver.</returns>
@@ -2614,16 +2617,77 @@ public sealed class SparqlParser
             return StepResult.Push(CompoundTermFrame());
         }
 
-        return EmitObject(frame, ParseVarOrTerm());
+        frame.ObjectTerm = ParseVarOrTerm();
+        frame.Annotations = null;
+        frame.Stage = 6;
+
+        return StepResult.Continue();
     }
 
-    /// <summary>Emits the triple for a popped compound object term, then continues the object list.</summary>
+    /// <summary>Adopts a popped compound object term and moves to its annotation tail.</summary>
     /// <param name="frame">The triple frame.</param>
     /// <param name="incoming">The popped object term.</param>
     /// <returns>The instruction for the driver.</returns>
-    private StepResult TripleObjectReceived(ParseFrame frame, object? incoming)
+    private static StepResult TripleObjectReceived(ParseFrame frame, object? incoming)
     {
-        return EmitObject(frame, Pop<TriplePatternTerm>(incoming));
+        frame.ObjectTerm = Pop<TriplePatternTerm>(incoming);
+        frame.Annotations = null;
+        frame.Stage = 6;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>
+    /// Reads the object's RDF 1.2 annotation tail — a run of reifiers (<c>~ id?</c>) and annotation
+    /// blocks (<c>{| … |}</c>) — then emits the triple (wrapping the object in an
+    /// <see cref="AnnotatedObject"/> when any annotation was present). Annotations require a non-path
+    /// predicate; a compound property-path verb followed by an annotation is rejected.
+    /// </summary>
+    /// <param name="frame">The triple frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult TripleObjectAnnotations(ParseFrame frame)
+    {
+        if(Current.Kind is SparqlTokenKind.Tilde or SparqlTokenKind.OpenAnnotation)
+        {
+            if(frame.Verb is PropertyPathTerm)
+            {
+                throw Expected("a non-path predicate before an annotation", Current);
+            }
+
+            frame.Annotations ??= [];
+
+            if(Current.Kind == SparqlTokenKind.Tilde)
+            {
+                SourceSpan start = Current.Span;
+                Advance();
+                TriplePatternTerm? reifier = CanStartReifierId(Current.Kind) ? ParseReifierId() : null;
+                frame.Annotations.Add(new ReifierAnnotation(CombineSpans(start, lastConsumedSpan), reifier));
+
+                return StepResult.Continue();
+            }
+
+            frame.Stage = 7;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.AnnotationBlock, StartSpan = Current.Span });
+        }
+
+        TriplePatternTerm objectTerm = frame.Annotations is { Count: > 0 }
+            ? new AnnotatedObject(CombineSpans(SpanOf(frame.ObjectTerm!), lastConsumedSpan), frame.ObjectTerm!, frame.Annotations)
+            : frame.ObjectTerm!;
+
+        return EmitObject(frame, objectTerm);
+    }
+
+    /// <summary>Adopts a popped annotation block and returns to the annotation tail for any further annotations.</summary>
+    /// <param name="frame">The triple frame.</param>
+    /// <param name="incoming">The popped annotation block.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult TripleObjectAnnotationReceived(ParseFrame frame, object? incoming)
+    {
+        frame.Annotations!.Add(Pop<AnnotationBlock>(incoming));
+        frame.Stage = 6;
+
+        return StepResult.Continue();
     }
 
     /// <summary>
@@ -3177,6 +3241,166 @@ public sealed class SparqlParser
 
         throw Expected("';' or ']' in the blank-node property list", Current);
     }
+
+    /// <summary>Advances an RDF 1.2 annotation block <c>{| verb objects ; ... |}</c>, mirroring the blank-node property list with annotation delimiters.</summary>
+    /// <param name="frame">The annotation-block frame.</param>
+    /// <param name="incoming">A popped path verb or compound object on resume.</param>
+    /// <returns>The instruction for the driver; the popped result is the <see cref="AnnotationBlock"/>.</returns>
+    private StepResult StepAnnotationBlock(ParseFrame frame, object? incoming)
+        => frame.Stage switch
+        {
+            0 => AnnotationBlockStart(frame),
+            1 => AnnotationBlockVerb(frame),
+            2 => AnnotationBlockVerbPath(frame, incoming),
+            3 => AnnotationBlockObject(frame),
+            4 => AnnotationBlockObjectReceived(frame, incoming),
+            _ => throw new SparqlParseException("Annotation block reached an unknown stage.", frame.StartSpan)
+        };
+
+    /// <summary>Consumes the opening <c>{|</c> and begins the predicate-object list (which must be non-empty).</summary>
+    /// <param name="frame">The annotation-block frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult AnnotationBlockStart(ParseFrame frame)
+    {
+        Advance();
+        if(Current.Kind == SparqlTokenKind.CloseAnnotation)
+        {
+            throw Expected("a predicate-object pair inside the annotation block", Current);
+        }
+
+        frame.Properties = [];
+        frame.Stage = 1;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Parses one verb (a variable inline or a property path) and begins its object list.</summary>
+    /// <param name="frame">The annotation-block frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult AnnotationBlockVerb(ParseFrame frame)
+    {
+        frame.VerbSpanStart = Current.Span;
+
+        if(Current.Kind == SparqlTokenKind.Variable)
+        {
+            frame.Verb = ConsumeVariable();
+            frame.TermItems = [];
+            frame.Stage = 3;
+
+            return StepResult.Continue();
+        }
+
+        if(CanStartPath(Current.Kind))
+        {
+            frame.Stage = 2;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PropertyPath, StartSpan = Current.Span });
+        }
+
+        throw Expected("a predicate or property path inside the annotation block", Current);
+    }
+
+    /// <summary>Converts the popped property path into the current verb and begins its object list.</summary>
+    /// <param name="frame">The annotation-block frame.</param>
+    /// <param name="incoming">The popped property path.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult AnnotationBlockVerbPath(ParseFrame frame, object? incoming)
+    {
+        PropertyPathExpression path = Pop<PropertyPathExpression>(incoming);
+        SourceSpan span = CombineSpans(frame.VerbSpanStart, lastConsumedSpan);
+        frame.Verb = path is PathPredicate predicate
+            ? new ConstantTerm(span, new NamedNode(predicate.Predicate.Value))
+            : new PropertyPathTerm(span, path);
+        frame.TermItems = [];
+        frame.Stage = 3;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Parses one object (pushing a frame for a compound term) of the current verb's object list.</summary>
+    /// <param name="frame">The annotation-block frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult AnnotationBlockObject(ParseFrame frame)
+    {
+        if(CanStartCompoundTerm(Current.Kind))
+        {
+            frame.Stage = 4;
+
+            return StepResult.Push(CompoundTermFrame());
+        }
+
+        return AnnotationBlockAppendObject(frame, ParseVarOrTerm());
+    }
+
+    /// <summary>Appends a popped compound object and continues the object list.</summary>
+    /// <param name="frame">The annotation-block frame.</param>
+    /// <param name="incoming">The popped object term.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult AnnotationBlockObjectReceived(ParseFrame frame, object? incoming)
+    {
+        return AnnotationBlockAppendObject(frame, Pop<TriplePatternTerm>(incoming));
+    }
+
+    /// <summary>
+    /// Adds one object; on a comma continues the object list, otherwise records the predicate-object
+    /// entry and then continues the next verb on a semicolon or closes the block at <c>|}</c>.
+    /// </summary>
+    /// <param name="frame">The annotation-block frame.</param>
+    /// <param name="objectTerm">The parsed object term.</param>
+    /// <returns>The instruction for the driver; the result is the <see cref="AnnotationBlock"/> when the block closes.</returns>
+    private StepResult AnnotationBlockAppendObject(ParseFrame frame, TriplePatternTerm objectTerm)
+    {
+        frame.TermItems!.Add(objectTerm);
+
+        if(Current.Kind == SparqlTokenKind.Comma)
+        {
+            Advance();
+            frame.Stage = 3;
+
+            return StepResult.Continue();
+        }
+
+        SourceSpan entrySpan = CombineSpans(frame.VerbSpanStart, lastConsumedSpan);
+        frame.Properties!.Add(new PropertyListPath(entrySpan, frame.Verb!, frame.TermItems!));
+
+        while(Current.Kind == SparqlTokenKind.Semicolon)
+        {
+            Advance();
+        }
+
+        if(Current.Kind == SparqlTokenKind.CloseAnnotation)
+        {
+            Advance();
+
+            return StepResult.Done(new AnnotationBlock(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.Properties!));
+        }
+
+        if(CanStartVerb(Current.Kind))
+        {
+            frame.Stage = 1;
+
+            return StepResult.Continue();
+        }
+
+        throw Expected("';' or '|}' in the annotation block", Current);
+    }
+
+    /// <summary>Returns the source span of a triple-pattern term, dispatching over the term kinds.</summary>
+    /// <param name="term">The term whose span to read.</param>
+    /// <returns>The term's source span.</returns>
+    private static SourceSpan SpanOf(TriplePatternTerm term)
+        => term switch
+        {
+            ConstantTerm constant => constant.Span,
+            VariableTerm variable => variable.Span,
+            PropertyPathTerm path => path.Span,
+            Ast.TripleTerm tripleTerm => tripleTerm.Span,
+            ReifiedTriple reified => reified.Span,
+            CollectionTerm collection => collection.Span,
+            BlankNodePropertyListTerm list => list.Span,
+            AnnotatedObject annotated => annotated.Span,
+            _ => SourceSpan.None
+        };
 
     /// <summary>
     /// Advances a CONSTRUCT template <c>{ triples }</c>: a triples-only block (collection and

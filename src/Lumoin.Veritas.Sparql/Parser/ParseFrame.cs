@@ -96,6 +96,9 @@ internal sealed class ParseFrame
     /// <summary>Gets or sets the reifier identity a <see cref="ParseFrameKind.ReifiedTriple"/> frame parsed after <c>~</c>, or <see langword="null"/> for an anonymous reifier.</summary>
     public TriplePatternTerm? Reifier { get; set; }
 
+    /// <summary>Gets or sets the RDF 1.2 annotations (reifiers and annotation blocks) collected for the object a <see cref="ParseFrameKind.Triple"/> frame is currently emitting.</summary>
+    public List<Annotation>? Annotations { get; set; }
+
     /// <summary>Gets or sets the triples accumulated by a <see cref="ParseFrameKind.Triple"/> frame across its predicate-object list.</summary>
     public List<TriplePattern>? TripleAccumulator { get; set; }
 

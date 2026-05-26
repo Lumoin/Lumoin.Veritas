@@ -96,6 +96,9 @@ internal enum ParseFrameKind
     /// <summary>An RDF 1.2 triple term <c>&lt;&lt;( ... )&gt;&gt;</c>.</summary>
     TripleTerm,
 
+    /// <summary>An RDF 1.2 annotation block <c>{| predicate-object list |}</c> attached to an object.</summary>
+    AnnotationBlock,
+
     /// <summary>A parenthesised, comma-separated argument or expression list: built-in / function call arguments, a <c>COALESCE</c> / <c>IF</c> list, or an <c>IN</c> set.</summary>
     ArgumentList,
 
