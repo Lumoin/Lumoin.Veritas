@@ -12,9 +12,16 @@ DESCRIBE/JSON results, conformance push).
   tested** (13 `SparqlLexerTests` green). **AST complete** — ~60 record types
   across 12 files in `Ast/`, the full mutually-recursive cluster
   (GraphPattern ↔ Expression ↔ TriplePattern ↔ PropertyPathExpression ↔
-  SparqlQuery) compiling clean. Next: the iterative parser (§9, Pratt expressions
-  + path precedence) → `SparqlParser.ParseRequest` → vendor the W3C syntax suite
-  and measure.
+  SparqlQuery) compiling clean. **Parser foundation laid** — `ParseStatus`
+  (Continue/NeedMore/Produced) and `ParseFrameKind` (~28 production kinds) enums,
+  mirroring the Turtle frame model (single mutable `ParseFrame` with Kind+Stage+
+  lazy accumulators; driver dispatches Kind+Stage). Next: the `ParseFrame` class +
+  `SparqlParser` driver + per-production step methods (iterative, Pratt expression
+  sub-driver, path-precedence sub-driver) + `SparqlParser.ParseRequest` → vendor
+  the W3C syntax suite and measure. This is the bulk of the parser and a large
+  multi-turn unit; build it production-by-production, compiling+tested at each
+  commit (start with SELECT/ASK + group graph pattern + triple patterns, then
+  expressions, paths, the other forms, modifiers).
 - Milestones B–F: not started.
 
 ## Verified against the codebase (so the spec's §22 assumptions are grounded)
