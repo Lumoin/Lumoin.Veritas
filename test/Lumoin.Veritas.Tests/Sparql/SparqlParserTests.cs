@@ -298,12 +298,75 @@ internal sealed class SparqlParserTests
         Assert.Throws<SparqlParseException>(() => ParseQuery("SELECT * WHERE { ?s foo:bar ?o }", pool));
     }
 
-    /// <summary>A query form this build does not yet implement reports a parse error.</summary>
+    /// <summary>A CONSTRUCT query records its template triples and its WHERE pattern.</summary>
     [TestMethod]
-    public void ConstructFormNotYetImplementedThrows()
+    public void ParsesConstruct()
     {
         using Utf8StringPool pool = new();
-        Assert.Throws<SparqlParseException>(() => ParseQuery("CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }", pool));
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> CONSTRUCT { ?s :p ?o } WHERE { ?s :q ?o }", pool);
+
+        ConstructQuery construct = (ConstructQuery)query.Form;
+        Assert.HasCount(1, construct.Template);
+        Assert.AreEqual("http://e/p", ((NamedNode)((ConstantTerm)construct.Template[0].Predicate).Term).Iri.ToString());
+        Assert.IsInstanceOfType<GroupGraphPattern>(query.Where.Pattern);
+    }
+
+    /// <summary>A CONSTRUCT template admits collection and blank-node-list sugar.</summary>
+    [TestMethod]
+    public void ParsesConstructTemplateWithSugar()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> CONSTRUCT { ?s :p (1 2) } WHERE { ?s ?q ?o }", pool);
+
+        ConstructQuery construct = (ConstructQuery)query.Form;
+        Assert.IsInstanceOfType<CollectionTerm>(construct.Template[0].Object);
+    }
+
+    /// <summary>The CONSTRUCT WHERE short form is recognised but not yet implemented in this build.</summary>
+    [TestMethod]
+    public void ConstructShortFormNotYetImplementedThrows()
+    {
+        using Utf8StringPool pool = new();
+        Assert.Throws<SparqlParseException>(() => ParseQuery("CONSTRUCT WHERE { ?s ?p ?o }", pool));
+    }
+
+    /// <summary>A DESCRIBE query records its IRI and variable targets.</summary>
+    [TestMethod]
+    public void ParsesDescribeTargets()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("DESCRIBE <http://x/> ?y WHERE { ?y ?p ?o }", pool);
+
+        DescribeQuery describe = (DescribeQuery)query.Form;
+        Assert.IsFalse(describe.IsStar);
+        Assert.HasCount(2, describe.Targets);
+        Assert.AreEqual("http://x/", ((DescribeIri)describe.Targets[0]).Iri.Value.ToString());
+        Assert.AreEqual("y", ((DescribeVariable)describe.Targets[1]).Variable.Name.ToString());
+    }
+
+    /// <summary>A DESCRIBE * query is flagged as star with no explicit targets.</summary>
+    [TestMethod]
+    public void ParsesDescribeStar()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("DESCRIBE * WHERE { ?s ?p ?o }", pool);
+
+        DescribeQuery describe = (DescribeQuery)query.Form;
+        Assert.IsTrue(describe.IsStar);
+        Assert.IsEmpty(describe.Targets);
+    }
+
+    /// <summary>A DESCRIBE without a WHERE clause yields an empty group, and trailing modifiers still parse.</summary>
+    [TestMethod]
+    public void ParsesDescribeWithoutWhere()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("DESCRIBE ?x LIMIT 5", pool);
+
+        DescribeQuery describe = (DescribeQuery)query.Form;
+        Assert.HasCount(1, describe.Targets);
+        Assert.IsEmpty(((GroupGraphPattern)query.Where.Pattern).Members);
+        Assert.AreEqual(5, query.Modifier.Limit);
     }
 
     /// <summary>Trailing tokens after a complete query are a parse error.</summary>

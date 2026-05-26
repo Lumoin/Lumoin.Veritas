@@ -164,6 +164,9 @@ internal sealed class ParseFrame
 
     /// <summary>Gets or sets the source span at which the current verb (predicate or path) began, used to span the verb term and a <see cref="PropertyListPath"/>.</summary>
     public SourceSpan VerbSpanStart { get; set; }
+
+    /// <summary>Gets or sets the accumulated <c>DESCRIBE</c> targets of the request frame.</summary>
+    public List<DescribeTarget>? DescribeTargets { get; set; }
 }
 
 /// <summary>

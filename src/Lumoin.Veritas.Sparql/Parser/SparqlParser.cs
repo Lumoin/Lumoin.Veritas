@@ -337,6 +337,7 @@ public sealed class SparqlParser
         {
             ParseFrameKind.Request => StepRequest(frame, incoming),
             ParseFrameKind.SelectClause => StepSelectClause(frame, incoming),
+            ParseFrameKind.ConstructTemplate => StepConstructTemplate(frame, incoming),
             ParseFrameKind.GroupGraphPattern => StepGroupGraphPattern(frame, incoming),
             ParseFrameKind.Triple => StepTriple(frame, incoming),
             ParseFrameKind.UnionPattern => StepGroupOrUnion(frame, incoming),
@@ -385,6 +386,8 @@ public sealed class SparqlParser
             11 => RequestOrderReceived(frame, incoming),
             12 => RequestModifier(frame),
             13 => RequestFinalize(frame),
+            14 => RequestConstructTemplate(frame, incoming),
+            15 => RequestDescribeTargets(frame),
             _ => throw new SparqlParseException("Request reached an unknown stage.", frame.StartSpan)
         };
 
@@ -423,8 +426,8 @@ public sealed class SparqlParser
         {
             SparqlTokenKind.SelectKeyword => RequestPushSelect(frame),
             SparqlTokenKind.AskKeyword => RequestAsk(frame),
-            SparqlTokenKind.ConstructKeyword => throw NotImplemented("CONSTRUCT"),
-            SparqlTokenKind.DescribeKeyword => throw NotImplemented("DESCRIBE"),
+            SparqlTokenKind.ConstructKeyword => RequestConstruct(frame),
+            SparqlTokenKind.DescribeKeyword => RequestDescribe(frame),
             _ => throw Expected("a query form (SELECT, CONSTRUCT, ASK, or DESCRIBE)", Current)
         };
 
@@ -445,6 +448,89 @@ public sealed class SparqlParser
     {
         Advance();
         frame.Form = new AskQuery();
+        frame.Stage = 3;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Begins a CONSTRUCT query by pushing its template; the short form is not yet supported.</summary>
+    /// <param name="frame">The request frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult RequestConstruct(ParseFrame frame)
+    {
+        Advance();
+        if(Current.Kind != SparqlTokenKind.OpenBrace)
+        {
+            throw new SparqlParseException("The CONSTRUCT WHERE short form is not yet implemented in this build.", Current.Span);
+        }
+
+        frame.Stage = 14;
+
+        return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.ConstructTemplate, StartSpan = Current.Span });
+    }
+
+    /// <summary>Adopts the popped CONSTRUCT template and advances to the dataset clauses.</summary>
+    /// <param name="frame">The request frame.</param>
+    /// <param name="incoming">The popped template triple list.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult RequestConstructTemplate(ParseFrame frame, object? incoming)
+    {
+        frame.Form = new ConstructQuery(Pop<List<TriplePattern>>(incoming));
+        frame.Stage = 3;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Begins a DESCRIBE query and moves to its target list.</summary>
+    /// <param name="frame">The request frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult RequestDescribe(ParseFrame frame)
+    {
+        Advance();
+        frame.DescribeTargets = [];
+        frame.Stage = 15;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>
+    /// Parses the DESCRIBE targets one per step: <c>*</c>, or a list of variables and IRIs; completes
+    /// the form and advances to the dataset clauses when no further target follows.
+    /// </summary>
+    /// <param name="frame">The request frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult RequestDescribeTargets(ParseFrame frame)
+    {
+        if(frame.DescribeTargets!.Count == 0 && Current.Kind == SparqlTokenKind.Star)
+        {
+            Advance();
+            frame.Form = new DescribeQuery(IsStar: true, Targets: []);
+            frame.Stage = 3;
+
+            return StepResult.Continue();
+        }
+
+        if(Current.Kind is SparqlTokenKind.Iri or SparqlTokenKind.PrefixedName)
+        {
+            frame.DescribeTargets!.Add(new DescribeIri(ConsumeIriOrPrefixedName("a DESCRIBE target IRI")));
+
+            return StepResult.Continue();
+        }
+
+        if(Current.Kind == SparqlTokenKind.Variable)
+        {
+            frame.DescribeTargets!.Add(new DescribeVariable(new SparqlVariable(Current.Value)));
+            Advance();
+
+            return StepResult.Continue();
+        }
+
+        if(frame.DescribeTargets!.Count == 0)
+        {
+            throw Expected("a DESCRIBE target (a variable, an IRI, or '*')", Current);
+        }
+
+        frame.Form = new DescribeQuery(IsStar: false, frame.DescribeTargets);
         frame.Stage = 3;
 
         return StepResult.Continue();
@@ -491,16 +577,29 @@ public sealed class SparqlParser
         if(Current.Kind == SparqlTokenKind.WhereKeyword)
         {
             Advance();
+            if(Current.Kind != SparqlTokenKind.OpenBrace)
+            {
+                throw Expected("'{' after WHERE", Current);
+            }
         }
 
-        if(Current.Kind != SparqlTokenKind.OpenBrace)
+        if(Current.Kind == SparqlTokenKind.OpenBrace)
         {
-            throw Expected("'{' to begin the WHERE group graph pattern", Current);
+            frame.Stage = 5;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GroupGraphPattern, StartSpan = Current.Span });
         }
 
-        frame.Stage = 5;
+        //The WHERE clause is optional only for DESCRIBE; an absent one is an empty group.
+        if(frame.Form is DescribeQuery)
+        {
+            frame.Where = new WhereClause(new GroupGraphPattern([]));
+            frame.Stage = 6;
 
-        return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GroupGraphPattern, StartSpan = Current.Span });
+            return StepResult.Continue();
+        }
+
+        throw Expected("'{' to begin the WHERE group graph pattern", Current);
     }
 
     /// <summary>Adopts the popped WHERE pattern and advances to the solution modifiers.</summary>
@@ -2700,6 +2799,48 @@ public sealed class SparqlParser
         }
 
         throw Expected("';' or ']' in the blank-node property list", Current);
+    }
+
+    /// <summary>
+    /// Advances a CONSTRUCT template <c>{ triples }</c>: a triples-only block (collection and
+    /// blank-node-list sugar allowed) whose result is the flat list of template triple patterns.
+    /// </summary>
+    /// <param name="frame">The construct-template frame.</param>
+    /// <param name="incoming">A popped triple run on resume.</param>
+    /// <returns>The instruction for the driver; the popped result is the template triple list.</returns>
+    private StepResult StepConstructTemplate(ParseFrame frame, object? incoming)
+    {
+        if(frame.Stage == 0)
+        {
+            //The caller ensured '{' is current.
+            Advance();
+            frame.TripleAccumulator = [];
+            frame.Stage = 1;
+        }
+        else if(incoming is List<TriplePattern> triples)
+        {
+            frame.TripleAccumulator!.AddRange(triples);
+            ConsumeOptionalDot();
+        }
+
+        if(Current.Kind == SparqlTokenKind.CloseBrace)
+        {
+            Advance();
+
+            return StepResult.Done(frame.TripleAccumulator!);
+        }
+
+        if(Current.Kind == SparqlTokenKind.EndOfInput)
+        {
+            throw Expected("'}' to close the CONSTRUCT template", Current);
+        }
+
+        if(CanStartTriple(Current.Kind))
+        {
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Triple, StartSpan = Current.Span });
+        }
+
+        throw Expected("a triple pattern or '}'", Current);
     }
 
     /// <summary>
