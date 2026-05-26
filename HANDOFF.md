@@ -9,11 +9,12 @@ DESCRIBE/JSON results, conformance push).
 ## Status
 
 - Milestone A: **in progress.** Project skeleton builds. **Lexer complete and
-  tested** — full byte-resumable `SparqlLexer` (sync `Tokenize()` + pipe-fed
-  `TokenizeAsync`/`TokenizeWithRecoveryAsync`, `NeedMore` resumability, recovery,
-  limits), allocation-free `SparqlKeywords` classifier, 13 `SparqlLexerTests`
-  green. Next: AST records → iterative parser → `SparqlParser.ParseRequest` →
-  vendor the W3C syntax suite and measure.
+  tested** (13 `SparqlLexerTests` green). **AST complete** — ~60 record types
+  across 12 files in `Ast/`, the full mutually-recursive cluster
+  (GraphPattern ↔ Expression ↔ TriplePattern ↔ PropertyPathExpression ↔
+  SparqlQuery) compiling clean. Next: the iterative parser (§9, Pratt expressions
+  + path precedence) → `SparqlParser.ParseRequest` → vendor the W3C syntax suite
+  and measure.
 - Milestones B–F: not started.
 
 ## Verified against the codebase (so the spec's §22 assumptions are grounded)
@@ -73,6 +74,20 @@ DESCRIBE/JSON results, conformance push).
   though SHACL-SPARQL only needs synchronous whole-buffer tokenisation. A
   whole-buffer-only lexer was explicitly rejected. This principle applies to every
   component in the batch.
+- **AST file granularity (follows the codebase, not spec §5.1's one-file-per-type
+  listing).** `Rdf/PropertyPath.cs` co-locates its abstract base + 7 subtypes in
+  one file, so the SPARQL AST groups each closed hierarchy into one file (12 files
+  total) instead of ~60. This also lets the mutually-recursive cluster compile.
+- **AST representation refinements (recorded):** built-in/aggregate function
+  identity is a canonical-name `Utf8String` (matching the lexer payload), not an
+  enum — the closed dispatch set belongs to the expression evaluator (§13/§14).
+  `AggregateExpression` adds an `IsCountStar` flag for `COUNT(*)`.
+  `ServicePattern.Endpoint` is a `GraphTerm` (VarOrIri) to accept `SERVICE ?v`
+  for syntax conformance, though execution still throws. `ConstructQuery.Template`
+  reuses `TriplePattern`. `FilterPattern` is a `GraphPattern` subtype (no separate
+  `GraphPatternMember` discriminator); the translator collects filters per §18.2.2.
+  The named-graph indirection is `GraphGraphPattern` (the spec's §5.1 list named it
+  `GraphPattern`, colliding with the abstract base).
 - **Verified Core APIs for the lexer:** `UnicodeConstants.{SurrogateRangeFirst
   =0xD800, SurrogateRangeLast=0xDFFF, MaximumCodePoint=0x10FFFF}` (public);
   `Utf8StringPool.Intern(ReadOnlySpan<byte>)` / `Intern(ReadOnlySequence<byte>)` /
