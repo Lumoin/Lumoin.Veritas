@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Text;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Sparql;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Lexer;
@@ -813,6 +814,109 @@ internal sealed class SparqlParserTests
         Assert.IsInstanceOfType<PathZeroOrMore>(sequence.Steps[1]);
     }
 
+    /// <summary>A collection object collects its items as an un-expanded <see cref="CollectionTerm"/>.</summary>
+    [TestMethod]
+    public void ParsesCollection()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * WHERE { ?s :p (1 2) }", pool);
+
+        CollectionTerm collection = (CollectionTerm)SingleBlockTriples(query)[0].Object;
+        Assert.HasCount(2, collection.Items);
+    }
+
+    /// <summary>An empty collection <c>()</c> yields a collection term with no items.</summary>
+    [TestMethod]
+    public void ParsesEmptyCollection()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * WHERE { ?s :p () }", pool);
+
+        Assert.IsEmpty(((CollectionTerm)SingleBlockTriples(query)[0].Object).Items);
+    }
+
+    /// <summary>Collections nest as terms.</summary>
+    [TestMethod]
+    public void ParsesNestedCollection()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * WHERE { ?s :p (1 (2 3)) }", pool);
+
+        CollectionTerm outer = (CollectionTerm)SingleBlockTriples(query)[0].Object;
+        Assert.HasCount(2, outer.Items);
+        Assert.HasCount(2, ((CollectionTerm)outer.Items[1]).Items);
+    }
+
+    /// <summary>A collection may stand in subject position.</summary>
+    [TestMethod]
+    public void ParsesCollectionSubject()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * WHERE { (1 2) :p ?o }", pool);
+
+        Assert.IsInstanceOfType<CollectionTerm>(SingleBlockTriples(query)[0].Subject);
+    }
+
+    /// <summary>A blank-node property list collects its predicate-object entries un-expanded.</summary>
+    [TestMethod]
+    public void ParsesBlankNodePropertyList()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * WHERE { ?s :p [ :a :b ] }", pool);
+
+        BlankNodePropertyListTerm list = (BlankNodePropertyListTerm)SingleBlockTriples(query)[0].Object;
+        Assert.HasCount(1, list.Properties);
+        Assert.HasCount(1, list.Properties[0].Objects);
+    }
+
+    /// <summary>A blank-node property list parses multiple predicates and object lists.</summary>
+    [TestMethod]
+    public void ParsesBlankNodePropertyListWithSeveralEntries()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * WHERE { ?s :p [ :a :b, :c ; :d :e ] }", pool);
+
+        BlankNodePropertyListTerm list = (BlankNodePropertyListTerm)SingleBlockTriples(query)[0].Object;
+        Assert.HasCount(2, list.Properties);
+        Assert.HasCount(2, list.Properties[0].Objects);
+        Assert.HasCount(1, list.Properties[1].Objects);
+    }
+
+    /// <summary>A blank-node property list may stand in subject position.</summary>
+    [TestMethod]
+    public void ParsesBlankNodePropertyListSubject()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * WHERE { [ :a :b ] :p ?o }", pool);
+
+        Assert.IsInstanceOfType<BlankNodePropertyListTerm>(SingleBlockTriples(query)[0].Subject);
+    }
+
+    /// <summary>Compound terms nest: a blank-node property list whose object is a collection.</summary>
+    [TestMethod]
+    public void ParsesNestedCompoundTerms()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * WHERE { ?s :p [ :a (1 2) ] }", pool);
+
+        BlankNodePropertyListTerm list = (BlankNodePropertyListTerm)SingleBlockTriples(query)[0].Object;
+        Assert.IsInstanceOfType<CollectionTerm>(list.Properties[0].Objects[0]);
+    }
+
+    /// <summary>Term spans are full source extents: a collection spans <c>(</c>…<c>)</c>, a variable its lexeme.</summary>
+    [TestMethod]
+    public void CollectsFullExtentTermSpans()
+    {
+        using Utf8StringPool pool = new();
+        const string Text = "PREFIX : <http://e/> SELECT * WHERE { ?s :p (1 2) }";
+        SparqlQuery query = ParseQuery(Text, pool);
+        byte[] bytes = Encoding.UTF8.GetBytes(Text);
+
+        TriplePattern triple = SingleBlockTriples(query)[0];
+        Assert.AreEqual("?s", Slice(bytes, ((VariableTerm)triple.Subject).Span));
+        Assert.AreEqual("(1 2)", Slice(bytes, ((CollectionTerm)triple.Object).Span));
+    }
+
     /// <summary>
     /// Feeding tokens one at a time, the parser suspends with <see cref="ParseStatus.NeedMore"/>
     /// before the stream completes and resumes to the same AST a whole-buffer parse produces — proof
@@ -918,6 +1022,18 @@ internal sealed class SparqlParserTests
     private static PropertyPathExpression PredicatePath(string text, Utf8StringPool pool)
     {
         return ((PropertyPathTerm)SingleBlockTriples(ParseQuery(text, pool))[0].Predicate).Path;
+    }
+
+    /// <summary>
+    /// Decodes the UTF-8 source bytes covered by a span, for asserting that a node's span is its full
+    /// source extent.
+    /// </summary>
+    /// <param name="bytes">The UTF-8 source bytes.</param>
+    /// <param name="span">The span to slice.</param>
+    /// <returns>The decoded source text the span covers.</returns>
+    private static string Slice(byte[] bytes, SourceSpan span)
+    {
+        return Encoding.UTF8.GetString(bytes, (int)span.StartByte, (int)(span.EndByte - span.StartByte));
     }
 
     /// <summary>

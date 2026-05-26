@@ -155,6 +155,15 @@ internal sealed class ParseFrame
 
     /// <summary>Gets or sets the accumulated elements of a <see cref="ParseFrameKind.PathNegatedSet"/> frame.</summary>
     public List<PathNegatedElement>? NegatedElements { get; set; }
+
+    /// <summary>Gets or sets the accumulated items of a <see cref="ParseFrameKind.Collection"/>, or the current object list of a <see cref="ParseFrameKind.BlankNodePropertyList"/>.</summary>
+    public List<TriplePatternTerm>? TermItems { get; set; }
+
+    /// <summary>Gets or sets the accumulated predicate-object entries of a <see cref="ParseFrameKind.BlankNodePropertyList"/> frame.</summary>
+    public List<PropertyListPath>? Properties { get; set; }
+
+    /// <summary>Gets or sets the source span at which the current verb (predicate or path) began, used to span the verb term and a <see cref="PropertyListPath"/>.</summary>
+    public SourceSpan VerbSpanStart { get; set; }
 }
 
 /// <summary>

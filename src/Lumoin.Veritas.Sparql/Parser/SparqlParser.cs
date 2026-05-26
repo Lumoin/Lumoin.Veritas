@@ -78,6 +78,7 @@ public sealed class SparqlParser
     private bool started;
     private int index;
     private int nextBlankNode;
+    private SourceSpan lastConsumedSpan;
 
     /// <summary>
     /// Initialises a <see cref="SparqlParser"/> over a fully materialised token stream.
@@ -238,10 +239,39 @@ public sealed class SparqlParser
     /// </summary>
     private void Advance()
     {
+        lastConsumedSpan = Tokens[index].Span;
+
         if(index < Tokens.Count - 1)
         {
             index++;
         }
+    }
+
+    /// <summary>
+    /// Combines a start span and an end span into the covering extent.
+    /// </summary>
+    /// <param name="start">The span at the start of the construct.</param>
+    /// <param name="end">The span at the end of the construct (typically <c>lastConsumedSpan</c>).</param>
+    /// <returns>The covering span.</returns>
+    private static SourceSpan CombineSpans(SourceSpan start, SourceSpan end)
+    {
+        return new SourceSpan(start.StartByte, end.EndByte, start.StartLine, start.StartColumn, end.EndLine, end.EndColumn);
+    }
+
+    /// <summary>
+    /// Downcasts a popped child frame's result to the type the receiving step expects. The work stack
+    /// hands every frame's product up through one untyped <c>object?</c> slot because those products
+    /// share no common base — graph patterns, expressions, terms, paths, lists, clauses — so each
+    /// receive site downcasts to the type of the child it pushed. The cast is safe by construction
+    /// (a step only consumes results of the frames it pushed) and <c>incoming</c> is non-null because
+    /// a popped frame always carries a result.
+    /// </summary>
+    /// <typeparam name="T">The product type the receiving step pushed for.</typeparam>
+    /// <param name="incoming">The popped child result.</param>
+    /// <returns>The result typed as <typeparamref name="T"/>.</returns>
+    private static T Pop<T>(object? incoming)
+    {
+        return (T)incoming!;
     }
 
     /// <summary>
@@ -319,6 +349,8 @@ public sealed class SparqlParser
             ParseFrameKind.PathSequence => StepPathSequence(frame, incoming),
             ParseFrameKind.PathElement => StepPathElement(frame, incoming),
             ParseFrameKind.PathNegatedSet => StepPathNegatedSet(frame),
+            ParseFrameKind.Collection => StepCollection(frame, incoming),
+            ParseFrameKind.BlankNodePropertyList => StepBlankNodePropertyList(frame, incoming),
             ParseFrameKind.ArgumentList => StepArgumentList(frame, incoming),
             ParseFrameKind.GroupBy => StepGroupBy(frame, incoming),
             ParseFrameKind.Having => StepHaving(frame, incoming),
@@ -424,7 +456,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private static StepResult RequestFormHead(ParseFrame frame, object? incoming)
     {
-        frame.Form = (QueryForm)incoming!;
+        frame.Form = Pop<QueryForm>(incoming);
         frame.Stage = 3;
 
         return StepResult.Continue();
@@ -477,7 +509,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private static StepResult RequestWherePattern(ParseFrame frame, object? incoming)
     {
-        frame.Where = new WhereClause((GraphPattern)incoming!);
+        frame.Where = new WhereClause(Pop<GraphPattern>(incoming));
         frame.Stage = 6;
 
         return StepResult.Continue();
@@ -506,7 +538,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private static StepResult RequestGroupReceived(ParseFrame frame, object? incoming)
     {
-        frame.Group = (GroupClause)incoming!;
+        frame.Group = Pop<GroupClause>(incoming);
         frame.Stage = 8;
 
         return StepResult.Continue();
@@ -535,7 +567,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private static StepResult RequestHavingReceived(ParseFrame frame, object? incoming)
     {
-        frame.Having = (HavingClause)incoming!;
+        frame.Having = Pop<HavingClause>(incoming);
         frame.Stage = 10;
 
         return StepResult.Continue();
@@ -564,7 +596,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private static StepResult RequestOrderReceived(ParseFrame frame, object? incoming)
     {
-        frame.Order = (OrderClause)incoming!;
+        frame.Order = Pop<OrderClause>(incoming);
         frame.Stage = 12;
 
         return StepResult.Continue();
@@ -706,7 +738,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private StepResult SelectExpressionProjection(ParseFrame frame, object? incoming)
     {
-        ExpressionNode expression = (ExpressionNode)incoming!;
+        ExpressionNode expression = Pop<ExpressionNode>(incoming);
         if(Current.Kind != SparqlTokenKind.AsKeyword)
         {
             throw Expected("AS in the (expr AS ?var) projection", Current);
@@ -842,7 +874,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private static StepResult GroupOrUnionStore(ParseFrame frame, object? incoming)
     {
-        frame.Accumulated = (GraphPattern)incoming!;
+        frame.Accumulated = Pop<GraphPattern>(incoming);
         frame.Stage = 2;
 
         return StepResult.Continue();
@@ -897,7 +929,7 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GroupGraphPattern, StartSpan = Current.Span });
         }
 
-        return StepResult.Done(new OptionalPattern((GraphPattern)incoming!));
+        return StepResult.Done(new OptionalPattern(Pop<GraphPattern>(incoming)));
     }
 
     /// <summary>
@@ -921,7 +953,7 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GroupGraphPattern, StartSpan = Current.Span });
         }
 
-        return StepResult.Done(new MinusPattern((GraphPattern)incoming!));
+        return StepResult.Done(new MinusPattern(Pop<GraphPattern>(incoming)));
     }
 
     /// <summary>
@@ -946,7 +978,7 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GroupGraphPattern, StartSpan = Current.Span });
         }
 
-        return StepResult.Done(new GraphGraphPattern(frame.GraphDesignator!, (GraphPattern)incoming!));
+        return StepResult.Done(new GraphGraphPattern(frame.GraphDesignator!, Pop<GraphPattern>(incoming)));
     }
 
     /// <summary>
@@ -977,7 +1009,7 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GroupGraphPattern, StartSpan = Current.Span });
         }
 
-        return StepResult.Done(new ServicePattern(frame.GraphDesignator!, frame.IsSilent, (GraphPattern)incoming!));
+        return StepResult.Done(new ServicePattern(frame.GraphDesignator!, frame.IsSilent, Pop<GraphPattern>(incoming)));
     }
 
     /// <summary>
@@ -1080,7 +1112,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private static StepResult ExpressionCombine(ParseFrame frame, object? incoming)
     {
-        frame.Left = CombineBinary(frame.OperatorKind, frame.Left!, (ExpressionNode)incoming!);
+        frame.Left = CombineBinary(frame.OperatorKind, frame.Left!, Pop<ExpressionNode>(incoming));
         if(IsComparison(frame.OperatorKind))
         {
             frame.SawComparison = true;
@@ -1097,7 +1129,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private static StepResult ExpressionWrapUnary(ParseFrame frame, object? incoming)
     {
-        frame.Left = WrapUnary(frame.OperatorKind, (ExpressionNode)incoming!);
+        frame.Left = WrapUnary(frame.OperatorKind, Pop<ExpressionNode>(incoming));
         frame.Stage = 1;
 
         return StepResult.Continue();
@@ -1115,7 +1147,7 @@ public sealed class SparqlParser
         }
 
         Advance();
-        frame.Left = (ExpressionNode)incoming!;
+        frame.Left = Pop<ExpressionNode>(incoming);
         frame.Stage = 1;
 
         return StepResult.Continue();
@@ -1127,7 +1159,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private static StepResult ExpressionCallReceived(ParseFrame frame, object? incoming)
     {
-        List<ExpressionNode> arguments = (List<ExpressionNode>)incoming!;
+        List<ExpressionNode> arguments = Pop<List<ExpressionNode>>(incoming);
         frame.Left = frame.Pending switch
         {
             PendingCall.If => BuildIf(arguments, frame.StartSpan),
@@ -1146,7 +1178,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private static StepResult ExpressionInReceived(ParseFrame frame, object? incoming)
     {
-        List<ExpressionNode> set = (List<ExpressionNode>)incoming!;
+        List<ExpressionNode> set = Pop<List<ExpressionNode>>(incoming);
         frame.Left = frame.Pending == PendingCall.NotIn
             ? new NotInExpression(frame.Left!, set)
             : new InExpression(frame.Left!, set);
@@ -1162,7 +1194,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private StepResult ExpressionAggregateReceived(ParseFrame frame, object? incoming)
     {
-        frame.Left = BuildAggregate(frame, (ExpressionNode)incoming!);
+        frame.Left = BuildAggregate(frame, Pop<ExpressionNode>(incoming));
         frame.Stage = 1;
 
         return StepResult.Continue();
@@ -1174,7 +1206,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private static StepResult ExpressionExistsReceived(ParseFrame frame, object? incoming)
     {
-        GraphPattern inner = (GraphPattern)incoming!;
+        GraphPattern inner = Pop<GraphPattern>(incoming);
         frame.Left = frame.OperatorKind == SparqlTokenKind.NotKeyword
             ? new NotExistsExpression(inner)
             : new ExistsExpression(inner);
@@ -1439,7 +1471,7 @@ public sealed class SparqlParser
 
         Advance();
 
-        return StepResult.Done(new FilterPattern((ExpressionNode)incoming!));
+        return StepResult.Done(new FilterPattern(Pop<ExpressionNode>(incoming)));
     }
 
     /// <summary>
@@ -1484,7 +1516,7 @@ public sealed class SparqlParser
 
         Advance();
 
-        return StepResult.Done(new BindPattern((ExpressionNode)incoming!, variable));
+        return StepResult.Done(new BindPattern(Pop<ExpressionNode>(incoming), variable));
     }
 
     /// <summary>
@@ -1514,7 +1546,7 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Expression, MinPrecedence = PrecExpression, StartSpan = Current.Span });
         }
 
-        frame.Arguments!.Add((ExpressionNode)incoming!);
+        frame.Arguments!.Add(Pop<ExpressionNode>(incoming));
 
         if(Current.Kind == SparqlTokenKind.Comma)
         {
@@ -1672,7 +1704,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private StepResult GroupByParenReceived(ParseFrame frame, object? incoming)
     {
-        ExpressionNode expression = (ExpressionNode)incoming!;
+        ExpressionNode expression = Pop<ExpressionNode>(incoming);
 
         if(Current.Kind == SparqlTokenKind.AsKeyword)
         {
@@ -1714,7 +1746,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private static StepResult GroupByBareReceived(ParseFrame frame, object? incoming)
     {
-        frame.GroupConditions!.Add(new GroupExpression((ExpressionNode)incoming!));
+        frame.GroupConditions!.Add(new GroupExpression(Pop<ExpressionNode>(incoming)));
         frame.Stage = 1;
 
         return StepResult.Continue();
@@ -1771,7 +1803,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private static StepResult HavingReceived(ParseFrame frame, object? incoming)
     {
-        frame.HavingConditions!.Add((ExpressionNode)incoming!);
+        frame.HavingConditions!.Add(Pop<ExpressionNode>(incoming));
         frame.Stage = 1;
 
         return StepResult.Continue();
@@ -1855,7 +1887,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private static StepResult OrderByDirectedReceived(ParseFrame frame, object? incoming)
     {
-        ExpressionNode expression = (ExpressionNode)incoming!;
+        ExpressionNode expression = Pop<ExpressionNode>(incoming);
         frame.OrderConditions!.Add(frame.DescendingOrder ? new OrderDescending(expression) : new OrderAscending(expression));
         frame.Stage = 1;
 
@@ -1868,7 +1900,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private static StepResult OrderByBareReceived(ParseFrame frame, object? incoming)
     {
-        frame.OrderConditions!.Add(new OrderAscending((ExpressionNode)incoming!));
+        frame.OrderConditions!.Add(new OrderAscending(Pop<ExpressionNode>(incoming)));
         frame.Stage = 1;
 
         return StepResult.Continue();
@@ -1917,7 +1949,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private StepResult PathAlternativeNext(ParseFrame frame, object? incoming)
     {
-        frame.PathItems!.Add((PropertyPathExpression)incoming!);
+        frame.PathItems!.Add(Pop<PropertyPathExpression>(incoming));
 
         if(Current.Kind == SparqlTokenKind.Pipe)
         {
@@ -1958,7 +1990,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private StepResult PathSequenceNext(ParseFrame frame, object? incoming)
     {
-        frame.PathItems!.Add((PropertyPathExpression)incoming!);
+        frame.PathItems!.Add(Pop<PropertyPathExpression>(incoming));
 
         if(Current.Kind == SparqlTokenKind.Slash)
         {
@@ -2035,7 +2067,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private StepResult PathElementNegatedReceived(ParseFrame frame, object? incoming)
     {
-        return FinishPathElement(frame, (PropertyPathExpression)incoming!);
+        return FinishPathElement(frame, Pop<PropertyPathExpression>(incoming));
     }
 
     /// <summary>Consumes the closing parenthesis and completes the element from a popped grouped path.</summary>
@@ -2051,7 +2083,7 @@ public sealed class SparqlParser
 
         Advance();
 
-        return FinishPathElement(frame, (PropertyPathExpression)incoming!);
+        return FinishPathElement(frame, Pop<PropertyPathExpression>(incoming));
     }
 
     /// <summary>Applies the optional quantifier and inverse to a path primary and completes the element.</summary>
@@ -2297,15 +2329,37 @@ public sealed class SparqlParser
             1 => TripleVerb(frame),
             2 => TripleObject(frame),
             3 => TripleVerbPath(frame, incoming),
+            4 => TripleSubjectReceived(frame, incoming),
+            5 => TripleObjectReceived(frame, incoming),
             _ => throw new SparqlParseException("Triple reached an unknown stage.", frame.StartSpan)
         };
 
-    /// <summary>Parses the subject of a triple block and moves to the verb.</summary>
+    /// <summary>Parses the subject of a triple block (pushing a frame for a compound term) and moves to the verb.</summary>
     /// <param name="frame">The triple frame.</param>
     /// <returns>The instruction for the driver.</returns>
     private StepResult TripleSubject(ParseFrame frame)
     {
+        if(CanStartCompoundTerm(Current.Kind))
+        {
+            frame.Stage = 4;
+
+            return StepResult.Push(CompoundTermFrame());
+        }
+
         frame.Subject = ParseVarOrTerm();
+        frame.TripleAccumulator = [];
+        frame.Stage = 1;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Adopts a popped compound subject term and moves to the verb.</summary>
+    /// <param name="frame">The triple frame.</param>
+    /// <param name="incoming">The popped subject term.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult TripleSubjectReceived(ParseFrame frame, object? incoming)
+    {
+        frame.Subject = Pop<TriplePatternTerm>(incoming);
         frame.TripleAccumulator = [];
         frame.Stage = 1;
 
@@ -2330,6 +2384,7 @@ public sealed class SparqlParser
 
         if(CanStartPath(Current.Kind))
         {
+            frame.VerbSpanStart = Current.Span;
             frame.Stage = 3;
 
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PropertyPath, StartSpan = Current.Span });
@@ -2342,12 +2397,13 @@ public sealed class SparqlParser
     /// <param name="frame">The triple frame.</param>
     /// <param name="incoming">The popped property path.</param>
     /// <returns>The instruction for the driver.</returns>
-    private static StepResult TripleVerbPath(ParseFrame frame, object? incoming)
+    private StepResult TripleVerbPath(ParseFrame frame, object? incoming)
     {
-        PropertyPathExpression path = (PropertyPathExpression)incoming!;
+        PropertyPathExpression path = Pop<PropertyPathExpression>(incoming);
+        SourceSpan span = CombineSpans(frame.VerbSpanStart, lastConsumedSpan);
         frame.Verb = path is PathPredicate predicate
-            ? new ConstantTerm(new NamedNode(predicate.Predicate.Value))
-            : new PropertyPathTerm(path);
+            ? new ConstantTerm(span, new NamedNode(predicate.Predicate.Value))
+            : new PropertyPathTerm(span, path);
         frame.Stage = 2;
 
         return StepResult.Continue();
@@ -2361,12 +2417,41 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private StepResult TripleObject(ParseFrame frame)
     {
-        TriplePatternTerm objectTerm = ParseObject();
-        frame.TripleAccumulator!.Add(new TriplePattern(frame.Subject!, frame.Verb!, objectTerm));
+        if(CanStartCompoundTerm(Current.Kind))
+        {
+            frame.Stage = 5;
+
+            return StepResult.Push(CompoundTermFrame());
+        }
+
+        return EmitObject(frame, ParseVarOrTerm());
+    }
+
+    /// <summary>Emits the triple for a popped compound object term, then continues the object list.</summary>
+    /// <param name="frame">The triple frame.</param>
+    /// <param name="incoming">The popped object term.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult TripleObjectReceived(ParseFrame frame, object? incoming)
+    {
+        return EmitObject(frame, Pop<TriplePatternTerm>(incoming));
+    }
+
+    /// <summary>
+    /// Records the triple for one object, then continues the object list on a comma, restarts the verb
+    /// on a semicolon, or completes the run. The triple's span runs from the subject to this object.
+    /// </summary>
+    /// <param name="frame">The triple frame.</param>
+    /// <param name="objectTerm">The parsed object term.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult EmitObject(ParseFrame frame, TriplePatternTerm objectTerm)
+    {
+        SourceSpan span = CombineSpans(frame.StartSpan, lastConsumedSpan);
+        frame.TripleAccumulator!.Add(new TriplePattern(span, frame.Subject!, frame.Verb!, objectTerm));
 
         if(Current.Kind == SparqlTokenKind.Comma)
         {
             Advance();
+            frame.Stage = 2;
 
             return StepResult.Continue();
         }
@@ -2389,6 +2474,232 @@ public sealed class SparqlParser
         }
 
         return StepResult.Done(frame.TripleAccumulator);
+    }
+
+    /// <summary>Builds the frame for the compound term (collection or blank-node property list) at the cursor.</summary>
+    /// <returns>The compound-term frame to push.</returns>
+    private ParseFrame CompoundTermFrame()
+    {
+        ParseFrameKind kind = Current.Kind == SparqlTokenKind.OpenParen
+            ? ParseFrameKind.Collection
+            : ParseFrameKind.BlankNodePropertyList;
+
+        return new ParseFrame { Kind = kind, StartSpan = Current.Span };
+    }
+
+    /// <summary>
+    /// Determines whether a token kind begins a compound (frame-parsed) term: a collection or a
+    /// blank-node property list.
+    /// </summary>
+    /// <param name="kind">The token kind to test.</param>
+    /// <returns><see langword="true"/> when the kind begins a compound term.</returns>
+    private static bool CanStartCompoundTerm(SparqlTokenKind kind)
+    {
+        return kind is SparqlTokenKind.OpenParen or SparqlTokenKind.OpenBracket;
+    }
+
+    /// <summary>Advances a collection term <c>( ... )</c>, parsing one item per step.</summary>
+    /// <param name="frame">The collection frame.</param>
+    /// <param name="incoming">A popped compound item on resume.</param>
+    /// <returns>The instruction for the driver; the popped result is the <see cref="CollectionTerm"/>.</returns>
+    private StepResult StepCollection(ParseFrame frame, object? incoming)
+        => frame.Stage switch
+        {
+            0 => CollectionStart(frame),
+            1 => CollectionItem(frame),
+            2 => CollectionItemReceived(frame, incoming),
+            _ => throw new SparqlParseException("Collection reached an unknown stage.", frame.StartSpan)
+        };
+
+    /// <summary>Consumes the opening parenthesis and begins the item list.</summary>
+    /// <param name="frame">The collection frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult CollectionStart(ParseFrame frame)
+    {
+        Advance();
+        frame.TermItems = [];
+        frame.Stage = 1;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Closes the collection at <c>)</c>, pushes a compound item, or parses a leaf item.</summary>
+    /// <param name="frame">The collection frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult CollectionItem(ParseFrame frame)
+    {
+        if(Current.Kind == SparqlTokenKind.CloseParen)
+        {
+            Advance();
+
+            return StepResult.Done(new CollectionTerm(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.TermItems!));
+        }
+
+        if(Current.Kind == SparqlTokenKind.EndOfInput)
+        {
+            throw Expected("')' to close the collection", Current);
+        }
+
+        if(CanStartCompoundTerm(Current.Kind))
+        {
+            frame.Stage = 2;
+
+            return StepResult.Push(CompoundTermFrame());
+        }
+
+        frame.TermItems!.Add(ParseVarOrTerm());
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Adds a popped compound item and continues the collection.</summary>
+    /// <param name="frame">The collection frame.</param>
+    /// <param name="incoming">The popped item term.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult CollectionItemReceived(ParseFrame frame, object? incoming)
+    {
+        frame.TermItems!.Add(Pop<TriplePatternTerm>(incoming));
+        frame.Stage = 1;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Advances a blank-node property list <c>[ verb objects ; ... ]</c>, one verb/object step at a time.</summary>
+    /// <param name="frame">The blank-node-property-list frame.</param>
+    /// <param name="incoming">A popped path verb or compound object on resume.</param>
+    /// <returns>The instruction for the driver; the popped result is the <see cref="BlankNodePropertyListTerm"/>.</returns>
+    private StepResult StepBlankNodePropertyList(ParseFrame frame, object? incoming)
+        => frame.Stage switch
+        {
+            0 => BlankNodeListStart(frame),
+            1 => BlankNodeListVerb(frame),
+            2 => BlankNodeListVerbPath(frame, incoming),
+            3 => BlankNodeListObject(frame),
+            4 => BlankNodeListObjectReceived(frame, incoming),
+            _ => throw new SparqlParseException("Blank-node property list reached an unknown stage.", frame.StartSpan)
+        };
+
+    /// <summary>Consumes the opening bracket and begins the predicate-object list.</summary>
+    /// <param name="frame">The blank-node-property-list frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult BlankNodeListStart(ParseFrame frame)
+    {
+        Advance();
+        frame.Properties = [];
+        frame.Stage = 1;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Parses one verb (a variable inline or a property path) and begins its object list.</summary>
+    /// <param name="frame">The blank-node-property-list frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult BlankNodeListVerb(ParseFrame frame)
+    {
+        frame.VerbSpanStart = Current.Span;
+
+        if(Current.Kind == SparqlTokenKind.Variable)
+        {
+            frame.Verb = ConsumeVariable();
+            frame.TermItems = [];
+            frame.Stage = 3;
+
+            return StepResult.Continue();
+        }
+
+        if(CanStartPath(Current.Kind))
+        {
+            frame.Stage = 2;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PropertyPath, StartSpan = Current.Span });
+        }
+
+        throw Expected("a predicate or property path inside the blank-node property list", Current);
+    }
+
+    /// <summary>Converts the popped property path into the current verb and begins its object list.</summary>
+    /// <param name="frame">The blank-node-property-list frame.</param>
+    /// <param name="incoming">The popped property path.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult BlankNodeListVerbPath(ParseFrame frame, object? incoming)
+    {
+        PropertyPathExpression path = Pop<PropertyPathExpression>(incoming);
+        SourceSpan span = CombineSpans(frame.VerbSpanStart, lastConsumedSpan);
+        frame.Verb = path is PathPredicate predicate
+            ? new ConstantTerm(span, new NamedNode(predicate.Predicate.Value))
+            : new PropertyPathTerm(span, path);
+        frame.TermItems = [];
+        frame.Stage = 3;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Parses one object (pushing a frame for a compound term) of the current verb's object list.</summary>
+    /// <param name="frame">The blank-node-property-list frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult BlankNodeListObject(ParseFrame frame)
+    {
+        if(CanStartCompoundTerm(Current.Kind))
+        {
+            frame.Stage = 4;
+
+            return StepResult.Push(CompoundTermFrame());
+        }
+
+        return BlankNodeListAppendObject(frame, ParseVarOrTerm());
+    }
+
+    /// <summary>Appends a popped compound object and continues the object list.</summary>
+    /// <param name="frame">The blank-node-property-list frame.</param>
+    /// <param name="incoming">The popped object term.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult BlankNodeListObjectReceived(ParseFrame frame, object? incoming)
+    {
+        return BlankNodeListAppendObject(frame, Pop<TriplePatternTerm>(incoming));
+    }
+
+    /// <summary>
+    /// Adds one object; on a comma continues the object list, otherwise records the predicate-object
+    /// entry and then continues the next verb on a semicolon or closes the list at <c>]</c>.
+    /// </summary>
+    /// <param name="frame">The blank-node-property-list frame.</param>
+    /// <param name="objectTerm">The parsed object term.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult BlankNodeListAppendObject(ParseFrame frame, TriplePatternTerm objectTerm)
+    {
+        frame.TermItems!.Add(objectTerm);
+
+        if(Current.Kind == SparqlTokenKind.Comma)
+        {
+            Advance();
+            frame.Stage = 3;
+
+            return StepResult.Continue();
+        }
+
+        SourceSpan entrySpan = CombineSpans(frame.VerbSpanStart, lastConsumedSpan);
+        frame.Properties!.Add(new PropertyListPath(entrySpan, frame.Verb!, frame.TermItems!));
+
+        while(Current.Kind == SparqlTokenKind.Semicolon)
+        {
+            Advance();
+        }
+
+        if(Current.Kind == SparqlTokenKind.CloseBracket)
+        {
+            Advance();
+
+            return StepResult.Done(new BlankNodePropertyListTerm(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.Properties!));
+        }
+
+        if(CanStartVerb(Current.Kind))
+        {
+            frame.Stage = 1;
+
+            return StepResult.Continue();
+        }
+
+        throw Expected("';' or ']' in the blank-node property list", Current);
     }
 
     /// <summary>
@@ -2484,8 +2795,8 @@ public sealed class SparqlParser
         => Current.Kind switch
         {
             SparqlTokenKind.Variable => ConsumeVariable(),
-            SparqlTokenKind.Iri => new ConstantTerm(new NamedNode(ConsumeIriRef().Value)),
-            SparqlTokenKind.PrefixedName => new ConstantTerm(new NamedNode(ConsumePrefixedName().Value)),
+            SparqlTokenKind.Iri => ConsumeIriConstantTerm(),
+            SparqlTokenKind.PrefixedName => ConsumePrefixedNameConstantTerm(),
             SparqlTokenKind.BlankNodeLabel => ConsumeBlankNodeTerm(),
             SparqlTokenKind.AnonymousBlankNode => ConsumeAnonymousBlankNodeTerm(),
             SparqlTokenKind.StringLiteral
@@ -2493,9 +2804,37 @@ public sealed class SparqlParser
                 or SparqlTokenKind.IntegerLiteral
                 or SparqlTokenKind.DecimalLiteral
                 or SparqlTokenKind.DoubleLiteral
-                or SparqlTokenKind.BooleanLiteral => new ConstantTerm(ParseRdfLiteral()),
+                or SparqlTokenKind.BooleanLiteral => ConsumeLiteralConstantTerm(),
             _ => throw Expected("a subject or object term", Current)
         };
+
+    /// <summary>Consumes the IRI at the cursor as a constant term carrying the token span.</summary>
+    /// <returns>The IRI constant term.</returns>
+    private ConstantTerm ConsumeIriConstantTerm()
+    {
+        IriRef iri = ConsumeIriRef();
+
+        return new ConstantTerm(iri.Span, new NamedNode(iri.Value));
+    }
+
+    /// <summary>Consumes the prefixed name at the cursor as a constant term carrying the token span.</summary>
+    /// <returns>The IRI constant term.</returns>
+    private ConstantTerm ConsumePrefixedNameConstantTerm()
+    {
+        IriRef iri = ConsumePrefixedName();
+
+        return new ConstantTerm(iri.Span, new NamedNode(iri.Value));
+    }
+
+    /// <summary>Consumes the literal at the cursor (with any suffix) as a constant term spanning its full extent.</summary>
+    /// <returns>The literal constant term.</returns>
+    private ConstantTerm ConsumeLiteralConstantTerm()
+    {
+        SourceSpan start = Current.Span;
+        Literal literal = ParseRdfLiteral();
+
+        return new ConstantTerm(CombineSpans(start, lastConsumedSpan), literal);
+    }
 
     /// <summary>
     /// Consumes the blank-node label at the cursor as a constant term and advances.
@@ -2503,10 +2842,11 @@ public sealed class SparqlParser
     /// <returns>The blank-node constant term.</returns>
     private ConstantTerm ConsumeBlankNodeTerm()
     {
+        SourceSpan span = Current.Span;
         Utf8String label = Current.Value;
         Advance();
 
-        return new ConstantTerm(new BlankNode(label));
+        return new ConstantTerm(span, new BlankNode(label));
     }
 
     /// <summary>
@@ -2515,19 +2855,10 @@ public sealed class SparqlParser
     /// <returns>The blank-node constant term.</returns>
     private ConstantTerm ConsumeAnonymousBlankNodeTerm()
     {
+        SourceSpan span = Current.Span;
         Advance();
 
-        return new ConstantTerm(new BlankNode(FreshBlankNodeLabel()));
-    }
-
-    /// <summary>
-    /// Parses an object term. In this build an object is a <c>VarOrTerm</c>; the triple-node and
-    /// path-augmented object forms arrive in later slices.
-    /// </summary>
-    /// <returns>The parsed object term.</returns>
-    private TriplePatternTerm ParseObject()
-    {
-        return ParseVarOrTerm();
+        return new ConstantTerm(span, new BlankNode(FreshBlankNodeLabel()));
     }
 
     /// <summary>
@@ -2561,7 +2892,7 @@ public sealed class SparqlParser
     /// <returns>The variable term.</returns>
     private VariableTerm ConsumeVariable()
     {
-        VariableTerm term = new(new SparqlVariable(Current.Value));
+        VariableTerm term = new(Current.Span, new SparqlVariable(Current.Value));
         Advance();
 
         return term;
@@ -2858,7 +3189,9 @@ public sealed class SparqlParser
             or SparqlTokenKind.IntegerLiteral
             or SparqlTokenKind.DecimalLiteral
             or SparqlTokenKind.DoubleLiteral
-            or SparqlTokenKind.BooleanLiteral;
+            or SparqlTokenKind.BooleanLiteral
+            or SparqlTokenKind.OpenParen
+            or SparqlTokenKind.OpenBracket;
     }
 
     /// <summary>
