@@ -49,6 +49,18 @@ DESCRIBE/JSON results, conformance push).
   `SparqlLexDiagnostic`, `SparqlLexerLimits`. Lifting the Turtle types into
   `Core/Lexing/` is deferred to a future cross-cutting batch. Rationale:
   self-contained project now, cheaper; the boundary is already marked.
+- **Token vocabulary (refinement of §7.1):** built-in-function and aggregate
+  names are NOT ~70 distinct enum members. They fold into two kinds —
+  `BuiltInFunctionName` and `AggregateFunctionName` — each carrying the canonical
+  upper-case name as its interned `Value`. This satisfies §7.1's intent (the
+  parser sees them as clean terminals, dispatches on kind+payload, never confuses
+  them with prefixed names) without an unmaintainable enum. `true`/`false` fold
+  into `BooleanLiteral` and `a` into `A`, matching the Turtle precedent.
+  Structural keywords carry distinct `XxxKeyword` kinds. `^` is `Caret` (the
+  spec's §7.1 list mentioned both `Hat` and `Caret`; unified to one).
+- **`ImplicitUsings` is OFF** for src projects (only the test project enables it).
+  Every src file needs explicit `using` directives — e.g. `using System;` for
+  `FormattableString`.
 
 ## Open verification to do at the consuming milestone
 
