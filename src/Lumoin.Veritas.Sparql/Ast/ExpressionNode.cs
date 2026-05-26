@@ -10,12 +10,12 @@ namespace Lumoin.Veritas.Sparql.Ast;
 /// output; the expression evaluator interprets it.
 /// </summary>
 /// <remarks>
-/// Built-in and aggregate function identity is carried as the canonical
-/// upper-case name (a <see cref="Utf8String"/> matching the lexer's payload)
-/// rather than an enum: the lexer already canonicalises these names, and the
-/// closed dispatch set belongs to the expression evaluator that consumes it.
-/// User-defined and constructor functions are named by IRI via
-/// <see cref="FunctionCallExpression"/>.
+/// Built-in and aggregate function identity is carried as a closed enum
+/// (<see cref="BuiltInFunction"/> / <see cref="AggregateFunction"/>): the lexer
+/// interns the canonical upper-case name and the parser maps it to the enum at
+/// construction (see <see cref="SparqlFunctions"/>), so the evaluator dispatches
+/// over an exhaustive set. User-defined and constructor functions are named by IRI
+/// via <see cref="FunctionCallExpression"/>.
 /// </remarks>
 public abstract record ExpressionNode;
 
@@ -127,15 +127,16 @@ public sealed record NotInExpression(ExpressionNode Value, IReadOnlyList<Express
 public sealed record FunctionCallExpression(IriRef Function, IReadOnlyList<ExpressionNode> Arguments) : ExpressionNode;
 
 /// <summary>
-/// A call to a reserved built-in function, identified by its canonical upper-case
-/// name. <see cref="IsDistinct"/> carries the <c>DISTINCT</c> flag where the
-/// grammar permits it.
+/// A call to a reserved built-in function, identified by <see cref="BuiltInFunction"/>.
+/// <see cref="IsDistinct"/> carries the <c>DISTINCT</c> flag where the grammar permits
+/// it. <c>BOUND</c>, <c>IF</c>, and <c>COALESCE</c> have dedicated nodes and never
+/// appear here.
 /// </summary>
-/// <param name="FunctionName">The canonical upper-case built-in name (for example <c>STR</c>).</param>
+/// <param name="Function">The built-in function.</param>
 /// <param name="Arguments">The argument expressions.</param>
 /// <param name="IsDistinct">Whether <c>DISTINCT</c> was given.</param>
-[DebuggerDisplay("{FunctionName,nq}(...)")]
-public sealed record BuiltInCallExpression(Utf8String FunctionName, IReadOnlyList<ExpressionNode> Arguments, bool IsDistinct = false) : ExpressionNode;
+[DebuggerDisplay("{Function}(...)")]
+public sealed record BuiltInCallExpression(BuiltInFunction Function, IReadOnlyList<ExpressionNode> Arguments, bool IsDistinct = false) : ExpressionNode;
 
 /// <summary>The <c>EXISTS { pattern }</c> test.</summary>
 /// <param name="Inner">The inner graph pattern.</param>
@@ -170,14 +171,14 @@ public sealed record BoundExpression(SparqlVariable Variable) : ExpressionNode;
 /// <see cref="IsCountStar"/> marks the <c>COUNT(*)</c> form, where
 /// <see cref="Argument"/> is <c>null</c>.
 /// </summary>
-/// <param name="FunctionName">The canonical upper-case aggregate name (for example <c>SUM</c>).</param>
+/// <param name="Function">The aggregate function.</param>
 /// <param name="Argument">The aggregated expression, or <c>null</c> for <c>COUNT(*)</c>.</param>
 /// <param name="IsDistinct">Whether <c>DISTINCT</c> was given.</param>
 /// <param name="IsCountStar">Whether this is the <c>COUNT(*)</c> form.</param>
 /// <param name="GroupConcatSeparator">The <c>GROUP_CONCAT</c> separator, or <c>null</c> for the default.</param>
-[DebuggerDisplay("{FunctionName,nq}(agg)")]
+[DebuggerDisplay("{Function}(agg)")]
 public sealed record AggregateExpression(
-    Utf8String FunctionName,
+    AggregateFunction Function,
     ExpressionNode? Argument,
     bool IsDistinct,
     bool IsCountStar,

@@ -55,7 +55,7 @@ algebra/executor milestones build on the AST.
 
 **Execution order (then Milestones B, C):**
 1. Pre-A (standalone PR). **DONE** — committed on `sparql-query-engine`.
-2. Built-in/aggregate enum realignment in the SPARQL AST (lexer payloads unchanged).
+2. Built-in/aggregate enum realignment in the SPARQL AST (lexer payloads unchanged). **DONE** — `Ast/SparqlFunctions.cs` (`BuiltInFunction`/`AggregateFunction` + name↔enum mapping).
 3. §7.0 documentation-convention pass (every terminal/production cites its §19.8
    anchor; grep audit at end of Milestone A).
 4. Slice 4b-ii — RDF 1.2 lexical completeness: `~` (Tilde) reifier token, `VERSION`

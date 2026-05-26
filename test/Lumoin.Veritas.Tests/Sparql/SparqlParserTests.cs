@@ -637,7 +637,7 @@ internal sealed class SparqlParserTests
         using Utf8StringPool pool = new();
         BuiltInCallExpression call = (BuiltInCallExpression)FilterExpression("ASK { FILTER(STR(?x)) }", pool);
 
-        Assert.AreEqual("STR", call.FunctionName.ToString());
+        Assert.AreEqual(BuiltInFunction.Str, call.Function);
         Assert.HasCount(1, call.Arguments);
         Assert.AreEqual("x", ((VariableExpression)call.Arguments[0]).Variable.Name.ToString());
     }
@@ -650,7 +650,7 @@ internal sealed class SparqlParserTests
         SparqlQuery query = ParseQuery("SELECT * WHERE { ?s ?p ?o BIND(NOW() AS ?t) }", pool);
 
         BuiltInCallExpression call = (BuiltInCallExpression)((BindPattern)Members(query)[1]).Expression;
-        Assert.AreEqual("NOW", call.FunctionName.ToString());
+        Assert.AreEqual(BuiltInFunction.Now, call.Function);
         Assert.IsEmpty(call.Arguments);
     }
 
@@ -724,7 +724,7 @@ internal sealed class SparqlParserTests
         SparqlQuery query = ParseQuery("SELECT (COUNT(*) AS ?n) WHERE { ?s ?p ?o }", pool);
 
         AggregateExpression aggregate = (AggregateExpression)((SelectExpressionAs)((SelectQuery)query.Form).Projections[0]).Expression;
-        Assert.AreEqual("COUNT", aggregate.FunctionName.ToString());
+        Assert.AreEqual(AggregateFunction.Count, aggregate.Function);
         Assert.IsTrue(aggregate.IsCountStar);
         Assert.IsNull(aggregate.Argument);
     }
@@ -737,7 +737,7 @@ internal sealed class SparqlParserTests
         SparqlQuery query = ParseQuery("SELECT (SUM(DISTINCT ?x) AS ?s) WHERE { ?a ?b ?x }", pool);
 
         AggregateExpression aggregate = (AggregateExpression)((SelectExpressionAs)((SelectQuery)query.Form).Projections[0]).Expression;
-        Assert.AreEqual("SUM", aggregate.FunctionName.ToString());
+        Assert.AreEqual(AggregateFunction.Sum, aggregate.Function);
         Assert.IsTrue(aggregate.IsDistinct);
         Assert.IsFalse(aggregate.IsCountStar);
     }
@@ -750,7 +750,7 @@ internal sealed class SparqlParserTests
         SparqlQuery query = ParseQuery("SELECT (GROUP_CONCAT(?x ; SEPARATOR=\", \") AS ?g) WHERE { ?a ?b ?x }", pool);
 
         AggregateExpression aggregate = (AggregateExpression)((SelectExpressionAs)((SelectQuery)query.Form).Projections[0]).Expression;
-        Assert.AreEqual("GROUP_CONCAT", aggregate.FunctionName.ToString());
+        Assert.AreEqual(AggregateFunction.GroupConcat, aggregate.Function);
         Assert.AreEqual(", ", aggregate.GroupConcatSeparator!.Value.ToString());
     }
 

@@ -1361,7 +1361,7 @@ public sealed class SparqlParser
             PendingCall.If => BuildIf(arguments, frame.StartSpan),
             PendingCall.Coalesce => new CoalesceExpression(arguments),
             PendingCall.Function => new FunctionCallExpression(frame.FunctionIri!.Value, arguments),
-            _ => new BuiltInCallExpression(frame.CallName!.Value, arguments)
+            _ => new BuiltInCallExpression(SparqlFunctions.BuiltInFromName(frame.CallName!.Value), arguments)
         };
         frame.Stage = 1;
 
@@ -1627,7 +1627,7 @@ public sealed class SparqlParser
             }
 
             Advance();
-            frame.Left = new AggregateExpression(name, Argument: null, frame.IsDistinct, IsCountStar: true, GroupConcatSeparator: null);
+            frame.Left = new AggregateExpression(SparqlFunctions.AggregateFromName(name), Argument: null, frame.IsDistinct, IsCountStar: true, GroupConcatSeparator: null);
             frame.Stage = 1;
 
             return StepResult.Continue();
@@ -1812,7 +1812,7 @@ public sealed class SparqlParser
 
         Advance();
 
-        return new AggregateExpression(name, argument, frame.IsDistinct, IsCountStar: false, separator);
+        return new AggregateExpression(SparqlFunctions.AggregateFromName(name), argument, frame.IsDistinct, IsCountStar: false, separator);
     }
 
     /// <summary>Advances a <c>GROUP BY</c> clause, parsing one grouping condition per step.</summary>
