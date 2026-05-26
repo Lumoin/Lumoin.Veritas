@@ -179,6 +179,9 @@ internal sealed class ParseFrame
 
     /// <summary>Gets or sets the trailing <c>VALUES</c> block on the request frame.</summary>
     public ValuesClause? Values { get; set; }
+
+    /// <summary>Gets or sets whether a request frame is a sub-<c>SELECT</c> (it finalises at the enclosing <c>}</c> rather than end of input, and the caller consumes the brace).</summary>
+    public bool IsSubSelect { get; set; }
 }
 
 /// <summary>

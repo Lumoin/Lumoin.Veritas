@@ -999,6 +999,31 @@ internal sealed class SparqlParserTests
         Assert.AreEqual("(1 2)", Slice(bytes, ((CollectionTerm)triple.Object).Span));
     }
 
+    /// <summary>A sub-SELECT is a group member carrying its own nested query.</summary>
+    [TestMethod]
+    public void ParsesSubSelectMember()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("SELECT * WHERE { ?s ?p ?o { SELECT ?x WHERE { ?x ?y ?z } } }", pool);
+
+        IReadOnlyList<GraphPattern> members = Members(query);
+        Assert.IsInstanceOfType<BasicGraphPatternBlock>(members[0]);
+        SubSelectPattern sub = (SubSelectPattern)members[1];
+        Assert.HasCount(1, ((SelectQuery)sub.InnerQuery.Form).Projections);
+    }
+
+    /// <summary>A <c>{ SELECT ... }</c> WHERE block is a sub-SELECT, with its own modifiers.</summary>
+    [TestMethod]
+    public void ParsesSubSelectAsWhere()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("SELECT * WHERE { SELECT ?x WHERE { ?x ?y ?z } LIMIT 5 }", pool);
+
+        SubSelectPattern sub = (SubSelectPattern)query.Where.Pattern;
+        Assert.IsInstanceOfType<SelectQuery>(sub.InnerQuery.Form);
+        Assert.AreEqual(5, sub.InnerQuery.Modifier.Limit);
+    }
+
     /// <summary>
     /// Feeding tokens one at a time, the parser suspends with <see cref="ParseStatus.NeedMore"/>
     /// before the stream completes and resumes to the same AST a whole-buffer parse produces — proof

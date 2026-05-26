@@ -764,7 +764,9 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private StepResult RequestFinalize(ParseFrame frame)
     {
-        if(Current.Kind != SparqlTokenKind.EndOfInput)
+        //A sub-SELECT finalises at the enclosing '}', which the caller consumes; a top-level request
+        //must reach end of input.
+        if(!frame.IsSubSelect && Current.Kind != SparqlTokenKind.EndOfInput)
         {
             throw Expected("end of query", Current);
         }
@@ -909,9 +911,30 @@ public sealed class SparqlParser
         {
             //The caller ensured '{' is current.
             Advance();
+
+            //A '{' immediately followed by SELECT is a sub-SELECT, not a group of members.
+            if(Current.Kind == SparqlTokenKind.SelectKeyword)
+            {
+                frame.Stage = 2;
+
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Request, IsSubSelect = true, StartSpan = Current.Span });
+            }
+
             frame.Members = [];
             frame.PendingTriples = [];
             frame.Stage = 1;
+        }
+        else if(frame.Stage == 2)
+        {
+            SparqlQuery inner = Pop<SparqlQuery>(incoming);
+            if(Current.Kind != SparqlTokenKind.CloseBrace)
+            {
+                throw Expected("'}' to close the sub-SELECT", Current);
+            }
+
+            Advance();
+
+            return StepResult.Done(new SubSelectPattern(inner));
         }
         else if(incoming is List<TriplePattern> triples)
         {
