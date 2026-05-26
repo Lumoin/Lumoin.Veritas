@@ -90,4 +90,13 @@ internal sealed class ParseFrame
 
     /// <summary>Gets or sets the triples accumulated by a <see cref="ParseFrameKind.Triple"/> frame across its predicate-object list.</summary>
     public List<TriplePattern>? TripleAccumulator { get; set; }
+
+    /// <summary>Gets or sets the graph pattern accumulated so far by a member frame (the left side of a <c>UNION</c> chain).</summary>
+    public GraphPattern? Accumulated { get; set; }
+
+    /// <summary>Gets or sets the graph designator (IRI or variable) of a <c>GRAPH</c> or <c>SERVICE</c> member.</summary>
+    public GraphTerm? GraphDesignator { get; set; }
+
+    /// <summary>Gets or sets whether a <c>SERVICE</c> member carried <c>SILENT</c>.</summary>
+    public bool IsSilent { get; set; }
 }

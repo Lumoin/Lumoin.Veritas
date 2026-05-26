@@ -283,6 +283,11 @@ public sealed class SparqlParser
             ParseFrameKind.SelectClause => StepSelectClause(frame),
             ParseFrameKind.GroupGraphPattern => StepGroupGraphPattern(frame, incoming),
             ParseFrameKind.Triple => StepTriple(frame),
+            ParseFrameKind.UnionPattern => StepGroupOrUnion(frame, incoming),
+            ParseFrameKind.OptionalPattern => StepOptional(frame, incoming),
+            ParseFrameKind.MinusPattern => StepMinus(frame, incoming),
+            ParseFrameKind.GraphPattern => StepGraph(frame, incoming),
+            ParseFrameKind.ServicePattern => StepService(frame, incoming),
             _ => throw new SparqlParseException($"Parser production '{frame.Kind}' is not yet implemented in this build.", frame.StartSpan)
         };
     }
@@ -585,7 +590,190 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Triple, StartSpan = Current.Span });
         }
 
-        throw Expected("a triple pattern or '}'", Current);
+        ParseFrameKind? memberKind = Current.Kind switch
+        {
+            //An opening brace begins a GroupOrUnionGraphPattern; the union frame handles the single-group case too.
+            SparqlTokenKind.OpenBrace => ParseFrameKind.UnionPattern,
+            SparqlTokenKind.OptionalKeyword => ParseFrameKind.OptionalPattern,
+            SparqlTokenKind.MinusKeyword => ParseFrameKind.MinusPattern,
+            SparqlTokenKind.GraphKeyword => ParseFrameKind.GraphPattern,
+            SparqlTokenKind.ServiceKeyword => ParseFrameKind.ServicePattern,
+            _ => null
+        };
+
+        if(memberKind is { } kind)
+        {
+            return StepResult.Push(new ParseFrame { Kind = kind, StartSpan = Current.Span });
+        }
+
+        if(Current.Kind is SparqlTokenKind.FilterKeyword or SparqlTokenKind.BindKeyword or SparqlTokenKind.ValuesKeyword)
+        {
+            throw new SparqlParseException(
+                $"The {Current.Kind} group member is not yet implemented in this build.",
+                Current.Span);
+        }
+
+        throw Expected("a triple pattern, a group-pattern keyword, or '}'", Current);
+    }
+
+    /// <summary>
+    /// Advances a <c>GroupOrUnionGraphPattern</c>: a group graph pattern optionally followed by one or
+    /// more <c>UNION</c> alternatives, left-associatively combined. A single group passes through
+    /// unwrapped.
+    /// </summary>
+    /// <param name="frame">The union frame.</param>
+    /// <param name="incoming">A popped alternative group on resume.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult StepGroupOrUnion(ParseFrame frame, object? incoming)
+    {
+        switch(frame.Stage)
+        {
+            case 0:
+            {
+                //The caller ensured '{' is current; the pushed frame consumes it.
+                frame.Stage = 1;
+
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GroupGraphPattern, StartSpan = Current.Span });
+            }
+
+            case 1:
+            {
+                frame.Accumulated = (GraphPattern)incoming!;
+                frame.Stage = 2;
+
+                return StepResult.Continue();
+            }
+
+            case 2:
+            {
+                if(incoming is GraphPattern right)
+                {
+                    frame.Accumulated = new UnionPattern(frame.Accumulated!, right);
+                }
+
+                if(Current.Kind != SparqlTokenKind.UnionKeyword)
+                {
+                    return StepResult.Done(frame.Accumulated!);
+                }
+
+                Advance();
+                if(Current.Kind != SparqlTokenKind.OpenBrace)
+                {
+                    throw Expected("'{' after UNION", Current);
+                }
+
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GroupGraphPattern, StartSpan = Current.Span });
+            }
+
+            default:
+            {
+                throw new SparqlParseException("Group-or-union reached an unknown stage.", frame.StartSpan);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Advances an <c>OPTIONAL { ... }</c> member.
+    /// </summary>
+    /// <param name="frame">The optional frame.</param>
+    /// <param name="incoming">The popped inner pattern on resume.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult StepOptional(ParseFrame frame, object? incoming)
+    {
+        if(frame.Stage == 0)
+        {
+            Advance();
+            if(Current.Kind != SparqlTokenKind.OpenBrace)
+            {
+                throw Expected("'{' after OPTIONAL", Current);
+            }
+
+            frame.Stage = 1;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GroupGraphPattern, StartSpan = Current.Span });
+        }
+
+        return StepResult.Done(new OptionalPattern((GraphPattern)incoming!));
+    }
+
+    /// <summary>
+    /// Advances a <c>MINUS { ... }</c> member.
+    /// </summary>
+    /// <param name="frame">The minus frame.</param>
+    /// <param name="incoming">The popped inner pattern on resume.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult StepMinus(ParseFrame frame, object? incoming)
+    {
+        if(frame.Stage == 0)
+        {
+            Advance();
+            if(Current.Kind != SparqlTokenKind.OpenBrace)
+            {
+                throw Expected("'{' after MINUS", Current);
+            }
+
+            frame.Stage = 1;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GroupGraphPattern, StartSpan = Current.Span });
+        }
+
+        return StepResult.Done(new MinusPattern((GraphPattern)incoming!));
+    }
+
+    /// <summary>
+    /// Advances a <c>GRAPH term { ... }</c> member.
+    /// </summary>
+    /// <param name="frame">The graph frame.</param>
+    /// <param name="incoming">The popped inner pattern on resume.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult StepGraph(ParseFrame frame, object? incoming)
+    {
+        if(frame.Stage == 0)
+        {
+            Advance();
+            frame.GraphDesignator = ParseGraphTerm();
+            if(Current.Kind != SparqlTokenKind.OpenBrace)
+            {
+                throw Expected("'{' after GRAPH designator", Current);
+            }
+
+            frame.Stage = 1;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GroupGraphPattern, StartSpan = Current.Span });
+        }
+
+        return StepResult.Done(new GraphGraphPattern(frame.GraphDesignator!, (GraphPattern)incoming!));
+    }
+
+    /// <summary>
+    /// Advances a <c>SERVICE [SILENT] term { ... }</c> member.
+    /// </summary>
+    /// <param name="frame">The service frame.</param>
+    /// <param name="incoming">The popped inner pattern on resume.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult StepService(ParseFrame frame, object? incoming)
+    {
+        if(frame.Stage == 0)
+        {
+            Advance();
+            if(Current.Kind == SparqlTokenKind.SilentKeyword)
+            {
+                frame.IsSilent = true;
+                Advance();
+            }
+
+            frame.GraphDesignator = ParseGraphTerm();
+            if(Current.Kind != SparqlTokenKind.OpenBrace)
+            {
+                throw Expected("'{' after SERVICE endpoint", Current);
+            }
+
+            frame.Stage = 1;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GroupGraphPattern, StartSpan = Current.Span });
+        }
+
+        return StepResult.Done(new ServicePattern(frame.GraphDesignator!, frame.IsSilent, (GraphPattern)incoming!));
     }
 
     /// <summary>
@@ -839,6 +1027,39 @@ public sealed class SparqlParser
             default:
             {
                 throw Expected("a predicate", Current);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Parses a <c>VarOrIri</c> graph designator for a <c>GRAPH</c> or <c>SERVICE</c> member.
+    /// </summary>
+    /// <returns>The graph designator.</returns>
+    private GraphTerm ParseGraphTerm()
+    {
+        switch(Current.Kind)
+        {
+            case SparqlTokenKind.Variable:
+            {
+                GraphVariableTerm term = new(new SparqlVariable(Current.Value));
+                Advance();
+
+                return term;
+            }
+
+            case SparqlTokenKind.Iri:
+            {
+                return new GraphIriTerm(ConsumeIriRef());
+            }
+
+            case SparqlTokenKind.PrefixedName:
+            {
+                return new GraphIriTerm(ConsumePrefixedName());
+            }
+
+            default:
+            {
+                throw Expected("a graph IRI or variable", Current);
             }
         }
     }

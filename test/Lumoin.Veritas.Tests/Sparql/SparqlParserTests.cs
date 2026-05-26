@@ -313,6 +313,140 @@ internal sealed class SparqlParserTests
         Assert.Throws<SparqlParseException>(() => ParseQuery("ASK { ?s ?p ?o } garbage:here", pool));
     }
 
+    /// <summary>A nested group graph pattern is preserved as a member of the enclosing group.</summary>
+    [TestMethod]
+    public void ParsesNestedGroup()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("ASK { { ?s ?p ?o } }", pool);
+
+        IReadOnlyList<GraphPattern> members = Members(query);
+        Assert.HasCount(1, members);
+        GroupGraphPattern inner = (GroupGraphPattern)members[0];
+        Assert.HasCount(1, ((BasicGraphPatternBlock)inner.Members[0]).Triples);
+    }
+
+    /// <summary>An <c>OPTIONAL</c> follows a leading basic graph pattern as a distinct member.</summary>
+    [TestMethod]
+    public void ParsesOptional()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("SELECT * WHERE { ?s ?p ?o OPTIONAL { ?s ?q ?r } }", pool);
+
+        IReadOnlyList<GraphPattern> members = Members(query);
+        Assert.HasCount(2, members);
+        Assert.IsInstanceOfType<BasicGraphPatternBlock>(members[0]);
+        OptionalPattern optional = (OptionalPattern)members[1];
+        GroupGraphPattern inner = (GroupGraphPattern)optional.Inner;
+        Assert.HasCount(1, ((BasicGraphPatternBlock)inner.Members[0]).Triples);
+    }
+
+    /// <summary>A <c>MINUS</c> member wraps its inner group.</summary>
+    [TestMethod]
+    public void ParsesMinus()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("SELECT * WHERE { ?s ?p ?o MINUS { ?s ?q ?r } }", pool);
+
+        IReadOnlyList<GraphPattern> members = Members(query);
+        Assert.HasCount(2, members);
+        Assert.IsInstanceOfType<MinusPattern>(members[1]);
+    }
+
+    /// <summary>A two-arm <c>UNION</c> produces a single union member over two groups.</summary>
+    [TestMethod]
+    public void ParsesUnion()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("SELECT * WHERE { { ?s ?p ?o } UNION { ?a ?b ?c } }", pool);
+
+        IReadOnlyList<GraphPattern> members = Members(query);
+        Assert.HasCount(1, members);
+        UnionPattern union = (UnionPattern)members[0];
+        Assert.IsInstanceOfType<GroupGraphPattern>(union.Left);
+        Assert.IsInstanceOfType<GroupGraphPattern>(union.Right);
+    }
+
+    /// <summary>A three-arm <c>UNION</c> nests left-associatively.</summary>
+    [TestMethod]
+    public void ParsesLeftAssociativeUnionChain()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("ASK { { ?s ?p ?o } UNION { ?a ?b ?c } UNION { ?x ?y ?z } }", pool);
+
+        UnionPattern outer = (UnionPattern)Members(query)[0];
+        Assert.IsInstanceOfType<UnionPattern>(outer.Left);
+        Assert.IsInstanceOfType<GroupGraphPattern>(outer.Right);
+    }
+
+    /// <summary>A <c>GRAPH</c> with an IRI designator wraps its inner group.</summary>
+    [TestMethod]
+    public void ParsesGraphWithIri()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("SELECT * WHERE { GRAPH <http://g/> { ?s ?p ?o } }", pool);
+
+        GraphGraphPattern graph = (GraphGraphPattern)Members(query)[0];
+        Assert.AreEqual("http://g/", ((GraphIriTerm)graph.GraphTerm).Iri.Value.ToString());
+    }
+
+    /// <summary>A <c>GRAPH</c> with a variable designator carries the variable.</summary>
+    [TestMethod]
+    public void ParsesGraphWithVariable()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("SELECT * WHERE { GRAPH ?g { ?s ?p ?o } }", pool);
+
+        GraphGraphPattern graph = (GraphGraphPattern)Members(query)[0];
+        Assert.AreEqual("g", ((GraphVariableTerm)graph.GraphTerm).Variable.Name.ToString());
+    }
+
+    /// <summary>A <c>SERVICE</c> records its endpoint and is not silent by default.</summary>
+    [TestMethod]
+    public void ParsesService()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("SELECT * WHERE { SERVICE <http://e/> { ?s ?p ?o } }", pool);
+
+        ServicePattern service = (ServicePattern)Members(query)[0];
+        Assert.IsFalse(service.IsSilent);
+        Assert.AreEqual("http://e/", ((GraphIriTerm)service.Endpoint).Iri.Value.ToString());
+    }
+
+    /// <summary>A <c>SERVICE SILENT</c> with a variable endpoint records the silent flag.</summary>
+    [TestMethod]
+    public void ParsesSilentServiceWithVariableEndpoint()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("SELECT * WHERE { SERVICE SILENT ?e { ?s ?p ?o } }", pool);
+
+        ServicePattern service = (ServicePattern)Members(query)[0];
+        Assert.IsTrue(service.IsSilent);
+        Assert.AreEqual("e", ((GraphVariableTerm)service.Endpoint).Variable.Name.ToString());
+    }
+
+    /// <summary>A non-triple member splits surrounding triples into separate basic graph pattern blocks.</summary>
+    [TestMethod]
+    public void MemberBreaksBasicGraphPatternRun()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("SELECT * WHERE { ?s ?p ?o . OPTIONAL { ?x ?y ?z } . ?a ?b ?c }", pool);
+
+        IReadOnlyList<GraphPattern> members = Members(query);
+        Assert.HasCount(3, members);
+        Assert.IsInstanceOfType<BasicGraphPatternBlock>(members[0]);
+        Assert.IsInstanceOfType<OptionalPattern>(members[1]);
+        Assert.IsInstanceOfType<BasicGraphPatternBlock>(members[2]);
+    }
+
+    /// <summary>A FILTER member is recognised but not yet implemented in this build.</summary>
+    [TestMethod]
+    public void FilterMemberNotYetImplementedThrows()
+    {
+        using Utf8StringPool pool = new();
+        Assert.Throws<SparqlParseException>(() => ParseQuery("ASK { ?s ?p ?o FILTER(?o) }", pool));
+    }
+
     /// <summary>
     /// Feeding tokens one at a time, the parser suspends with <see cref="ParseStatus.NeedMore"/>
     /// before the stream completes and resumes to the same AST a whole-buffer parse produces — proof
@@ -384,6 +518,16 @@ internal sealed class SparqlParserTests
         GroupGraphPattern group = (GroupGraphPattern)query.Where.Pattern;
 
         return ((BasicGraphPatternBlock)group.Members[0]).Triples;
+    }
+
+    /// <summary>
+    /// Returns the members of the query's WHERE group graph pattern.
+    /// </summary>
+    /// <param name="query">The parsed query.</param>
+    /// <returns>The group members in source order.</returns>
+    private static IReadOnlyList<GraphPattern> Members(SparqlQuery query)
+    {
+        return ((GroupGraphPattern)query.Where.Pattern).Members;
     }
 
     /// <summary>
