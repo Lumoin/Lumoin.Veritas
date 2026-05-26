@@ -352,6 +352,7 @@ public sealed class SparqlParser
             ParseFrameKind.PathNegatedSet => StepPathNegatedSet(frame),
             ParseFrameKind.Collection => StepCollection(frame, incoming),
             ParseFrameKind.BlankNodePropertyList => StepBlankNodePropertyList(frame, incoming),
+            ParseFrameKind.Values => StepValues(frame),
             ParseFrameKind.ArgumentList => StepArgumentList(frame, incoming),
             ParseFrameKind.GroupBy => StepGroupBy(frame, incoming),
             ParseFrameKind.Having => StepHaving(frame, incoming),
@@ -388,6 +389,8 @@ public sealed class SparqlParser
             13 => RequestFinalize(frame),
             14 => RequestConstructTemplate(frame, incoming),
             15 => RequestDescribeTargets(frame),
+            16 => RequestTrailingValues(frame),
+            17 => RequestTrailingValuesReceived(frame, incoming),
             _ => throw new SparqlParseException("Request reached an unknown stage.", frame.StartSpan)
         };
 
@@ -722,6 +725,35 @@ public sealed class SparqlParser
             return StepResult.Continue();
         }
 
+        frame.Stage = 16;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Pushes the trailing <c>VALUES</c> block when present, otherwise advances to finalisation.</summary>
+    /// <param name="frame">The request frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult RequestTrailingValues(ParseFrame frame)
+    {
+        if(Current.Kind == SparqlTokenKind.ValuesKeyword)
+        {
+            frame.Stage = 17;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Values, StartSpan = Current.Span });
+        }
+
+        frame.Stage = 13;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Adopts the popped trailing <c>VALUES</c> block and advances to finalisation.</summary>
+    /// <param name="frame">The request frame.</param>
+    /// <param name="incoming">The popped values clause.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult RequestTrailingValuesReceived(ParseFrame frame, object? incoming)
+    {
+        frame.Values = (ValuesClause)incoming!;
         frame.Stage = 13;
 
         return StepResult.Continue();
@@ -743,7 +775,7 @@ public sealed class SparqlParser
             frame.Dataset!,
             frame.Where!,
             new SolutionModifier(frame.Group, frame.Having, frame.Order, frame.Offset, frame.Limit),
-            Values: null);
+            frame.Values);
 
         return StepResult.Done(query);
     }
@@ -893,6 +925,13 @@ public sealed class SparqlParser
             frame.Members!.Add(member);
             ConsumeOptionalDot();
         }
+        else if(incoming is ValuesClause values)
+        {
+            //An inline VALUES data block is a member; wrap it as a values pattern.
+            FlushPendingTriples(frame);
+            frame.Members!.Add(new ValuesPattern(values));
+            ConsumeOptionalDot();
+        }
 
         if(Current.Kind == SparqlTokenKind.CloseBrace)
         {
@@ -922,19 +961,13 @@ public sealed class SparqlParser
             SparqlTokenKind.ServiceKeyword => ParseFrameKind.ServicePattern,
             SparqlTokenKind.FilterKeyword => ParseFrameKind.Filter,
             SparqlTokenKind.BindKeyword => ParseFrameKind.Bind,
+            SparqlTokenKind.ValuesKeyword => ParseFrameKind.Values,
             _ => null
         };
 
         if(memberKind is { } kind)
         {
             return StepResult.Push(new ParseFrame { Kind = kind, StartSpan = Current.Span });
-        }
-
-        if(Current.Kind == SparqlTokenKind.ValuesKeyword)
-        {
-            throw new SparqlParseException(
-                "The inline VALUES group member is not yet implemented in this build.",
-                Current.Span);
         }
 
         throw Expected("a triple pattern, a group-pattern keyword, or '}'", Current);
@@ -2841,6 +2874,180 @@ public sealed class SparqlParser
         }
 
         throw Expected("a triple pattern or '}'", Current);
+    }
+
+    /// <summary>
+    /// Advances a <c>VALUES</c> data block in either the one-variable form
+    /// (<c>VALUES ?v { ... }</c>) or the full tuple form (<c>VALUES (?a ?b) { (..) (..) }</c>),
+    /// reading one variable or one value per step.
+    /// </summary>
+    /// <param name="frame">The values frame.</param>
+    /// <returns>The instruction for the driver; the popped result is the <see cref="ValuesClause"/>.</returns>
+    private StepResult StepValues(ParseFrame frame)
+        => frame.Stage switch
+        {
+            0 => ValuesStart(frame),
+            1 => ValuesOneVarRow(frame),
+            2 => ValuesFullRow(frame),
+            3 => ValuesVariableList(frame),
+            4 => ValuesRowValue(frame),
+            _ => throw new SparqlParseException("VALUES reached an unknown stage.", frame.StartSpan)
+        };
+
+    /// <summary>Consumes <c>VALUES</c> and dispatches the one-variable or full tuple form.</summary>
+    /// <param name="frame">The values frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult ValuesStart(ParseFrame frame)
+    {
+        Advance();
+        frame.ValuesRows = [];
+
+        if(Current.Kind == SparqlTokenKind.Variable)
+        {
+            frame.ValuesVariables = [new SparqlVariable(Current.Value)];
+            Advance();
+            ConsumeValuesOpenBrace();
+            frame.Stage = 1;
+
+            return StepResult.Continue();
+        }
+
+        if(Current.Kind == SparqlTokenKind.OpenParen)
+        {
+            Advance();
+            frame.ValuesVariables = [];
+            frame.Stage = 3;
+
+            return StepResult.Continue();
+        }
+
+        throw Expected("a variable or '(' after VALUES", Current);
+    }
+
+    /// <summary>Reads the full-form variable list, one variable per step, then opens the data brace.</summary>
+    /// <param name="frame">The values frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult ValuesVariableList(ParseFrame frame)
+    {
+        if(Current.Kind == SparqlTokenKind.Variable)
+        {
+            frame.ValuesVariables!.Add(new SparqlVariable(Current.Value));
+            Advance();
+
+            return StepResult.Continue();
+        }
+
+        if(Current.Kind == SparqlTokenKind.CloseParen)
+        {
+            Advance();
+            ConsumeValuesOpenBrace();
+            frame.Stage = 2;
+
+            return StepResult.Continue();
+        }
+
+        throw Expected("a variable or ')' in the VALUES variable list", Current);
+    }
+
+    /// <summary>Reads one one-variable-form value (a single-column row), or closes the block.</summary>
+    /// <param name="frame">The values frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult ValuesOneVarRow(ParseFrame frame)
+    {
+        if(Current.Kind == SparqlTokenKind.CloseBrace)
+        {
+            Advance();
+
+            return StepResult.Done(new ValuesClause(frame.ValuesVariables!, frame.ValuesRows!));
+        }
+
+        RdfTerm? value = ParseDataBlockValue();
+        frame.ValuesRows!.Add([value]);
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Begins a full-form row at <c>(</c>, or closes the block at <c>}</c>.</summary>
+    /// <param name="frame">The values frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult ValuesFullRow(ParseFrame frame)
+    {
+        if(Current.Kind == SparqlTokenKind.CloseBrace)
+        {
+            Advance();
+
+            return StepResult.Done(new ValuesClause(frame.ValuesVariables!, frame.ValuesRows!));
+        }
+
+        if(Current.Kind == SparqlTokenKind.OpenParen)
+        {
+            Advance();
+            frame.CurrentRow = [];
+            frame.Stage = 4;
+
+            return StepResult.Continue();
+        }
+
+        throw Expected("'(' to begin a VALUES row or '}' to close the block", Current);
+    }
+
+    /// <summary>Reads one value of the current full-form row, or closes the row at <c>)</c>.</summary>
+    /// <param name="frame">The values frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult ValuesRowValue(ParseFrame frame)
+    {
+        if(Current.Kind == SparqlTokenKind.CloseParen)
+        {
+            Advance();
+            frame.ValuesRows!.Add(frame.CurrentRow!);
+            frame.Stage = 2;
+
+            return StepResult.Continue();
+        }
+
+        frame.CurrentRow!.Add(ParseDataBlockValue());
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Consumes the opening brace of a VALUES data block.</summary>
+    private void ConsumeValuesOpenBrace()
+    {
+        if(Current.Kind != SparqlTokenKind.OpenBrace)
+        {
+            throw Expected("'{' to begin the VALUES data", Current);
+        }
+
+        Advance();
+    }
+
+    /// <summary>
+    /// Parses one <c>DataBlockValue</c>: an IRI, a literal, or <c>UNDEF</c> (which yields a null,
+    /// leaving the variable unbound in that row).
+    /// </summary>
+    /// <returns>The value term, or <see langword="null"/> for <c>UNDEF</c>.</returns>
+    private RdfTerm? ParseDataBlockValue()
+        => Current.Kind switch
+        {
+            SparqlTokenKind.UndefKeyword => ConsumeUndef(),
+            SparqlTokenKind.Iri => new NamedNode(ConsumeIriRef().Value),
+            SparqlTokenKind.PrefixedName => new NamedNode(ConsumePrefixedName().Value),
+            SparqlTokenKind.StringLiteral
+                or SparqlTokenKind.LongStringLiteral
+                or SparqlTokenKind.IntegerLiteral
+                or SparqlTokenKind.DecimalLiteral
+                or SparqlTokenKind.DoubleLiteral
+                or SparqlTokenKind.BooleanLiteral => ParseRdfLiteral(),
+            _ => throw Expected("a VALUES data value (an IRI, a literal, or UNDEF)", Current)
+        };
+
+    /// <summary>Consumes the <c>UNDEF</c> keyword, returning a null value.</summary>
+    /// <returns><see langword="null"/>.</returns>
+    private RdfTerm? ConsumeUndef()
+    {
+        Advance();
+
+        return null;
     }
 
     /// <summary>

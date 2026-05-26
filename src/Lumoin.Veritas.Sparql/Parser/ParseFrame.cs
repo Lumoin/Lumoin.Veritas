@@ -167,6 +167,18 @@ internal sealed class ParseFrame
 
     /// <summary>Gets or sets the accumulated <c>DESCRIBE</c> targets of the request frame.</summary>
     public List<DescribeTarget>? DescribeTargets { get; set; }
+
+    /// <summary>Gets or sets the variables of a <see cref="ParseFrameKind.Values"/> data block.</summary>
+    public List<SparqlVariable>? ValuesVariables { get; set; }
+
+    /// <summary>Gets or sets the accumulated rows of a <see cref="ParseFrameKind.Values"/> data block.</summary>
+    public List<IReadOnlyList<RdfTerm?>>? ValuesRows { get; set; }
+
+    /// <summary>Gets or sets the row currently being read by a <see cref="ParseFrameKind.Values"/> frame in its full (tuple) form.</summary>
+    public List<RdfTerm?>? CurrentRow { get; set; }
+
+    /// <summary>Gets or sets the trailing <c>VALUES</c> block on the request frame.</summary>
+    public ValuesClause? Values { get; set; }
 }
 
 /// <summary>

@@ -503,12 +503,31 @@ internal sealed class SparqlParserTests
         Assert.IsInstanceOfType<BasicGraphPatternBlock>(members[2]);
     }
 
-    /// <summary>An inline VALUES member is recognised but not yet implemented in this build.</summary>
+    /// <summary>An inline one-variable VALUES block is a member with one row per value.</summary>
     [TestMethod]
-    public void ValuesMemberNotYetImplementedThrows()
+    public void ParsesInlineValues()
     {
         using Utf8StringPool pool = new();
-        Assert.Throws<SparqlParseException>(() => ParseQuery("ASK { VALUES ?x { 1 2 } }", pool));
+        SparqlQuery query = ParseQuery("ASK { VALUES ?x { 1 2 } }", pool);
+
+        ValuesPattern values = (ValuesPattern)Members(query)[0];
+        Assert.HasCount(1, values.Data.Variables);
+        Assert.AreEqual("x", values.Data.Variables[0].Name.ToString());
+        Assert.HasCount(2, values.Data.Rows);
+    }
+
+    /// <summary>A trailing full-form VALUES block records its variables, rows, and UNDEF holes.</summary>
+    [TestMethod]
+    public void ParsesTrailingValuesWithUndef()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("SELECT * WHERE { ?s ?p ?o } VALUES (?a ?b) { (1 2) (3 UNDEF) }", pool);
+
+        ValuesClause values = query.Values!;
+        Assert.HasCount(2, values.Variables);
+        Assert.HasCount(2, values.Rows);
+        Assert.IsNotNull(values.Rows[0][0]);
+        Assert.IsNull(values.Rows[1][1]);
     }
 
     /// <summary>A FILTER member carries its constraint expression with comparison operands.</summary>
