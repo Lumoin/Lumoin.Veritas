@@ -6,6 +6,60 @@ AST → algebra → translator → hypertrie backend + executor subset → SHACL
 unlock). **Batch 2 = Milestones D–F** (full algebra/aggregation, CONSTRUCT/
 DESCRIBE/JSON results, conformance push).
 
+## ⏵ CURRENT WORK — Parser error-recovery batch (prerequisite before Milestone B)
+
+A separate handoff doc, **"Parser error recovery — Handoff"** (companion to
+`Sparql.Spec.md`; the user holds it — re-paste on resume for the full spec),
+retrofits *both* the Turtle and SPARQL parsers from throw-on-error to
+recovery-with-diagnostics. (Naming note: that doc calls itself "Batch 2"; it is
+*not* the "Batch 2 = Milestones D–F" below — it's a prerequisite slotting in
+before Milestone B so the algebra translator is built against possibly-error
+AST from day one.) This is the cross-cutting error-model rework deferred earlier
+(see [[project_sparql_ast_faithful]]); it also subsumes the parser side of the
+`Core/Lexing/` consolidation.
+
+**Status: Step 1 done** (commit `2a4bc69`) — `Core/Diagnostics/`: `Diagnostic`,
+`DiagnosticSeverity`, `DiagnosticBag`, `WellKnownDiagnostics` catalogue + tests.
+**Steps 2–6 remain:** (2) lexer recovery — `Error` tokens, remove
+`recoverFromErrors`, `LexDiagnostic`→`LX####` bridge; (3) Turtle parser recovery
+— error-node AST variants per abstract base, resync tables per frame kind,
+`ParseResult`, test sweep; (4) SPARQL parser recovery — same on the larger
+parser (the conformance jump lands here); (5) `SparqlInvalidRequestException`
+type; (6) docs audit (every code linked + referenced by name).
+
+**Q1–Q3 resolved (locked):**
+- **Sequencing:** do error-recovery now; 4b-ii's four remaining known-gap
+  features (standalone reified `<< >> .`, VALUES/expression triple terms,
+  `VERSION`) land *after*, on the recovered parser.
+- **Engine:** `SparqlQueryEngine` / `ExecuteAsync(string)` / `SparqlEvaluationContext`
+  / `AlgebraOperator` / `SparqlQueryEngineOptions` **do not exist yet** (Milestone C).
+  Land Core + lexer + both parsers + the `SparqlInvalidRequestException` *type*;
+  put `MaxDiagnostics` as a parser-level option; **defer §7/Step-5 `ExecuteAsync`
+  wiring** until the engine is built.
+- **Streaming:** keep the resumable pull (`FeedToken`/`TryParseRequest`/Turtle
+  `TryParseStatement`) with a **shared `DiagnosticBag`** the consumer reads; the
+  static `ParseRequest(text)` is a facade over the instance API that drains the
+  bag into a `ParseResult`.
+
+**Codebase adaptations (locked — the handoff doc assumes some things that differ):**
+- `WellKnownDiagnostics` codes are pool-free `Utf8String` the **`Vocabulary` way**
+  (`new("LX0001"u8.ToArray())`) — there is **no `WellKnownMediaTypes` and no
+  `ToUtf8String()`** in the tree.
+- Enums are **not `: byte`** (CA1028 rejects it); the grouped nested catalogue
+  classes carry the same **CA1034 suppression** `Vocabulary.Xsd` uses.
+- Frame steps return **`StepResult`** (`Done`/`Push`/`Continue`), *not* `ParseStatus`
+  (which is the coarse `Continue`/`NeedMore`/`Produced` streaming enum). Error nodes
+  flow via `StepResult.Done(errorNode)` — **no new status enum needed**.
+- `DiagnosticBag` is **append-only, no dedup** (§3 over §6.4's conflicting "guard in
+  Add"); cascade suppression is the **parser's** job.
+- **Internal-invariant guards stay throws** (`"reached unknown stage"` etc. are bugs,
+  not user syntax errors); only genuine syntax errors become diagnostics.
+
+**§10 open questions — self-decide and record when reached:** per-frame max-errors
+count; English-only messages (note the `MessageKey` i18n seam); `ErrorPrologueDeclaration`
+reparenting; the Turtle `LexDiagnostic`→`LX####` bridge table; algebra-input error
+validation (decide at Milestone B).
+
 ## Spec reconciliation — the full implementation spec arrived after Milestone A was built
 
 The authoritative implementation spec was provided after the lexer/parser/AST and
