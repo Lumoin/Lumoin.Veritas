@@ -18,14 +18,53 @@ AST from day one.) This is the cross-cutting error-model rework deferred earlier
 (see [[project_sparql_ast_faithful]]); it also subsumes the parser side of the
 `Core/Lexing/` consolidation.
 
-**Status: Step 1 done** (commit `2a4bc69`) — `Core/Diagnostics/`: `Diagnostic`,
-`DiagnosticSeverity`, `DiagnosticBag`, `WellKnownDiagnostics` catalogue + tests.
-**Steps 2–6 remain:** (2) lexer recovery — `Error` tokens, remove
-`recoverFromErrors`, `LexDiagnostic`→`LX####` bridge; (3) Turtle parser recovery
+**Status: Steps 1–2 done.**
+- **Step 1** (commit `2a4bc69`) — `Core/Diagnostics/`: `Diagnostic`,
+  `DiagnosticSeverity`, `DiagnosticBag`, `WellKnownDiagnostics` catalogue + tests.
+- **Step 2** (lexer recovery, both lexers) — `SparqlTokenKind.Error` /
+  `TurtleTokenKind.Error` added; `recoverFromErrors` removed and recovery made the
+  only mode; the `TokenizeWithRecoveryAsync` method collapsed into an always-recovering
+  `TokenizeAsync`; every lexer error site now records the (kept) `SparqlLexDiagnostic`/
+  `LexDiagnostic`, emits an `Error` token spanning failure→resync via a shared
+  `RecordErrorAndRecover` helper, and continues (no lexer-layer throw). The
+  `LexDiagnostic`→`LX####` bridge is `SparqlLexDiagnosticBridge` / `TurtleLexDiagnosticBridge`
+  (`ToDiagnostic(in …) → Core Diagnostic`), the single place that knows each
+  `*LexErrorCode` enum. `WellKnownDiagnostics.Lexer` expanded to **fine-grained 1:1**
+  `LX0001`–`LX0030` (the SPARQL∪Turtle condition union; LX0001–05 kept verbatim from
+  Step 1, LX0005 `UnknownDirective` reserved/parser-level with no lexer emitter).
+  Lexer-test sweep done (SPARQL 2 + Turtle 6 throw-tests → Error-token+diagnostic
+  assertions; 3 Turtle async tests retargeted; 2 new bridge-coverage tests). **Full
+  suite green: 0 new failures** (50 = the unchanged pre-existing SHACL baseline).
+**Steps 3–6 remain:** (3) Turtle parser recovery
 — error-node AST variants per abstract base, resync tables per frame kind,
 `ParseResult`, test sweep; (4) SPARQL parser recovery — same on the larger
 parser (the conformance jump lands here); (5) `SparqlInvalidRequestException`
 type; (6) docs audit (every code linked + referenced by name).
+
+**Step 2 decisions recorded (§10 + locked-adaptations follow-through):**
+- **LX granularity (§10 Q4 + the user's explicit call):** fine-grained, one `LX####`
+  per distinct lexical condition (≈1:1 with the internal enums), *not* coarse buckets —
+  so an editor branches on the code alone (quick-fix / per-code severity / dedup) without
+  parsing the message, and the lexer layer stays as specific as the future `EX####`
+  layer. Splitting a coarse code later would be the breaking change; widening is additive.
+- **Bridge ownership (§5.1/§5.3):** the lexer keeps emitting its rich
+  `SparqlLexDiagnostic`/`LexDiagnostic` (preserving the on-demand `GetMessage()` and the
+  fine enum) via `Diagnostics`; the enum→`LX####` mapping lives only in the bridge helper.
+  The parser-owned shared `DiagnosticBag` threading is deferred to Steps 3–4 (the parser
+  owns the bag); Step 2 ships the bridge but does not yet wire it into a parse.
+- **Bridge completeness:** the `MapCode` switch has a throwing `_` default (an unmapped
+  code is an internal bug — "internal-invariant guards stay throws"); the bridge-coverage
+  test enumerates every enum value, so a missing mapping fails a test rather than compiling.
+- **Error-token shape:** `Error` token `Value` is the empty `Utf8String`; its `Span` covers
+  failure-start→resync-end (the offending run). The matching diagnostic is correlated by
+  span in `Diagnostics`. Parser treats `Error` as a resync point (Steps 3–4).
+- **Transitional green-branch (Step 2 only):** the unchanged parsers throw on the
+  unexpected `Error` token, so negative parser/conformance tests stay red-on-bad-input;
+  Steps 3–4 replace that with `StepResult.Done(errorNode)` recovery. Verified: SPARQL’s
+  8 negative parser tests are all lexically-valid (syntactic/semantic), so they never
+  involve an `Error` token.
+- **English-only messages (§10 Q2):** the bridge renders `Diagnostic.Message` from
+  `GetMessage()` (English) once, at error time; the i18n `MessageKey` seam stays deferred.
 
 **Q1–Q3 resolved (locked):**
 - **Sequencing:** do error-recovery now; 4b-ii's four remaining known-gap

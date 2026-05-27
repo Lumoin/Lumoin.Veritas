@@ -123,6 +123,18 @@ public enum TurtleTokenKind
     /// <summary>The TriG <c>GRAPH</c> keyword.</summary>
     GraphKeyword,
 
+    /// <summary>
+    /// A run of bytes the lexer could not tokenise.
+    /// </summary>
+    /// <remarks>
+    /// Recovery emits this token in place of throwing, with a <see cref="TurtleToken.Span"/> covering
+    /// the offending bytes; the matching <see cref="LexDiagnostic"/> is recorded in
+    /// <see cref="TurtleLexer.Diagnostics"/>. The parser treats an <see cref="Error"/> token as a
+    /// resync point rather than a grammar terminal. See
+    /// <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar</see>.
+    /// </remarks>
+    Error,
+
     /// <summary>End of the input stream.</summary>
     EndOfInput
 }

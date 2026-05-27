@@ -20,8 +20,9 @@ namespace Lumoin.Veritas.Turtle.Lexer;
 /// <see cref="LexStatus"/> rather than throwing or blocking, so the same code serves a synchronous
 /// whole-buffer pass (<see cref="Tokenize"/>) and an asynchronous pull over a pipe. A
 /// <see cref="LexStatus.NeedMore"/> asks the driver for more bytes; a <see cref="LexStatus.Error"/>
-/// reports a recorded <see cref="LexDiagnostic"/> without unwinding the stack, leaving the driver
-/// free to throw or to recover and continue.
+/// reports a recorded <see cref="LexDiagnostic"/> without unwinding the stack — the lexer then emits a
+/// <see cref="TurtleTokenKind.Error"/> token over the offending bytes, resynchronises to the next token
+/// boundary, and continues. Recovery is always on; the lexer never throws on malformed input.
 /// </para>
 /// <para>
 /// Byte access is through <see cref="SequenceReader{T}"/> over a <see cref="ReadOnlySequence{T}"/>,
@@ -49,7 +50,6 @@ public sealed class TurtleLexer
     private bool pendingCarriageReturn;
     private bool atFinalBuffer = true;
     private long byteOffsetBase;
-    private bool recoverFromErrors;
     private LexDiagnostic pendingDiagnostic;
     private TokenGrowthContext scratchToken;
     private readonly List<TurtleToken> pendingTokens = [];
@@ -106,8 +106,9 @@ public sealed class TurtleLexer
     /// </summary>
     /// <remarks>
     /// The iterator yields an <see cref="TurtleTokenKind.EndOfInput"/> token as its final element
-    /// so the parser can drive its loop without checking the source position separately. The whole
-    /// source is present, so a lexical error throws <see cref="TurtleParseException"/>.
+    /// so the parser can drive its loop without checking the source position separately. Recovery is
+    /// always on: a lexical error is recorded in <see cref="Diagnostics"/> and surfaces as a
+    /// <see cref="TurtleTokenKind.Error"/> token rather than an exception.
     /// </remarks>
     /// <returns>An iterator over the source tokens.</returns>
     public IEnumerable<TurtleToken> Tokenize()
@@ -133,36 +134,45 @@ public sealed class TurtleLexer
         reader.Advance(consumed);
 
         LexStatus status = TryLexToken(ref reader, out TurtleToken token);
-        consumed = reader.Consumed;
 
         if(status == LexStatus.Error)
         {
-            throw new TurtleParseException(pendingDiagnostic.GetMessage(), pendingDiagnostic.Span);
+            token = RecordErrorAndRecover(ref reader);
         }
+
+        consumed = reader.Consumed;
 
         return token;
     }
 
     /// <summary>
-    /// Gets the lexical diagnostics collected during the most recent
-    /// <see cref="TokenizeWithRecoveryAsync"/> run, in source order.
+    /// Gets the lexical diagnostics recorded while tokenising, in source order — one entry for each
+    /// <see cref="TurtleTokenKind.Error"/> token the lexer emits.
     /// </summary>
     /// <remarks>
-    /// The throwing paths (<see cref="Tokenize"/>, <see cref="TokenizeAsync"/>) do not populate this
-    /// list; they raise <see cref="TurtleParseException"/> on the first fault instead.
+    /// Recovery is always on: instead of throwing, the lexer records a <see cref="LexDiagnostic"/> here
+    /// and emits a <see cref="TurtleTokenKind.Error"/> token spanning the offending bytes, then
+    /// resynchronises and continues. A consumer bridges these to layer-stable
+    /// <see cref="Lumoin.Veritas.Core.Diagnostics.Diagnostic"/> values via
+    /// <see cref="TurtleLexDiagnosticBridge"/>.
     /// </remarks>
     public IReadOnlyList<LexDiagnostic> Diagnostics => diagnostics;
 
     /// <summary>
     /// Pulls UTF-8 bytes from a <see cref="PipeReader"/> and yields tokens as they complete, without
-    /// buffering the whole document. A lexical error throws <see cref="TurtleParseException"/>.
+    /// buffering the whole document. Each lexical error is recorded in <see cref="Diagnostics"/> and
+    /// surfaces as a <see cref="TurtleTokenKind.Error"/> token; the lexer resynchronises and continues
+    /// rather than throwing.
     /// </summary>
     /// <remarks>
     /// Each <see cref="PipeReader.ReadAsync"/> is the genuine asynchronous suspension; between reads
     /// the resumable core lexes synchronously over the buffered <see cref="ReadOnlySequence{T}"/>.
     /// A token that straddles a read is retained — the reader advances only to the last completed
     /// token and examines to the buffer end — and re-lexed once more bytes arrive, so peak memory
-    /// tracks the largest single token rather than the document.
+    /// tracks the largest single token rather than the document. On an error the lexer records a
+    /// <see cref="LexDiagnostic"/>, skips the offending run to the next whitespace, emits a
+    /// <see cref="TurtleTokenKind.Error"/> token, and resumes — so an editor keeps tokens, highlighting,
+    /// and completion past the fault and surfaces every problem at once instead of only the first.
     /// </remarks>
     /// <param name="pipeReader">The pipe delivering UTF-8 source bytes.</param>
     /// <param name="cancellationToken">Cancels between reads.</param>
@@ -171,34 +181,13 @@ public sealed class TurtleLexer
     {
         ArgumentNullException.ThrowIfNull(pipeReader);
 
-        return TokenizeInternalAsync(pipeReader, recover: false, cancellationToken);
-    }
-
-    /// <summary>
-    /// Pulls UTF-8 bytes from a <see cref="PipeReader"/> and yields tokens as they complete, recording
-    /// each lexical error in <see cref="Diagnostics"/> and resynchronising rather than throwing.
-    /// </summary>
-    /// <remarks>
-    /// On an error the lexer records a <see cref="LexDiagnostic"/>, skips the offending run to the next
-    /// whitespace, and resumes — so an editor keeps tokens, highlighting, and completion past the fault
-    /// and surfaces every problem at once instead of only the first.
-    /// </remarks>
-    /// <param name="pipeReader">The pipe delivering UTF-8 source bytes.</param>
-    /// <param name="cancellationToken">Cancels between reads.</param>
-    /// <returns>An asynchronous stream of tokens ending with <see cref="TurtleTokenKind.EndOfInput"/>.</returns>
-    public IAsyncEnumerable<TurtleToken> TokenizeWithRecoveryAsync(PipeReader pipeReader, CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(pipeReader);
-
-        return TokenizeInternalAsync(pipeReader, recover: true, cancellationToken);
+        return TokenizeInternalAsync(pipeReader, cancellationToken);
     }
 
     private async IAsyncEnumerable<TurtleToken> TokenizeInternalAsync(
         PipeReader pipeReader,
-        bool recover,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        recoverFromErrors = recover;
         diagnostics.Clear();
 
         while(true)
@@ -268,15 +257,11 @@ public sealed class TurtleLexer
 
             if(status == LexStatus.Error)
             {
-                if(!recoverFromErrors)
-                {
-                    throw new TurtleParseException(pendingDiagnostic.GetMessage(), pendingDiagnostic.Span);
-                }
-
-                //Record the fault and resynchronise so lexing continues past it; commit the recovery
-                //position as the new boundary the driver may roll back to.
-                diagnostics.Add(pendingDiagnostic);
-                RecoverToTokenBoundary(ref reader);
+                //Record the fault, resynchronise past it, and emit an Error token standing in for the
+                //offending bytes; commit the recovery position as the new boundary the driver may roll
+                //back to.
+                TurtleToken errorToken = RecordErrorAndRecover(ref reader);
+                pendingTokens.Add(errorToken);
 
                 committedLine = line;
                 committedColumn = column;
@@ -1962,6 +1947,30 @@ public sealed class TurtleLexer
         {
             Advance(ref reader);
         }
+    }
+
+    /// <summary>
+    /// Records the pending lexical diagnostic, resynchronises past the offending bytes, and builds the
+    /// <see cref="TurtleTokenKind.Error"/> token that stands in for them.
+    /// </summary>
+    /// <param name="reader">The reader, positioned where the error was detected; advanced to the next token boundary.</param>
+    /// <returns>A <see cref="TurtleTokenKind.Error"/> token spanning from the failure to the resync boundary.</returns>
+    private TurtleToken RecordErrorAndRecover(ref SequenceReader<byte> reader)
+    {
+        LexDiagnostic diagnostic = pendingDiagnostic;
+        diagnostics.Add(diagnostic);
+
+        RecoverToTokenBoundary(ref reader);
+
+        SourceSpan span = new(
+            diagnostic.Span.StartByte,
+            Offset(reader.Consumed),
+            diagnostic.Span.StartLine,
+            diagnostic.Span.StartColumn,
+            line,
+            column);
+
+        return new TurtleToken(TurtleTokenKind.Error, span, Pool.Intern(ReadOnlySpan<byte>.Empty));
     }
 
     private void RecoverToTokenBoundary(ref SequenceReader<byte> reader)

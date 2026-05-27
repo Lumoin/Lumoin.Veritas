@@ -21,7 +21,9 @@ namespace Lumoin.Veritas.Sparql.Lexer;
 /// synchronous whole-buffer pass (<see cref="Tokenize"/>) and an asynchronous pull over a pipe
 /// (<see cref="TokenizeAsync"/>). A <see cref="SparqlLexStatus.NeedMore"/> asks the driver for more
 /// bytes; a <see cref="SparqlLexStatus.Error"/> reports a recorded <see cref="SparqlLexDiagnostic"/>
-/// without unwinding the stack, leaving the driver free to throw or to recover and continue.
+/// without unwinding the stack — the lexer then emits a <see cref="SparqlTokenKind.Error"/> token over
+/// the offending bytes, resynchronises to the next token boundary, and continues. Recovery is always
+/// on; the lexer never throws on malformed input.
 /// </para>
 /// <para>
 /// Byte access is through <see cref="SequenceReader{T}"/> over a <see cref="ReadOnlySequence{T}"/>,
@@ -51,7 +53,6 @@ public sealed class SparqlLexer
     private bool pendingCarriageReturn;
     private bool atFinalBuffer = true;
     private long byteOffsetBase;
-    private bool recoverFromErrors;
     private SparqlLexDiagnostic pendingDiagnostic;
     private SparqlTokenGrowthContext scratchToken;
     private readonly List<SparqlToken> pendingTokens = [];
@@ -104,12 +105,15 @@ public sealed class SparqlLexer
     private SparqlLexerLimits Limits { get; }
 
     /// <summary>
-    /// Gets the lexical diagnostics collected during the most recent
-    /// <see cref="TokenizeWithRecoveryAsync"/> run, in source order.
+    /// Gets the lexical diagnostics recorded while tokenising, in source order — one entry for each
+    /// <see cref="SparqlTokenKind.Error"/> token the lexer emits.
     /// </summary>
     /// <remarks>
-    /// The throwing paths (<see cref="Tokenize"/>, <see cref="TokenizeAsync"/>) do not populate this
-    /// list; they raise <see cref="SparqlParseException"/> on the first fault instead.
+    /// Recovery is always on: instead of throwing, the lexer records a <see cref="SparqlLexDiagnostic"/>
+    /// here and emits an <see cref="SparqlTokenKind.Error"/> token spanning the offending bytes, then
+    /// resynchronises and continues. A consumer bridges these to layer-stable
+    /// <see cref="Lumoin.Veritas.Core.Diagnostics.Diagnostic"/> values via
+    /// <see cref="SparqlLexDiagnosticBridge"/>.
     /// </remarks>
     public IReadOnlyList<SparqlLexDiagnostic> Diagnostics => diagnostics;
 
@@ -118,8 +122,9 @@ public sealed class SparqlLexer
     /// </summary>
     /// <remarks>
     /// The iterator yields a <see cref="SparqlTokenKind.EndOfInput"/> token as its final element so
-    /// the parser can drive its loop without checking the source position separately. The whole
-    /// source is present, so a lexical error throws <see cref="SparqlParseException"/>.
+    /// the parser can drive its loop without checking the source position separately. Recovery is
+    /// always on: a lexical error is recorded in <see cref="Diagnostics"/> and surfaces as a
+    /// <see cref="SparqlTokenKind.Error"/> token rather than an exception.
     /// </remarks>
     /// <returns>An iterator over the source tokens.</returns>
     public IEnumerable<SparqlToken> Tokenize()
@@ -138,7 +143,9 @@ public sealed class SparqlLexer
 
     /// <summary>
     /// Pulls UTF-8 bytes from a <see cref="PipeReader"/> and yields tokens as they complete, without
-    /// buffering the whole document. A lexical error throws <see cref="SparqlParseException"/>.
+    /// buffering the whole document. Each lexical error is recorded in <see cref="Diagnostics"/> and
+    /// surfaces as a <see cref="SparqlTokenKind.Error"/> token; the lexer resynchronises and continues
+    /// rather than throwing.
     /// </summary>
     /// <param name="pipeReader">The pipe delivering UTF-8 source bytes.</param>
     /// <param name="cancellationToken">Cancels between reads.</param>
@@ -147,21 +154,7 @@ public sealed class SparqlLexer
     {
         ArgumentNullException.ThrowIfNull(pipeReader);
 
-        return TokenizeInternalAsync(pipeReader, recover: false, cancellationToken);
-    }
-
-    /// <summary>
-    /// Pulls UTF-8 bytes from a <see cref="PipeReader"/> and yields tokens as they complete, recording
-    /// each lexical error in <see cref="Diagnostics"/> and resynchronising rather than throwing.
-    /// </summary>
-    /// <param name="pipeReader">The pipe delivering UTF-8 source bytes.</param>
-    /// <param name="cancellationToken">Cancels between reads.</param>
-    /// <returns>An asynchronous stream of tokens ending with <see cref="SparqlTokenKind.EndOfInput"/>.</returns>
-    public IAsyncEnumerable<SparqlToken> TokenizeWithRecoveryAsync(PipeReader pipeReader, CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(pipeReader);
-
-        return TokenizeInternalAsync(pipeReader, recover: true, cancellationToken);
+        return TokenizeInternalAsync(pipeReader, cancellationToken);
     }
 
     private SparqlToken LexNextToken()
@@ -173,22 +166,21 @@ public sealed class SparqlLexer
         reader.Advance(consumed);
 
         SparqlLexStatus status = TryLexToken(ref reader, out SparqlToken token);
-        consumed = reader.Consumed;
 
         if(status == SparqlLexStatus.Error)
         {
-            throw new SparqlParseException(pendingDiagnostic.GetMessage(), pendingDiagnostic.Span);
+            token = RecordErrorAndRecover(ref reader);
         }
+
+        consumed = reader.Consumed;
 
         return token;
     }
 
     private async IAsyncEnumerable<SparqlToken> TokenizeInternalAsync(
         PipeReader pipeReader,
-        bool recover,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        recoverFromErrors = recover;
         diagnostics.Clear();
 
         while(true)
@@ -258,13 +250,8 @@ public sealed class SparqlLexer
 
             if(status == SparqlLexStatus.Error)
             {
-                if(!recoverFromErrors)
-                {
-                    throw new SparqlParseException(pendingDiagnostic.GetMessage(), pendingDiagnostic.Span);
-                }
-
-                diagnostics.Add(pendingDiagnostic);
-                RecoverToTokenBoundary(ref reader);
+                SparqlToken errorToken = RecordErrorAndRecover(ref reader);
+                pendingTokens.Add(errorToken);
 
                 committedLine = line;
                 committedColumn = column;
@@ -2109,6 +2096,30 @@ public sealed class SparqlLexer
         {
             Advance(ref reader);
         }
+    }
+
+    /// <summary>
+    /// Records the pending lexical diagnostic, resynchronises past the offending bytes, and builds the
+    /// <see cref="SparqlTokenKind.Error"/> token that stands in for them.
+    /// </summary>
+    /// <param name="reader">The reader, positioned where the error was detected; advanced to the next token boundary.</param>
+    /// <returns>An <see cref="SparqlTokenKind.Error"/> token spanning from the failure to the resync boundary.</returns>
+    private SparqlToken RecordErrorAndRecover(ref SequenceReader<byte> reader)
+    {
+        SparqlLexDiagnostic diagnostic = pendingDiagnostic;
+        diagnostics.Add(diagnostic);
+
+        RecoverToTokenBoundary(ref reader);
+
+        SourceSpan span = new(
+            diagnostic.Span.StartByte,
+            Offset(reader.Consumed),
+            diagnostic.Span.StartLine,
+            diagnostic.Span.StartColumn,
+            line,
+            column);
+
+        return new SparqlToken(SparqlTokenKind.Error, span, Pool.Intern(ReadOnlySpan<byte>.Empty));
     }
 
     private void RecoverToTokenBoundary(ref SequenceReader<byte> reader)

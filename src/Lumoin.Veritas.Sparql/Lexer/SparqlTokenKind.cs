@@ -287,6 +287,18 @@ public enum SparqlTokenKind
     /// </summary>
     AggregateFunctionName,
 
+    /// <summary>
+    /// A run of bytes the lexer could not tokenise.
+    /// </summary>
+    /// <remarks>
+    /// Recovery emits this token in place of throwing, with a <see cref="SparqlToken.Span"/> covering
+    /// the offending bytes; the matching <see cref="SparqlLexDiagnostic"/> is recorded in
+    /// <see cref="SparqlLexer.Diagnostics"/>. The parser treats an <see cref="Error"/> token as a
+    /// resync point rather than a grammar terminal. See
+    /// <see href="https://www.w3.org/TR/sparql12-query/#sparqlGrammar">SPARQL 1.2 §19 (grammar)</see>.
+    /// </remarks>
+    Error,
+
     /// <summary>End of the input stream.</summary>
     EndOfInput
 }

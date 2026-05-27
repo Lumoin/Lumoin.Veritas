@@ -208,18 +208,35 @@ internal sealed class SparqlLexerTests
         Assert.AreEqual(SparqlTokenKind.EndOfInput, all[^1].Kind);
     }
 
-    /// <summary>An unterminated string literal throws <see cref="SparqlParseException"/>.</summary>
+    /// <summary>
+    /// An unterminated string literal recovers as a single <see cref="SparqlTokenKind.Error"/> token
+    /// carrying an <see cref="SparqlLexErrorCode.UnterminatedString"/> diagnostic — the lexer no longer
+    /// throws.
+    /// </summary>
     [TestMethod]
-    public void UnterminatedStringThrows()
+    public void UnterminatedStringRecoversAsErrorToken()
     {
-        Assert.Throws<SparqlParseException>(static () => Lex("\"abc"));
+        (List<SparqlToken> tokens, IReadOnlyList<SparqlLexDiagnostic> diagnostics) = LexWithDiagnostics("\"abc");
+
+        CollectionAssert.AreEqual(new[] { SparqlTokenKind.Error }, Kinds(tokens));
+        Assert.HasCount(1, diagnostics);
+        Assert.AreEqual(SparqlLexErrorCode.UnterminatedString, diagnostics[0].Code);
     }
 
-    /// <summary>A lone <c>&amp;</c> (no second <c>&amp;</c>) throws.</summary>
+    /// <summary>
+    /// A lone <c>&amp;</c> (no second <c>&amp;</c>) recovers as an <see cref="SparqlTokenKind.Error"/>
+    /// token, keeping the variables on either side and recording one diagnostic.
+    /// </summary>
     [TestMethod]
-    public void LoneAmpersandThrows()
+    public void LoneAmpersandRecoversAsErrorToken()
     {
-        Assert.Throws<SparqlParseException>(static () => Lex("?a & ?b"));
+        (List<SparqlToken> tokens, IReadOnlyList<SparqlLexDiagnostic> diagnostics) = LexWithDiagnostics("?a & ?b");
+
+        CollectionAssert.AreEqual(
+            new[] { SparqlTokenKind.Variable, SparqlTokenKind.Error, SparqlTokenKind.Variable },
+            Kinds(tokens));
+        Assert.HasCount(1, diagnostics);
+        Assert.AreEqual(SparqlLexErrorCode.ExpectedSecondAmpersand, diagnostics[0].Code);
     }
 
     /// <summary>
@@ -243,6 +260,30 @@ internal sealed class SparqlLexerTests
         }
 
         return tokens;
+    }
+
+    /// <summary>
+    /// Lexes <paramref name="query"/> with recovery on, returning both the tokens (without the trailing
+    /// <see cref="SparqlTokenKind.EndOfInput"/>) and the diagnostics the lexer recorded.
+    /// </summary>
+    /// <param name="query">The SPARQL query text.</param>
+    /// <returns>The tokens and the recorded lexical diagnostics.</returns>
+    private static (List<SparqlToken> Tokens, IReadOnlyList<SparqlLexDiagnostic> Diagnostics) LexWithDiagnostics(string query)
+    {
+        using Utf8StringPool pool = new();
+        SparqlLexer lexer = new(Encoding.UTF8.GetBytes(query), pool);
+        List<SparqlToken> tokens = [];
+        foreach(SparqlToken token in lexer.Tokenize())
+        {
+            if(token.Kind == SparqlTokenKind.EndOfInput)
+            {
+                break;
+            }
+
+            tokens.Add(token);
+        }
+
+        return (tokens, lexer.Diagnostics);
     }
 
     /// <summary>Projects the token kinds for sequence assertions.</summary>

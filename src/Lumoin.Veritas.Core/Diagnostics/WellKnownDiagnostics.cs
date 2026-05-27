@@ -20,7 +20,16 @@ namespace Lumoin.Veritas.Core.Diagnostics;
 /// </remarks>
 public static class WellKnownDiagnostics
 {
-    /// <summary>Lexer diagnostics (<c>LX</c> prefix).</summary>
+    /// <summary>
+    /// Lexer diagnostics (<c>LX</c> prefix), shared by the Turtle and SPARQL lexers.
+    /// </summary>
+    /// <remarks>
+    /// One code per distinct lexical-error condition (a near 1:1 image of each lexer's internal
+    /// error-code enum), so an editor surface can branch on the code alone — squiggle, quick-fix, or
+    /// per-code severity — without parsing the human-readable message. The per-lexer enum-to-code
+    /// mapping lives in that lexer's diagnostic-bridge helper and nowhere else. Codes are stable and
+    /// never renumbered; new conditions append a higher number.
+    /// </remarks>
     [SuppressMessage("Design", "CA1034:Nested types should not be visible", Justification = "WellKnownDiagnostics.Lexer.X is the intended usage pattern.")]
     public static class Lexer
     {
@@ -43,6 +52,106 @@ public static class WellKnownDiagnostics
         /// <summary>A directive-introducing token (for example a leading <c>@</c>) named no known directive.</summary>
         /// <remarks>Turtle <c>directive</c>. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar [directive]</see>.</remarks>
         public static Utf8String UnknownDirective { get; } = new("LX0005"u8.ToArray());
+
+        /// <summary>A byte not permitted inside an IRI reference appeared between the angle brackets.</summary>
+        /// <remarks>Lexer rule for <c>IRIREF</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rIRIREF">SPARQL 1.2 §19.8 [IRIREF]</see>.</remarks>
+        public static Utf8String InvalidIriByte { get; } = new("LX0006"u8.ToArray());
+
+        /// <summary>A multi-byte UTF-8 sequence was cut short by end of input.</summary>
+        /// <remarks>UTF-8 source encoding. See <see href="https://www.w3.org/TR/sparql12-query/#sparqlGrammar">SPARQL 1.2 §19 (grammar)</see>.</remarks>
+        public static Utf8String TruncatedUtf8 { get; } = new("LX0007"u8.ToArray());
+
+        /// <summary>A byte that cannot begin a UTF-8 sequence was encountered.</summary>
+        /// <remarks>UTF-8 source encoding. See <see href="https://www.w3.org/TR/sparql12-query/#sparqlGrammar">SPARQL 1.2 §19 (grammar)</see>.</remarks>
+        public static Utf8String InvalidUtf8LeadByte { get; } = new("LX0008"u8.ToArray());
+
+        /// <summary>An escape sequence was cut short by end of input.</summary>
+        /// <remarks>Lexer rules for <c>ECHAR</c> / <c>UCHAR</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rECHAR">SPARQL 1.2 §19.8 [ECHAR]</see>.</remarks>
+        public static Utf8String TruncatedEscape { get; } = new("LX0009"u8.ToArray());
+
+        /// <summary>A <c>\u</c> / <c>\U</c> escape contained a non-hexadecimal digit.</summary>
+        /// <remarks>Lexer rule for <c>UCHAR</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rPN_LOCAL_ESC">SPARQL 1.2 §19.8 (escapes)</see>.</remarks>
+        public static Utf8String InvalidHexDigit { get; } = new("LX0010"u8.ToArray());
+
+        /// <summary>A <c>\u</c> / <c>\U</c> escape named a UTF-16 surrogate code point, which is not a scalar value.</summary>
+        /// <remarks>Lexer rule for <c>UCHAR</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rString">SPARQL 1.2 §19.8 [String]</see>.</remarks>
+        public static Utf8String SurrogateCodePoint { get; } = new("LX0011"u8.ToArray());
+
+        /// <summary>A <c>\U</c> escape named a code point beyond U+10FFFF.</summary>
+        /// <remarks>Lexer rule for <c>UCHAR</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rString">SPARQL 1.2 §19.8 [String]</see>.</remarks>
+        public static Utf8String CodePointOutOfRange { get; } = new("LX0012"u8.ToArray());
+
+        /// <summary>An unescaped line break appeared inside a short string literal.</summary>
+        /// <remarks>Lexer rule for <c>STRING_LITERAL1</c> / <c>STRING_LITERAL2</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rString">SPARQL 1.2 §19.8 [String]</see>.</remarks>
+        public static Utf8String UnescapedLineBreak { get; } = new("LX0013"u8.ToArray());
+
+        /// <summary>A long (triple-quoted) string literal was not closed before end of input.</summary>
+        /// <remarks>Lexer rule for <c>STRING_LITERAL_LONG1</c> / <c>STRING_LITERAL_LONG2</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rString">SPARQL 1.2 §19.8 [String]</see>.</remarks>
+        public static Utf8String UnterminatedLongString { get; } = new("LX0014"u8.ToArray());
+
+        /// <summary>A <c>_</c> was not followed by the <c>:</c> that begins a blank-node label.</summary>
+        /// <remarks>Lexer rule for <c>BLANK_NODE_LABEL</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rBLANK_NODE_LABEL">SPARQL 1.2 §19.8 [BLANK_NODE_LABEL]</see>.</remarks>
+        public static Utf8String ExpectedColonAfterUnderscore { get; } = new("LX0015"u8.ToArray());
+
+        /// <summary>A <c>_:</c> was not followed by a valid blank-node label.</summary>
+        /// <remarks>Lexer rule for <c>BLANK_NODE_LABEL</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rBLANK_NODE_LABEL">SPARQL 1.2 §19.8 [BLANK_NODE_LABEL]</see>.</remarks>
+        public static Utf8String ExpectedBlankNodeLabel { get; } = new("LX0016"u8.ToArray());
+
+        /// <summary>A <c>?</c> or <c>$</c> variable marker was not followed by a valid variable name.</summary>
+        /// <remarks>Lexer rule for <c>VARNAME</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rVARNAME">SPARQL 1.2 §19.8 [VARNAME]</see>.</remarks>
+        public static Utf8String ExpectedVariableName { get; } = new("LX0017"u8.ToArray());
+
+        /// <summary>An <c>@</c> was not followed by a language-tag (or, in Turtle, directive) identifier.</summary>
+        /// <remarks>Lexer rule for <c>LANGTAG</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rLANGTAG">SPARQL 1.2 §19.8 [LANGTAG]</see>.</remarks>
+        public static Utf8String ExpectedIdentifierAfterAt { get; } = new("LX0018"u8.ToArray());
+
+        /// <summary>A <c>--</c> direction marker was not followed by a direction tag.</summary>
+        /// <remarks>RDF 1.2 base-direction language form. See <see href="https://www.w3.org/TR/sparql12-query/#rLANGTAG">SPARQL 1.2 §19.8 [LANGTAG]</see>.</remarks>
+        public static Utf8String ExpectedDirectionTag { get; } = new("LX0019"u8.ToArray());
+
+        /// <summary>A <c>-</c> in a language tag was not followed by a subtag.</summary>
+        /// <remarks>Lexer rule for <c>LANGTAG</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rLANGTAG">SPARQL 1.2 §19.8 [LANGTAG]</see>.</remarks>
+        public static Utf8String ExpectedLanguageSubtag { get; } = new("LX0020"u8.ToArray());
+
+        /// <summary>An identifier resolved to no keyword, function name, boolean, or prefixed name.</summary>
+        /// <remarks>Tokenisation failure with no applicable terminal. See <see href="https://www.w3.org/TR/sparql12-query/#sparqlGrammar">SPARQL 1.2 §19 (grammar)</see>.</remarks>
+        public static Utf8String UnrecognisedIdentifier { get; } = new("LX0021"u8.ToArray());
+
+        /// <summary>A reserved-character escape inside a prefixed name was cut short.</summary>
+        /// <remarks>Lexer rule for <c>PN_LOCAL_ESC</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rPN_LOCAL_ESC">SPARQL 1.2 §19.8 [PN_LOCAL_ESC]</see>.</remarks>
+        public static Utf8String TruncatedPrefixedNameEscape { get; } = new("LX0022"u8.ToArray());
+
+        /// <summary>A percent escape inside a prefixed name was not two hex digits.</summary>
+        /// <remarks>Lexer rule for <c>PERCENT</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rPERCENT">SPARQL 1.2 §19.8 [PERCENT]</see>.</remarks>
+        public static Utf8String MalformedPercentEscape { get; } = new("LX0023"u8.ToArray());
+
+        /// <summary>A digit was expected (for example after a sign or decimal point) but not found.</summary>
+        /// <remarks>Lexer rules for the numeric literals. See <see href="https://www.w3.org/TR/sparql12-query/#rNumericLiteral">SPARQL 1.2 §19.8 [NumericLiteral]</see>.</remarks>
+        public static Utf8String ExpectedDigit { get; } = new("LX0024"u8.ToArray());
+
+        /// <summary>Exponent digits were expected after <c>e</c> / <c>E</c> but not found.</summary>
+        /// <remarks>Lexer rule for <c>EXPONENT</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rEXPONENT">SPARQL 1.2 §19.8 [EXPONENT]</see>.</remarks>
+        public static Utf8String ExpectedExponentDigits { get; } = new("LX0025"u8.ToArray());
+
+        /// <summary>A numeric literal was malformed.</summary>
+        /// <remarks>Lexer rules for the numeric literals. See <see href="https://www.w3.org/TR/sparql12-query/#rNumericLiteral">SPARQL 1.2 §19.8 [NumericLiteral]</see>.</remarks>
+        public static Utf8String InvalidNumericLiteral { get; } = new("LX0026"u8.ToArray());
+
+        /// <summary>A single <c>^</c> was not followed by the second <c>^</c> of the datatype marker.</summary>
+        /// <remarks>Lexer rule for the <c>^^</c> datatype marker of <c>RDFLiteral</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rRDFLiteral">SPARQL 1.2 §19.8 [RDFLiteral]</see>.</remarks>
+        public static Utf8String ExpectedTypeMarker { get; } = new("LX0027"u8.ToArray());
+
+        /// <summary>A lone <c>&amp;</c> was encountered; SPARQL has only the <c>&amp;&amp;</c> operator.</summary>
+        /// <remarks>Lexer rule for the <c>&amp;&amp;</c> operator of <c>ConditionalAndExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rConditionalAndExpression">SPARQL 1.2 §19.8 [ConditionalAndExpression]</see>.</remarks>
+        public static Utf8String ExpectedSecondAmpersand { get; } = new("LX0028"u8.ToArray());
+
+        /// <summary>A <c>&gt;</c> appeared where no token begins with it (outside <c>&gt;&gt;</c> and <c>&gt;=</c>).</summary>
+        /// <remarks>Tokenisation failure with no applicable terminal. See <see href="https://www.w3.org/TR/sparql12-query/#sparqlGrammar">SPARQL 1.2 §19 (grammar)</see>.</remarks>
+        public static Utf8String UnexpectedGreaterThan { get; } = new("LX0029"u8.ToArray());
+
+        /// <summary>A <c>|</c> appeared where no <c>|}</c> annotation close was expected.</summary>
+        /// <remarks>RDF 1.2 annotation-block close <c>|}</c>. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar</see>.</remarks>
+        public static Utf8String UnexpectedPipe { get; } = new("LX0030"u8.ToArray());
     }
 
     /// <summary>Turtle parser diagnostics (<c>TT</c> prefix).</summary>

@@ -254,63 +254,41 @@ internal sealed class TurtleLexerTests
     }
 
     [TestMethod]
-    public void UnterminatedStringThrows()
+    public void UnterminatedStringRecoversAsErrorToken()
     {
-        Utf8StringPool pool = new();
-        TurtleLexer lexer = new(Encoding.UTF8.GetBytes("\"open"), pool);
-
-        Assert.Throws<TurtleParseException>(() =>
-        {
-            foreach(TurtleToken token in lexer.Tokenize())
-            {
-                _ = token;
-            }
-        });
-
-        pool.Dispose();
+        AssertLexRecoversWithError("\"open", TurtleLexErrorCode.UnterminatedString);
     }
 
     [TestMethod]
-    public void InvalidEscapeThrows()
+    public void InvalidEscapeRecoversAsErrorToken()
     {
-        Utf8StringPool pool = new();
-        TurtleLexer lexer = new(Encoding.UTF8.GetBytes("\"\\q\""), pool);
-
-        Assert.Throws<TurtleParseException>(() =>
-        {
-            foreach(TurtleToken token in lexer.Tokenize())
-            {
-                _ = token;
-            }
-        });
-
-        pool.Dispose();
+        AssertLexRecoversWithError("\"\\q\"", TurtleLexErrorCode.InvalidEscape);
     }
 
     [TestMethod]
-    public void ThrowsOnLoneHighSurrogateEscape()
+    public void LoneHighSurrogateEscapeRecoversAsErrorToken()
     {
-        AssertLexThrows("\"\\uD83C\"");
+        AssertLexRecoversWithError("\"\\uD83C\"", TurtleLexErrorCode.SurrogateCodePoint);
     }
 
     [TestMethod]
-    public void ThrowsOnLoneLowSurrogateEscape()
+    public void LoneLowSurrogateEscapeRecoversAsErrorToken()
     {
-        AssertLexThrows("\"\\uDCA1\"");
+        AssertLexRecoversWithError("\"\\uDCA1\"", TurtleLexErrorCode.SurrogateCodePoint);
     }
 
     [TestMethod]
-    public void ThrowsOnSurrogatePairEscape()
+    public void SurrogatePairEscapeRecoversAsErrorToken()
     {
         //Turtle does not encode astral characters as a \u surrogate pair; each \u must be a
         //Unicode scalar value, so even a well-formed high/low pair is rejected.
-        AssertLexThrows("\"\\uD83C\\uDCA1\"");
+        AssertLexRecoversWithError("\"\\uD83C\\uDCA1\"", TurtleLexErrorCode.SurrogateCodePoint);
     }
 
     [TestMethod]
-    public void ThrowsOnCodePointExceedingUnicodeRange()
+    public void CodePointExceedingUnicodeRangeRecoversAsErrorToken()
     {
-        AssertLexThrows("\"\\U00110000\"");
+        AssertLexRecoversWithError("\"\\U00110000\"", TurtleLexErrorCode.CodePointOutOfRange);
     }
 
     [TestMethod]
@@ -322,19 +300,33 @@ internal sealed class TurtleLexerTests
         Assert.AreEqual("\U0001F600", tokens[0].Value.ToString());
     }
 
-    private static void AssertLexThrows(string source)
+    private static void AssertLexRecoversWithError(string source, TurtleLexErrorCode expectedCode)
+    {
+        (List<TurtleToken> tokens, IReadOnlyList<LexDiagnostic> diagnostics) = LexWithDiagnostics(source);
+
+        Assert.IsTrue(tokens.Exists(static token => token.Kind == TurtleTokenKind.Error), source);
+        Assert.HasCount(1, diagnostics, source);
+        Assert.AreEqual(expectedCode, diagnostics[0].Code, source);
+    }
+
+    private static (List<TurtleToken> Tokens, IReadOnlyList<LexDiagnostic> Diagnostics) LexWithDiagnostics(string source)
     {
         Utf8StringPool pool = new();
         try
         {
             TurtleLexer lexer = new(Encoding.UTF8.GetBytes(source), pool);
-            Assert.Throws<TurtleParseException>(() =>
+            List<TurtleToken> tokens = [];
+            foreach(TurtleToken token in lexer.Tokenize())
             {
-                foreach(TurtleToken token in lexer.Tokenize())
+                if(token.Kind == TurtleTokenKind.EndOfInput)
                 {
-                    _ = token;
+                    break;
                 }
-            });
+
+                tokens.Add(token);
+            }
+
+            return (tokens, lexer.Diagnostics);
         }
         finally
         {

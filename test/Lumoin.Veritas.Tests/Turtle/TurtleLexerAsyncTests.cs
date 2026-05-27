@@ -67,7 +67,7 @@ internal sealed class TurtleLexerAsyncTests
     }
 
     [TestMethod]
-    public async Task AsyncThrowsOnUnterminatedIriAtEndOfStream()
+    public async Task AsyncRecoversUnterminatedIriAtEndOfStream()
     {
         byte[] bytes = Encoding.UTF8.GetBytes("<http://example.org/unterminated");
 
@@ -75,13 +75,18 @@ internal sealed class TurtleLexerAsyncTests
         TurtleLexer lexer = new(pool);
         CancellationToken cancellationToken = TestContext.CancellationToken;
 
-        await Assert.ThrowsAsync<TurtleParseException>(async () =>
+        bool sawError = false;
+        await foreach(TurtleToken token in lexer.TokenizeAsync(CreatePipe(bytes, 4), cancellationToken).ConfigureAwait(false))
         {
-            await foreach(TurtleToken token in lexer.TokenizeAsync(CreatePipe(bytes, 4), cancellationToken).ConfigureAwait(false))
+            if(token.Kind == TurtleTokenKind.Error)
             {
-                _ = token;
+                sawError = true;
             }
-        }).ConfigureAwait(false);
+        }
+
+        Assert.IsTrue(sawError);
+        Assert.HasCount(1, lexer.Diagnostics);
+        Assert.AreEqual(TurtleLexErrorCode.UnterminatedIri, lexer.Diagnostics[0].Code);
     }
 
     [TestMethod]
@@ -97,7 +102,7 @@ internal sealed class TurtleLexerAsyncTests
             using Utf8StringPool pool = new();
             TurtleLexer lexer = new(pool);
             int iriCount = 0;
-            await foreach(TurtleToken token in lexer.TokenizeWithRecoveryAsync(CreatePipe(bytes, chunkSize), TestContext.CancellationToken).ConfigureAwait(false))
+            await foreach(TurtleToken token in lexer.TokenizeAsync(CreatePipe(bytes, chunkSize), TestContext.CancellationToken).ConfigureAwait(false))
             {
                 if(token.Kind == TurtleTokenKind.Iri)
                 {
@@ -120,7 +125,7 @@ internal sealed class TurtleLexerAsyncTests
 
         using Utf8StringPool pool = new();
         TurtleLexer lexer = new(pool);
-        await foreach(TurtleToken token in lexer.TokenizeWithRecoveryAsync(CreatePipe(bytes, 3), TestContext.CancellationToken).ConfigureAwait(false))
+        await foreach(TurtleToken token in lexer.TokenizeAsync(CreatePipe(bytes, 3), TestContext.CancellationToken).ConfigureAwait(false))
         {
             _ = token;
         }
