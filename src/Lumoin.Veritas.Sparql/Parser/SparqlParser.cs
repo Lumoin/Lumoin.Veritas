@@ -79,6 +79,7 @@ public sealed class SparqlParser
     private bool tokensComplete;
     private bool started;
     private int index;
+    private int parserDiagnosticsRecorded;
     private readonly BlankNodeDelegate blankNodes;
     private SourceSpan lastConsumedSpan;
 
@@ -90,8 +91,9 @@ public sealed class SparqlParser
     /// <param name="baseIri">The external base IRI relative references resolve against before any in-query <c>BASE</c>, or <see langword="null"/>.</param>
     /// <param name="blankNodes">Allocates labels for anonymous <c>[]</c> blank nodes; defaults to <see cref="VeritasBlankNodes.System"/>.</param>
     /// <param name="diagnostics">The bag recovery records diagnostics into; a private bag is created when <see langword="null"/>. Pass a shared bag to merge lexer-bridged and parser diagnostics.</param>
-    public SparqlParser(IEnumerable<SparqlToken> tokens, Utf8StringPool pool, Utf8String? baseIri = null, BlankNodeDelegate? blankNodes = null, DiagnosticBag? diagnostics = null)
-        : this(pool, baseIri, blankNodes, diagnostics)
+    /// <param name="maxDiagnostics">The per-parse cap on parser-recorded diagnostics; once reached, an <see cref="WellKnownDiagnostics.Sparql.ExcessDiagnostics"/> marker is recorded and further parser diagnostics are suppressed. Defaults to unbounded.</param>
+    public SparqlParser(IEnumerable<SparqlToken> tokens, Utf8StringPool pool, Utf8String? baseIri = null, BlankNodeDelegate? blankNodes = null, DiagnosticBag? diagnostics = null, int maxDiagnostics = int.MaxValue)
+        : this(pool, baseIri, blankNodes, diagnostics, maxDiagnostics)
     {
         ArgumentNullException.ThrowIfNull(tokens);
 
@@ -111,11 +113,12 @@ public sealed class SparqlParser
     /// <param name="baseIri">The external base IRI relative references resolve against before any in-query <c>BASE</c>, or <see langword="null"/>.</param>
     /// <param name="blankNodes">Allocates labels for anonymous <c>[]</c> blank nodes; defaults to <see cref="VeritasBlankNodes.System"/>.</param>
     /// <param name="diagnostics">The bag recovery records diagnostics into; a private bag is created when <see langword="null"/>. Pass a shared bag to merge lexer-bridged and parser diagnostics.</param>
+    /// <param name="maxDiagnostics">The per-parse cap on parser-recorded diagnostics; once reached, an <see cref="WellKnownDiagnostics.Sparql.ExcessDiagnostics"/> marker is recorded and further parser diagnostics are suppressed. Defaults to unbounded.</param>
     /// <remarks>
     /// The parser suspends — preserving its work stack — when the request needs tokens that have not
     /// arrived yet, and resumes when more are fed, so the token buffer need not hold the whole query.
     /// </remarks>
-    internal SparqlParser(Utf8StringPool pool, Utf8String? baseIri = null, BlankNodeDelegate? blankNodes = null, DiagnosticBag? diagnostics = null)
+    internal SparqlParser(Utf8StringPool pool, Utf8String? baseIri = null, BlankNodeDelegate? blankNodes = null, DiagnosticBag? diagnostics = null, int maxDiagnostics = int.MaxValue)
     {
         ArgumentNullException.ThrowIfNull(pool);
 
@@ -124,6 +127,7 @@ public sealed class SparqlParser
         this.baseIri = baseIri;
         this.blankNodes = blankNodes ?? VeritasBlankNodes.System;
         Diagnostics = diagnostics ?? new DiagnosticBag();
+        MaxDiagnostics = maxDiagnostics;
 
         xsdString = pool.Intern("http://www.w3.org/2001/XMLSchema#string"u8);
         xsdInteger = pool.Intern("http://www.w3.org/2001/XMLSchema#integer"u8);
@@ -146,6 +150,9 @@ public sealed class SparqlParser
     /// parser's own syntax diagnostics accumulate here in source order.
     /// </summary>
     internal DiagnosticBag Diagnostics { get; }
+
+    /// <summary>Gets the per-parse cap on parser-recorded diagnostics; <see cref="int.MaxValue"/> is unbounded.</summary>
+    private int MaxDiagnostics { get; }
 
     /// <summary>
     /// Gets whether enough tokens are buffered for the next step to run without reading past the buffer.
@@ -4750,7 +4757,25 @@ public sealed class SparqlParser
     /// <param name="message">A human-readable explanation.</param>
     private void Report(Utf8String code, SourceSpan span, string message)
     {
+        //Beyond the per-parse cap the parser stops recording — a runaway-error backstop. The AST still
+        //assembles (error nodes are produced regardless); only the diagnostic list is bounded.
+        if(parserDiagnosticsRecorded >= MaxDiagnostics)
+        {
+            return;
+        }
+
         Diagnostics.Add(new Diagnostic(code, DiagnosticSeverity.Error, span, Utf8String.FromString(message)));
+        parserDiagnosticsRecorded++;
+
+        //On reaching the cap, record the marker once; subsequent reports are suppressed by the guard above.
+        if(parserDiagnosticsRecorded == MaxDiagnostics)
+        {
+            Diagnostics.Add(new Diagnostic(
+                WellKnownDiagnostics.Sparql.ExcessDiagnostics,
+                DiagnosticSeverity.Error,
+                span,
+                Utf8String.FromString("The per-parse diagnostic cap was reached; further diagnostics are suppressed.")));
+        }
     }
 
     /// <summary>

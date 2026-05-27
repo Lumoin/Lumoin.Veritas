@@ -439,7 +439,7 @@ public static class WellKnownDiagnostics
         /// <remarks>RDF 1.2 base-direction language form in <c>RDFLiteral</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rRDFLiteral">SPARQL 1.2 §19.8 [RDFLiteral]</see>.</remarks>
         public static Utf8String InvalidBaseDirection { get; } = new("SP0042"u8.ToArray());
 
-        /// <summary>The per-parse diagnostic cap was reached; remaining input is skipped.</summary>
+        /// <summary>The per-parse diagnostic cap was reached; further parser diagnostics are suppressed (the AST still assembles).</summary>
         /// <remarks>Parser-internal bound (see the parser's <c>MaxDiagnostics</c> option), not a grammar production.</remarks>
         public static Utf8String ExcessDiagnostics { get; } = new("SP9999"u8.ToArray());
     }

@@ -213,6 +213,61 @@ internal sealed class SparqlParserRecoveryTests
         Assert.AreEqual(term.Span.StartByte, errorTerm.Span.StartByte, "the error node should anchor at the faulty token");
     }
 
+    [TestMethod]
+    public void ThrowIfInvalidThrowsCarryingDiagnostics()
+    {
+        using Utf8StringPool pool = new();
+        ParseResult<SparqlRequest> result = Parse("SELECT * WHERE { ?s ?p }", pool);
+
+        Assert.IsTrue(result.HasErrors);
+
+        SparqlInvalidRequestException exception = Assert.Throws<SparqlInvalidRequestException>(
+            () => SparqlInvalidRequestException.ThrowIfInvalid(result));
+
+        Assert.IsNotEmpty(exception.Diagnostics);
+    }
+
+    [TestMethod]
+    public void ThrowIfInvalidDoesNotThrowOnCleanRequest()
+    {
+        using Utf8StringPool pool = new();
+        ParseResult<SparqlRequest> result = Parse("SELECT * WHERE { ?s ?p ?o }", pool);
+
+        Assert.IsFalse(result.HasErrors);
+
+        //A clean parse is executable; the guard must not throw.
+        SparqlInvalidRequestException.ThrowIfInvalid(result);
+    }
+
+    [TestMethod]
+    public void MaxDiagnosticsCapsParserDiagnostics()
+    {
+        //Three malformed objects would record three diagnostics; a cap of two records two plus the
+        //ExcessDiagnostics marker and suppresses the rest, bounding a runaway-error parse.
+        using Utf8StringPool pool = new();
+        DiagnosticBag diagnostics = new();
+        List<SparqlToken> tokens = [.. new SparqlLexer(Encoding.UTF8.GetBytes("SELECT * WHERE { ?s ?p ) . ?a ?b ) . ?c ?d ) }"), pool).Tokenize()];
+        SparqlParser parser = new(tokens, pool, baseIri: null, blankNodes: null, diagnostics: diagnostics, maxDiagnostics: 2);
+        _ = parser.ParseToResult();
+
+        int realErrors = 0;
+        bool sawExcess = false;
+        foreach(Diagnostic diagnostic in diagnostics.Diagnostics)
+        {
+            if(diagnostic.Code.Equals(WellKnownDiagnostics.Sparql.ExcessDiagnostics))
+            {
+                sawExcess = true;
+            }
+            else
+            {
+                realErrors++;
+            }
+        }
+
+        Assert.IsLessThanOrEqualTo(2, realErrors, "parser diagnostics should be capped at MaxDiagnostics");
+        Assert.IsTrue(sawExcess, "the ExcessDiagnostics marker should be recorded once the cap is reached");
+    }
+
     private static ParseResult<SparqlRequest> Parse(string text, Utf8StringPool pool)
     {
         return SparqlParser.ParseRequest(new System.ReadOnlyMemory<byte>(Encoding.UTF8.GetBytes(text)), pool);

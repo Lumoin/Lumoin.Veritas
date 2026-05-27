@@ -81,8 +81,17 @@ AST from day one.) This is the cross-cutting error-model rework deferred earlier
   **Build clean (0 warnings); 366/366 SPARQL tests pass; full suite 50 failed = the unchanged SHACL
   baseline, 0 new failures.** *(The mechanical conversion was delegated to a subagent against this anchor +
   the Turtle template, then reviewed line-by-line + re-tested.)*
-**Steps 5–6 remain:** (5) `SparqlInvalidRequestException` type; (6) docs audit (every code linked +
-referenced by name). With both parsers now recovering, Milestone B (algebra translator) can build against
+- **Step 5** (`SparqlInvalidRequestException` + `MaxDiagnostics`) — **COMPLETE.** `SparqlInvalidRequestException`
+  is the execution-boundary guard: parsing never throws (returns a `ParseResult` with `HasErrors`);
+  *executing* an errored request is the contract violation the future engine refuses via
+  `SparqlInvalidRequestException.ThrowIfInvalid(ParseResult<SparqlRequest>)`, which carries the
+  `Diagnostics`. `MaxDiagnostics` is a parser-level ctor option (default unbounded): once the cap of
+  parser-recorded diagnostics is reached, `Report` records `SP9999 ExcessDiagnostics` once and suppresses
+  the rest (the AST still assembles) — a runaway-error backstop. §7/`ExecuteAsync` wiring stays deferred
+  (no engine yet). Tests added to `SparqlParserRecoveryTests`; full suite still 0 new failures over the
+  SHACL baseline.
+**Step 6 remains:** docs audit (every diagnostic code linked + referenced by name; every terminal/production
+cites its §19.8 anchor). With both parsers recovering, Milestone B (algebra translator) can build against
 possibly-error-node ASTs from day one — the original reason recovery was sequenced before it.
 
 ### ⏵ STEP 4 RESUME ANCHOR — SPARQL parser recovery rewrite (executed; kept as the record of what landed)
