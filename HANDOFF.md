@@ -141,32 +141,39 @@ Then B (algebra + translator, §10–§11) and C (hypertrie backend + executor s
         bnode-list objects). `StepTripleTerm` frame; `Ast.TripleTerm` node (already
         existed). Inner subject is a leaf (no nesting), verb is IRI/`a`/var (no
         paths), object is a leaf or nested triple term. + 8 parser tests.
-      - **TODO — reified triples + reifiers** `<< s verb o ~r? >>`. **Grammar learned
-        from the W3C suite** (`sparql12/syntax-triple-terms-{positive,negative}` at the
-        pinned commit): a reified triple's subject may be a leaf, a nested reified
-        triple, or a triple term; its object may also be a triple term; the reifier
-        `~ (var|iri|bnode)?` is optional and a bare `<< s p o >>` still reifies
-        (anonymous reifier). **Asymmetry vs triple terms:** `<<( )>> .` is INVALID
-        (a triple term needs a following predicate) but `<< >> .` is VALID (a reified
-        triple asserts its inner triple as a standalone `TriplesSameSubject`). Reified
-        triples are FORBIDDEN in expressions (BIND) — triple terms are allowed there.
-      - **TODO — annotations** `s p o ~r {| pol |}` after objects (the `( Reifier |
-        '{|' PropertyListNotEmpty '|}' )*` tail). FORBIDDEN when the predicate is a
-        path (`:p/:q ?o ~r` is a negative test) — only attaches to a simple Verb.
-      - **TODO — triple terms in VALUES + expression position** (positive tests
-        `basic-tripleterm-05`, `expr-tripleterm-*`); **VERSION prologue decl**
-        (`version-*`: only a short `"…"` string label; `"""…"""`/`'''…'''` are bad).
-      - **TODO — vendor** `sparql12/syntax-triple-terms-{positive,negative}` + `version`
-        (query `.rq` only; the `.ru` updates stay skipped) and wire into the harness.
-      - **AST modeling decision (load-bearing for B/C — confirm before building):**
-        keep `ReifiedTriple(Span, Inner, Reifier?)` as a `TriplePatternTerm` for
-        reified triples used as subject/object *terms*; give `TriplePattern` an
-        optional `Annotations` list. A standalone `<< s p o ~r >> .` and the
-        annotation form `s p o ~r {| … |}` **converge**: both are a `TriplePattern`
-        (s,p,o) carrying annotations — so the standalone reified triple unwraps to
-        its inner triple + a reifier annotation, while a reified triple with a
-        following predicate stays a `ReifiedTriple` subject term. The early-expansion
-        pass lowers all of it to `rdf:reifies` triples.
+      - **DONE (reified triples + reifiers):** `<< s verb o ~r? >>` as a faithful
+        `Ast.ReifiedTriple(Span, Inner, Reifier?)` term (`Reifier` null = anonymous),
+        `StepReifiedTriple` frame; subject/object may nest a reified triple or triple
+        term; rejected in expression position. + 7 parser tests.
+      - **DONE (object annotations):** `s p o ~r {| pol |}` as a faithful
+        `Ast.AnnotatedObject(object, Annotation[])` with `Annotation` /
+        `ReifierAnnotation` / `AnnotationBlock` — **mirrors the Turtle parser** (NOT
+        the earlier "converge onto TriplePattern" sketch, which the user rejected as
+        unfaithful). The Triple frame reads the `( ~id? | {| pol |} )*` tail after each
+        object; the block reuses the bnode-list pol shape via `StepAnnotationBlock`.
+        Annotations require a non-path verb. + 6 parser tests.
+      - **DONE (conformance vendored):** `syntax-triple-terms-{positive,negative}` +
+        `version` vendored under `Material/Sparql/` and wired into the harness. The
+        suite found one real bug (triple-term subjects MAY nest — the WHERE-context
+        `TripleTerm` differs from the VALUES-context `TripleTermData`), now fixed.
+      - **Remaining (tracked as self-correcting known-gaps in `KnownGaps`):**
+        - **Standalone reified triple** `<< s p o >> .` (empty property list; 12 tests
+          `basic-{anon,}reifier-08..13`). Needs the BGP to hold a subject-only
+          assertion — Turtle allows a subject statement with an empty predicate-object
+          list; SPARQL's `BasicGraphPatternBlock.Triples` is `List<TriplePattern>`, so
+          this needs a small block-shape decision (hold the standalone `ReifiedTriple`
+          alongside the triples). Do NOT unwrap at parse (faithful).
+        - **Triple terms in VALUES** (`basic-tripleterm-05`) — wire the VALUES
+          data-block value parser to accept `<<( )>>` (note VALUES `TripleTermData` is
+          more restrictive: no nested-triple-term subject, no variables — see the
+          `tripleterm-subject-*` negatives).
+        - **Triple terms in expressions** (`expr-tripleterm-01`,`-06`) — the primary
+          expression parser needs a `<<( )>>` arm and an expression node wrapping a
+          triple term.
+        - **VERSION prologue decl** (`version-01..06`) — `VERSION "…"` after/with the
+          prologue; only a short `"…"` string label (`"""…"""`/`'''…'''` are bad,
+          per `version-bad-*`). `version-01/02` also embed a standalone `<< >>` so
+          they need the standalone fix too.
     - Slice S — **spans on the remaining AST layers** (graph-pattern members,
       expressions, property-path nodes, clauses, query forms, request), applying
       the same `frame.StartSpan` + `lastConsumedSpan` + `CombineSpans` mechanism,
