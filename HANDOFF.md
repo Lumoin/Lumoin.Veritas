@@ -18,7 +18,7 @@ AST from day one.) This is the cross-cutting error-model rework deferred earlier
 (see [[project_sparql_ast_faithful]]); it also subsumes the parser side of the
 `Core/Lexing/` consolidation.
 
-**Status: Steps 1–2 done.**
+**Status: Steps 1–3 done.**
 - **Step 1** (commit `2a4bc69`) — `Core/Diagnostics/`: `Diagnostic`,
   `DiagnosticSeverity`, `DiagnosticBag`, `WellKnownDiagnostics` catalogue + tests.
 - **Step 2** (lexer recovery, both lexers) — `SparqlTokenKind.Error` /
@@ -35,9 +35,31 @@ AST from day one.) This is the cross-cutting error-model rework deferred earlier
   Lexer-test sweep done (SPARQL 2 + Turtle 6 throw-tests → Error-token+diagnostic
   assertions; 3 Turtle async tests retargeted; 2 new bridge-coverage tests). **Full
   suite green: 0 new failures** (50 = the unchanged pre-existing SHACL baseline).
-**Steps 3–6 remain:** (3) Turtle parser recovery
-— error-node AST variants per abstract base, resync tables per frame kind,
-`ParseResult`, test sweep; (4) SPARQL parser recovery — same on the larger
+- **Step 3** (Turtle parser recovery — implementation landed) — `TurtleParser` recovery is
+  value-based and the only mode: `DiagnosticBag` on both ctors + `ParseToResult()`; `Report`/
+  `ReportRecoverable` (suppresses the parser code when the offending token is a lexer `Error` so the
+  bridged `LX####` stands alone)/`ResyncTo`/`IsResyncToken` (resync table per `ParseFrameKind`)/
+  `RecoverTerm`·`RecoverStatement`·`RecoverAnnotation`. Every recoverable throw site converted (structural
+  → `Recover*` error node; validation → report-and-keep faithful term; unclosed list/graph-block at EOF →
+  report-and-finalise-partial; missing-`.` → report+resync+keep the recoverable triple); invariants
+  (unknown stage / unhandled frame / numeric-kind / `ConsumePrefixedName`+`ExtractPrefix` missing-`:` /
+  DirLangTag missing-`--`) stay throws. `WellKnownDiagnostics.Turtle` expanded to TT0001–TT0027.
+  **Emitter is now value-based too** (the user's call — [[project_turtle_emitter_value_based]]):
+  `TurtleQuadEmitter` takes the shared `DiagnosticBag`, resolution is fallible (`RdfTerm?`/`NamedNode?`),
+  unresolvable-relative-IRI/undeclared-prefix record `TT0026`/`TT0027` and skip, error nodes skip (no NRE).
+  Reader: bare `ReadAsync` gained a **required** `DiagnosticBag` (bridges `lexer.Diagnostics` via
+  `TurtleLexDiagnosticBridge`, threads it to parser+emitter, never throws on malformed input);
+  `ReadWithSourceAsync` returns `ParseResult<TurtleDocument>`. Test sweep done: 5 throw-tests →
+  `HasErrors`+code; the shared W3C runner keeps its catch-based negative detection via a test-only
+  `TurtleConformanceReader` adapter that re-raises on `HasErrors` (NQuads/SPARQL delegates untouched);
+  `TurtleReaderLimitsTests` stays a throw. **Key realisation while implementing:** a stray top-level closer
+  (`}`/`)`/`]`…) is consumed by no frame, so `StepStatement` skips any token that fails `CanStartStatement`
+  (and list frames push a Term sub-frame only on `CanStartTerm`) — this is what guarantees the work stack
+  always progresses under malformed input. **Build clean (0 warnings, TreatWarningsAsErrors); 313/313
+  Turtle tests pass; full suite 50 failed = the unchanged SHACL baseline, 0 new failures.**
+  *Remaining for Step 3:* the additive recovery tests below (per-frame resync, cascade-suppression,
+  reactive-editor) — sanctioned as a follow-up commit.
+**Steps 4–6 remain:** (4) SPARQL parser recovery — same on the larger
 parser (the conformance jump lands here); (5) `SparqlInvalidRequestException`
 type; (6) docs audit (every code linked + referenced by name).
 

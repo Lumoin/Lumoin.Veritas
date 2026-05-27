@@ -7,6 +7,7 @@ using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Turtle.Ast;
 using Lumoin.Veritas.Turtle.Emission;
@@ -49,6 +50,7 @@ public static class TurtleReader
     /// </summary>
     /// <param name="input">The UTF-8 encoded source pipe.</param>
     /// <param name="syntax">Whether the source is Turtle or TriG.</param>
+    /// <param name="diagnostics">The caller-owned bag lexical and parse/emit diagnostics accumulate into; inspect <see cref="DiagnosticBag.HasErrors"/> after enumerating. Reading never throws on malformed input.</param>
     /// <param name="pool">Optional pool to intern interned strings into. A private pool is created when null.</param>
     /// <param name="baseIri">Optional document base IRI for resolving relative references that precede any in-document <c>@base</c>.</param>
     /// <param name="cancellationToken">A token to cancel iteration.</param>
@@ -57,17 +59,22 @@ public static class TurtleReader
     /// The pipe is consumed statement by statement: each <see cref="PipeReader.ReadAsync"/> feeds the
     /// lexer, completed tokens feed the parser, and a completed statement is emitted and released before
     /// more bytes are pulled. Peak memory tracks the largest single statement, not the document.
+    /// Malformed input is recovered, not thrown: the reader records a diagnostic into
+    /// <paramref name="diagnostics"/>, skips the offending quad, and continues. Only I/O failures,
+    /// cancellation, and resource-limit breaches throw.
     /// </remarks>
     public static IAsyncEnumerable<Quad> ReadAsync(
         PipeReader input,
         TurtleSyntax syntax,
+        DiagnosticBag diagnostics,
         Utf8StringPool? pool = null,
         string? baseIri = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(input);
+        ArgumentNullException.ThrowIfNull(diagnostics);
 
-        return IterateBareAsync(input, syntax, pool, baseIri, cancellationToken);
+        return IterateBareAsync(input, syntax, diagnostics, pool, baseIri, cancellationToken);
     }
 
     /// <summary>
@@ -75,6 +82,7 @@ public static class TurtleReader
     /// </summary>
     /// <param name="source">The UTF-8 source bytes.</param>
     /// <param name="syntax">Whether the source is Turtle or TriG.</param>
+    /// <param name="diagnostics">The caller-owned bag lexical and parse/emit diagnostics accumulate into; inspect <see cref="DiagnosticBag.HasErrors"/> after enumerating. Reading never throws on malformed input.</param>
     /// <param name="pool">Optional pool to intern strings into.</param>
     /// <param name="baseIri">Optional document base IRI for resolving relative references that precede any in-document <c>@base</c>.</param>
     /// <param name="cancellationToken">A token to cancel iteration.</param>
@@ -82,11 +90,14 @@ public static class TurtleReader
     public static IAsyncEnumerable<Quad> ReadAsync(
         ReadOnlyMemory<byte> source,
         TurtleSyntax syntax,
+        DiagnosticBag diagnostics,
         Utf8StringPool? pool = null,
         string? baseIri = null,
         CancellationToken cancellationToken = default)
     {
-        return IterateBareFromMemoryAsync(source, syntax, pool, baseIri, cancellationToken);
+        ArgumentNullException.ThrowIfNull(diagnostics);
+
+        return IterateBareFromMemoryAsync(source, syntax, diagnostics, pool, baseIri, cancellationToken);
     }
 
     /// <summary>
@@ -99,13 +110,15 @@ public static class TurtleReader
     /// <param name="pool">Optional pool to intern strings into.</param>
     /// <param name="baseIri">Optional document base IRI for resolving relative references that precede any in-document <c>@base</c>.</param>
     /// <param name="cancellationToken">A token to cancel iteration.</param>
-    /// <returns>A tuple of the parsed document AST and an async iterator over source-tagged quads.</returns>
+    /// <returns>A tuple of the parse result (document AST plus diagnostics) and an async iterator over source-tagged quads.</returns>
     /// <remarks>
     /// The pipe is drained to a contiguous buffer and parsed before the AST is returned, so this
     /// overload is asynchronous; the in-memory <see cref="ReadOnlyMemory{T}"/> overload returns
-    /// the tuple synchronously.
+    /// the tuple synchronously. The returned <see cref="ParseResult{TTree}"/> carries the lexical and
+    /// parse diagnostics; resolution diagnostics raised while the quad iterator runs append to the same
+    /// bag, observable through <see cref="ParseResult{TTree}.Diagnostics"/>.
     /// </remarks>
-    public static async System.Threading.Tasks.Task<(TurtleDocument Document, IAsyncEnumerable<EmittedQuad> Quads)> ReadWithSourceAsync(
+    public static async System.Threading.Tasks.Task<(ParseResult<TurtleDocument> Result, IAsyncEnumerable<EmittedQuad> Quads)> ReadWithSourceAsync(
         PipeReader input,
         TurtleSyntax syntax,
         DocumentId documentId,
@@ -126,10 +139,12 @@ public static class TurtleReader
             await input.CompleteAsync().ConfigureAwait(false);
         }
 
-        TurtleDocument document = ParseDocument(bytes, syntax, documentId, effectivePool);
-        IAsyncEnumerable<EmittedQuad> quads = IterateWithSourceAsync(document, effectivePool, baseIri, cancellationToken);
+        DiagnosticBag diagnostics = new();
+        TurtleDocument document = ParseDocumentInto(bytes, syntax, documentId, effectivePool, diagnostics);
+        ParseResult<TurtleDocument> result = new(document, diagnostics.Diagnostics, diagnostics.HasErrors);
+        IAsyncEnumerable<EmittedQuad> quads = IterateWithSourceAsync(document, effectivePool, diagnostics, baseIri, cancellationToken);
 
-        return (document, quads);
+        return (result, quads);
     }
 
     /// <summary>
@@ -142,8 +157,8 @@ public static class TurtleReader
     /// <param name="pool">Optional pool to intern strings into.</param>
     /// <param name="baseIri">Optional document base IRI for resolving relative references that precede any in-document <c>@base</c>.</param>
     /// <param name="cancellationToken">A token to cancel iteration.</param>
-    /// <returns>A tuple of the parsed document AST and an async iterator over source-tagged quads.</returns>
-    public static (TurtleDocument Document, IAsyncEnumerable<EmittedQuad> Quads) ReadWithSourceAsync(
+    /// <returns>A tuple of the parse result (document AST plus diagnostics) and an async iterator over source-tagged quads.</returns>
+    public static (ParseResult<TurtleDocument> Result, IAsyncEnumerable<EmittedQuad> Quads) ReadWithSourceAsync(
         ReadOnlyMemory<byte> source,
         TurtleSyntax syntax,
         DocumentId documentId,
@@ -152,14 +167,17 @@ public static class TurtleReader
         CancellationToken cancellationToken = default)
     {
         Utf8StringPool effectivePool = pool ?? new Utf8StringPool();
-        TurtleDocument document = ParseDocument(source.ToArray(), syntax, documentId, effectivePool);
-        IAsyncEnumerable<EmittedQuad> quads = IterateWithSourceAsync(document, effectivePool, baseIri, cancellationToken);
-        return (document, quads);
+        DiagnosticBag diagnostics = new();
+        TurtleDocument document = ParseDocumentInto(source.ToArray(), syntax, documentId, effectivePool, diagnostics);
+        ParseResult<TurtleDocument> result = new(document, diagnostics.Diagnostics, diagnostics.HasErrors);
+        IAsyncEnumerable<EmittedQuad> quads = IterateWithSourceAsync(document, effectivePool, diagnostics, baseIri, cancellationToken);
+        return (result, quads);
     }
 
     private static async IAsyncEnumerable<Quad> IterateBareAsync(
         PipeReader input,
         TurtleSyntax syntax,
+        DiagnosticBag diagnostics,
         Utf8StringPool? pool,
         string? baseIri,
         [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -168,12 +186,14 @@ public static class TurtleReader
         try
         {
             TurtleLexer lexer = new(ownedPool);
-            TurtleParser parser = new(ownedPool, default, syntax);
-            TurtleQuadEmitter emitter = new(EmptyStreamingDocument(), ownedPool, baseIri);
+            TurtleParser parser = new(ownedPool, default, syntax, blankNodes: null, diagnostics: diagnostics);
+            TurtleQuadEmitter emitter = new(EmptyStreamingDocument(), ownedPool, diagnostics, baseIri);
+            int bridged = 0;
 
             await foreach(TurtleToken token in lexer.TokenizeAsync(input, cancellationToken).ConfigureAwait(false))
             {
                 parser.FeedToken(token);
+                bridged = BridgeLexerDiagnostics(lexer, diagnostics, bridged);
 
                 foreach(Quad quad in DrainStatements(parser, emitter))
                 {
@@ -182,6 +202,8 @@ public static class TurtleReader
                     yield return quad;
                 }
             }
+
+            BridgeLexerDiagnostics(lexer, diagnostics, bridged);
         }
         finally
         {
@@ -197,6 +219,7 @@ public static class TurtleReader
     private static async IAsyncEnumerable<Quad> IterateBareFromMemoryAsync(
         ReadOnlyMemory<byte> source,
         TurtleSyntax syntax,
+        DiagnosticBag diagnostics,
         Utf8StringPool? pool,
         string? baseIri,
         [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -205,12 +228,14 @@ public static class TurtleReader
         try
         {
             TurtleLexer lexer = new(source, ownedPool);
-            TurtleParser parser = new(ownedPool, default, syntax);
-            TurtleQuadEmitter emitter = new(EmptyStreamingDocument(), ownedPool, baseIri);
+            TurtleParser parser = new(ownedPool, default, syntax, blankNodes: null, diagnostics: diagnostics);
+            TurtleQuadEmitter emitter = new(EmptyStreamingDocument(), ownedPool, diagnostics, baseIri);
+            int bridged = 0;
 
             foreach(TurtleToken token in lexer.Tokenize())
             {
                 parser.FeedToken(token);
+                bridged = BridgeLexerDiagnostics(lexer, diagnostics, bridged);
 
                 foreach(Quad quad in DrainStatements(parser, emitter))
                 {
@@ -219,6 +244,8 @@ public static class TurtleReader
                     yield return quad;
                 }
             }
+
+            BridgeLexerDiagnostics(lexer, diagnostics, bridged);
 
             await System.Threading.Tasks.Task.CompletedTask.ConfigureAwait(false);
         }
@@ -229,6 +256,20 @@ public static class TurtleReader
                 ownedPool.Dispose();
             }
         }
+    }
+
+    //Bridges any lexer-internal diagnostics recorded since the last call into the shared parse-level bag,
+    //and returns the new high-water mark. Lexical errors surface as Error tokens the parser resyncs past,
+    //so their LX#### diagnostics belong in the same bag the consumer reads.
+    private static int BridgeLexerDiagnostics(TurtleLexer lexer, DiagnosticBag diagnostics, int alreadyBridged)
+    {
+        IReadOnlyList<LexDiagnostic> lexDiagnostics = lexer.Diagnostics;
+        for(int i = alreadyBridged; i < lexDiagnostics.Count; i++)
+        {
+            diagnostics.Add(TurtleLexDiagnosticBridge.ToDiagnostic(lexDiagnostics[i]));
+        }
+
+        return lexDiagnostics.Count;
     }
 
     //Drives the suspendable parser to completion over the tokens fed so far, emitting each finished
@@ -263,10 +304,11 @@ public static class TurtleReader
     private static async IAsyncEnumerable<EmittedQuad> IterateWithSourceAsync(
         TurtleDocument document,
         Utf8StringPool pool,
+        DiagnosticBag diagnostics,
         string? baseIri,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        TurtleQuadEmitter emitter = new(document, pool, baseIri);
+        TurtleQuadEmitter emitter = new(document, pool, diagnostics, baseIri);
         foreach(EmittedQuad emitted in emitter.Emit())
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -276,14 +318,20 @@ public static class TurtleReader
         await System.Threading.Tasks.Task.CompletedTask.ConfigureAwait(false);
     }
 
-    private static TurtleDocument ParseDocument(
+    //Lexes and parses the whole buffer into the shared bag (lexical diagnostics bridged first, then the
+    //parser's), returning the document. The caller wraps the bag in a ParseResult and reuses it for the
+    //emitter, so one bag spans lexing, parsing, and emission.
+    private static TurtleDocument ParseDocumentInto(
         byte[] bytes,
         TurtleSyntax syntax,
         DocumentId documentId,
-        Utf8StringPool pool)
+        Utf8StringPool pool,
+        DiagnosticBag diagnostics)
     {
         TurtleLexer lexer = new(bytes, pool);
-        TurtleParser parser = new(lexer.Tokenize(), pool, documentId, syntax);
+        TurtleParser parser = new(lexer.Tokenize(), pool, documentId, syntax, blankNodes: null, diagnostics: diagnostics);
+        BridgeLexerDiagnostics(lexer, diagnostics, 0);
+
         return parser.Parse();
     }
 

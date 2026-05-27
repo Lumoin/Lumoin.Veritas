@@ -4,6 +4,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Rdf;
 using Lumoin.Veritas.Shacl;
@@ -145,10 +146,18 @@ internal static class W3cShaclRunner
         Uri baseUri = new(Path.GetFullPath(path));
 
         List<Quad> quads = [];
+        DiagnosticBag diagnostics = new();
         await foreach(Quad quad in TurtleReader.ReadAsync(
-            bytes, TurtleSyntax.Turtle, pool: null, baseIri: baseUri.AbsoluteUri, cancellationToken: cancellationToken).ConfigureAwait(false))
+            bytes, TurtleSyntax.Turtle, diagnostics, pool: null, baseIri: baseUri.AbsoluteUri, cancellationToken: cancellationToken).ConfigureAwait(false))
         {
             quads.Add(quad);
+        }
+
+        //A SHACL shapes/data graph is trusted input; preserve the prior loud-failure semantics by
+        //re-raising once the never-throwing reader reports an error (rather than using a partial graph).
+        if(diagnostics.HasErrors)
+        {
+            throw new TurtleParseException(TurtleConformanceReader.DescribeFirstError(diagnostics));
         }
 
         return quads;

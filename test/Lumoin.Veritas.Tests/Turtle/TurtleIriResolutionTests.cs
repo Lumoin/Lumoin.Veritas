@@ -4,6 +4,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Turtle;
 
 namespace Lumoin.Veritas.Tests.Turtle;
@@ -73,8 +74,10 @@ internal sealed class TurtleIriResolutionTests
     [TestMethod]
     public async Task RejectsRelativeIriWhenNoBaseInScope()
     {
-        await Assert.ThrowsAsync<TurtleParseException>(
-            () => ReadAsync($"<s> {AbsolutePredicateObject}", baseIri: null)).ConfigureAwait(false);
+        DiagnosticBag diagnostics = await DiagnosticsAsync($"<s> {AbsolutePredicateObject}", baseIri: null).ConfigureAwait(false);
+
+        Assert.IsTrue(diagnostics.HasErrors);
+        Assert.IsTrue(ContainsCode(diagnostics, WellKnownDiagnostics.Turtle.UnresolvableRelativeIri));
     }
 
     [TestMethod]
@@ -82,16 +85,37 @@ internal sealed class TurtleIriResolutionTests
     {
         string turtle = $"@base <relative/> .\n<c> {AbsolutePredicateObject}";
 
-        await Assert.ThrowsAsync<TurtleParseException>(() => ReadAsync(turtle, baseIri: null)).ConfigureAwait(false);
+        DiagnosticBag diagnostics = await DiagnosticsAsync(turtle, baseIri: null).ConfigureAwait(false);
+
+        Assert.IsTrue(diagnostics.HasErrors);
+        Assert.IsTrue(ContainsCode(diagnostics, WellKnownDiagnostics.Turtle.UnresolvableRelativeIri));
     }
 
     private static async Task<List<Quad>> ReadAsync(string turtle, string? baseIri)
     {
+        (List<Quad> quads, DiagnosticBag diagnostics) = await ReadWithDiagnosticsAsync(turtle, baseIri).ConfigureAwait(false);
+
+        Assert.IsFalse(diagnostics.HasErrors, "Resolution should succeed without diagnostics for this case.");
+
+        return quads;
+    }
+
+    private static async Task<DiagnosticBag> DiagnosticsAsync(string turtle, string? baseIri)
+    {
+        (List<Quad> _, DiagnosticBag diagnostics) = await ReadWithDiagnosticsAsync(turtle, baseIri).ConfigureAwait(false);
+
+        return diagnostics;
+    }
+
+    private static async Task<(List<Quad> Quads, DiagnosticBag Diagnostics)> ReadWithDiagnosticsAsync(string turtle, string? baseIri)
+    {
         byte[] bytes = Encoding.UTF8.GetBytes(turtle);
+        DiagnosticBag diagnostics = new();
         List<Quad> quads = [];
         await foreach(Quad quad in TurtleReader.ReadAsync(
             new ReadOnlyMemory<byte>(bytes),
             TurtleSyntax.Turtle,
+            diagnostics,
             pool: null,
             baseIri: baseIri,
             cancellationToken: CancellationToken.None).ConfigureAwait(false))
@@ -99,7 +123,20 @@ internal sealed class TurtleIriResolutionTests
             quads.Add(quad);
         }
 
-        return quads;
+        return (quads, diagnostics);
+    }
+
+    private static bool ContainsCode(DiagnosticBag diagnostics, Utf8String code)
+    {
+        foreach(Diagnostic diagnostic in diagnostics.Diagnostics)
+        {
+            if(diagnostic.Code.Equals(code))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static string SubjectIri(List<Quad> quads)

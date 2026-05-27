@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Turtle;
 
@@ -116,21 +117,23 @@ internal static class W3cManifestLoader
         //helpers below map straight back to disk. The base is harness bookkeeping and never reaches
         //test output, so a file:// base is the right choice here.
         List<Quad> quads = [];
-        try
+        DiagnosticBag diagnostics = new();
+        await foreach(Quad q in TurtleReader.ReadAsync(
+            bytes,
+            TurtleSyntax.Turtle,
+            diagnostics,
+            pool: null,
+            baseIri: manifestUri.AbsoluteUri,
+            cancellationToken: cancellationToken).ConfigureAwait(false))
         {
-            await foreach(Quad q in TurtleReader.ReadAsync(
-                bytes,
-                TurtleSyntax.Turtle,
-                pool: null,
-                baseIri: manifestUri.AbsoluteUri,
-                cancellationToken: cancellationToken).ConfigureAwait(false))
-            {
-                quads.Add(q);
-            }
+            quads.Add(q);
         }
-        catch(TurtleParseException ex)
+
+        //A manifest is trusted infrastructure; a malformed one should fail loudly rather than silently
+        //yield a partial graph. The reader no longer throws on malformed input, so the bag is checked.
+        if(diagnostics.HasErrors)
         {
-            throw new InvalidOperationException($"Failed to parse manifest or test file '{path}': {ex.Message}", ex);
+            throw new InvalidOperationException($"Failed to parse manifest or test file '{path}': {TurtleConformanceReader.DescribeFirstError(diagnostics)}");
         }
 
         Dictionary<string, List<Quad>> bySubject = IndexBySubject(quads);

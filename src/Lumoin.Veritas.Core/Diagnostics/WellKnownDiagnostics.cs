@@ -181,6 +181,90 @@ public static class WellKnownDiagnostics
         /// <summary>An RDF collection <c>( … )</c> was not closed.</summary>
         /// <remarks>Turtle <c>collection</c>. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar [collection]</see>.</remarks>
         public static Utf8String UnclosedCollection { get; } = new("TT0006"u8.ToArray());
+
+        /// <summary>A term was expected (in subject, predicate, or object position) but no term-starting token was found.</summary>
+        /// <remarks>Turtle <c>object</c> / <c>subject</c> / <c>verb</c>. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar [object]</see>.</remarks>
+        public static Utf8String ExpectedTerm { get; } = new("TT0007"u8.ToArray());
+
+        /// <summary>A <c>@prefix</c> or <c>@base</c> directive was missing its IRI reference.</summary>
+        /// <remarks>Turtle <c>prefixID</c> / <c>base</c>. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar [prefixID]</see>.</remarks>
+        public static Utf8String ExpectedDirectiveIri { get; } = new("TT0008"u8.ToArray());
+
+        /// <summary>A <c>@prefix</c> directive was missing its namespace label (<c>ns:</c>).</summary>
+        /// <remarks>Turtle <c>prefixID</c> / <c>PNAME_NS</c>. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar [prefixID]</see>.</remarks>
+        public static Utf8String ExpectedPrefixNamespace { get; } = new("TT0009"u8.ToArray());
+
+        /// <summary>A <c>VERSION</c> directive argument was not a short-quoted string literal.</summary>
+        /// <remarks>Turtle <c>version</c>. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar [version]</see>.</remarks>
+        public static Utf8String InvalidVersionArgument { get; } = new("TT0010"u8.ToArray());
+
+        /// <summary>A TriG graph block (the <c>GRAPH</c> keyword or a <c>{</c>) appeared in plain Turtle syntax.</summary>
+        /// <remarks>TriG <c>graphStatement</c> is not valid in Turtle. See <see href="https://www.w3.org/TR/rdf12-trig/#sec-grammar-grammar">RDF 1.2 TriG grammar</see>.</remarks>
+        public static Utf8String GraphBlockRequiresTriG { get; } = new("TT0011"u8.ToArray());
+
+        /// <summary>A TriG graph block was missing its opening <c>{</c>.</summary>
+        /// <remarks>TriG <c>wrappedGraph</c>. See <see href="https://www.w3.org/TR/rdf12-trig/#sec-grammar-grammar">RDF 1.2 TriG grammar [wrappedGraph]</see>.</remarks>
+        public static Utf8String ExpectedGraphBlockOpen { get; } = new("TT0012"u8.ToArray());
+
+        /// <summary>A TriG graph block <c>{ … }</c> was not closed.</summary>
+        /// <remarks>TriG <c>wrappedGraph</c>. See <see href="https://www.w3.org/TR/rdf12-trig/#sec-grammar-grammar">RDF 1.2 TriG grammar [wrappedGraph]</see>.</remarks>
+        public static Utf8String UnclosedGraphBlock { get; } = new("TT0013"u8.ToArray());
+
+        /// <summary>A non-triple statement (a directive) appeared inside a TriG graph block.</summary>
+        /// <remarks>TriG <c>wrappedGraph</c> admits only <c>triplesBlock</c>. See <see href="https://www.w3.org/TR/rdf12-trig/#sec-grammar-grammar">RDF 1.2 TriG grammar [wrappedGraph]</see>.</remarks>
+        public static Utf8String OnlyTriplesInGraphBlock { get; } = new("TT0014"u8.ToArray());
+
+        /// <summary>A triple term <c>&lt;&lt;( … )&gt;&gt;</c> was used as the subject of an asserted statement.</summary>
+        /// <remarks>RDF 1.2 <c>tripleTerm</c> stands only in object position. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar [tripleTerm]</see>.</remarks>
+        public static Utf8String TripleTermAsSubject { get; } = new("TT0015"u8.ToArray());
+
+        /// <summary>A triple term <c>&lt;&lt;( … )&gt;&gt;</c> was not closed.</summary>
+        /// <remarks>RDF 1.2 <c>tripleTerm</c>. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar [tripleTerm]</see>.</remarks>
+        public static Utf8String UnclosedTripleTerm { get; } = new("TT0016"u8.ToArray());
+
+        /// <summary>A reified triple <c>&lt;&lt; … &gt;&gt;</c> was not closed.</summary>
+        /// <remarks>RDF 1.2 <c>reifiedTriple</c>. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar [reifiedTriple]</see>.</remarks>
+        public static Utf8String UnclosedReifiedTriple { get; } = new("TT0017"u8.ToArray());
+
+        /// <summary>The subject of a triple term was not an IRI or blank node.</summary>
+        /// <remarks>RDF 1.2 <c>ttSubject</c>. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar [ttSubject]</see>.</remarks>
+        public static Utf8String InvalidTripleTermSubject { get; } = new("TT0018"u8.ToArray());
+
+        /// <summary>The object of a triple term was not an IRI, blank node, literal, or triple term.</summary>
+        /// <remarks>RDF 1.2 <c>ttObject</c>. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar [ttObject]</see>.</remarks>
+        public static Utf8String InvalidTripleTermObject { get; } = new("TT0019"u8.ToArray());
+
+        /// <summary>The subject of a reified triple was not an IRI, blank node, or reified triple.</summary>
+        /// <remarks>RDF 1.2 <c>rtSubject</c>. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar [rtSubject]</see>.</remarks>
+        public static Utf8String InvalidReifiedTripleSubject { get; } = new("TT0020"u8.ToArray());
+
+        /// <summary>The object of a reified triple was not an IRI, blank node, literal, triple term, or reified triple.</summary>
+        /// <remarks>RDF 1.2 <c>rtObject</c>. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar [rtObject]</see>.</remarks>
+        public static Utf8String InvalidReifiedTripleObject { get; } = new("TT0021"u8.ToArray());
+
+        /// <summary>An annotation block <c>{| |}</c> contained no predicate-object pair.</summary>
+        /// <remarks>RDF 1.2 <c>annotation</c>. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar [annotation]</see>.</remarks>
+        public static Utf8String EmptyAnnotationBlock { get; } = new("TT0022"u8.ToArray());
+
+        /// <summary>A predicate or the annotation-block close <c>|}</c> was expected.</summary>
+        /// <remarks>RDF 1.2 <c>annotation</c>. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar [annotation]</see>.</remarks>
+        public static Utf8String ExpectedAnnotationVerbOrClose { get; } = new("TT0023"u8.ToArray());
+
+        /// <summary>A datatype IRI was expected after the <c>^^</c> marker.</summary>
+        /// <remarks>Turtle <c>RDFLiteral</c> datatype. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar [RDFLiteral]</see>.</remarks>
+        public static Utf8String ExpectedDatatypeIri { get; } = new("TT0024"u8.ToArray());
+
+        /// <summary>A directional language tag named a base direction other than <c>ltr</c> or <c>rtl</c>.</summary>
+        /// <remarks>RDF 1.2 base-direction language form. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar</see>.</remarks>
+        public static Utf8String InvalidBaseDirection { get; } = new("TT0025"u8.ToArray());
+
+        /// <summary>A relative IRI could not be resolved to an absolute IRI because no absolute base was in scope.</summary>
+        /// <remarks>Emitter resolution (RFC 3986 §5) of an RDF term IRI. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-iri-references">RDF 1.2 Turtle IRI references</see>.</remarks>
+        public static Utf8String UnresolvableRelativeIri { get; } = new("TT0026"u8.ToArray());
+
+        /// <summary>A prefixed name used a prefix with no in-scope <c>@prefix</c> declaration.</summary>
+        /// <remarks>Emitter expansion of <c>PrefixedName</c>. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar [PrefixedName]</see>.</remarks>
+        public static Utf8String UndeclaredPrefix { get; } = new("TT0027"u8.ToArray());
     }
 
     /// <summary>SPARQL parser diagnostics (<c>SP</c> prefix).</summary>

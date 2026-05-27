@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using System.Text;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Turtle;
 using Lumoin.Veritas.Turtle.Ast;
@@ -78,13 +79,19 @@ internal sealed class TurtleParserTests
     [TestMethod]
     public void RejectsVersionWithTripleDoubleQuotedString()
     {
-        Assert.Throws<TurtleParseException>(() => ParseTurtle("VERSION \"\"\"1.2\"\"\""));
+        ParseResult<TurtleDocument> result = ParseTurtleToResult("VERSION \"\"\"1.2\"\"\"");
+
+        Assert.IsTrue(result.HasErrors);
+        Assert.IsTrue(HasCode(result, WellKnownDiagnostics.Turtle.InvalidVersionArgument));
     }
 
     [TestMethod]
     public void RejectsVersionWithTripleSingleQuotedString()
     {
-        Assert.Throws<TurtleParseException>(() => ParseTurtle("@version '''1.2''' ."));
+        ParseResult<TurtleDocument> result = ParseTurtleToResult("@version '''1.2''' .");
+
+        Assert.IsTrue(result.HasErrors);
+        Assert.IsTrue(HasCode(result, WellKnownDiagnostics.Turtle.InvalidVersionArgument));
     }
 
     [TestMethod]
@@ -337,7 +344,9 @@ internal sealed class TurtleParserTests
     [TestMethod]
     public void GraphBlockRejectedInPlainTurtle()
     {
-        Assert.Throws<TurtleParseException>(() => ParseTurtle("<g> { <s> <p> <o> . }"));
+        ParseResult<TurtleDocument> result = ParseTurtleToResult("<g> { <s> <p> <o> . }");
+
+        Assert.IsTrue(result.HasErrors);
     }
 
     private static TurtleDocument ParseTurtle(string source)
@@ -358,5 +367,27 @@ internal sealed class TurtleParserTests
         TurtleParser parser = new(lexer.Tokenize(), pool, new DocumentId(1), syntax);
 
         return parser.Parse();
+    }
+
+    private static ParseResult<TurtleDocument> ParseTurtleToResult(string source)
+    {
+        using Utf8StringPool pool = new();
+        TurtleLexer lexer = new(Encoding.UTF8.GetBytes(source), pool);
+        TurtleParser parser = new(lexer.Tokenize(), pool, new DocumentId(1), TurtleSyntax.Turtle);
+
+        return parser.ParseToResult();
+    }
+
+    private static bool HasCode(ParseResult<TurtleDocument> result, Utf8String code)
+    {
+        foreach(Diagnostic diagnostic in result.Diagnostics)
+        {
+            if(diagnostic.Code.Equals(code))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

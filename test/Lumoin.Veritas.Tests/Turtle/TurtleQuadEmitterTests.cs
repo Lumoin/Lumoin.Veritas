@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Text;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Turtle;
 using Lumoin.Veritas.Turtle.Ast;
@@ -254,7 +255,7 @@ internal sealed class TurtleQuadEmitterTests
         TurtleLexer lexer = new(Encoding.UTF8.GetBytes(source), pool);
         TurtleParser parser = new(lexer.Tokenize(), pool, new DocumentId(1), syntax);
         TurtleDocument document = parser.Parse();
-        TurtleQuadEmitter emitter = new(document, pool);
+        TurtleQuadEmitter emitter = new(document, pool, new DiagnosticBag());
 
         List<EmittedQuad> result = [];
         foreach(EmittedQuad q in emitter.Emit())

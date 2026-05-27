@@ -4,6 +4,7 @@ using System.IO.Pipelines;
 using System.Text;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Turtle;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -152,14 +153,18 @@ internal sealed class TurtleRoundTripTests
         encoded.Position = 0;
 
         List<Quad> result = [];
+        DiagnosticBag diagnostics = new();
         await foreach(Quad quad in TurtleReader.ReadAsync(
             PipeReader.Create(encoded, new StreamPipeReaderOptions(leaveOpen: true)),
             syntax,
+            diagnostics,
             pool: null,
             cancellationToken: cancellationToken).ConfigureAwait(false))
         {
             result.Add(quad);
         }
+
+        Assert.IsFalse(diagnostics.HasErrors, "Round-tripped Turtle should re-parse without diagnostics.");
 
         return result;
     }

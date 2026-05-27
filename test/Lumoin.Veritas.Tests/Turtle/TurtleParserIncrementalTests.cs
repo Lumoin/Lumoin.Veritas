@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Turtle;
 using Lumoin.Veritas.Turtle.Ast;
@@ -155,7 +156,7 @@ internal sealed class TurtleParserIncrementalTests
 
     private static List<Quad> EmitWhole(TurtleDocument document, Utf8StringPool pool)
     {
-        TurtleQuadEmitter emitter = new(document, pool);
+        TurtleQuadEmitter emitter = new(document, pool, new DiagnosticBag());
         List<Quad> quads = [];
         foreach(EmittedQuad emitted in emitter.Emit())
         {
@@ -170,7 +171,7 @@ internal sealed class TurtleParserIncrementalTests
         //Feeding statements one at a time to EmitStatement reproduces the whole-document emit: the
         //emitter carries the prefix and base context forward, and only the document identity is read
         //from the document itself.
-        TurtleQuadEmitter emitter = new(document, pool);
+        TurtleQuadEmitter emitter = new(document, pool, new DiagnosticBag());
         List<Quad> quads = [];
         foreach(Statement statement in statements)
         {

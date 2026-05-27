@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Turtle;
 using Lumoin.Veritas.Turtle.Ast;
@@ -84,9 +85,11 @@ internal sealed class TurtleReaderStreamingTests
         foreach(int chunkSize in (int[])[1, 3, 7, 16, 64])
         {
             List<Quad> actual = [];
+            DiagnosticBag diagnostics = new();
             await foreach(Quad quad in TurtleReader.ReadAsync(
                 Fragmented(bytes, chunkSize),
                 syntax,
+                diagnostics,
                 pool: null,
                 cancellationToken: TestContext.CancellationToken).ConfigureAwait(false))
             {
@@ -109,7 +112,7 @@ internal sealed class TurtleReaderStreamingTests
         TurtleLexer lexer = new(bytes, pool);
         TurtleParser parser = new(lexer.Tokenize(), pool, new DocumentId(1), syntax);
         TurtleDocument document = parser.Parse();
-        TurtleQuadEmitter emitter = new(document, pool);
+        TurtleQuadEmitter emitter = new(document, pool, new DiagnosticBag());
 
         List<Quad> quads = [];
         foreach(EmittedQuad emitted in emitter.Emit())

@@ -20,7 +20,7 @@ internal sealed class W3cTriGTests
     {
         W3cOutcome outcome = await W3cTestRunner.RunAsync(
             testCase,
-            static (stream, ct) => TurtleReader.ReadAsync(stream, TurtleSyntax.TriG, pool: null, cancellationToken: ct),
+            static (stream, ct) => TurtleConformanceReader.ReadAsync(stream, TurtleSyntax.TriG, ct),
             TestContext.CancellationToken).ConfigureAwait(false);
 
         ConformanceAssertions.Apply(outcome);

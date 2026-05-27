@@ -5,6 +5,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.NQuads;
 using Lumoin.Veritas.Turtle;
 
@@ -139,9 +140,11 @@ internal sealed class PipeBoundaryParseTests
     private async Task<List<Quad>> ReadTurtleAsync(string text, TurtleSyntax syntax)
     {
         List<Quad> quads = [];
+        DiagnosticBag diagnostics = new();
         await foreach(Quad quad in TurtleReader.ReadAsync(
             Fragmented(text),
             syntax,
+            diagnostics,
             pool: null,
             cancellationToken: TestContext.CancellationToken).ConfigureAwait(false))
         {

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Iris;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Turtle.Ast;
@@ -25,9 +26,17 @@ namespace Lumoin.Veritas.Turtle.Emission;
 /// <see cref="Core.TripleTerm"/> values; reified triples produce both
 /// the inner triple and the reification statement.
 /// </para>
+/// <para>
+/// Emission never throws on malformed input. A term that cannot be resolved — an unresolvable
+/// relative IRI, an undeclared prefix, or an <see cref="ErrorTerm"/> the parser recovered — records a
+/// diagnostic into the supplied bag and is skipped: the offending quad is dropped (or the whole triple,
+/// when its subject fails). The diagnostics from a recovered parse already populate the bag, so a
+/// consumer reads one <see cref="DiagnosticBag"/> for both layers.
+/// </para>
 /// </remarks>
 public sealed class TurtleQuadEmitter
 {
+    private readonly DiagnosticBag diagnostics;
     private string? baseIri;
     private int nextEmitterBlankNode;
 
@@ -36,18 +45,21 @@ public sealed class TurtleQuadEmitter
     /// </summary>
     /// <param name="document">The parsed Turtle or TriG document.</param>
     /// <param name="pool">The pool used to intern emitter-allocated identifiers.</param>
+    /// <param name="diagnostics">The bag resolution failures are recorded into; shared with the parser so one bag covers both layers.</param>
     /// <param name="documentBase">
     /// The document's retrieval IRI, used as the initial base for resolving relative references
     /// that appear before any in-document <c>@base</c> directive. A later <c>@base</c> resolves
     /// against it. When <see langword="null"/>, only an in-document <c>@base</c> establishes a base.
     /// </param>
-    public TurtleQuadEmitter(TurtleDocument document, Utf8StringPool pool, string? documentBase = null)
+    public TurtleQuadEmitter(TurtleDocument document, Utf8StringPool pool, DiagnosticBag diagnostics, string? documentBase = null)
     {
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(pool);
+        ArgumentNullException.ThrowIfNull(diagnostics);
 
         Document = document;
         Pool = pool;
+        this.diagnostics = diagnostics;
         baseIri = documentBase;
     }
 
@@ -128,9 +140,18 @@ public sealed class TurtleQuadEmitter
 
             case GraphBlockStatement graphBlock:
             {
-                RdfTerm? graphTerm = graphBlock.Label is null
-                    ? null
-                    : ResolveTermAsSimple(graphBlock.Label);
+                RdfTerm? graphTerm = null;
+                if(graphBlock.Label is not null)
+                {
+                    graphTerm = ResolveTermAsSimple(graphBlock.Label);
+
+                    //An unresolvable graph label (recorded by the resolver) drops the whole block: its
+                    //triples have no graph to belong to.
+                    if(graphTerm is null)
+                    {
+                        break;
+                    }
+                }
 
                 foreach(TripleStatement inner in graphBlock.Triples)
                 {
@@ -152,7 +173,15 @@ public sealed class TurtleQuadEmitter
 
     private IEnumerable<EmittedQuad> EmitTriple(TripleStatement triple, RdfTerm? graph)
     {
-        RdfTerm subject = ResolveTerm(triple.Subject, graph, out List<EmittedQuad> subjectAux);
+        RdfTerm? subject = ResolveTerm(triple.Subject, graph, out List<EmittedQuad> subjectAux);
+
+        //A subject that could not be resolved (an error node or an unresolvable reference) drops the
+        //whole triple; its diagnostic is already in the bag.
+        if(subject is null)
+        {
+            yield break;
+        }
+
         foreach(EmittedQuad q in subjectAux)
         {
             yield return q;
@@ -160,10 +189,20 @@ public sealed class TurtleQuadEmitter
 
         foreach(PredicateObject predObj in triple.Predicates)
         {
-            NamedNode predicate = ResolvePredicate(predObj.Predicate);
+            NamedNode? predicate = ResolvePredicate(predObj.Predicate);
+            if(predicate is null)
+            {
+                continue;
+            }
+
             foreach(AnnotatedObject annotatedObject in predObj.Objects)
             {
-                RdfTerm objectTerm = ResolveTerm(annotatedObject.Object, graph, out List<EmittedQuad> objectAux);
+                RdfTerm? objectTerm = ResolveTerm(annotatedObject.Object, graph, out List<EmittedQuad> objectAux);
+                if(objectTerm is null)
+                {
+                    continue;
+                }
+
                 foreach(EmittedQuad q in objectAux)
                 {
                     yield return q;
@@ -215,9 +254,16 @@ public sealed class TurtleQuadEmitter
                 {
                     case ReifierAnnotation reifier:
                     {
-                        RdfTerm resolvedReifier = reifier.Identifier is null
+                        RdfTerm? resolvedReifier = reifier.Identifier is null
                             ? AllocateBlankNode()
                             : ResolveTermAsSimple(reifier.Identifier);
+
+                        //An unresolvable explicit reifier (diagnostic already recorded) yields no
+                        //reification; this annotation is skipped and the next one is processed.
+                        if(resolvedReifier is null)
+                        {
+                            break;
+                        }
 
                         Quad reificationQuad = new(resolvedReifier, reifies, tripleTerm, graph);
 
@@ -244,10 +290,20 @@ public sealed class TurtleQuadEmitter
 
                         foreach(PredicateObject inner in block.Predicates)
                         {
-                            NamedNode innerPredicate = ResolvePredicate(inner.Predicate);
+                            NamedNode? innerPredicate = ResolvePredicate(inner.Predicate);
+                            if(innerPredicate is null)
+                            {
+                                continue;
+                            }
+
                             foreach(AnnotatedObject innerObject in inner.Objects)
                             {
-                                RdfTerm innerObjectTerm = ResolveTerm(innerObject.Object, graph, out List<EmittedQuad> aux);
+                                RdfTerm? innerObjectTerm = ResolveTerm(innerObject.Object, graph, out List<EmittedQuad> aux);
+                                if(innerObjectTerm is null)
+                                {
+                                    continue;
+                                }
+
                                 foreach(EmittedQuad q in aux)
                                 {
                                     yield return q;
@@ -280,12 +336,15 @@ public sealed class TurtleQuadEmitter
         }
     }
 
-    private RdfTerm ResolveTermAsSimple(Term term)
+    private RdfTerm? ResolveTermAsSimple(Term term)
     {
         return ResolveTerm(term, graph: null, out _);
     }
 
-    private RdfTerm ResolveTerm(Term term, RdfTerm? graph, out List<EmittedQuad> auxiliary)
+    //Resolves a term tree to an RDF term, or to <see langword="null"/> when any part of it cannot be
+    //resolved (an error node, an unresolvable IRI, or an undeclared prefix). The diagnostic for each
+    //failure is recorded as it is found; the caller drops the quad the null term would have filled.
+    private RdfTerm? ResolveTerm(Term term, RdfTerm? graph, out List<EmittedQuad> auxiliary)
     {
         List<EmittedQuad> sink = [];
         auxiliary = sink;
@@ -294,8 +353,8 @@ public sealed class TurtleQuadEmitter
         //only after its child terms are resolved, so no production resolves another by recursion.
         //Auxiliary quads accumulate into the shared sink; each child's quads are appended when the
         //child is combined, which is before its parent — so order differs from a top-down walk, but
-        //the emitted set is the same.
-        Dictionary<int, RdfTerm> resolved = [];
+        //the emitted set is the same. A failed resolution stores null and the parent combiner propagates.
+        Dictionary<int, RdfTerm?> resolved = [];
         Stack<ResolveFrame> stack = new();
         stack.Push(new ResolveFrame(term, Expanded: false));
 
@@ -315,14 +374,14 @@ public sealed class TurtleQuadEmitter
             {
                 case IriTerm iri:
                 {
-                    resolved[current.NodeId] = new NamedNode(ResolveIri(iri.Value, iri.Span));
+                    resolved[current.NodeId] = ResolveIri(iri.Value, iri.Span) is { } iriValue ? new NamedNode(iriValue) : null;
 
                     break;
                 }
 
                 case PrefixedNameTerm prefixed:
                 {
-                    resolved[current.NodeId] = new NamedNode(ExpandPrefixedName(prefixed));
+                    resolved[current.NodeId] = ExpandPrefixedName(prefixed) is { } expanded ? new NamedNode(expanded) : null;
 
                     break;
                 }
@@ -337,6 +396,14 @@ public sealed class TurtleQuadEmitter
                 case LiteralTerm literal:
                 {
                     resolved[current.NodeId] = BuildLiteral(literal);
+
+                    break;
+                }
+
+                case ErrorTerm:
+                {
+                    //A parse error node carries its own diagnostic already; it resolves to nothing.
+                    resolved[current.NodeId] = null;
 
                     break;
                 }
@@ -411,10 +478,10 @@ public sealed class TurtleQuadEmitter
         }
     }
 
-    private RdfTerm CombineResolvedTerm(
+    private RdfTerm? CombineResolvedTerm(
         Term term,
         RdfTerm? graph,
-        Dictionary<int, RdfTerm> resolved,
+        Dictionary<int, RdfTerm?> resolved,
         List<EmittedQuad> sink)
     {
         switch(term)
@@ -434,9 +501,15 @@ public sealed class TurtleQuadEmitter
 
             case TripleTermTerm tripleTermNode:
             {
-                RdfTerm inner = resolved[tripleTermNode.Subject.NodeId];
-                NamedNode innerPredicate = ResolvePredicate(tripleTermNode.Predicate);
-                RdfTerm innerObject = resolved[tripleTermNode.Object.NodeId];
+                RdfTerm? inner = resolved[tripleTermNode.Subject.NodeId];
+                NamedNode? innerPredicate = ResolvePredicate(tripleTermNode.Predicate);
+                RdfTerm? innerObject = resolved[tripleTermNode.Object.NodeId];
+
+                //A triple term needs all three positions; any unresolved part drops it.
+                if(inner is null || innerPredicate is null || innerObject is null)
+                {
+                    return null;
+                }
 
                 return new TripleTerm(inner, innerPredicate, innerObject);
             }
@@ -459,17 +532,26 @@ public sealed class TurtleQuadEmitter
         BlankNode head,
         BlankNodePropertyListTerm propertyList,
         RdfTerm? graph,
-        Dictionary<int, RdfTerm> resolved,
+        Dictionary<int, RdfTerm?> resolved,
         List<EmittedQuad> sink)
     {
         DocumentNodeRef anchor = new(Document.DocumentId, propertyList.NodeId);
 
         foreach(PredicateObject predObj in propertyList.Predicates)
         {
-            NamedNode predicate = ResolvePredicate(predObj.Predicate);
+            NamedNode? predicate = ResolvePredicate(predObj.Predicate);
+            if(predicate is null)
+            {
+                continue;
+            }
+
             foreach(AnnotatedObject annotatedObject in predObj.Objects)
             {
-                RdfTerm obj = resolved[annotatedObject.Object.NodeId];
+                RdfTerm? obj = resolved[annotatedObject.Object.NodeId];
+                if(obj is null)
+                {
+                    continue;
+                }
 
                 Quad quad = new(head, predicate, obj, graph);
                 sink.Add(new EmittedQuad(quad, new DocumentNodeRef(Document.DocumentId, annotatedObject.NodeId)));
@@ -488,16 +570,26 @@ public sealed class TurtleQuadEmitter
         _ = anchor;
     }
 
-    private RdfTerm BuildCollection(
+    private RdfTerm? BuildCollection(
         CollectionTerm collection,
         RdfTerm? graph,
-        Dictionary<int, RdfTerm> resolved,
+        Dictionary<int, RdfTerm?> resolved,
         List<EmittedQuad> sink)
     {
         NamedNode rdfNil = new(Pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#nil"u8));
         if(collection.Items.IsDefaultOrEmpty)
         {
             return rdfNil;
+        }
+
+        //A collection is an ordered rdf:first/rdf:rest chain; a single unresolved item would break the
+        //chain, so the whole collection is dropped (each failure's diagnostic is already recorded).
+        for(int i = 0; i < collection.Items.Length; i++)
+        {
+            if(resolved[collection.Items[i].NodeId] is null)
+            {
+                return null;
+            }
         }
 
         NamedNode rdfFirst = new(Pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#first"u8));
@@ -508,7 +600,7 @@ public sealed class TurtleQuadEmitter
 
         for(int i = 0; i < collection.Items.Length; i++)
         {
-            RdfTerm item = resolved[collection.Items[i].NodeId];
+            RdfTerm item = resolved[collection.Items[i].NodeId]!;
 
             sink.Add(new EmittedQuad(
                 new Quad(currentHead, rdfFirst, item, graph),
@@ -533,22 +625,28 @@ public sealed class TurtleQuadEmitter
         return head;
     }
 
-    private RdfTerm ExpandReifiedTriple(
+    private RdfTerm? ExpandReifiedTriple(
         ReifiedTripleTerm reified,
         RdfTerm? graph,
-        Dictionary<int, RdfTerm> resolved,
+        Dictionary<int, RdfTerm?> resolved,
         List<EmittedQuad> sink)
     {
-        RdfTerm subject = resolved[reified.Subject.NodeId];
-        NamedNode predicate = ResolvePredicate(reified.Predicate);
-        RdfTerm objectTerm = resolved[reified.Object.NodeId];
+        RdfTerm? subject = resolved[reified.Subject.NodeId];
+        NamedNode? predicate = ResolvePredicate(reified.Predicate);
+        RdfTerm? objectTerm = resolved[reified.Object.NodeId];
 
         //A reified triple <<s p o>> yields only the reifier and the reification
         //"reifier rdf:reifies <<( s p o )>>"; it does not assert the inner triple. The inner
-        //triple is asserted only when written as a plain statement (optionally annotated).
-        RdfTerm reifier = reified.Reifier is null
+        //triple is asserted only when written as a plain statement (optionally annotated). Any
+        //unresolved part of the inner triple, or an unresolvable explicit reifier, drops it.
+        RdfTerm? reifier = reified.Reifier is null
             ? AllocateBlankNode()
             : resolved[reified.Reifier.NodeId];
+
+        if(subject is null || predicate is null || objectTerm is null || reifier is null)
+        {
+            return null;
+        }
 
         NamedNode reifies = new(Pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies"u8));
         TripleTerm tripleTerm = new(subject, predicate, objectTerm);
@@ -560,28 +658,38 @@ public sealed class TurtleQuadEmitter
         return reifier;
     }
 
-    private NamedNode ResolvePredicate(Term predicate)
+    private NamedNode? ResolvePredicate(Term predicate)
     {
         return predicate switch
         {
-            IriTerm iri => new NamedNode(ResolveIri(iri.Value, iri.Span)),
-            PrefixedNameTerm prefixed => new NamedNode(ExpandPrefixedName(prefixed)),
-            _ => throw new TurtleParseException(
-                $"Predicate must be an IRI or prefixed name, was {predicate.GetType().Name}.",
-                predicate.Span)
+            IriTerm iri => ResolveIri(iri.Value, iri.Span) is { } value ? new NamedNode(value) : null,
+            PrefixedNameTerm prefixed => ExpandPrefixedName(prefixed) is { } expanded ? new NamedNode(expanded) : null,
+
+            //An ErrorTerm (or any non-IRI) predicate is already diagnosed at parse time; the quad is dropped.
+            _ => null
         };
     }
 
-    private Literal BuildLiteral(LiteralTerm literal)
+    private Literal? BuildLiteral(LiteralTerm literal)
     {
         NamedNode datatype;
         if(literal.Datatype is IriTerm iriDatatype)
         {
-            datatype = new NamedNode(ResolveIri(iriDatatype.Value, iriDatatype.Span));
+            if(ResolveIri(iriDatatype.Value, iriDatatype.Span) is not { } resolvedDatatype)
+            {
+                return null;
+            }
+
+            datatype = new NamedNode(resolvedDatatype);
         }
         else if(literal.Datatype is PrefixedNameTerm prefixedDatatype)
         {
-            datatype = new NamedNode(ExpandPrefixedName(prefixedDatatype));
+            if(ExpandPrefixedName(prefixedDatatype) is not { } expandedDatatype)
+            {
+                return null;
+            }
+
+            datatype = new NamedNode(expandedDatatype);
         }
         else if(literal.Language is not null && literal.Direction is not null)
         {
@@ -599,7 +707,7 @@ public sealed class TurtleQuadEmitter
         return new Literal(literal.Value, datatype, literal.Language, literal.Direction);
     }
 
-    private Utf8String ResolveIri(Utf8String value, SourceSpan span)
+    private Utf8String? ResolveIri(Utf8String value, SourceSpan span)
     {
         //Absolute IRIs pass through without allocating; only a relative reference needs resolving.
         ReadOnlySpan<byte> bytes = value.Span;
@@ -611,7 +719,7 @@ public sealed class TurtleQuadEmitter
         //A relative reference is resolved against the in-scope base (the document base, then any
         //@base directive) per RFC 3986 §5. RDF admits only absolute IRIs in term positions, so a
         //reference that stays relative — because no base is in scope, or the base itself is not
-        //absolute — cannot be expressed and is rejected.
+        //absolute — cannot be expressed: a diagnostic is recorded and the term is dropped.
         if(baseIri is not null)
         {
             string resolved = IriResolver.ResolveIri(baseIri, value.ToString());
@@ -621,18 +729,26 @@ public sealed class TurtleQuadEmitter
             }
         }
 
-        throw new TurtleParseException(
-            $"Relative IRI '{value.ToString()}' cannot be resolved to an absolute IRI; no absolute @base or document base is in scope.",
-            span);
+        diagnostics.Add(new Diagnostic(
+            WellKnownDiagnostics.Turtle.UnresolvableRelativeIri,
+            DiagnosticSeverity.Error,
+            span,
+            Utf8String.FromString($"Relative IRI '{value.ToString()}' cannot be resolved to an absolute IRI; no absolute @base or document base is in scope.")));
+
+        return null;
     }
 
-    private Utf8String ExpandPrefixedName(PrefixedNameTerm prefixed)
+    private Utf8String? ExpandPrefixedName(PrefixedNameTerm prefixed)
     {
         if(!PrefixMap.TryGetValue(prefixed.Prefix, out IriTerm? namespaceIri))
         {
-            throw new TurtleParseException(
-                $"Undeclared prefix '{prefixed.Prefix.ToString()}' in prefixed name.",
-                prefixed.Span);
+            diagnostics.Add(new Diagnostic(
+                WellKnownDiagnostics.Turtle.UndeclaredPrefix,
+                DiagnosticSeverity.Error,
+                prefixed.Span,
+                Utf8String.FromString($"Undeclared prefix '{prefixed.Prefix.ToString()}' in prefixed name.")));
+
+            return null;
         }
 
         ReadOnlySpan<byte> nsBytes = namespaceIri.Value.Span;

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Turtle.Ast;
 using Lumoin.Veritas.Turtle.Lexer;
@@ -57,7 +58,8 @@ public sealed class TurtleParser
     /// <param name="documentId">The content-addressed identifier for the source document.</param>
     /// <param name="syntax">The syntax flavour to accept.</param>
     /// <param name="blankNodes">Allocates labels for anonymous <c>[]</c> blank nodes; defaults to <see cref="VeritasBlankNodes.System"/>.</param>
-    public TurtleParser(IEnumerable<TurtleToken> tokens, Utf8StringPool pool, DocumentId documentId, TurtleSyntax syntax, BlankNodeDelegate? blankNodes = null)
+    /// <param name="diagnostics">The bag recovery records diagnostics into; a private bag is created when <see langword="null"/>. Pass a shared bag to merge lexer-bridged and parser diagnostics.</param>
+    public TurtleParser(IEnumerable<TurtleToken> tokens, Utf8StringPool pool, DocumentId documentId, TurtleSyntax syntax, BlankNodeDelegate? blankNodes = null, DiagnosticBag? diagnostics = null)
     {
         ArgumentNullException.ThrowIfNull(tokens);
         ArgumentNullException.ThrowIfNull(pool);
@@ -72,6 +74,7 @@ public sealed class TurtleParser
         DocumentId = documentId;
         Syntax = syntax;
         this.blankNodes = blankNodes ?? VeritasBlankNodes.System;
+        Diagnostics = diagnostics ?? new DiagnosticBag();
         tokensComplete = true;
     }
 
@@ -84,12 +87,13 @@ public sealed class TurtleParser
     /// <param name="documentId">The content-addressed identifier for the source document.</param>
     /// <param name="syntax">The syntax flavour to accept.</param>
     /// <param name="blankNodes">Allocates labels for anonymous <c>[]</c> blank nodes; defaults to <see cref="VeritasBlankNodes.System"/>.</param>
+    /// <param name="diagnostics">The bag recovery records diagnostics into; a private bag is created when <see langword="null"/>. Pass a shared bag to merge lexer-bridged and parser diagnostics.</param>
     /// <remarks>
     /// The parser suspends — preserving its work stack — when a statement needs tokens that have not
     /// arrived yet, and resumes when more are fed, so neither the token buffer nor the parse state
     /// grows with the document. Consumed tokens are trimmed at each statement boundary.
     /// </remarks>
-    internal TurtleParser(Utf8StringPool pool, DocumentId documentId, TurtleSyntax syntax, BlankNodeDelegate? blankNodes = null)
+    internal TurtleParser(Utf8StringPool pool, DocumentId documentId, TurtleSyntax syntax, BlankNodeDelegate? blankNodes = null, DiagnosticBag? diagnostics = null)
     {
         ArgumentNullException.ThrowIfNull(pool);
 
@@ -98,6 +102,7 @@ public sealed class TurtleParser
         DocumentId = documentId;
         Syntax = syntax;
         this.blankNodes = blankNodes ?? VeritasBlankNodes.System;
+        Diagnostics = diagnostics ?? new DiagnosticBag();
         incremental = true;
     }
 
@@ -115,6 +120,24 @@ public sealed class TurtleParser
 
     /// <summary>Gets the node-id-keyed lookup table populated as nodes are created.</summary>
     private Dictionary<int, TurtleAstNode> Nodes { get; } = [];
+
+    /// <summary>
+    /// Gets the bag recovery records diagnostics into. Lexical diagnostics bridged by the reader and
+    /// the parser's own syntax diagnostics accumulate here in source order.
+    /// </summary>
+    internal DiagnosticBag Diagnostics { get; }
+
+    /// <summary>
+    /// Parses the token stream into a <see cref="ParseResult{TTree}"/>: the document (possibly carrying
+    /// error nodes) together with the accumulated diagnostics and whether any has error severity.
+    /// </summary>
+    /// <returns>The parse result.</returns>
+    public ParseResult<TurtleDocument> ParseToResult()
+    {
+        TurtleDocument document = Parse();
+
+        return new ParseResult<TurtleDocument>(document, Diagnostics.Diagnostics, Diagnostics.HasErrors);
+    }
 
     /// <summary>
     /// Parses the token stream into a <see cref="TurtleDocument"/>.
@@ -265,7 +288,7 @@ public sealed class TurtleParser
         }
     }
 
-    private PrefixDeclaration ParsePrefixDeclaration()
+    private Statement ParsePrefixDeclaration()
     {
         SourceSpan startSpan = Current.Span;
         bool isSparqlForm = Current.Value.Span.SequenceEqual("PREFIX"u8);
@@ -273,7 +296,7 @@ public sealed class TurtleParser
 
         if(Current.Kind != TurtleTokenKind.PrefixNamespace)
         {
-            throw Expected("prefix declaration namespace", Current);
+            return RecoverStatement(ParseFrameKind.Statement, startSpan, WellKnownDiagnostics.Turtle.ExpectedPrefixNamespace, Current.Span, "A prefix declaration must be followed by a namespace label such as 'ex:'.", "prefixID");
         }
 
         Utf8String prefixText = ExtractPrefix(Current.Value);
@@ -281,7 +304,7 @@ public sealed class TurtleParser
 
         if(Current.Kind != TurtleTokenKind.Iri)
         {
-            throw Expected("IRI in prefix declaration", Current);
+            return RecoverStatement(ParseFrameKind.Statement, startSpan, WellKnownDiagnostics.Turtle.ExpectedDirectiveIri, Current.Span, "A prefix declaration must declare an IRI for its namespace.", "prefixID");
         }
 
         IriTerm iri = NewNode(id => new IriTerm(id, Current.Span, Current.Value));
@@ -292,7 +315,7 @@ public sealed class TurtleParser
         {
             if(Current.Kind != TurtleTokenKind.Period)
             {
-                throw Expected("'.' to terminate @prefix directive", Current);
+                return RecoverStatement(ParseFrameKind.Statement, startSpan, WellKnownDiagnostics.Turtle.ExpectedDot, Current.Span, "A @prefix directive must end with '.'.", "prefixID");
             }
 
             endSpan = Current.Span;
@@ -304,7 +327,7 @@ public sealed class TurtleParser
         return NewNode(id => new PrefixDeclaration(id, totalSpan, prefixText, iri));
     }
 
-    private BaseDeclaration ParseBaseDeclaration()
+    private Statement ParseBaseDeclaration()
     {
         SourceSpan startSpan = Current.Span;
         bool isSparqlForm = Current.Value.Span.SequenceEqual("BASE"u8);
@@ -312,7 +335,7 @@ public sealed class TurtleParser
 
         if(Current.Kind != TurtleTokenKind.Iri)
         {
-            throw Expected("IRI in base declaration", Current);
+            return RecoverStatement(ParseFrameKind.Statement, startSpan, WellKnownDiagnostics.Turtle.ExpectedDirectiveIri, Current.Span, "A base declaration must declare an IRI.", "base");
         }
 
         IriTerm iri = NewNode(id => new IriTerm(id, Current.Span, Current.Value));
@@ -323,7 +346,7 @@ public sealed class TurtleParser
         {
             if(Current.Kind != TurtleTokenKind.Period)
             {
-                throw Expected("'.' to terminate @base directive", Current);
+                return RecoverStatement(ParseFrameKind.Statement, startSpan, WellKnownDiagnostics.Turtle.ExpectedDot, Current.Span, "A @base directive must end with '.'.", "base");
             }
 
             endSpan = Current.Span;
@@ -335,7 +358,7 @@ public sealed class TurtleParser
         return NewNode(id => new BaseDeclaration(id, totalSpan, iri));
     }
 
-    private VersionDeclaration ParseVersionDeclaration()
+    private Statement ParseVersionDeclaration()
     {
         SourceSpan startSpan = Current.Span;
         bool isSparqlForm = Current.Value.Span.SequenceEqual("VERSION"u8);
@@ -343,14 +366,12 @@ public sealed class TurtleParser
 
         if(Current.Kind == TurtleTokenKind.LongStringLiteral)
         {
-            throw new TurtleParseException(
-                $"The version directive argument must be a short-quoted string, not a long (triple-quoted) string, at line {Current.Span.StartLine + 1} column {Current.Span.StartColumn + 1}.",
-                Current.Span);
+            return RecoverStatement(ParseFrameKind.Statement, startSpan, WellKnownDiagnostics.Turtle.InvalidVersionArgument, Current.Span, "The version directive argument must be a short-quoted string, not a long (triple-quoted) string.", "version");
         }
 
         if(Current.Kind != TurtleTokenKind.StringLiteral)
         {
-            throw Expected("string literal in version declaration", Current);
+            return RecoverStatement(ParseFrameKind.Statement, startSpan, WellKnownDiagnostics.Turtle.InvalidVersionArgument, Current.Span, "A version directive must be followed by a short-quoted string literal.", "version");
         }
 
         Utf8String versionValue = Current.Value;
@@ -361,7 +382,7 @@ public sealed class TurtleParser
         {
             if(Current.Kind != TurtleTokenKind.Period)
             {
-                throw Expected("'.' to terminate @version directive", Current);
+                return RecoverStatement(ParseFrameKind.Statement, startSpan, WellKnownDiagnostics.Turtle.ExpectedDot, Current.Span, "A @version directive must end with '.'.", "version");
             }
 
             endSpan = Current.Span;
@@ -469,6 +490,41 @@ public sealed class TurtleParser
             return StepResult.Done(incoming);
         }
 
+        //Skip any stray tokens that cannot begin a statement — closers/separators a deeper frame left
+        //behind, or junk — recording one diagnostic per run. Doing this here is what keeps the top-level
+        //loop progressing: such tokens have no enclosing frame to consume them, so without this they
+        //would be re-dispatched forever.
+        bool reportedStray = false;
+        while(Current.Kind != TurtleTokenKind.EndOfInput && !CanStartStatement(Current.Kind))
+        {
+            if(!reportedStray)
+            {
+                _ = ReportRecoverable(WellKnownDiagnostics.Turtle.ExpectedTerm, Current.Span, "A statement cannot begin with this token.");
+                reportedStray = true;
+            }
+
+            int before = index;
+            Advance();
+
+            if(index == before)
+            {
+                break;
+            }
+        }
+
+        //If the skipped run reached end of input, the trailing junk is reported as a single error node.
+        if(Current.Kind == TurtleTokenKind.EndOfInput)
+        {
+            if(reportedStray)
+            {
+                return StepResult.Done(NewNode(id => new ErrorStatement(id, frame.StartSpan, Utf8String.FromString("statement"), [], ImmutableArray<TurtleToken>.Empty)));
+            }
+
+            //An empty document with the frame already pushed cannot occur (the driver only pushes the
+            //frame when a non-end token is present), so reaching here without skipping is an invariant.
+            throw new TurtleParseException("Statement frame entered at end of input.", frame.StartSpan);
+        }
+
         switch(Current.Kind)
         {
             case TurtleTokenKind.PrefixKeyword:
@@ -490,9 +546,7 @@ public sealed class TurtleParser
             {
                 if(Syntax != TurtleSyntax.TriG)
                 {
-                    throw new TurtleParseException(
-                        "GRAPH keyword is only valid in TriG syntax.",
-                        Current.Span);
+                    return StepResult.Done(RecoverStatement(ParseFrameKind.Statement, Current.Span, WellKnownDiagnostics.Turtle.GraphBlockRequiresTriG, Current.Span, "The GRAPH keyword is only valid in TriG syntax.", "graphStatement"));
                 }
 
                 return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GraphBlock, StartSpan = Current.Span, HasKeyword = true });
@@ -502,9 +556,7 @@ public sealed class TurtleParser
             {
                 if(Syntax != TurtleSyntax.TriG)
                 {
-                    throw new TurtleParseException(
-                        "Graph block '{' is only valid in TriG syntax.",
-                        Current.Span);
+                    return StepResult.Done(RecoverStatement(ParseFrameKind.Statement, Current.Span, WellKnownDiagnostics.Turtle.GraphBlockRequiresTriG, Current.Span, "A graph block '{' is only valid in TriG syntax.", "graphStatement"));
                 }
 
                 return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GraphBlock, StartSpan = Current.Span });
@@ -542,12 +594,11 @@ public sealed class TurtleParser
 
                 //A triple term is a term that denotes a triple; it may stand only in object position,
                 //never as the subject of an asserted statement. A reified triple, by contrast, yields a
-                //reifier and may begin a statement.
+                //reifier and may begin a statement. The malformed subject is kept faithfully (the emitter
+                //skips it); the diagnostic flags it without abandoning the rest of the statement.
                 if(subject is TripleTermTerm)
                 {
-                    throw new TurtleParseException(
-                        "A triple term may not be the subject of a statement.",
-                        subject.Span);
+                    Report(WellKnownDiagnostics.Turtle.TripleTermAsSubject, subject.Span, "A triple term may not be the subject of a statement.");
                 }
 
                 frame.Subject = subject;
@@ -581,9 +632,22 @@ public sealed class TurtleParser
                     return StepResult.Done(NewNode(id => new TripleStatement(id, braceTotal, subject, predicates)));
                 }
 
+                //A missing terminator does not throw away the parsed triple: the diagnostic is recorded,
+                //junk up to the next '.'/'}' is skipped, and the recoverable triple is still produced.
                 if(Current.Kind != TurtleTokenKind.Period)
                 {
-                    throw Expected("'.' to terminate triple", Current);
+                    _ = ReportRecoverable(WellKnownDiagnostics.Turtle.ExpectedDot, Current.Span, "A triple must be terminated with '.'.");
+                    ResyncTo(ParseFrameKind.SubjectStatement, Current.Span, out _);
+                    SourceSpan recoveredEnd = Current.Kind == TurtleTokenKind.Period ? Current.Span : predicates[^1].Span;
+
+                    if(Current.Kind == TurtleTokenKind.Period)
+                    {
+                        Advance();
+                    }
+
+                    SourceSpan recoveredTotal = CombineSpans(frame.StartSpan, recoveredEnd);
+
+                    return StepResult.Done(NewNode(id => new TripleStatement(id, recoveredTotal, subject, predicates)));
                 }
 
                 SourceSpan periodSpan = Current.Span;
@@ -624,7 +688,7 @@ public sealed class TurtleParser
 
                 if(Current.Kind != TurtleTokenKind.OpenBrace)
                 {
-                    throw Expected("'{' to begin graph block", Current);
+                    return StepResult.Done(RecoverStatement(ParseFrameKind.Statement, frame.StartSpan, WellKnownDiagnostics.Turtle.ExpectedGraphBlockOpen, Current.Span, "A graph block must begin with '{'.", "wrappedGraph"));
                 }
 
                 Advance();
@@ -642,14 +706,17 @@ public sealed class TurtleParser
             case 1:
             {
                 Statement parsed = (Statement)incoming!;
-                if(parsed is not TripleStatement triple)
-                {
-                    throw new TurtleParseException(
-                        "Only triple statements are permitted inside a graph block.",
-                        parsed.Span);
-                }
 
-                frame.Triples!.Add(triple);
+                //A directive inside a graph block is invalid; the diagnostic flags it and the statement is
+                //dropped from the block. An ErrorStatement is already diagnosed, so it is silently skipped.
+                if(parsed is TripleStatement triple)
+                {
+                    frame.Triples!.Add(triple);
+                }
+                else if(parsed is not ErrorStatement)
+                {
+                    Report(WellKnownDiagnostics.Turtle.OnlyTriplesInGraphBlock, parsed.Span, "Only triple statements are permitted inside a graph block.");
+                }
 
                 return ContinueGraphBlock(frame);
             }
@@ -676,9 +743,18 @@ public sealed class TurtleParser
             return StepResult.Done(NewNode(id => new GraphBlockStatement(id, totalSpan, label, hasKeyword, triples)));
         }
 
+        //An unclosed graph block at end of input is finalised with the triples gathered so far, plus a
+        //diagnostic — the partial block is the most faithful recoverable shape for an editor.
         if(Current.Kind == TurtleTokenKind.EndOfInput)
         {
-            throw Expected("'}' to close graph block", Current);
+            Report(WellKnownDiagnostics.Turtle.UnclosedGraphBlock, Current.Span, "A graph block must be closed with '}'.");
+            inGraphBlock = frame.SavedInGraphBlock;
+            SourceSpan eofTotal = CombineSpans(frame.StartSpan, Current.Span);
+            Term? eofLabel = frame.Label;
+            bool eofHasKeyword = frame.HasKeyword;
+            ImmutableArray<TripleStatement> eofTriples = ToImmutable(frame.Triples!);
+
+            return StepResult.Done(NewNode(id => new GraphBlockStatement(id, eofTotal, eofLabel, eofHasKeyword, eofTriples)));
         }
 
         return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.SubjectStatement, StartSpan = Current.Span });
@@ -782,7 +858,7 @@ public sealed class TurtleParser
 
             default:
             {
-                throw Expected("term", Current);
+                return StepResult.Done(RecoverTerm(ParseFrameKind.Term, Current.Span, WellKnownDiagnostics.Turtle.ExpectedTerm, Current.Span, "A term (IRI, literal, blank node, collection, or triple term) was expected.", "object"));
             }
         }
     }
@@ -806,9 +882,17 @@ public sealed class TurtleParser
             return StepResult.Done(built);
         }
 
-        if(Current.Kind == TurtleTokenKind.EndOfInput)
+        //An unterminated collection — end of input, or a token that cannot start an item and is not ')' —
+        //is finalised with the items gathered so far plus a diagnostic. Refusing to push a Term frame on a
+        //non-item token is also what guarantees progress: a Term frame on such a token would resync to an
+        //empty ErrorTerm without advancing, and the collection would re-push it forever.
+        if(Current.Kind == TurtleTokenKind.EndOfInput || !CanStartTerm(Current.Kind))
         {
-            throw Expected("')' to close collection", Current);
+            _ = ReportRecoverable(WellKnownDiagnostics.Turtle.UnclosedCollection, Current.Span, "A collection must be closed with ')'.");
+            SourceSpan eofTotal = CombineSpans(frame.StartSpan, Current.Span);
+            ImmutableArray<Term> eofItems = ToImmutable(frame.TermItems!);
+
+            return StepResult.Done(NewNode(id => new CollectionTerm(id, eofTotal, eofItems)));
         }
 
         return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Term, StartSpan = Current.Span });
@@ -849,9 +933,15 @@ public sealed class TurtleParser
                     return FinaliseBlankNodePropertyList(frame);
                 }
 
+                //A token that is neither a verb nor ']' breaks the list; skip to ']' and finalise with the
+                //pairs gathered so far. Skipping (rather than re-pushing a PredicateObject) guarantees
+                //progress past a stray token the inner frames would not consume.
                 if(!CanStartVerb(Current.Kind))
                 {
-                    throw Expected("predicate or ']' inside blank-node property list", Current);
+                    _ = ReportRecoverable(WellKnownDiagnostics.Turtle.ExpectedPredicate, Current.Span, "A predicate or ']' was expected inside a blank-node property list.");
+                    ResyncTo(ParseFrameKind.BlankNodePropertyList, Current.Span, out _);
+
+                    return FinaliseBlankNodePropertyList(frame);
                 }
 
                 return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PredicateObject, StartSpan = Current.Span });
@@ -904,7 +994,7 @@ public sealed class TurtleParser
                 ValidateTripleTermObject(frame.Object);
                 if(Current.Kind != TurtleTokenKind.CloseTripleTerm)
                 {
-                    throw Expected("')>>' to close triple term", Current);
+                    return StepResult.Done(RecoverTerm(ParseFrameKind.TripleTerm, frame.StartSpan, WellKnownDiagnostics.Turtle.UnclosedTripleTerm, Current.Span, "A triple term must be closed with ')>>'.", "tripleTerm"));
                 }
 
                 SourceSpan endSpan = Current.Span;
@@ -964,7 +1054,7 @@ public sealed class TurtleParser
 
                 if(Current.Kind != TurtleTokenKind.CloseReifiedTriple)
                 {
-                    throw Expected("'>>' to close reified triple", Current);
+                    return StepResult.Done(RecoverTerm(ParseFrameKind.ReifiedTriple, frame.StartSpan, WellKnownDiagnostics.Turtle.UnclosedReifiedTriple, Current.Span, "A reified triple must be closed with '>>'.", "reifiedTriple"));
                 }
 
                 SourceSpan endSpan = Current.Span;
@@ -1167,9 +1257,7 @@ public sealed class TurtleParser
                 //An annotation block must contain at least one predicate-object pair; '{| |}' is invalid.
                 if(Current.Kind == TurtleTokenKind.CloseAnnotation)
                 {
-                    throw new TurtleParseException(
-                        $"An annotation block must contain at least one predicate-object pair at line {Current.Span.StartLine + 1} column {Current.Span.StartColumn + 1}.",
-                        Current.Span);
+                    return StepResult.Done(RecoverAnnotation(frame.StartSpan, WellKnownDiagnostics.Turtle.EmptyAnnotationBlock, Current.Span, "An annotation block must contain at least one predicate-object pair.", "annotation"));
                 }
 
                 return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PredicateObject, StartSpan = Current.Span });
@@ -1189,7 +1277,7 @@ public sealed class TurtleParser
 
                 if(!CanStartVerb(Current.Kind))
                 {
-                    throw Expected("predicate or '|}' inside annotation block", Current);
+                    return StepResult.Done(RecoverAnnotation(frame.StartSpan, WellKnownDiagnostics.Turtle.ExpectedAnnotationVerbOrClose, Current.Span, "A predicate or '|}' was expected inside an annotation block.", "annotation"));
                 }
 
                 return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PredicateObject, StartSpan = Current.Span });
@@ -1242,7 +1330,7 @@ public sealed class TurtleParser
             TurtleTokenKind.PrefixedName => ConsumePrefixedName(),
             TurtleTokenKind.PrefixNamespace => ConsumePrefixedName(),
             TurtleTokenKind.BlankNodeLabel => ConsumeBlankNodeLabel(),
-            _ => throw Expected(what, Current)
+            _ => RecoverTerm(ParseFrameKind.Term, Current.Span, WellKnownDiagnostics.Turtle.ExpectedTerm, Current.Span, $"A {what} was expected.", what)
         };
     }
 
@@ -1255,7 +1343,7 @@ public sealed class TurtleParser
             TurtleTokenKind.PrefixedName => ConsumePrefixedName(),
             TurtleTokenKind.PrefixNamespace => ConsumePrefixedName(),
             TurtleTokenKind.A => ConsumeAKeyword(),
-            _ => throw Expected("predicate", Current)
+            _ => RecoverTerm(ParseFrameKind.Term, Current.Span, WellKnownDiagnostics.Turtle.ExpectedPredicate, Current.Span, "A predicate (IRI, prefixed name, or 'a') was expected.", "verb")
         };
     }
 
@@ -1264,52 +1352,72 @@ public sealed class TurtleParser
         return kind is TurtleTokenKind.Iri or TurtleTokenKind.PrefixedName or TurtleTokenKind.PrefixNamespace or TurtleTokenKind.A;
     }
 
+    //Whether a token can begin a term. List frames push a Term sub-frame only on such a token (an Error
+    //token included, which the sub-frame consumes while recovering); on anything else they recover and
+    //finalise, which is what guarantees the work stack makes progress under malformed input.
+    private static bool CanStartTerm(TurtleTokenKind kind)
+    {
+        return kind is TurtleTokenKind.Iri or TurtleTokenKind.PrefixedName or TurtleTokenKind.PrefixNamespace
+            or TurtleTokenKind.BlankNodeLabel or TurtleTokenKind.AnonymousBlankNode
+            or TurtleTokenKind.StringLiteral or TurtleTokenKind.LongStringLiteral
+            or TurtleTokenKind.IntegerLiteral or TurtleTokenKind.DecimalLiteral or TurtleTokenKind.DoubleLiteral
+            or TurtleTokenKind.BooleanLiteral or TurtleTokenKind.A
+            or TurtleTokenKind.OpenParen or TurtleTokenKind.OpenBracket
+            or TurtleTokenKind.OpenTripleTerm or TurtleTokenKind.OpenReifiedTriple
+            or TurtleTokenKind.Error;
+    }
+
+    //Whether a token can begin a top-level statement: a directive keyword, a TriG graph block, or a
+    //subject term. Anything else at statement position is stray and is skipped by StepStatement.
+    private static bool CanStartStatement(TurtleTokenKind kind)
+    {
+        return kind is TurtleTokenKind.PrefixKeyword or TurtleTokenKind.BaseKeyword or TurtleTokenKind.VersionKeyword
+            or TurtleTokenKind.GraphKeyword or TurtleTokenKind.OpenBrace
+            || CanStartTerm(kind);
+    }
+
     private static bool IsIriOrBlank(Term term)
     {
         return term is IriTerm or PrefixedNameTerm or BlankNodeTerm;
     }
 
-    private static void ValidateTripleTermSubject(Term subject)
+    //The triple-term/reified-triple positional constraints are semantic: the term is structurally
+    //complete but stands in a position the grammar forbids. There is nothing to resync past, so these
+    //record a diagnostic and keep the faithful term (the emitter skips it; production callers refuse on
+    //HasErrors). An ErrorTerm already carries its own diagnostic, so it is passed through silently.
+    private void ValidateTripleTermSubject(Term subject)
     {
         //ttSubject ::= iri | BlankNode.
-        if(!IsIriOrBlank(subject))
+        if(subject is not ErrorTerm && !IsIriOrBlank(subject))
         {
-            throw new TurtleParseException(
-                "The subject of a triple term must be an IRI or a blank node.",
-                subject.Span);
+            Report(WellKnownDiagnostics.Turtle.InvalidTripleTermSubject, subject.Span, "The subject of a triple term must be an IRI or a blank node.");
         }
     }
 
-    private static void ValidateTripleTermObject(Term objectTerm)
+    private void ValidateTripleTermObject(Term objectTerm)
     {
         //ttObject ::= iri | BlankNode | literal | tripleTerm.
-        if(!IsIriOrBlank(objectTerm) && objectTerm is not (LiteralTerm or TripleTermTerm))
+        if(objectTerm is not ErrorTerm && !IsIriOrBlank(objectTerm) && objectTerm is not (LiteralTerm or TripleTermTerm))
         {
-            throw new TurtleParseException(
-                "The object of a triple term must be an IRI, blank node, literal, or triple term.",
-                objectTerm.Span);
+            Report(WellKnownDiagnostics.Turtle.InvalidTripleTermObject, objectTerm.Span, "The object of a triple term must be an IRI, blank node, literal, or triple term.");
         }
     }
 
-    private static void ValidateReifiedTripleSubject(Term subject)
+    private void ValidateReifiedTripleSubject(Term subject)
     {
         //rtSubject ::= iri | BlankNode | reifiedTriple.
-        if(!IsIriOrBlank(subject) && subject is not ReifiedTripleTerm)
+        if(subject is not ErrorTerm && !IsIriOrBlank(subject) && subject is not ReifiedTripleTerm)
         {
-            throw new TurtleParseException(
-                "The subject of a reified triple must be an IRI, blank node, or reified triple.",
-                subject.Span);
+            Report(WellKnownDiagnostics.Turtle.InvalidReifiedTripleSubject, subject.Span, "The subject of a reified triple must be an IRI, blank node, or reified triple.");
         }
     }
 
-    private static void ValidateReifiedTripleObject(Term objectTerm)
+    private void ValidateReifiedTripleObject(Term objectTerm)
     {
         //rtObject ::= iri | BlankNode | literal | tripleTerm | reifiedTriple.
-        if(!IsIriOrBlank(objectTerm) && objectTerm is not (LiteralTerm or TripleTermTerm or ReifiedTripleTerm))
+        if(objectTerm is not ErrorTerm && !IsIriOrBlank(objectTerm) && objectTerm is not (LiteralTerm or TripleTermTerm or ReifiedTripleTerm))
         {
-            throw new TurtleParseException(
-                "The object of a reified triple must be an IRI, blank node, literal, triple term, or reified triple.",
-                objectTerm.Span);
+            Report(WellKnownDiagnostics.Turtle.InvalidReifiedTripleObject, objectTerm.Span, "The object of a reified triple must be an IRI, blank node, literal, triple term, or reified triple.");
         }
     }
 
@@ -1369,7 +1477,7 @@ public sealed class TurtleParser
         return NewNode(id => new BlankNodeTerm(id, span, label));
     }
 
-    private LiteralTerm ParseStringLiteral()
+    private Term ParseStringLiteral()
     {
         SourceSpan startSpan = Current.Span;
         Utf8String value = Current.Value;
@@ -1394,6 +1502,9 @@ public sealed class TurtleParser
             case TurtleTokenKind.DirLangTag:
             {
                 ReadOnlySpan<byte> bytes = Current.Value.Span;
+
+                //The lexer only emits DirLangTag when it has matched the '--' separator, so its absence
+                //here would be an internal invariant violation, not malformed input.
                 int dirIndex = IndexOfDoubleDash(bytes);
                 if(dirIndex < 0)
                 {
@@ -1404,7 +1515,19 @@ public sealed class TurtleParser
 
                 language = Pool.Intern(bytes[..dirIndex]);
                 ReadOnlySpan<byte> dirSpan = bytes[(dirIndex + 2)..];
-                direction = ParseDirection(dirSpan, Current.Span);
+
+                //A direction other than 'ltr'/'rtl' is recoverable: keep the language tag, drop the bad
+                //direction, and record a diagnostic.
+                TextDirection? parsedDirection = ParseDirection(dirSpan);
+                if(parsedDirection is null)
+                {
+                    Report(WellKnownDiagnostics.Turtle.InvalidBaseDirection, Current.Span, "A base direction must be 'ltr' or 'rtl'.");
+                }
+                else
+                {
+                    direction = parsedDirection;
+                }
+
                 endSpan = Current.Span;
                 Advance();
 
@@ -1435,7 +1558,7 @@ public sealed class TurtleParser
 
                     default:
                     {
-                        throw Expected("datatype IRI after '^^'", Current);
+                        return RecoverTerm(ParseFrameKind.Term, startSpan, WellKnownDiagnostics.Turtle.ExpectedDatatypeIri, Current.Span, "A datatype IRI was expected after '^^'.", "RDFLiteral");
                     }
                 }
 
@@ -1453,7 +1576,7 @@ public sealed class TurtleParser
         return NewNode(id => new LiteralTerm(id, totalSpan, value, datatype, language, direction));
     }
 
-    private static TextDirection ParseDirection(ReadOnlySpan<byte> directionBytes, SourceSpan span)
+    private static TextDirection? ParseDirection(ReadOnlySpan<byte> directionBytes)
     {
         if(directionBytes.SequenceEqual("ltr"u8))
         {
@@ -1465,9 +1588,7 @@ public sealed class TurtleParser
             return TextDirection.Rtl;
         }
 
-        throw new TurtleParseException(
-            $"Invalid base direction '{System.Text.Encoding.UTF8.GetString(directionBytes)}'; expected 'ltr' or 'rtl'.",
-            span);
+        return null;
     }
 
     private LiteralTerm ParseNumericLiteral(TurtleTokenKind kind)
@@ -1564,11 +1685,116 @@ public sealed class TurtleParser
         return builder.ToImmutable();
     }
 
-    private static TurtleParseException Expected(string what, TurtleToken got)
+    //Records a recoverable parse diagnostic into the shared bag.
+    private void Report(Utf8String code, SourceSpan span, string message)
     {
-        return new TurtleParseException(
-            $"Expected {what} but found {got.Kind} '{got.Value}' at line {got.Span.StartLine + 1} column {got.Span.StartColumn + 1}.",
-            got.Span);
+        Diagnostics.Add(new Diagnostic(code, DiagnosticSeverity.Error, span, Utf8String.FromString(message)));
+    }
+
+    //Records the diagnostic for a recoverable error and returns the codes to stamp on the error node —
+    //unless the offending token is a lexer Error token, whose LX#### diagnostic the reader already
+    //bridged into the bag. Re-reporting that would double-count, so the lexer's code stands alone and
+    //the parser stays silent (the node still spans the offending run, correlating by span).
+    private ImmutableArray<Utf8String> ReportRecoverable(Utf8String code, SourceSpan span, string message)
+    {
+        if(Current.Kind == TurtleTokenKind.Error)
+        {
+            return [];
+        }
+
+        Report(code, span, message);
+
+        return [code];
+    }
+
+    //Skips tokens from the cursor — collecting them as the error node's trivia — until a token in the
+    //frame's resync set (or end-of-input) is reached, which is left as the new cursor. The before==index
+    //guard breaks when Advance cannot move (the cursor is clamped at the final token), so recovery from
+    //any position terminates.
+    private ImmutableArray<TurtleToken> ResyncTo(ParseFrameKind frameKind, SourceSpan startSpan, out SourceSpan lastSpan)
+    {
+        ImmutableArray<TurtleToken>.Builder skipped = ImmutableArray.CreateBuilder<TurtleToken>();
+        lastSpan = startSpan;
+
+        while(Current.Kind != TurtleTokenKind.EndOfInput && !IsResyncToken(frameKind, Current.Kind))
+        {
+            skipped.Add(Current);
+            lastSpan = Current.Span;
+            int before = index;
+            Advance();
+
+            if(index == before)
+            {
+                break;
+            }
+        }
+
+        return skipped.ToImmutable();
+    }
+
+    //The resync set for each frame kind: the structural tokens at or after which the parser can resume
+    //after skipping a malformed run. A term frame (default) resyncs to any separator or closer; the
+    //bracketed forms resync to their own closer (plus the statement terminators for the triple forms,
+    //which may be the next safe point if the closer is missing). End-of-input is always a stop, handled
+    //by ResyncTo's loop condition.
+    private static bool IsResyncToken(ParseFrameKind frameKind, TurtleTokenKind kind)
+    {
+        return frameKind switch
+        {
+            ParseFrameKind.Statement or ParseFrameKind.SubjectStatement => kind is TurtleTokenKind.Period or TurtleTokenKind.CloseBrace,
+            ParseFrameKind.GraphBlock => kind is TurtleTokenKind.CloseBrace,
+            ParseFrameKind.Collection => kind is TurtleTokenKind.CloseParen,
+            ParseFrameKind.BlankNodePropertyList => kind is TurtleTokenKind.CloseBracket,
+            ParseFrameKind.TripleTerm => kind is TurtleTokenKind.CloseTripleTerm or TurtleTokenKind.Period or TurtleTokenKind.CloseBrace,
+            ParseFrameKind.ReifiedTriple => kind is TurtleTokenKind.CloseReifiedTriple or TurtleTokenKind.Period or TurtleTokenKind.CloseBrace,
+            ParseFrameKind.AnnotationBlock => kind is TurtleTokenKind.CloseAnnotation,
+            _ => kind is TurtleTokenKind.Period or TurtleTokenKind.Semicolon or TurtleTokenKind.Comma
+                or TurtleTokenKind.CloseBracket or TurtleTokenKind.CloseParen or TurtleTokenKind.CloseBrace
+                or TurtleTokenKind.CloseTripleTerm or TurtleTokenKind.CloseReifiedTriple or TurtleTokenKind.CloseAnnotation
+        };
+    }
+
+    //Records the diagnostic, resyncs to the frame's resync set, and builds an ErrorTerm spanning the
+    //failure→resync run. The node slots into any parent that expected a Term, so the existing value
+    //flow carries it up — no multi-frame unwind.
+    private ErrorTerm RecoverTerm(ParseFrameKind frameKind, SourceSpan startSpan, Utf8String code, SourceSpan errorSpan, string message, string expectedProduction)
+    {
+        ImmutableArray<Utf8String> codes = ReportRecoverable(code, errorSpan, message);
+        ImmutableArray<TurtleToken> skipped = ResyncTo(frameKind, errorSpan, out SourceSpan endSpan);
+
+        return NewNode(id => new ErrorTerm(id, CombineSpans(startSpan, endSpan), Utf8String.FromString(expectedProduction), codes, skipped));
+    }
+
+    //As RecoverTerm, for a broken statement; it also consumes a trailing '.' terminator (but leaves a
+    //'}', which the enclosing graph-block frame closes), so the next statement dispatch starts cleanly.
+    private ErrorStatement RecoverStatement(ParseFrameKind frameKind, SourceSpan startSpan, Utf8String code, SourceSpan errorSpan, string message, string expectedProduction)
+    {
+        ImmutableArray<Utf8String> codes = ReportRecoverable(code, errorSpan, message);
+        ImmutableArray<TurtleToken> skipped = ResyncTo(frameKind, errorSpan, out SourceSpan endSpan);
+
+        if(Current.Kind == TurtleTokenKind.Period)
+        {
+            endSpan = Current.Span;
+            Advance();
+        }
+
+        return NewNode(id => new ErrorStatement(id, CombineSpans(startSpan, endSpan), Utf8String.FromString(expectedProduction), codes, skipped));
+    }
+
+    //As RecoverTerm, for a broken annotation; it consumes a trailing '|}' close so the annotated-object
+    //frame resumes at the next object or terminator.
+    private ErrorAnnotation RecoverAnnotation(SourceSpan startSpan, Utf8String code, SourceSpan errorSpan, string message, string expectedProduction)
+    {
+        ImmutableArray<Utf8String> codes = ReportRecoverable(code, errorSpan, message);
+        ImmutableArray<TurtleToken> skipped = ResyncTo(ParseFrameKind.AnnotationBlock, errorSpan, out SourceSpan endSpan);
+
+        if(Current.Kind == TurtleTokenKind.CloseAnnotation)
+        {
+            endSpan = Current.Span;
+            Advance();
+        }
+
+        return NewNode(id => new ErrorAnnotation(id, CombineSpans(startSpan, endSpan), Utf8String.FromString(expectedProduction), codes, skipped));
     }
 
     /// <summary>
