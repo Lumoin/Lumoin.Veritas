@@ -63,9 +63,105 @@ AST from day one.) This is the cross-cutting error-model rework deferred earlier
   for one unclosed `[`), real spans on every diagnostic, the emitter's `UndeclaredPrefix`, and a
   reactive-editor incremental feed (error node + diagnostic, then recovery keeps producing). 325/325
   Turtle tests pass. **Step 3 complete.**
-**Steps 4–6 remain:** (4) SPARQL parser recovery — same on the larger
-parser (the conformance jump lands here); (5) `SparqlInvalidRequestException`
-type; (6) docs audit (every code linked + referenced by name).
+- **Step 4** (SPARQL parser recovery) — **foundations landed** (`62740e7`): `Ast/SparqlErrorNodes.cs`
+  adds the seven error-node records, one per product base the work stack hands up — `ErrorGraphPattern`
+  (`GraphPattern`), `ErrorQueryForm` (`QueryForm`), `ErrorExpression` (`ExpressionNode`),
+  `ErrorPropertyPath` (`PropertyPathExpression`), `ErrorTriplePatternTerm` (`TriplePatternTerm`),
+  `ErrorGraphTerm` (`GraphTerm`), `ErrorAnnotation` (`Annotation`). Each carries
+  `(SourceSpan Span, Utf8String ExpectedProduction, ImmutableArray<Utf8String> DiagnosticCodes,
+  ImmutableArray<SparqlToken> SkippedTokens)`; `ErrorAnnotation` passes `Span` to the `Annotation(Span)`
+  base. Additive + green (full solution builds). The atomic recovery rewrite is below.
+**Steps 5–6 remain:** (5) `SparqlInvalidRequestException` type; (6) docs audit (every code linked +
+referenced by name).
+
+### ⏵ STEP 4 RESUME ANCHOR — SPARQL parser recovery rewrite (execution checklist)
+
+Branch `sparql-query-engine`. Commits: `62740e7` (Step 4 foundations: the seven error-node records),
+`123e004` (Turtle Step 3 done — **the worked template for everything below**). Tree clean+green.
+**Re-paste the "Parser error recovery — Handoff" spec on resume** if its SPARQL-specific §-references
+(the `SP####` taxonomy, `SparqlInvalidRequestException`) are needed; the checklist itself is self-sufficient.
+
+**This is the same retrofit just done to the Turtle parser** (`src/Lumoin.Veritas.Turtle/Parser/TurtleParser.cs`
+in `123e004`) applied to the larger `src/Lumoin.Veritas.Sparql/Parser/SparqlParser.cs` (4297 lines, ~25
+`ParseFrameKind`s, ~110 throw sites of which ~80 are grammar errors). Read the Turtle parser's recovery
+helpers + `123e004` diff first; the SPARQL shapes are identical, only more numerous. The parser is the same
+frame-stack/`Drive`/`StepResult`/`FeedToken`+`TryParseRequest` machine, with one difference: products share
+no base, so each receive site does `Pop<T>(incoming)` — which is exactly why there are **seven** error-node
+types (one per `T`) instead of Turtle's three.
+
+**Build/test (MTP — `dotnet test` does NOT work):** build with
+`dotnet build src/Lumoin.Veritas.Sparql/Lumoin.Veritas.Sparql.csproj -clp:ErrorsOnly --nologo`; run via the
+built exe `test\Lumoin.Veritas.Tests\bin\Debug\net10.0\Lumoin.Veritas.Tests.exe --filter "FullyQualifiedName~Sparql"`.
+Full suite: success = **no new failures over the 50-test SHACL baseline** (SPARQL syntax conformance is
+~198 tests, 185 green + 13 self-correcting known-gap skips — recovery must not regress these; negative-syntax
+tests must still surface `HasErrors`).
+
+1. **Parser infra** (`SparqlParser.cs`): `using Lumoin.Veritas.Core.Diagnostics;`; add `DiagnosticBag? diagnostics = null`
+   to both ctors (public + internal) → store `Diagnostics = diagnostics ?? new DiagnosticBag()`; add
+   `internal DiagnosticBag Diagnostics { get; }`; make instance `ParseRequest()` **non-throwing** on malformed
+   input (it already drives to `Produced`; under recovery the request always completes — a `NeedMore`-at-end
+   becomes an error node, not the current throw) and add
+   `public ParseResult<SparqlRequest> ParseToResult()` = `new(ParseRequest(), Diagnostics.Diagnostics, Diagnostics.HasErrors)`.
+   Add the **static facade** `public static ParseResult<SparqlRequest> ParseRequest(ReadOnlyMemory<byte> source, Utf8StringPool? pool = null, Utf8String? baseIri = null)`
+   (and/or `string`) that lexes, bridges `lexer.Diagnostics` via `SparqlLexDiagnosticBridge` into the bag, runs the
+   instance parser, and returns the `ParseResult` (the locked "static `ParseRequest(text)` is a facade draining
+   the bag" — §6/§9.1). The lexer-bridge drain mirrors Turtle's `BridgeLexerDiagnostics`.
+2. **Recovery helpers** (place by `Expected`; KEEP `Expected` until every caller is converted, then delete it):
+   `Report(code, span, msg)`; `ReportRecoverable(code, span, msg)` → returns `[code]` unless `Current.Kind == SparqlTokenKind.Error`
+   (then `[]`, no double-report — the bridged `LX####` stands alone); `ResyncTo(ParseFrameKind, startSpan, out lastSpan)`
+   (the `index==before` clamp guard); `IsResyncToken(kind, token)` resync table (below); and the **seven**
+   `Recover{GraphPattern,QueryForm,Expression,PropertyPath,TriplePatternTerm,GraphTerm,Annotation}` builders —
+   each `ReportRecoverable` + `ResyncTo` + build its error record (`CombineSpans(startSpan, lastSpan)`, `[code]`, skipped).
+   Plus `CanStartTerm`/`CanStartTriple` (already exists)/`CanStartGroupMember` guards so list/group frames push a
+   sub-frame only on a token that can start the production — **the progress guarantee** (Turtle's key realisation:
+   a stray closer no frame consumes must be skipped at the group/request level, else the stack spins).
+3. **Resync table per `ParseFrameKind`** (default = nearest separator/closer): `Request`/`SelectClause`→`{Dot,CloseBrace,EndOfInput}`;
+   `GroupGraphPattern`/`UnionPattern`/`Optional`/`Minus`/`Graph`/`Service`→`{CloseBrace}`; `Triple`→`{Dot,Semicolon,CloseBrace}`;
+   `Collection`→`{CloseParen}`; `BlankNodePropertyList`→`{CloseBracket}`; `TripleTerm`→`{CloseTripleTerm,Dot,CloseBrace}`;
+   `ReifiedTriple`→`{CloseReifiedTriple,Dot,CloseBrace}`; `AnnotationBlock`→`{CloseAnnotation}`; `Expression`/`ArgumentList`→`{CloseParen,Comma}`;
+   `PropertyPath`/`PathSequence`/`PathElement`/`PathNegatedSet`→`{CloseParen,CloseBrace,Dot,Semicolon}`;
+   `Values`→`{CloseBrace,CloseParen}`; `GroupBy`/`Having`/`OrderBy`/`Filter`/`Bind`→`{CloseBrace,Dot}`;
+   `ConstructTemplate`→`{CloseBrace}`. (+`EndOfInput` always stops.) Confirm against each frame's closer while converting.
+4. **Convert throw sites → value-based** (taxonomy mirrors Turtle exactly):
+   - **Grammar errors** (the ~80 `throw Expected(...)` + the structural `throw new SparqlParseException` at a real
+     cursor position) ⇒ recover. Map each to its product base's `Recover*` (term position → `RecoverTriplePatternTerm`;
+     graph-designator → `RecoverGraphTerm`; pattern/member → `RecoverGraphPattern`; expression → `RecoverExpression`;
+     path → `RecoverPropertyPath`; form dispatch (line 440) → `RecoverQueryForm`; annotation → `RecoverAnnotation`).
+     Close-token-missing sites and list-frame "expected X or closer" sites → report + resync/finalise-partial (no error
+     node where a list simply ends early — wrap the `Error*` children it already holds, as Turtle's list frames do).
+   - **Validation / semantic** (complete construct violates a positional rule) ⇒ report-and-continue, keeping the faithful
+     node: comparison-chaining (lines 1270/1298), `IF`-arity (1769), `VALUES` duplicate-var/arity (3593/3618), prefixed-name
+     subject-vs-path checks. These already have specific SP codes.
+   - **KEEP as throws (invariants)**: every `"reached an unknown stage"`, `"Parser driver reached an undefined state"`,
+     `"production '…' is not yet implemented"`, `"is not a binary/unary operator"` (lines 2488/2505); `ConsumePrefixedName`
+     missing-`:` (4060) and the dir-langtag missing-`--` (4102) (lexer-guaranteed quasi-invariants). The unbound-prefix
+     resolution error is **input-reachable** (a prefixed name with no `PREFIX`) ⇒ recover with `SP0006 UnboundPrefix`
+     (return an `ErrorTriplePatternTerm`/`ErrorGraphTerm` per position).
+5. **`Drive` incoming lexer `Error` tokens**: the reader/facade bridges them already; the natural recover path with the
+   `ReportRecoverable` Error-suppression handles them (Turtle added no special `Drive` code — same here). Keep the
+   `Drive`/`Step` invariant throws.
+6. **SP#### codes** (`WellKnownDiagnostics.Sparql`, currently SP0001–SP0014 + SP9999): **decide the granularity** (the
+   LX/TT layers went fine-grained at the user's explicit call — §10 Q4; the SPARQL set is currently coarse). Reuse the
+   existing specific codes (ExpectedQueryForm, ExpectedWhereKeyword, UnclosedGroupGraphPattern, ExpectedTriplePattern,
+   ExpressionExpected, UnclosedExpression, UnboundPrefix, …); add structural-closer + expected-X codes as needed
+   (unclosed collection/bracket/paren/triple-term/reified-triple/annotation, expected-path, expected-term, expected-var,
+   …) referencing each by name at its site. `SP0005 UnexpectedToken` is the catch-all only where nothing specific fits.
+7. **Reader / callers / tests** (small surface): the 9 negative `Assert.Throws<SparqlParseException>` in
+   `SparqlParserTests` (lines 299, 383, 619, 1153, 1173, 1182, 1260, 1318, 1327) → `ParseToResult()`/facade then assert
+   `HasErrors` + the expected code. `W3cSparqlSyntaxTests.ParseSparqlQuery` (line 154) re-raises on `HasErrors` so the
+   shared `W3cTestRunner` keeps catch-based negative-syntax detection (the SPARQL analog of `TurtleConformanceReader` —
+   or generalise that adapter). Positive `SparqlParserTests` keep using `ParseRequest()`/`ParseToResult` and assert no
+   errors. **Verify the 13 `KnownGaps` still skip** (a gap that starts passing fails the harness) and **no negative test
+   regresses** (recovery must still flag every currently-rejected query with `HasErrors`).
+8. **Additive tests** (may be a 2nd commit, as Turtle's were): a `SparqlParserRecoveryTests` mirroring
+   `TurtleParserRecoveryTests` — per-frame resync (unclosed `{`/`(`/`[`/`<<(`/`{|`, bad form, bad projection, bad path,
+   missing predicate), recovery-continuation (a trailing clean clause still parses), cascade-suppression (bounded count
+   for one unclosed brace), real spans, and a reactive-editor incremental `FeedToken`/`TryParseRequest` feed.
+
+**Q resolved (locked, carried from Step 3):** value-based everywhere, single mode, no backwards-compat hedges; the
+reader/facade never throws on malformed input (only I/O, cancellation, resource limits throw); internal-invariant guards
+stay throws. The SPARQL engine (`SparqlQueryEngine`/`ExecuteAsync`) still does **not** exist — Step 4 lands the parser
+recovery + the `ParseToResult`/facade only; §7/Step-5 `ExecuteAsync` wiring stays deferred to Milestone C.
 
 **Step 2 decisions recorded (§10 + locked-adaptations follow-through):**
 - **LX granularity (§10 Q4 + the user's explicit call):** fine-grained, one `LX####`
