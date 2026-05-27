@@ -90,9 +90,21 @@ AST from day one.) This is the cross-cutting error-model rework deferred earlier
   the rest (the AST still assembles) — a runaway-error backstop. §7/`ExecuteAsync` wiring stays deferred
   (no engine yet). Tests added to `SparqlParserRecoveryTests`; full suite still 0 new failures over the
   SHACL baseline.
-**Step 6 remains:** docs audit (every diagnostic code linked + referenced by name; every terminal/production
-cites its §19.8 anchor). With both parsers recovering, Milestone B (algebra translator) can build against
-possibly-error-node ASTs from day one — the original reason recovery was sequenced before it.
+- **Step 6** (diagnostic-code audit) — **COMPLETE.** Every `LX`/`TT`/`SP` code is now either referenced by
+  name at an emission site or documented as **reserved**; no emission site uses a string-literal code. The
+  9 reserved codes (not renumbered, per the stable-catalogue rule) are: `LX0005 UnknownDirective` (no lexer
+  emitter — a leading `@` lexes as a tag/identifier); `TT0001 ExpectedSubject` + `TT0003 ExpectedObject`
+  (the Turtle parser reports the position-agnostic `ExpectedTerm`); `TT0005 UnclosedBlankNodePropertyList`
+  (Turtle reports `ExpectedPredicate`); `SP0002 ExpectedWhereKeyword` (WHERE is optional; dispatch is on
+  `{`); `SP0007 InvalidBaseIri`, `SP0008 UpdateNotSupported`, `SP0009 NestedAggregateNotSupported`,
+  `SP0010 AggregateOutsideProjection` (not-yet-implemented checks — base-IRI validation, Update detection,
+  aggregate scope analysis). **The error-recovery batch (Steps 1–6) is COMPLETE.**
+
+**Not part of the recovery batch (separate Milestone A continuation):** the §7.0 documentation-convention
+pass — every *token kind* and *grammar-production AST record* citing its SPARQL 1.2 §19.8 anchor in a
+`<remarks>` block (the diagnostic *codes* already cite theirs; this is the wider lexer/AST/parser retrofit,
+verified by the grep-the-anchors audit). With both parsers recovering, Milestone B (algebra translator) can
+build against possibly-error-node ASTs from day one — the original reason recovery was sequenced before it.
 
 ### ⏵ STEP 4 RESUME ANCHOR — SPARQL parser recovery rewrite (executed; kept as the record of what landed)
 
