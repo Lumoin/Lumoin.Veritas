@@ -100,11 +100,45 @@ AST from day one.) This is the cross-cutting error-model rework deferred earlier
   `SP0010 AggregateOutsideProjection` (not-yet-implemented checks — base-IRI validation, Update detection,
   aggregate scope analysis). **The error-recovery batch (Steps 1–6) is COMPLETE.**
 
-**Not part of the recovery batch (separate Milestone A continuation):** the §7.0 documentation-convention
-pass — every *token kind* and *grammar-production AST record* citing its SPARQL 1.2 §19.8 anchor in a
-`<remarks>` block (the diagnostic *codes* already cite theirs; this is the wider lexer/AST/parser retrofit,
-verified by the grep-the-anchors audit). With both parsers recovering, Milestone B (algebra translator) can
-build against possibly-error-node ASTs from day one — the original reason recovery was sequenced before it.
+## ⏵ CURRENT WORK — Pre-Milestone-B pass (cleanups + Milestone-A completion)
+
+After the recovery batch, a pre-B pass to finish Milestone A and reach the algebra on-ramp. **Done so far
+(all committed, green, full suite at the 50-test SHACL baseline = 0 new failures):**
+- **Code cleanups** (`8ed01fd`): removed the dead `NotImplemented` helper; fixed the stale `RequestConstruct`
+  "short form not supported" summary (the CONSTRUCT WHERE short form is supported).
+- **§7.0 §19.8 doc-anchor pass** (`8aa859b`): every `SparqlTokenKind` member + every grammar-production AST
+  record cites its SPARQL 1.2 §19.8 anchor in `<remarks>` (mirrors the `WellKnownDiagnostics.Sparql` style).
+- **Slice S — uniform AST spans** (`bad6756`): every higher-layer AST record now carries a `SourceSpan Span`
+  threaded with the real extent (`CombineSpans(frame.StartSpan, lastConsumedSpan)` for frame nodes, child
+  spans for binary/unary expressions, zero-width spans at the cursor for empty productions — never `None`).
+  `SparqlAstSpanTests` pins exact source slices.
+- **Slice 4b-ii: VERSION** (`2e765d5`): the `VERSION` prologue declaration — `VersionDecl` record +
+  `Prologue.Versions`; `ParseVersionDeclaration` recovers (`SP0043 InvalidVersionArgument`) on a long/non-string
+  arg. version-03/04/06 un-skipped.
+
+**Remaining pre-B work (substantial, design-sensitive — paused for a focused continuation):**
+1. **Slice 4b-ii — triple term in expression** (`expr-tripleterm-01/06`): add an `OpenTripleTerm` arm to the
+   expression primary dispatch (push a `TripleTerm` frame, receive it via a new expression stage) wrapping it
+   in a new `ExpressionNode` subtype (e.g. `TripleTermExpression(Span, TriplePatternTerm Inner)`).
+2. **Slice 4b-ii — triple term in VALUES** (`basic-tripleterm-05`): accept `<<( … )>>` in the VALUES data-block
+   value parser. Note the VALUES `TripleTermData` form is **more restrictive** (no nested-triple-term subject,
+   no variables — see the `tripleterm-subject-*` negatives).
+3. **Slice 4b-ii — standalone reified triple** `<< s p o >> .` (`basic-{anon,}reifier-08..13`, `version-01/02/05`):
+   the design-heavy one. **Decision (record when implementing):** `BasicGraphPatternBlock` gains a second list
+   `IReadOnlyList<TriplePatternTerm> StandaloneNodes` (default empty) holding subject-only assertions (a
+   `ReifiedTriple`/node written with no property list); `StepTriple`, when a reified-triple (or triple-node)
+   subject is **not** followed by a property list, adds the faithful term there instead of erroring (do NOT
+   unwrap at parse). Update `ExtractTemplateTriples` (CONSTRUCT WHERE) + the `SingleBlockTriples` test helper.
+   This touches a Slice-S-spanned record consumed by the future translator, so make the shape decision
+   deliberately. Then un-skip the 12 `basic-*reifier-08..13` + the 3 `version-01/02/05` gaps.
+4. **Normalization pass + B scaffold** (§8.5): a new early-expansion pass (between parse and algebra) lowering
+   `CollectionTerm`/`BlankNodePropertyListTerm`/reified-triple sugar to plain triples (using Core's
+   `BlankNodeDelegate`, preserving spans), so the translator sees the four core term cases; + the `Algebra/`
+   and `Translation/` namespace layout (§5.1). The direct on-ramp to Milestone B; arguably its first slice.
+
+**Not part of the recovery batch (the §7.0 pass above covered it for SPARQL):** the §7.0 convention was a
+Milestone-A-completion item; with both parsers recovering, Milestone B (algebra translator) can build against
+possibly-error-node ASTs from day one — the original reason recovery was sequenced before it.
 
 ### ⏵ STEP 4 RESUME ANCHOR — SPARQL parser recovery rewrite (executed; kept as the record of what landed)
 
