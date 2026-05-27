@@ -66,6 +66,71 @@ type; (6) docs audit (every code linked + referenced by name).
 - **English-only messages (§10 Q2):** the bridge renders `Diagnostic.Message` from
   `GetMessage()` (English) once, at error time; the i18n `MessageKey` seam stays deferred.
 
+**Step 3 (Turtle parser recovery) — IN PROGRESS (uncommitted):**
+- **Surface decision (final-form now, confirmed with the user):** take the real API this
+  step, not a transitional throw — because Turtle has *no future engine layer* to defer the
+  `HasErrors` decision to (the reader is the top consumer), so deferring would just mean a
+  throwaway throwing reader + a double caller migration. **Recovery is the single mode
+  everywhere; the reader never throws on malformed input** (only genuine non-parse faults —
+  I/O, cancellation — throw). There is **0 backwards-compat need** (see
+  [[feedback_no_backwards_compat]]), so no optional/throw-for-compat mode exists; every
+  throw-expecting caller and test migrates to a `HasErrors`/bag check. Two surfaces:
+  - **Whole-document path** (`ReadWithSourceAsync` / the document-returning entry) → returns
+    `ParseResult<TurtleDocument>` (tree possibly-with-error-nodes + diagnostics + `HasErrors`).
+    Callers migrate (bounded: ~mostly tests + `NQuadsReader`/`TurtleWriter`/`TurtleQuadEmitter`).
+  - **Streaming quad path** (`ReadAsync` → `IAsyncEnumerable<Quad>`) → takes a **required**
+    consumer-owned `DiagnosticBag` (the locked "shared bag the consumer reads"): it recovers,
+    emits quads for valid statements, records diagnostics, and never throws on bad input. The
+    caller inspects `bag.HasErrors` after enumerating and applies its own policy. (My earlier
+    "optional bag, null → throw" was a backwards-compat hedge — dropped.)
+- **`ParseResult<TTree>` location:** single generic def in `Core/Diagnostics/ParseResult.cs`
+  (depends only on `Diagnostic`), **not** duplicated per parser namespace as §6.1 illustrates.
+- **Error-node variants = the three Turtle abstract bases:** `ErrorStatement : Statement`
+  (covers triple-statements *and* directives — both derive from `Statement`), `ErrorTerm : Term`,
+  `ErrorAnnotation : Annotation`. Sealed classes matching the class-based AST style, each
+  `(nodeId, span, Utf8String ExpectedProduction, ImmutableArray<Utf8String> DiagnosticCodes,
+  ImmutableArray<TurtleToken> SkippedTokens)`. **DONE + builds green** — confirmed no AST
+  consumer has an exhaustive type-switch that the new subtypes break.
+- **Frame contract (StepResult Pop/Push/Continue):** error nodes flow up via `Pop` carrying the
+  error node (the locked "no new status enum; `StepResult.Done(errorNode)`" adaptation). On an
+  unexpected or lexer-`Error` token: emit `TT####`/bridged `LX####` diagnostics into the
+  parser-owned `DiagnosticBag`, resync to the frame's resync set collecting `SkippedTokens`,
+  build the nearest-base error node, `Pop`. The reader bridges `lexer.Diagnostics` via
+  `TurtleLexDiagnosticBridge` into that same bag (the locked shared-bag model).
+- **Recovery mechanism = value-based everywhere (locked, the user's call; see
+  [[feedback_value_based_control_flow]]):** *one* recovery path, no exceptions for control flow.
+  Leaf helpers (`ParsePrefixDeclaration`, `ConsumeLeafTermFor`, `ParseStringLiteral`, `Validate*`,
+  …) record the diagnostic into the bag and **return a typed error node** (an `ErrorTerm` in term
+  positions) rather than throwing; frame-level detection sites likewise `return Done(errorNode)`.
+  **Internal-invariant guards stay throws** (the "reached unknown stage" / "unhandled frame kind"
+  set — our bugs, not control flow). (Rejected alternative: a recoverable exception caught once in
+  `Drive` — surgical but two mechanisms and throwing-for-control-flow.)
+  - **Recovery is LOCAL per frame — the key realization that avoids unwinding:** because `ErrorTerm`
+    *is* a `Term` (and `ErrorStatement` a `Statement`, `ErrorAnnotation` an `Annotation`), an error
+    node slots into any parent that expected that base, so the existing value flow carries it up — no
+    multi-frame `Drive` unwind, **no new `StepAction`** (keeps the locked `Done(errorNode)` model).
+    Each frame resyncs to its own resync set and produces its own appropriately-typed error node.
+  - **The list/pair frames need NO error variant:** `PredicateObjectList`/`ObjectList` (→
+    `ImmutableArray<…>`), `PredicateObject`, `AnnotatedObject` simply *wrap* the `ErrorTerm`s their
+    child term-frames hand up. `ErrorStatement` is produced only when statement-level structure is
+    broken (bad directive, missing `.`); `ErrorAnnotation` only for a broken annotation. That is why
+    the three error-node types (Statement/Term/Annotation) suffice.
+  - **Note on incrementality (keeps a green build mid-rewrite):** a `throw` site and a
+    `return Done(errorNode)` both compile, so throw→recover conversions can land one at a time. But a
+    converted site stops the reader throwing there, so its negative test must migrate to a
+    `HasErrors`/error-node check in the same step — the (site + test + `ParseResult` entry) move
+    together. The reader-surface change is the one piece that must land atomically with the rest.
+- **Reactive-editor tests (added per the user):** beyond positive/negative sweeps, add incremental
+  tests that feed tokens as if typed, assert the error node + diagnostic land at the **right span**
+  (so an editor highlights correctly), then feed valid input and assert the parser recovers and keeps
+  producing. Intellisense/auto-correct is a later layer (spec §1 out of scope), but the error nodes'
+  `ExpectedProduction` + `DiagnosticCodes` + spans are the deliberate data hook for it.
+- **Remaining:** resync table per `ParseFrameKind` (14 kinds); the frame-step rewrite across
+  `TurtleParser` (~1600 lines) + `Drive` handling `Pop(errorNode)` and incoming `Error` tokens;
+  a materialised `ParseResult` entry + diagnostic threading; the reader surface + caller
+  migration; the Turtle test sweep (negative → `HasErrors`+code; positive → no-error tree) and
+  new resync / cascade-suppression / coverage tests.
+
 **Q1–Q3 resolved (locked):**
 - **Sequencing:** do error-recovery now; 4b-ii's four remaining known-gap
   features (standalone reified `<< >> .`, VALUES/expression triple terms,
