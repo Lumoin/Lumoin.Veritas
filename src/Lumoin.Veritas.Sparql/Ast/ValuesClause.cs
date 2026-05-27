@@ -13,6 +13,7 @@ namespace Lumoin.Veritas.Sparql.Ast;
 /// </summary>
 /// <param name="Variables">The variables the rows bind, in column order.</param>
 /// <param name="Rows">The rows; each row has one entry per variable, <c>null</c> for <c>UNDEF</c>.</param>
+/// <remarks>SPARQL <c>DataBlock</c> (<c>ValuesClause</c> / <c>InlineData</c>). See <see href="https://www.w3.org/TR/sparql12-query/#rDataBlock">SPARQL 1.2 §19.8 [DataBlock]</see>.</remarks>
 [DebuggerDisplay("VALUES vars={Variables.Count} rows={Rows.Count}")]
 public sealed record ValuesClause(
     IReadOnlyList<SparqlVariable> Variables,

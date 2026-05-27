@@ -7,5 +7,6 @@ namespace Lumoin.Veritas.Sparql.Ast;
 /// surrounding braces produce a <see cref="GroupGraphPattern"/>).
 /// </summary>
 /// <param name="Pattern">The group graph pattern.</param>
+/// <remarks>SPARQL <c>WhereClause</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rWhereClause">SPARQL 1.2 §19.8 [WhereClause]</see>.</remarks>
 [DebuggerDisplay("WHERE")]
 public sealed record WhereClause(GraphPattern Pattern);

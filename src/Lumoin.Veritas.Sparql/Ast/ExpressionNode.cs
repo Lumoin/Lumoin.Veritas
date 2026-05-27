@@ -10,61 +10,76 @@ namespace Lumoin.Veritas.Sparql.Ast;
 /// output; the expression evaluator interprets it.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Built-in and aggregate function identity is carried as a closed enum
 /// (<see cref="BuiltInFunction"/> / <see cref="AggregateFunction"/>): the lexer
 /// interns the canonical upper-case name and the parser maps it to the enum at
 /// construction (see <see cref="SparqlFunctions"/>), so the evaluator dispatches
 /// over an exhaustive set. User-defined and constructor functions are named by IRI
 /// via <see cref="FunctionCallExpression"/>.
+/// </para>
+/// <para>SPARQL <c>Expression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rExpression">SPARQL 1.2 §19.8 [Expression]</see>.</para>
 /// </remarks>
 public abstract record ExpressionNode;
 
 /// <summary>A constant RDF term (a literal or IRI used as a value).</summary>
 /// <param name="Value">The constant term.</param>
+/// <remarks>SPARQL <c>PrimaryExpression</c> (an <c>RDFLiteral</c> / <c>NumericLiteral</c> / <c>iri</c>). See <see href="https://www.w3.org/TR/sparql12-query/#rPrimaryExpression">SPARQL 1.2 §19.8 [PrimaryExpression]</see>.</remarks>
 [DebuggerDisplay("{Value}")]
 public sealed record ConstantExpression(RdfTerm Value) : ExpressionNode;
 
 /// <summary>A reference to a variable's bound value.</summary>
 /// <param name="Variable">The variable.</param>
+/// <remarks>SPARQL <c>Var</c> in <c>PrimaryExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rPrimaryExpression">SPARQL 1.2 §19.8 [PrimaryExpression]</see>.</remarks>
 [DebuggerDisplay("?{Variable.Name}")]
 public sealed record VariableExpression(SparqlVariable Variable) : ExpressionNode;
 
 /// <summary>The logical conjunction <c>left &amp;&amp; right</c>.</summary>
 /// <param name="Left">The left operand.</param>
 /// <param name="Right">The right operand.</param>
+/// <remarks>SPARQL <c>ConditionalAndExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rConditionalAndExpression">SPARQL 1.2 §19.8 [ConditionalAndExpression]</see>.</remarks>
 [DebuggerDisplay("(&&)")]
 public sealed record AndExpression(ExpressionNode Left, ExpressionNode Right) : ExpressionNode;
 
 /// <summary>The logical disjunction <c>left || right</c>.</summary>
 /// <param name="Left">The left operand.</param>
 /// <param name="Right">The right operand.</param>
+/// <remarks>SPARQL <c>ConditionalOrExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rConditionalOrExpression">SPARQL 1.2 §19.8 [ConditionalOrExpression]</see>.</remarks>
 [DebuggerDisplay("(||)")]
 public sealed record OrExpression(ExpressionNode Left, ExpressionNode Right) : ExpressionNode;
 
 /// <summary>The logical negation <c>!inner</c>.</summary>
 /// <param name="Inner">The negated operand.</param>
+/// <remarks>SPARQL <c>UnaryExpression</c> (<c>'!'</c>). See <see href="https://www.w3.org/TR/sparql12-query/#rUnaryExpression">SPARQL 1.2 §19.8 [UnaryExpression]</see>.</remarks>
 [DebuggerDisplay("(!)")]
 public sealed record NotExpression(ExpressionNode Inner) : ExpressionNode;
 
 /// <summary>The comparison operators of the <c>RelationalExpression</c> production.</summary>
+/// <remarks>SPARQL <c>RelationalExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rRelationalExpression">SPARQL 1.2 §19.8 [RelationalExpression]</see>.</remarks>
 public enum ComparisonOp
 {
     /// <summary>Equality, <c>=</c>.</summary>
+    /// <remarks>SPARQL <c>'='</c> of <c>RelationalExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rRelationalExpression">SPARQL 1.2 §19.8 [RelationalExpression]</see>.</remarks>
     Equal,
 
     /// <summary>Inequality, <c>!=</c>.</summary>
+    /// <remarks>SPARQL <c>'!='</c> of <c>RelationalExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rRelationalExpression">SPARQL 1.2 §19.8 [RelationalExpression]</see>.</remarks>
     NotEqual,
 
     /// <summary>Less than, <c>&lt;</c>.</summary>
+    /// <remarks>SPARQL <c>'&lt;'</c> of <c>RelationalExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rRelationalExpression">SPARQL 1.2 §19.8 [RelationalExpression]</see>.</remarks>
     LessThan,
 
     /// <summary>Less than or equal, <c>&lt;=</c>.</summary>
+    /// <remarks>SPARQL <c>'&lt;='</c> of <c>RelationalExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rRelationalExpression">SPARQL 1.2 §19.8 [RelationalExpression]</see>.</remarks>
     LessOrEqual,
 
     /// <summary>Greater than, <c>&gt;</c>.</summary>
+    /// <remarks>SPARQL <c>'&gt;'</c> of <c>RelationalExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rRelationalExpression">SPARQL 1.2 §19.8 [RelationalExpression]</see>.</remarks>
     GreaterThan,
 
     /// <summary>Greater than or equal, <c>&gt;=</c>.</summary>
+    /// <remarks>SPARQL <c>'&gt;='</c> of <c>RelationalExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rRelationalExpression">SPARQL 1.2 §19.8 [RelationalExpression]</see>.</remarks>
     GreaterOrEqual
 }
 
@@ -72,28 +87,36 @@ public enum ComparisonOp
 /// <param name="Left">The left operand.</param>
 /// <param name="Op">The comparison operator.</param>
 /// <param name="Right">The right operand.</param>
+/// <remarks>SPARQL <c>RelationalExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rRelationalExpression">SPARQL 1.2 §19.8 [RelationalExpression]</see>.</remarks>
 [DebuggerDisplay("({Op})")]
 public sealed record ComparisonExpression(ExpressionNode Left, ComparisonOp Op, ExpressionNode Right) : ExpressionNode;
 
 /// <summary>The arithmetic operators, including the unary forms.</summary>
+/// <remarks>SPARQL <c>AdditiveExpression</c> / <c>MultiplicativeExpression</c> / <c>UnaryExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rAdditiveExpression">SPARQL 1.2 §19.8 [AdditiveExpression]</see>.</remarks>
 public enum ArithmeticOp
 {
     /// <summary>Addition, <c>+</c>.</summary>
+    /// <remarks>SPARQL <c>'+'</c> of <c>AdditiveExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rAdditiveExpression">SPARQL 1.2 §19.8 [AdditiveExpression]</see>.</remarks>
     Add,
 
     /// <summary>Subtraction, <c>-</c>.</summary>
+    /// <remarks>SPARQL <c>'-'</c> of <c>AdditiveExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rAdditiveExpression">SPARQL 1.2 §19.8 [AdditiveExpression]</see>.</remarks>
     Subtract,
 
     /// <summary>Multiplication, <c>*</c>.</summary>
+    /// <remarks>SPARQL <c>'*'</c> of <c>MultiplicativeExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rMultiplicativeExpression">SPARQL 1.2 §19.8 [MultiplicativeExpression]</see>.</remarks>
     Multiply,
 
     /// <summary>Division, <c>/</c>.</summary>
+    /// <remarks>SPARQL <c>'/'</c> of <c>MultiplicativeExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rMultiplicativeExpression">SPARQL 1.2 §19.8 [MultiplicativeExpression]</see>.</remarks>
     Divide,
 
     /// <summary>Unary minus, <c>-x</c>.</summary>
+    /// <remarks>SPARQL <c>'-'</c> of <c>UnaryExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rUnaryExpression">SPARQL 1.2 §19.8 [UnaryExpression]</see>.</remarks>
     UnaryMinus,
 
     /// <summary>Unary plus, <c>+x</c>.</summary>
+    /// <remarks>SPARQL <c>'+'</c> of <c>UnaryExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rUnaryExpression">SPARQL 1.2 §19.8 [UnaryExpression]</see>.</remarks>
     UnaryPlus
 }
 
@@ -105,24 +128,28 @@ public enum ArithmeticOp
 /// <param name="Left">The left operand (the sole operand for unary forms).</param>
 /// <param name="Op">The arithmetic operator.</param>
 /// <param name="Right">The right operand, or <c>null</c> for unary forms.</param>
+/// <remarks>SPARQL <c>AdditiveExpression</c> / <c>MultiplicativeExpression</c> / <c>UnaryExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rAdditiveExpression">SPARQL 1.2 §19.8 [AdditiveExpression]</see>.</remarks>
 [DebuggerDisplay("({Op})")]
 public sealed record ArithmeticExpression(ExpressionNode Left, ArithmeticOp Op, ExpressionNode? Right) : ExpressionNode;
 
 /// <summary>The <c>value IN (set)</c> test.</summary>
 /// <param name="Value">The value tested for membership.</param>
 /// <param name="Set">The candidate set.</param>
+/// <remarks>SPARQL <c>RelationalExpression</c> (<c>IN</c>) / <c>ExpressionList</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rRelationalExpression">SPARQL 1.2 §19.8 [RelationalExpression]</see>.</remarks>
 [DebuggerDisplay("(IN)")]
 public sealed record InExpression(ExpressionNode Value, IReadOnlyList<ExpressionNode> Set) : ExpressionNode;
 
 /// <summary>The <c>value NOT IN (set)</c> test.</summary>
 /// <param name="Value">The value tested for non-membership.</param>
 /// <param name="Set">The candidate set.</param>
+/// <remarks>SPARQL <c>RelationalExpression</c> (<c>NOT IN</c>) / <c>ExpressionList</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rRelationalExpression">SPARQL 1.2 §19.8 [RelationalExpression]</see>.</remarks>
 [DebuggerDisplay("(NOT IN)")]
 public sealed record NotInExpression(ExpressionNode Value, IReadOnlyList<ExpressionNode> Set) : ExpressionNode;
 
 /// <summary>A call to a named function: a user-defined or constructor function identified by IRI.</summary>
 /// <param name="Function">The function IRI.</param>
 /// <param name="Arguments">The argument expressions.</param>
+/// <remarks>SPARQL <c>iriOrFunction</c>. See <see href="https://www.w3.org/TR/sparql12-query/#ririOrFunction">SPARQL 1.2 §19.8 [iriOrFunction]</see>.</remarks>
 [DebuggerDisplay("<{Function.Value}>(...)")]
 public sealed record FunctionCallExpression(IriRef Function, IReadOnlyList<ExpressionNode> Arguments) : ExpressionNode;
 
@@ -135,16 +162,19 @@ public sealed record FunctionCallExpression(IriRef Function, IReadOnlyList<Expre
 /// <param name="Function">The built-in function.</param>
 /// <param name="Arguments">The argument expressions.</param>
 /// <param name="IsDistinct">Whether <c>DISTINCT</c> was given.</param>
+/// <remarks>SPARQL <c>BuiltInCall</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rBuiltInCall">SPARQL 1.2 §19.8 [BuiltInCall]</see>.</remarks>
 [DebuggerDisplay("{Function}(...)")]
 public sealed record BuiltInCallExpression(BuiltInFunction Function, IReadOnlyList<ExpressionNode> Arguments, bool IsDistinct = false) : ExpressionNode;
 
 /// <summary>The <c>EXISTS { pattern }</c> test.</summary>
 /// <param name="Inner">The inner graph pattern.</param>
+/// <remarks>SPARQL <c>ExistsFunc</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rExistsFunc">SPARQL 1.2 §19.8 [ExistsFunc]</see>.</remarks>
 [DebuggerDisplay("EXISTS")]
 public sealed record ExistsExpression(GraphPattern Inner) : ExpressionNode;
 
 /// <summary>The <c>NOT EXISTS { pattern }</c> test.</summary>
 /// <param name="Inner">The inner graph pattern.</param>
+/// <remarks>SPARQL <c>NotExistsFunc</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rNotExistsFunc">SPARQL 1.2 §19.8 [NotExistsFunc]</see>.</remarks>
 [DebuggerDisplay("NOT EXISTS")]
 public sealed record NotExistsExpression(GraphPattern Inner) : ExpressionNode;
 
@@ -152,16 +182,19 @@ public sealed record NotExistsExpression(GraphPattern Inner) : ExpressionNode;
 /// <param name="Condition">The condition expression.</param>
 /// <param name="IfTrue">The value when the condition's effective boolean value is true.</param>
 /// <param name="IfFalse">The value otherwise.</param>
+/// <remarks>SPARQL <c>BuiltInCall</c> (<c>IF</c>). See <see href="https://www.w3.org/TR/sparql12-query/#rBuiltInCall">SPARQL 1.2 §19.8 [BuiltInCall]</see>.</remarks>
 [DebuggerDisplay("IF")]
 public sealed record IfExpression(ExpressionNode Condition, ExpressionNode IfTrue, ExpressionNode IfFalse) : ExpressionNode;
 
 /// <summary>The <c>COALESCE(...)</c> first-non-error expression.</summary>
 /// <param name="Alternatives">The candidate expressions, in order.</param>
+/// <remarks>SPARQL <c>BuiltInCall</c> (<c>COALESCE</c>). See <see href="https://www.w3.org/TR/sparql12-query/#rBuiltInCall">SPARQL 1.2 §19.8 [BuiltInCall]</see>.</remarks>
 [DebuggerDisplay("COALESCE")]
 public sealed record CoalesceExpression(IReadOnlyList<ExpressionNode> Alternatives) : ExpressionNode;
 
 /// <summary>The <c>BOUND(?var)</c> test.</summary>
 /// <param name="Variable">The variable tested for being bound.</param>
+/// <remarks>SPARQL <c>BuiltInCall</c> (<c>BOUND</c>). See <see href="https://www.w3.org/TR/sparql12-query/#rBuiltInCall">SPARQL 1.2 §19.8 [BuiltInCall]</see>.</remarks>
 [DebuggerDisplay("BOUND(?{Variable.Name})")]
 public sealed record BoundExpression(SparqlVariable Variable) : ExpressionNode;
 
@@ -176,6 +209,7 @@ public sealed record BoundExpression(SparqlVariable Variable) : ExpressionNode;
 /// <param name="IsDistinct">Whether <c>DISTINCT</c> was given.</param>
 /// <param name="IsCountStar">Whether this is the <c>COUNT(*)</c> form.</param>
 /// <param name="GroupConcatSeparator">The <c>GROUP_CONCAT</c> separator, or <c>null</c> for the default.</param>
+/// <remarks>SPARQL <c>Aggregate</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rAggregate">SPARQL 1.2 §19.8 [Aggregate]</see>.</remarks>
 [DebuggerDisplay("{Function}(agg)")]
 public sealed record AggregateExpression(
     AggregateFunction Function,

@@ -12,6 +12,7 @@ namespace Lumoin.Veritas.Sparql.Ast;
 /// <param name="Order">The <c>ORDER BY</c> clause, or <c>null</c>.</param>
 /// <param name="Offset">The <c>OFFSET</c> value, or <c>null</c>.</param>
 /// <param name="Limit">The <c>LIMIT</c> value, or <c>null</c>.</param>
+/// <remarks>SPARQL <c>SolutionModifier</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rSolutionModifier">SPARQL 1.2 §19.8 [SolutionModifier]</see>.</remarks>
 [DebuggerDisplay("Modifier")]
 public sealed record SolutionModifier(
     GroupClause? Group,
@@ -22,47 +23,57 @@ public sealed record SolutionModifier(
 
 /// <summary>A <c>GROUP BY</c> clause: the grouping conditions in order.</summary>
 /// <param name="Conditions">The grouping conditions.</param>
+/// <remarks>SPARQL <c>GroupClause</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rGroupClause">SPARQL 1.2 §19.8 [GroupClause]</see>.</remarks>
 [DebuggerDisplay("GROUP BY [{Conditions.Count}]")]
 public sealed record GroupClause(IReadOnlyList<GroupCondition> Conditions);
 
 /// <summary>One <c>GROUP BY</c> condition: a variable, an expression, or an expression bound to a variable.</summary>
+/// <remarks>SPARQL <c>GroupCondition</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rGroupCondition">SPARQL 1.2 §19.8 [GroupCondition]</see>.</remarks>
 public abstract record GroupCondition;
 
 /// <summary>Grouping by a variable.</summary>
 /// <param name="Variable">The grouping variable.</param>
+/// <remarks>SPARQL <c>Var</c> in <c>GroupCondition</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rGroupCondition">SPARQL 1.2 §19.8 [GroupCondition]</see>.</remarks>
 [DebuggerDisplay("?{Variable.Name}")]
 public sealed record GroupVariable(SparqlVariable Variable) : GroupCondition;
 
 /// <summary>Grouping by an expression.</summary>
 /// <param name="Expression">The grouping expression.</param>
+/// <remarks>SPARQL <c>BuiltInCall</c> / <c>FunctionCall</c> in <c>GroupCondition</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rGroupCondition">SPARQL 1.2 §19.8 [GroupCondition]</see>.</remarks>
 [DebuggerDisplay("expr")]
 public sealed record GroupExpression(ExpressionNode Expression) : GroupCondition;
 
 /// <summary>Grouping by an expression bound to a variable: <c>(expr AS ?var)</c>.</summary>
 /// <param name="Expression">The grouping expression.</param>
 /// <param name="AsVariable">The variable the expression binds to.</param>
+/// <remarks>SPARQL <c>( Expression AS Var )</c> in <c>GroupCondition</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rGroupCondition">SPARQL 1.2 §19.8 [GroupCondition]</see>.</remarks>
 [DebuggerDisplay("(expr AS ?{AsVariable.Name})")]
 public sealed record GroupExpressionAs(ExpressionNode Expression, SparqlVariable AsVariable) : GroupCondition;
 
 /// <summary>A <c>HAVING</c> clause: the conditions constraining grouped solutions.</summary>
 /// <param name="Conditions">The having conditions.</param>
+/// <remarks>SPARQL <c>HavingClause</c> / <c>HavingCondition</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rHavingClause">SPARQL 1.2 §19.8 [HavingClause]</see>.</remarks>
 [DebuggerDisplay("HAVING [{Conditions.Count}]")]
 public sealed record HavingClause(IReadOnlyList<ExpressionNode> Conditions);
 
 /// <summary>An <c>ORDER BY</c> clause: the ordering conditions in priority order.</summary>
 /// <param name="Conditions">The order conditions.</param>
+/// <remarks>SPARQL <c>OrderClause</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rOrderClause">SPARQL 1.2 §19.8 [OrderClause]</see>.</remarks>
 [DebuggerDisplay("ORDER BY [{Conditions.Count}]")]
 public sealed record OrderClause(IReadOnlyList<OrderCondition> Conditions);
 
 /// <summary>One <c>ORDER BY</c> condition with its direction.</summary>
+/// <remarks>SPARQL <c>OrderCondition</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rOrderCondition">SPARQL 1.2 §19.8 [OrderCondition]</see>.</remarks>
 public abstract record OrderCondition;
 
 /// <summary>An ascending order condition (the default direction).</summary>
 /// <param name="Expression">The ordering key expression.</param>
+/// <remarks>SPARQL <c>OrderCondition</c> (<c>ASC</c>). See <see href="https://www.w3.org/TR/sparql12-query/#rOrderCondition">SPARQL 1.2 §19.8 [OrderCondition]</see>.</remarks>
 [DebuggerDisplay("ASC")]
 public sealed record OrderAscending(ExpressionNode Expression) : OrderCondition;
 
 /// <summary>A descending order condition.</summary>
 /// <param name="Expression">The ordering key expression.</param>
+/// <remarks>SPARQL <c>OrderCondition</c> (<c>DESC</c>). See <see href="https://www.w3.org/TR/sparql12-query/#rOrderCondition">SPARQL 1.2 §19.8 [OrderCondition]</see>.</remarks>
 [DebuggerDisplay("DESC")]
 public sealed record OrderDescending(ExpressionNode Expression) : OrderCondition;

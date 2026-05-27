@@ -7,6 +7,7 @@ namespace Lumoin.Veritas.Sparql.Ast;
 /// The reserved built-in functions a <see cref="BuiltInCallExpression"/> can name.
 /// </summary>
 /// <remarks>
+/// <para>
 /// This is the closed dispatch set the expression evaluator switches over. The
 /// grammar's <c>BOUND</c>, <c>IF</c>, and <c>COALESCE</c> built-ins are deliberately
 /// absent: they get dedicated AST nodes (<see cref="BoundExpression"/>,
@@ -14,6 +15,8 @@ namespace Lumoin.Veritas.Sparql.Ast;
 /// <see cref="BuiltInCallExpression"/>. The lexer still interns the canonical
 /// upper-case name as the token payload; the parser maps that payload to this enum
 /// at the AST-construction site via <see cref="SparqlFunctions.BuiltInFromName"/>.
+/// </para>
+/// <para>SPARQL <c>BuiltInCall</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rBuiltInCall">SPARQL 1.2 §19.8 [BuiltInCall]</see>.</para>
 /// </remarks>
 public enum BuiltInFunction
 {
@@ -199,9 +202,12 @@ public enum BuiltInFunction
 /// The set-function (aggregate) operators an <see cref="AggregateExpression"/> can name.
 /// </summary>
 /// <remarks>
+/// <para>
 /// As with <see cref="BuiltInFunction"/>, the lexer interns the canonical upper-case
 /// name and the parser maps it to this enum via
 /// <see cref="SparqlFunctions.AggregateFromName"/>.
+/// </para>
+/// <para>SPARQL <c>Aggregate</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rAggregate">SPARQL 1.2 §19.8 [Aggregate]</see>.</para>
 /// </remarks>
 public enum AggregateFunction
 {

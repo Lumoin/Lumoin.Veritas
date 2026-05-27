@@ -9,6 +9,7 @@ namespace Lumoin.Veritas.Sparql.Ast;
 /// update operations). The parser dispatches on the first keyword after the
 /// prologue.
 /// </summary>
+/// <remarks>SPARQL <c>QueryUnit</c> / <c>UpdateUnit</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rQueryUnit">SPARQL 1.2 §19.8 [QueryUnit]</see>.</remarks>
 public abstract record SparqlRequest;
 
 /// <summary>
@@ -22,6 +23,7 @@ public abstract record SparqlRequest;
 /// <param name="Where">The <c>WHERE</c> graph pattern.</param>
 /// <param name="Modifier">The solution modifiers (group, having, order, slice).</param>
 /// <param name="Values">The trailing <c>VALUES</c> block, or <c>null</c>.</param>
+/// <remarks>SPARQL <c>Query</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rQuery">SPARQL 1.2 §19.8 [Query]</see>.</remarks>
 [DebuggerDisplay("SparqlQuery {Form}")]
 public sealed record SparqlQuery(
     Prologue Prologue,
@@ -44,6 +46,7 @@ public sealed record SparqlQuery(
 /// </remarks>
 /// <param name="InitialPrologue">The leading prologue shared by the operations.</param>
 /// <param name="Operations">The update operations, in order.</param>
+/// <remarks>SPARQL <c>Update</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rUpdate">SPARQL 1.2 §19.8 [Update]</see>.</remarks>
 [DebuggerDisplay("SparqlUpdateRequest ops={Operations.Count}")]
 public sealed record SparqlUpdateRequest(
     Prologue InitialPrologue,
@@ -54,4 +57,5 @@ public sealed record SparqlUpdateRequest(
 /// in this build; the future Update batch defines the operation forms (INSERT,
 /// DELETE, LOAD, CLEAR, CREATE, DROP, COPY, MOVE, ADD).
 /// </summary>
+/// <remarks>SPARQL <c>Update1</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rUpdate1">SPARQL 1.2 §19.8 [Update1]</see>.</remarks>
 public abstract record UpdateOperation;
