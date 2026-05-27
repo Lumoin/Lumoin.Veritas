@@ -136,6 +136,53 @@ After the recovery batch, a pre-B pass to finish Milestone A and reach the algeb
    `BlankNodeDelegate`, preserving spans), so the translator sees the four core term cases; + the `Algebra/`
    and `Translation/` namespace layout (§5.1). The direct on-ramp to Milestone B; arguably its first slice.
 
+### ⏵ PRE-B RESUME ANCHOR — execution guide for items 1–4 above (start here after a clear)
+
+State: branch `sparql-query-engine`, tree clean+green, HEAD `d777300`. Everything parses **value-based**
+(never throws on malformed input — diagnostics into a `DiagnosticBag`, error nodes at each product base);
+the SPARQL AST has **uniform spans** on every node; the diagnostic catalogue is audited. Do items in the
+order 1 → 2 → 3 → 4 (additive features first; the standalone-reified block-shape and the normalization pass
+are the design-heavy core). Commit each as its own green milestone.
+
+**Build/test (MTP — `dotnet test` does NOT work; these are the exact commands that worked all session):**
+- Build: `dotnet build src/Lumoin.Veritas.Sparql/Lumoin.Veritas.Sparql.csproj -clp:ErrorsOnly --nologo`,
+  then `dotnet build Lumoin.Veritas.slnx -clp:ErrorsOnly --nologo` (0 warnings required — `TreatWarningsAsErrors`).
+- **Rebuild the TEST project before running the exe** (`dotnet build test/Lumoin.Veritas.Tests/Lumoin.Veritas.Tests.csproj …`)
+  — the runner executes the built dll, so a stale exe silently runs old tests (a gotcha I hit with KnownGaps).
+- Run: `& "test\Lumoin.Veritas.Tests\bin\Debug\net10.0\Lumoin.Veritas.Tests.exe" --filter "FullyQualifiedName~Sparql"`.
+  **Success = no new failures over the 50-test SHACL baseline** (full suite, no filter, must stay at exactly 50
+  failed, all `ShaclValidate`). SPARQL conformance gaps live in `test/.../Sparql/W3cSparqlSyntaxTests.cs`
+  `KnownGaps`: un-skip a gap when you close it — **if a gap still in `KnownGaps` starts passing, the harness
+  FAILS it** (forcing removal). Leave the 13 non-4b-ii gaps (scope analysis, PN_LOCAL, standalone bnode list).
+- Lesson from VERSION: some suite files mix features — `version-01/02/05` embed a standalone reified triple, so
+  they only close with item 3, not item 1/2. After un-skipping, run the suite to see which actually pass.
+
+**Where to work (`src/Lumoin.Veritas.Sparql/Parser/SparqlParser.cs`, ~4300 lines):**
+- Item 1: `DispatchPrimaryExpression` (the `Current.Kind switch` of primaries) gets an `OpenTripleTerm` arm →
+  push `ParseFrameKind.TripleTerm`; add a new expression `frame.Stage` to receive the popped `Ast.TripleTerm`
+  and wrap it in the new `TripleTermExpression` node (add the record to `Ast/ExpressionNode.cs` with a `Span`
+  and a §19.8 `<remarks>`). The expression frame's stages are an `=> frame.Stage switch`; mirror an existing
+  receive stage (e.g. `ExpressionExistsReceived`).
+- Item 2: `StepValues`/`ParseDataBlockValue` (search `ExpectedValuesValue`) — add an `OpenTripleTerm` arm
+  producing a restricted triple term (reuse `StepTripleTerm` but reject variables / nested-triple-term subjects;
+  the `tripleterm-subject-*` negatives define the restriction).
+- Item 3: `StepTriple` — `TripleSubject`/`TripleSubjectReceived` already push a compound-term frame for a
+  reified-triple subject; after it pops, if the next token is `.`/`}`/`;` (no verb), route the term to the new
+  `BasicGraphPatternBlock.StandaloneNodes` (add it to `Ast/GraphPattern.cs`) instead of `TripleVerb`'s
+  `Expected("a predicate or property path")`. `StepGroupGraphPattern` collects `PendingTriples` into a
+  `BasicGraphPatternBlock` (`FlushPendingTriples`) — thread the standalone nodes alongside. Update
+  `ExtractTemplateTriples` + the `SingleBlockTriples` test helper for the new field.
+- Item 4: new files under `src/Lumoin.Veritas.Sparql/Translation/` (normalization) and `Algebra/`; mirror the
+  Turtle emitter's explicit-stack lowering of collections/bnode-lists; use `VeritasBlankNodes`/`BlankNodeDelegate`
+  for fresh labels; preserve spans onto lowered triples.
+
+**Working pattern that worked this session:** delegate the *mechanical / conformance-gated* passes to a
+`general-purpose` subagent (it ran the §7.0 doc pass + Slice S well — give it the exact files, the idioms, the
+build/test commands, "no commit", and require slice-precise tests), then **review the diff + re-run tests
+yourself** before committing. Do the *AST-shape design* (items 1's node, 3's `StandaloneNodes`, 4's pass)
+directly or with a tight spec — those ripple into Milestone B. Add a unit test per feature pinning the AST
+shape (e.g. `RecordsVersionDeclaration` for VERSION) beyond the conformance pass.
+
 **Not part of the recovery batch (the §7.0 pass above covered it for SPARQL):** the §7.0 convention was a
 Milestone-A-completion item; with both parsers recovering, Milestone B (algebra translator) can build against
 possibly-error-node ASTs from day one — the original reason recovery was sequenced before it.
