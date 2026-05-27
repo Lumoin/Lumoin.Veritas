@@ -8,6 +8,9 @@ Original paths within the upstream repository:
 
 - `sparql/sparql11/syntax-query/` → `Material/Sparql/syntax-query/`
 - `sparql/sparql12/syntax/` → `Material/Sparql/syntax/`
+- `sparql/sparql12/syntax-triple-terms-positive/` → `Material/Sparql/syntax-triple-terms-positive/`
+- `sparql/sparql12/syntax-triple-terms-negative/` → `Material/Sparql/syntax-triple-terms-negative/`
+- `sparql/sparql12/version/` → `Material/Sparql/version/`
 
 Licensed under the dual W3C Test Suite licence and W3C 3-clause
 BSD licence per the upstream `LICENSE.md`:
@@ -30,13 +33,18 @@ covering features the parser implements:
   `mf:NegativeSyntaxTest11`).
 - `syntax/` — SPARQL 1.2 general query syntax (`mf:PositiveSyntaxTest` /
   `mf:NegativeSyntaxTest`).
+- `syntax-triple-terms-positive/` & `syntax-triple-terms-negative/` — RDF 1.2
+  triple terms, reified triples, reifiers, and object annotations (Slice 4b-ii).
+- `version/` — the SPARQL 1.2 `VERSION` prologue declaration.
+
+A few RDF 1.2 sub-features the parser does not yet wire — standalone reified
+triples (`<< … >>` with an empty property list), triple terms in VALUES and
+expression positions, and the `VERSION` declaration itself — are recorded as
+self-correcting known-gaps in `W3cSparqlSyntaxTests.KnownGaps` (reported
+inconclusive; the run fails if any starts passing) until those slices land.
 
 Deferred:
 
-- The RDF 1.2 triple-term syntax suites
-  (`sparql/sparql12/syntax-triple-terms-{positive,negative}/`) wait on the
-  RDF 1.2 reified-triple / triple-term parser slice; until then the parser
-  would reject valid triple-term syntax and the results would mislead.
 - SPARQL **Update** syntax tests (`mf:*UpdateSyntaxTest*`) are out of scope —
   this build parses queries, not update requests — and the conformance loader
   classifies those test types as unknown, so the runner skips them.

@@ -2777,6 +2777,7 @@ public sealed class SparqlParser
             3 => TripleTermObject(frame),
             4 => TripleTermObjectReceived(frame, incoming),
             5 => TripleTermClose(frame),
+            6 => TripleTermSubjectReceived(frame, incoming),
             _ => throw new SparqlParseException("Triple term reached an unknown stage.", frame.StartSpan)
         };
 
@@ -2791,12 +2792,31 @@ public sealed class SparqlParser
         return StepResult.Continue();
     }
 
-    /// <summary>Parses the inner subject (a leaf term; nesting is rejected) and moves to the verb.</summary>
+    /// <summary>Parses the inner subject — a nested triple term (pushed) or a leaf term — and moves to the verb.</summary>
     /// <param name="frame">The triple-term frame.</param>
     /// <returns>The instruction for the driver.</returns>
     private StepResult TripleTermSubject(ParseFrame frame)
     {
+        if(Current.Kind == SparqlTokenKind.OpenTripleTerm)
+        {
+            frame.Stage = 6;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.TripleTerm, StartSpan = Current.Span });
+        }
+
         frame.Subject = ParseVarOrTerm();
+        frame.Stage = 2;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Adopts a popped nested triple-term subject and moves to the verb.</summary>
+    /// <param name="frame">The triple-term frame.</param>
+    /// <param name="incoming">The popped subject term.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult TripleTermSubjectReceived(ParseFrame frame, object? incoming)
+    {
+        frame.Subject = Pop<TriplePatternTerm>(incoming);
         frame.Stage = 2;
 
         return StepResult.Continue();

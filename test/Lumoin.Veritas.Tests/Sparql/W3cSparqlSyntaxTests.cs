@@ -58,6 +58,29 @@ internal sealed class W3cSparqlSyntaxTests
         ["GROUP BY variable in-scope (2)"] = "GROUP BY scope — requires scope analysis",
         ["Nested aggregate functions"] = "nested aggregates — requires static aggregate analysis",
         ["syntax-propertyPaths-01.rq"] = "standalone blank-node property list — needs the sugar-expansion pass",
+
+        // RDF 1.2 reification (Slice 4b-ii) — features not yet wired; tracked for follow-up.
+        ["basic-anonreifier-08.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
+        ["basic-anonreifier-09.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
+        ["basic-anonreifier-10.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
+        ["basic-anonreifier-11.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
+        ["basic-anonreifier-12.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
+        ["basic-anonreifier-13.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
+        ["basic-reifier-08.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
+        ["basic-reifier-09.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
+        ["basic-reifier-10.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
+        ["basic-reifier-11.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
+        ["basic-reifier-12.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
+        ["basic-reifier-13.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
+        ["basic-tripleterm-05.rq"] = "triple term in a VALUES data block — VALUES triple-term parsing not yet wired",
+        ["expr-tripleterm-01.rq"] = "triple term in an expression position — expression-position triple-term parsing not yet wired",
+        ["expr-tripleterm-06.rq"] = "triple term in an expression position — expression-position triple-term parsing not yet wired",
+        ["version-01.rq"] = "VERSION prologue declaration + standalone reified triple — not yet wired",
+        ["version-02.rq"] = "VERSION prologue declaration + standalone reified triple — not yet wired",
+        ["version-03.rq"] = "VERSION prologue declaration — not yet parsed",
+        ["version-04.rq"] = "VERSION prologue declaration — not yet parsed",
+        ["version-05.rq"] = "VERSION prologue declaration — not yet parsed",
+        ["version-06.rq"] = "VERSION prologue declaration — not yet parsed",
     };
 
     /// <summary>Runs one SPARQL 1.1 query-syntax test.</summary>
@@ -73,6 +96,27 @@ internal sealed class W3cSparqlSyntaxTests
     [TestMethod]
     [W3cManifestData("Sparql", "syntax")]
     public Task RunW3cSparql12SyntaxTest(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
+    /// <summary>Runs one SPARQL 1.2 RDF-1.2 triple-term positive-syntax test.</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "syntax-triple-terms-positive")]
+    public Task RunW3cSparql12TripleTermsPositiveTest(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
+    /// <summary>Runs one SPARQL 1.2 RDF-1.2 triple-term negative-syntax test.</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "syntax-triple-terms-negative")]
+    public Task RunW3cSparql12TripleTermsNegativeTest(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
+    /// <summary>Runs one SPARQL 1.2 <c>VERSION</c>-declaration syntax test.</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "version")]
+    public Task RunW3cSparql12VersionTest(W3cTestCase testCase) => RunAndAssertAsync(testCase);
 
     /// <summary>
     /// Runs a test case and applies the outcome, translating a known gap into an inconclusive result

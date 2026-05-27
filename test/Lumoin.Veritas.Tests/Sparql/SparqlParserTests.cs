@@ -1153,13 +1153,15 @@ internal sealed class SparqlParserTests
         Assert.Throws<SparqlParseException>(() => ParseQuery("PREFIX : <http://e/> SELECT * WHERE { <<( ?s ?p ?o )>> . }", pool));
     }
 
-    /// <summary>A triple term whose subject is itself a triple term is rejected (subjects cannot nest).</summary>
+    /// <summary>A triple term's subject may itself be a triple term (nesting in subject position).</summary>
     [TestMethod]
-    public void TripleTermNestedSubjectThrows()
+    public void ParsesTripleTermWithNestedSubject()
     {
         using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * { <<( <<( :s :p :o )>> :q :z )>> :p1 :o1 }", pool);
 
-        Assert.Throws<SparqlParseException>(() => ParseQuery("PREFIX : <http://e/> SELECT * { <<( <<( :s :p :o )>> :q :z )>> :p :o }", pool));
+        AstTripleTerm outer = (AstTripleTerm)SingleBlockTriples(query)[0].Subject;
+        Assert.IsInstanceOfType<AstTripleTerm>(outer.Inner.Subject);
     }
 
     /// <summary>A property path is rejected as a triple term's verb.</summary>
