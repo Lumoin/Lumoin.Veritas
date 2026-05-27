@@ -292,6 +292,25 @@ internal sealed class SparqlParserTests
         Assert.AreEqual("http://example.org/", query.Prologue.Prefixes[0].Namespace.Value.ToString());
     }
 
+    /// <summary>A VERSION declaration is recorded on the prologue with its short-string label.</summary>
+    [TestMethod]
+    public void RecordsVersionDeclaration()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("VERSION \"1.2\" ASK { ?s ?p ?o }", pool);
+
+        Assert.HasCount(1, query.Prologue.Versions);
+        Assert.AreEqual("1.2", query.Prologue.Versions[0].Version.ToString());
+    }
+
+    /// <summary>A long (triple-quoted) VERSION argument is rejected.</summary>
+    [TestMethod]
+    public void RejectsLongStringVersionArgument()
+    {
+        using Utf8StringPool pool = new();
+        AssertParseError("VERSION \"\"\"1.2\"\"\" ASK { ?s ?p ?o }", pool, WellKnownDiagnostics.Sparql.InvalidVersionArgument);
+    }
+
     /// <summary>An unbound prefix is a parse error.</summary>
     [TestMethod]
     public void UnboundPrefixThrows()

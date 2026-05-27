@@ -76,12 +76,9 @@ internal sealed class W3cSparqlSyntaxTests
         ["basic-tripleterm-05.rq"] = "triple term in a VALUES data block — VALUES triple-term parsing not yet wired",
         ["expr-tripleterm-01.rq"] = "triple term in an expression position — expression-position triple-term parsing not yet wired",
         ["expr-tripleterm-06.rq"] = "triple term in an expression position — expression-position triple-term parsing not yet wired",
-        ["version-01.rq"] = "VERSION prologue declaration + standalone reified triple — not yet wired",
-        ["version-02.rq"] = "VERSION prologue declaration + standalone reified triple — not yet wired",
-        ["version-03.rq"] = "VERSION prologue declaration — not yet parsed",
-        ["version-04.rq"] = "VERSION prologue declaration — not yet parsed",
-        ["version-05.rq"] = "VERSION prologue declaration — not yet parsed",
-        ["version-06.rq"] = "VERSION prologue declaration — not yet parsed",
+        ["version-01.rq"] = "VERSION + standalone reified triple — VERSION parses, but the standalone << … >> still needs the BGP subject-only assertion",
+        ["version-02.rq"] = "VERSION + standalone reified triple — VERSION parses, but the standalone << … >> still needs the BGP subject-only assertion",
+        ["version-05.rq"] = "VERSION + standalone reified triple — VERSION parses, but the standalone << … >> still needs the BGP subject-only assertion",
     };
 
     /// <summary>Runs one SPARQL 1.1 query-syntax test.</summary>

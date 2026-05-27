@@ -483,6 +483,7 @@ public sealed class SparqlParser
     {
         frame.Bases ??= [];
         frame.Prefixes ??= [];
+        frame.Versions ??= [];
 
         if(Current.Kind == SparqlTokenKind.BaseKeyword)
         {
@@ -494,6 +495,13 @@ public sealed class SparqlParser
         if(Current.Kind == SparqlTokenKind.PrefixKeyword)
         {
             ParsePrefixDeclaration(frame);
+
+            return StepResult.Continue();
+        }
+
+        if(Current.Kind == SparqlTokenKind.VersionKeyword)
+        {
+            ParseVersionDeclaration(frame);
 
             return StepResult.Continue();
         }
@@ -965,13 +973,14 @@ public sealed class SparqlParser
     {
         List<BaseDecl> bases = frame.Bases!;
         List<PrefixDecl> prefixes = frame.Prefixes!;
+        List<VersionDecl> versions = frame.Versions!;
 
-        if(bases.Count == 0 && prefixes.Count == 0)
+        if(bases.Count == 0 && prefixes.Count == 0 && versions.Count == 0)
         {
-            return new Prologue(EmptySpanAt(frame.StartSpan), bases, prefixes);
+            return new Prologue(EmptySpanAt(frame.StartSpan), bases, prefixes, versions);
         }
 
-        //Declarations interleave in source across the two lists, so take the earliest-starting and the
+        //Declarations interleave in source across the three lists, so take the earliest-starting and the
         //latest-ending declaration regardless of which list each is in.
         SourceSpan? earliest = null;
         SourceSpan? latest = null;
@@ -985,7 +994,12 @@ public sealed class SparqlParser
             ExtendPrologueBounds(prefix.Span, ref earliest, ref latest);
         }
 
-        return new Prologue(CombineSpans(earliest!.Value, latest!.Value), bases, prefixes);
+        foreach(VersionDecl version in versions)
+        {
+            ExtendPrologueBounds(version.Span, ref earliest, ref latest);
+        }
+
+        return new Prologue(CombineSpans(earliest!.Value, latest!.Value), bases, prefixes, versions);
     }
 
     /// <summary>
@@ -4358,6 +4372,31 @@ public sealed class SparqlParser
         IriRef ns = ConsumeIriRef();
         prefixMap[prefixLabel] = ns.Value;
         frame.Prefixes!.Add(new PrefixDecl(CombineSpans(keywordSpan, ns.Span), prefixLabel, ns));
+    }
+
+    /// <summary>
+    /// Parses a <c>VERSION</c> declaration (RDF 1.2 / SPARQL 1.2), recording its short-quoted string
+    /// version label. A long (triple-quoted) string or any non-string argument is recovered, not thrown.
+    /// </summary>
+    /// <param name="frame">The request frame accumulating the prologue.</param>
+    private void ParseVersionDeclaration(ParseFrame frame)
+    {
+        SourceSpan keywordSpan = Current.Span;
+        Advance();
+
+        //The version specifier is a short-quoted string label; a long string or a non-string is invalid.
+        if(Current.Kind != SparqlTokenKind.StringLiteral)
+        {
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.InvalidVersionArgument, Current.Span, "Expected a short-quoted version string after VERSION.");
+            ResyncTo(ParseFrameKind.Request, Current.Span, out _);
+
+            return;
+        }
+
+        Utf8String version = Current.Value;
+        SourceSpan versionSpan = Current.Span;
+        Advance();
+        frame.Versions!.Add(new VersionDecl(CombineSpans(keywordSpan, versionSpan), version));
     }
 
     /// <summary>

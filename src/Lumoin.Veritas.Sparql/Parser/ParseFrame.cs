@@ -45,6 +45,9 @@ internal sealed class ParseFrame
     /// <summary>Gets or sets the accumulated <c>PREFIX</c> declarations of the request prologue.</summary>
     public List<PrefixDecl>? Prefixes { get; set; }
 
+    /// <summary>Gets or sets the accumulated <c>VERSION</c> declarations of the request prologue.</summary>
+    public List<VersionDecl>? Versions { get; set; }
+
     /// <summary>Gets or sets the parsed query-form head once it is available.</summary>
     public QueryForm? Form { get; set; }
 
