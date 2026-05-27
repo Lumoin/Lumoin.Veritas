@@ -34,7 +34,7 @@ public sealed record ErrorGraphPattern(
     SourceSpan Span,
     Utf8String ExpectedProduction,
     ImmutableArray<Utf8String> DiagnosticCodes,
-    ImmutableArray<SparqlToken> SkippedTokens) : GraphPattern;
+    ImmutableArray<SparqlToken> SkippedTokens) : GraphPattern(Span);
 
 /// <summary>A query-form head (SELECT/CONSTRUCT/ASK/DESCRIBE) the parser could not parse.</summary>
 /// <param name="Span">The source extent covering the point of failure and the tokens skipped to resynchronise.</param>
@@ -46,7 +46,7 @@ public sealed record ErrorQueryForm(
     SourceSpan Span,
     Utf8String ExpectedProduction,
     ImmutableArray<Utf8String> DiagnosticCodes,
-    ImmutableArray<SparqlToken> SkippedTokens) : QueryForm;
+    ImmutableArray<SparqlToken> SkippedTokens) : QueryForm(Span);
 
 /// <summary>An expression the parser could not parse.</summary>
 /// <param name="Span">The source extent covering the point of failure and the tokens skipped to resynchronise.</param>
@@ -58,7 +58,7 @@ public sealed record ErrorExpression(
     SourceSpan Span,
     Utf8String ExpectedProduction,
     ImmutableArray<Utf8String> DiagnosticCodes,
-    ImmutableArray<SparqlToken> SkippedTokens) : ExpressionNode;
+    ImmutableArray<SparqlToken> SkippedTokens) : ExpressionNode(Span);
 
 /// <summary>A property-path expression the parser could not parse.</summary>
 /// <param name="Span">The source extent covering the point of failure and the tokens skipped to resynchronise.</param>
@@ -94,7 +94,7 @@ public sealed record ErrorGraphTerm(
     SourceSpan Span,
     Utf8String ExpectedProduction,
     ImmutableArray<Utf8String> DiagnosticCodes,
-    ImmutableArray<SparqlToken> SkippedTokens) : GraphTerm;
+    ImmutableArray<SparqlToken> SkippedTokens) : GraphTerm(Span);
 
 /// <summary>An RDF 1.2 annotation (a reifier <c>~</c> or an annotation block <c>{| … |}</c>) the parser could not parse.</summary>
 /// <param name="Span">The source extent covering the point of failure and the tokens skipped to resynchronise.</param>

@@ -327,6 +327,17 @@ public sealed class SparqlParser
     }
 
     /// <summary>
+    /// Returns a zero-width span at the start of <paramref name="at"/>, for a production that matched no
+    /// tokens but still has a faithful source position (the cursor where it would have begun).
+    /// </summary>
+    /// <param name="at">The span whose start position the empty extent sits at.</param>
+    /// <returns>The zero-width span at that position.</returns>
+    private static SourceSpan EmptySpanAt(SourceSpan at)
+    {
+        return new SourceSpan(at.StartByte, at.StartByte, at.StartLine, at.StartColumn, at.StartLine, at.StartColumn);
+    }
+
+    /// <summary>
     /// Downcasts a popped child frame's result to the type the receiving step expects. The work stack
     /// hands every frame's product up through one untyped <c>object?</c> slot because those products
     /// share no common base — graph patterns, expressions, terms, paths, lists, clauses — so each
@@ -514,8 +525,8 @@ public sealed class SparqlParser
     private StepResult RequestRecoverForm(ParseFrame frame)
     {
         frame.Form = RecoverQueryForm(ParseFrameKind.Request, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedQueryForm, Current.Span, "Expected a query form (SELECT, CONSTRUCT, ASK, or DESCRIBE).", "Query");
-        frame.Where = new WhereClause(new GroupGraphPattern([]));
-        frame.Dataset = new DatasetClause([], []);
+        frame.Where = new WhereClause(Current.Span, new GroupGraphPattern(Current.Span, []));
+        frame.Dataset = new DatasetClause(Current.Span, [], []);
         frame.Bases ??= [];
         frame.Prefixes ??= [];
         frame.Stage = 13;
@@ -539,7 +550,7 @@ public sealed class SparqlParser
     private StepResult RequestAsk(ParseFrame frame)
     {
         Advance();
-        frame.Form = new AskQuery();
+        frame.Form = new AskQuery(lastConsumedSpan);
         frame.Stage = 3;
 
         return StepResult.Continue();
@@ -550,6 +561,8 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private StepResult RequestConstruct(ParseFrame frame)
     {
+        //Stash the CONSTRUCT keyword span so the form span covers it through the template / WHERE end.
+        frame.VerbSpanStart = Current.Span;
         Advance();
 
         //CONSTRUCT { template } ... : parse the explicit template. CONSTRUCT [dataset] WHERE { triples }:
@@ -571,9 +584,9 @@ public sealed class SparqlParser
     /// <param name="frame">The request frame.</param>
     /// <param name="incoming">The popped template triple list.</param>
     /// <returns>The instruction for the driver.</returns>
-    private static StepResult RequestConstructTemplate(ParseFrame frame, object? incoming)
+    private StepResult RequestConstructTemplate(ParseFrame frame, object? incoming)
     {
-        frame.Form = new ConstructQuery(Pop<List<TriplePattern>>(incoming));
+        frame.Form = new ConstructQuery(CombineSpans(frame.VerbSpanStart, lastConsumedSpan), Pop<List<TriplePattern>>(incoming));
         frame.Stage = 3;
 
         return StepResult.Continue();
@@ -584,6 +597,8 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private StepResult RequestDescribe(ParseFrame frame)
     {
+        //Stash the DESCRIBE keyword span so the form span covers it through the last target.
+        frame.VerbSpanStart = Current.Span;
         Advance();
         frame.DescribeTargets = [];
         frame.Stage = 15;
@@ -602,7 +617,7 @@ public sealed class SparqlParser
         if(frame.DescribeTargets!.Count == 0 && Current.Kind == SparqlTokenKind.Star)
         {
             Advance();
-            frame.Form = new DescribeQuery(IsStar: true, Targets: []);
+            frame.Form = new DescribeQuery(CombineSpans(frame.VerbSpanStart, lastConsumedSpan), IsStar: true, Targets: []);
             frame.Stage = 3;
 
             return StepResult.Continue();
@@ -610,14 +625,15 @@ public sealed class SparqlParser
 
         if(Current.Kind is SparqlTokenKind.Iri or SparqlTokenKind.PrefixedName)
         {
-            frame.DescribeTargets!.Add(new DescribeIri(ConsumeIriOrPrefixedName("a DESCRIBE target IRI")));
+            IriRef iri = ConsumeIriOrPrefixedName("a DESCRIBE target IRI");
+            frame.DescribeTargets!.Add(new DescribeIri(iri.Span, iri));
 
             return StepResult.Continue();
         }
 
         if(Current.Kind == SparqlTokenKind.Variable)
         {
-            frame.DescribeTargets!.Add(new DescribeVariable(new SparqlVariable(Current.Value)));
+            frame.DescribeTargets!.Add(new DescribeVariable(Current.Span, new SparqlVariable(Current.Value)));
             Advance();
 
             return StepResult.Continue();
@@ -629,7 +645,7 @@ public sealed class SparqlParser
             _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedDescribeTarget, Current.Span, "Expected a DESCRIBE target (a variable, an IRI, or '*').");
         }
 
-        frame.Form = new DescribeQuery(IsStar: false, frame.DescribeTargets);
+        frame.Form = new DescribeQuery(CombineSpans(frame.VerbSpanStart, lastConsumedSpan), IsStar: false, frame.DescribeTargets);
         frame.Stage = 3;
 
         return StepResult.Continue();
@@ -652,8 +668,13 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private StepResult RequestDataset(ParseFrame frame)
     {
-        frame.DefaultGraphs ??= [];
-        frame.NamedGraphs ??= [];
+        if(frame.DefaultGraphs is null)
+        {
+            //First entry: record where the dataset clauses begin so an empty dataset still has a position.
+            frame.DatasetSpanStart = Current.Span;
+            frame.DefaultGraphs = [];
+            frame.NamedGraphs = [];
+        }
 
         if(Current.Kind == SparqlTokenKind.FromKeyword)
         {
@@ -662,7 +683,9 @@ public sealed class SparqlParser
             return StepResult.Continue();
         }
 
-        frame.Dataset = new DatasetClause(frame.DefaultGraphs, frame.NamedGraphs);
+        bool hasClause = frame.DefaultGraphs.Count > 0 || frame.NamedGraphs!.Count > 0;
+        SourceSpan datasetSpan = hasClause ? CombineSpans(frame.DatasetSpanStart, lastConsumedSpan) : EmptySpanAt(frame.DatasetSpanStart);
+        frame.Dataset = new DatasetClause(datasetSpan, frame.DefaultGraphs, frame.NamedGraphs!);
         frame.Stage = 4;
 
         return StepResult.Continue();
@@ -673,12 +696,16 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private StepResult RequestWhere(ParseFrame frame)
     {
+        //The WHERE clause begins at the WHERE keyword, or at the opening brace when the keyword is elided.
+        frame.WhereSpanStart = Current.Span;
+
         if(Current.Kind == SparqlTokenKind.WhereKeyword)
         {
             Advance();
             if(Current.Kind != SparqlTokenKind.OpenBrace)
             {
-                frame.Where = new WhereClause(RecoverGraphPattern(ParseFrameKind.Request, Current.Span, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after WHERE.", "GroupGraphPattern"));
+                GraphPattern recovered = RecoverGraphPattern(ParseFrameKind.Request, Current.Span, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after WHERE.", "GroupGraphPattern");
+                frame.Where = new WhereClause(CombineSpans(frame.WhereSpanStart, recovered.Span), recovered);
                 frame.Stage = 6;
 
                 return StepResult.Continue();
@@ -695,13 +722,15 @@ public sealed class SparqlParser
         //The WHERE clause is optional only for DESCRIBE; an absent one is an empty group.
         if(frame.Form is DescribeQuery)
         {
-            frame.Where = new WhereClause(new GroupGraphPattern([]));
+            SourceSpan emptySpan = EmptySpanAt(Current.Span);
+            frame.Where = new WhereClause(emptySpan, new GroupGraphPattern(emptySpan, []));
             frame.Stage = 6;
 
             return StepResult.Continue();
         }
 
-        frame.Where = new WhereClause(RecoverGraphPattern(ParseFrameKind.Request, Current.Span, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' to begin the WHERE group graph pattern.", "GroupGraphPattern"));
+        GraphPattern recoveredPattern = RecoverGraphPattern(ParseFrameKind.Request, Current.Span, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' to begin the WHERE group graph pattern.", "GroupGraphPattern");
+        frame.Where = new WhereClause(CombineSpans(frame.WhereSpanStart, recoveredPattern.Span), recoveredPattern);
         frame.Stage = 6;
 
         return StepResult.Continue();
@@ -714,12 +743,12 @@ public sealed class SparqlParser
     private static StepResult RequestWherePattern(ParseFrame frame, object? incoming)
     {
         GraphPattern pattern = Pop<GraphPattern>(incoming);
-        frame.Where = new WhereClause(pattern);
+        frame.Where = new WhereClause(CombineSpans(frame.WhereSpanStart, pattern.Span), pattern);
 
         //In the CONSTRUCT WHERE short form the WHERE triples double as the template.
         if(frame.IsConstructShort)
         {
-            frame.Form = new ConstructQuery(ExtractTemplateTriples(pattern));
+            frame.Form = new ConstructQuery(CombineSpans(frame.VerbSpanStart, pattern.Span), ExtractTemplateTriples(pattern));
         }
 
         frame.Stage = 6;
@@ -756,6 +785,9 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private StepResult RequestGroupBy(ParseFrame frame)
     {
+        //The solution modifiers begin here, after the WHERE pattern; record the start for the span.
+        frame.ModifierSpanStart = Current.Span;
+
         if(Current.Kind == SparqlTokenKind.GroupKeyword)
         {
             frame.Stage = 7;
@@ -907,15 +939,72 @@ public sealed class SparqlParser
             ResyncTo(ParseFrameKind.Request, Current.Span, out _);
         }
 
+        SourceSpan modifierSpan = frame.Group is not null || frame.Having is not null || frame.Order is not null || frame.Offset is not null || frame.Limit is not null
+            ? CombineSpans(frame.ModifierSpanStart, lastConsumedSpan)
+            : EmptySpanAt(frame.ModifierSpanStart);
+
         SparqlQuery query = new(
-            new Prologue(frame.Bases!, frame.Prefixes!),
+            CombineSpans(frame.StartSpan, lastConsumedSpan),
+            BuildPrologue(frame),
             frame.Form!,
             frame.Dataset!,
             frame.Where!,
-            new SolutionModifier(frame.Group, frame.Having, frame.Order, frame.Offset, frame.Limit),
+            new SolutionModifier(modifierSpan, frame.Group, frame.Having, frame.Order, frame.Offset, frame.Limit),
             frame.Values);
 
         return StepResult.Done(query);
+    }
+
+    /// <summary>
+    /// Assembles the prologue from the request frame's accumulated declarations, spanning from the first
+    /// declaration through the last. An empty prologue is a zero-width span at the request start.
+    /// </summary>
+    /// <param name="frame">The request frame carrying the accumulated declarations.</param>
+    /// <returns>The prologue.</returns>
+    private static Prologue BuildPrologue(ParseFrame frame)
+    {
+        List<BaseDecl> bases = frame.Bases!;
+        List<PrefixDecl> prefixes = frame.Prefixes!;
+
+        if(bases.Count == 0 && prefixes.Count == 0)
+        {
+            return new Prologue(EmptySpanAt(frame.StartSpan), bases, prefixes);
+        }
+
+        //Declarations interleave in source across the two lists, so take the earliest-starting and the
+        //latest-ending declaration regardless of which list each is in.
+        SourceSpan? earliest = null;
+        SourceSpan? latest = null;
+        foreach(BaseDecl @base in bases)
+        {
+            ExtendPrologueBounds(@base.Span, ref earliest, ref latest);
+        }
+
+        foreach(PrefixDecl prefix in prefixes)
+        {
+            ExtendPrologueBounds(prefix.Span, ref earliest, ref latest);
+        }
+
+        return new Prologue(CombineSpans(earliest!.Value, latest!.Value), bases, prefixes);
+    }
+
+    /// <summary>
+    /// Widens the running earliest-start and latest-end prologue bounds to include one declaration span.
+    /// </summary>
+    /// <param name="span">The declaration span to fold in.</param>
+    /// <param name="earliest">The earliest-starting span seen so far, updated in place.</param>
+    /// <param name="latest">The latest-ending span seen so far, updated in place.</param>
+    private static void ExtendPrologueBounds(SourceSpan span, ref SourceSpan? earliest, ref SourceSpan? latest)
+    {
+        if(earliest is null || span.StartByte < earliest.Value.StartByte)
+        {
+            earliest = span;
+        }
+
+        if(latest is null || span.EndByte > latest.Value.EndByte)
+        {
+            latest = span;
+        }
     }
 
     /// <summary>
@@ -960,7 +1049,7 @@ public sealed class SparqlParser
         {
             Advance();
 
-            return StepResult.Done(new SelectQuery(frame.IsDistinct, frame.IsReduced, IsStar: true, Projections: []));
+            return StepResult.Done(new SelectQuery(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.IsDistinct, frame.IsReduced, IsStar: true, Projections: []));
         }
 
         frame.Projections = [];
@@ -979,7 +1068,7 @@ public sealed class SparqlParser
     {
         if(Current.Kind == SparqlTokenKind.Variable)
         {
-            frame.Projections!.Add(new SelectVariable(new SparqlVariable(Current.Value)));
+            frame.Projections!.Add(new SelectVariable(Current.Span, new SparqlVariable(Current.Value)));
             Advance();
 
             return StepResult.Continue();
@@ -987,6 +1076,8 @@ public sealed class SparqlParser
 
         if(Current.Kind == SparqlTokenKind.OpenParen)
         {
+            //The (expr AS ?var) projection begins at the opening paren; record it for the projection span.
+            frame.VerbSpanStart = Current.Span;
             Advance();
             frame.Stage = 2;
 
@@ -998,7 +1089,7 @@ public sealed class SparqlParser
             return StepResult.Done(RecoverQueryForm(ParseFrameKind.SelectClause, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedProjection, Current.Span, "Expected a projected variable, an (expr AS ?var) projection, or '*'.", "SelectClause"));
         }
 
-        return StepResult.Done(new SelectQuery(frame.IsDistinct, frame.IsReduced, IsStar: false, frame.Projections));
+        return StepResult.Done(new SelectQuery(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.IsDistinct, frame.IsReduced, IsStar: false, frame.Projections));
     }
 
     /// <summary>Completes an <c>(expr AS ?var)</c> projection from its popped expression and continues the list.</summary>
@@ -1027,7 +1118,7 @@ public sealed class SparqlParser
         }
 
         Advance();
-        frame.Projections!.Add(new SelectExpressionAs(expression, variable));
+        frame.Projections!.Add(new SelectExpressionAs(CombineSpans(frame.VerbSpanStart, lastConsumedSpan), expression, variable));
         frame.Stage = 1;
 
         return StepResult.Continue();
@@ -1046,7 +1137,7 @@ public sealed class SparqlParser
         _ = ReportRecoverable(code, Current.Span, message);
         ResyncTo(ParseFrameKind.SelectClause, Current.Span, out _);
 
-        return StepResult.Done(new SelectQuery(frame.IsDistinct, frame.IsReduced, IsStar: false, frame.Projections!));
+        return StepResult.Done(new SelectQuery(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.IsDistinct, frame.IsReduced, IsStar: false, frame.Projections!));
     }
 
     /// <summary>
@@ -1090,7 +1181,7 @@ public sealed class SparqlParser
                 Advance();
             }
 
-            return StepResult.Done(new SubSelectPattern(inner));
+            return StepResult.Done(new SubSelectPattern(CombineSpans(frame.StartSpan, lastConsumedSpan), inner));
         }
         else if(incoming is List<TriplePattern> triples)
         {
@@ -1108,7 +1199,7 @@ public sealed class SparqlParser
         {
             //An inline VALUES data block is a member; wrap it as a values pattern.
             FlushPendingTriples(frame);
-            frame.Members!.Add(new ValuesPattern(values));
+            frame.Members!.Add(new ValuesPattern(values.Span, values));
             ConsumeOptionalDot();
         }
 
@@ -1117,7 +1208,7 @@ public sealed class SparqlParser
             FlushPendingTriples(frame);
             Advance();
 
-            return StepResult.Done(new GroupGraphPattern(frame.Members!));
+            return StepResult.Done(new GroupGraphPattern(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.Members!));
         }
 
         //An unclosed group at end of input is finalised with the members gathered so far plus a
@@ -1127,7 +1218,7 @@ public sealed class SparqlParser
             FlushPendingTriples(frame);
             _ = ReportRecoverable(WellKnownDiagnostics.Sparql.UnclosedGroupGraphPattern, Current.Span, "Expected '}' to close the group graph pattern.");
 
-            return StepResult.Done(new GroupGraphPattern(frame.Members!));
+            return StepResult.Done(new GroupGraphPattern(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.Members!));
         }
 
         if(CanStartTriple(Current.Kind))
@@ -1237,7 +1328,7 @@ public sealed class SparqlParser
     {
         if(incoming is GraphPattern right)
         {
-            frame.Accumulated = new UnionPattern(frame.Accumulated!, right);
+            frame.Accumulated = new UnionPattern(CombineSpans(frame.Accumulated!.Span, right.Span), frame.Accumulated, right);
         }
 
         if(Current.Kind != SparqlTokenKind.UnionKeyword)
@@ -1249,7 +1340,8 @@ public sealed class SparqlParser
         if(Current.Kind != SparqlTokenKind.OpenBrace)
         {
             //A missing UNION alternative is folded as an error pattern; the accumulator stands.
-            frame.Accumulated = new UnionPattern(frame.Accumulated!, RecoverGraphPattern(ParseFrameKind.UnionPattern, Current.Span, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after UNION.", "GroupGraphPattern"));
+            GraphPattern missing = RecoverGraphPattern(ParseFrameKind.UnionPattern, Current.Span, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after UNION.", "GroupGraphPattern");
+            frame.Accumulated = new UnionPattern(CombineSpans(frame.Accumulated!.Span, missing.Span), frame.Accumulated, missing);
 
             return StepResult.Done(frame.Accumulated);
         }
@@ -1270,7 +1362,9 @@ public sealed class SparqlParser
             Advance();
             if(Current.Kind != SparqlTokenKind.OpenBrace)
             {
-                return StepResult.Done(new OptionalPattern(RecoverGraphPattern(ParseFrameKind.OptionalPattern, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after OPTIONAL.", "GroupGraphPattern")));
+                GraphPattern recovered = RecoverGraphPattern(ParseFrameKind.OptionalPattern, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after OPTIONAL.", "GroupGraphPattern");
+
+                return StepResult.Done(new OptionalPattern(CombineSpans(frame.StartSpan, recovered.Span), recovered));
             }
 
             frame.Stage = 1;
@@ -1278,7 +1372,9 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GroupGraphPattern, StartSpan = Current.Span });
         }
 
-        return StepResult.Done(new OptionalPattern(Pop<GraphPattern>(incoming)));
+        GraphPattern inner = Pop<GraphPattern>(incoming);
+
+        return StepResult.Done(new OptionalPattern(CombineSpans(frame.StartSpan, inner.Span), inner));
     }
 
     /// <summary>
@@ -1294,7 +1390,9 @@ public sealed class SparqlParser
             Advance();
             if(Current.Kind != SparqlTokenKind.OpenBrace)
             {
-                return StepResult.Done(new MinusPattern(RecoverGraphPattern(ParseFrameKind.MinusPattern, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after MINUS.", "GroupGraphPattern")));
+                GraphPattern recovered = RecoverGraphPattern(ParseFrameKind.MinusPattern, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after MINUS.", "GroupGraphPattern");
+
+                return StepResult.Done(new MinusPattern(CombineSpans(frame.StartSpan, recovered.Span), recovered));
             }
 
             frame.Stage = 1;
@@ -1302,7 +1400,9 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GroupGraphPattern, StartSpan = Current.Span });
         }
 
-        return StepResult.Done(new MinusPattern(Pop<GraphPattern>(incoming)));
+        GraphPattern inner = Pop<GraphPattern>(incoming);
+
+        return StepResult.Done(new MinusPattern(CombineSpans(frame.StartSpan, inner.Span), inner));
     }
 
     /// <summary>
@@ -1319,7 +1419,9 @@ public sealed class SparqlParser
             frame.GraphDesignator = ParseGraphTerm();
             if(Current.Kind != SparqlTokenKind.OpenBrace)
             {
-                return StepResult.Done(new GraphGraphPattern(frame.GraphDesignator, RecoverGraphPattern(ParseFrameKind.GraphPattern, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after the GRAPH designator.", "GroupGraphPattern")));
+                GraphPattern recovered = RecoverGraphPattern(ParseFrameKind.GraphPattern, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after the GRAPH designator.", "GroupGraphPattern");
+
+                return StepResult.Done(new GraphGraphPattern(CombineSpans(frame.StartSpan, recovered.Span), frame.GraphDesignator, recovered));
             }
 
             frame.Stage = 1;
@@ -1327,7 +1429,9 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GroupGraphPattern, StartSpan = Current.Span });
         }
 
-        return StepResult.Done(new GraphGraphPattern(frame.GraphDesignator!, Pop<GraphPattern>(incoming)));
+        GraphPattern inner = Pop<GraphPattern>(incoming);
+
+        return StepResult.Done(new GraphGraphPattern(CombineSpans(frame.StartSpan, inner.Span), frame.GraphDesignator!, inner));
     }
 
     /// <summary>
@@ -1350,7 +1454,9 @@ public sealed class SparqlParser
             frame.GraphDesignator = ParseGraphTerm();
             if(Current.Kind != SparqlTokenKind.OpenBrace)
             {
-                return StepResult.Done(new ServicePattern(frame.GraphDesignator, frame.IsSilent, RecoverGraphPattern(ParseFrameKind.ServicePattern, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after the SERVICE endpoint.", "GroupGraphPattern")));
+                GraphPattern recovered = RecoverGraphPattern(ParseFrameKind.ServicePattern, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after the SERVICE endpoint.", "GroupGraphPattern");
+
+                return StepResult.Done(new ServicePattern(CombineSpans(frame.StartSpan, recovered.Span), frame.GraphDesignator, frame.IsSilent, recovered));
             }
 
             frame.Stage = 1;
@@ -1358,7 +1464,9 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GroupGraphPattern, StartSpan = Current.Span });
         }
 
-        return StepResult.Done(new ServicePattern(frame.GraphDesignator!, frame.IsSilent, Pop<GraphPattern>(incoming)));
+        GraphPattern inner = Pop<GraphPattern>(incoming);
+
+        return StepResult.Done(new ServicePattern(CombineSpans(frame.StartSpan, inner.Span), frame.GraphDesignator!, frame.IsSilent, inner));
     }
 
     /// <summary>
@@ -1467,7 +1575,11 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private static StepResult ExpressionCombine(ParseFrame frame, object? incoming)
     {
-        frame.Left = CombineBinary(frame.OperatorKind, frame.Left!, Pop<ExpressionNode>(incoming));
+        ExpressionNode left = frame.Left!;
+        ExpressionNode right = Pop<ExpressionNode>(incoming);
+
+        //The operator sits between the operands, so the combined span (left start, right end) covers it.
+        frame.Left = CombineBinary(CombineSpans(left.Span, right.Span), frame.OperatorKind, left, right);
         if(IsComparison(frame.OperatorKind))
         {
             frame.SawComparison = true;
@@ -1484,7 +1596,10 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private static StepResult ExpressionWrapUnary(ParseFrame frame, object? incoming)
     {
-        frame.Left = WrapUnary(frame.OperatorKind, Pop<ExpressionNode>(incoming));
+        ExpressionNode operand = Pop<ExpressionNode>(incoming);
+
+        //The frame's start span is the unary operator's position, so it through the operand covers both.
+        frame.Left = WrapUnary(CombineSpans(frame.StartSpan, operand.Span), frame.OperatorKind, operand);
         frame.Stage = 1;
 
         return StepResult.Continue();
@@ -1520,12 +1635,15 @@ public sealed class SparqlParser
     private StepResult ExpressionCallReceived(ParseFrame frame, object? incoming)
     {
         List<ExpressionNode> arguments = Pop<List<ExpressionNode>>(incoming);
+
+        //The call runs from its name (the frame start) through the closing parenthesis just consumed.
+        SourceSpan callSpan = CombineSpans(frame.StartSpan, lastConsumedSpan);
         frame.Left = frame.Pending switch
         {
-            PendingCall.If => BuildIf(arguments, frame.StartSpan),
-            PendingCall.Coalesce => new CoalesceExpression(arguments),
-            PendingCall.Function => new FunctionCallExpression(frame.FunctionIri!.Value, arguments),
-            _ => new BuiltInCallExpression(SparqlFunctions.BuiltInFromName(frame.CallName!.Value), arguments)
+            PendingCall.If => BuildIf(arguments, callSpan),
+            PendingCall.Coalesce => new CoalesceExpression(callSpan, arguments),
+            PendingCall.Function => new FunctionCallExpression(callSpan, frame.FunctionIri!.Value, arguments),
+            _ => new BuiltInCallExpression(callSpan, SparqlFunctions.BuiltInFromName(frame.CallName!.Value), arguments)
         };
         frame.Stage = 1;
 
@@ -1536,12 +1654,15 @@ public sealed class SparqlParser
     /// <param name="frame">The expression frame.</param>
     /// <param name="incoming">The popped candidate-set list.</param>
     /// <returns>The instruction for the driver.</returns>
-    private static StepResult ExpressionInReceived(ParseFrame frame, object? incoming)
+    private StepResult ExpressionInReceived(ParseFrame frame, object? incoming)
     {
         List<ExpressionNode> set = Pop<List<ExpressionNode>>(incoming);
+
+        //The test runs from the left operand through the closing parenthesis of the set just consumed.
+        SourceSpan inSpan = CombineSpans(frame.Left!.Span, lastConsumedSpan);
         frame.Left = frame.Pending == PendingCall.NotIn
-            ? new NotInExpression(frame.Left!, set)
-            : new InExpression(frame.Left!, set);
+            ? new NotInExpression(inSpan, frame.Left!, set)
+            : new InExpression(inSpan, frame.Left!, set);
         frame.SawComparison = true;
         frame.Stage = 1;
 
@@ -1567,9 +1688,12 @@ public sealed class SparqlParser
     private static StepResult ExpressionExistsReceived(ParseFrame frame, object? incoming)
     {
         GraphPattern inner = Pop<GraphPattern>(incoming);
+
+        //The frame start is the EXISTS / NOT keyword, so it through the inner pattern covers the test.
+        SourceSpan existsSpan = CombineSpans(frame.StartSpan, inner.Span);
         frame.Left = frame.OperatorKind == SparqlTokenKind.NotKeyword
-            ? new NotExistsExpression(inner)
-            : new ExistsExpression(inner);
+            ? new NotExistsExpression(existsSpan, inner)
+            : new ExistsExpression(existsSpan, inner);
         frame.Stage = 1;
 
         return StepResult.Continue();
@@ -1606,7 +1730,7 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private StepResult ExpressionVariable(ParseFrame frame)
     {
-        frame.Left = new VariableExpression(new SparqlVariable(Current.Value));
+        frame.Left = new VariableExpression(Current.Span, new SparqlVariable(Current.Value));
         Advance();
         frame.Stage = 1;
 
@@ -1618,7 +1742,9 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private StepResult ExpressionLiteral(ParseFrame frame)
     {
-        frame.Left = new ConstantExpression(ParseRdfLiteral());
+        SourceSpan start = Current.Span;
+        Literal literal = ParseRdfLiteral();
+        frame.Left = new ConstantExpression(CombineSpans(start, lastConsumedSpan), literal);
         frame.Stage = 1;
 
         return StepResult.Continue();
@@ -1643,7 +1769,7 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.ArgumentList, StartSpan = Current.Span });
         }
 
-        frame.Left = new ConstantExpression(new NamedNode(iri.Value));
+        frame.Left = new ConstantExpression(iri.Span, new NamedNode(iri.Value));
         frame.Stage = 1;
 
         return StepResult.Continue();
@@ -1731,14 +1857,14 @@ public sealed class SparqlParser
             {
                 //A missing close paren keeps the parsed BOUND(?v); the diagnostic flags the gap.
                 _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedCloser, Current.Span, "Expected ')' to close BOUND.");
-                frame.Left = new BoundExpression(variable);
+                frame.Left = new BoundExpression(CombineSpans(frame.StartSpan, lastConsumedSpan), variable);
                 frame.Stage = 1;
 
                 return StepResult.Continue();
             }
 
             Advance();
-            frame.Left = new BoundExpression(variable);
+            frame.Left = new BoundExpression(CombineSpans(frame.StartSpan, lastConsumedSpan), variable);
             frame.Stage = 1;
 
             return StepResult.Continue();
@@ -1796,7 +1922,7 @@ public sealed class SparqlParser
             }
 
             Advance();
-            frame.Left = new AggregateExpression(SparqlFunctions.AggregateFromName(name), Argument: null, frame.IsDistinct, IsCountStar: true, GroupConcatSeparator: null);
+            frame.Left = new AggregateExpression(CombineSpans(frame.StartSpan, lastConsumedSpan), SparqlFunctions.AggregateFromName(name), Argument: null, frame.IsDistinct, IsCountStar: true, GroupConcatSeparator: null);
             frame.Stage = 1;
 
             return StepResult.Continue();
@@ -1828,7 +1954,11 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Expression, MinPrecedence = PrecExpression, StartSpan = Current.Span });
         }
 
-        return StepResult.Done(new FilterPattern(Pop<ExpressionNode>(incoming)));
+        ExpressionNode constraint = Pop<ExpressionNode>(incoming);
+
+        //FILTER is frame-produced: its end is the last token consumed by the constraint (the closing ')'
+        //of a bracketed constraint, which the inner expression's own span excludes).
+        return StepResult.Done(new FilterPattern(CombineSpans(frame.StartSpan, lastConsumedSpan), constraint));
     }
 
     /// <summary>
@@ -1873,12 +2003,12 @@ public sealed class SparqlParser
             //A missing close paren keeps the parsed BIND(expr AS ?var); the diagnostic flags the gap.
             _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedCloser, Current.Span, "Expected ')' to close BIND.");
 
-            return StepResult.Done(new BindPattern(bound, variable));
+            return StepResult.Done(new BindPattern(CombineSpans(frame.StartSpan, lastConsumedSpan), bound, variable));
         }
 
         Advance();
 
-        return StepResult.Done(new BindPattern(bound, variable));
+        return StepResult.Done(new BindPattern(CombineSpans(frame.StartSpan, lastConsumedSpan), bound, variable));
     }
 
     /// <summary>
@@ -1963,7 +2093,7 @@ public sealed class SparqlParser
     {
         if(arguments.Count == 3)
         {
-            return new IfExpression(arguments[0], arguments[1], arguments[2]);
+            return new IfExpression(span, arguments[0], arguments[1], arguments[2]);
         }
 
         Report(WellKnownDiagnostics.Sparql.IfArityMismatch, span, $"IF takes exactly three arguments but received {arguments.Count}.");
@@ -1973,7 +2103,7 @@ public sealed class SparqlParser
         ExpressionNode second = arguments.Count > 1 ? arguments[1] : missing;
         ExpressionNode third = arguments.Count > 2 ? arguments[2] : missing;
 
-        return new IfExpression(first, second, third);
+        return new IfExpression(span, first, second, third);
     }
 
     /// <summary>
@@ -2019,7 +2149,7 @@ public sealed class SparqlParser
 
         Advance();
 
-        return new AggregateExpression(SparqlFunctions.AggregateFromName(name), argument, frame.IsDistinct, IsCountStar: false, separator);
+        return new AggregateExpression(CombineSpans(frame.StartSpan, lastConsumedSpan), SparqlFunctions.AggregateFromName(name), argument, frame.IsDistinct, IsCountStar: false, separator);
     }
 
     /// <summary>
@@ -2043,7 +2173,7 @@ public sealed class SparqlParser
             Advance();
         }
 
-        return new AggregateExpression(SparqlFunctions.AggregateFromName(name), argument, frame.IsDistinct, IsCountStar: false, separator);
+        return new AggregateExpression(CombineSpans(frame.StartSpan, lastConsumedSpan), SparqlFunctions.AggregateFromName(name), argument, frame.IsDistinct, IsCountStar: false, separator);
     }
 
     /// <summary>Advances a <c>GROUP BY</c> clause, parsing one grouping condition per step.</summary>
@@ -2072,7 +2202,7 @@ public sealed class SparqlParser
         {
             _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedKeyword, Current.Span, "Expected BY after GROUP.");
 
-            return StepResult.Done(new GroupClause(frame.GroupConditions));
+            return StepResult.Done(new GroupClause(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.GroupConditions));
         }
 
         Advance();
@@ -2091,7 +2221,7 @@ public sealed class SparqlParser
     {
         if(Current.Kind == SparqlTokenKind.Variable)
         {
-            frame.GroupConditions!.Add(new GroupVariable(new SparqlVariable(Current.Value)));
+            frame.GroupConditions!.Add(new GroupVariable(Current.Span, new SparqlVariable(Current.Value)));
             Advance();
 
             return StepResult.Continue();
@@ -2099,6 +2229,8 @@ public sealed class SparqlParser
 
         if(Current.Kind == SparqlTokenKind.OpenParen)
         {
+            //The parenthesised grouping condition begins at the opening paren; record it for the span.
+            frame.VerbSpanStart = Current.Span;
             Advance();
             frame.Stage = 2;
 
@@ -2117,7 +2249,7 @@ public sealed class SparqlParser
             _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedSolutionCondition, Current.Span, "Expected a GROUP BY condition.");
         }
 
-        return StepResult.Done(new GroupClause(frame.GroupConditions));
+        return StepResult.Done(new GroupClause(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.GroupConditions));
     }
 
     /// <summary>Completes a parenthesised grouping condition, with or without an <c>AS</c> binding.</summary>
@@ -2141,14 +2273,14 @@ public sealed class SparqlParser
             if(Current.Kind != SparqlTokenKind.CloseParen)
             {
                 _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedCloser, Current.Span, "Expected ')' to close the GROUP BY expression.");
-                frame.GroupConditions!.Add(new GroupExpressionAs(expression, variable));
+                frame.GroupConditions!.Add(new GroupExpressionAs(CombineSpans(frame.VerbSpanStart, lastConsumedSpan), expression, variable));
                 frame.Stage = 1;
 
                 return StepResult.Continue();
             }
 
             Advance();
-            frame.GroupConditions!.Add(new GroupExpressionAs(expression, variable));
+            frame.GroupConditions!.Add(new GroupExpressionAs(CombineSpans(frame.VerbSpanStart, lastConsumedSpan), expression, variable));
             frame.Stage = 1;
 
             return StepResult.Continue();
@@ -2160,7 +2292,7 @@ public sealed class SparqlParser
         }
 
         Advance();
-        frame.GroupConditions!.Add(new GroupExpression(expression));
+        frame.GroupConditions!.Add(new GroupExpression(CombineSpans(frame.VerbSpanStart, lastConsumedSpan), expression));
         frame.Stage = 1;
 
         return StepResult.Continue();
@@ -2179,7 +2311,7 @@ public sealed class SparqlParser
     {
         _ = ReportRecoverable(code, Current.Span, message);
         ResyncTo(ParseFrameKind.GroupBy, Current.Span, out _);
-        frame.GroupConditions!.Add(new GroupExpression(expression));
+        frame.GroupConditions!.Add(new GroupExpression(expression.Span, expression));
         frame.Stage = 1;
 
         return StepResult.Continue();
@@ -2191,7 +2323,8 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private static StepResult GroupByBareReceived(ParseFrame frame, object? incoming)
     {
-        frame.GroupConditions!.Add(new GroupExpression(Pop<ExpressionNode>(incoming)));
+        ExpressionNode expression = Pop<ExpressionNode>(incoming);
+        frame.GroupConditions!.Add(new GroupExpression(expression.Span, expression));
         frame.Stage = 1;
 
         return StepResult.Continue();
@@ -2239,7 +2372,7 @@ public sealed class SparqlParser
             _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedSolutionCondition, Current.Span, "Expected a HAVING constraint.");
         }
 
-        return StepResult.Done(new HavingClause(frame.HavingConditions));
+        return StepResult.Done(new HavingClause(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.HavingConditions));
     }
 
     /// <summary>Adds a popped HAVING constraint expression.</summary>
@@ -2280,7 +2413,7 @@ public sealed class SparqlParser
         {
             _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedKeyword, Current.Span, "Expected BY after ORDER.");
 
-            return StepResult.Done(new OrderClause(frame.OrderConditions));
+            return StepResult.Done(new OrderClause(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.OrderConditions));
         }
 
         Advance();
@@ -2299,6 +2432,8 @@ public sealed class SparqlParser
     {
         if(Current.Kind is SparqlTokenKind.AscKeyword or SparqlTokenKind.DescKeyword)
         {
+            //The directed condition begins at the ASC/DESC keyword; record it for the condition span.
+            frame.VerbSpanStart = Current.Span;
             frame.DescendingOrder = Current.Kind == SparqlTokenKind.DescKeyword;
             Advance();
             frame.Stage = 2;
@@ -2308,7 +2443,7 @@ public sealed class SparqlParser
 
         if(Current.Kind == SparqlTokenKind.Variable)
         {
-            frame.OrderConditions!.Add(new OrderAscending(new VariableExpression(new SparqlVariable(Current.Value))));
+            frame.OrderConditions!.Add(new OrderAscending(Current.Span, new VariableExpression(Current.Span, new SparqlVariable(Current.Value))));
             Advance();
 
             return StepResult.Continue();
@@ -2326,7 +2461,7 @@ public sealed class SparqlParser
             _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedSolutionCondition, Current.Span, "Expected an ORDER BY condition.");
         }
 
-        return StepResult.Done(new OrderClause(frame.OrderConditions));
+        return StepResult.Done(new OrderClause(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.OrderConditions));
     }
 
     /// <summary>Adds a popped <c>ASC</c> / <c>DESC</c> ordering condition with its recorded direction.</summary>
@@ -2336,7 +2471,10 @@ public sealed class SparqlParser
     private static StepResult OrderByDirectedReceived(ParseFrame frame, object? incoming)
     {
         ExpressionNode expression = Pop<ExpressionNode>(incoming);
-        frame.OrderConditions!.Add(frame.DescendingOrder ? new OrderDescending(expression) : new OrderAscending(expression));
+
+        //The condition runs from the ASC/DESC keyword (the recorded start) through the key expression.
+        SourceSpan conditionSpan = CombineSpans(frame.VerbSpanStart, expression.Span);
+        frame.OrderConditions!.Add(frame.DescendingOrder ? new OrderDescending(conditionSpan, expression) : new OrderAscending(conditionSpan, expression));
         frame.Stage = 1;
 
         return StepResult.Continue();
@@ -2348,7 +2486,8 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private static StepResult OrderByBareReceived(ParseFrame frame, object? incoming)
     {
-        frame.OrderConditions!.Add(new OrderAscending(Pop<ExpressionNode>(incoming)));
+        ExpressionNode expression = Pop<ExpressionNode>(incoming);
+        frame.OrderConditions!.Add(new OrderAscending(expression.Span, expression));
         frame.Stage = 1;
 
         return StepResult.Continue();
@@ -2749,26 +2888,27 @@ public sealed class SparqlParser
     /// <summary>
     /// Combines a left and right operand under a binary operator into the matching expression node.
     /// </summary>
+    /// <param name="span">The covering source extent of the combined expression.</param>
     /// <param name="operatorKind">The binary operator token kind.</param>
     /// <param name="left">The left operand.</param>
     /// <param name="right">The right operand.</param>
     /// <returns>The combined expression.</returns>
-    private static ExpressionNode CombineBinary(SparqlTokenKind operatorKind, ExpressionNode left, ExpressionNode right)
+    private static ExpressionNode CombineBinary(SourceSpan span, SparqlTokenKind operatorKind, ExpressionNode left, ExpressionNode right)
     {
         return operatorKind switch
         {
-            SparqlTokenKind.LogicalOr => new OrExpression(left, right),
-            SparqlTokenKind.LogicalAnd => new AndExpression(left, right),
-            SparqlTokenKind.Equals => new ComparisonExpression(left, ComparisonOp.Equal, right),
-            SparqlTokenKind.NotEquals => new ComparisonExpression(left, ComparisonOp.NotEqual, right),
-            SparqlTokenKind.LessThan => new ComparisonExpression(left, ComparisonOp.LessThan, right),
-            SparqlTokenKind.LessOrEqual => new ComparisonExpression(left, ComparisonOp.LessOrEqual, right),
-            SparqlTokenKind.GreaterThan => new ComparisonExpression(left, ComparisonOp.GreaterThan, right),
-            SparqlTokenKind.GreaterOrEqual => new ComparisonExpression(left, ComparisonOp.GreaterOrEqual, right),
-            SparqlTokenKind.Plus => new ArithmeticExpression(left, ArithmeticOp.Add, right),
-            SparqlTokenKind.Minus => new ArithmeticExpression(left, ArithmeticOp.Subtract, right),
-            SparqlTokenKind.Star => new ArithmeticExpression(left, ArithmeticOp.Multiply, right),
-            SparqlTokenKind.Slash => new ArithmeticExpression(left, ArithmeticOp.Divide, right),
+            SparqlTokenKind.LogicalOr => new OrExpression(span, left, right),
+            SparqlTokenKind.LogicalAnd => new AndExpression(span, left, right),
+            SparqlTokenKind.Equals => new ComparisonExpression(span, left, ComparisonOp.Equal, right),
+            SparqlTokenKind.NotEquals => new ComparisonExpression(span, left, ComparisonOp.NotEqual, right),
+            SparqlTokenKind.LessThan => new ComparisonExpression(span, left, ComparisonOp.LessThan, right),
+            SparqlTokenKind.LessOrEqual => new ComparisonExpression(span, left, ComparisonOp.LessOrEqual, right),
+            SparqlTokenKind.GreaterThan => new ComparisonExpression(span, left, ComparisonOp.GreaterThan, right),
+            SparqlTokenKind.GreaterOrEqual => new ComparisonExpression(span, left, ComparisonOp.GreaterOrEqual, right),
+            SparqlTokenKind.Plus => new ArithmeticExpression(span, left, ArithmeticOp.Add, right),
+            SparqlTokenKind.Minus => new ArithmeticExpression(span, left, ArithmeticOp.Subtract, right),
+            SparqlTokenKind.Star => new ArithmeticExpression(span, left, ArithmeticOp.Multiply, right),
+            SparqlTokenKind.Slash => new ArithmeticExpression(span, left, ArithmeticOp.Divide, right),
             _ => throw new SparqlParseException($"Token {operatorKind} is not a binary operator.")
         };
     }
@@ -2776,16 +2916,17 @@ public sealed class SparqlParser
     /// <summary>
     /// Wraps an operand under a unary operator into the matching expression node.
     /// </summary>
+    /// <param name="span">The covering source extent from the operator through the operand.</param>
     /// <param name="operatorKind">The unary operator token kind.</param>
     /// <param name="operand">The operand.</param>
     /// <returns>The unary expression.</returns>
-    private static ExpressionNode WrapUnary(SparqlTokenKind operatorKind, ExpressionNode operand)
+    private static ExpressionNode WrapUnary(SourceSpan span, SparqlTokenKind operatorKind, ExpressionNode operand)
     {
         return operatorKind switch
         {
-            SparqlTokenKind.Bang => new NotExpression(operand),
-            SparqlTokenKind.Minus => new ArithmeticExpression(operand, ArithmeticOp.UnaryMinus, Right: null),
-            SparqlTokenKind.Plus => new ArithmeticExpression(operand, ArithmeticOp.UnaryPlus, Right: null),
+            SparqlTokenKind.Bang => new NotExpression(span, operand),
+            SparqlTokenKind.Minus => new ArithmeticExpression(span, operand, ArithmeticOp.UnaryMinus, Right: null),
+            SparqlTokenKind.Plus => new ArithmeticExpression(span, operand, ArithmeticOp.UnaryPlus, Right: null),
             _ => throw new SparqlParseException($"Token {operatorKind} is not a unary operator.")
         };
     }
@@ -3881,7 +4022,7 @@ public sealed class SparqlParser
             Advance();
             if(!ConsumeValuesOpenBrace())
             {
-                return StepResult.Done(new ValuesClause(frame.ValuesVariables, frame.ValuesRows!));
+                return StepResult.Done(new ValuesClause(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.ValuesVariables, frame.ValuesRows!));
             }
 
             frame.Stage = 1;
@@ -3903,7 +4044,7 @@ public sealed class SparqlParser
         _ = ReportRecoverable(WellKnownDiagnostics.Sparql.MalformedValuesBlock, Current.Span, "Expected a variable or '(' after VALUES.");
         ResyncTo(ParseFrameKind.Values, Current.Span, out _);
 
-        return StepResult.Done(new ValuesClause([], []));
+        return StepResult.Done(new ValuesClause(CombineSpans(frame.StartSpan, lastConsumedSpan), [], []));
     }
 
     /// <summary>Reads the full-form variable list, one variable per step, then opens the data brace.</summary>
@@ -3926,7 +4067,7 @@ public sealed class SparqlParser
 
             if(!ConsumeValuesOpenBrace())
             {
-                return StepResult.Done(new ValuesClause(frame.ValuesVariables!, frame.ValuesRows!));
+                return StepResult.Done(new ValuesClause(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.ValuesVariables!, frame.ValuesRows!));
             }
 
             frame.Stage = 2;
@@ -3938,7 +4079,7 @@ public sealed class SparqlParser
         _ = ReportRecoverable(WellKnownDiagnostics.Sparql.MalformedValuesBlock, Current.Span, "Expected a variable or ')' in the VALUES variable list.");
         ResyncTo(ParseFrameKind.Values, Current.Span, out _);
 
-        return StepResult.Done(new ValuesClause(frame.ValuesVariables!, frame.ValuesRows!));
+        return StepResult.Done(new ValuesClause(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.ValuesVariables!, frame.ValuesRows!));
     }
 
     /// <summary>Reads one one-variable-form value (a single-column row), or closes the block.</summary>
@@ -3950,7 +4091,7 @@ public sealed class SparqlParser
         {
             Advance();
 
-            return StepResult.Done(new ValuesClause(frame.ValuesVariables!, frame.ValuesRows!));
+            return StepResult.Done(new ValuesClause(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.ValuesVariables!, frame.ValuesRows!));
         }
 
         //A token that begins no data value (and is not '}') finalises the block; parsing a value would
@@ -3965,7 +4106,7 @@ public sealed class SparqlParser
                 Advance();
             }
 
-            return StepResult.Done(new ValuesClause(frame.ValuesVariables!, frame.ValuesRows!));
+            return StepResult.Done(new ValuesClause(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.ValuesVariables!, frame.ValuesRows!));
         }
 
         RdfTerm? value = ParseDataBlockValue();
@@ -3983,7 +4124,7 @@ public sealed class SparqlParser
         {
             Advance();
 
-            return StepResult.Done(new ValuesClause(frame.ValuesVariables!, frame.ValuesRows!));
+            return StepResult.Done(new ValuesClause(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.ValuesVariables!, frame.ValuesRows!));
         }
 
         if(Current.Kind == SparqlTokenKind.OpenParen)
@@ -4004,7 +4145,7 @@ public sealed class SparqlParser
             Advance();
         }
 
-        return StepResult.Done(new ValuesClause(frame.ValuesVariables!, frame.ValuesRows!));
+        return StepResult.Done(new ValuesClause(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.ValuesVariables!, frame.ValuesRows!));
     }
 
     /// <summary>Reads one value of the current full-form row, or closes the row at <c>)</c>.</summary>
@@ -4160,7 +4301,8 @@ public sealed class SparqlParser
     {
         if(frame.PendingTriples!.Count > 0)
         {
-            frame.Members!.Add(new BasicGraphPatternBlock(frame.PendingTriples));
+            SourceSpan blockSpan = CombineSpans(frame.PendingTriples[0].Span, frame.PendingTriples[^1].Span);
+            frame.Members!.Add(new BasicGraphPatternBlock(blockSpan, frame.PendingTriples));
             frame.PendingTriples = [];
         }
     }
@@ -4171,6 +4313,7 @@ public sealed class SparqlParser
     /// <param name="frame">The request frame accumulating the prologue.</param>
     private void ParseBaseDeclaration(ParseFrame frame)
     {
+        SourceSpan keywordSpan = Current.Span;
         Advance();
         if(Current.Kind != SparqlTokenKind.Iri)
         {
@@ -4183,7 +4326,7 @@ public sealed class SparqlParser
 
         IriRef iri = ConsumeIriRef();
         baseIri = iri.Value;
-        frame.Bases!.Add(new BaseDecl(iri));
+        frame.Bases!.Add(new BaseDecl(CombineSpans(keywordSpan, iri.Span), iri));
     }
 
     /// <summary>
@@ -4192,6 +4335,7 @@ public sealed class SparqlParser
     /// <param name="frame">The request frame accumulating the prologue.</param>
     private void ParsePrefixDeclaration(ParseFrame frame)
     {
+        SourceSpan keywordSpan = Current.Span;
         Advance();
         if(Current.Kind != SparqlTokenKind.PrefixNamespace)
         {
@@ -4213,7 +4357,7 @@ public sealed class SparqlParser
 
         IriRef ns = ConsumeIriRef();
         prefixMap[prefixLabel] = ns.Value;
-        frame.Prefixes!.Add(new PrefixDecl(prefixLabel, ns));
+        frame.Prefixes!.Add(new PrefixDecl(CombineSpans(keywordSpan, ns.Span), prefixLabel, ns));
     }
 
     /// <summary>
@@ -4317,10 +4461,18 @@ public sealed class SparqlParser
         => Current.Kind switch
         {
             SparqlTokenKind.Variable => ConsumeGraphVariable(),
-            SparqlTokenKind.Iri => new GraphIriTerm(ConsumeIriRef()),
-            SparqlTokenKind.PrefixedName => new GraphIriTerm(ConsumePrefixedName()),
+            SparqlTokenKind.Iri => ConsumeGraphIri(ConsumeIriRef()),
+            SparqlTokenKind.PrefixedName => ConsumeGraphIri(ConsumePrefixedName()),
             _ => RecoverGraphDesignator()
         };
+
+    /// <summary>Wraps a consumed IRI reference as a graph designator carrying its source span.</summary>
+    /// <param name="iri">The consumed IRI reference.</param>
+    /// <returns>The IRI graph designator.</returns>
+    private static GraphIriTerm ConsumeGraphIri(IriRef iri)
+    {
+        return new GraphIriTerm(iri.Span, iri);
+    }
 
     /// <summary>
     /// Reports a missing graph designator and returns an <see cref="ErrorGraphTerm"/> over the current
@@ -4341,7 +4493,7 @@ public sealed class SparqlParser
     /// <returns>The graph variable designator.</returns>
     private GraphVariableTerm ConsumeGraphVariable()
     {
-        GraphVariableTerm term = new(new SparqlVariable(Current.Value));
+        GraphVariableTerm term = new(Current.Span, new SparqlVariable(Current.Value));
         Advance();
 
         return term;

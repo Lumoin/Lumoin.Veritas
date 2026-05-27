@@ -174,6 +174,15 @@ internal sealed class ParseFrame
     /// <summary>Gets or sets the source span at which the current verb (predicate or path) began, used to span the verb term and a <see cref="PropertyListPath"/>.</summary>
     public SourceSpan VerbSpanStart { get; set; }
 
+    /// <summary>Gets or sets the source span at which the dataset clauses begin on the request frame, used to span the <see cref="DatasetClause"/> (which is zero-width when no <c>FROM</c> clause is present).</summary>
+    public SourceSpan DatasetSpanStart { get; set; }
+
+    /// <summary>Gets or sets the source span at which the <c>WHERE</c> clause begins on the request frame (the <c>WHERE</c> keyword or, when it is elided, the opening brace), used to span the <see cref="WhereClause"/>.</summary>
+    public SourceSpan WhereSpanStart { get; set; }
+
+    /// <summary>Gets or sets the source span at which the solution modifiers begin on the request frame, used to span the <see cref="SolutionModifier"/> (which is zero-width when no modifier is present).</summary>
+    public SourceSpan ModifierSpanStart { get; set; }
+
     /// <summary>Gets or sets the accumulated <c>DESCRIBE</c> targets of the request frame.</summary>
     public List<DescribeTarget>? DescribeTargets { get; set; }
 
