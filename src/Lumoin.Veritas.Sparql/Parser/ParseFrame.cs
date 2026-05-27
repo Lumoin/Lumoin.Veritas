@@ -194,6 +194,9 @@ internal sealed class ParseFrame
 
     /// <summary>Gets or sets whether a request frame is the <c>CONSTRUCT WHERE { ... }</c> short form, where the WHERE triples are also the template.</summary>
     public bool IsConstructShort { get; set; }
+
+    /// <summary>Gets or sets whether a <see cref="ParseFrameKind.Triple"/> frame has already reported an annotation following a property-path predicate, so the diagnostic is recorded once per object.</summary>
+    public bool ReportedPathAnnotation { get; set; }
 }
 
 /// <summary>

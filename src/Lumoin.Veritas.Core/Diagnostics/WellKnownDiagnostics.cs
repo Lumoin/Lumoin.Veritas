@@ -327,6 +327,118 @@ public static class WellKnownDiagnostics
         /// <remarks>SPARQL <c>DataBlock</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rDataBlock">SPARQL 1.2 §19.8 [DataBlock]</see>.</remarks>
         public static Utf8String ValuesArityMismatch { get; } = new("SP0014"u8.ToArray());
 
+        /// <summary>An <c>IF</c> call had an argument count other than three.</summary>
+        /// <remarks>SPARQL built-in <c>IF</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rBuiltInCall">SPARQL 1.2 §19.8 [BuiltInCall]</see>.</remarks>
+        public static Utf8String IfArityMismatch { get; } = new("SP0015"u8.ToArray());
+
+        /// <summary>A required structural keyword (for example <c>BY</c>, <c>AS</c>, <c>IN</c>, <c>SEPARATOR</c>, <c>EXISTS</c>) was missing.</summary>
+        /// <remarks>SPARQL keyword-introduced productions. See <see href="https://www.w3.org/TR/sparql12-query/#sparqlGrammar">SPARQL 1.2 §19 (grammar)</see>.</remarks>
+        public static Utf8String ExpectedKeyword { get; } = new("SP0016"u8.ToArray());
+
+        /// <summary>An opening <c>{</c> introducing a group graph pattern was expected.</summary>
+        /// <remarks>SPARQL <c>GroupGraphPattern</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rGroupGraphPattern">SPARQL 1.2 §19.8 [GroupGraphPattern]</see>.</remarks>
+        public static Utf8String ExpectedGroupGraphPatternOpen { get; } = new("SP0017"u8.ToArray());
+
+        /// <summary>A projected variable, an <c>(expr AS ?var)</c> projection, or <c>*</c> was expected.</summary>
+        /// <remarks>SPARQL <c>SelectClause</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rSelectClause">SPARQL 1.2 §19.8 [SelectClause]</see>.</remarks>
+        public static Utf8String ExpectedProjection { get; } = new("SP0018"u8.ToArray());
+
+        /// <summary>A <c>DESCRIBE</c> target (a variable, an IRI, or <c>*</c>) was expected.</summary>
+        /// <remarks>SPARQL <c>DescribeQuery</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rDescribeQuery">SPARQL 1.2 §19.8 [DescribeQuery]</see>.</remarks>
+        public static Utf8String ExpectedDescribeTarget { get; } = new("SP0019"u8.ToArray());
+
+        /// <summary>A variable was expected.</summary>
+        /// <remarks>SPARQL <c>Var</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rVar">SPARQL 1.2 §19.8 [Var]</see>.</remarks>
+        public static Utf8String ExpectedVariable { get; } = new("SP0020"u8.ToArray());
+
+        /// <summary>A graph designator (a variable or an IRI) was expected after <c>GRAPH</c> or <c>SERVICE</c>.</summary>
+        /// <remarks>SPARQL <c>VarOrIri</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rVarOrIri">SPARQL 1.2 §19.8 [VarOrIri]</see>.</remarks>
+        public static Utf8String ExpectedGraphTerm { get; } = new("SP0021"u8.ToArray());
+
+        /// <summary>A subject or object term was expected.</summary>
+        /// <remarks>SPARQL <c>VarOrTerm</c> / <c>GraphNode</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rVarOrTerm">SPARQL 1.2 §19.8 [VarOrTerm]</see>.</remarks>
+        public static Utf8String ExpectedTerm { get; } = new("SP0022"u8.ToArray());
+
+        /// <summary>A predicate or property path was expected.</summary>
+        /// <remarks>SPARQL <c>Verb</c> / <c>Path</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rPath">SPARQL 1.2 §19.8 [Path]</see>.</remarks>
+        public static Utf8String ExpectedVerb { get; } = new("SP0023"u8.ToArray());
+
+        /// <summary>A path primary (an IRI, <c>a</c>, an inverse, a negated set, or a group) was expected.</summary>
+        /// <remarks>SPARQL <c>PathPrimary</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rPathPrimary">SPARQL 1.2 §19.8 [PathPrimary]</see>.</remarks>
+        public static Utf8String ExpectedPathPrimary { get; } = new("SP0024"u8.ToArray());
+
+        /// <summary>A grouped path <c>( … )</c> was not closed.</summary>
+        /// <remarks>SPARQL <c>PathPrimary</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rPathPrimary">SPARQL 1.2 §19.8 [PathPrimary]</see>.</remarks>
+        public static Utf8String UnclosedPath { get; } = new("SP0025"u8.ToArray());
+
+        /// <summary>A <c>|</c> separator or a closing <c>)</c> was expected in a negated property set.</summary>
+        /// <remarks>SPARQL <c>PathNegatedPropertySet</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rPathNegatedPropertySet">SPARQL 1.2 §19.8 [PathNegatedPropertySet]</see>.</remarks>
+        public static Utf8String ExpectedNegatedPathItem { get; } = new("SP0026"u8.ToArray());
+
+        /// <summary>A collection <c>( … )</c> was not closed.</summary>
+        /// <remarks>SPARQL <c>Collection</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rCollection">SPARQL 1.2 §19.8 [Collection]</see>.</remarks>
+        public static Utf8String UnclosedCollection { get; } = new("SP0027"u8.ToArray());
+
+        /// <summary>A blank-node property list <c>[ … ]</c> was not closed (a <c>;</c> or <c>]</c> was expected).</summary>
+        /// <remarks>SPARQL <c>BlankNodePropertyListPath</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rBlankNodePropertyListPath">SPARQL 1.2 §19.8 [BlankNodePropertyListPath]</see>.</remarks>
+        public static Utf8String UnclosedBlankNodePropertyList { get; } = new("SP0028"u8.ToArray());
+
+        /// <summary>An RDF 1.2 triple term <c>&lt;&lt;( … )&gt;&gt;</c> was not closed.</summary>
+        /// <remarks>SPARQL RDF 1.2 <c>TripleTerm</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rTripleTerm">SPARQL 1.2 §19.8 [TripleTerm]</see>.</remarks>
+        public static Utf8String UnclosedTripleTerm { get; } = new("SP0029"u8.ToArray());
+
+        /// <summary>An RDF 1.2 reified triple <c>&lt;&lt; … &gt;&gt;</c> was not closed.</summary>
+        /// <remarks>SPARQL RDF 1.2 <c>ReifiedTriple</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rReifiedTriple">SPARQL 1.2 §19.8 [ReifiedTriple]</see>.</remarks>
+        public static Utf8String UnclosedReifiedTriple { get; } = new("SP0030"u8.ToArray());
+
+        /// <summary>An RDF 1.2 annotation block <c>{| … |}</c> was not closed or was empty.</summary>
+        /// <remarks>SPARQL RDF 1.2 <c>Annotation</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rAnnotation">SPARQL 1.2 §19.8 [Annotation]</see>.</remarks>
+        public static Utf8String UnclosedAnnotationBlock { get; } = new("SP0031"u8.ToArray());
+
+        /// <summary>An RDF 1.2 annotation followed a property-path predicate, which is not permitted.</summary>
+        /// <remarks>SPARQL RDF 1.2 <c>PropertyListPathNotEmpty</c> annotation tail. See <see href="https://www.w3.org/TR/sparql12-query/#rAnnotation">SPARQL 1.2 §19.8 [Annotation]</see>.</remarks>
+        public static Utf8String AnnotationOnPathVerb { get; } = new("SP0032"u8.ToArray());
+
+        /// <summary>A reifier identity (an IRI, a variable, or a blank node) was expected after <c>~</c>.</summary>
+        /// <remarks>SPARQL RDF 1.2 <c>Reifier</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rReifier">SPARQL 1.2 §19.8 [Reifier]</see>.</remarks>
+        public static Utf8String ExpectedReifier { get; } = new("SP0033"u8.ToArray());
+
+        /// <summary>An RDF 1.2 triple-term verb (an IRI, <c>a</c>, or a variable) was expected.</summary>
+        /// <remarks>SPARQL RDF 1.2 <c>TripleTerm</c> verb. See <see href="https://www.w3.org/TR/sparql12-query/#rTripleTerm">SPARQL 1.2 §19.8 [TripleTerm]</see>.</remarks>
+        public static Utf8String ExpectedTripleTermVerb { get; } = new("SP0034"u8.ToArray());
+
+        /// <summary>A datatype IRI was expected after the <c>^^</c> marker.</summary>
+        /// <remarks>SPARQL <c>RDFLiteral</c> datatype. See <see href="https://www.w3.org/TR/sparql12-query/#rRDFLiteral">SPARQL 1.2 §19.8 [RDFLiteral]</see>.</remarks>
+        public static Utf8String ExpectedDatatypeIri { get; } = new("SP0035"u8.ToArray());
+
+        /// <summary>A <c>VALUES</c> data value (an IRI, a literal, or <c>UNDEF</c>) was expected.</summary>
+        /// <remarks>SPARQL <c>DataBlockValue</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rDataBlockValue">SPARQL 1.2 §19.8 [DataBlockValue]</see>.</remarks>
+        public static Utf8String ExpectedValuesValue { get; } = new("SP0036"u8.ToArray());
+
+        /// <summary>The <c>VALUES</c> data block was malformed (a variable, <c>(</c>, <c>)</c>, <c>{</c>, or <c>}</c> was expected).</summary>
+        /// <remarks>SPARQL <c>InlineData</c> / <c>DataBlock</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rDataBlock">SPARQL 1.2 §19.8 [DataBlock]</see>.</remarks>
+        public static Utf8String MalformedValuesBlock { get; } = new("SP0037"u8.ToArray());
+
+        /// <summary>The query continued past its complete form (trailing tokens after the request).</summary>
+        /// <remarks>SPARQL <c>Query</c> end. See <see href="https://www.w3.org/TR/sparql12-query/#rQuery">SPARQL 1.2 §19.8 [Query]</see>.</remarks>
+        public static Utf8String ExpectedEndOfQuery { get; } = new("SP0038"u8.ToArray());
+
+        /// <summary>An expected closing token (for example <c>)</c> or <c>}</c>) was missing.</summary>
+        /// <remarks>SPARQL bracketed / call productions. See <see href="https://www.w3.org/TR/sparql12-query/#sparqlGrammar">SPARQL 1.2 §19 (grammar)</see>.</remarks>
+        public static Utf8String ExpectedCloser { get; } = new("SP0039"u8.ToArray());
+
+        /// <summary>An integer value (for example a <c>LIMIT</c> or <c>OFFSET</c>) was expected or malformed.</summary>
+        /// <remarks>SPARQL <c>LimitClause</c> / <c>OffsetClause</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rLimitOffsetClauses">SPARQL 1.2 §19.8 [LimitOffsetClauses]</see>.</remarks>
+        public static Utf8String ExpectedInteger { get; } = new("SP0040"u8.ToArray());
+
+        /// <summary>A grouping, having, or ordering condition was expected.</summary>
+        /// <remarks>SPARQL <c>GroupCondition</c> / <c>HavingCondition</c> / <c>OrderCondition</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rSolutionModifier">SPARQL 1.2 §19.8 [SolutionModifier]</see>.</remarks>
+        public static Utf8String ExpectedSolutionCondition { get; } = new("SP0041"u8.ToArray());
+
+        /// <summary>A directional language tag named a base direction other than <c>ltr</c> or <c>rtl</c>.</summary>
+        /// <remarks>RDF 1.2 base-direction language form in <c>RDFLiteral</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rRDFLiteral">SPARQL 1.2 §19.8 [RDFLiteral]</see>.</remarks>
+        public static Utf8String InvalidBaseDirection { get; } = new("SP0042"u8.ToArray());
+
         /// <summary>The per-parse diagnostic cap was reached; remaining input is skipped.</summary>
         /// <remarks>Parser-internal bound (see the parser's <c>MaxDiagnostics</c> option), not a grammar production.</remarks>
         public static Utf8String ExcessDiagnostics { get; } = new("SP9999"u8.ToArray());

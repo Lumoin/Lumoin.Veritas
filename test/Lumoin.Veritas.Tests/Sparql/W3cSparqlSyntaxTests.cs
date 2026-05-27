@@ -10,6 +10,7 @@ using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Sparql.Lexer;
 using Lumoin.Veritas.Sparql.Parser;
 using Lumoin.Veritas.Tests.Conformance;
@@ -145,9 +146,16 @@ internal sealed class W3cSparqlSyntaxTests
     }
 
     /// <summary>
-    /// Parses the query bytes from the pipe and yields no quads; a lexical or
-    /// grammar error surfaces as the exception the runner observes.
+    /// Parses the query bytes from the pipe and yields no quads; a lexical or grammar error surfaces as
+    /// the exception the runner observes.
     /// </summary>
+    /// <remarks>
+    /// The recovery-mode parser never throws on malformed input — it records diagnostics into a bag and
+    /// returns a (possibly error-node-carrying) request. The shared <see cref="W3cTestRunner"/> detects a
+    /// negative-syntax test by catching a parse exception, so this adapter re-raises a
+    /// <see cref="Lumoin.Veritas.Sparql.SparqlParseException"/> when the bag holds any error-severity
+    /// diagnostic, mirroring <see cref="TurtleConformanceReader"/>.
+    /// </remarks>
     /// <param name="input">The pipe over the query file's bytes.</param>
     /// <param name="cancellationToken">A token to cancel reading.</param>
     /// <returns>An empty quad stream (a query produces no quads).</returns>
@@ -156,11 +164,29 @@ internal sealed class W3cSparqlSyntaxTests
         ReadOnlyMemory<byte> source = await ReadToEndAsync(input, cancellationToken).ConfigureAwait(false);
 
         using Utf8StringPool pool = new();
+        DiagnosticBag diagnostics = new();
         SparqlLexer lexer = new(source, pool);
-        SparqlParser parser = new(lexer.Tokenize(), pool);
-        _ = parser.ParseRequest();
+        SparqlParser parser = new(lexer.Tokenize(), pool, baseIri: null, blankNodes: null, diagnostics: diagnostics);
+        ParseResult<Lumoin.Veritas.Sparql.Ast.SparqlRequest> result = parser.ParseToResult();
+        BridgeLexerDiagnostics(lexer, diagnostics);
+
+        if(result.HasErrors || diagnostics.HasErrors)
+        {
+            throw new Lumoin.Veritas.Sparql.SparqlParseException(TurtleConformanceReader.DescribeFirstError(diagnostics));
+        }
 
         yield break;
+    }
+
+    /// <summary>Bridges the lexer's internal diagnostics into the shared parse-level bag.</summary>
+    /// <param name="lexer">The lexer whose diagnostics are drained.</param>
+    /// <param name="diagnostics">The bag to append the bridged diagnostics to.</param>
+    private static void BridgeLexerDiagnostics(SparqlLexer lexer, DiagnosticBag diagnostics)
+    {
+        foreach(SparqlLexDiagnostic lexDiagnostic in lexer.Diagnostics)
+        {
+            diagnostics.Add(SparqlLexDiagnosticBridge.ToDiagnostic(lexDiagnostic));
+        }
     }
 
     /// <summary>

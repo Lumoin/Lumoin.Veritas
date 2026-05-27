@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Globalization;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
@@ -494,8 +495,26 @@ public sealed class SparqlParser
             SparqlTokenKind.AskKeyword => RequestAsk(frame),
             SparqlTokenKind.ConstructKeyword => RequestConstruct(frame),
             SparqlTokenKind.DescribeKeyword => RequestDescribe(frame),
-            _ => throw Expected("a query form (SELECT, CONSTRUCT, ASK, or DESCRIBE)", Current)
+            _ => RequestRecoverForm(frame)
         };
+
+    /// <summary>
+    /// Recovers a request whose form head could not be parsed: the form is recorded as an
+    /// <see cref="ErrorQueryForm"/> and the request is finalised so the partial query still materialises.
+    /// </summary>
+    /// <param name="frame">The request frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult RequestRecoverForm(ParseFrame frame)
+    {
+        frame.Form = RecoverQueryForm(ParseFrameKind.Request, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedQueryForm, Current.Span, "Expected a query form (SELECT, CONSTRUCT, ASK, or DESCRIBE).", "Query");
+        frame.Where = new WhereClause(new GroupGraphPattern([]));
+        frame.Dataset = new DatasetClause([], []);
+        frame.Bases ??= [];
+        frame.Prefixes ??= [];
+        frame.Stage = 13;
+
+        return StepResult.Continue();
+    }
 
     /// <summary>Pushes the SELECT clause frame and waits for its head.</summary>
     /// <param name="frame">The request frame.</param>
@@ -599,7 +618,8 @@ public sealed class SparqlParser
 
         if(frame.DescribeTargets!.Count == 0)
         {
-            throw Expected("a DESCRIBE target (a variable, an IRI, or '*')", Current);
+            //No target at all: report and keep an empty DESCRIBE form (the faithful recoverable shape).
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedDescribeTarget, Current.Span, "Expected a DESCRIBE target (a variable, an IRI, or '*').");
         }
 
         frame.Form = new DescribeQuery(IsStar: false, frame.DescribeTargets);
@@ -651,7 +671,10 @@ public sealed class SparqlParser
             Advance();
             if(Current.Kind != SparqlTokenKind.OpenBrace)
             {
-                throw Expected("'{' after WHERE", Current);
+                frame.Where = new WhereClause(RecoverGraphPattern(ParseFrameKind.Request, Current.Span, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after WHERE.", "GroupGraphPattern"));
+                frame.Stage = 6;
+
+                return StepResult.Continue();
             }
         }
 
@@ -671,7 +694,10 @@ public sealed class SparqlParser
             return StepResult.Continue();
         }
 
-        throw Expected("'{' to begin the WHERE group graph pattern", Current);
+        frame.Where = new WhereClause(RecoverGraphPattern(ParseFrameKind.Request, Current.Span, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' to begin the WHERE group graph pattern.", "GroupGraphPattern"));
+        frame.Stage = 6;
+
+        return StepResult.Continue();
     }
 
     /// <summary>Adopts the popped WHERE pattern and advances to the solution modifiers.</summary>
@@ -866,10 +892,12 @@ public sealed class SparqlParser
     private StepResult RequestFinalize(ParseFrame frame)
     {
         //A sub-SELECT finalises at the enclosing '}', which the caller consumes; a top-level request
-        //must reach end of input.
+        //must reach end of input. Trailing tokens are reported and skipped, then the parsed query is
+        //still produced — the recoverable shape for an editor.
         if(!frame.IsSubSelect && Current.Kind != SparqlTokenKind.EndOfInput)
         {
-            throw Expected("end of query", Current);
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedEndOfQuery, Current.Span, "Unexpected tokens after the end of the query.");
+            ResyncTo(ParseFrameKind.Request, Current.Span, out _);
         }
 
         SparqlQuery query = new(
@@ -960,7 +988,7 @@ public sealed class SparqlParser
 
         if(frame.Projections!.Count == 0)
         {
-            throw Expected("a projected variable, an (expr AS ?var) projection, or '*'", Current);
+            return StepResult.Done(RecoverQueryForm(ParseFrameKind.SelectClause, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedProjection, Current.Span, "Expected a projected variable, an (expr AS ?var) projection, or '*'.", "SelectClause"));
         }
 
         return StepResult.Done(new SelectQuery(frame.IsDistinct, frame.IsReduced, IsStar: false, frame.Projections));
@@ -975,20 +1003,20 @@ public sealed class SparqlParser
         ExpressionNode expression = Pop<ExpressionNode>(incoming);
         if(Current.Kind != SparqlTokenKind.AsKeyword)
         {
-            throw Expected("AS in the (expr AS ?var) projection", Current);
+            return RecoverSelectProjection(frame, WellKnownDiagnostics.Sparql.ExpectedKeyword, "Expected AS in the (expr AS ?var) projection.");
         }
 
         Advance();
         if(Current.Kind != SparqlTokenKind.Variable)
         {
-            throw Expected("a variable after AS", Current);
+            return RecoverSelectProjection(frame, WellKnownDiagnostics.Sparql.ExpectedVariable, "Expected a variable after AS.");
         }
 
         SparqlVariable variable = new(Current.Value);
         Advance();
         if(Current.Kind != SparqlTokenKind.CloseParen)
         {
-            throw Expected("')' to close the (expr AS ?var) projection", Current);
+            return RecoverSelectProjection(frame, WellKnownDiagnostics.Sparql.ExpectedCloser, "Expected ')' to close the (expr AS ?var) projection.");
         }
 
         Advance();
@@ -996,6 +1024,22 @@ public sealed class SparqlParser
         frame.Stage = 1;
 
         return StepResult.Continue();
+    }
+
+    /// <summary>
+    /// Recovers a malformed <c>(expr AS ?var)</c> projection: reports the diagnostic, resyncs to the
+    /// clause's resync set, and finalises the SELECT clause with the projections gathered so far.
+    /// </summary>
+    /// <param name="frame">The select-clause frame.</param>
+    /// <param name="code">The stable diagnostic code.</param>
+    /// <param name="message">A human-readable explanation.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult RecoverSelectProjection(ParseFrame frame, Utf8String code, string message)
+    {
+        _ = ReportRecoverable(code, Current.Span, message);
+        ResyncTo(ParseFrameKind.SelectClause, Current.Span, out _);
+
+        return StepResult.Done(new SelectQuery(frame.IsDistinct, frame.IsReduced, IsStar: false, frame.Projections!));
     }
 
     /// <summary>
@@ -1030,10 +1074,14 @@ public sealed class SparqlParser
             SparqlQuery inner = Pop<SparqlQuery>(incoming);
             if(Current.Kind != SparqlTokenKind.CloseBrace)
             {
-                throw Expected("'}' to close the sub-SELECT", Current);
+                _ = ReportRecoverable(WellKnownDiagnostics.Sparql.UnclosedGroupGraphPattern, Current.Span, "Expected '}' to close the sub-SELECT.");
+                ResyncTo(ParseFrameKind.SubSelect, Current.Span, out _);
             }
 
-            Advance();
+            if(Current.Kind == SparqlTokenKind.CloseBrace)
+            {
+                Advance();
+            }
 
             return StepResult.Done(new SubSelectPattern(inner));
         }
@@ -1065,9 +1113,14 @@ public sealed class SparqlParser
             return StepResult.Done(new GroupGraphPattern(frame.Members!));
         }
 
+        //An unclosed group at end of input is finalised with the members gathered so far plus a
+        //diagnostic — the partial group is the most faithful recoverable shape for an editor.
         if(Current.Kind == SparqlTokenKind.EndOfInput)
         {
-            throw Expected("'}' to close the group graph pattern", Current);
+            FlushPendingTriples(frame);
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.UnclosedGroupGraphPattern, Current.Span, "Expected '}' to close the group graph pattern.");
+
+            return StepResult.Done(new GroupGraphPattern(frame.Members!));
         }
 
         if(CanStartTriple(Current.Kind))
@@ -1094,7 +1147,37 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = kind, StartSpan = Current.Span });
         }
 
-        throw Expected("a triple pattern, a group-pattern keyword, or '}'", Current);
+        //A stray token that begins no member is consumed by no frame, so the work stack would spin
+        //forever if it stayed. Record one diagnostic, then skip exactly the stray run up to the next
+        //token that can begin a member (or the group's closer / end of input) — this is the progress
+        //guarantee for the group frame, mirroring the Turtle parser's StepStatement skip loop.
+        return RecoverGroupStrayToken();
+    }
+
+    /// <summary>
+    /// Skips a run of stray tokens at group-member position — those that begin no member and are not a
+    /// closer — recording one diagnostic, so the group frame always advances. Resumes the group on the
+    /// next iteration once the cursor reaches a member start, the closing <c>}</c>, or end of input.
+    /// </summary>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult RecoverGroupStrayToken()
+    {
+        _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedTriplePattern, Current.Span, "Expected a triple pattern, a group-pattern keyword, or '}'.");
+
+        while(Current.Kind != SparqlTokenKind.EndOfInput
+            && Current.Kind != SparqlTokenKind.CloseBrace
+            && !CanStartGroupMember(Current.Kind))
+        {
+            int before = index;
+            Advance();
+
+            if(index == before)
+            {
+                break;
+            }
+        }
+
+        return StepResult.Continue();
     }
 
     /// <summary>
@@ -1158,7 +1241,10 @@ public sealed class SparqlParser
         Advance();
         if(Current.Kind != SparqlTokenKind.OpenBrace)
         {
-            throw Expected("'{' after UNION", Current);
+            //A missing UNION alternative is folded as an error pattern; the accumulator stands.
+            frame.Accumulated = new UnionPattern(frame.Accumulated!, RecoverGraphPattern(ParseFrameKind.UnionPattern, Current.Span, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after UNION.", "GroupGraphPattern"));
+
+            return StepResult.Done(frame.Accumulated);
         }
 
         return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GroupGraphPattern, StartSpan = Current.Span });
@@ -1177,7 +1263,7 @@ public sealed class SparqlParser
             Advance();
             if(Current.Kind != SparqlTokenKind.OpenBrace)
             {
-                throw Expected("'{' after OPTIONAL", Current);
+                return StepResult.Done(new OptionalPattern(RecoverGraphPattern(ParseFrameKind.OptionalPattern, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after OPTIONAL.", "GroupGraphPattern")));
             }
 
             frame.Stage = 1;
@@ -1201,7 +1287,7 @@ public sealed class SparqlParser
             Advance();
             if(Current.Kind != SparqlTokenKind.OpenBrace)
             {
-                throw Expected("'{' after MINUS", Current);
+                return StepResult.Done(new MinusPattern(RecoverGraphPattern(ParseFrameKind.MinusPattern, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after MINUS.", "GroupGraphPattern")));
             }
 
             frame.Stage = 1;
@@ -1226,7 +1312,7 @@ public sealed class SparqlParser
             frame.GraphDesignator = ParseGraphTerm();
             if(Current.Kind != SparqlTokenKind.OpenBrace)
             {
-                throw Expected("'{' after GRAPH designator", Current);
+                return StepResult.Done(new GraphGraphPattern(frame.GraphDesignator, RecoverGraphPattern(ParseFrameKind.GraphPattern, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after the GRAPH designator.", "GroupGraphPattern")));
             }
 
             frame.Stage = 1;
@@ -1257,7 +1343,7 @@ public sealed class SparqlParser
             frame.GraphDesignator = ParseGraphTerm();
             if(Current.Kind != SparqlTokenKind.OpenBrace)
             {
-                throw Expected("'{' after SERVICE endpoint", Current);
+                return StepResult.Done(new ServicePattern(frame.GraphDesignator, frame.IsSilent, RecoverGraphPattern(ParseFrameKind.ServicePattern, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after the SERVICE endpoint.", "GroupGraphPattern")));
             }
 
             frame.Stage = 1;
@@ -1322,9 +1408,13 @@ public sealed class SparqlParser
         bool isNotIn = Current.Kind == SparqlTokenKind.NotKeyword && Peek(1).Kind == SparqlTokenKind.InKeyword;
         if((isIn || isNotIn) && frame.MinPrecedence <= PrecComparison)
         {
+            //Comparison chaining is a positional rule violation: report and keep the left operand built
+            //so far rather than fabricating an illegal chain.
             if(frame.SawComparison)
             {
-                throw new SparqlParseException("SPARQL comparison operators do not chain.", Current.Span);
+                Report(WellKnownDiagnostics.Sparql.UnexpectedToken, Current.Span, "SPARQL comparison operators do not chain.");
+
+                return StepResult.Done(frame.Left!);
             }
 
             Advance();
@@ -1335,7 +1425,7 @@ public sealed class SparqlParser
 
             if(Current.Kind != SparqlTokenKind.OpenParen)
             {
-                throw Expected("'(' to begin the IN list", Current);
+                return StepResult.Done(RecoverExpression(ParseFrameKind.Expression, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedCloser, Current.Span, "Expected '(' to begin the IN list.", "ExpressionList"));
             }
 
             frame.Pending = isNotIn ? PendingCall.NotIn : PendingCall.In;
@@ -1352,7 +1442,9 @@ public sealed class SparqlParser
 
         if(IsComparison(Current.Kind) && frame.SawComparison)
         {
-            throw new SparqlParseException("SPARQL comparison operators do not chain.", Current.Span);
+            Report(WellKnownDiagnostics.Sparql.UnexpectedToken, Current.Span, "SPARQL comparison operators do not chain.");
+
+            return StepResult.Done(frame.Left!);
         }
 
         frame.OperatorKind = Current.Kind;
@@ -1399,7 +1491,12 @@ public sealed class SparqlParser
     {
         if(Current.Kind != SparqlTokenKind.CloseParen)
         {
-            throw Expected("')' to close the bracketed expression", Current);
+            //A missing close paren keeps the parsed inner expression; the diagnostic flags the gap.
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.UnclosedExpression, Current.Span, "Expected ')' to close the bracketed expression.");
+            frame.Left = Pop<ExpressionNode>(incoming);
+            frame.Stage = 1;
+
+            return StepResult.Continue();
         }
 
         Advance();
@@ -1413,7 +1510,7 @@ public sealed class SparqlParser
     /// <param name="frame">The expression frame.</param>
     /// <param name="incoming">The popped argument list.</param>
     /// <returns>The instruction for the driver.</returns>
-    private static StepResult ExpressionCallReceived(ParseFrame frame, object? incoming)
+    private StepResult ExpressionCallReceived(ParseFrame frame, object? incoming)
     {
         List<ExpressionNode> arguments = Pop<List<ExpressionNode>>(incoming);
         frame.Left = frame.Pending switch
@@ -1494,7 +1591,7 @@ public sealed class SparqlParser
             SparqlTokenKind.ExistsKeyword => ExpressionExists(frame),
             SparqlTokenKind.NotKeyword => ExpressionNotExists(frame),
             SparqlTokenKind.OpenParen => ExpressionBracket(frame),
-            _ => throw Expected("an expression", Current)
+            _ => StepResult.Done(RecoverExpression(ParseFrameKind.Expression, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpressionExpected, Current.Span, "Expected an expression.", "Expression"))
         };
 
     /// <summary>Sets the frame's left operand to the variable at the cursor and advances to the binary loop.</summary>
@@ -1553,7 +1650,7 @@ public sealed class SparqlParser
         Advance();
         if(Current.Kind != SparqlTokenKind.OpenBrace)
         {
-            throw Expected("'{' after EXISTS", Current);
+            return StepResult.Done(RecoverExpression(ParseFrameKind.Expression, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after EXISTS.", "ExistsFunc"));
         }
 
         frame.OperatorKind = SparqlTokenKind.ExistsKeyword;
@@ -1570,13 +1667,13 @@ public sealed class SparqlParser
         Advance();
         if(Current.Kind != SparqlTokenKind.ExistsKeyword)
         {
-            throw Expected("EXISTS after NOT", Current);
+            return StepResult.Done(RecoverExpression(ParseFrameKind.Expression, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedKeyword, Current.Span, "Expected EXISTS after NOT.", "NotExistsFunc"));
         }
 
         Advance();
         if(Current.Kind != SparqlTokenKind.OpenBrace)
         {
-            throw Expected("'{' after NOT EXISTS", Current);
+            return StepResult.Done(RecoverExpression(ParseFrameKind.Expression, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after NOT EXISTS.", "NotExistsFunc"));
         }
 
         frame.OperatorKind = SparqlTokenKind.NotKeyword;
@@ -1612,20 +1709,25 @@ public sealed class SparqlParser
         {
             if(Current.Kind != SparqlTokenKind.OpenParen)
             {
-                throw Expected("'(' after BOUND", Current);
+                return StepResult.Done(RecoverExpression(ParseFrameKind.Expression, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedCloser, Current.Span, "Expected '(' after BOUND.", "BuiltInCall"));
             }
 
             Advance();
             if(Current.Kind != SparqlTokenKind.Variable)
             {
-                throw Expected("a variable inside BOUND", Current);
+                return StepResult.Done(RecoverExpression(ParseFrameKind.Expression, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedVariable, Current.Span, "Expected a variable inside BOUND.", "BuiltInCall"));
             }
 
             SparqlVariable variable = new(Current.Value);
             Advance();
             if(Current.Kind != SparqlTokenKind.CloseParen)
             {
-                throw Expected("')' to close BOUND", Current);
+                //A missing close paren keeps the parsed BOUND(?v); the diagnostic flags the gap.
+                _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedCloser, Current.Span, "Expected ')' to close BOUND.");
+                frame.Left = new BoundExpression(variable);
+                frame.Stage = 1;
+
+                return StepResult.Continue();
             }
 
             Advance();
@@ -1637,7 +1739,7 @@ public sealed class SparqlParser
 
         if(Current.Kind != SparqlTokenKind.OpenParen)
         {
-            throw Expected("'(' after a built-in function", Current);
+            return StepResult.Done(RecoverExpression(ParseFrameKind.Expression, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedCloser, Current.Span, "Expected '(' after a built-in function.", "BuiltInCall"));
         }
 
         frame.CallName = name;
@@ -1664,7 +1766,7 @@ public sealed class SparqlParser
         Advance();
         if(Current.Kind != SparqlTokenKind.OpenParen)
         {
-            throw Expected("'(' after an aggregate function", Current);
+            return StepResult.Done(RecoverExpression(ParseFrameKind.Expression, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedCloser, Current.Span, "Expected '(' after an aggregate function.", "Aggregate"));
         }
 
         Advance();
@@ -1683,7 +1785,7 @@ public sealed class SparqlParser
             Advance();
             if(Current.Kind != SparqlTokenKind.CloseParen)
             {
-                throw Expected("')' to close COUNT(*)", Current);
+                return StepResult.Done(RecoverExpression(ParseFrameKind.Expression, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedCloser, Current.Span, "Expected ')' to close COUNT(*).", "Aggregate"));
             }
 
             Advance();
@@ -1735,7 +1837,7 @@ public sealed class SparqlParser
             Advance();
             if(Current.Kind != SparqlTokenKind.OpenParen)
             {
-                throw Expected("'(' after BIND", Current);
+                return StepResult.Done(RecoverGraphPattern(ParseFrameKind.Bind, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedCloser, Current.Span, "Expected '(' after BIND.", "Bind"));
             }
 
             Advance();
@@ -1744,27 +1846,45 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Expression, MinPrecedence = PrecExpression, StartSpan = Current.Span });
         }
 
+        ExpressionNode bound = Pop<ExpressionNode>(incoming);
+
         if(Current.Kind != SparqlTokenKind.AsKeyword)
         {
-            throw Expected("AS in BIND", Current);
+            return RecoverBind(frame, WellKnownDiagnostics.Sparql.ExpectedKeyword, "Expected AS in BIND.");
         }
 
         Advance();
         if(Current.Kind != SparqlTokenKind.Variable)
         {
-            throw Expected("a variable after AS in BIND", Current);
+            return RecoverBind(frame, WellKnownDiagnostics.Sparql.ExpectedVariable, "Expected a variable after AS in BIND.");
         }
 
         SparqlVariable variable = new(Current.Value);
         Advance();
         if(Current.Kind != SparqlTokenKind.CloseParen)
         {
-            throw Expected("')' to close BIND", Current);
+            //A missing close paren keeps the parsed BIND(expr AS ?var); the diagnostic flags the gap.
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedCloser, Current.Span, "Expected ')' to close BIND.");
+
+            return StepResult.Done(new BindPattern(bound, variable));
         }
 
         Advance();
 
-        return StepResult.Done(new BindPattern(Pop<ExpressionNode>(incoming), variable));
+        return StepResult.Done(new BindPattern(bound, variable));
+    }
+
+    /// <summary>
+    /// Recovers a malformed <c>BIND ( expr AS ?var )</c>: reports the diagnostic, resyncs to the bind
+    /// frame's resync set, and produces an <see cref="ErrorGraphPattern"/> in the member's place.
+    /// </summary>
+    /// <param name="frame">The bind frame.</param>
+    /// <param name="code">The stable diagnostic code.</param>
+    /// <param name="message">A human-readable explanation.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult RecoverBind(ParseFrame frame, Utf8String code, string message)
+    {
+        return StepResult.Done(RecoverGraphPattern(ParseFrameKind.Bind, frame.StartSpan, code, Current.Span, message, "Bind"));
     }
 
     /// <summary>
@@ -1805,7 +1925,17 @@ public sealed class SparqlParser
 
         if(Current.Kind != SparqlTokenKind.CloseParen)
         {
-            throw Expected("',' or ')' in the argument list", Current);
+            //An argument list ending without a ',' or ')' is finalised with the arguments gathered so
+            //far plus a diagnostic; junk up to the closer or a comma is skipped.
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedCloser, Current.Span, "Expected ',' or ')' in the argument list.");
+            ResyncTo(ParseFrameKind.ArgumentList, Current.Span, out _);
+
+            if(Current.Kind == SparqlTokenKind.CloseParen)
+            {
+                Advance();
+            }
+
+            return StepResult.Done(frame.Arguments!);
         }
 
         Advance();
@@ -1814,19 +1944,29 @@ public sealed class SparqlParser
     }
 
     /// <summary>
-    /// Builds an <see cref="IfExpression"/> from its three arguments, rejecting any other arity.
+    /// Builds an <see cref="IfExpression"/> from its three arguments. An arity other than three is a
+    /// positional rule violation: it is reported and the call is reshaped to three positions (padding
+    /// missing positions with an <see cref="ErrorExpression"/>, dropping any beyond the third), keeping
+    /// the faithful node.
     /// </summary>
     /// <param name="arguments">The parsed argument list.</param>
-    /// <param name="span">The source span, for the error message.</param>
+    /// <param name="span">The source span, for the diagnostic.</param>
     /// <returns>The conditional expression.</returns>
-    private static IfExpression BuildIf(List<ExpressionNode> arguments, SourceSpan span)
+    private IfExpression BuildIf(List<ExpressionNode> arguments, SourceSpan span)
     {
-        if(arguments.Count != 3)
+        if(arguments.Count == 3)
         {
-            throw new SparqlParseException($"IF takes exactly three arguments but received {arguments.Count}.", span);
+            return new IfExpression(arguments[0], arguments[1], arguments[2]);
         }
 
-        return new IfExpression(arguments[0], arguments[1], arguments[2]);
+        Report(WellKnownDiagnostics.Sparql.IfArityMismatch, span, $"IF takes exactly three arguments but received {arguments.Count}.");
+
+        ExpressionNode missing = new ErrorExpression(span, Utf8String.FromString("Expression"), [WellKnownDiagnostics.Sparql.IfArityMismatch], []);
+        ExpressionNode first = arguments.Count > 0 ? arguments[0] : missing;
+        ExpressionNode second = arguments.Count > 1 ? arguments[1] : missing;
+        ExpressionNode third = arguments.Count > 2 ? arguments[2] : missing;
+
+        return new IfExpression(first, second, third);
     }
 
     /// <summary>
@@ -1846,19 +1986,19 @@ public sealed class SparqlParser
             Advance();
             if(Current.Kind != SparqlTokenKind.SeparatorKeyword)
             {
-                throw Expected("SEPARATOR in GROUP_CONCAT", Current);
+                return RecoverAggregate(frame, name, argument, separator, WellKnownDiagnostics.Sparql.ExpectedKeyword, "Expected SEPARATOR in GROUP_CONCAT.");
             }
 
             Advance();
             if(Current.Kind != SparqlTokenKind.Equals)
             {
-                throw Expected("'=' after SEPARATOR", Current);
+                return RecoverAggregate(frame, name, argument, separator, WellKnownDiagnostics.Sparql.ExpectedKeyword, "Expected '=' after SEPARATOR.");
             }
 
             Advance();
             if(Current.Kind is not (SparqlTokenKind.StringLiteral or SparqlTokenKind.LongStringLiteral))
             {
-                throw Expected("a string separator", Current);
+                return RecoverAggregate(frame, name, argument, separator, WellKnownDiagnostics.Sparql.ExpectedValuesValue, "Expected a string separator.");
             }
 
             separator = Current.Value;
@@ -1867,10 +2007,34 @@ public sealed class SparqlParser
 
         if(Current.Kind != SparqlTokenKind.CloseParen)
         {
-            throw Expected("')' to close the aggregate", Current);
+            return RecoverAggregate(frame, name, argument, separator, WellKnownDiagnostics.Sparql.ExpectedCloser, "Expected ')' to close the aggregate.");
         }
 
         Advance();
+
+        return new AggregateExpression(SparqlFunctions.AggregateFromName(name), argument, frame.IsDistinct, IsCountStar: false, separator);
+    }
+
+    /// <summary>
+    /// Recovers a malformed aggregate tail (separator or closer): reports the diagnostic, resyncs to the
+    /// enclosing expression's resync set, and returns the faithful aggregate built from what was parsed.
+    /// </summary>
+    /// <param name="frame">The expression frame carrying the aggregate name and distinct flag.</param>
+    /// <param name="name">The aggregate name.</param>
+    /// <param name="argument">The parsed aggregated expression.</param>
+    /// <param name="separator">The separator parsed so far, or <see langword="null"/>.</param>
+    /// <param name="code">The stable diagnostic code.</param>
+    /// <param name="message">A human-readable explanation.</param>
+    /// <returns>The aggregate expression.</returns>
+    private AggregateExpression RecoverAggregate(ParseFrame frame, Utf8String name, ExpressionNode argument, Utf8String? separator, Utf8String code, string message)
+    {
+        _ = ReportRecoverable(code, Current.Span, message);
+        ResyncTo(ParseFrameKind.Expression, Current.Span, out _);
+
+        if(Current.Kind == SparqlTokenKind.CloseParen)
+        {
+            Advance();
+        }
 
         return new AggregateExpression(SparqlFunctions.AggregateFromName(name), argument, frame.IsDistinct, IsCountStar: false, separator);
     }
@@ -1895,13 +2059,16 @@ public sealed class SparqlParser
     private StepResult GroupByStart(ParseFrame frame)
     {
         Advance();
+        frame.GroupConditions = [];
+
         if(Current.Kind != SparqlTokenKind.ByKeyword)
         {
-            throw Expected("BY after GROUP", Current);
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedKeyword, Current.Span, "Expected BY after GROUP.");
+
+            return StepResult.Done(new GroupClause(frame.GroupConditions));
         }
 
         Advance();
-        frame.GroupConditions = [];
         frame.Stage = 1;
 
         return StepResult.Continue();
@@ -1940,7 +2107,7 @@ public sealed class SparqlParser
 
         if(frame.GroupConditions!.Count == 0)
         {
-            throw Expected("a GROUP BY condition", Current);
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedSolutionCondition, Current.Span, "Expected a GROUP BY condition.");
         }
 
         return StepResult.Done(new GroupClause(frame.GroupConditions));
@@ -1959,14 +2126,18 @@ public sealed class SparqlParser
             Advance();
             if(Current.Kind != SparqlTokenKind.Variable)
             {
-                throw Expected("a variable after AS", Current);
+                return RecoverGroupByExpression(frame, expression, WellKnownDiagnostics.Sparql.ExpectedVariable, "Expected a variable after AS.");
             }
 
             SparqlVariable variable = new(Current.Value);
             Advance();
             if(Current.Kind != SparqlTokenKind.CloseParen)
             {
-                throw Expected("')' to close the GROUP BY expression", Current);
+                _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedCloser, Current.Span, "Expected ')' to close the GROUP BY expression.");
+                frame.GroupConditions!.Add(new GroupExpressionAs(expression, variable));
+                frame.Stage = 1;
+
+                return StepResult.Continue();
             }
 
             Advance();
@@ -1978,10 +2149,29 @@ public sealed class SparqlParser
 
         if(Current.Kind != SparqlTokenKind.CloseParen)
         {
-            throw Expected("')' to close the GROUP BY expression", Current);
+            return RecoverGroupByExpression(frame, expression, WellKnownDiagnostics.Sparql.ExpectedCloser, "Expected ')' to close the GROUP BY expression.");
         }
 
         Advance();
+        frame.GroupConditions!.Add(new GroupExpression(expression));
+        frame.Stage = 1;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>
+    /// Recovers a malformed parenthesised <c>GROUP BY</c> expression: reports the diagnostic, keeps the
+    /// parsed expression as a bare grouping condition, resyncs to the clause's resync set, and continues.
+    /// </summary>
+    /// <param name="frame">The group-by frame.</param>
+    /// <param name="expression">The parsed grouping expression to keep.</param>
+    /// <param name="code">The stable diagnostic code.</param>
+    /// <param name="message">A human-readable explanation.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult RecoverGroupByExpression(ParseFrame frame, ExpressionNode expression, Utf8String code, string message)
+    {
+        _ = ReportRecoverable(code, Current.Span, message);
+        ResyncTo(ParseFrameKind.GroupBy, Current.Span, out _);
         frame.GroupConditions!.Add(new GroupExpression(expression));
         frame.Stage = 1;
 
@@ -2039,7 +2229,7 @@ public sealed class SparqlParser
 
         if(frame.HavingConditions!.Count == 0)
         {
-            throw Expected("a HAVING constraint", Current);
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedSolutionCondition, Current.Span, "Expected a HAVING constraint.");
         }
 
         return StepResult.Done(new HavingClause(frame.HavingConditions));
@@ -2077,13 +2267,16 @@ public sealed class SparqlParser
     private StepResult OrderByStart(ParseFrame frame)
     {
         Advance();
+        frame.OrderConditions = [];
+
         if(Current.Kind != SparqlTokenKind.ByKeyword)
         {
-            throw Expected("BY after ORDER", Current);
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedKeyword, Current.Span, "Expected BY after ORDER.");
+
+            return StepResult.Done(new OrderClause(frame.OrderConditions));
         }
 
         Advance();
-        frame.OrderConditions = [];
         frame.Stage = 1;
 
         return StepResult.Continue();
@@ -2123,7 +2316,7 @@ public sealed class SparqlParser
 
         if(frame.OrderConditions!.Count == 0)
         {
-            throw Expected("an ORDER BY condition", Current);
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedSolutionCondition, Current.Span, "Expected an ORDER BY condition.");
         }
 
         return StepResult.Done(new OrderClause(frame.OrderConditions));
@@ -2284,7 +2477,7 @@ public sealed class SparqlParser
             SparqlTokenKind.A => FinishPathElement(frame, new PathPredicate(ConsumeRdfTypeIriRef())),
             SparqlTokenKind.Bang => PushNegatedSet(frame),
             SparqlTokenKind.OpenParen => PushGroupedPath(frame),
-            _ => throw Expected("a path primary (an IRI, 'a', '!', or '(')", Current)
+            _ => StepResult.Done(RecoverPropertyPath(ParseFrameKind.PathElement, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedPathPrimary, Current.Span, "Expected a path primary (an IRI, 'a', '!', or '(').", "PathPrimary"))
         };
     }
 
@@ -2326,7 +2519,10 @@ public sealed class SparqlParser
     {
         if(Current.Kind != SparqlTokenKind.CloseParen)
         {
-            throw Expected("')' to close the grouped path", Current);
+            //A missing close paren keeps the parsed grouped path; the diagnostic flags the gap.
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.UnclosedPath, Current.Span, "Expected ')' to close the grouped path.");
+
+            return FinishPathElement(frame, Pop<PropertyPathExpression>(incoming));
         }
 
         Advance();
@@ -2423,7 +2619,16 @@ public sealed class SparqlParser
 
         if(Current.Kind != SparqlTokenKind.CloseParen)
         {
-            throw Expected("'|' or ')' in the negated property set", Current);
+            //Finalise the negated set with the elements gathered so far, skipping junk to the closer.
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedNegatedPathItem, Current.Span, "Expected '|' or ')' in the negated property set.");
+            ResyncTo(ParseFrameKind.PathNegatedSet, Current.Span, out _);
+
+            if(Current.Kind == SparqlTokenKind.CloseParen)
+            {
+                Advance();
+            }
+
+            return StepResult.Done(new PathNegatedSet(frame.NegatedElements!));
         }
 
         Advance();
@@ -2441,15 +2646,30 @@ public sealed class SparqlParser
             Advance();
         }
 
+        //A negated property set element has no error-node variant; on a bad token report and yield a
+        //forward element over rdf:type without advancing, so the enclosing negated-set frame's next step
+        //reaches its resync (the cursor cannot advance past a non-IRI here, so progress is the frame's).
         IriRef iri = Current.Kind switch
         {
             SparqlTokenKind.Iri => ConsumeIriRef(),
             SparqlTokenKind.PrefixedName => ConsumePrefixedName(),
             SparqlTokenKind.A => ConsumeRdfTypeIriRef(),
-            _ => throw Expected("an IRI or 'a' in the negated property set", Current)
+            _ => RecoverNegatedPathItem()
         };
 
         return inverse ? new PathNegatedInverse(iri) : new PathNegatedForward(iri);
+    }
+
+    /// <summary>
+    /// Reports a missing negated-property-set element and returns an <c>rdf:type</c> IRI reference as the
+    /// faithful fallback (the element has no error-node variant); the cursor is not advanced.
+    /// </summary>
+    /// <returns>The fallback IRI reference.</returns>
+    private IriRef RecoverNegatedPathItem()
+    {
+        _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedNegatedPathItem, Current.Span, "Expected an IRI or 'a' in the negated property set.");
+
+        return new IriRef(rdfType, Current.Span);
     }
 
     /// <summary>Consumes the <c>a</c> shorthand at the cursor as an <c>rdf:type</c> IRI reference and advances.</summary>
@@ -2640,7 +2860,12 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PropertyPath, StartSpan = Current.Span });
         }
 
-        throw Expected("a predicate or property path", Current);
+        //A missing predicate finalises the triple run with the triples gathered so far, plus a
+        //diagnostic; junk up to the next separator/closer is skipped.
+        _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedVerb, Current.Span, "Expected a predicate or property path.");
+        ResyncTo(ParseFrameKind.Triple, Current.Span, out _);
+
+        return StepResult.Done(frame.TripleAccumulator!);
     }
 
     /// <summary>Converts the popped property path into a verb term — unwrapping a bare predicate — and moves to the objects.</summary>
@@ -2706,9 +2931,12 @@ public sealed class SparqlParser
     {
         if(Current.Kind is SparqlTokenKind.Tilde or SparqlTokenKind.OpenAnnotation)
         {
-            if(frame.Verb is PropertyPathTerm)
+            //An annotation after a property-path predicate is a positional violation; report it and keep
+            //the faithful annotation rather than discarding the construct.
+            if(frame.Verb is PropertyPathTerm && !frame.ReportedPathAnnotation)
             {
-                throw Expected("a non-path predicate before an annotation", Current);
+                Report(WellKnownDiagnostics.Sparql.AnnotationOnPathVerb, Current.Span, "An annotation cannot follow a property-path predicate.");
+                frame.ReportedPathAnnotation = true;
             }
 
             frame.Annotations ??= [];
@@ -2735,13 +2963,16 @@ public sealed class SparqlParser
         return EmitObject(frame, objectTerm);
     }
 
-    /// <summary>Adopts a popped annotation block and returns to the annotation tail for any further annotations.</summary>
+    /// <summary>
+    /// Adopts a popped annotation block (or, under recovery, an <see cref="ErrorAnnotation"/>) and
+    /// returns to the annotation tail for any further annotations.
+    /// </summary>
     /// <param name="frame">The triple frame.</param>
-    /// <param name="incoming">The popped annotation block.</param>
+    /// <param name="incoming">The popped annotation.</param>
     /// <returns>The instruction for the driver.</returns>
     private static StepResult TripleObjectAnnotationReceived(ParseFrame frame, object? incoming)
     {
-        frame.Annotations!.Add(Pop<AnnotationBlock>(incoming));
+        frame.Annotations!.Add(Pop<Annotation>(incoming));
         frame.Stage = 6;
 
         return StepResult.Continue();
@@ -2927,7 +3158,7 @@ public sealed class SparqlParser
     {
         if(Current.Kind != SparqlTokenKind.CloseTripleTerm)
         {
-            throw Expected("')>>' to close the triple term", Current);
+            return StepResult.Done(RecoverTriplePatternTerm(ParseFrameKind.TripleTerm, frame.StartSpan, WellKnownDiagnostics.Sparql.UnclosedTripleTerm, Current.Span, "Expected ')>>' to close the triple term.", "TripleTerm"));
         }
 
         Advance();
@@ -2949,7 +3180,7 @@ public sealed class SparqlParser
             SparqlTokenKind.Iri => ConsumeIriConstantTerm(),
             SparqlTokenKind.PrefixedName => ConsumePrefixedNameConstantTerm(),
             SparqlTokenKind.Variable => ConsumeVariable(),
-            _ => throw Expected("an IRI, 'a', or variable as the verb", Current)
+            _ => RecoverTriplePatternTerm(ParseFrameKind.TripleTerm, Current.Span, WellKnownDiagnostics.Sparql.ExpectedTripleTermVerb, Current.Span, "Expected an IRI, 'a', or variable as the verb.", "Verb")
         };
 
     /// <summary>Consumes the <c>a</c> shorthand as the <c>rdf:type</c> constant term and advances.</summary>
@@ -3080,7 +3311,7 @@ public sealed class SparqlParser
 
         if(Current.Kind != SparqlTokenKind.CloseReifiedTriple)
         {
-            throw Expected("'>>' to close the reified triple", Current);
+            return StepResult.Done(RecoverTriplePatternTerm(ParseFrameKind.ReifiedTriple, frame.StartSpan, WellKnownDiagnostics.Sparql.UnclosedReifiedTriple, Current.Span, "Expected '>>' to close the reified triple.", "ReifiedTriple"));
         }
 
         Advance();
@@ -3112,7 +3343,7 @@ public sealed class SparqlParser
             SparqlTokenKind.Variable => ConsumeVariable(),
             SparqlTokenKind.BlankNodeLabel => ConsumeBlankNodeTerm(),
             SparqlTokenKind.AnonymousBlankNode => ConsumeAnonymousBlankNodeTerm(),
-            _ => throw Expected("an IRI, variable, or blank node as the reifier", Current)
+            _ => RecoverTriplePatternTerm(ParseFrameKind.ReifiedTriple, Current.Span, WellKnownDiagnostics.Sparql.ExpectedReifier, Current.Span, "Expected an IRI, variable, or blank node as the reifier.", "Reifier")
         };
 
     /// <summary>Advances a collection term <c>( ... )</c>, parsing one item per step.</summary>
@@ -3152,9 +3383,15 @@ public sealed class SparqlParser
             return StepResult.Done(new CollectionTerm(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.TermItems!));
         }
 
-        if(Current.Kind == SparqlTokenKind.EndOfInput)
+        //An unterminated collection — end of input, or a token that cannot start an item and is not ')' —
+        //is finalised with the items gathered so far plus a diagnostic. Refusing to parse a leaf on a
+        //non-item token is what guarantees progress: parsing one would recover without advancing and the
+        //collection would re-enter forever.
+        if(Current.Kind == SparqlTokenKind.EndOfInput || !CanStartTriple(Current.Kind))
         {
-            throw Expected("')' to close the collection", Current);
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.UnclosedCollection, Current.Span, "Expected ')' to close the collection.");
+
+            return StepResult.Done(new CollectionTerm(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.TermItems!));
         }
 
         if(CanStartCompoundTerm(Current.Kind))
@@ -3231,7 +3468,17 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PropertyPath, StartSpan = Current.Span });
         }
 
-        throw Expected("a predicate or property path inside the blank-node property list", Current);
+        //A blank-node property list with no further verb is finalised with the entries gathered so far,
+        //skipping junk to its ']' closer — yielding the term faithfully for an editor.
+        _ = ReportRecoverable(WellKnownDiagnostics.Sparql.UnclosedBlankNodePropertyList, Current.Span, "Expected a predicate or property path inside the blank-node property list.");
+        ResyncTo(ParseFrameKind.BlankNodePropertyList, Current.Span, out _);
+
+        if(Current.Kind == SparqlTokenKind.CloseBracket)
+        {
+            Advance();
+        }
+
+        return StepResult.Done(new BlankNodePropertyListTerm(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.Properties!));
     }
 
     /// <summary>Converts the popped property path into the current verb and begins its object list.</summary>
@@ -3261,6 +3508,21 @@ public sealed class SparqlParser
             frame.Stage = 4;
 
             return StepResult.Push(CompoundTermFrame());
+        }
+
+        //A token that cannot begin an object finalises the list with the entries gathered so far; parsing
+        //a leaf here would recover without advancing and the list would re-enter forever.
+        if(!CanStartTriple(Current.Kind))
+        {
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.UnclosedBlankNodePropertyList, Current.Span, "Expected an object inside the blank-node property list.");
+            ResyncTo(ParseFrameKind.BlankNodePropertyList, Current.Span, out _);
+
+            if(Current.Kind == SparqlTokenKind.CloseBracket)
+            {
+                Advance();
+            }
+
+            return StepResult.Done(new BlankNodePropertyListTerm(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.Properties!));
         }
 
         return BlankNodeListAppendObject(frame, ParseVarOrTerm());
@@ -3316,7 +3578,17 @@ public sealed class SparqlParser
             return StepResult.Continue();
         }
 
-        throw Expected("';' or ']' in the blank-node property list", Current);
+        //A token that is neither a verb nor ']' finalises the list with the entries gathered so far,
+        //skipping junk to ']'.
+        _ = ReportRecoverable(WellKnownDiagnostics.Sparql.UnclosedBlankNodePropertyList, Current.Span, "Expected ';' or ']' in the blank-node property list.");
+        ResyncTo(ParseFrameKind.BlankNodePropertyList, Current.Span, out _);
+
+        if(Current.Kind == SparqlTokenKind.CloseBracket)
+        {
+            Advance();
+        }
+
+        return StepResult.Done(new BlankNodePropertyListTerm(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.Properties!));
     }
 
     /// <summary>Advances an RDF 1.2 annotation block <c>{| verb objects ; ... |}</c>, mirroring the blank-node property list with annotation delimiters.</summary>
@@ -3342,7 +3614,7 @@ public sealed class SparqlParser
         Advance();
         if(Current.Kind == SparqlTokenKind.CloseAnnotation)
         {
-            throw Expected("a predicate-object pair inside the annotation block", Current);
+            return StepResult.Done(RecoverAnnotation(ParseFrameKind.AnnotationBlock, frame.StartSpan, WellKnownDiagnostics.Sparql.UnclosedAnnotationBlock, Current.Span, "An annotation block must contain at least one predicate-object pair.", "Annotation"));
         }
 
         frame.Properties = [];
@@ -3374,7 +3646,7 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PropertyPath, StartSpan = Current.Span });
         }
 
-        throw Expected("a predicate or property path inside the annotation block", Current);
+        return StepResult.Done(RecoverAnnotation(ParseFrameKind.AnnotationBlock, frame.StartSpan, WellKnownDiagnostics.Sparql.UnclosedAnnotationBlock, Current.Span, "Expected a predicate or property path inside the annotation block.", "Annotation"));
     }
 
     /// <summary>Converts the popped property path into the current verb and begins its object list.</summary>
@@ -3406,7 +3678,35 @@ public sealed class SparqlParser
             return StepResult.Push(CompoundTermFrame());
         }
 
+        //A token that cannot begin an object finalises the block; parsing a leaf would recover without
+        //advancing and the block would re-enter forever.
+        if(!CanStartTriple(Current.Kind))
+        {
+            return AnnotationBlockFinalisePartial(frame, WellKnownDiagnostics.Sparql.UnclosedAnnotationBlock, "Expected an object inside the annotation block.");
+        }
+
         return AnnotationBlockAppendObject(frame, ParseVarOrTerm());
+    }
+
+    /// <summary>
+    /// Reports a malformed annotation block and finalises it with the predicate-object entries gathered
+    /// so far, skipping junk to its <c>|}</c> closer.
+    /// </summary>
+    /// <param name="frame">The annotation-block frame.</param>
+    /// <param name="code">The stable diagnostic code.</param>
+    /// <param name="message">A human-readable explanation.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult AnnotationBlockFinalisePartial(ParseFrame frame, Utf8String code, string message)
+    {
+        _ = ReportRecoverable(code, Current.Span, message);
+        ResyncTo(ParseFrameKind.AnnotationBlock, Current.Span, out _);
+
+        if(Current.Kind == SparqlTokenKind.CloseAnnotation)
+        {
+            Advance();
+        }
+
+        return StepResult.Done(new AnnotationBlock(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.Properties ?? []));
     }
 
     /// <summary>Appends a popped compound object and continues the object list.</summary>
@@ -3459,7 +3759,7 @@ public sealed class SparqlParser
             return StepResult.Continue();
         }
 
-        throw Expected("';' or '|}' in the annotation block", Current);
+        return AnnotationBlockFinalisePartial(frame, WellKnownDiagnostics.Sparql.UnclosedAnnotationBlock, "Expected ';' or '|}' in the annotation block.");
     }
 
     /// <summary>Returns the source span of a triple-pattern term, dispatching over the term kinds.</summary>
@@ -3508,9 +3808,13 @@ public sealed class SparqlParser
             return StepResult.Done(frame.TripleAccumulator!);
         }
 
+        //An unclosed template at end of input is finalised with the triples gathered so far plus a
+        //diagnostic.
         if(Current.Kind == SparqlTokenKind.EndOfInput)
         {
-            throw Expected("'}' to close the CONSTRUCT template", Current);
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.UnclosedGroupGraphPattern, Current.Span, "Expected '}' to close the CONSTRUCT template.");
+
+            return StepResult.Done(frame.TripleAccumulator!);
         }
 
         if(CanStartTriple(Current.Kind))
@@ -3518,7 +3822,24 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Triple, StartSpan = Current.Span });
         }
 
-        throw Expected("a triple pattern or '}'", Current);
+        //A stray token that begins no triple is consumed by no frame; skip the stray run (one diagnostic)
+        //up to a triple start, the template's closer, or end of input, so the template frame progresses.
+        _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedTriplePattern, Current.Span, "Expected a triple pattern or '}'.");
+
+        while(Current.Kind != SparqlTokenKind.EndOfInput
+            && Current.Kind != SparqlTokenKind.CloseBrace
+            && !CanStartTriple(Current.Kind))
+        {
+            int before = index;
+            Advance();
+
+            if(index == before)
+            {
+                break;
+            }
+        }
+
+        return StepResult.Continue();
     }
 
     /// <summary>
@@ -3551,7 +3872,11 @@ public sealed class SparqlParser
         {
             frame.ValuesVariables = [new SparqlVariable(Current.Value)];
             Advance();
-            ConsumeValuesOpenBrace();
+            if(!ConsumeValuesOpenBrace())
+            {
+                return StepResult.Done(new ValuesClause(frame.ValuesVariables, frame.ValuesRows!));
+            }
+
             frame.Stage = 1;
 
             return StepResult.Continue();
@@ -3566,7 +3891,12 @@ public sealed class SparqlParser
             return StepResult.Continue();
         }
 
-        throw Expected("a variable or '(' after VALUES", Current);
+        //A malformed VALUES head yields an empty data block plus a diagnostic; junk is skipped to a safe
+        //point so the enclosing group/request frame resumes cleanly.
+        _ = ReportRecoverable(WellKnownDiagnostics.Sparql.MalformedValuesBlock, Current.Span, "Expected a variable or '(' after VALUES.");
+        ResyncTo(ParseFrameKind.Values, Current.Span, out _);
+
+        return StepResult.Done(new ValuesClause([], []));
     }
 
     /// <summary>Reads the full-form variable list, one variable per step, then opens the data brace.</summary>
@@ -3586,13 +3916,22 @@ public sealed class SparqlParser
         {
             Advance();
             EnsureDistinctValuesVariables(frame);
-            ConsumeValuesOpenBrace();
+
+            if(!ConsumeValuesOpenBrace())
+            {
+                return StepResult.Done(new ValuesClause(frame.ValuesVariables!, frame.ValuesRows!));
+            }
+
             frame.Stage = 2;
 
             return StepResult.Continue();
         }
 
-        throw Expected("a variable or ')' in the VALUES variable list", Current);
+        //A malformed variable list is finalised with the variables gathered so far; junk is skipped.
+        _ = ReportRecoverable(WellKnownDiagnostics.Sparql.MalformedValuesBlock, Current.Span, "Expected a variable or ')' in the VALUES variable list.");
+        ResyncTo(ParseFrameKind.Values, Current.Span, out _);
+
+        return StepResult.Done(new ValuesClause(frame.ValuesVariables!, frame.ValuesRows!));
     }
 
     /// <summary>Reads one one-variable-form value (a single-column row), or closes the block.</summary>
@@ -3603,6 +3942,21 @@ public sealed class SparqlParser
         if(Current.Kind == SparqlTokenKind.CloseBrace)
         {
             Advance();
+
+            return StepResult.Done(new ValuesClause(frame.ValuesVariables!, frame.ValuesRows!));
+        }
+
+        //A token that begins no data value (and is not '}') finalises the block; parsing a value would
+        //recover without advancing and the block would re-enter forever.
+        if(!CanStartDataBlockValue(Current.Kind))
+        {
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedValuesValue, Current.Span, "Expected a VALUES data value or '}'.");
+            ResyncTo(ParseFrameKind.Values, Current.Span, out _);
+
+            if(Current.Kind == SparqlTokenKind.CloseBrace)
+            {
+                Advance();
+            }
 
             return StepResult.Done(new ValuesClause(frame.ValuesVariables!, frame.ValuesRows!));
         }
@@ -3634,7 +3988,16 @@ public sealed class SparqlParser
             return StepResult.Continue();
         }
 
-        throw Expected("'(' to begin a VALUES row or '}' to close the block", Current);
+        //A token that begins no row (and is not '}') finalises the block; junk is skipped.
+        _ = ReportRecoverable(WellKnownDiagnostics.Sparql.MalformedValuesBlock, Current.Span, "Expected '(' to begin a VALUES row or '}' to close the block.");
+        ResyncTo(ParseFrameKind.Values, Current.Span, out _);
+
+        if(Current.Kind == SparqlTokenKind.CloseBrace)
+        {
+            Advance();
+        }
+
+        return StepResult.Done(new ValuesClause(frame.ValuesVariables!, frame.ValuesRows!));
     }
 
     /// <summary>Reads one value of the current full-form row, or closes the row at <c>)</c>.</summary>
@@ -3645,14 +4008,33 @@ public sealed class SparqlParser
         if(Current.Kind == SparqlTokenKind.CloseParen)
         {
             Advance();
+
+            //A row whose arity differs from the variable list is a positional violation; report and keep
+            //the faithful row rather than dropping it.
             if(frame.CurrentRow!.Count != frame.ValuesVariables!.Count)
             {
-                throw new SparqlParseException(
-                    $"A VALUES row has {frame.CurrentRow.Count} value(s) but the block declares {frame.ValuesVariables.Count} variable(s).",
-                    frame.StartSpan);
+                Report(WellKnownDiagnostics.Sparql.ValuesArityMismatch, frame.StartSpan, $"A VALUES row has {frame.CurrentRow.Count} value(s) but the block declares {frame.ValuesVariables.Count} variable(s).");
             }
 
             frame.ValuesRows!.Add(frame.CurrentRow);
+            frame.Stage = 2;
+
+            return StepResult.Continue();
+        }
+
+        //A token that begins no data value (and is not ')') closes the row; parsing a value would recover
+        //without advancing and the row would re-enter forever.
+        if(!CanStartDataBlockValue(Current.Kind))
+        {
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedValuesValue, Current.Span, "Expected a VALUES data value or ')'.");
+            ResyncTo(ParseFrameKind.Values, Current.Span, out _);
+
+            if(Current.Kind == SparqlTokenKind.CloseParen)
+            {
+                Advance();
+            }
+
+            frame.ValuesRows!.Add(frame.CurrentRow!);
             frame.Stage = 2;
 
             return StepResult.Continue();
@@ -3663,31 +4045,39 @@ public sealed class SparqlParser
         return StepResult.Continue();
     }
 
-    /// <summary>Rejects a VALUES variable list that repeats a variable.</summary>
+    /// <summary>
+    /// Reports a VALUES variable list that repeats a variable. The duplicate is a positional violation;
+    /// it is recorded and the faithful variable list is kept (the duplicate is not removed).
+    /// </summary>
     /// <param name="frame">The values frame.</param>
-    private static void EnsureDistinctValuesVariables(ParseFrame frame)
+    private void EnsureDistinctValuesVariables(ParseFrame frame)
     {
         HashSet<Utf8String> seen = [];
         foreach(SparqlVariable variable in frame.ValuesVariables!)
         {
             if(!seen.Add(variable.Name))
             {
-                throw new SparqlParseException(
-                    $"The variable ?{variable.Name} appears more than once in the VALUES variable list.",
-                    frame.StartSpan);
+                Report(WellKnownDiagnostics.Sparql.DuplicateVariableInValues, frame.StartSpan, $"The variable ?{variable.Name} appears more than once in the VALUES variable list.");
             }
         }
     }
 
-    /// <summary>Consumes the opening brace of a VALUES data block.</summary>
-    private void ConsumeValuesOpenBrace()
+    /// <summary>
+    /// Consumes the opening brace of a VALUES data block, reporting and not consuming when it is absent.
+    /// </summary>
+    /// <returns><see langword="true"/> when the brace was present and consumed; <see langword="false"/> when it was missing.</returns>
+    private bool ConsumeValuesOpenBrace()
     {
         if(Current.Kind != SparqlTokenKind.OpenBrace)
         {
-            throw Expected("'{' to begin the VALUES data", Current);
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.MalformedValuesBlock, Current.Span, "Expected '{' to begin the VALUES data.");
+
+            return false;
         }
 
         Advance();
+
+        return true;
     }
 
     /// <summary>
@@ -3707,8 +4097,32 @@ public sealed class SparqlParser
                 or SparqlTokenKind.DecimalLiteral
                 or SparqlTokenKind.DoubleLiteral
                 or SparqlTokenKind.BooleanLiteral => ParseRdfLiteral(),
-            _ => throw Expected("a VALUES data value (an IRI, a literal, or UNDEF)", Current)
+            _ => RecoverDataBlockValue()
         };
+
+    /// <summary>
+    /// Reports a missing <c>DataBlockValue</c> and returns a null value (an unbound cell); the call sites
+    /// guard with <see cref="CanStartDataBlockValue"/>, so this is a defensive fallback that never advances.
+    /// </summary>
+    /// <returns><see langword="null"/>.</returns>
+    private RdfTerm? RecoverDataBlockValue()
+    {
+        _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedValuesValue, Current.Span, "Expected a VALUES data value (an IRI, a literal, or UNDEF).");
+
+        return null;
+    }
+
+    /// <summary>Determines whether a token kind can begin a <c>DataBlockValue</c> (an IRI, a literal, or <c>UNDEF</c>).</summary>
+    /// <param name="kind">The token kind to test.</param>
+    /// <returns><see langword="true"/> when the kind begins a data value.</returns>
+    private static bool CanStartDataBlockValue(SparqlTokenKind kind)
+    {
+        return kind is SparqlTokenKind.UndefKeyword
+            or SparqlTokenKind.Iri or SparqlTokenKind.PrefixedName
+            or SparqlTokenKind.StringLiteral or SparqlTokenKind.LongStringLiteral
+            or SparqlTokenKind.IntegerLiteral or SparqlTokenKind.DecimalLiteral or SparqlTokenKind.DoubleLiteral
+            or SparqlTokenKind.BooleanLiteral;
+    }
 
     /// <summary>Consumes the <c>UNDEF</c> keyword, returning a null value.</summary>
     /// <returns><see langword="null"/>.</returns>
@@ -3753,7 +4167,11 @@ public sealed class SparqlParser
         Advance();
         if(Current.Kind != SparqlTokenKind.Iri)
         {
-            throw Expected("IRI after BASE", Current);
+            //A BASE without its IRI is reported and skipped; the prologue resumes at the next safe point.
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedTerm, Current.Span, "Expected an IRI after BASE.");
+            ResyncTo(ParseFrameKind.Request, Current.Span, out _);
+
+            return;
         }
 
         IriRef iri = ConsumeIriRef();
@@ -3770,14 +4188,20 @@ public sealed class SparqlParser
         Advance();
         if(Current.Kind != SparqlTokenKind.PrefixNamespace)
         {
-            throw Expected("namespace prefix after PREFIX", Current);
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedTerm, Current.Span, "Expected a namespace prefix after PREFIX.");
+            ResyncTo(ParseFrameKind.Request, Current.Span, out _);
+
+            return;
         }
 
         Utf8String prefixLabel = Current.Value;
         Advance();
         if(Current.Kind != SparqlTokenKind.Iri)
         {
-            throw Expected("IRI in PREFIX declaration", Current);
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedTerm, Current.Span, "Expected an IRI in the PREFIX declaration.");
+            ResyncTo(ParseFrameKind.Request, Current.Span, out _);
+
+            return;
         }
 
         IriRef ns = ConsumeIriRef();
@@ -3822,7 +4246,7 @@ public sealed class SparqlParser
                 or SparqlTokenKind.DecimalLiteral
                 or SparqlTokenKind.DoubleLiteral
                 or SparqlTokenKind.BooleanLiteral => ConsumeLiteralConstantTerm(),
-            _ => throw Expected("a subject or object term", Current)
+            _ => RecoverTriplePatternTerm(ParseFrameKind.Triple, Current.Span, WellKnownDiagnostics.Sparql.ExpectedTerm, Current.Span, "Expected a subject or object term.", "VarOrTerm")
         };
 
     /// <summary>Consumes the IRI at the cursor as a constant term carrying the token span.</summary>
@@ -3888,8 +4312,21 @@ public sealed class SparqlParser
             SparqlTokenKind.Variable => ConsumeGraphVariable(),
             SparqlTokenKind.Iri => new GraphIriTerm(ConsumeIriRef()),
             SparqlTokenKind.PrefixedName => new GraphIriTerm(ConsumePrefixedName()),
-            _ => throw Expected("a graph IRI or variable", Current)
+            _ => RecoverGraphDesignator()
         };
+
+    /// <summary>
+    /// Reports a missing graph designator and returns an <see cref="ErrorGraphTerm"/> over the current
+    /// token without resyncing, so the caller (<c>GRAPH</c> / <c>SERVICE</c>) can still test for the
+    /// following <c>{</c>. Resyncing here would skip the entire group pattern.
+    /// </summary>
+    /// <returns>The error graph-term node.</returns>
+    private ErrorGraphTerm RecoverGraphDesignator()
+    {
+        ImmutableArray<Utf8String> codes = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedGraphTerm, Current.Span, "Expected a graph IRI or variable.");
+
+        return new ErrorGraphTerm(Current.Span, Utf8String.FromString("VarOrIri"), codes, []);
+    }
 
     /// <summary>
     /// Consumes the variable at the cursor as a graph designator and advances.
@@ -3953,8 +4390,21 @@ public sealed class SparqlParser
         {
             SparqlTokenKind.Iri => ConsumeIriRef(),
             SparqlTokenKind.PrefixedName => ConsumePrefixedName(),
-            _ => throw Expected(what, Current)
+            _ => RecoverMissingIri(what)
         };
+    }
+
+    /// <summary>
+    /// Reports a missing IRI (in a DESCRIBE target or FROM clause) and returns an empty IRI reference
+    /// without advancing; the enclosing list loop then resumes on the offending token.
+    /// </summary>
+    /// <param name="what">A description of the expected element for the diagnostic.</param>
+    /// <returns>An empty IRI reference at the current span.</returns>
+    private IriRef RecoverMissingIri(string what)
+    {
+        _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedTerm, Current.Span, $"Expected {what}.");
+
+        return new IriRef(Pool.Intern(""u8), Current.Span);
     }
 
     /// <summary>
@@ -3970,8 +4420,20 @@ public sealed class SparqlParser
             SparqlTokenKind.DecimalLiteral => ConsumeTypedNumericOrBoolean(xsdDecimal),
             SparqlTokenKind.DoubleLiteral => ConsumeTypedNumericOrBoolean(xsdDouble),
             SparqlTokenKind.BooleanLiteral => ConsumeTypedNumericOrBoolean(xsdBoolean),
-            _ => throw Expected("a literal", Current)
+            _ => RecoverMissingLiteral()
         };
+
+    /// <summary>
+    /// Reports a missing literal and returns an empty <c>xsd:string</c> literal without advancing; the
+    /// call sites guard on a literal token, so this is a defensive fallback.
+    /// </summary>
+    /// <returns>The fallback literal.</returns>
+    private Literal RecoverMissingLiteral()
+    {
+        _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedTerm, Current.Span, "Expected a literal.");
+
+        return new Literal(Pool.Intern(""u8), new NamedNode(xsdString), Language: null, BaseDirection: null);
+    }
 
     /// <summary>
     /// Consumes a string literal at the cursor and its optional language tag, directional language tag,
@@ -4055,8 +4517,20 @@ public sealed class SparqlParser
         {
             SparqlTokenKind.Iri => new NamedNode(ConsumeIriRef().Value),
             SparqlTokenKind.PrefixedName => new NamedNode(ConsumePrefixedName().Value),
-            _ => throw Expected("a datatype IRI after '^^'", Current)
+            _ => RecoverMissingDatatype()
         };
+    }
+
+    /// <summary>
+    /// Reports a missing datatype IRI after <c>^^</c> and returns an <c>xsd:string</c> fallback without
+    /// advancing, keeping the literal faithful.
+    /// </summary>
+    /// <returns>The fallback datatype named node.</returns>
+    private NamedNode RecoverMissingDatatype()
+    {
+        _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedDatatypeIri, Current.Span, "Expected a datatype IRI after '^^'.");
+
+        return new NamedNode(xsdString);
     }
 
     /// <summary>
@@ -4068,14 +4542,20 @@ public sealed class SparqlParser
     {
         if(Current.Kind != SparqlTokenKind.IntegerLiteral)
         {
-            throw Expected(what, Current);
+            //A missing slice value is reported and treated as zero without advancing; the request frame's
+            //modifier loop then resumes on the offending token.
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedInteger, Current.Span, $"Expected {what}.");
+
+            return 0;
         }
 
         if(!int.TryParse(Current.Value.ToString(), NumberStyles.None, CultureInfo.InvariantCulture, out int value))
         {
-            throw new SparqlParseException(
-                $"The {what} '{Current.Value}' is not a valid non-negative 32-bit integer.",
-                Current.Span);
+            //A malformed integer is reported and treated as zero; the malformed token is consumed.
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedInteger, Current.Span, $"The {what} '{Current.Value}' is not a valid non-negative 32-bit integer.");
+            Advance();
+
+            return 0;
         }
 
         Advance();
@@ -4120,9 +4600,12 @@ public sealed class SparqlParser
         Utf8String prefixLabel = Pool.Intern(bytes[..(colonIndex + 1)]);
         if(!prefixMap.TryGetValue(prefixLabel, out Utf8String namespaceIri))
         {
-            throw new SparqlParseException(
-                $"The prefix '{prefixLabel}' is not bound by any PREFIX declaration.",
-                span);
+            //An unbound prefix is input-reachable (a prefixed name with no PREFIX declaration). Report it
+            //and keep the unexpanded prefixed-name text as the IRI value, so the AST stays faithful and
+            //the offending token is still consumed by the caller.
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.UnboundPrefix, span, $"The prefix '{prefixLabel}' is not bound by any PREFIX declaration.");
+
+            return prefixedName;
         }
 
         return InternConcatenated(namespaceIri.Span, bytes[(colonIndex + 1)..]);
@@ -4172,9 +4655,11 @@ public sealed class SparqlParser
             return (language, TextDirection.Rtl);
         }
 
-        throw new SparqlParseException(
-            $"The base direction '{System.Text.Encoding.UTF8.GetString(directionBytes)}' is not 'ltr' or 'rtl'.",
-            span);
+        //The lexer accepts any letter sequence after '--', so a direction other than 'ltr'/'rtl' is
+        //input-reachable: report it and keep the language tag with a default left-to-right direction.
+        _ = ReportRecoverable(WellKnownDiagnostics.Sparql.InvalidBaseDirection, span, $"The base direction '{System.Text.Encoding.UTF8.GetString(directionBytes)}' is not 'ltr' or 'rtl'.");
+
+        return (language, TextDirection.Ltr);
     }
 
     /// <summary>
@@ -4258,16 +4743,254 @@ public sealed class SparqlParser
     }
 
     /// <summary>
-    /// Builds an "expected X but found Y" exception anchored at a token.
+    /// Records a recoverable parse diagnostic into the shared bag.
     /// </summary>
-    /// <param name="what">A description of what the parser expected.</param>
-    /// <param name="got">The token that was found instead.</param>
-    /// <returns>The exception to throw.</returns>
-    private static SparqlParseException Expected(string what, SparqlToken got)
+    /// <param name="code">The stable diagnostic code.</param>
+    /// <param name="span">The source extent the diagnostic covers.</param>
+    /// <param name="message">A human-readable explanation.</param>
+    private void Report(Utf8String code, SourceSpan span, string message)
     {
-        return new SparqlParseException(
-            $"Expected {what} but found {got.Kind} '{got.Value}' at line {got.Span.StartLine + 1} column {got.Span.StartColumn + 1}.",
-            got.Span);
+        Diagnostics.Add(new Diagnostic(code, DiagnosticSeverity.Error, span, Utf8String.FromString(message)));
+    }
+
+    /// <summary>
+    /// Records the diagnostic for a recoverable error and returns the codes to stamp on the error node —
+    /// unless the offending token is a lexer <see cref="SparqlTokenKind.Error"/> token, whose <c>LX####</c>
+    /// diagnostic the facade already bridged into the bag.
+    /// </summary>
+    /// <remarks>
+    /// Re-reporting an <see cref="SparqlTokenKind.Error"/> token would double-count, so the lexer's code
+    /// stands alone and the parser stays silent; the error node still spans the offending run, correlating
+    /// by span.
+    /// </remarks>
+    /// <param name="code">The stable diagnostic code.</param>
+    /// <param name="span">The source extent the diagnostic covers.</param>
+    /// <param name="message">A human-readable explanation.</param>
+    /// <returns>The codes to record on the error node: <c>[code]</c>, or empty when the offending token is a lexer error.</returns>
+    private ImmutableArray<Utf8String> ReportRecoverable(Utf8String code, SourceSpan span, string message)
+    {
+        if(Current.Kind == SparqlTokenKind.Error)
+        {
+            return [];
+        }
+
+        Report(code, span, message);
+
+        return [code];
+    }
+
+    /// <summary>
+    /// Skips tokens from the cursor — collecting them as the error node's trivia — until a token in the
+    /// frame's resync set (or end-of-input) is reached, which is left as the new cursor.
+    /// </summary>
+    /// <remarks>
+    /// The <c>before == index</c> guard breaks when <see cref="Advance"/> cannot move (the cursor is
+    /// clamped at the final token), so recovery from any position terminates.
+    /// </remarks>
+    /// <param name="frameKind">The frame whose resync set determines where skipping stops.</param>
+    /// <param name="startSpan">The span the running end span is seeded from.</param>
+    /// <param name="lastSpan">Receives the span of the last skipped token, or <paramref name="startSpan"/> when none was skipped.</param>
+    /// <returns>The tokens skipped to resynchronise.</returns>
+    private ImmutableArray<SparqlToken> ResyncTo(ParseFrameKind frameKind, SourceSpan startSpan, out SourceSpan lastSpan)
+    {
+        ImmutableArray<SparqlToken>.Builder skipped = ImmutableArray.CreateBuilder<SparqlToken>();
+        lastSpan = startSpan;
+
+        while(Current.Kind != SparqlTokenKind.EndOfInput && !IsResyncToken(frameKind, Current.Kind))
+        {
+            skipped.Add(Current);
+            lastSpan = Current.Span;
+            int before = index;
+            Advance();
+
+            if(index == before)
+            {
+                break;
+            }
+        }
+
+        return skipped.ToImmutable();
+    }
+
+    /// <summary>
+    /// The resync set for each <see cref="ParseFrameKind"/>: the structural tokens at or after which the
+    /// parser can resume after skipping a malformed run.
+    /// </summary>
+    /// <remarks>
+    /// A bracketed form resyncs to its own closer (plus the statement terminators for the triple forms,
+    /// which may be the next safe point if the closer is missing); the request and clause frames resync
+    /// to the nearest statement boundary. End-of-input is always a stop, handled by
+    /// <see cref="ResyncTo"/>'s loop condition.
+    /// </remarks>
+    /// <param name="frameKind">The frame whose resync set to test against.</param>
+    /// <param name="kind">The token kind at the cursor.</param>
+    /// <returns><see langword="true"/> when the cursor token is a safe point to resume at.</returns>
+    private static bool IsResyncToken(ParseFrameKind frameKind, SparqlTokenKind kind)
+        => frameKind switch
+        {
+            ParseFrameKind.Request or ParseFrameKind.SelectClause
+                => kind is SparqlTokenKind.Period or SparqlTokenKind.CloseBrace,
+            ParseFrameKind.GroupGraphPattern or ParseFrameKind.UnionPattern or ParseFrameKind.OptionalPattern
+                or ParseFrameKind.MinusPattern or ParseFrameKind.GraphPattern or ParseFrameKind.ServicePattern
+                or ParseFrameKind.SubSelect or ParseFrameKind.ConstructTemplate
+                => kind is SparqlTokenKind.CloseBrace,
+            ParseFrameKind.Triple
+                => kind is SparqlTokenKind.Period or SparqlTokenKind.Semicolon or SparqlTokenKind.CloseBrace,
+            ParseFrameKind.Collection
+                => kind is SparqlTokenKind.CloseParen,
+            ParseFrameKind.BlankNodePropertyList
+                => kind is SparqlTokenKind.CloseBracket,
+            ParseFrameKind.TripleTerm
+                => kind is SparqlTokenKind.CloseTripleTerm or SparqlTokenKind.Period or SparqlTokenKind.CloseBrace,
+            ParseFrameKind.ReifiedTriple
+                => kind is SparqlTokenKind.CloseReifiedTriple or SparqlTokenKind.Period or SparqlTokenKind.CloseBrace,
+            ParseFrameKind.AnnotationBlock
+                => kind is SparqlTokenKind.CloseAnnotation,
+            ParseFrameKind.Expression or ParseFrameKind.ArgumentList
+                => kind is SparqlTokenKind.CloseParen or SparqlTokenKind.Comma,
+            ParseFrameKind.PropertyPath or ParseFrameKind.PathSequence or ParseFrameKind.PathElement
+                or ParseFrameKind.PathNegatedSet
+                => kind is SparqlTokenKind.CloseParen or SparqlTokenKind.CloseBrace or SparqlTokenKind.Period or SparqlTokenKind.Semicolon,
+            ParseFrameKind.Values
+                => kind is SparqlTokenKind.CloseBrace or SparqlTokenKind.CloseParen,
+            ParseFrameKind.GroupBy or ParseFrameKind.Having or ParseFrameKind.OrderBy
+                or ParseFrameKind.Filter or ParseFrameKind.Bind
+                => kind is SparqlTokenKind.CloseBrace or SparqlTokenKind.Period,
+            _ => kind is SparqlTokenKind.Period or SparqlTokenKind.Semicolon or SparqlTokenKind.Comma
+                or SparqlTokenKind.CloseBracket or SparqlTokenKind.CloseParen or SparqlTokenKind.CloseBrace
+                or SparqlTokenKind.CloseTripleTerm or SparqlTokenKind.CloseReifiedTriple or SparqlTokenKind.CloseAnnotation
+        };
+
+    /// <summary>
+    /// Records the diagnostic, resyncs to the frame's resync set, and builds an
+    /// <see cref="ErrorGraphPattern"/> spanning the failure-to-resync run. The node slots into any parent
+    /// that expected a <see cref="GraphPattern"/>, so the existing value flow carries it up.
+    /// </summary>
+    /// <param name="frameKind">The frame whose resync set bounds the skip.</param>
+    /// <param name="startSpan">The span the node's extent begins at.</param>
+    /// <param name="code">The stable diagnostic code.</param>
+    /// <param name="errorSpan">The span the diagnostic is anchored at.</param>
+    /// <param name="message">A human-readable explanation.</param>
+    /// <param name="expectedProduction">The grammar production the parser expected.</param>
+    /// <returns>The error graph-pattern node.</returns>
+    private ErrorGraphPattern RecoverGraphPattern(ParseFrameKind frameKind, SourceSpan startSpan, Utf8String code, SourceSpan errorSpan, string message, string expectedProduction)
+    {
+        ImmutableArray<Utf8String> codes = ReportRecoverable(code, errorSpan, message);
+        ImmutableArray<SparqlToken> skipped = ResyncTo(frameKind, errorSpan, out SourceSpan endSpan);
+
+        return new ErrorGraphPattern(CombineSpans(startSpan, endSpan), Utf8String.FromString(expectedProduction), codes, skipped);
+    }
+
+    /// <summary>As <see cref="RecoverGraphPattern"/>, for a broken query-form head, yielding an <see cref="ErrorQueryForm"/>.</summary>
+    /// <param name="frameKind">The frame whose resync set bounds the skip.</param>
+    /// <param name="startSpan">The span the node's extent begins at.</param>
+    /// <param name="code">The stable diagnostic code.</param>
+    /// <param name="errorSpan">The span the diagnostic is anchored at.</param>
+    /// <param name="message">A human-readable explanation.</param>
+    /// <param name="expectedProduction">The grammar production the parser expected.</param>
+    /// <returns>The error query-form node.</returns>
+    private ErrorQueryForm RecoverQueryForm(ParseFrameKind frameKind, SourceSpan startSpan, Utf8String code, SourceSpan errorSpan, string message, string expectedProduction)
+    {
+        ImmutableArray<Utf8String> codes = ReportRecoverable(code, errorSpan, message);
+        ImmutableArray<SparqlToken> skipped = ResyncTo(frameKind, errorSpan, out SourceSpan endSpan);
+
+        return new ErrorQueryForm(CombineSpans(startSpan, endSpan), Utf8String.FromString(expectedProduction), codes, skipped);
+    }
+
+    /// <summary>As <see cref="RecoverGraphPattern"/>, for a broken expression, yielding an <see cref="ErrorExpression"/>.</summary>
+    /// <param name="frameKind">The frame whose resync set bounds the skip.</param>
+    /// <param name="startSpan">The span the node's extent begins at.</param>
+    /// <param name="code">The stable diagnostic code.</param>
+    /// <param name="errorSpan">The span the diagnostic is anchored at.</param>
+    /// <param name="message">A human-readable explanation.</param>
+    /// <param name="expectedProduction">The grammar production the parser expected.</param>
+    /// <returns>The error expression node.</returns>
+    private ErrorExpression RecoverExpression(ParseFrameKind frameKind, SourceSpan startSpan, Utf8String code, SourceSpan errorSpan, string message, string expectedProduction)
+    {
+        ImmutableArray<Utf8String> codes = ReportRecoverable(code, errorSpan, message);
+        ImmutableArray<SparqlToken> skipped = ResyncTo(frameKind, errorSpan, out SourceSpan endSpan);
+
+        return new ErrorExpression(CombineSpans(startSpan, endSpan), Utf8String.FromString(expectedProduction), codes, skipped);
+    }
+
+    /// <summary>As <see cref="RecoverGraphPattern"/>, for a broken property path, yielding an <see cref="ErrorPropertyPath"/>.</summary>
+    /// <param name="frameKind">The frame whose resync set bounds the skip.</param>
+    /// <param name="startSpan">The span the node's extent begins at.</param>
+    /// <param name="code">The stable diagnostic code.</param>
+    /// <param name="errorSpan">The span the diagnostic is anchored at.</param>
+    /// <param name="message">A human-readable explanation.</param>
+    /// <param name="expectedProduction">The grammar production the parser expected.</param>
+    /// <returns>The error property-path node.</returns>
+    private ErrorPropertyPath RecoverPropertyPath(ParseFrameKind frameKind, SourceSpan startSpan, Utf8String code, SourceSpan errorSpan, string message, string expectedProduction)
+    {
+        ImmutableArray<Utf8String> codes = ReportRecoverable(code, errorSpan, message);
+        ImmutableArray<SparqlToken> skipped = ResyncTo(frameKind, errorSpan, out SourceSpan endSpan);
+
+        return new ErrorPropertyPath(CombineSpans(startSpan, endSpan), Utf8String.FromString(expectedProduction), codes, skipped);
+    }
+
+    /// <summary>As <see cref="RecoverGraphPattern"/>, for a broken triple-pattern term, yielding an <see cref="ErrorTriplePatternTerm"/>.</summary>
+    /// <param name="frameKind">The frame whose resync set bounds the skip.</param>
+    /// <param name="startSpan">The span the node's extent begins at.</param>
+    /// <param name="code">The stable diagnostic code.</param>
+    /// <param name="errorSpan">The span the diagnostic is anchored at.</param>
+    /// <param name="message">A human-readable explanation.</param>
+    /// <param name="expectedProduction">The grammar production the parser expected.</param>
+    /// <returns>The error triple-pattern-term node.</returns>
+    private ErrorTriplePatternTerm RecoverTriplePatternTerm(ParseFrameKind frameKind, SourceSpan startSpan, Utf8String code, SourceSpan errorSpan, string message, string expectedProduction)
+    {
+        ImmutableArray<Utf8String> codes = ReportRecoverable(code, errorSpan, message);
+        ImmutableArray<SparqlToken> skipped = ResyncTo(frameKind, errorSpan, out SourceSpan endSpan);
+
+        return new ErrorTriplePatternTerm(CombineSpans(startSpan, endSpan), Utf8String.FromString(expectedProduction), codes, skipped);
+    }
+
+    /// <summary>As <see cref="RecoverGraphPattern"/>, for a broken graph designator, yielding an <see cref="ErrorGraphTerm"/>.</summary>
+    /// <param name="frameKind">The frame whose resync set bounds the skip.</param>
+    /// <param name="startSpan">The span the node's extent begins at.</param>
+    /// <param name="code">The stable diagnostic code.</param>
+    /// <param name="errorSpan">The span the diagnostic is anchored at.</param>
+    /// <param name="message">A human-readable explanation.</param>
+    /// <param name="expectedProduction">The grammar production the parser expected.</param>
+    /// <returns>The error graph-term node.</returns>
+    private ErrorGraphTerm RecoverGraphTerm(ParseFrameKind frameKind, SourceSpan startSpan, Utf8String code, SourceSpan errorSpan, string message, string expectedProduction)
+    {
+        ImmutableArray<Utf8String> codes = ReportRecoverable(code, errorSpan, message);
+        ImmutableArray<SparqlToken> skipped = ResyncTo(frameKind, errorSpan, out SourceSpan endSpan);
+
+        return new ErrorGraphTerm(CombineSpans(startSpan, endSpan), Utf8String.FromString(expectedProduction), codes, skipped);
+    }
+
+    /// <summary>As <see cref="RecoverGraphPattern"/>, for a broken annotation, yielding an <see cref="ErrorAnnotation"/>.</summary>
+    /// <param name="frameKind">The frame whose resync set bounds the skip.</param>
+    /// <param name="startSpan">The span the node's extent begins at.</param>
+    /// <param name="code">The stable diagnostic code.</param>
+    /// <param name="errorSpan">The span the diagnostic is anchored at.</param>
+    /// <param name="message">A human-readable explanation.</param>
+    /// <param name="expectedProduction">The grammar production the parser expected.</param>
+    /// <returns>The error annotation node.</returns>
+    private ErrorAnnotation RecoverAnnotation(ParseFrameKind frameKind, SourceSpan startSpan, Utf8String code, SourceSpan errorSpan, string message, string expectedProduction)
+    {
+        ImmutableArray<Utf8String> codes = ReportRecoverable(code, errorSpan, message);
+        ImmutableArray<SparqlToken> skipped = ResyncTo(frameKind, errorSpan, out SourceSpan endSpan);
+
+        return new ErrorAnnotation(CombineSpans(startSpan, endSpan), Utf8String.FromString(expectedProduction), codes, skipped);
+    }
+
+    /// <summary>
+    /// Determines whether a token kind can begin a group-graph-pattern member: a triple subject, a
+    /// nested-group / member keyword, or a <c>VALUES</c> block.
+    /// </summary>
+    /// <param name="kind">The token kind to test.</param>
+    /// <returns><see langword="true"/> when the kind begins a member.</returns>
+    private static bool CanStartGroupMember(SparqlTokenKind kind)
+    {
+        return CanStartTriple(kind)
+            || kind is SparqlTokenKind.OpenBrace
+            or SparqlTokenKind.OptionalKeyword or SparqlTokenKind.MinusKeyword
+            or SparqlTokenKind.GraphKeyword or SparqlTokenKind.ServiceKeyword
+            or SparqlTokenKind.FilterKeyword or SparqlTokenKind.BindKeyword
+            or SparqlTokenKind.ValuesKeyword;
     }
 
     /// <summary>

@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Text;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Sparql;
 using Lumoin.Veritas.Sparql.Ast;
@@ -296,7 +297,7 @@ internal sealed class SparqlParserTests
     public void UnboundPrefixThrows()
     {
         using Utf8StringPool pool = new();
-        Assert.Throws<SparqlParseException>(() => ParseQuery("SELECT * WHERE { ?s foo:bar ?o }", pool));
+        AssertParseError("SELECT * WHERE { ?s foo:bar ?o }", pool, WellKnownDiagnostics.Sparql.UnboundPrefix);
     }
 
     /// <summary>A CONSTRUCT query records its template triples and its WHERE pattern.</summary>
@@ -380,7 +381,7 @@ internal sealed class SparqlParserTests
     public void TrailingTokensThrow()
     {
         using Utf8StringPool pool = new();
-        Assert.Throws<SparqlParseException>(() => ParseQuery("ASK { ?s ?p ?o } garbage:here", pool));
+        AssertParseError("ASK { ?s ?p ?o } garbage:here", pool, WellKnownDiagnostics.Sparql.ExpectedEndOfQuery);
     }
 
     /// <summary>A nested group graph pattern is preserved as a member of the enclosing group.</summary>
@@ -616,7 +617,7 @@ internal sealed class SparqlParserTests
     public void ChainedComparisonThrows()
     {
         using Utf8StringPool pool = new();
-        Assert.Throws<SparqlParseException>(() => ParseQuery("ASK { FILTER(?a < ?b < ?c) }", pool));
+        AssertParseError("ASK { FILTER(?a < ?b < ?c) }", pool, WellKnownDiagnostics.Sparql.UnexpectedToken);
     }
 
     /// <summary>A BIND member binds an expression to a variable.</summary>
@@ -1150,7 +1151,7 @@ internal sealed class SparqlParserTests
     {
         using Utf8StringPool pool = new();
 
-        Assert.Throws<SparqlParseException>(() => ParseQuery("PREFIX : <http://e/> SELECT * WHERE { <<( ?s ?p ?o )>> . }", pool));
+        AssertParseError("PREFIX : <http://e/> SELECT * WHERE { <<( ?s ?p ?o )>> . }", pool, WellKnownDiagnostics.Sparql.ExpectedVerb);
     }
 
     /// <summary>A triple term's subject may itself be a triple term (nesting in subject position).</summary>
@@ -1170,7 +1171,7 @@ internal sealed class SparqlParserTests
     {
         using Utf8StringPool pool = new();
 
-        Assert.Throws<SparqlParseException>(() => ParseQuery("PREFIX : <http://e/> SELECT * { <<( ?s :p/:q ?o )>> :a :b }", pool));
+        AssertParseError("PREFIX : <http://e/> SELECT * { <<( ?s :p/:q ?o )>> :a :b }", pool, WellKnownDiagnostics.Sparql.UnclosedTripleTerm);
     }
 
     /// <summary>A blank node is rejected as a triple term's predicate.</summary>
@@ -1179,7 +1180,7 @@ internal sealed class SparqlParserTests
     {
         using Utf8StringPool pool = new();
 
-        Assert.Throws<SparqlParseException>(() => ParseQuery("PREFIX : <http://e/> SELECT * { <<( ?s [] ?o )>> :a :b }", pool));
+        AssertParseError("PREFIX : <http://e/> SELECT * { <<( ?s [] ?o )>> :a :b }", pool, WellKnownDiagnostics.Sparql.ExpectedTripleTermVerb);
     }
 
     /// <summary>A reified triple in subject position parses with an explicit IRI reifier.</summary>
@@ -1257,7 +1258,7 @@ internal sealed class SparqlParserTests
     {
         using Utf8StringPool pool = new();
 
-        Assert.Throws<SparqlParseException>(() => ParseQuery("PREFIX : <http://e/> SELECT * { ?s ?p ?o BIND(<< ?s ?p ?o ~ :iri >> AS ?t) }", pool));
+        AssertParseError("PREFIX : <http://e/> SELECT * { ?s ?p ?o BIND(<< ?s ?p ?o ~ :iri >> AS ?t) }", pool, WellKnownDiagnostics.Sparql.ExpressionExpected);
     }
 
     /// <summary>An annotation block on an object parses to an <see cref="AnnotatedObject"/> carrying an <see cref="AnnotationBlock"/>.</summary>
@@ -1315,7 +1316,7 @@ internal sealed class SparqlParserTests
     {
         using Utf8StringPool pool = new();
 
-        Assert.Throws<SparqlParseException>(() => ParseQuery("PREFIX : <http://e/> SELECT * { ?s :p/:q ?o ~ :iri }", pool));
+        AssertParseError("PREFIX : <http://e/> SELECT * { ?s :p/:q ?o ~ :iri }", pool, WellKnownDiagnostics.Sparql.AnnotationOnPathVerb);
     }
 
     /// <summary>An empty annotation block is rejected.</summary>
@@ -1324,7 +1325,7 @@ internal sealed class SparqlParserTests
     {
         using Utf8StringPool pool = new();
 
-        Assert.Throws<SparqlParseException>(() => ParseQuery("PREFIX : <http://e/> SELECT * { ?s ?p ?o {| |} }", pool));
+        AssertParseError("PREFIX : <http://e/> SELECT * { ?s ?p ?o {| |} }", pool, WellKnownDiagnostics.Sparql.UnclosedAnnotationBlock);
     }
 
     private static SparqlQuery ParseQuery(string text, Utf8StringPool pool)
@@ -1333,6 +1334,55 @@ internal sealed class SparqlParserTests
         SparqlParser parser = new(lexer.Tokenize(), pool);
 
         return (SparqlQuery)parser.ParseRequest();
+    }
+
+    /// <summary>
+    /// Parses a query through the recovery surface, returning the parse result (the request plus the
+    /// diagnostics gathered, with lexer diagnostics bridged in) without throwing on malformed input.
+    /// </summary>
+    /// <param name="text">The SPARQL query text.</param>
+    /// <param name="pool">The pool keeping the parsed handles alive.</param>
+    /// <returns>The parse result.</returns>
+    private static ParseResult<SparqlRequest> ParseQueryToResult(string text, Utf8StringPool pool)
+    {
+        DiagnosticBag diagnostics = new();
+        SparqlLexer lexer = new(Encoding.UTF8.GetBytes(text), pool);
+        SparqlParser parser = new(lexer.Tokenize(), pool, baseIri: null, blankNodes: null, diagnostics: diagnostics);
+        ParseResult<SparqlRequest> result = parser.ParseToResult();
+
+        foreach(SparqlLexDiagnostic lexDiagnostic in lexer.Diagnostics)
+        {
+            diagnostics.Add(SparqlLexDiagnosticBridge.ToDiagnostic(lexDiagnostic));
+        }
+
+        return new ParseResult<SparqlRequest>(result.Tree, diagnostics.Diagnostics, diagnostics.HasErrors);
+    }
+
+    /// <summary>
+    /// Asserts the recovery parser flags <paramref name="text"/> as malformed, with the expected
+    /// diagnostic code among the gathered diagnostics.
+    /// </summary>
+    /// <param name="text">The malformed SPARQL query text.</param>
+    /// <param name="pool">The pool keeping the parsed handles alive.</param>
+    /// <param name="expectedCode">The diagnostic code expected to fire.</param>
+    private static void AssertParseError(string text, Utf8StringPool pool, Utf8String expectedCode)
+    {
+        ParseResult<SparqlRequest> result = ParseQueryToResult(text, pool);
+
+        Assert.IsTrue(result.HasErrors, $"Expected '{text}' to be flagged as malformed, but no error diagnostic was recorded.");
+
+        bool found = false;
+        foreach(Diagnostic diagnostic in result.Diagnostics)
+        {
+            if(diagnostic.Code.Equals(expectedCode))
+            {
+                found = true;
+
+                break;
+            }
+        }
+
+        Assert.IsTrue(found, $"Expected diagnostic code '{expectedCode}' for '{text}', but it was not among the recorded diagnostics.");
     }
 
     /// <summary>
