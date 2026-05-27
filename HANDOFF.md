@@ -57,8 +57,12 @@ AST from day one.) This is the cross-cutting error-model rework deferred earlier
   (and list frames push a Term sub-frame only on `CanStartTerm`) — this is what guarantees the work stack
   always progresses under malformed input. **Build clean (0 warnings, TreatWarningsAsErrors); 313/313
   Turtle tests pass; full suite 50 failed = the unchanged SHACL baseline, 0 new failures.**
-  *Remaining for Step 3:* the additive recovery tests below (per-frame resync, cascade-suppression,
-  reactive-editor) — sanctioned as a follow-up commit.
+  *Additive recovery tests landed* (`TurtleParserRecoveryTests`, 12 tests): per-frame resync
+  (collection/BNPL/triple-term/annotation-block/graph-block/directive/missing-`.`/stray top-level `}`),
+  recovery-continuation (a trailing clean triple still parses), cascade-suppression (bounded diagnostics
+  for one unclosed `[`), real spans on every diagnostic, the emitter's `UndeclaredPrefix`, and a
+  reactive-editor incremental feed (error node + diagnostic, then recovery keeps producing). 325/325
+  Turtle tests pass. **Step 3 complete.**
 **Steps 4–6 remain:** (4) SPARQL parser recovery — same on the larger
 parser (the conformance jump lands here); (5) `SparqlInvalidRequestException`
 type; (6) docs audit (every code linked + referenced by name).
