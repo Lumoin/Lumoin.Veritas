@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Iris;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Sparql.Ast;
@@ -87,8 +88,9 @@ public sealed class SparqlParser
     /// <param name="pool">The pool used to intern parser-allocated identifiers (resolved IRIs, blank-node labels).</param>
     /// <param name="baseIri">The external base IRI relative references resolve against before any in-query <c>BASE</c>, or <see langword="null"/>.</param>
     /// <param name="blankNodes">Allocates labels for anonymous <c>[]</c> blank nodes; defaults to <see cref="VeritasBlankNodes.System"/>.</param>
-    public SparqlParser(IEnumerable<SparqlToken> tokens, Utf8StringPool pool, Utf8String? baseIri = null, BlankNodeDelegate? blankNodes = null)
-        : this(pool, baseIri, blankNodes)
+    /// <param name="diagnostics">The bag recovery records diagnostics into; a private bag is created when <see langword="null"/>. Pass a shared bag to merge lexer-bridged and parser diagnostics.</param>
+    public SparqlParser(IEnumerable<SparqlToken> tokens, Utf8StringPool pool, Utf8String? baseIri = null, BlankNodeDelegate? blankNodes = null, DiagnosticBag? diagnostics = null)
+        : this(pool, baseIri, blankNodes, diagnostics)
     {
         ArgumentNullException.ThrowIfNull(tokens);
 
@@ -107,11 +109,12 @@ public sealed class SparqlParser
     /// <param name="pool">The pool used to intern parser-allocated identifiers.</param>
     /// <param name="baseIri">The external base IRI relative references resolve against before any in-query <c>BASE</c>, or <see langword="null"/>.</param>
     /// <param name="blankNodes">Allocates labels for anonymous <c>[]</c> blank nodes; defaults to <see cref="VeritasBlankNodes.System"/>.</param>
+    /// <param name="diagnostics">The bag recovery records diagnostics into; a private bag is created when <see langword="null"/>. Pass a shared bag to merge lexer-bridged and parser diagnostics.</param>
     /// <remarks>
     /// The parser suspends — preserving its work stack — when the request needs tokens that have not
     /// arrived yet, and resumes when more are fed, so the token buffer need not hold the whole query.
     /// </remarks>
-    internal SparqlParser(Utf8StringPool pool, Utf8String? baseIri = null, BlankNodeDelegate? blankNodes = null)
+    internal SparqlParser(Utf8StringPool pool, Utf8String? baseIri = null, BlankNodeDelegate? blankNodes = null, DiagnosticBag? diagnostics = null)
     {
         ArgumentNullException.ThrowIfNull(pool);
 
@@ -119,6 +122,7 @@ public sealed class SparqlParser
         Pool = pool;
         this.baseIri = baseIri;
         this.blankNodes = blankNodes ?? VeritasBlankNodes.System;
+        Diagnostics = diagnostics ?? new DiagnosticBag();
 
         xsdString = pool.Intern("http://www.w3.org/2001/XMLSchema#string"u8);
         xsdInteger = pool.Intern("http://www.w3.org/2001/XMLSchema#integer"u8);
@@ -135,6 +139,12 @@ public sealed class SparqlParser
 
     /// <summary>Gets the pool used to intern parser-allocated identifiers.</summary>
     private Utf8StringPool Pool { get; }
+
+    /// <summary>
+    /// Gets the bag recovery records diagnostics into. Lexical diagnostics bridged by the facade and the
+    /// parser's own syntax diagnostics accumulate here in source order.
+    /// </summary>
+    internal DiagnosticBag Diagnostics { get; }
 
     /// <summary>
     /// Gets whether enough tokens are buffered for the next step to run without reading past the buffer.
@@ -176,6 +186,53 @@ public sealed class SparqlParser
         }
 
         return request!;
+    }
+
+    /// <summary>
+    /// Parses the token stream into a <see cref="ParseResult{TTree}"/>: the request (possibly carrying
+    /// error nodes) together with the accumulated diagnostics and whether any has error severity.
+    /// </summary>
+    /// <returns>The parse result.</returns>
+    public ParseResult<SparqlRequest> ParseToResult()
+    {
+        SparqlRequest request = ParseRequest();
+
+        return new ParseResult<SparqlRequest>(request, Diagnostics.Diagnostics, Diagnostics.HasErrors);
+    }
+
+    /// <summary>
+    /// Lexes and parses a UTF-8 SPARQL query buffer into a <see cref="ParseResult{TTree}"/>: the facade
+    /// over the resumable instance machinery for callers that hold the whole query. Lexical diagnostics
+    /// are bridged into the same bag as the parser's, so one <see cref="ParseResult{TTree}"/> covers both
+    /// layers; malformed input is recovered, never thrown.
+    /// </summary>
+    /// <param name="source">The UTF-8 query bytes.</param>
+    /// <param name="pool">The pool to intern identifiers into; a private pool is created when <see langword="null"/> (the result's interned values keep it alive).</param>
+    /// <param name="baseIri">The external base IRI relative references resolve against before any in-query <c>BASE</c>, or <see langword="null"/>.</param>
+    /// <returns>The parse result.</returns>
+    public static ParseResult<SparqlRequest> ParseRequest(ReadOnlyMemory<byte> source, Utf8StringPool? pool = null, Utf8String? baseIri = null)
+    {
+        Utf8StringPool effectivePool = pool ?? new Utf8StringPool();
+        DiagnosticBag diagnostics = new();
+        SparqlLexer lexer = new(source, effectivePool);
+        SparqlParser parser = new(lexer.Tokenize(), effectivePool, baseIri, blankNodes: null, diagnostics: diagnostics);
+
+        //The public ctor enumerated the lexer, so its diagnostics are complete; bridge them into the bag
+        //(lexical errors first) before draining the parser's via ParseToResult.
+        BridgeLexerDiagnostics(lexer, diagnostics);
+
+        return parser.ParseToResult();
+    }
+
+    /// <summary>Bridges the lexer's internal diagnostics into the shared parse-level bag.</summary>
+    /// <param name="lexer">The lexer whose <see cref="SparqlLexer.Diagnostics"/> are drained.</param>
+    /// <param name="diagnostics">The bag to append the bridged diagnostics to.</param>
+    private static void BridgeLexerDiagnostics(SparqlLexer lexer, DiagnosticBag diagnostics)
+    {
+        foreach(SparqlLexDiagnostic lexDiagnostic in lexer.Diagnostics)
+        {
+            diagnostics.Add(SparqlLexDiagnosticBridge.ToDiagnostic(lexDiagnostic));
+        }
     }
 
     /// <summary>
