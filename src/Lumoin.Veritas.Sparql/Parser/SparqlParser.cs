@@ -545,7 +545,7 @@ public sealed class SparqlParser
         return StepResult.Continue();
     }
 
-    /// <summary>Begins a CONSTRUCT query by pushing its template; the short form is not yet supported.</summary>
+    /// <summary>Begins a CONSTRUCT query: pushes the explicit <c>{ template }</c>, or marks the <c>CONSTRUCT WHERE { ... }</c> short form whose WHERE triples are assembled into the template at the WHERE stage.</summary>
     /// <param name="frame">The request frame.</param>
     /// <returns>The instruction for the driver.</returns>
     private StepResult RequestConstruct(ParseFrame frame)
@@ -4737,16 +4737,6 @@ public sealed class SparqlParser
         }
 
         return -1;
-    }
-
-    /// <summary>
-    /// Builds a "not yet implemented" exception for a recognised but unsupported query form.
-    /// </summary>
-    /// <param name="form">The form name.</param>
-    /// <returns>The exception to throw.</returns>
-    private static SparqlParseException NotImplemented(string form)
-    {
-        return new SparqlParseException($"The {form} query form is not yet implemented in this build.");
     }
 
     /// <summary>
