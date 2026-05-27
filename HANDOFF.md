@@ -63,18 +63,29 @@ AST from day one.) This is the cross-cutting error-model rework deferred earlier
   for one unclosed `[`), real spans on every diagnostic, the emitter's `UndeclaredPrefix`, and a
   reactive-editor incremental feed (error node + diagnostic, then recovery keeps producing). 325/325
   Turtle tests pass. **Step 3 complete.**
-- **Step 4** (SPARQL parser recovery) — **foundations landed** (`62740e7`): `Ast/SparqlErrorNodes.cs`
-  adds the seven error-node records, one per product base the work stack hands up — `ErrorGraphPattern`
-  (`GraphPattern`), `ErrorQueryForm` (`QueryForm`), `ErrorExpression` (`ExpressionNode`),
-  `ErrorPropertyPath` (`PropertyPathExpression`), `ErrorTriplePatternTerm` (`TriplePatternTerm`),
-  `ErrorGraphTerm` (`GraphTerm`), `ErrorAnnotation` (`Annotation`). Each carries
-  `(SourceSpan Span, Utf8String ExpectedProduction, ImmutableArray<Utf8String> DiagnosticCodes,
-  ImmutableArray<SparqlToken> SkippedTokens)`; `ErrorAnnotation` passes `Span` to the `Annotation(Span)`
-  base. Additive + green (full solution builds). The atomic recovery rewrite is below.
+- **Step 4** (SPARQL parser recovery) — **COMPLETE.** Foundations (`62740e7`): `Ast/SparqlErrorNodes.cs`
+  — the seven error-node records, one per product base the work stack hands up (`ErrorGraphPattern`,
+  `ErrorQueryForm`, `ErrorExpression`, `ErrorPropertyPath`, `ErrorTriplePatternTerm`, `ErrorGraphTerm`,
+  `ErrorAnnotation`), each `(SourceSpan Span, Utf8String ExpectedProduction, ImmutableArray<Utf8String>
+  DiagnosticCodes, ImmutableArray<SparqlToken> SkippedTokens)`. Infra (`8e076a2`): `DiagnosticBag` on both
+  ctors + `Diagnostics` + `ParseToResult()` + the static `ParseRequest(source, pool?, baseIri?)→ParseResult`
+  facade bridging `lexer.Diagnostics`. Rewrite (`4cc29a3`): the recovery helpers (`Report`/`ReportRecoverable`/
+  `ResyncTo`/`IsResyncToken` resync-table-per-`ParseFrameKind` + the seven `Recover*` builders), all ~80
+  grammar throw sites converted (structural→`Recover*`; validation→report-and-keep faithful node;
+  close/list→report+finalise-partial; unbound-prefix→`SP0006`; a bad base direction `@en--xyz` is
+  input-reachable in SPARQL so it recovers via `SP0042`), invariants kept as throws, `Expected` removed,
+  `WellKnownDiagnostics.Sparql` expanded to `SP0042`. Progress guards (`CanStartGroupMember` + a bounded
+  group stray-token skip) guarantee the work stack always advances (the Turtle realisation). The 9 negative
+  `SparqlParserTests` → `HasErrors`+code; `W3cSparqlSyntaxTests` re-raises on `HasErrors` (shared W3C runner
+  unchanged); 13 `KnownGaps` still skip. Recovery tests (`SparqlParserRecoveryTests`, 10) added.
+  **Build clean (0 warnings); 366/366 SPARQL tests pass; full suite 50 failed = the unchanged SHACL
+  baseline, 0 new failures.** *(The mechanical conversion was delegated to a subagent against this anchor +
+  the Turtle template, then reviewed line-by-line + re-tested.)*
 **Steps 5–6 remain:** (5) `SparqlInvalidRequestException` type; (6) docs audit (every code linked +
-referenced by name).
+referenced by name). With both parsers now recovering, Milestone B (algebra translator) can build against
+possibly-error-node ASTs from day one — the original reason recovery was sequenced before it.
 
-### ⏵ STEP 4 RESUME ANCHOR — SPARQL parser recovery rewrite (execution checklist)
+### ⏵ STEP 4 RESUME ANCHOR — SPARQL parser recovery rewrite (executed; kept as the record of what landed)
 
 Branch `sparql-query-engine`. Commits: `62740e7` (Step 4 foundations: the seven error-node records),
 `123e004` (Turtle Step 3 done — **the worked template for everything below**). Tree clean+green.
