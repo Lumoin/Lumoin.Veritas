@@ -155,9 +155,94 @@ internal sealed class SparqlParserRecoveryTests
         Assert.IsTrue(ContainsCode(diagnostics, WellKnownDiagnostics.Sparql.UnclosedCollection));
     }
 
+    [TestMethod]
+    public void IncompleteInputRecordsNoDiagnosticUntilComplete()
+    {
+        //An editor feeds tokens as the user types. A well-formed query that is merely unfinished must
+        //never record a diagnostic mid-stream — nothing to squiggle yet. The parser suspends (NeedMore)
+        //until enough has arrived, then produces with an empty bag: incomplete is not the same as wrong.
+        using Utf8StringPool pool = new();
+        DiagnosticBag diagnostics = new();
+        List<SparqlToken> tokens = [.. new SparqlLexer(Encoding.UTF8.GetBytes("SELECT * WHERE { ?s ?p ?o }"), pool).Tokenize()];
+
+        SparqlParser parser = new(pool, baseIri: null, blankNodes: null, diagnostics: diagnostics);
+        SparqlRequest? request = null;
+        int next = 0;
+        while(true)
+        {
+            ParseStatus status = parser.TryParseRequest(out request);
+
+            Assert.IsFalse(diagnostics.HasErrors, "an unfinished but well-formed query must not record a diagnostic");
+
+            if(status == ParseStatus.Produced)
+            {
+                break;
+            }
+
+            if(next >= tokens.Count)
+            {
+                Assert.Fail("the parser asked for more tokens than the stream holds");
+            }
+
+            parser.FeedToken(tokens[next]);
+            next++;
+        }
+
+        Assert.IsNotNull(request);
+        Assert.IsFalse(diagnostics.HasErrors);
+    }
+
+    [TestMethod]
+    public void DiagnosticSquigglesTheOffendingTokenAndNodeSpansTheRun()
+    {
+        //The faulty token gets the tight squiggle — the diagnostic span is exactly that token — while
+        //the error node spans the failure-to-resync run it stands in for, so an editor can both underline
+        //the word and select the broken construct.
+        byte[] bytes = Encoding.UTF8.GetBytes("SELECT * WHERE { ?s ?p ) }");
+        using Utf8StringPool pool = new();
+        ParseResult<SparqlRequest> result = SparqlParser.ParseRequest(new System.ReadOnlyMemory<byte>(bytes), pool);
+
+        Assert.IsTrue(result.HasErrors);
+
+        Diagnostic term = FindDiagnostic(result, WellKnownDiagnostics.Sparql.ExpectedTerm);
+        Assert.AreEqual(")", Slice(bytes, term.Span), "the diagnostic should squiggle exactly the offending token");
+
+        TriplePattern triple = FirstTriple((SparqlQuery)result.Tree);
+        Assert.IsInstanceOfType<ErrorTriplePatternTerm>(triple.Object);
+        ErrorTriplePatternTerm errorTerm = (ErrorTriplePatternTerm)triple.Object;
+        Assert.AreEqual(term.Span.StartByte, errorTerm.Span.StartByte, "the error node should anchor at the faulty token");
+    }
+
     private static ParseResult<SparqlRequest> Parse(string text, Utf8StringPool pool)
     {
         return SparqlParser.ParseRequest(new System.ReadOnlyMemory<byte>(Encoding.UTF8.GetBytes(text)), pool);
+    }
+
+    private static TriplePattern FirstTriple(SparqlQuery query)
+    {
+        GroupGraphPattern group = (GroupGraphPattern)query.Where.Pattern;
+
+        return ((BasicGraphPatternBlock)group.Members[0]).Triples[0];
+    }
+
+    private static Diagnostic FindDiagnostic(ParseResult<SparqlRequest> result, Utf8String code)
+    {
+        foreach(Diagnostic diagnostic in result.Diagnostics)
+        {
+            if(diagnostic.Code.Equals(code))
+            {
+                return diagnostic;
+            }
+        }
+
+        Assert.Fail($"Expected a diagnostic with code '{code}', but none was recorded.");
+
+        return default;
+    }
+
+    private static string Slice(byte[] bytes, SourceSpan span)
+    {
+        return Encoding.UTF8.GetString(bytes, (int)span.StartByte, (int)(span.EndByte - span.StartByte));
     }
 
     private static int CountTriples(SparqlQuery query)

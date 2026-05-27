@@ -177,6 +177,96 @@ internal sealed class TurtleParserRecoveryTests
         Assert.IsTrue(ContainsTripleWithSubject(produced, "http://e/ok"), "the parser should recover and produce the clean trailing triple");
     }
 
+    [TestMethod]
+    public void IncompleteInputRecordsNoDiagnosticUntilComplete()
+    {
+        //An editor feeds tokens as the user types. A well-formed statement that is merely unfinished must
+        //never record a diagnostic mid-stream — there is nothing to squiggle yet. The parser suspends
+        //(NeedMore) until the terminator arrives, then produces with an empty bag. This pins the editor
+        //rule that incomplete is not the same as wrong.
+        using Utf8StringPool pool = new();
+        DiagnosticBag diagnostics = new();
+        List<TurtleToken> tokens = [.. new TurtleLexer(Encoding.UTF8.GetBytes("<http://e/s> <http://e/p> <http://e/o> ."), pool).Tokenize()];
+
+        TurtleParser parser = new(pool, default, TurtleSyntax.Turtle, blankNodes: null, diagnostics: diagnostics);
+        int produced = 0;
+        int next = 0;
+        while(true)
+        {
+            ParseStatus status = parser.TryParseStatement(out Statement? statement);
+
+            Assert.IsFalse(diagnostics.HasErrors, "an unfinished but well-formed statement must not record a diagnostic");
+
+            if(status == ParseStatus.Produced)
+            {
+                _ = statement;
+                produced++;
+
+                continue;
+            }
+
+            if(status == ParseStatus.Completed)
+            {
+                break;
+            }
+
+            if(next >= tokens.Count)
+            {
+                Assert.Fail("the parser asked for more tokens than the stream holds");
+            }
+
+            parser.FeedToken(tokens[next]);
+            next++;
+        }
+
+        Assert.AreEqual(1, produced);
+        Assert.IsFalse(diagnostics.HasErrors);
+    }
+
+    [TestMethod]
+    public void DiagnosticSquigglesTheOffendingTokenAndNodeSpansTheRun()
+    {
+        //The faulty token gets the tight squiggle — the diagnostic span is exactly that token — while
+        //the error node spans the whole failure-to-resync run it stands in for, so an editor can both
+        //underline the word and select the broken construct.
+        byte[] bytes = Encoding.UTF8.GetBytes("<http://e/s> 42 <http://e/o> .");
+        using Utf8StringPool pool = new();
+        TurtleLexer lexer = new(bytes, pool);
+        TurtleParser parser = new(lexer.Tokenize(), pool, new DocumentId(1), TurtleSyntax.Turtle);
+        ParseResult<TurtleDocument> result = parser.ParseToResult();
+
+        Assert.IsTrue(result.HasErrors);
+
+        Diagnostic predicate = FindDiagnostic(result, WellKnownDiagnostics.Turtle.ExpectedPredicate);
+        Assert.AreEqual("42", Slice(bytes, predicate.Span), "the diagnostic should squiggle exactly the offending token");
+
+        TripleStatement triple = (TripleStatement)result.Tree.Statements[0];
+        Assert.IsInstanceOfType<ErrorTerm>(triple.Predicates[0].Predicate);
+        ErrorTerm errorTerm = (ErrorTerm)triple.Predicates[0].Predicate;
+        Assert.AreEqual(predicate.Span.StartByte, errorTerm.Span.StartByte, "the error node should anchor at the faulty token");
+        Assert.IsGreaterThanOrEqualTo(1, errorTerm.SkippedTokens.Length, "the error node should record the skipped run");
+    }
+
+    private static Diagnostic FindDiagnostic(ParseResult<TurtleDocument> result, Utf8String code)
+    {
+        foreach(Diagnostic diagnostic in result.Diagnostics)
+        {
+            if(diagnostic.Code.Equals(code))
+            {
+                return diagnostic;
+            }
+        }
+
+        Assert.Fail($"Expected a diagnostic with code '{code}', but none was recorded.");
+
+        return default;
+    }
+
+    private static string Slice(byte[] bytes, SourceSpan span)
+    {
+        return Encoding.UTF8.GetString(bytes, (int)span.StartByte, (int)(span.EndByte - span.StartByte));
+    }
+
     private static void AssertRecovered(ParseResult<TurtleDocument> result, Utf8String expectedCode)
     {
         Assert.IsTrue(result.HasErrors, "recovery should have recorded an error diagnostic");
