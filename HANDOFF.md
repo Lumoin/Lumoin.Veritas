@@ -66,7 +66,10 @@ type; (6) docs audit (every code linked + referenced by name).
 - **English-only messages (§10 Q2):** the bridge renders `Diagnostic.Message` from
   `GetMessage()` (English) once, at error time; the i18n `MessageKey` seam stays deferred.
 
-**Step 3 (Turtle parser recovery) — IN PROGRESS (uncommitted):**
+**Step 3 (Turtle parser recovery) — foundations committed (`42d48f1`), parser pass NOT started:**
+(Foundations = `ParseResult<TTree>` + the three error-node classes, green. The parser-recovery
+rewrite was scoped + designed below but not coded; an exploratory attempt was reverted because it is
+atomic — see the RESUME ANCHOR at the end of this Step 3 block for the execution checklist.)
 - **Surface decision (final-form now, confirmed with the user):** take the real API this
   step, not a transitional throw — because Turtle has *no future engine layer* to defer the
   `HasErrors` decision to (the reader is the top consumer), so deferring would just mean a
@@ -115,11 +118,61 @@ type; (6) docs audit (every code linked + referenced by name).
     child term-frames hand up. `ErrorStatement` is produced only when statement-level structure is
     broken (bad directive, missing `.`); `ErrorAnnotation` only for a broken annotation. That is why
     the three error-node types (Statement/Term/Annotation) suffice.
-  - **Note on incrementality (keeps a green build mid-rewrite):** a `throw` site and a
-    `return Done(errorNode)` both compile, so throw→recover conversions can land one at a time. But a
-    converted site stops the reader throwing there, so its negative test must migrate to a
-    `HasErrors`/error-node check in the same step — the (site + test + `ParseResult` entry) move
-    together. The reader-surface change is the one piece that must land atomically with the rest.
+  - **Note on incrementality:** the change is effectively atomic — `TreatWarningsAsErrors` flags
+    unused private members, so the recovery helpers can't be added before they're used; and converting
+    any throw site stops the reader throwing there, breaking its negative test until the reader change
+    lands. So parser-recovery + reader-surface + test-migration land together (the new resync/cascade/
+    reactive *tests* are additive and may follow in a second commit).
+
+### ⏵ STEP 3 RESUME ANCHOR — execution checklist (re-paste the "Parser error recovery — Handoff" spec, then do this)
+
+Branch `sparql-query-engine`. Commits: `b428500` (Step 2), `42d48f1` (Step 3 foundations). Tree clean+green.
+**Build/test (MTP — `dotnet test` does NOT work the usual way):** build with
+`dotnet build src/Lumoin.Veritas.Turtle/Lumoin.Veritas.Turtle.csproj -clp:ErrorsOnly --nologo`; run tests via the
+built exe `test\Lumoin.Veritas.Tests\bin\Debug\net10.0\Lumoin.Veritas.Tests.exe --filter "FullyQualifiedName~Turtle"`
+(the full suite has a **50-test pre-existing SHACL-conformance baseline** that is expected-red; Step-3 success = no *new* failures).
+
+1. **Parser infra** (`src/Lumoin.Veritas.Turtle/Parser/TurtleParser.cs`): add `using Lumoin.Veritas.Core.Diagnostics;`;
+   add `DiagnosticBag? diagnostics = null` to both ctors → store `Diagnostics = diagnostics ?? new DiagnosticBag()`;
+   add `internal DiagnosticBag Diagnostics { get; }`; add
+   `public ParseResult<TurtleDocument> ParseToResult()` = `new(Parse(), Diagnostics.Diagnostics, Diagnostics.HasErrors)`.
+2. **Recovery helpers** (place by `Expected`; KEEP `Expected` until all callers are converted so the build
+   stays green mid-edit): `Report(code, span, msg)` → `Diagnostics.Add(new Diagnostic(code, DiagnosticSeverity.Error, span, Utf8String.FromString(msg)))`;
+   `ResyncTo(ParseFrameKind)` → consume `Current` collecting skipped tokens until `IsResyncToken` (guard `index==before`
+   break for the incremental clamp); `IsResyncToken(kind, token)` resync table — Statement/SubjectStatement→`{Period,CloseBrace}`,
+   GraphBlock→`{CloseBrace}`, Collection→`{CloseParen}`, BlankNodePropertyList→`{CloseBracket}`, TripleTerm→`{CloseTripleTerm,Period,CloseBrace}`,
+   ReifiedTriple→`{CloseReifiedTriple,Period,CloseBrace}`, AnnotationBlock→`{CloseAnnotation}`, default→`{Period,Semicolon,Comma,Close*}` (+`EndOfInput` always);
+   `RecoverTerm/RecoverStatement/RecoverAnnotation(frameKind, startSpan, code, errorSpan, message, expectedProduction)` → `Report` + `ResyncTo` +
+   `NewNode(id => new Error{Term,Statement,Annotation}(id, CombineSpans(startSpan, lastSkippedOrErrorSpan), Utf8String.FromString(expectedProduction), [code], skipped))`.
+3. **Expand `WellKnownDiagnostics.Turtle`** (`src/Lumoin.Veritas.Core/Diagnostics/WellKnownDiagnostics.cs`) — currently
+   TT0001–TT0006; add codes for: version-directive-arg, graph-block-open/close, only-triples-in-graph-block, annotation
+   (empty / expected verb-or-`|}`), datatype-after-`^^`, triple-term/reified-triple subject/object validation, expected-term,
+   unexpected-`Error`-token. Reference each by name at its emission site (no string-literal codes).
+4. **Convert throw sites → value-based recover** (taxonomy: input-reachable ⇒ recover; invariant ⇒ keep throw):
+   - **Term-position** (→ `RecoverTerm`, frameKind=Term/Collection/BNPL/TripleTerm/ReifiedTriple): `StepTerm` default `Expected("term")`;
+     `StepCollection`/`StepBlankNodePropertyList` EOF/verb sites; `StepTripleTerm`/`StepReifiedTriple` close-token sites + the
+     `Validate{TripleTerm,ReifiedTriple}{Subject,Object}` statics (make them return the offending term as an `ErrorTerm` or report+recover);
+     `ConsumeLeafTermFor`/`ParsePredicateLeaf` `_ => Expected(...)` → return an `ErrorTerm`; `ParseStringLiteral` datatype-after-`^^`.
+   - **Statement-position** (→ `RecoverStatement`, frameKind=Statement/SubjectStatement/GraphBlock): `ParsePrefixDeclaration`/
+     `ParseBaseDeclaration`/`ParseVersionDeclaration` (return `Statement`; on bad token report+`RecoverStatement`); the version
+     long-string check; `StepSubjectStatement` missing-`.`; `StepGraphBlock` open-`{`/close-`}`/only-triples sites.
+   - **Annotation-position** (→ `RecoverAnnotation`, frameKind=AnnotationBlock): `StepAnnotationBlock` empty-block / expected verb-or-`|}`.
+   - **KEEP as throws (invariants):** every `"reached unknown stage"`, `"Unhandled frame kind"`, `"undefined state"`,
+     `"Numeric kind out of range"`; `ConsumePrefixedName` missing-`:` and `ExtractPrefix` missing-`:` (lexer guarantees the colon — quasi-invariant).
+5. **`Drive` handles incoming lexer `Error` tokens:** when `Current.Kind == TurtleTokenKind.Error`, the lexer diagnostic is already
+   in the shared bag (bridged by the reader, step 6) — skip the `Error` token via the top frame's recover (don't double-report).
+6. **Reader** (`src/Lumoin.Veritas.Turtle/TurtleReader.cs`): create a `DiagnosticBag`, pass it to both lexer (bridge `lexer.Diagnostics`
+   via `TurtleLexDiagnosticBridge.ToDiagnostic` into it) and `TurtleParser`. Document path returns `ParseResult<TurtleDocument>`
+   (document + diagnostics). Streaming `ReadAsync` gains a **required** `DiagnosticBag` param; recover, emit quads for non-error
+   statements, **never throw** on malformed input. Verify `TurtleQuadEmitter`/`TurtleWriter` skip error nodes (they built green with
+   the new subtypes, so no exhaustive-switch break — just confirm no NRE on an `ErrorStatement`/`ErrorTerm`).
+7. **Migrate callers/tests** (small surface): `TurtleParserTests` 81/87/340 and `TurtleIriResolutionTests` 76/85 (`Assert.Throws<TurtleParseException>`
+   → `ParseToResult()`/`ReadAsync(bag)` then assert `HasErrors` + the expected code/error-node); W3C Turtle/TriG conformance harness
+   (catch-exception → check `HasErrors`); wrap positive tests to assert no errors. **NQuads is a separate reader — unaffected.**
+   `TurtleReaderLimitsTests` uses `TurtleLimitExceededException` (a resource guard, **stays a throw**).
+8. **New tests (additive, may be a 2nd commit):** per-`ParseFrameKind` resync test; cascade-suppression (one unclosed `]`/`)` ⇒ bounded
+   diagnostics); **reactive-editor** (feed tokens incrementally as if typed; assert error node + diagnostic at the right span, then feed
+   valid input and assert recovery continues) — these exercise the incremental `FeedToken`/`TryParseStatement` + shared-bag path.
 - **Reactive-editor tests (added per the user):** beyond positive/negative sweeps, add incremental
   tests that feed tokens as if typed, assert the error node + diagnostic land at the **right span**
   (so an editor highlights correctly), then feed valid input and assert the parser recovers and keeps
