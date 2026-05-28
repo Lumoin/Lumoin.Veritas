@@ -116,76 +116,105 @@ After the recovery batch, a pre-B pass to finish Milestone A and reach the algeb
   `Prologue.Versions`; `ParseVersionDeclaration` recovers (`SP0043 InvalidVersionArgument`) on a long/non-string
   arg. version-03/04/06 un-skipped.
 
-**Remaining pre-B work (substantial, design-sensitive — paused for a focused continuation):**
-1. **Slice 4b-ii — triple term in expression** (`expr-tripleterm-01/06`): add an `OpenTripleTerm` arm to the
-   expression primary dispatch (push a `TripleTerm` frame, receive it via a new expression stage) wrapping it
-   in a new `ExpressionNode` subtype (e.g. `TripleTermExpression(Span, TriplePatternTerm Inner)`).
-2. **Slice 4b-ii — triple term in VALUES** (`basic-tripleterm-05`): accept `<<( … )>>` in the VALUES data-block
-   value parser. Note the VALUES `TripleTermData` form is **more restrictive** (no nested-triple-term subject,
-   no variables — see the `tripleterm-subject-*` negatives).
-3. **Slice 4b-ii — standalone reified triple** `<< s p o >> .` (`basic-{anon,}reifier-08..13`, `version-01/02/05`):
-   the design-heavy one. **Decision (record when implementing):** `BasicGraphPatternBlock` gains a second list
-   `IReadOnlyList<TriplePatternTerm> StandaloneNodes` (default empty) holding subject-only assertions (a
-   `ReifiedTriple`/node written with no property list); `StepTriple`, when a reified-triple (or triple-node)
-   subject is **not** followed by a property list, adds the faithful term there instead of erroring (do NOT
-   unwrap at parse). Update `ExtractTemplateTriples` (CONSTRUCT WHERE) + the `SingleBlockTriples` test helper.
-   This touches a Slice-S-spanned record consumed by the future translator, so make the shape decision
-   deliberately. Then un-skip the 12 `basic-*reifier-08..13` + the 3 `version-01/02/05` gaps.
+**Items 1–3 DONE (committed on `sparql-query-engine`, each green at the 50-test SHACL baseline = 0 new failures):**
+1. **Slice 4b-ii — triple term in expression** (`d0f230d`) — `TripleTermExpression(Span, TriplePattern Inner)`
+   added to `Ast/ExpressionNode.cs`; `DispatchPrimaryExpression` gains an `OpenTripleTerm` arm pushing a
+   `TripleTerm` frame under `TripleTermContext.Expression`; expression stage 9 receives the popped term
+   (re-typing an error node to `ErrorExpression`). `expr-tripleterm-01/06` closed.
+2. **Slice 4b-ii — triple term in VALUES** (`e8f73f5`) — `StepValues(frame, incoming)`; `ValuesOneVarRow`/
+   `ValuesRowValue` push a `TripleTerm` frame under `TripleTermContext.Data` on `<<(` (frame-driven because the
+   construct nests unboundedly — inline parse would break the ≤4-token-per-step resumability), then convert the
+   popped term to a ground `Core.TripleTerm` at new stages 5/6. `basic-tripleterm-05` closed.
+3. **Slice 4b-ii — standalone reified triple** (`362f230`) — `BasicGraphPatternBlock` gains
+   `IReadOnlyList<TriplePatternTerm> StandaloneNodes`; `StepTriple`'s `TripleVerb` routes a verb-less
+   `ReifiedTriple` subject to the standalone channel (`Done(frame.Subject)`); `StepGroupGraphPattern` collects a
+   popped `TriplePatternTerm` into `PendingStandaloneNodes`; `FlushPendingTriples` flushes a block holding either
+   or both. A bare triple term `<<( … )>>`/collection standalone still errors (the `tripleterm-separate-*`
+   negatives keep failing). 12 `basic-*reifier-08..13` + 3 `version-01/02/05` closed.
+
+**Shared mechanism added by 1–3 (read before item 4):** `StepTripleTerm` is now **context-aware** via
+`ParseFrame.TripleTermContext` (`Pattern`/`Expression`/`Data` enum in `Parser/ParseFrame.cs`) — the authoritative
+grammar (confirmed against the W3C SPARQL 1.2 EBNF): WHERE `TripleTerm ::= '<<(' VarOrTerm Verb VarOrTerm ')>>'`
+(full, may nest a triple term in subject/object); expression `ExprTripleTerm` subject = `iri | Var` only, object
+adds literals + nested, no blank node; data `TripleTermData` subject = `iri` only, verb = `iri | 'a'` (no var),
+object = `iri | literal | nested`, **no variables**. Diagnostics `SP0044 InvalidTripleTermSubject` /
+`SP0045 InvalidTripleTermObject`. (The pinned conformance corpus at `674da26` enforces these subject restrictions
+via the `tripleterm-subject-01..06` negatives even though the *latest* W3C grammar relaxed
+`ExprVarOrTerm`/`DataValueTerm`; the corpus is the arbiter.)
+
+**Remaining pre-B work — item 4 (the design-heavy Milestone-B on-ramp; see the ITEM-4 RESUME ANCHOR below):**
 4. **Normalization pass + B scaffold** (§8.5): a new early-expansion pass (between parse and algebra) lowering
-   `CollectionTerm`/`BlankNodePropertyListTerm`/reified-triple sugar to plain triples (using Core's
-   `BlankNodeDelegate`, preserving spans), so the translator sees the four core term cases; + the `Algebra/`
-   and `Translation/` namespace layout (§5.1). The direct on-ramp to Milestone B; arguably its first slice.
+   `CollectionTerm`/`BlankNodePropertyListTerm`/reified-triple/`AnnotatedObject`/`StandaloneNodes` sugar to plain
+   triples (using Core's `BlankNodeDelegate`, preserving spans), so the translator sees the four core term cases
+   (`ConstantTerm`, `VariableTerm`, `PropertyPathTerm`, `Ast.TripleTerm`); + the `Algebra/` and `Translation/`
+   namespace layout (§5.1). The direct on-ramp to Milestone B; arguably its first slice.
 
-### ⏵ PRE-B RESUME ANCHOR — execution guide for items 1–4 above (start here after a clear)
+### ⏵ ITEM-4 RESUME ANCHOR — normalization pass + B scaffold (start here after a clear)
 
-State: branch `sparql-query-engine`, tree clean+green, HEAD `d777300`. Everything parses **value-based**
-(never throws on malformed input — diagnostics into a `DiagnosticBag`, error nodes at each product base);
-the SPARQL AST has **uniform spans** on every node; the diagnostic catalogue is audited. Do items in the
-order 1 → 2 → 3 → 4 (additive features first; the standalone-reified block-shape and the normalization pass
-are the design-heavy core). Commit each as its own green milestone.
+State: branch `sparql-query-engine`, tree clean+green, HEAD `362f230`. **Items 1–3 (Slice 4b-ii additive
+features) are DONE and committed** (`d0f230d`/`e8f73f5`/`362f230`); 17 conformance gaps closed; full suite at
+the 50-test SHACL baseline = 0 new failures. Everything parses **value-based** (never throws on malformed input);
+the SPARQL AST has **uniform spans**; the diagnostic catalogue is audited (now through `SP0045`). Item 4 is the
+design-heavy Milestone-B on-ramp — do it on a **fresh context**.
 
-**Build/test (MTP — `dotnet test` does NOT work; these are the exact commands that worked all session):**
+**Build/test (MTP — `dotnet test` does NOT work; exact commands that worked all session):**
 - Build: `dotnet build src/Lumoin.Veritas.Sparql/Lumoin.Veritas.Sparql.csproj -clp:ErrorsOnly --nologo`,
-  then `dotnet build Lumoin.Veritas.slnx -clp:ErrorsOnly --nologo` (0 warnings required — `TreatWarningsAsErrors`).
+  then `dotnet build Lumoin.Veritas.slnx -clp:ErrorsOnly --nologo` (0 warnings — `TreatWarningsAsErrors`).
 - **Rebuild the TEST project before running the exe** (`dotnet build test/Lumoin.Veritas.Tests/Lumoin.Veritas.Tests.csproj …`)
-  — the runner executes the built dll, so a stale exe silently runs old tests (a gotcha I hit with KnownGaps).
-- Run: `& "test\Lumoin.Veritas.Tests\bin\Debug\net10.0\Lumoin.Veritas.Tests.exe" --filter "FullyQualifiedName~Sparql"`.
-  **Success = no new failures over the 50-test SHACL baseline** (full suite, no filter, must stay at exactly 50
-  failed, all `ShaclValidate`). SPARQL conformance gaps live in `test/.../Sparql/W3cSparqlSyntaxTests.cs`
-  `KnownGaps`: un-skip a gap when you close it — **if a gap still in `KnownGaps` starts passing, the harness
-  FAILS it** (forcing removal). Leave the 13 non-4b-ii gaps (scope analysis, PN_LOCAL, standalone bnode list).
-- Lesson from VERSION: some suite files mix features — `version-01/02/05` embed a standalone reified triple, so
-  they only close with item 3, not item 1/2. After un-skipping, run the suite to see which actually pass.
+  — a stale exe silently runs old tests.
+- Run: `& "test\Lumoin.Veritas.Tests\bin\Debug\net10.0\Lumoin.Veritas.Tests.exe" --filter "FullyQualifiedName~Sparql"`,
+  and the full suite with no filter. **Success = exactly 50 failed (all `ShaclValidate`), 0 new.** `KnownGaps`
+  remaining (12, in `W3cSparqlSyntaxTests.cs`): scope-analysis (SELECT*/GROUP BY/BIND scope, duplicate
+  projection), nested aggregates, `syn-bad-pname-06` (PN_LOCAL), and **`syntax-propertyPaths-01`** (a *standalone
+  blank-node property list* `[ :p|:q|:r ?X ]` — the one item-4-adjacent gap; see below).
 
-**Where to work (`src/Lumoin.Veritas.Sparql/Parser/SparqlParser.cs`, ~4300 lines):**
-- Item 1: `DispatchPrimaryExpression` (the `Current.Kind switch` of primaries) gets an `OpenTripleTerm` arm →
-  push `ParseFrameKind.TripleTerm`; add a new expression `frame.Stage` to receive the popped `Ast.TripleTerm`
-  and wrap it in the new `TripleTermExpression` node (add the record to `Ast/ExpressionNode.cs` with a `Span`
-  and a §19.8 `<remarks>`). The expression frame's stages are an `=> frame.Stage switch`; mirror an existing
-  receive stage (e.g. `ExpressionExistsReceived`).
-- Item 2: `StepValues`/`ParseDataBlockValue` (search `ExpectedValuesValue`) — add an `OpenTripleTerm` arm
-  producing a restricted triple term (reuse `StepTripleTerm` but reject variables / nested-triple-term subjects;
-  the `tripleterm-subject-*` negatives define the restriction).
-- Item 3: `StepTriple` — `TripleSubject`/`TripleSubjectReceived` already push a compound-term frame for a
-  reified-triple subject; after it pops, if the next token is `.`/`}`/`;` (no verb), route the term to the new
-  `BasicGraphPatternBlock.StandaloneNodes` (add it to `Ast/GraphPattern.cs`) instead of `TripleVerb`'s
-  `Expected("a predicate or property path")`. `StepGroupGraphPattern` collects `PendingTriples` into a
-  `BasicGraphPatternBlock` (`FlushPendingTriples`) — thread the standalone nodes alongside. Update
-  `ExtractTemplateTriples` + the `SingleBlockTriples` test helper for the new field.
-- Item 4: new files under `src/Lumoin.Veritas.Sparql/Translation/` (normalization) and `Algebra/`; mirror the
-  Turtle emitter's explicit-stack lowering of collections/bnode-lists; use `VeritasBlankNodes`/`BlankNodeDelegate`
-  for fresh labels; preserve spans onto lowered triples.
+**⚠ Before coding, re-paste the implementation spec's §5.1 (namespace/folder layout) and §8.5 (post-normalization
+shape).** The user holds it. Item 4 has two halves with different readiness:
+- **(a) The normalization pass — buildable now from the Turtle emitter as the reference** (the handoff's
+  "mirror the Turtle emitter's explicit-stack lowering"). Read `src/Lumoin.Veritas.Turtle/Emission/TurtleQuadEmitter.cs`
+  — it is the worked lowering: `ResolveTerm` (explicit `ResolveFrame` stack, bottom-up), `BuildCollection`
+  (rdf:first/rest/nil chain; empty → rdf:nil), `EmitPropertyListBody` (fresh bnode + per-predicate triples),
+  `ExpandReifiedTriple` (reifier + `reifier rdf:reifies <<( s p o )>>`), `EmitAnnotations` (reifier pending/fresh,
+  nested blocks via an `AnnotationFrame` stack).
+- **(b) The `Algebra/` type hierarchy + the algebra translator — needs §5.1 and is Milestone B proper.** Do NOT
+  fabricate the algebra layout without the spec.
 
-**Working pattern that worked this session:** delegate the *mechanical / conformance-gated* passes to a
-`general-purpose` subagent (it ran the §7.0 doc pass + Slice S well — give it the exact files, the idioms, the
-build/test commands, "no commit", and require slice-precise tests), then **review the diff + re-run tests
-yourself** before committing. Do the *AST-shape design* (items 1's node, 3's `StandaloneNodes`, 4's pass)
-directly or with a tight spec — those ripple into Milestone B. Add a unit test per feature pinning the AST
-shape (e.g. `RecordsVersionDeclaration` for VERSION) beyond the conformance pass.
+**Normalization pass — design (record decisions as you implement):**
+- New namespace `src/Lumoin.Veritas.Sparql/Translation/`. A normalizer transforming the parsed AST so every
+  `BasicGraphPatternBlock` holds only plain `TriplePattern`s whose terms are the **four core cases**:
+  `ConstantTerm`, `VariableTerm`, `PropertyPathTerm` (predicate only), `Ast.TripleTerm` (object). It lowers
+  `CollectionTerm`, `BlankNodePropertyListTerm`, `ReifiedTriple`, `AnnotatedObject`, and the block's
+  `StandaloneNodes` into fresh-bnode + plain triples.
+- **Differs from the Turtle emitter:** (1) SPARQL terms include **variables** — preserve `VariableTerm`, never
+  resolve; (2) **no prefix/IRI resolution** here — `ConstantTerm` already carries the resolved `NamedNode` from
+  parse; (3) output is **`TriplePattern` (AST)**, not `Quad`; (4) the predicate may be a `PropertyPathTerm` —
+  leave it; (5) **fresh blank nodes come from Core's `BlankNodeDelegate`** ([[project_veritas_injection_seams]] —
+  raw counters are banned; the parser already takes a `blankNodes` delegate, default `VeritasBlankNodes.System` —
+  thread the same seam into the normalizer), not the emitter's private `nextEmitterBlankNode`.
+- **`rdf:first`/`rdf:rest`/`rdf:nil` are NOT yet in `Vocabulary.Rdf`** (it has `Type`, `Reifies`,
+  `PropositionForm*` only) — add `First`/`Rest`/`Nil` there (the emitter currently interns the literals inline).
+- **Preserve spans** onto every lowered triple (use the sugar term's `Span`).
+- **SEMANTIC QUESTION for §8.5 — resolve before coding the reified-triple lowering:** does a reified triple as a
+  *term* assert its inner triple? The Turtle emitter says **no** (it yields only reifier + `rdf:reifies` —
+  `ExpandReifiedTriple` comment). Does a **standalone** `<< s p o ~r >> .` (item 3's `StandaloneNodes`) assert the
+  inner `s p o`? RDF 1.2 statement semantics likely **yes** — but confirm against §8.5 (my item-3 commit message
+  says "asserts its inner triple and reifier" as the *intended* normalization; the parse itself is faithful and
+  decides nothing). This is exactly the design-sensitive call that needs the spec.
+- **`syntax-propertyPaths-01`** (standalone `[ … ]` bnode list): item 3 routed only `ReifiedTriple` to
+  `StandaloneNodes`; a standalone collection/bnode-list subject still errors (`ExpectedVerb`). To close this gap,
+  either extend `StepTriple`'s `TripleVerb` to also route a verb-less `CollectionTerm`/`BlankNodePropertyListTerm`
+  subject to `StandaloneNodes` (then the normalizer lowers it), or handle in the normalizer — decide with §8.5.
+- Consumers to update for the new shape: `ExtractTemplateTriples` (CONSTRUCT WHERE — currently reads only
+  `block.Triples`, so a CONSTRUCT-WHERE reified/standalone template contributes nothing until normalization runs)
+  and any `SingleBlockTriples`/`SingleBlockStandaloneNodes` test helpers.
 
-**Not part of the recovery batch (the §7.0 pass above covered it for SPARQL):** the §7.0 convention was a
-Milestone-A-completion item; with both parsers recovering, Milestone B (algebra translator) can build against
-possibly-error-node ASTs from day one — the original reason recovery was sequenced before it.
+**Working pattern that worked this session:** AST-shape + lowering design done directly (it ripples into
+Milestone B); add a unit test per feature pinning the AST/normalized shape; commit each green milestone; the
+full-suite SHACL baseline (exactly 50) is the regression gate. Delegating *mechanical* passes to a
+`general-purpose` subagent worked earlier, but item 4's lowering is design-sensitive — do it directly.
+
+**Not part of the recovery batch (the §7.0 pass covered it for SPARQL):** with both parsers recovering,
+Milestone B (algebra translator) builds against possibly-error-node ASTs from day one.
 
 ### ⏵ STEP 4 RESUME ANCHOR — SPARQL parser recovery rewrite (executed; kept as the record of what landed)
 
