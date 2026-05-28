@@ -226,25 +226,24 @@ user authorized the conventions layout (2026-05-28) and added the §10.1 base me
   is implemented. 8 `SparqlAlgebraWalkerTests` (incl. value-equal-siblings-not-deduped + a 50k-deep
   no-overflow case); build clean (0 warnings); full suite at exactly 50 ShaclValidate failures, 0 new.
 
-⚠ **RECURSION DEBT — [[feedback_no_recursion]] applies everywhere.** Mostly CLEARED: **(a) `SparqlTranslator`**
+✅ **RECURSION SWEEP COMPLETE — no call-stack recursion remains in the Sparql translation/algebra layer**
+([[feedback_no_recursion]]; the parsers were already frame-stack machines). Cleared: **(a) `SparqlTranslator`**
 (`65386e1`) — `TranslatePattern`/`TranslateGroup` → explicit post-order build with a reference-keyed results map
 (`SubPatterns`/`TranslateNode`/`CombineGroup`); `VisibleVariables` → work-stack of visit/emit steps;
 `CollectTermVariables` → term stack. **(b) `AlgebraScope.Collect`** + **(c) `AlgebraOperator.OutputVariables`**
-(`7d9c603`) — Collect → term stack; OutputVariables now warms the subtree bottom-up over an explicit post-order
-stack (off-instance cache + value equality unchanged). **(d) `SparqlNormalizer`** (`b683a90`) — `NormalizePattern`
-→ explicit post-order rebuild. **STILL RECURSIVE (the one remaining):** the normalizer's **term-lowering** mutual
-recursion — `LowerTerm` ↔ `LowerCollection`/`LowerBlankNodePropertyList`/`LowerReifiedTriple`/`LowerTripleTerm` ↔
-`EmitObject` ↔ `LowerProperties`/`LowerAnnotations`. Bounded by RDF-1.2 sugar-nesting depth (collections /
-blank-node property lists / reified triples), it is an intricate two-entry mutual recursion with sink
-side-effects + fresh-blank-node allocation; left for its own careful pass (don't rush it).
+(`7d9c603`) — Collect → term stack; OutputVariables warms the subtree bottom-up over an explicit post-order stack
+(off-instance cache + value equality unchanged). **(d) `SparqlNormalizer`** — `NormalizePattern` → post-order
+rebuild (`b683a90`); the **term-lowering** mutual recursion → an explicit **FIFO `Queue`** of
+`(subject, predicate, object, span)` emission tasks, with the one bottom-up case (cores embedded in quoted/reified
+triple terms) resolved by a local post-order stack in `ResolveCore`/`BuildQuotedCore` (`e3f08e8`). ⚠ The work-list
+**must stay FIFO** — a LIFO stack reverses triple order and breaks `SELECT *` variable order. Deep-nesting tests
+guard all of it (50k Join `OutputVariables`/Transform, 20k nested groups end-to-end, 10k nested collections).
 
-▶ **NEXT AFTER A CLEAR:** HEAD `b683a90`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
-unchanged baseline, 0 new). Milestone B's pattern/modifier core + traversal layer are in place (normalizer
-`b70bdb1`, algebra hierarchy `6d4d36d`, group/modifier translator `1eafdc5`, property-path pattern translation
-`71e995f`, iterative AlgebraWalker `86d8245`); the recursion sweep cleared the translator (`65386e1`), algebra
-layer (`7d9c603`), and the normalizer pattern walk (`b683a90`). **Two immediate items:** (i) finish the recursion
-sweep — the normalizer **term-lowering** mutual recursion above ([[feedback_no_recursion]]); (ii) the remaining
-Milestone-B slices, each its own fresh-context unit (see "STILL OPEN" below): **(1) aggregation**
+▶ **NEXT AFTER A CLEAR:** HEAD `e3f08e8`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
+unchanged baseline, 0 new). Milestone B's pattern/modifier core + traversal layer are in place and fully iterative
+(normalizer `b70bdb1`, algebra hierarchy `6d4d36d`, group/modifier translator `1eafdc5`, property-path pattern
+translation `71e995f`, iterative AlgebraWalker `86d8245`, recursion sweep `65386e1`/`7d9c603`/`b683a90`/`e3f08e8`).
+**Next: the remaining Milestone-B slices**, each its own fresh-context unit (see "STILL OPEN" below): **(1) aggregation**
 (`Group`/`AggregateJoin` + §18.2.4.1 grouping/scope + implicit-grouping detection — the design-heavy one; re-paste
 the impl spec), **(2) sub-`SELECT`** (`ToMultiSet` + §18.2.1 scope), and **(3) property-path form *lowering***
 (decompose seq/alt/inv + define `*`/`+`/`?`/NPS evaluation — deferred from `71e995f`, likely an evaluation-time
