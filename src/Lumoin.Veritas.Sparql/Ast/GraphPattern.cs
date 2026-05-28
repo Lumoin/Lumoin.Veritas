@@ -33,9 +33,11 @@ public sealed record GroupGraphPattern(SourceSpan Span, IReadOnlyList<GraphPatte
 /// <param name="Triples">The triple patterns.</param>
 /// <param name="StandaloneNodes">
 /// The RDF 1.2 reified triples written as subject-only assertions in this run — a <c>&lt;&lt; s p o ~r? &gt;&gt;</c>
-/// with an empty property list (<c>ReifiedTripleBlockPath</c>), which asserts its inner triple and reifier
-/// without further properties. Empty in the common case. Kept un-expanded for tooling fidelity; the early
-/// normalization pass lowers each to the asserted triple plus the <c>rdf:reifies</c> reification triple.
+/// with an empty property list (<c>ReifiedTripleBlockPath</c>), reifying its inner triple without further
+/// properties. Empty in the common case. Kept un-expanded for tooling fidelity; the early normalization pass
+/// lowers each to the reification triple <c>reifier rdf:reifies &lt;&lt;( s p o )&gt;&gt;</c>. Per RDF 1.2 the
+/// inner triple is not asserted (only the annotation <c>{| … |}</c> form asserts), unless the opt-in
+/// <c>SparqlNormalizerOptions.AssertReifiedTripleInnerTriple</c> flag is set.
 /// </param>
 /// <remarks>SPARQL <c>TriplesBlock</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rTriplesBlock">SPARQL 1.2 §19.8 [TriplesBlock]</see>.</remarks>
 [DebuggerDisplay("BGP[{Triples.Count}] standalone[{StandaloneNodes.Count}]")]

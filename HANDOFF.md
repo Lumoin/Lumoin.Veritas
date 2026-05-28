@@ -157,6 +157,38 @@ the 50-test SHACL baseline = 0 new failures. Everything parses **value-based** (
 the SPARQL AST has **uniform spans**; the diagnostic catalogue is audited (now through `SP0045`). Item 4 is the
 design-heavy Milestone-B on-ramp — do it on a **fresh context**.
 
+**STATUS (2026-05-28 session): item 4(a) — the normalization pass — is IMPLEMENTED and green (uncommitted).**
+- New `Translation/SparqlNormalizer.cs` + `Translation/SparqlNormalizerOptions.cs`. Walks the query tree
+  (groups / optional / minus / union / graph / service / sub-select + the CONSTRUCT template), lowering
+  `CollectionTerm`, `BlankNodePropertyListTerm`, `ReifiedTriple`, `AnnotatedObject`, and a block's
+  `StandaloneNodes` to plain core `TriplePattern`s; fresh bnodes via the parser's `BlankNodeDelegate` seam
+  (same pool ⇒ the per-pool `b#` counter continues, no label collision); spans preserved onto every lowered
+  triple; error nodes pass through; never throws. Mirrors `TurtleQuadEmitter` but outputs AST, keeps variables,
+  does no IRI resolution, and leaves property-path predicates alone.
+- **Reified-triple semantics RESOLVED (no-assert; see the §8.5 block below) and made CONFIGURABLE** per the
+  user: default = spec no-assert (`reifier rdf:reifies <<( s p o )>>` only); opt-in
+  `SparqlNormalizerOptions.AssertReifiedTripleInnerTriple` *also* asserts the base triple. Only the annotation
+  `{| … |}` form asserts the base by default. The 3 contradicting AST doc comments were corrected.
+- `rdf:first/rest/nil` were NOT added to Core — they already exist as `RdfVocabulary.Rdf.First/Rest/Nil`
+  (`Lumoin.Veritas.Rdf`, already referenced by Sparql), exactly where the Core `Vocabulary.Rdf` doc delegates
+  list vocabulary; `rdf:reifies` from `Vocabulary.Rdf.Reifies` (Core). The handoff's "add to Vocabulary.Rdf" was
+  based on an incomplete view.
+- 9 `SparqlNormalizerTests` pin the lowered shapes (empty/non-empty collection, blank-node property list,
+  reified ×2 config modes, standalone reified, annotation-asserts-base, span preservation, nested-pattern
+  recursion). Build clean (0 warnings); 415 Sparql tests pass; **full suite at exactly 50 ShaclValidate
+  failures, 0 new** (Sparql filter = 0 failed, so all 50 are outside Sparql).
+- **No consumer wiring done.** The normalizer is standalone; the translator/engine that will invoke it do not
+  exist yet. **Known deferred gap:** the CONSTRUCT-WHERE short form's `ExtractTemplateTriples`
+  (`SparqlParser.cs:773`) copies only `block.Triples` at parse time, dropping `StandaloneNodes` — a
+  CONSTRUCT-template fidelity issue to resolve when CONSTRUCT execution is wired (Batch 2), not a normalizer bug.
+
+**STILL OPEN — item 4(b): the `Algebra/` + `Translation/` type hierarchy / namespace layout needs §5.1** (the
+user's internal impl spec). The official W3C SPARQL 1.2 §18 gives the algebra *operators* — BGP, Join, LeftJoin,
+Filter, Union, Graph, Extend, Minus, Group, Aggregation, AggregateJoin, Project, Distinct, Reduced, OrderBy,
+Slice, ToList, ToMultiSet, Service, and the path operators (Path, ZeroOrMore/OneOrMore/ZeroOrOnePath,
+NegatedPropertySet) — but not the C# folder/namespace layout. Paste §5.1 or authorize laying it out to existing
+conventions. Scope decision (user, 2026-05-28): build the **full SPARQL 1.2 core**, not a SHACL-minimal subset.
+
 **Build/test (MTP — `dotnet test` does NOT work; exact commands that worked all session):**
 - Build: `dotnet build src/Lumoin.Veritas.Sparql/Lumoin.Veritas.Sparql.csproj -clp:ErrorsOnly --nologo`,
   then `dotnet build Lumoin.Veritas.slnx -clp:ErrorsOnly --nologo` (0 warnings — `TreatWarningsAsErrors`).
@@ -194,12 +226,23 @@ shape).** The user holds it. Item 4 has two halves with different readiness:
 - **`rdf:first`/`rdf:rest`/`rdf:nil` are NOT yet in `Vocabulary.Rdf`** (it has `Type`, `Reifies`,
   `PropositionForm*` only) — add `First`/`Rest`/`Nil` there (the emitter currently interns the literals inline).
 - **Preserve spans** onto every lowered triple (use the sugar term's `Span`).
-- **SEMANTIC QUESTION for §8.5 — resolve before coding the reified-triple lowering:** does a reified triple as a
-  *term* assert its inner triple? The Turtle emitter says **no** (it yields only reifier + `rdf:reifies` —
-  `ExpandReifiedTriple` comment). Does a **standalone** `<< s p o ~r >> .` (item 3's `StandaloneNodes`) assert the
-  inner `s p o`? RDF 1.2 statement semantics likely **yes** — but confirm against §8.5 (my item-3 commit message
-  says "asserts its inner triple and reifier" as the *intended* normalization; the parse itself is faithful and
-  decides nothing). This is exactly the design-sensitive call that needs the spec.
+- **SEMANTIC QUESTION for §8.5 — RESOLVED against the official W3C spec (2026-05-28).** Does a reified triple assert
+  its inner triple? **NO.** Neither a triple term `<<( s p o )>>` nor a reified triple `<< s p o ~r >>` (standalone
+  or as a term) asserts/adds `s p o` to the graph. Authoritative, verbatim:
+  - RDF 1.2 Turtle **§2.11 "Reifying Triples"** — *"Note that this graph does not assert that `employee38` has a
+    `jobTitle` of "Assistant Designer"; it says that `employee22` has made that claim using a reifiedTriple."*
+  - RDF 1.2 Turtle **§7.3.2 "Reified Triples"** — finishing a `reifiedTriple` *"yields the RDF triple curReifier
+    `rdf:reifies` curTripleTerm"* (a fresh blank node if no `~reifier`) — and nothing else.
+  - RDF 1.2 Turtle **§2.11.1 "Annotation Syntax"** — the annotation syntax `s p o {| … |}` is *"an annotation syntax
+    to both reify **and assert** a triple"* — i.e. only `{| |}` asserts the base `s p o`.
+
+  **So the normalizer lowers a standalone `<< s p o ~r >> .` to ONLY `reifier rdf:reifies <<( s p o )>>`** — exactly
+  the existing Turtle emitter `ExpandReifiedTriple` (the emitter was correct). ⚠ The item-3 commit message
+  (`362f230`) "asserts its inner triple and reifier" was the WRONG intended normalization — **discard it**; the
+  faithful parse decides nothing, and the normalizer must NOT assert the base triple. Base `s p o` is emitted ONLY
+  for the `AnnotatedObject` (`{| |}`) sugar. (Residual: the verbatim SPARQL-1.2 §-anchor for the reifier-in-pattern
+  expansion couldn't be pulled via WebFetch — the single-page spec truncates the reader window; SPARQL follows the
+  shared RDF 1.2 data-model semantics + the emitter template. Confirm the exact §4.x anchor when coding.)
 - **`syntax-propertyPaths-01`** (standalone `[ … ]` bnode list): item 3 routed only `ReifiedTriple` to
   `StandaloneNodes`; a standalone collection/bnode-list subject still errors (`ExpectedVerb`). To close this gap,
   either extend `StepTriple`'s `TripleVerb` to also route a verb-less `CollectionTerm`/`BlankNodePropertyListTerm`

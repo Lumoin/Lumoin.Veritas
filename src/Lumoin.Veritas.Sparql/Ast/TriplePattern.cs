@@ -59,14 +59,16 @@ public sealed record PropertyPathTerm(SourceSpan Span, PropertyPathExpression Pa
 public sealed record TripleTerm(SourceSpan Span, TriplePattern Inner) : TriplePatternTerm;
 
 /// <summary>
-/// An RDF 1.2 reified triple <c>&lt;&lt; s p o ~r? &gt;&gt;</c> in the subject or object position.
-/// Unlike a <see cref="TripleTerm"/>, a reified triple asserts its inner triple and yields the reifier
-/// as its value. Kept un-expanded for tooling fidelity (mirroring the Turtle parser's
-/// <c>ReifiedTripleTerm</c>); the early normalization pass lowers it to the asserted triple plus the
-/// <c>rdf:reifies</c> reification triple.
+/// An RDF 1.2 reified triple <c>&lt;&lt; s p o ~r? &gt;&gt;</c> in the subject or object position. Its
+/// value is the reifier. Per RDF 1.2 (Turtle §2.11 / §7.3.2) a reified triple does NOT assert its inner
+/// triple — it produces only the reification triple <c>reifier rdf:reifies &lt;&lt;( s p o )&gt;&gt;</c>
+/// (only the annotation form <c>{| … |}</c> both reifies and asserts). Kept un-expanded for tooling
+/// fidelity (mirroring the Turtle parser's <c>ReifiedTripleTerm</c>); the early normalization pass lowers
+/// it to that reification triple — and, only under the opt-in
+/// <c>SparqlNormalizerOptions.AssertReifiedTripleInnerTriple</c> flag, the base triple as well.
 /// </summary>
 /// <param name="Span">The source extent from <c>&lt;&lt;</c> to <c>&gt;&gt;</c>.</param>
-/// <param name="Inner">The asserted inner triple.</param>
+/// <param name="Inner">The inner triple — reified, and not asserted unless the normalizer's opt-in assert flag is set.</param>
 /// <param name="Reifier">The explicit reifier identity (an IRI, variable, or blank node), or <see langword="null"/> for a fresh anonymous reifier.</param>
 /// <remarks>SPARQL <c>ReifiedTriple</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rReifiedTriple">SPARQL 1.2 §19.8 [ReifiedTriple]</see>.</remarks>
 [DebuggerDisplay("<< triple >>")]
