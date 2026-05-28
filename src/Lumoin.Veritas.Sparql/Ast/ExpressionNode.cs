@@ -38,6 +38,18 @@ public sealed record ConstantExpression(SourceSpan Span, RdfTerm Value) : Expres
 [DebuggerDisplay("?{Variable.Name}")]
 public sealed record VariableExpression(SourceSpan Span, SparqlVariable Variable) : ExpressionNode(Span);
 
+/// <summary>
+/// An RDF 1.2 triple-term expression <c>&lt;&lt;( s verb o )&gt;&gt;</c> in an expression position
+/// (for example a <c>BIND</c> right-hand side), denoting the triple term built from its components.
+/// Unlike the <see cref="TripleTerm"/> in a triple pattern, the expression form restricts its subject
+/// to an IRI or variable (no literal, blank node, or nested triple term) per <c>ExprTripleTerm</c>.
+/// </summary>
+/// <param name="Span">The source extent from <c>&lt;&lt;(</c> to <c>)&gt;&gt;</c>.</param>
+/// <param name="Inner">The denoted triple, whose terms are evaluated as sub-expressions.</param>
+/// <remarks>SPARQL <c>ExprTripleTerm</c> in <c>PrimaryExpression</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rExprTripleTerm">SPARQL 1.2 §19.8 [ExprTripleTerm]</see>.</remarks>
+[DebuggerDisplay("<<( triple )>>")]
+public sealed record TripleTermExpression(SourceSpan Span, TriplePattern Inner) : ExpressionNode(Span);
+
 /// <summary>The logical conjunction <c>left &amp;&amp; right</c>.</summary>
 /// <param name="Span">The source extent from the left operand through the right.</param>
 /// <param name="Left">The left operand.</param>

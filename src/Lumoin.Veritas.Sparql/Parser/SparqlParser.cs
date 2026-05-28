@@ -1504,6 +1504,7 @@ public sealed class SparqlParser
             6 => ExpressionInReceived(frame, incoming),
             7 => ExpressionAggregateReceived(frame, incoming),
             8 => ExpressionExistsReceived(frame, incoming),
+            9 => ExpressionTripleTermReceived(frame, incoming),
             _ => throw new SparqlParseException("Expression reached an unknown stage.", frame.StartSpan)
         };
 
@@ -1736,6 +1737,7 @@ public sealed class SparqlParser
             SparqlTokenKind.ExistsKeyword => ExpressionExists(frame),
             SparqlTokenKind.NotKeyword => ExpressionNotExists(frame),
             SparqlTokenKind.OpenParen => ExpressionBracket(frame),
+            SparqlTokenKind.OpenTripleTerm => ExpressionTripleTerm(frame),
             _ => StepResult.Done(RecoverExpression(ParseFrameKind.Expression, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpressionExpected, Current.Span, "Expected an expression.", "Expression"))
         };
 
@@ -1838,6 +1840,38 @@ public sealed class SparqlParser
         frame.Stage = 4;
 
         return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Expression, MinPrecedence = PrecExpression, StartSpan = Current.Span });
+    }
+
+    /// <summary>Begins an RDF 1.2 triple-term expression <c>&lt;&lt;( s verb o )&gt;&gt;</c>, pushing the inner triple term parsed under the expression context.</summary>
+    /// <param name="frame">The expression frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult ExpressionTripleTerm(ParseFrame frame)
+    {
+        frame.Stage = 9;
+
+        return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.TripleTerm, StartSpan = Current.Span, TripleTermContext = TripleTermContext.Expression });
+    }
+
+    /// <summary>
+    /// Adopts the popped triple term as a <see cref="TripleTermExpression"/>. When the inner triple term
+    /// could not be parsed (its closing <c>)&gt;&gt;</c> was missing, or a restricted position rejected a
+    /// term), the popped <see cref="ErrorTriplePatternTerm"/> is re-typed to an <see cref="ErrorExpression"/>
+    /// so the expression frame carries it up; its diagnostic was already recorded, so no double report.
+    /// </summary>
+    /// <param name="frame">The expression frame.</param>
+    /// <param name="incoming">The popped triple term (an <see cref="Ast.TripleTerm"/> or an error node).</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult ExpressionTripleTermReceived(ParseFrame frame, object? incoming)
+    {
+        frame.Left = Pop<TriplePatternTerm>(incoming) switch
+        {
+            Ast.TripleTerm tripleTerm => new TripleTermExpression(tripleTerm.Span, tripleTerm.Inner),
+            ErrorTriplePatternTerm error => new ErrorExpression(error.Span, error.ExpectedProduction, error.DiagnosticCodes, error.SkippedTokens),
+            _ => throw new SparqlParseException("A triple-term frame in expression position produced an unexpected term.", frame.StartSpan)
+        };
+        frame.Stage = 1;
+
+        return StepResult.Continue();
     }
 
     /// <summary>
@@ -3211,12 +3245,15 @@ public sealed class SparqlParser
 
     /// <summary>
     /// Advances an RDF 1.2 triple term <c>&lt;&lt;( s verb o )&gt;&gt;</c>, parsing the inner subject,
-    /// verb, and object one step each. The inner subject is a leaf term (no nesting), the verb is an
-    /// IRI / <c>a</c> / variable (no property paths), and the object is a leaf term or a nested triple
-    /// term. Collections, blank-node property lists, and reified triples are rejected inside.
+    /// verb, and object one step each. The terms permitted in each position depend on the frame's
+    /// <see cref="ParseFrame.TripleTermContext"/>: a triple-pattern term takes a full <c>VarOrTerm</c>
+    /// (which may nest a triple term in subject or object); an expression term restricts its subject to
+    /// an IRI or variable; a <c>VALUES</c> data term restricts its subject to an IRI, its verb to an IRI
+    /// or <c>a</c>, and admits no variables. Collections, blank-node property lists, and reified triples
+    /// are rejected inside. The verb takes no property paths.
     /// </summary>
     /// <param name="frame">The triple-term frame.</param>
-    /// <param name="incoming">A popped nested triple-term object on resume.</param>
+    /// <param name="incoming">A popped nested triple-term subject or object on resume.</param>
     /// <returns>The instruction for the driver; the popped result is the <see cref="Ast.TripleTerm"/>.</returns>
     private StepResult StepTripleTerm(ParseFrame frame, object? incoming)
         => frame.Stage switch
@@ -3242,16 +3279,42 @@ public sealed class SparqlParser
         return StepResult.Continue();
     }
 
-    /// <summary>Parses the inner subject — a nested triple term (pushed) or a leaf term — and moves to the verb.</summary>
+    /// <summary>Parses the inner subject and moves to the verb. The permitted subject terms depend on the frame's context.</summary>
     /// <param name="frame">The triple-term frame.</param>
     /// <returns>The instruction for the driver.</returns>
     private StepResult TripleTermSubject(ParseFrame frame)
     {
-        if(Current.Kind == SparqlTokenKind.OpenTripleTerm)
+        //A triple-pattern subject is a full VarOrTerm and may nest a triple term; the restricted
+        //expression and data forms accept only an IRI (and, for an expression, a variable).
+        if(frame.TripleTermContext == TripleTermContext.Pattern)
         {
-            frame.Stage = 6;
+            if(Current.Kind == SparqlTokenKind.OpenTripleTerm)
+            {
+                frame.Stage = 6;
 
-            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.TripleTerm, StartSpan = Current.Span });
+                return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.TripleTerm, StartSpan = Current.Span, TripleTermContext = frame.TripleTermContext });
+            }
+
+            frame.Subject = ParseVarOrTerm();
+            frame.Stage = 2;
+
+            return StepResult.Continue();
+        }
+
+        bool subjectAllowed = Current.Kind switch
+        {
+            SparqlTokenKind.Iri or SparqlTokenKind.PrefixedName => true,
+            SparqlTokenKind.Variable => frame.TripleTermContext == TripleTermContext.Expression,
+            _ => false
+        };
+
+        if(!subjectAllowed)
+        {
+            (string message, string production) = frame.TripleTermContext == TripleTermContext.Expression
+                ? ("An expression triple-term subject must be an IRI or variable.", "ExprTripleTerm")
+                : ("A VALUES triple-term subject must be an IRI.", "TripleTermData");
+
+            return StepResult.Done(RecoverTriplePatternTerm(ParseFrameKind.TripleTerm, frame.StartSpan, WellKnownDiagnostics.Sparql.InvalidTripleTermSubject, Current.Span, message, production));
         }
 
         frame.Subject = ParseVarOrTerm();
@@ -3272,18 +3335,18 @@ public sealed class SparqlParser
         return StepResult.Continue();
     }
 
-    /// <summary>Parses the inner verb (IRI, <c>a</c>, or variable; no property paths) and moves to the object.</summary>
+    /// <summary>Parses the inner verb and moves to the object. A data triple term takes an IRI or <c>a</c>; the other forms also permit a variable. No property paths.</summary>
     /// <param name="frame">The triple-term frame.</param>
     /// <returns>The instruction for the driver.</returns>
     private StepResult TripleTermVerb(ParseFrame frame)
     {
-        frame.Verb = ParseTripleVerb();
+        frame.Verb = frame.TripleTermContext == TripleTermContext.Data ? ParseDataTripleVerb() : ParseTripleVerb();
         frame.Stage = 3;
 
         return StepResult.Continue();
     }
 
-    /// <summary>Parses the inner object: a nested triple term (pushed) or a leaf term, then moves to the close.</summary>
+    /// <summary>Parses the inner object — a nested triple term (pushed) or a leaf term — then moves to the close. The permitted leaf terms depend on the frame's context.</summary>
     /// <param name="frame">The triple-term frame.</param>
     /// <returns>The instruction for the driver.</returns>
     private StepResult TripleTermObject(ParseFrame frame)
@@ -3292,7 +3355,36 @@ public sealed class SparqlParser
         {
             frame.Stage = 4;
 
-            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.TripleTerm, StartSpan = Current.Span });
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.TripleTerm, StartSpan = Current.Span, TripleTermContext = frame.TripleTermContext });
+        }
+
+        //A triple-pattern object is a full VarOrTerm; the restricted expression and data forms accept an
+        //IRI, a literal, or a nested triple term (and, for an expression, a variable) — never a blank node.
+        if(frame.TripleTermContext == TripleTermContext.Pattern)
+        {
+            frame.ObjectTerm = ParseVarOrTerm();
+            frame.Stage = 5;
+
+            return StepResult.Continue();
+        }
+
+        bool objectAllowed = Current.Kind switch
+        {
+            SparqlTokenKind.Iri or SparqlTokenKind.PrefixedName
+                or SparqlTokenKind.StringLiteral or SparqlTokenKind.LongStringLiteral
+                or SparqlTokenKind.IntegerLiteral or SparqlTokenKind.DecimalLiteral or SparqlTokenKind.DoubleLiteral
+                or SparqlTokenKind.BooleanLiteral => true,
+            SparqlTokenKind.Variable => frame.TripleTermContext == TripleTermContext.Expression,
+            _ => false
+        };
+
+        if(!objectAllowed)
+        {
+            (string message, string production) = frame.TripleTermContext == TripleTermContext.Expression
+                ? ("An expression triple-term object must be an IRI, a literal, a variable, or a nested triple term.", "ExprTripleTerm")
+                : ("A VALUES triple-term object must be an IRI, a literal, or a nested triple term.", "TripleTermData");
+
+            return StepResult.Done(RecoverTriplePatternTerm(ParseFrameKind.TripleTerm, frame.StartSpan, WellKnownDiagnostics.Sparql.InvalidTripleTermObject, Current.Span, message, production));
         }
 
         frame.ObjectTerm = ParseVarOrTerm();
@@ -3343,6 +3435,20 @@ public sealed class SparqlParser
             SparqlTokenKind.PrefixedName => ConsumePrefixedNameConstantTerm(),
             SparqlTokenKind.Variable => ConsumeVariable(),
             _ => RecoverTriplePatternTerm(ParseFrameKind.TripleTerm, Current.Span, WellKnownDiagnostics.Sparql.ExpectedTripleTermVerb, Current.Span, "Expected an IRI, 'a', or variable as the verb.", "Verb")
+        };
+
+    /// <summary>
+    /// Parses the verb inside a <c>VALUES</c> data triple term: an IRI or the <c>a</c> shorthand only
+    /// (the data form admits no variables).
+    /// </summary>
+    /// <returns>The verb term.</returns>
+    private TriplePatternTerm ParseDataTripleVerb()
+        => Current.Kind switch
+        {
+            SparqlTokenKind.A => ConsumeAVerbTerm(),
+            SparqlTokenKind.Iri => ConsumeIriConstantTerm(),
+            SparqlTokenKind.PrefixedName => ConsumePrefixedNameConstantTerm(),
+            _ => RecoverTriplePatternTerm(ParseFrameKind.TripleTerm, Current.Span, WellKnownDiagnostics.Sparql.ExpectedTripleTermVerb, Current.Span, "Expected an IRI or 'a' as the triple-term verb.", "TripleTermData")
         };
 
     /// <summary>Consumes the <c>a</c> shorthand as the <c>rdf:type</c> constant term and advances.</summary>

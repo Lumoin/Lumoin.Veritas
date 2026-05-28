@@ -209,6 +209,26 @@ internal sealed class ParseFrame
 
     /// <summary>Gets or sets whether a <see cref="ParseFrameKind.Triple"/> frame has already reported an annotation following a property-path predicate, so the diagnostic is recorded once per object.</summary>
     public bool ReportedPathAnnotation { get; set; }
+
+    /// <summary>Gets or sets the grammatical context a <see cref="ParseFrameKind.TripleTerm"/> frame parses under, which constrains the terms its subject, verb, and object may take.</summary>
+    public TripleTermContext TripleTermContext { get; set; }
+}
+
+/// <summary>
+/// The grammatical context a <see cref="ParseFrameKind.TripleTerm"/> frame parses under. SPARQL 1.2
+/// gives the triple term <c>&lt;&lt;( … )&gt;&gt;</c> three productions whose subject, verb, and object
+/// alternatives differ, so one frame parses all three by branching on this value.
+/// </summary>
+internal enum TripleTermContext
+{
+    /// <summary>A triple pattern's <c>TripleTerm</c>: subject and object are a full <c>VarOrTerm</c> (variable, IRI, literal, blank node, or nested triple term); the verb is an IRI, <c>a</c>, or variable.</summary>
+    Pattern,
+
+    /// <summary>An expression's <c>ExprTripleTerm</c>: the subject is an IRI or variable only; the object adds literals and a nested triple term; the verb is an IRI, <c>a</c>, or variable.</summary>
+    Expression,
+
+    /// <summary>A <c>VALUES</c> data block's <c>TripleTermData</c>: the subject is an IRI only; the object is an IRI, a literal, or a nested triple term; the verb is an IRI or <c>a</c>; no variables appear.</summary>
+    Data
 }
 
 /// <summary>

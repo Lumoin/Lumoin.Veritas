@@ -443,6 +443,14 @@ public static class WellKnownDiagnostics
         /// <remarks>SPARQL <c>VersionDecl</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rVersionDecl">SPARQL 1.2 §19.8 [VersionDecl]</see>.</remarks>
         public static Utf8String InvalidVersionArgument { get; } = new("SP0043"u8.ToArray());
 
+        /// <summary>An RDF 1.2 triple-term subject was not permitted in this position: an expression <c>ExprTripleTerm</c> subject must be an IRI or variable, and a <c>VALUES</c> <c>TripleTermData</c> subject must be an IRI (no literal, blank node, or nested triple term).</summary>
+        /// <remarks>SPARQL <c>ExprTripleTerm</c> / <c>TripleTermData</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rTripleTermData">SPARQL 1.2 §19.8 [TripleTermData]</see>.</remarks>
+        public static Utf8String InvalidTripleTermSubject { get; } = new("SP0044"u8.ToArray());
+
+        /// <summary>An RDF 1.2 triple-term object was not permitted in this position: an expression or <c>VALUES</c> triple-term object must be an IRI, a literal, or a nested triple term (and, in an expression, a variable) — not a blank node.</summary>
+        /// <remarks>SPARQL <c>ExprTripleTerm</c> / <c>TripleTermData</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rTripleTermData">SPARQL 1.2 §19.8 [TripleTermData]</see>.</remarks>
+        public static Utf8String InvalidTripleTermObject { get; } = new("SP0045"u8.ToArray());
+
         /// <summary>The per-parse diagnostic cap was reached; further parser diagnostics are suppressed (the AST still assembles).</summary>
         /// <remarks>Parser-internal bound (see the parser's <c>MaxDiagnostics</c> option), not a grammar production.</remarks>
         public static Utf8String ExcessDiagnostics { get; } = new("SP9999"u8.ToArray());

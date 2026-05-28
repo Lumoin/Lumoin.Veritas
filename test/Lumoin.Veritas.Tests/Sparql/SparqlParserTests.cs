@@ -1173,6 +1173,51 @@ internal sealed class SparqlParserTests
         AssertParseError("PREFIX : <http://e/> SELECT * WHERE { <<( ?s ?p ?o )>> . }", pool, WellKnownDiagnostics.Sparql.ExpectedVerb);
     }
 
+    /// <summary>A triple term in an expression (a <c>BIND</c> right-hand side) parses to a <see cref="TripleTermExpression"/> over its inner triple.</summary>
+    [TestMethod]
+    public void ParsesTripleTermInExpression()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * { ?s ?p ?o BIND(<<( ?s ?p ?o )>> AS ?t) }", pool);
+
+        BindPattern bind = (BindPattern)Members(query)[1];
+        Assert.AreEqual("t", bind.AsVariable.Name.ToString());
+        TripleTermExpression tripleTerm = (TripleTermExpression)bind.Expression;
+        Assert.AreEqual("s", VariableName(tripleTerm.Inner.Subject));
+        Assert.AreEqual("p", VariableName(tripleTerm.Inner.Predicate));
+        Assert.AreEqual("o", VariableName(tripleTerm.Inner.Object));
+    }
+
+    /// <summary>An expression triple term admits an IRI subject and a nested triple term in its object position.</summary>
+    [TestMethod]
+    public void ParsesTripleTermInExpressionWithNestedObject()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * { ?s ?p ?o BIND(<<( :a :b <<( ?s ?p ?o )>> )>> AS ?t) }", pool);
+
+        TripleTermExpression outer = (TripleTermExpression)((BindPattern)Members(query)[1]).Expression;
+        Assert.AreEqual("http://e/a", IriValue(outer.Inner.Subject));
+        Assert.IsInstanceOfType<AstTripleTerm>(outer.Inner.Object);
+    }
+
+    /// <summary>An expression triple term rejects a nested triple term in its subject position.</summary>
+    [TestMethod]
+    public void TripleTermInExpressionRejectsNestedSubject()
+    {
+        using Utf8StringPool pool = new();
+
+        AssertParseError("PREFIX : <http://e/> SELECT * { BIND(<<( <<( :s :p :o )>> :q :z )>> AS ?X) }", pool, WellKnownDiagnostics.Sparql.InvalidTripleTermSubject);
+    }
+
+    /// <summary>An expression triple term rejects a literal in its subject position.</summary>
+    [TestMethod]
+    public void TripleTermInExpressionRejectsLiteralSubject()
+    {
+        using Utf8StringPool pool = new();
+
+        AssertParseError("PREFIX : <http://e/> SELECT * { BIND(<<( \"literal\" :q :z )>> AS ?X) }", pool, WellKnownDiagnostics.Sparql.InvalidTripleTermSubject);
+    }
+
     /// <summary>A triple term's subject may itself be a triple term (nesting in subject position).</summary>
     [TestMethod]
     public void ParsesTripleTermWithNestedSubject()
