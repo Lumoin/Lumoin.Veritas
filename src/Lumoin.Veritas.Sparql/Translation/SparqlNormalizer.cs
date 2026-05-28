@@ -102,19 +102,116 @@ public sealed class SparqlNormalizer
         return result;
     }
 
-    /// <summary>Normalizes a graph pattern, recursing into nested groups and rebuilding basic blocks with lowered triples.</summary>
-    /// <param name="pattern">The pattern to normalize.</param>
+    /// <summary>
+    /// Normalizes a graph pattern, rebuilding each basic block with lowered triples and recursing into nested
+    /// groups — over an explicit post-order stack (no recursion), so arbitrarily deep pattern nesting cannot
+    /// overflow the stack. Each pattern's normalized sub-patterns are looked up by reference when it is rebuilt.
+    /// </summary>
+    /// <param name="root">The pattern to normalize.</param>
     /// <returns>The normalized pattern.</returns>
-    private GraphPattern NormalizePattern(GraphPattern pattern)
+    private GraphPattern NormalizePattern(GraphPattern root)
+    {
+        //Keyed by reference: a parsed pattern is a tree, and value-equal sibling patterns are distinct
+        //positions that must map to their own normalized result.
+        Dictionary<GraphPattern, GraphPattern> normalized = new(ReferenceEqualityComparer.Instance);
+        Stack<(GraphPattern Node, bool Rebuild)> work = new();
+        work.Push((root, Rebuild: false));
+
+        while(work.Count > 0)
+        {
+            (GraphPattern node, bool rebuild) = work.Pop();
+            if(rebuild)
+            {
+                normalized[node] = RebuildPattern(node, normalized);
+
+                continue;
+            }
+
+            List<GraphPattern> children = PatternChildren(node);
+            if(children.Count == 0)
+            {
+                //A basic block (rebuilt with lowered triples) or a passthrough member (BIND/FILTER/VALUES/error).
+                normalized[node] = RebuildPattern(node, normalized);
+            }
+            else
+            {
+                work.Push((node, Rebuild: true));
+                for(int i = children.Count - 1; i >= 0; i--)
+                {
+                    work.Push((children[i], Rebuild: false));
+                }
+            }
+        }
+
+        return normalized[root];
+    }
+
+    /// <summary>Returns the nested patterns a pattern must have normalized before it is rebuilt.</summary>
+    /// <param name="pattern">The pattern.</param>
+    /// <returns>The nested patterns, in source order; empty for a basic block or a passthrough member.</returns>
+    private static List<GraphPattern> PatternChildren(GraphPattern pattern)
     {
         switch(pattern)
+        {
+            case GroupGraphPattern group:
+            {
+                return [.. group.Members];
+            }
+
+            case OptionalPattern optional:
+            {
+                return [optional.Inner];
+            }
+
+            case MinusPattern minus:
+            {
+                return [minus.Inner];
+            }
+
+            case UnionPattern union:
+            {
+                return [union.Left, union.Right];
+            }
+
+            case GraphGraphPattern graph:
+            {
+                return [graph.Inner];
+            }
+
+            case ServicePattern service:
+            {
+                return [service.Inner];
+            }
+
+            case SubSelectPattern subSelect:
+            {
+                //A sub-SELECT is a SELECT (no CONSTRUCT template), so normalizing it is normalizing its WHERE pattern.
+                return [subSelect.InnerQuery.Where.Pattern];
+            }
+
+            default:
+            {
+                //BasicGraphPatternBlock (rebuilt as a leaf) and BIND / FILTER / VALUES / error patterns (which
+                //carry no triple-pattern sugar) have no nested pattern to normalize.
+                return [];
+            }
+        }
+    }
+
+    /// <summary>Rebuilds a pattern from its already-normalized nested patterns (looked up by reference); a basic block is lowered and a passthrough member returned unchanged.</summary>
+    /// <param name="node">The pattern to rebuild.</param>
+    /// <param name="normalized">The map of already-normalized nested patterns.</param>
+    /// <returns>The normalized pattern.</returns>
+    private GraphPattern RebuildPattern(GraphPattern node, Dictionary<GraphPattern, GraphPattern> normalized)
+    {
+        switch(node)
         {
             case GroupGraphPattern group:
             {
                 List<GraphPattern> members = new(group.Members.Count);
                 foreach(GraphPattern member in group.Members)
                 {
-                    members.Add(NormalizePattern(member));
+                    members.Add(normalized[member]);
                 }
 
                 return new GroupGraphPattern(group.Span, members);
@@ -127,32 +224,35 @@ public sealed class SparqlNormalizer
 
             case OptionalPattern optional:
             {
-                return new OptionalPattern(optional.Span, NormalizePattern(optional.Inner));
+                return new OptionalPattern(optional.Span, normalized[optional.Inner]);
             }
 
             case MinusPattern minus:
             {
-                return new MinusPattern(minus.Span, NormalizePattern(minus.Inner));
+                return new MinusPattern(minus.Span, normalized[minus.Inner]);
             }
 
             case UnionPattern union:
             {
-                return new UnionPattern(union.Span, NormalizePattern(union.Left), NormalizePattern(union.Right));
+                return new UnionPattern(union.Span, normalized[union.Left], normalized[union.Right]);
             }
 
             case GraphGraphPattern graph:
             {
-                return new GraphGraphPattern(graph.Span, graph.GraphTerm, NormalizePattern(graph.Inner));
+                return new GraphGraphPattern(graph.Span, graph.GraphTerm, normalized[graph.Inner]);
             }
 
             case ServicePattern service:
             {
-                return new ServicePattern(service.Span, service.Endpoint, service.IsSilent, NormalizePattern(service.Inner));
+                return new ServicePattern(service.Span, service.Endpoint, service.IsSilent, normalized[service.Inner]);
             }
 
             case SubSelectPattern subSelect:
             {
-                return new SubSelectPattern(subSelect.Span, NormalizeQuery(subSelect.InnerQuery));
+                SparqlQuery inner = subSelect.InnerQuery;
+                SparqlQuery normalizedInner = inner with { Where = inner.Where with { Pattern = normalized[inner.Where.Pattern] } };
+
+                return new SubSelectPattern(subSelect.Span, normalizedInner);
             }
 
             default:
@@ -160,7 +260,7 @@ public sealed class SparqlNormalizer
                 //BIND / FILTER expressions, VALUES data, and error-node patterns carry no triple-pattern
                 //sugar to lower (a triple term in an expression or VALUES is already a core term), so they
                 //flow through unchanged.
-                return pattern;
+                return node;
             }
         }
     }

@@ -284,6 +284,21 @@ internal sealed class SparqlTranslatorTests
         Cast<Bgp>(slice.Input);
     }
 
+    /// <summary>Deeply nested groups parse, normalize, and translate iteratively — far past the depth a recursive pipeline would overflow.</summary>
+    [TestMethod]
+    public void DeeplyNestedGroupsTranslateWithoutOverflow()
+    {
+        using Utf8StringPool pool = new();
+        const int depth = 20_000;
+        string query = "PREFIX : <http://example.org/> SELECT * WHERE " + new string('{', depth) + " ?s :p ?o " + new string('}', depth);
+
+        AlgebraOperator algebra = Translate(query, pool);
+
+        //The nested single-member groups collapse through the join identity to a projection over the inner BGP.
+        Project project = Cast<Project>(algebra);
+        Cast<Bgp>(project.Input);
+    }
+
     /// <summary>A sub-SELECT is a deferred construct and is refused.</summary>
     [TestMethod]
     public void SubSelectIsNotSupportedYet()
