@@ -73,7 +73,6 @@ internal sealed class W3cSparqlSyntaxTests
         ["basic-reifier-11.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
         ["basic-reifier-12.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
         ["basic-reifier-13.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
-        ["basic-tripleterm-05.rq"] = "triple term in a VALUES data block — VALUES triple-term parsing not yet wired",
         ["version-01.rq"] = "VERSION + standalone reified triple — VERSION parses, but the standalone << … >> still needs the BGP subject-only assertion",
         ["version-02.rq"] = "VERSION + standalone reified triple — VERSION parses, but the standalone << … >> still needs the BGP subject-only assertion",
         ["version-05.rq"] = "VERSION + standalone reified triple — VERSION parses, but the standalone << … >> still needs the BGP subject-only assertion",

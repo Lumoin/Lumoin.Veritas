@@ -9,6 +9,7 @@ using Lumoin.Veritas.Sparql.Lexer;
 using Lumoin.Veritas.Sparql.Parser;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using AstTripleTerm = Lumoin.Veritas.Sparql.Ast.TripleTerm;
+using CoreTripleTerm = Lumoin.Veritas.Core.TripleTerm;
 
 namespace Lumoin.Veritas.Tests.Sparql;
 
@@ -554,6 +555,41 @@ internal sealed class SparqlParserTests
         Assert.HasCount(2, values.Rows);
         Assert.IsNotNull(values.Rows[0][0]);
         Assert.IsNull(values.Rows[1][1]);
+    }
+
+    /// <summary>A triple term in a one-variable VALUES block parses to a ground Core triple-term value.</summary>
+    [TestMethod]
+    public void ParsesTripleTermInValues()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * { VALUES ?x { <<( :s :p :o )>> } }", pool);
+
+        ValuesPattern values = (ValuesPattern)Members(query)[0];
+        CoreTripleTerm value = (CoreTripleTerm)values.Data.Rows[0][0]!;
+        Assert.AreEqual("http://e/s", ((NamedNode)value.Subject).Iri.ToString());
+        Assert.AreEqual("http://e/p", value.Predicate.Iri.ToString());
+        Assert.AreEqual("http://e/o", ((NamedNode)value.Object).Iri.ToString());
+    }
+
+    /// <summary>A VALUES triple term admits a nested triple term in its object position.</summary>
+    [TestMethod]
+    public void ParsesNestedTripleTermInValues()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * { VALUES ?x { <<( :x :q <<( :s :p :o )>> )>> } }", pool);
+
+        ValuesPattern values = (ValuesPattern)Members(query)[0];
+        CoreTripleTerm outer = (CoreTripleTerm)values.Data.Rows[0][0]!;
+        Assert.IsInstanceOfType<CoreTripleTerm>(outer.Object);
+    }
+
+    /// <summary>A VALUES triple term rejects a variable in its object position (the data form is variable-free).</summary>
+    [TestMethod]
+    public void TripleTermInValuesRejectsVariable()
+    {
+        using Utf8StringPool pool = new();
+
+        AssertParseError("PREFIX : <http://e/> SELECT * { VALUES ?x { <<( :s :p ?o )>> } }", pool, WellKnownDiagnostics.Sparql.InvalidTripleTermObject);
     }
 
     /// <summary>A FILTER member carries its constraint expression with comparison operands.</summary>

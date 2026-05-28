@@ -434,7 +434,7 @@ public sealed class SparqlParser
             ParseFrameKind.TripleTerm => StepTripleTerm(frame, incoming),
             ParseFrameKind.ReifiedTriple => StepReifiedTriple(frame, incoming),
             ParseFrameKind.AnnotationBlock => StepAnnotationBlock(frame, incoming),
-            ParseFrameKind.Values => StepValues(frame),
+            ParseFrameKind.Values => StepValues(frame, incoming),
             ParseFrameKind.ArgumentList => StepArgumentList(frame, incoming),
             ParseFrameKind.GroupBy => StepGroupBy(frame, incoming),
             ParseFrameKind.Having => StepHaving(frame, incoming),
@@ -4116,8 +4116,9 @@ public sealed class SparqlParser
     /// reading one variable or one value per step.
     /// </summary>
     /// <param name="frame">The values frame.</param>
+    /// <param name="incoming">A popped triple-term value on resume, or <see langword="null"/>.</param>
     /// <returns>The instruction for the driver; the popped result is the <see cref="ValuesClause"/>.</returns>
-    private StepResult StepValues(ParseFrame frame)
+    private StepResult StepValues(ParseFrame frame, object? incoming)
         => frame.Stage switch
         {
             0 => ValuesStart(frame),
@@ -4125,6 +4126,8 @@ public sealed class SparqlParser
             2 => ValuesFullRow(frame),
             3 => ValuesVariableList(frame),
             4 => ValuesRowValue(frame),
+            5 => ValuesOneVarTripleTermReceived(frame, incoming),
+            6 => ValuesRowTripleTermReceived(frame, incoming),
             _ => throw new SparqlParseException("VALUES reached an unknown stage.", frame.StartSpan)
         };
 
@@ -4229,6 +4232,15 @@ public sealed class SparqlParser
             return StepResult.Done(new ValuesClause(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.ValuesVariables!, frame.ValuesRows!));
         }
 
+        //A triple-term data value nests unboundedly, so it is parsed in a child frame (one bounded step
+        //each) rather than inline; the popped term is converted to a ground value at stage 5.
+        if(Current.Kind == SparqlTokenKind.OpenTripleTerm)
+        {
+            frame.Stage = 5;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.TripleTerm, StartSpan = Current.Span, TripleTermContext = TripleTermContext.Data });
+        }
+
         RdfTerm? value = ParseDataBlockValue();
         frame.ValuesRows!.Add([value]);
 
@@ -4308,6 +4320,15 @@ public sealed class SparqlParser
             return StepResult.Continue();
         }
 
+        //As in the one-variable form, a triple-term value is parsed in a child frame and converted at
+        //stage 6 rather than parsed inline.
+        if(Current.Kind == SparqlTokenKind.OpenTripleTerm)
+        {
+            frame.Stage = 6;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.TripleTerm, StartSpan = Current.Span, TripleTermContext = TripleTermContext.Data });
+        }
+
         frame.CurrentRow!.Add(ParseDataBlockValue());
 
         return StepResult.Continue();
@@ -4380,7 +4401,7 @@ public sealed class SparqlParser
         return null;
     }
 
-    /// <summary>Determines whether a token kind can begin a <c>DataBlockValue</c> (an IRI, a literal, or <c>UNDEF</c>).</summary>
+    /// <summary>Determines whether a token kind can begin a <c>DataBlockValue</c> (an IRI, a literal, <c>UNDEF</c>, or an RDF 1.2 triple term).</summary>
     /// <param name="kind">The token kind to test.</param>
     /// <returns><see langword="true"/> when the kind begins a data value.</returns>
     private static bool CanStartDataBlockValue(SparqlTokenKind kind)
@@ -4389,8 +4410,53 @@ public sealed class SparqlParser
             or SparqlTokenKind.Iri or SparqlTokenKind.PrefixedName
             or SparqlTokenKind.StringLiteral or SparqlTokenKind.LongStringLiteral
             or SparqlTokenKind.IntegerLiteral or SparqlTokenKind.DecimalLiteral or SparqlTokenKind.DoubleLiteral
-            or SparqlTokenKind.BooleanLiteral;
+            or SparqlTokenKind.BooleanLiteral
+            or SparqlTokenKind.OpenTripleTerm;
     }
+
+    /// <summary>Adopts a popped triple-term value for the one-variable VALUES form and resumes reading the next value.</summary>
+    /// <param name="frame">The values frame.</param>
+    /// <param name="incoming">The popped triple term (an <see cref="Ast.TripleTerm"/> or an error node).</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult ValuesOneVarTripleTermReceived(ParseFrame frame, object? incoming)
+    {
+        frame.ValuesRows!.Add([GroundTripleTermValue(Pop<TriplePatternTerm>(incoming))]);
+        frame.Stage = 1;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Adopts a popped triple-term value for the current full-form VALUES row and resumes reading the next cell.</summary>
+    /// <param name="frame">The values frame.</param>
+    /// <param name="incoming">The popped triple term (an <see cref="Ast.TripleTerm"/> or an error node).</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult ValuesRowTripleTermReceived(ParseFrame frame, object? incoming)
+    {
+        frame.CurrentRow!.Add(GroundTripleTermValue(Pop<TriplePatternTerm>(incoming)));
+        frame.Stage = 4;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>
+    /// Converts a parsed <c>TripleTermData</c> term into its ground <see cref="Core.TripleTerm"/> value.
+    /// The data form is variable-free, so every component is a constant or a nested triple term; a term
+    /// that is not ground (an error node from recovery) yields <see langword="null"/> — an unbound cell —
+    /// with its diagnostic already recorded.
+    /// </summary>
+    /// <param name="term">The parsed triple-term value.</param>
+    /// <returns>The ground triple-term value, or <see langword="null"/> when a component is not ground.</returns>
+    private static RdfTerm? GroundTripleTermValue(TriplePatternTerm term)
+        => term switch
+        {
+            ConstantTerm constant => constant.Term,
+            Ast.TripleTerm tripleTerm
+                when GroundTripleTermValue(tripleTerm.Inner.Subject) is { } subject
+                    && GroundTripleTermValue(tripleTerm.Inner.Predicate) is NamedNode predicate
+                    && GroundTripleTermValue(tripleTerm.Inner.Object) is { } objectValue
+                => new Core.TripleTerm(subject, predicate, objectValue),
+            _ => null
+        };
 
     /// <summary>Consumes the <c>UNDEF</c> keyword, returning a null value.</summary>
     /// <returns><see langword="null"/>.</returns>
