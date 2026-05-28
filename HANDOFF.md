@@ -185,7 +185,7 @@ design-heavy Milestone-B on-ramp — do it on a **fresh context**.
 **STATUS (cont.): item 4(b) — the `Algebra/` type hierarchy — is BUILT, committed (`6d4d36d`), and green.** The
 user authorized the conventions layout (2026-05-28) and added the §10.1 base members.
 
-**STATUS (cont.): the translator — AST → algebra (SPARQL 1.2 §18.2) — is BUILT, committed (`1eafdc5`), and green.**
+**STATUS (cont.): the translator — AST → algebra (SPARQL 1.2 §18.2) — is BUILT, committed (`1eafdc5`; property-path pattern translation `71e995f`), and green.**
 - New `Translation/SparqlTranslator.cs` (pure static function; expects a request already lowered by
   `SparqlNormalizer`). §18.2.2.6 group translation: members combined left-to-right from the join identity
   (`UnitTable` = the algebra `Z`); FILTERs collected and lifted to one `Filter` over the whole group (conjoined
@@ -197,22 +197,28 @@ user authorized the conventions layout (2026-05-28) and added the §10.1 base me
   every visible variable for `SELECT *` via a deterministic source-ordered, scope-aware collector that drives the
   algebra's `Children` surface) → `Distinct`/`Reduced` → `Slice`. ASK→bare pattern; CONSTRUCT/DESCRIBE→`OrderBy`+
   `Slice`, no projection. Error nodes contribute nothing (`ErrorGraphPattern`→`UnitTable`; `ErrorQueryForm`→bare
-  pattern). **Property-path predicates stay inside the `Bgp`** (Path lowering is a later slice). **Deferred (raise
-  `NotSupportedException`): aggregation (`GROUP BY`/`HAVING`) and sub-`SELECT`.**
-- 18 `SparqlTranslatorTests` pin the shapes (single BGP, filter lifting ×2, OPTIONAL→LeftJoin ±lifted condition,
+  pattern). **A complex property-path predicate becomes a `Path` operator** (`71e995f`, §18.2.2.4): `TranslateBlock`
+  splits a block into `Bgp` runs (plain predicates) and `Path` operators (each `PropertyPathTerm` triple), joined in
+  source order; the parser already collapses a single-link path to a `ConstantTerm`, so a `PropertyPathTerm` is always
+  a genuine path. The `Path` operator holds the path expression intact (seq/alt/inv as well as `*`/`+`/`?`/NPS) —
+  decomposing those forms (joins/unions/swaps + evaluation semantics) is the later path-form-lowering slice.
+  **Deferred (raise `NotSupportedException`): aggregation (`GROUP BY`/`HAVING`) and sub-`SELECT`.**
+- 20 `SparqlTranslatorTests` pin the shapes (single BGP, filter lifting ×2, OPTIONAL→LeftJoin ±lifted condition,
   UNION/MINUS/BIND/GRAPH, empty group→UnitTable, modifier nesting, SELECT-expr Extend, ASK bare, trailing VALUES
-  join, CONSTRUCT slice-no-project, sub-SELECT + GROUP BY refusal). Build clean (0 warnings); full suite at exactly
-  50 ShaclValidate failures, 0 new. **One known limitation:** a SELECT with an aggregate expression but no explicit
-  `GROUP BY`/`HAVING` (implicit grouping) is NOT yet detected — it currently lowers the aggregate as a plain
-  `Extend`; the aggregation slice owns the fix (along with aggregate-in-HAVING/ORDER BY detection).
+  join, CONSTRUCT slice-no-project, sub-SELECT + GROUP BY refusal, + 3 path: complex→Path, sequence carried whole,
+  mixed plain+path join in order). Build clean (0 warnings); full suite at exactly 50 ShaclValidate failures, 0 new.
+  **One known limitation:** a SELECT with an aggregate expression but no explicit `GROUP BY`/`HAVING` (implicit
+  grouping) is NOT yet detected — it currently lowers the aggregate as a plain `Extend`; the aggregation slice owns
+  the fix (along with aggregate-in-HAVING/ORDER BY detection).
 
-▶ **NEXT AFTER A CLEAR:** HEAD `1eafdc5`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
-unchanged baseline, 0 new). Milestone B's core is in place (normalizer `b70bdb1`, algebra hierarchy `6d4d36d`,
-translator `1eafdc5`). The remaining Milestone-B slices, each its own fresh-context unit (see "STILL OPEN" below):
-**(1) property-path translation** (§18.2.2.4 — extract path triples out of the `Bgp` into `Path`; lower
-`*`/`+`/`?`/negated-set), **(2) aggregation** (`Group`/`AggregateJoin` + §18.2.4.1 grouping/scope + implicit-
-grouping detection), **(3) sub-`SELECT`** (`ToMultiSet` + §18.2.1 scope), **(4) the `AlgebraWalker`** (§10.5
-`Traverse`/`Transform`). Relevant memory: [[project_sparql_reified_triple_no_assert]],
+▶ **NEXT AFTER A CLEAR:** HEAD `71e995f`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
+unchanged baseline, 0 new). Milestone B's pattern/modifier core is in place (normalizer `b70bdb1`, algebra
+hierarchy `6d4d36d`, group/modifier translator `1eafdc5`, property-path pattern translation `71e995f`). The
+remaining Milestone-B slices, each its own fresh-context unit (see "STILL OPEN" below): **(1) aggregation**
+(`Group`/`AggregateJoin` + §18.2.4.1 grouping/scope + implicit-grouping detection), **(2) sub-`SELECT`**
+(`ToMultiSet` + §18.2.1 scope), **(3) the `AlgebraWalker`** (§10.5 `Traverse`/`Transform`), and **(4) property-path
+form *lowering*** (decompose seq/alt/inv + define `*`/`+`/`?`/NPS evaluation — deferred from `71e995f`, likely an
+evaluation-time concern). Relevant memory: [[project_sparql_reified_triple_no_assert]],
 [[project_sparql_algebra_design]]. Build/test commands are in the ITEM-4 anchor's build block above.
 - New `Algebra/AlgebraOperator.cs` (abstract record base) + `Algebra/AlgebraOperators.cs` (operator records +
   `AlgebraScope` helpers). The base exposes **lazy/cached `Children`** (the uniform traversal surface the future
@@ -226,15 +232,16 @@ grouping detection), **(3) sub-`SELECT`** (`ToMultiSet` + §18.2.1 scope), **(4)
   Slice, ToList, ToMultiSet. 9 `SparqlAlgebraTests` pin Children/OutputVariables per shape, caching, and
   value-equality-after-traversal. Build clean; full suite at exactly 50 ShaclValidate failures, 0 new.
 
-**STILL OPEN (Milestone B remainder) — the group/modifier translator core landed in `1eafdc5`; what remains:**
-(1) **property-path *translation*** — §18.2.2.4 extracts path triples out of the `Bgp` into `Path`, and the
-`*`/`+`/`?`/negated-set lowering logic (the `Path` *type* exists; path-bearing triples currently ride inside the
-`Bgp` untouched). (2) the **aggregation operators** (`Group`/`AggregateJoin` — deferred because their shape needs
-the aggregate-expression + §18.2.4.1 grouping/scope design; also wire implicit-grouping + HAVING/ORDER-BY aggregate
-detection, currently a documented gap in `SparqlTranslator`). (3) **sub-`SELECT` translation** (`ToMultiSet` + the
-§18.2.1 in-scope-variable renaming the translator's `NotSupportedException` defers). (4) the **`AlgebraWalker`**
-(§10.5 `Traverse`/`Transform`, driving the base `Children` surface). Scope: full SPARQL 1.2 core, not a
-SHACL-minimal subset. If §5.1 prescribes a different layout/naming, the scaffold is cheap to adjust.
+**STILL OPEN (Milestone B remainder) — the group/modifier translator core landed in `1eafdc5` and property-path
+*pattern* translation in `71e995f`; what remains:** (1) the **aggregation operators** (`Group`/`AggregateJoin` —
+deferred because their shape needs the aggregate-expression + §18.2.4.1 grouping/scope design; also wire
+implicit-grouping + HAVING/ORDER-BY aggregate detection, currently a documented gap in `SparqlTranslator`). (2)
+**sub-`SELECT` translation** (`ToMultiSet` + the §18.2.1 in-scope-variable renaming the translator's
+`NotSupportedException` defers). (3) the **`AlgebraWalker`** (§10.5 `Traverse`/`Transform`, driving the base
+`Children` surface). (4) **property-path form *lowering*** — the `Path` operator now carries the structured path
+expression whole (`71e995f`); decomposing seq/alt/inverse into joins/unions/swaps and defining the
+`*`/`+`/`?`/negated-set evaluation semantics is still open (likely an evaluation-time concern). Scope: full SPARQL
+1.2 core, not a SHACL-minimal subset. If §5.1 prescribes a different layout/naming, the scaffold is cheap to adjust.
 
 **Build/test (MTP — `dotnet test` does NOT work; exact commands that worked all session):**
 - Build: `dotnet build src/Lumoin.Veritas.Sparql/Lumoin.Veritas.Sparql.csproj -clp:ErrorsOnly --nologo`,
