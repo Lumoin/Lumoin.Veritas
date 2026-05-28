@@ -182,12 +182,25 @@ design-heavy Milestone-B on-ramp — do it on a **fresh context**.
   (`SparqlParser.cs:773`) copies only `block.Triples` at parse time, dropping `StandaloneNodes` — a
   CONSTRUCT-template fidelity issue to resolve when CONSTRUCT execution is wired (Batch 2), not a normalizer bug.
 
-**STILL OPEN — item 4(b): the `Algebra/` + `Translation/` type hierarchy / namespace layout needs §5.1** (the
-user's internal impl spec). The official W3C SPARQL 1.2 §18 gives the algebra *operators* — BGP, Join, LeftJoin,
-Filter, Union, Graph, Extend, Minus, Group, Aggregation, AggregateJoin, Project, Distinct, Reduced, OrderBy,
-Slice, ToList, ToMultiSet, Service, and the path operators (Path, ZeroOrMore/OneOrMore/ZeroOrOnePath,
-NegatedPropertySet) — but not the C# folder/namespace layout. Paste §5.1 or authorize laying it out to existing
-conventions. Scope decision (user, 2026-05-28): build the **full SPARQL 1.2 core**, not a SHACL-minimal subset.
+**STATUS (cont.): item 4(b) — the `Algebra/` type hierarchy — is BUILT and green.** The user authorized the
+conventions layout (2026-05-28) and added the §10.1 base members.
+- New `Algebra/AlgebraOperator.cs` (abstract record base) + `Algebra/AlgebraOperators.cs` (operator records +
+  `AlgebraScope` helpers). The base exposes **lazy/cached `Children`** (the uniform traversal surface the future
+  `AlgebraWalker` §10.5 drives — no per-operator walking code) and **`OutputVariables`** (scope analysis +
+  optimizer). Per §10.1 both are declared on the base now. Caches are held **off-instance** in a static
+  `ConditionalWeakTable` so they don't break record value equality (a lazy cache in a record *field* participates
+  in value equality and would). Algebra carries **no spans**; reuses AST `ExpressionNode` / `OrderCondition` /
+  `ValuesClause` / `GraphTerm` / `PropertyPathExpression`. Base name `AlgebraOperator` (the handoff's name).
+- Operators: Bgp (normalized AST `TriplePattern`s), Join, LeftJoin, Union, Minus, Filter, Graph, Extend, Service,
+  Table (wraps `ValuesClause`), UnitTable (the `{}` join identity), Path, Project, Distinct, Reduced, OrderBy,
+  Slice, ToList, ToMultiSet. 9 `SparqlAlgebraTests` pin Children/OutputVariables per shape, caching, and
+  value-equality-after-traversal. Build clean; full suite at exactly 50 ShaclValidate failures, 0 new.
+
+**STILL OPEN — the next big slice is the translator (AST → algebra, SPARQL 1.2 §18.2)**, plus the aggregation
+operators (`Group`/`AggregateJoin` — deferred because their shape needs the aggregate-expression + §18 grouping/
+scope design), the `AlgebraWalker` (§10.5 `Traverse`/`Transform`), and property-path *translation* (the `Path`
+type exists; the `*`/`+`/`?`/negated-set lowering logic is later). Scope: full SPARQL 1.2 core, not a
+SHACL-minimal subset. If §5.1 prescribes a different layout/naming, the scaffold is cheap to adjust.
 
 **Build/test (MTP — `dotnet test` does NOT work; exact commands that worked all session):**
 - Build: `dotnet build src/Lumoin.Veritas.Sparql/Lumoin.Veritas.Sparql.csproj -clp:ErrorsOnly --nologo`,
