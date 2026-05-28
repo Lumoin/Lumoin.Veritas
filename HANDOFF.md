@@ -226,26 +226,31 @@ user authorized the conventions layout (2026-05-28) and added the §10.1 base me
   is implemented. 8 `SparqlAlgebraWalkerTests` (incl. value-equal-siblings-not-deduped + a 50k-deep
   no-overflow case); build clean (0 warnings); full suite at exactly 50 ShaclValidate failures, 0 new.
 
-⚠ **RECURSION DEBT — [[feedback_no_recursion]] applies everywhere, not just the walker.** Remaining call-stack
-recursion to convert to explicit work-lists: **(a) `SparqlTranslator`** (`1eafdc5`) — `TranslatePattern`↔
-`TranslateGroup`, `CollectVisible`, `CollectTermVariables`; **(b) `AlgebraScope.Collect`** (`6d4d36d`) — nested
-triple terms; **(c) `AlgebraOperator.OutputVariables`** — each `ComputeOutputVariables` reads its children's
-`.OutputVariables`, i.e. recursion through the property getters (overflows on a deep tree — the non-obvious one);
-**(d) `SparqlNormalizer`** (`b70bdb1`) — `NormalizePattern` + the `Lower*` family. These predate the rule being
-made explicit; clear them before/alongside the remaining slices.
+⚠ **RECURSION DEBT — [[feedback_no_recursion]] applies everywhere.** Mostly CLEARED: **(a) `SparqlTranslator`**
+(`65386e1`) — `TranslatePattern`/`TranslateGroup` → explicit post-order build with a reference-keyed results map
+(`SubPatterns`/`TranslateNode`/`CombineGroup`); `VisibleVariables` → work-stack of visit/emit steps;
+`CollectTermVariables` → term stack. **(b) `AlgebraScope.Collect`** + **(c) `AlgebraOperator.OutputVariables`**
+(`7d9c603`) — Collect → term stack; OutputVariables now warms the subtree bottom-up over an explicit post-order
+stack (off-instance cache + value equality unchanged). **(d) `SparqlNormalizer`** (`b683a90`) — `NormalizePattern`
+→ explicit post-order rebuild. **STILL RECURSIVE (the one remaining):** the normalizer's **term-lowering** mutual
+recursion — `LowerTerm` ↔ `LowerCollection`/`LowerBlankNodePropertyList`/`LowerReifiedTriple`/`LowerTripleTerm` ↔
+`EmitObject` ↔ `LowerProperties`/`LowerAnnotations`. Bounded by RDF-1.2 sugar-nesting depth (collections /
+blank-node property lists / reified triples), it is an intricate two-entry mutual recursion with sink
+side-effects + fresh-blank-node allocation; left for its own careful pass (don't rush it).
 
-▶ **NEXT AFTER A CLEAR:** HEAD `86d8245`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
+▶ **NEXT AFTER A CLEAR:** HEAD `b683a90`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
 unchanged baseline, 0 new). Milestone B's pattern/modifier core + traversal layer are in place (normalizer
 `b70bdb1`, algebra hierarchy `6d4d36d`, group/modifier translator `1eafdc5`, property-path pattern translation
-`71e995f`, iterative AlgebraWalker `86d8245`). **Immediate priority: clear the RECURSION DEBT above**
-([[feedback_no_recursion]]) — convert `SparqlTranslator`/`AlgebraScope.Collect`/`OutputVariables`/`SparqlNormalizer`
-to explicit work-lists. Then the remaining Milestone-B slices, each its own fresh-context unit (see "STILL OPEN"
-below): **(1) aggregation** (`Group`/`AggregateJoin` + §18.2.4.1 grouping/scope + implicit-grouping detection — the
-design-heavy one; re-paste the impl spec), **(2) sub-`SELECT`** (`ToMultiSet` + §18.2.1 scope), and **(3)
-property-path form *lowering*** (decompose seq/alt/inv + define `*`/`+`/`?`/NPS evaluation — deferred from
-`71e995f`, likely an evaluation-time concern; the `AlgebraWalker.Transform` now exists to drive it). Relevant
-memory: [[feedback_no_recursion]], [[project_sparql_reified_triple_no_assert]], [[project_sparql_algebra_design]].
-Build/test commands are in
+`71e995f`, iterative AlgebraWalker `86d8245`); the recursion sweep cleared the translator (`65386e1`), algebra
+layer (`7d9c603`), and the normalizer pattern walk (`b683a90`). **Two immediate items:** (i) finish the recursion
+sweep — the normalizer **term-lowering** mutual recursion above ([[feedback_no_recursion]]); (ii) the remaining
+Milestone-B slices, each its own fresh-context unit (see "STILL OPEN" below): **(1) aggregation**
+(`Group`/`AggregateJoin` + §18.2.4.1 grouping/scope + implicit-grouping detection — the design-heavy one; re-paste
+the impl spec), **(2) sub-`SELECT`** (`ToMultiSet` + §18.2.1 scope), and **(3) property-path form *lowering***
+(decompose seq/alt/inv + define `*`/`+`/`?`/NPS evaluation — deferred from `71e995f`, likely an evaluation-time
+concern; `AlgebraWalker.Transform` now exists to drive it). A 20k-deep nested-group test now guards the iterative
+parse→normalize→translate path. Relevant memory: [[feedback_no_recursion]],
+[[project_sparql_reified_triple_no_assert]], [[project_sparql_algebra_design]]. Build/test commands are in
 the ITEM-4 anchor's build block above.
 - New `Algebra/AlgebraOperator.cs` (abstract record base) + `Algebra/AlgebraOperators.cs` (operator records +
   `AlgebraScope` helpers). The base exposes **lazy/cached `Children`** (the uniform traversal surface the future
