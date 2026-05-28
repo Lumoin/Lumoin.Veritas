@@ -157,7 +157,7 @@ the 50-test SHACL baseline = 0 new failures. Everything parses **value-based** (
 the SPARQL AST has **uniform spans**; the diagnostic catalogue is audited (now through `SP0045`). Item 4 is the
 design-heavy Milestone-B on-ramp — do it on a **fresh context**.
 
-**STATUS (2026-05-28 session): item 4(a) — the normalization pass — is IMPLEMENTED and green (uncommitted).**
+**STATUS (2026-05-28 session): item 4(a) — the normalization pass — is IMPLEMENTED, committed (`b70bdb1`), and green.**
 - New `Translation/SparqlNormalizer.cs` + `Translation/SparqlNormalizerOptions.cs`. Walks the query tree
   (groups / optional / minus / union / graph / service / sub-select + the CONSTRUCT template), lowering
   `CollectionTerm`, `BlankNodePropertyListTerm`, `ReifiedTriple`, `AnnotatedObject`, and a block's
@@ -182,8 +182,15 @@ design-heavy Milestone-B on-ramp — do it on a **fresh context**.
   (`SparqlParser.cs:773`) copies only `block.Triples` at parse time, dropping `StandaloneNodes` — a
   CONSTRUCT-template fidelity issue to resolve when CONSTRUCT execution is wired (Batch 2), not a normalizer bug.
 
-**STATUS (cont.): item 4(b) — the `Algebra/` type hierarchy — is BUILT and green.** The user authorized the
-conventions layout (2026-05-28) and added the §10.1 base members.
+**STATUS (cont.): item 4(b) — the `Algebra/` type hierarchy — is BUILT, committed (`6d4d36d`), and green.** The
+user authorized the conventions layout (2026-05-28) and added the §10.1 base members.
+
+▶ **NEXT AFTER A CLEAR:** HEAD `6d4d36d`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
+unchanged baseline, 0 new). The next slice is the **translator (AST → algebra, SPARQL 1.2 §18.2)** — see the
+"STILL OPEN" paragraph at the end of this block for scope. Re-paste the impl spec's §5.1 (layout) and §18.2
+(translation algorithm) if available; otherwise build to conventions against the §18.2 algorithm. New memory this
+session: [[project_sparql_reified_triple_no_assert]], [[project_sparql_algebra_design]]. Build/test commands are
+in the ITEM-4 anchor's build block above.
 - New `Algebra/AlgebraOperator.cs` (abstract record base) + `Algebra/AlgebraOperators.cs` (operator records +
   `AlgebraScope` helpers). The base exposes **lazy/cached `Children`** (the uniform traversal surface the future
   `AlgebraWalker` §10.5 drives — no per-operator walking code) and **`OutputVariables`** (scope analysis +
