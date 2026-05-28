@@ -136,6 +136,23 @@ internal sealed class SparqlAlgebraTests
         Assert.AreEqual(traversed, fresh);
     }
 
+    /// <summary>OutputVariables on a tree far deeper than the call stack tolerates is computed bottom-up without overflowing.</summary>
+    [TestMethod]
+    public void OutputVariablesOnDeepTreeDoesNotOverflow()
+    {
+        //Every level binds the same two variables, so each node's union stays O(1) and the test is fast; the
+        //point is depth, which a recursive ComputeOutputVariables (reading children's OutputVariables) would
+        //overflow on.
+        const int depth = 50_000;
+        AlgebraOperator tree = new Bgp([Triple(Var("s"), Iri("p"), Var("o"))]);
+        for(int i = 0; i < depth; i++)
+        {
+            tree = new Join(tree, new Bgp([Triple(Var("s"), Iri("p"), Var("o"))]));
+        }
+
+        AssertVariables(tree.OutputVariables, "s", "o");
+    }
+
     private static VariableTerm Var(string name)
     {
         return new VariableTerm(default, new SparqlVariable(Utf8String.FromString(name)));

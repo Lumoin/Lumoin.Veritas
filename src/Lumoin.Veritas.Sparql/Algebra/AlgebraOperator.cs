@@ -36,10 +36,57 @@ public abstract record AlgebraOperator
     private static ConditionalWeakTable<AlgebraOperator, ComputedMembers> Computed { get; } = new();
 
     /// <summary>Gets the operator's direct child operators, in evaluation order — computed once and cached. Leaf operators have none.</summary>
-    public IReadOnlyList<AlgebraOperator> Children => Computed.GetValue(this, static self => new ComputedMembers(self)).Children;
+    public IReadOnlyList<AlgebraOperator> Children => Computed.GetValue(this, CreateComputedMembers).Children;
 
     /// <summary>Gets the variables the operator's solution multiset may bind — computed once and cached. Consumed by scope analysis and the optimizer.</summary>
-    public IReadOnlySet<SparqlVariable> OutputVariables => Computed.GetValue(this, static self => new ComputedMembers(self)).OutputVariables;
+    /// <remarks>
+    /// An operator's output variables are a function of its children's, so the value is warmed
+    /// <em>bottom-up over an explicit post-order stack</em> rather than by letting one operator's
+    /// <see cref="ComputeOutputVariables"/> read its children's <see cref="OutputVariables"/> and recurse down
+    /// the tree: a deep plan would otherwise overflow the call stack. After warming, each
+    /// <see cref="ComputeOutputVariables"/> reads only already-cached child values.
+    /// </remarks>
+    public IReadOnlySet<SparqlVariable> OutputVariables
+    {
+        get
+        {
+            ComputedMembers members = Computed.GetValue(this, CreateComputedMembers);
+            if(members.HasOutputVariables)
+            {
+                return members.OutputVariables;
+            }
+
+            //Post-order over Children (itself non-recursive), warming each node's output variables before any
+            //ancestor's, so the per-operator combine reads cached children rather than recursing through them.
+            Stack<(AlgebraOperator Node, bool Emit)> stack = new();
+            stack.Push((this, Emit: false));
+
+            while(stack.Count > 0)
+            {
+                (AlgebraOperator node, bool emit) = stack.Pop();
+                if(emit)
+                {
+                    Computed.GetValue(node, CreateComputedMembers).EnsureOutputVariables();
+
+                    continue;
+                }
+
+                stack.Push((node, Emit: true));
+                IReadOnlyList<AlgebraOperator> children = node.Children;
+                for(int i = children.Count - 1; i >= 0; i--)
+                {
+                    stack.Push((children[i], Emit: false));
+                }
+            }
+
+            return members.OutputVariables;
+        }
+    }
+
+    /// <summary>Creates the off-instance cache entry for an operator (the <see cref="ConditionalWeakTable{TKey,TValue}"/> factory).</summary>
+    /// <param name="self">The operator the cache entry belongs to.</param>
+    /// <returns>A fresh cache entry.</returns>
+    private static ComputedMembers CreateComputedMembers(AlgebraOperator self) => new(self);
 
     /// <summary>Computes the direct child operators backing <see cref="Children"/>.</summary>
     /// <returns>The direct children, in evaluation order; empty for a leaf operator.</returns>
@@ -81,7 +128,13 @@ public abstract record AlgebraOperator
         /// <summary>Gets the cached child operators, computing them on first access.</summary>
         public IReadOnlyList<AlgebraOperator> Children => children ??= owner.ComputeChildren();
 
-        /// <summary>Gets the cached output variables, computing them on first access.</summary>
+        /// <summary>Gets whether the output variables have already been computed and cached.</summary>
+        public bool HasOutputVariables => outputVariables is not null;
+
+        /// <summary>Gets the cached output variables (warmed bottom-up by <see cref="AlgebraOperator.OutputVariables"/> before access).</summary>
         public IReadOnlySet<SparqlVariable> OutputVariables => outputVariables ??= owner.ComputeOutputVariables();
+
+        /// <summary>Computes and caches the output variables if not already cached; called in post-order so the owner's children are already cached.</summary>
+        public void EnsureOutputVariables() => outputVariables ??= owner.ComputeOutputVariables();
     }
 }

@@ -80,34 +80,42 @@ internal static class AlgebraScope
         return set;
     }
 
-    /// <summary>Adds the variables a single term contributes, recursing into a nested triple term.</summary>
+    /// <summary>Adds the variables a single term contributes, descending into a nested triple term via an explicit stack (no recursion).</summary>
     /// <param name="term">The term to scan.</param>
     /// <param name="into">The set to add variables to.</param>
     private static void Collect(TriplePatternTerm term, HashSet<SparqlVariable> into)
     {
-        switch(term)
+        Stack<TriplePatternTerm> pending = new();
+        pending.Push(term);
+
+        while(pending.Count > 0)
         {
-            case VariableTerm variable:
+            TriplePatternTerm current = pending.Pop();
+            switch(current)
             {
-                into.Add(variable.Variable);
+                case VariableTerm variable:
+                {
+                    into.Add(variable.Variable);
 
-                break;
-            }
+                    break;
+                }
 
-            case TripleTerm tripleTerm:
-            {
-                Collect(tripleTerm.Inner.Subject, into);
-                Collect(tripleTerm.Inner.Predicate, into);
-                Collect(tripleTerm.Inner.Object, into);
+                case TripleTerm tripleTerm:
+                {
+                    //The result is a set, so the order the inner positions are pushed does not matter.
+                    pending.Push(tripleTerm.Inner.Subject);
+                    pending.Push(tripleTerm.Inner.Predicate);
+                    pending.Push(tripleTerm.Inner.Object);
 
-                break;
-            }
+                    break;
+                }
 
-            default:
-            {
-                //A ConstantTerm, a PropertyPathTerm (paths range over IRIs), and an ErrorTriplePatternTerm
-                //bind no variables.
-                break;
+                default:
+                {
+                    //A ConstantTerm, a PropertyPathTerm (paths range over IRIs), and an ErrorTriplePatternTerm
+                    //bind no variables.
+                    break;
+                }
             }
         }
     }
