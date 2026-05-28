@@ -123,6 +123,9 @@ public sealed record Bgp(IReadOnlyList<TriplePattern> Patterns) : AlgebraOperato
 
     /// <inheritdoc/>
     protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables() => AlgebraScope.VariablesOf(Patterns);
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => this;
 }
 
 /// <summary>The join of two patterns: solutions compatible across both.</summary>
@@ -136,6 +139,9 @@ public sealed record Join(AlgebraOperator Left, AlgebraOperator Right) : Algebra
 
     /// <inheritdoc/>
     protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables() => AlgebraScope.Union(Left.OutputVariables, Right.OutputVariables);
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => new Join(children[0], children[1]);
 }
 
 /// <summary>An <c>OPTIONAL</c> join: left solutions extended by compatible right solutions, with an optional filter condition.</summary>
@@ -150,6 +156,9 @@ public sealed record LeftJoin(AlgebraOperator Left, AlgebraOperator Right, Expre
 
     /// <inheritdoc/>
     protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables() => AlgebraScope.Union(Left.OutputVariables, Right.OutputVariables);
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => new LeftJoin(children[0], children[1], Condition);
 }
 
 /// <summary>The union of two patterns: all solutions of either operand.</summary>
@@ -163,6 +172,9 @@ public sealed record Union(AlgebraOperator Left, AlgebraOperator Right) : Algebr
 
     /// <inheritdoc/>
     protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables() => AlgebraScope.Union(Left.OutputVariables, Right.OutputVariables);
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => new Union(children[0], children[1]);
 }
 
 /// <summary>A <c>MINUS</c>: left solutions that have no compatible solution on the right. Only the left's variables are in scope.</summary>
@@ -176,6 +188,9 @@ public sealed record Minus(AlgebraOperator Left, AlgebraOperator Right) : Algebr
 
     /// <inheritdoc/>
     protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables() => Left.OutputVariables;
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => new Minus(children[0], children[1]);
 }
 
 /// <summary>A <c>FILTER</c>: the input solutions for which the condition evaluates to true.</summary>
@@ -189,6 +204,9 @@ public sealed record Filter(ExpressionNode Condition, AlgebraOperator Input) : A
 
     /// <inheritdoc/>
     protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables() => Input.OutputVariables;
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => new Filter(Condition, children[0]);
 }
 
 /// <summary>A <c>GRAPH</c> redirection: the input evaluated against the designated named graph. A variable designator is bound by the operator.</summary>
@@ -207,6 +225,9 @@ public sealed record Graph(GraphTerm Designator, AlgebraOperator Input) : Algebr
             ? AlgebraScope.With(Input.OutputVariables, graphVariable.Variable)
             : Input.OutputVariables;
     }
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => new Graph(Designator, children[0]);
 }
 
 /// <summary>An <c>Extend</c>: a <c>BIND</c> that adds a variable bound to an expression's value over each input solution.</summary>
@@ -221,6 +242,9 @@ public sealed record Extend(AlgebraOperator Input, SparqlVariable Variable, Expr
 
     /// <inheritdoc/>
     protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables() => AlgebraScope.With(Input.OutputVariables, Variable);
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => new Extend(children[0], Variable, Expression);
 }
 
 /// <summary>A <c>SERVICE</c>: the input delegated to a federated endpoint. This build models it structurally; execution is a later milestone.</summary>
@@ -235,6 +259,9 @@ public sealed record Service(GraphTerm Endpoint, AlgebraOperator Input, bool Sil
 
     /// <inheritdoc/>
     protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables() => Input.OutputVariables;
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => new Service(Endpoint, children[0], Silent);
 }
 
 /// <summary>Inline data: a multiset of solutions over fixed variables, from a <c>VALUES</c> block.</summary>
@@ -247,6 +274,9 @@ public sealed record Table(ValuesClause Data) : AlgebraOperator
 
     /// <inheritdoc/>
     protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables() => new HashSet<SparqlVariable>(Data.Variables);
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => this;
 }
 
 /// <summary>The unit table: a single empty solution — the identity of join, the algebra of an empty group <c>{}</c>.</summary>
@@ -258,6 +288,9 @@ public sealed record UnitTable : AlgebraOperator
 
     /// <inheritdoc/>
     protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables() => AlgebraScope.NoVariables;
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => this;
 }
 
 /// <summary>A property-path match between two endpoints.</summary>
@@ -272,6 +305,9 @@ public sealed record Path(TriplePatternTerm Subject, PropertyPathExpression Path
 
     /// <inheritdoc/>
     protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables() => AlgebraScope.VariablesOf(Subject, Object);
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => this;
 }
 
 /// <summary>A projection: restrict each solution to the named variables.</summary>
@@ -285,6 +321,9 @@ public sealed record Project(AlgebraOperator Input, IReadOnlyList<SparqlVariable
 
     /// <inheritdoc/>
     protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables() => new HashSet<SparqlVariable>(Variables);
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => new Project(children[0], Variables);
 }
 
 /// <summary>A <c>DISTINCT</c>: eliminate duplicate solutions.</summary>
@@ -297,6 +336,9 @@ public sealed record Distinct(AlgebraOperator Input) : AlgebraOperator
 
     /// <inheritdoc/>
     protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables() => Input.OutputVariables;
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => new Distinct(children[0]);
 }
 
 /// <summary>A <c>REDUCED</c>: permit, but do not require, duplicate elimination.</summary>
@@ -309,6 +351,9 @@ public sealed record Reduced(AlgebraOperator Input) : AlgebraOperator
 
     /// <inheritdoc/>
     protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables() => Input.OutputVariables;
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => new Reduced(children[0]);
 }
 
 /// <summary>An <c>ORDER BY</c>: order the input solutions by the conditions, in priority order.</summary>
@@ -322,6 +367,9 @@ public sealed record OrderBy(AlgebraOperator Input, IReadOnlyList<OrderCondition
 
     /// <inheritdoc/>
     protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables() => Input.OutputVariables;
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => new OrderBy(children[0], Conditions);
 }
 
 /// <summary>A slice: the <c>OFFSET</c>/<c>LIMIT</c> window over the input solutions.</summary>
@@ -336,6 +384,9 @@ public sealed record Slice(AlgebraOperator Input, int Offset, int? Limit) : Alge
 
     /// <inheritdoc/>
     protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables() => Input.OutputVariables;
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => new Slice(children[0], Offset, Limit);
 }
 
 /// <summary>A sequence: materialize the input as an ordered list (the operand of <c>OrderBy</c> in the algebra).</summary>
@@ -348,6 +399,9 @@ public sealed record ToList(AlgebraOperator Input) : AlgebraOperator
 
     /// <inheritdoc/>
     protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables() => Input.OutputVariables;
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => new ToList(children[0]);
 }
 
 /// <summary>A conversion to a multiset of solutions (e.g. the result of a sub-select joined into an enclosing pattern).</summary>
@@ -360,4 +414,7 @@ public sealed record ToMultiSet(AlgebraOperator Input) : AlgebraOperator
 
     /// <inheritdoc/>
     protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables() => Input.OutputVariables;
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => new ToMultiSet(children[0]);
 }

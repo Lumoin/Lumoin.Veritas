@@ -49,6 +49,21 @@ public abstract record AlgebraOperator
     /// <returns>The set of variables the operator may bind.</returns>
     protected abstract IReadOnlySet<SparqlVariable> ComputeOutputVariables();
 
+    /// <summary>
+    /// Reconstructs this operator with the given replacement children, preserving its non-child data (the
+    /// structural dual of <see cref="ComputeChildren"/> that lets <see cref="AlgebraWalker.Transform"/>
+    /// rewrite a subtree without a per-operator switch).
+    /// </summary>
+    /// <param name="children">The replacement children, in the same count and order as <see cref="Children"/>. A leaf operator ignores them and returns itself.</param>
+    /// <returns>The reconstructed operator, or this instance when the operator is a leaf.</returns>
+    /// <remarks>
+    /// Internal because the SPARQL algebra is a closed operator set: keeping this member non-public seals the
+    /// hierarchy to this assembly (an external type cannot satisfy the abstract), so every operator the walker
+    /// rebuilds is one defined here. Declared abstract so adding an operator is a compile error until it is
+    /// implemented — there is no silent default to mishandle a new shape.
+    /// </remarks>
+    internal abstract AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children);
+
     /// <summary>The per-instance lazy cache of the two computed members, held off the record so it never enters value equality.</summary>
     private sealed class ComputedMembers
     {
