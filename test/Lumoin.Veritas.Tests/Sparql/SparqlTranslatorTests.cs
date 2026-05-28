@@ -8,6 +8,7 @@ using Lumoin.Veritas.Sparql.Lexer;
 using Lumoin.Veritas.Sparql.Parser;
 using Lumoin.Veritas.Sparql.Translation;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using AlgebraPath = Lumoin.Veritas.Sparql.Algebra.Path;
 
 namespace Lumoin.Veritas.Tests.Sparql;
 
@@ -154,6 +155,49 @@ internal sealed class SparqlTranslatorTests
         Cast<GraphVariableTerm>(graph.Designator);
         Cast<Bgp>(graph.Input);
         AssertVariablesInOrder(project.Variables, "s", "o", "g");
+    }
+
+    /// <summary>A triple with a complex property-path predicate becomes a Path operator, not a BGP triple.</summary>
+    [TestMethod]
+    public void ComplexPathBecomesPathOperator()
+    {
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?s :p+ ?o }", pool);
+
+        Project project = Cast<Project>(algebra);
+        AlgebraPath path = Cast<AlgebraPath>(project.Input);
+
+        Cast<PathOneOrMore>(path.PathExpression);
+        AssertVariablesInOrder(project.Variables, "s", "o");
+    }
+
+    /// <summary>A sequence path is carried whole into the Path operator; its decomposition is a later slice.</summary>
+    [TestMethod]
+    public void SequencePathIsCarriedWholeIntoPath()
+    {
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?s :p/:q ?o }", pool);
+
+        Project project = Cast<Project>(algebra);
+        AlgebraPath path = Cast<AlgebraPath>(project.Input);
+
+        Cast<PathSequence>(path.PathExpression);
+    }
+
+    /// <summary>Plain triples and a path triple in one block join as BGP runs and a Path, in source order.</summary>
+    [TestMethod]
+    public void MixedPlainAndPathTriplesJoinInOrder()
+    {
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?s :p ?o . ?s :q+ ?x }", pool);
+
+        Project project = Cast<Project>(algebra);
+        Join join = Cast<Join>(project.Input);
+
+        //The leading plain triple forms the BGP; the path triple is the Path, joined after it.
+        Cast<Bgp>(join.Left);
+        Cast<AlgebraPath>(join.Right);
+        AssertVariablesInOrder(project.Variables, "s", "o", "x");
     }
 
     /// <summary>An empty group <c>{}</c> translates to the unit table (the join identity).</summary>

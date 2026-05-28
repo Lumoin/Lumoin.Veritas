@@ -24,15 +24,15 @@ namespace Lumoin.Veritas.Sparql.Translation;
 /// pure function of the AST and carries no state, so the type is static.
 /// </para>
 /// <para>
-/// Three constructs are deferred to their own slices and are not produced here: aggregation
-/// (<c>GROUP BY</c>/<c>HAVING</c> and aggregate expressions, which require the <c>Group</c>/
-/// <c>AggregateJoin</c> operators) and sub-<c>SELECT</c> translation both raise
-/// <see cref="NotSupportedException"/>; and property-path <em>lowering</em> to <see cref="Path"/> operators
-/// is left for later, so a triple whose predicate is a <see cref="PropertyPathTerm"/> is carried inside its
-/// <see cref="Bgp"/> verbatim (the property-path-translation slice extracts it per §18.2.2.4). An error node
-/// in the recovered AST contributes nothing — a graph-pattern error becomes <see cref="UnitTable"/> and an
-/// errored query-form head translates to the bare pattern algebra. SPARQL 1.2 §18.2 [Translation to the
-/// SPARQL Algebra].
+/// A triple whose predicate is a complex property path becomes a <see cref="Path"/> operator carrying the
+/// structured <see cref="PropertyPathExpression"/> whole (§18.2.2.4); the <em>decomposition</em> of the
+/// individual path forms — sequence/alternative/inverse into joins/unions/swaps, and the
+/// <c>*</c>/<c>+</c>/<c>?</c>/negated-set evaluation semantics — is a later lowering slice. Two constructs are
+/// deferred and raise <see cref="NotSupportedException"/>: aggregation (<c>GROUP BY</c>/<c>HAVING</c> and
+/// aggregate expressions, which require the <c>Group</c>/<c>AggregateJoin</c> operators) and sub-<c>SELECT</c>
+/// translation. An error node in the recovered AST contributes nothing — a graph-pattern error becomes
+/// <see cref="UnitTable"/> and an errored query-form head translates to the bare pattern algebra. SPARQL 1.2
+/// §18.2 [Translation to the SPARQL Algebra].
 /// </para>
 /// </remarks>
 public static class SparqlTranslator
@@ -175,14 +175,46 @@ public static class SparqlTranslator
         return accumulated;
     }
 
-    /// <summary>Translates a basic graph pattern block to a <see cref="Bgp"/> (or <see cref="UnitTable"/> when empty).</summary>
+    /// <summary>
+    /// Translates a basic graph pattern block (§18.2.2.4 / §18.2.2.5): triples with a plain predicate
+    /// accumulate into <see cref="Bgp"/> runs, while each triple whose predicate is a property path becomes a
+    /// <see cref="Path"/> operator, and the runs and paths join in source order.
+    /// </summary>
     /// <param name="block">The normalized block; its triples are over core terms and its standalone nodes are empty.</param>
-    /// <returns>A <see cref="Bgp"/> over the block's triples, or <see cref="UnitTable"/> (the join identity) for an empty run.</returns>
+    /// <returns>The block's algebra: a single <see cref="Bgp"/> in the common all-plain case, a join of BGP runs and paths when paths are present, or <see cref="UnitTable"/> (the join identity) for an empty block.</returns>
     private static AlgebraOperator TranslateBlock(BasicGraphPatternBlock block)
     {
-        return block.Triples.Count == 0
-            ? new UnitTable()
-            : new Bgp(block.Triples);
+        AlgebraOperator result = new UnitTable();
+        List<TriplePattern>? bgpRun = null;
+
+        foreach(TriplePattern triple in block.Triples)
+        {
+            //The parser collapses a single-link path to a ConstantTerm predicate, so a PropertyPathTerm is
+            //always a genuine complex path that earns its own Path operator (the path-form decomposition /
+            //evaluation is a later lowering slice). A plain IRI or variable predicate stays a BGP triple.
+            if(triple.Predicate is PropertyPathTerm pathTerm)
+            {
+                if(bgpRun is not null)
+                {
+                    result = Join(result, new Bgp(bgpRun));
+                    bgpRun = null;
+                }
+
+                result = Join(result, new Path(triple.Subject, pathTerm.Path, triple.Object));
+            }
+            else
+            {
+                bgpRun ??= [];
+                bgpRun.Add(triple);
+            }
+        }
+
+        if(bgpRun is not null)
+        {
+            result = Join(result, new Bgp(bgpRun));
+        }
+
+        return result;
     }
 
     /// <summary>
