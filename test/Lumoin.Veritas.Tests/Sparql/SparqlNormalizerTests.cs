@@ -207,6 +207,21 @@ internal sealed class SparqlNormalizerTests
         Assert.AreEqual(1, CountByPredicate(right, $"{Ex}b"));
     }
 
+    /// <summary>Deeply nested collections lower iteratively — far past the depth a recursive term-lowering would overflow.</summary>
+    [TestMethod]
+    public void DeeplyNestedCollectionsLowerWithoutOverflow()
+    {
+        using Utf8StringPool pool = new();
+        const int depth = 10_000;
+        string query = "PREFIX : <http://example.org/> SELECT * WHERE { ?s :p " + new string('(', depth) + " :a " + new string(')', depth) + " }";
+
+        IReadOnlyList<TriplePattern> triples = NormalizedBlockTriples(query, pool);
+
+        //Each of the `depth` nested one-item collections lowers to an rdf:first + rdf:rest pair, plus the one
+        //?s :p head triple.
+        Assert.HasCount((depth * 2) + 1, triples);
+    }
+
     /// <summary>Parses a query, runs the normalizer, and returns the triples of the single basic block in the WHERE group.</summary>
     /// <param name="text">The SPARQL query text.</param>
     /// <param name="pool">The pool keeping parsed and lowered handles alive.</param>

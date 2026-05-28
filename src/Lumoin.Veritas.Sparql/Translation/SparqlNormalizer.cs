@@ -94,10 +94,7 @@ public sealed class SparqlNormalizer
     private List<TriplePattern> NormalizeTemplate(IReadOnlyList<TriplePattern> template)
     {
         List<TriplePattern> result = [];
-        foreach(TriplePattern triple in template)
-        {
-            LowerTriple(triple, result);
-        }
+        LowerTriples(template, [], result);
 
         return result;
     }
@@ -271,191 +268,83 @@ public sealed class SparqlNormalizer
     private BasicGraphPatternBlock NormalizeBlock(BasicGraphPatternBlock block)
     {
         List<TriplePattern> result = [];
-        foreach(TriplePattern triple in block.Triples)
-        {
-            LowerTriple(triple, result);
-        }
-
-        //A standalone reified triple has no enclosing predicate; lowering it asserts only its reification
-        //(and, under the opt-in flag, its base triple). The reifier it yields is discarded.
-        foreach(TriplePatternTerm standalone in block.StandaloneNodes)
-        {
-            _ = LowerTerm(standalone, result);
-        }
+        LowerTriples(block.Triples, block.StandaloneNodes, result);
 
         return new BasicGraphPatternBlock(block.Span, result, []);
     }
 
-    /// <summary>Lowers one source triple — its subject, predicate, and object (including any object annotations) — into <paramref name="sink"/>.</summary>
-    /// <param name="triple">The source triple pattern.</param>
+    /// <summary>
+    /// Lowers a run of source triples (and a block's standalone reified-triple assertions) into
+    /// <paramref name="sink"/> over an explicit work-list (no recursion): each triple's object is queued as a
+    /// task, and a collection / blank-node property list / annotation block expands by queueing further tasks
+    /// rather than recursing, so arbitrarily deep RDF 1.2 sugar cannot overflow the stack.
+    /// </summary>
+    /// <param name="triples">The source triples, each <c>subject predicate object</c> (the object possibly sugar or annotated).</param>
+    /// <param name="standaloneNodes">The block's standalone reified triples (subject-only assertions); empty for a CONSTRUCT template.</param>
     /// <param name="sink">The list lowered triples are appended to.</param>
-    private void LowerTriple(TriplePattern triple, List<TriplePattern> sink)
+    private void LowerTriples(IReadOnlyList<TriplePattern> triples, IReadOnlyList<TriplePatternTerm> standaloneNodes, List<TriplePattern> sink)
     {
-        TriplePatternTerm subject = LowerTerm(triple.Subject, sink);
-        EmitObject(subject, triple.Predicate, triple.Object, triple.Span, sink);
+        Queue<EmitObjectTask> work = new();
+
+        foreach(TriplePattern triple in triples)
+        {
+            //The subject is resolved to a core term (its own sugar emitted / queued); the object is then queued.
+            TriplePatternTerm subject = ResolveCore(triple.Subject, sink, work);
+            work.Enqueue(new EmitObjectTask(subject, triple.Predicate, triple.Object, triple.Span));
+        }
+
+        //A standalone reified triple has no enclosing predicate; resolving it asserts only its reification
+        //(and, under the opt-in flag, its base triple). The reifier it yields is discarded.
+        foreach(TriplePatternTerm standalone in standaloneNodes)
+        {
+            _ = ResolveCore(standalone, sink, work);
+        }
+
+        while(work.Count > 0)
+        {
+            EmitObject(work.Dequeue(), sink, work);
+        }
     }
 
     /// <summary>
-    /// Emits a single <c>subject predicate object</c> triple, lowering the object term and — when the
-    /// object carries RDF 1.2 annotations — the reification triples those annotations describe.
+    /// Emits one <c>subject predicate object</c> triple, resolving the object to a core term and — when the
+    /// object carries RDF 1.2 annotations — the reification triples those annotations describe. Sugar in the
+    /// object expands by queueing further tasks onto <paramref name="work"/>, never by recursing.
     /// </summary>
-    /// <param name="subject">The already-lowered subject term.</param>
-    /// <param name="predicate">The predicate term (an IRI, variable, or property path), passed through unchanged.</param>
-    /// <param name="objectTerm">The object term, possibly an <see cref="AnnotatedObject"/> or sugar.</param>
-    /// <param name="span">The source span attributed to the emitted base triple.</param>
+    /// <param name="task">The pending emission: subject, predicate, object (possibly an <see cref="AnnotatedObject"/> or sugar), and span.</param>
     /// <param name="sink">The list lowered triples are appended to.</param>
-    private void EmitObject(TriplePatternTerm subject, TriplePatternTerm predicate, TriplePatternTerm objectTerm, SourceSpan span, List<TriplePattern> sink)
+    /// <param name="work">The work-list onto which the object's expansion queues further emissions.</param>
+    private void EmitObject(EmitObjectTask task, List<TriplePattern> sink, Queue<EmitObjectTask> work)
     {
-        if(objectTerm is AnnotatedObject annotated)
+        if(task.Object is AnnotatedObject annotated)
         {
-            //The annotation syntax both reifies and asserts: the base triple is emitted, then the
-            //annotations are lowered as reification triples about it.
-            TriplePatternTerm annotatedValue = LowerTerm(annotated.Object, sink);
-            sink.Add(new TriplePattern(span, subject, predicate, annotatedValue));
-            LowerAnnotations(annotated.Annotations, subject, predicate, annotatedValue, sink);
+            //The annotation syntax both reifies and asserts: the base triple is emitted, then the annotations
+            //are lowered as reification triples about it.
+            TriplePatternTerm annotatedValue = ResolveCore(annotated.Object, sink, work);
+            sink.Add(new TriplePattern(task.Span, task.Subject, task.Predicate, annotatedValue));
+            EmitAnnotations(annotated.Annotations, task.Subject, task.Predicate, annotatedValue, sink, work);
 
             return;
         }
 
-        TriplePatternTerm value = LowerTerm(objectTerm, sink);
-        sink.Add(new TriplePattern(span, subject, predicate, value));
-    }
-
-    /// <summary>
-    /// Lowers a term in subject, object, or reifier position to a core term, appending any triples its
-    /// sugar expands into. Core terms, property paths, and error placeholders pass through unchanged.
-    /// </summary>
-    /// <param name="term">The term to lower.</param>
-    /// <param name="sink">The list lowered triples are appended to.</param>
-    /// <returns>The core term to use in the enclosing position.</returns>
-    private TriplePatternTerm LowerTerm(TriplePatternTerm term, List<TriplePattern> sink)
-    {
-        return term switch
-        {
-            ConstantTerm or VariableTerm or PropertyPathTerm or ErrorTriplePatternTerm => term,
-            AstTripleTerm tripleTerm => LowerTripleTerm(tripleTerm, sink),
-            CollectionTerm collection => LowerCollection(collection, sink),
-            BlankNodePropertyListTerm propertyList => LowerBlankNodePropertyList(propertyList, sink),
-            ReifiedTriple reified => LowerReifiedTriple(reified, sink),
-
-            //An AnnotatedObject only occurs in object position, where EmitObject intercepts it; any other
-            //term kind here is an internal invariant violation, not recoverable user input.
-            _ => throw new InvalidOperationException($"Unexpected term kind {term.GetType().Name} in a non-object position during SPARQL normalization.")
-        };
-    }
-
-    /// <summary>Lowers a quoted triple term <c>&lt;&lt;( s p o )&gt;&gt;</c>: a core term whose inner positions are themselves lowered. A triple term asserts nothing.</summary>
-    /// <param name="tripleTerm">The quoted triple term.</param>
-    /// <param name="sink">The list lowered triples are appended to.</param>
-    /// <returns>The quoted triple term with its inner positions lowered.</returns>
-    private AstTripleTerm LowerTripleTerm(AstTripleTerm tripleTerm, List<TriplePattern> sink)
-    {
-        //A triple term's inner subject/object are grammar-restricted to non-asserting terms (IRI, variable,
-        //literal, or a nested triple term), so lowering them never appends to the sink; doing so keeps the
-        //recursion uniform without asserting the quoted triple.
-        TriplePattern inner = tripleTerm.Inner;
-        TriplePattern lowered = new(
-            inner.Span,
-            LowerTerm(inner.Subject, sink),
-            inner.Predicate,
-            LowerTerm(inner.Object, sink));
-
-        return new AstTripleTerm(tripleTerm.Span, lowered);
-    }
-
-    /// <summary>Lowers an RDF collection to an <c>rdf:first</c>/<c>rdf:rest</c>/<c>rdf:nil</c> chain; an empty collection is <c>rdf:nil</c>.</summary>
-    /// <param name="collection">The collection term.</param>
-    /// <param name="sink">The list lowered triples are appended to.</param>
-    /// <returns>The head of the chain (a fresh blank node), or <c>rdf:nil</c> for an empty collection.</returns>
-    private TriplePatternTerm LowerCollection(CollectionTerm collection, List<TriplePattern> sink)
-    {
-        if(collection.Items.Count == 0)
-        {
-            return new ConstantTerm(collection.Span, new NamedNode(RdfVocabulary.Rdf.Nil));
-        }
-
-        ConstantTerm first = new(collection.Span, new NamedNode(RdfVocabulary.Rdf.First));
-        ConstantTerm rest = new(collection.Span, new NamedNode(RdfVocabulary.Rdf.Rest));
-        ConstantTerm nil = new(collection.Span, new NamedNode(RdfVocabulary.Rdf.Nil));
-
-        TriplePatternTerm head = FreshBlankNode(collection.Span);
-        TriplePatternTerm current = head;
-        for(int i = 0; i < collection.Items.Count; i++)
-        {
-            TriplePatternTerm item = LowerTerm(collection.Items[i], sink);
-            sink.Add(new TriplePattern(collection.Span, current, first, item));
-
-            if(i == collection.Items.Count - 1)
-            {
-                sink.Add(new TriplePattern(collection.Span, current, rest, nil));
-            }
-            else
-            {
-                TriplePatternTerm next = FreshBlankNode(collection.Span);
-                sink.Add(new TriplePattern(collection.Span, current, rest, next));
-                current = next;
-            }
-        }
-
-        return head;
-    }
-
-    /// <summary>Lowers a blank-node property list to a fresh blank node carrying its predicate-object triples.</summary>
-    /// <param name="propertyList">The blank-node property list term.</param>
-    /// <param name="sink">The list lowered triples are appended to.</param>
-    /// <returns>The fresh blank node standing for the property list.</returns>
-    private TriplePatternTerm LowerBlankNodePropertyList(BlankNodePropertyListTerm propertyList, List<TriplePattern> sink)
-    {
-        TriplePatternTerm head = FreshBlankNode(propertyList.Span);
-        LowerProperties(head, propertyList.Properties, sink);
-
-        return head;
-    }
-
-    /// <summary>Lowers a reified triple to its <c>rdf:reifies</c> reification triple (and, under the opt-in flag, its base triple).</summary>
-    /// <param name="reified">The reified triple term.</param>
-    /// <param name="sink">The list lowered triples are appended to.</param>
-    /// <returns>The reifier (the explicit identity, or a fresh blank node) — the reified triple's value.</returns>
-    private TriplePatternTerm LowerReifiedTriple(ReifiedTriple reified, List<TriplePattern> sink)
-    {
-        TriplePattern inner = reified.Inner;
-        TriplePattern loweredInner = new(
-            inner.Span,
-            LowerTerm(inner.Subject, sink),
-            inner.Predicate,
-            LowerTerm(inner.Object, sink));
-
-        TriplePatternTerm reifier = reified.Reifier is null
-            ? FreshBlankNode(reified.Span)
-            : LowerTerm(reified.Reifier, sink);
-
-        ConstantTerm reifies = new(reified.Span, new NamedNode(Vocabulary.Rdf.Reifies));
-        AstTripleTerm tripleTerm = new(reified.Span, loweredInner);
-        sink.Add(new TriplePattern(reified.Span, reifier, reifies, tripleTerm));
-
-        //RDF 1.2 (Turtle §2.11 / §7.3.2): a reified triple does not assert its inner triple. The opt-in
-        //flag additionally asserts it — a deliberate non-standard extension.
-        if(options.AssertReifiedTripleInnerTriple)
-        {
-            sink.Add(loweredInner);
-        }
-
-        return reifier;
+        TriplePatternTerm value = ResolveCore(task.Object, sink, work);
+        sink.Add(new TriplePattern(task.Span, task.Subject, task.Predicate, value));
     }
 
     /// <summary>
     /// Lowers the RDF 1.2 annotations on a stated triple into reification triples. A reifier (<c>~ id?</c>)
-    /// emits <c>reifier rdf:reifies &lt;&lt;( s p o )&gt;&gt;</c> and stays pending for an immediately
-    /// following block; an annotation block (<c>{| … |}</c>) reuses the pending reifier or allocates a
-    /// fresh one, then attaches its predicate-object list to that reifier. Blocks nest naturally: an
-    /// annotated object inside a block annotates that block's own annotation triple.
+    /// emits <c>reifier rdf:reifies &lt;&lt;( s p o )&gt;&gt;</c> and stays pending for an immediately following
+    /// block; an annotation block (<c>{| … |}</c>) reuses the pending reifier or allocates a fresh one, then
+    /// queues its predicate-object list against that reifier. Blocks nest naturally — an annotated object inside
+    /// a block annotates that block's own annotation triple — via the same work-list, without recursing.
     /// </summary>
     /// <param name="annotations">The annotations attached to the object, in source order.</param>
     /// <param name="subject">The stated triple's subject.</param>
     /// <param name="predicate">The stated triple's predicate.</param>
     /// <param name="objectTerm">The stated triple's object.</param>
     /// <param name="sink">The list lowered triples are appended to.</param>
-    private void LowerAnnotations(IReadOnlyList<Annotation> annotations, TriplePatternTerm subject, TriplePatternTerm predicate, TriplePatternTerm objectTerm, List<TriplePattern> sink)
+    /// <param name="work">The work-list onto which an annotation block's properties are queued.</param>
+    private void EmitAnnotations(IReadOnlyList<Annotation> annotations, TriplePatternTerm subject, TriplePatternTerm predicate, TriplePatternTerm objectTerm, List<TriplePattern> sink, Queue<EmitObjectTask> work)
     {
         TriplePatternTerm? pendingReifier = null;
 
@@ -467,7 +356,7 @@ public sealed class SparqlNormalizer
                 {
                     TriplePatternTerm reifier = reifierAnnotation.Reifier is null
                         ? FreshBlankNode(reifierAnnotation.Span)
-                        : LowerTerm(reifierAnnotation.Reifier, sink);
+                        : ResolveCore(reifierAnnotation.Reifier, sink, work);
 
                     sink.Add(ReificationTriple(reifier, subject, predicate, objectTerm, reifierAnnotation.Span));
                     pendingReifier = reifier;
@@ -488,7 +377,16 @@ public sealed class SparqlNormalizer
                         sink.Add(ReificationTriple(blockReifier, subject, predicate, objectTerm, block.Span));
                     }
 
-                    LowerProperties(blockReifier, block.Properties, sink);
+                    //The block's properties annotate the block's reifier; queue them so nested annotations and
+                    //sugar lower iteratively through the same work-list.
+                    foreach(PropertyListPath property in block.Properties)
+                    {
+                        foreach(TriplePatternTerm propertyObject in property.Objects)
+                        {
+                            work.Enqueue(new EmitObjectTask(blockReifier, property.Verb, propertyObject, property.Span));
+                        }
+                    }
+
                     pendingReifier = null;
 
                     break;
@@ -503,17 +401,203 @@ public sealed class SparqlNormalizer
         }
     }
 
-    /// <summary>Lowers a predicate-object list against a subject, reusing the object path so nested annotations and sugar lower the same way.</summary>
-    /// <param name="subject">The subject the properties attach to.</param>
-    /// <param name="properties">The predicate-object entries.</param>
+    /// <summary>
+    /// Resolves a term in subject, object, item, or reifier position to its core term, emitting the triples its
+    /// sugar expands into and queueing any deferred expansion onto <paramref name="work"/>. Core terms, property
+    /// paths, and error placeholders pass through. The one bottom-up case — the cores embedded inside a quoted or
+    /// reified triple term — is resolved with a local post-order stack so nested triple terms cannot overflow.
+    /// </summary>
+    /// <param name="root">The term to resolve.</param>
     /// <param name="sink">The list lowered triples are appended to.</param>
-    private void LowerProperties(TriplePatternTerm subject, IReadOnlyList<PropertyListPath> properties, List<TriplePattern> sink)
+    /// <param name="work">The work-list onto which a collection's items / a property list's objects are queued.</param>
+    /// <returns>The core term to use in the enclosing position.</returns>
+    private TriplePatternTerm ResolveCore(TriplePatternTerm root, List<TriplePattern> sink, Queue<EmitObjectTask> work)
     {
-        foreach(PropertyListPath property in properties)
+        //Only quoted/reified triple terms embed their inner cores and so need bottom-up resolution; every other
+        //term's core is allocated immediately (its contents deferred), so the common path skips the stack.
+        if(root is not (AstTripleTerm or ReifiedTriple))
         {
-            foreach(TriplePatternTerm objectTerm in property.Objects)
+            return ResolveImmediateCore(root, sink, work);
+        }
+
+        Dictionary<TriplePatternTerm, TriplePatternTerm> cores = new(ReferenceEqualityComparer.Instance);
+        Stack<(TriplePatternTerm Term, bool Build)> pending = new();
+        pending.Push((root, Build: false));
+
+        while(pending.Count > 0)
+        {
+            (TriplePatternTerm term, bool build) = pending.Pop();
+            if(build)
             {
-                EmitObject(subject, property.Verb, objectTerm, property.Span, sink);
+                cores[term] = BuildQuotedCore(term, cores, sink);
+
+                continue;
+            }
+
+            switch(term)
+            {
+                case AstTripleTerm tripleTerm:
+                {
+                    pending.Push((tripleTerm, Build: true));
+                    pending.Push((tripleTerm.Inner.Object, Build: false));
+                    pending.Push((tripleTerm.Inner.Subject, Build: false));
+
+                    break;
+                }
+
+                case ReifiedTriple reified:
+                {
+                    pending.Push((reified, Build: true));
+                    if(reified.Reifier is not null)
+                    {
+                        pending.Push((reified.Reifier, Build: false));
+                    }
+
+                    pending.Push((reified.Inner.Object, Build: false));
+                    pending.Push((reified.Inner.Subject, Build: false));
+
+                    break;
+                }
+
+                default:
+                {
+                    cores[term] = ResolveImmediateCore(term, sink, work);
+
+                    break;
+                }
+            }
+        }
+
+        return cores[root];
+    }
+
+    /// <summary>
+    /// Resolves a term whose core does not embed any child core: a core term (passed through), an empty
+    /// collection (<c>rdf:nil</c>), a non-empty collection (a fresh head, its <c>rdf:rest</c> backbone emitted
+    /// and its items queued), or a blank-node property list (a fresh node, its properties queued).
+    /// </summary>
+    /// <param name="term">The term to resolve; never a quoted or reified triple term (those take the post-order path).</param>
+    /// <param name="sink">The list lowered triples are appended to.</param>
+    /// <param name="work">The work-list onto which a collection's items / a property list's objects are queued.</param>
+    /// <returns>The core term to use in the enclosing position.</returns>
+    private TriplePatternTerm ResolveImmediateCore(TriplePatternTerm term, List<TriplePattern> sink, Queue<EmitObjectTask> work)
+    {
+        switch(term)
+        {
+            case ConstantTerm or VariableTerm or PropertyPathTerm or ErrorTriplePatternTerm:
+            {
+                return term;
+            }
+
+            case CollectionTerm collection:
+            {
+                return ResolveCollection(collection, sink, work);
+            }
+
+            case BlankNodePropertyListTerm propertyList:
+            {
+                TriplePatternTerm head = FreshBlankNode(propertyList.Span);
+                foreach(PropertyListPath property in propertyList.Properties)
+                {
+                    foreach(TriplePatternTerm propertyObject in property.Objects)
+                    {
+                        work.Enqueue(new EmitObjectTask(head, property.Verb, propertyObject, property.Span));
+                    }
+                }
+
+                return head;
+            }
+
+            default:
+            {
+                //An AnnotatedObject only occurs in object position, where EmitObject intercepts it; any other
+                //term kind here is an internal invariant violation, not recoverable user input.
+                throw new InvalidOperationException($"Unexpected term kind {term.GetType().Name} in a non-object position during SPARQL normalization.");
+            }
+        }
+    }
+
+    /// <summary>Resolves a non-empty collection to its fresh head, emitting the <c>rdf:rest</c> backbone (terminated by <c>rdf:nil</c>) and queueing each item as an <c>rdf:first</c> emission; an empty collection is <c>rdf:nil</c>.</summary>
+    /// <param name="collection">The collection term.</param>
+    /// <param name="sink">The list lowered triples are appended to.</param>
+    /// <param name="work">The work-list onto which the items are queued.</param>
+    /// <returns>The head of the chain (a fresh blank node), or <c>rdf:nil</c> for an empty collection.</returns>
+    private TriplePatternTerm ResolveCollection(CollectionTerm collection, List<TriplePattern> sink, Queue<EmitObjectTask> work)
+    {
+        if(collection.Items.Count == 0)
+        {
+            return new ConstantTerm(collection.Span, new NamedNode(RdfVocabulary.Rdf.Nil));
+        }
+
+        ConstantTerm first = new(collection.Span, new NamedNode(RdfVocabulary.Rdf.First));
+        ConstantTerm rest = new(collection.Span, new NamedNode(RdfVocabulary.Rdf.Rest));
+        ConstantTerm nil = new(collection.Span, new NamedNode(RdfVocabulary.Rdf.Nil));
+
+        TriplePatternTerm head = FreshBlankNode(collection.Span);
+        TriplePatternTerm current = head;
+        for(int i = 0; i < collection.Items.Count; i++)
+        {
+            //Each item is lowered as the object of an rdf:first triple, queued so nested sugar expands iteratively.
+            work.Enqueue(new EmitObjectTask(current, first, collection.Items[i], collection.Span));
+
+            if(i == collection.Items.Count - 1)
+            {
+                sink.Add(new TriplePattern(collection.Span, current, rest, nil));
+            }
+            else
+            {
+                TriplePatternTerm next = FreshBlankNode(collection.Span);
+                sink.Add(new TriplePattern(collection.Span, current, rest, next));
+                current = next;
+            }
+        }
+
+        return head;
+    }
+
+    /// <summary>Builds the core of a quoted or reified triple term from its already-resolved inner cores; a reified triple also emits its <c>rdf:reifies</c> triple (and, under the opt-in flag, its base triple).</summary>
+    /// <param name="term">The quoted (<see cref="AstTripleTerm"/>) or reified (<see cref="ReifiedTriple"/>) triple term.</param>
+    /// <param name="cores">The resolved cores of the inner positions (and the explicit reifier, if any).</param>
+    /// <param name="sink">The list lowered triples are appended to.</param>
+    /// <returns>The quoted triple term (for <see cref="AstTripleTerm"/>) or the reifier (for <see cref="ReifiedTriple"/>).</returns>
+    private TriplePatternTerm BuildQuotedCore(TriplePatternTerm term, Dictionary<TriplePatternTerm, TriplePatternTerm> cores, List<TriplePattern> sink)
+    {
+        switch(term)
+        {
+            case AstTripleTerm tripleTerm:
+            {
+                TriplePattern inner = tripleTerm.Inner;
+                TriplePattern lowered = new(inner.Span, cores[inner.Subject], inner.Predicate, cores[inner.Object]);
+
+                return new AstTripleTerm(tripleTerm.Span, lowered);
+            }
+
+            case ReifiedTriple reified:
+            {
+                TriplePattern inner = reified.Inner;
+                TriplePattern loweredInner = new(inner.Span, cores[inner.Subject], inner.Predicate, cores[inner.Object]);
+
+                TriplePatternTerm reifier = reified.Reifier is null
+                    ? FreshBlankNode(reified.Span)
+                    : cores[reified.Reifier];
+
+                ConstantTerm reifies = new(reified.Span, new NamedNode(Vocabulary.Rdf.Reifies));
+                AstTripleTerm tripleTerm = new(reified.Span, loweredInner);
+                sink.Add(new TriplePattern(reified.Span, reifier, reifies, tripleTerm));
+
+                //RDF 1.2 (Turtle §2.11 / §7.3.2): a reified triple does not assert its inner triple. The opt-in
+                //flag additionally asserts it — a deliberate non-standard extension.
+                if(options.AssertReifiedTripleInnerTriple)
+                {
+                    sink.Add(loweredInner);
+                }
+
+                return reifier;
+            }
+
+            default:
+            {
+                throw new InvalidOperationException($"Unexpected term kind {term.GetType().Name} in BuildQuotedCore during SPARQL normalization.");
             }
         }
     }
@@ -543,4 +627,14 @@ public sealed class SparqlNormalizer
 
         return new ConstantTerm(span, new BlankNode(label));
     }
+
+    /// <summary>
+    /// One pending object emission on the term-lowering work-list: a <c>subject predicate object</c> triple to
+    /// emit, where the object may still be RDF 1.2 sugar or an <see cref="AnnotatedObject"/>.
+    /// </summary>
+    /// <param name="Subject">The (already core) subject term.</param>
+    /// <param name="Predicate">The predicate term, passed through unchanged.</param>
+    /// <param name="Object">The object term to lower and emit.</param>
+    /// <param name="Span">The source span attributed to the emitted base triple.</param>
+    private readonly record struct EmitObjectTask(TriplePatternTerm Subject, TriplePatternTerm Predicate, TriplePatternTerm Object, SourceSpan Span);
 }
