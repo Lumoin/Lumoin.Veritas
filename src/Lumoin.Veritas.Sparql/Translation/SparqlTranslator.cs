@@ -82,18 +82,136 @@ public static class SparqlTranslator
         };
     }
 
-    /// <summary>Translates a graph pattern to its algebra (§18.2.2).</summary>
-    /// <param name="pattern">The graph pattern to translate.</param>
+    /// <summary>
+    /// Translates a graph pattern to its algebra (§18.2.2) over an explicit post-order stack (no recursion):
+    /// every sub-pattern is translated before its parent and its result looked up by reference when the parent
+    /// combines, so arbitrarily deep pattern nesting cannot overflow the stack.
+    /// </summary>
+    /// <param name="root">The graph pattern to translate.</param>
     /// <returns>The algebra for the pattern.</returns>
-    private static AlgebraOperator TranslatePattern(GraphPattern pattern)
+    private static AlgebraOperator TranslatePattern(GraphPattern root)
     {
-        return pattern switch
+        //Results are keyed by reference: two value-equal sibling patterns are distinct positions that must map
+        //to distinct algebra. A parsed pattern is a tree, so each instance appears exactly once as a key.
+        Dictionary<GraphPattern, AlgebraOperator> results = new(ReferenceEqualityComparer.Instance);
+        Stack<(GraphPattern Node, bool Combine)> work = new();
+        work.Push((root, Combine: false));
+
+        while(work.Count > 0)
         {
-            GroupGraphPattern group => TranslateGroup(group),
+            (GraphPattern node, bool combine) = work.Pop();
+            if(combine)
+            {
+                results[node] = TranslateNode(node, results);
+
+                continue;
+            }
+
+            List<GraphPattern> subPatterns = SubPatterns(node);
+            if(subPatterns.Count == 0)
+            {
+                //A leaf (block / VALUES / error / sub-SELECT), or a group whose only members are FILTER/BIND,
+                //translates without awaiting any child result.
+                results[node] = TranslateNode(node, results);
+            }
+            else
+            {
+                work.Push((node, Combine: true));
+                for(int i = subPatterns.Count - 1; i >= 0; i--)
+                {
+                    work.Push((subPatterns[i], Combine: false));
+                }
+            }
+        }
+
+        return results[root];
+    }
+
+    /// <summary>
+    /// Returns the sub-patterns of a graph pattern that translate to their own algebra and are looked up when
+    /// the pattern combines — the operands the iterative <see cref="TranslatePattern"/> must process first.
+    /// </summary>
+    /// <param name="pattern">The graph pattern.</param>
+    /// <returns>The sub-patterns to translate, in source order; empty for a leaf or a FILTER/BIND-only group.</returns>
+    private static List<GraphPattern> SubPatterns(GraphPattern pattern)
+    {
+        switch(pattern)
+        {
+            case GroupGraphPattern group:
+            {
+                List<GraphPattern> subPatterns = [];
+                foreach(GraphPattern member in group.Members)
+                {
+                    switch(member)
+                    {
+                        case OptionalPattern optional:
+                        {
+                            subPatterns.Add(optional.Inner);
+
+                            break;
+                        }
+
+                        case MinusPattern minus:
+                        {
+                            subPatterns.Add(minus.Inner);
+
+                            break;
+                        }
+
+                        case FilterPattern or BindPattern:
+                        {
+                            //A FILTER's / BIND's expression is not a sub-pattern; the group fold handles it inline.
+                            break;
+                        }
+
+                        default:
+                        {
+                            subPatterns.Add(member);
+
+                            break;
+                        }
+                    }
+                }
+
+                return subPatterns;
+            }
+
+            case UnionPattern union:
+            {
+                return [union.Left, union.Right];
+            }
+
+            case GraphGraphPattern graph:
+            {
+                return [graph.Inner];
+            }
+
+            case ServicePattern service:
+            {
+                return [service.Inner];
+            }
+
+            default:
+            {
+                //Leaves: BasicGraphPatternBlock, ValuesPattern, ErrorGraphPattern, SubSelectPattern.
+                return [];
+            }
+        }
+    }
+
+    /// <summary>Builds the algebra for a single pattern node, given its already-translated sub-patterns (looked up by reference).</summary>
+    /// <param name="node">The pattern node to translate.</param>
+    /// <param name="results">The map of already-translated sub-patterns to their algebra.</param>
+    /// <returns>The node's algebra.</returns>
+    private static AlgebraOperator TranslateNode(GraphPattern node, Dictionary<GraphPattern, AlgebraOperator> results)
+    {
+        return node switch
+        {
+            GroupGraphPattern group => CombineGroup(group, results),
             BasicGraphPatternBlock block => TranslateBlock(block),
-            UnionPattern union => new Union(TranslatePattern(union.Left), TranslatePattern(union.Right)),
-            GraphGraphPattern graph => new Graph(graph.GraphTerm, TranslatePattern(graph.Inner)),
-            ServicePattern service => new Service(service.Endpoint, TranslatePattern(service.Inner), service.IsSilent),
+            UnionPattern union => new Union(results[union.Left], results[union.Right]),
+            GraphGraphPattern graph => new Graph(graph.GraphTerm, results[graph.Inner]),
+            ServicePattern service => new Service(service.Endpoint, results[service.Inner], service.IsSilent),
             ValuesPattern values => new Table(values.Data),
 
             //An error graph pattern carries its own diagnostics and contributes nothing to the algebra.
@@ -102,21 +220,23 @@ public static class SparqlTranslator
             SubSelectPattern => throw new NotSupportedException("Sub-SELECT translation is a separate slice (SPARQL 1.2 §18.2.2 / §18.2.4)."),
 
             //OPTIONAL / MINUS / BIND / FILTER are only meaningful relative to their enclosing group and are
-            //handled in TranslateGroup; reaching one here is a structural invariant violation.
-            OptionalPattern or MinusPattern or BindPattern or FilterPattern => throw new InvalidOperationException($"{pattern.GetType().Name} is only valid as a group member and is handled during group translation, not as a standalone pattern."),
+            //handled in CombineGroup; reaching one here is a structural invariant violation.
+            OptionalPattern or MinusPattern or BindPattern or FilterPattern => throw new InvalidOperationException($"{node.GetType().Name} is only valid as a group member and is handled during group translation, not as a standalone pattern."),
 
-            _ => throw new InvalidOperationException($"Unexpected graph-pattern kind {pattern.GetType().Name} during SPARQL algebra translation.")
+            _ => throw new InvalidOperationException($"Unexpected graph-pattern kind {node.GetType().Name} during SPARQL algebra translation.")
         };
     }
 
     /// <summary>
-    /// Translates a group graph pattern (§18.2.2.6): the members are combined left to right, <c>FILTER</c>s
-    /// are collected and lifted to constrain the whole group, and <c>OPTIONAL</c>/<c>MINUS</c>/<c>BIND</c>
-    /// map to their operators while every other member is joined in.
+    /// Combines a group's members into algebra (§18.2.2.6): members combine left to right from the join
+    /// identity, <c>FILTER</c>s are collected and lifted to constrain the whole group, and
+    /// <c>OPTIONAL</c>/<c>MINUS</c>/<c>BIND</c> map to their operators. Each member's already-translated
+    /// sub-pattern is read from <paramref name="results"/>.
     /// </summary>
-    /// <param name="group">The group graph pattern to translate.</param>
+    /// <param name="group">The group graph pattern.</param>
+    /// <param name="results">The map of already-translated sub-patterns to their algebra.</param>
     /// <returns>The algebra for the group; <see cref="UnitTable"/> for an empty group.</returns>
-    private static AlgebraOperator TranslateGroup(GroupGraphPattern group)
+    private static AlgebraOperator CombineGroup(GroupGraphPattern group, Dictionary<GraphPattern, AlgebraOperator> results)
     {
         List<ExpressionNode> filters = [];
         AlgebraOperator accumulated = new UnitTable();
@@ -136,7 +256,7 @@ public static class SparqlTranslator
                 case OptionalPattern optional:
                 {
                     //A top-level FILTER inside the OPTIONAL becomes the left-join condition (§18.2.2.6).
-                    AlgebraOperator right = TranslatePattern(optional.Inner);
+                    AlgebraOperator right = results[optional.Inner];
                     accumulated = right is Filter lifted
                         ? new LeftJoin(accumulated, lifted.Input, lifted.Condition)
                         : new LeftJoin(accumulated, right, Condition: null);
@@ -146,7 +266,7 @@ public static class SparqlTranslator
 
                 case MinusPattern minus:
                 {
-                    accumulated = new Minus(accumulated, TranslatePattern(minus.Inner));
+                    accumulated = new Minus(accumulated, results[minus.Inner]);
 
                     break;
                 }
@@ -160,7 +280,7 @@ public static class SparqlTranslator
 
                 default:
                 {
-                    accumulated = Join(accumulated, TranslatePattern(member));
+                    accumulated = Join(accumulated, results[member]);
 
                     break;
                 }
@@ -343,136 +463,159 @@ public static class SparqlTranslator
         return conjunction;
     }
 
-    /// <summary>Returns the variables visible (in scope) in an algebra subtree, in a deterministic source-appearance order with duplicates removed — the projection set for <c>SELECT *</c>.</summary>
+    /// <summary>
+    /// Returns the variables visible (in scope) in an algebra subtree, in deterministic source-appearance
+    /// order with duplicates removed — the projection set for <c>SELECT *</c>. Walks an explicit work stack
+    /// (no recursion), respecting each operator's scope rule.
+    /// </summary>
     /// <param name="op">The algebra subtree.</param>
     /// <returns>The visible variables, in first-appearance order.</returns>
     private static List<SparqlVariable> VisibleVariables(AlgebraOperator op)
     {
         List<SparqlVariable> ordered = [];
         HashSet<SparqlVariable> seen = [];
-        CollectVisible(op, ordered, seen);
+        Stack<VisibleStep> work = new();
+        work.Push(new VisibleStep(op, default));
+
+        while(work.Count > 0)
+        {
+            VisibleStep step = work.Pop();
+            if(step.Operator is null)
+            {
+                //A deferred variable, emitted after the subtree it follows (a GRAPH designator or BIND target).
+                Add(step.Variable, ordered, seen);
+
+                continue;
+            }
+
+            switch(step.Operator)
+            {
+                case Bgp bgp:
+                {
+                    foreach(TriplePattern triple in bgp.Patterns)
+                    {
+                        CollectTermVariables(triple.Subject, ordered, seen);
+                        CollectTermVariables(triple.Predicate, ordered, seen);
+                        CollectTermVariables(triple.Object, ordered, seen);
+                    }
+
+                    break;
+                }
+
+                case Path path:
+                {
+                    CollectTermVariables(path.Subject, ordered, seen);
+                    CollectTermVariables(path.Object, ordered, seen);
+
+                    break;
+                }
+
+                case Table table:
+                {
+                    foreach(SparqlVariable variable in table.Data.Variables)
+                    {
+                        Add(variable, ordered, seen);
+                    }
+
+                    break;
+                }
+
+                case Minus minus:
+                {
+                    //Only the left operand's variables are in scope; the right is matched for compatibility only.
+                    work.Push(new VisibleStep(minus.Left, default));
+
+                    break;
+                }
+
+                case Graph graph:
+                {
+                    //The designator variable follows the inner pattern's variables, so push it first (it pops last).
+                    if(graph.Designator is GraphVariableTerm graphVariable)
+                    {
+                        work.Push(new VisibleStep(null, graphVariable.Variable));
+                    }
+
+                    work.Push(new VisibleStep(graph.Input, default));
+
+                    break;
+                }
+
+                case Extend extend:
+                {
+                    //The bound variable follows the input's variables, so push it first (it pops last).
+                    work.Push(new VisibleStep(null, extend.Variable));
+                    work.Push(new VisibleStep(extend.Input, default));
+
+                    break;
+                }
+
+                case Project project:
+                {
+                    //A (sub-SELECT) projection caps the visible variables to its columns; push reversed so they pop in order.
+                    for(int i = project.Variables.Count - 1; i >= 0; i--)
+                    {
+                        work.Push(new VisibleStep(null, project.Variables[i]));
+                    }
+
+                    break;
+                }
+
+                default:
+                {
+                    //Transparent operators (Join, Union, LeftJoin, Filter, Service, Distinct, Reduced, OrderBy,
+                    //Slice, ToList, ToMultiSet) expose exactly their children's variables; UnitTable binds none.
+                    //Push children reversed so they are processed in evaluation order.
+                    IReadOnlyList<AlgebraOperator> children = step.Operator.Children;
+                    for(int i = children.Count - 1; i >= 0; i--)
+                    {
+                        work.Push(new VisibleStep(children[i], default));
+                    }
+
+                    break;
+                }
+            }
+        }
 
         return ordered;
     }
 
-    /// <summary>Walks an algebra subtree appending its in-scope variables to <paramref name="ordered"/>, respecting each operator's scope rule.</summary>
-    /// <param name="op">The operator to scan.</param>
-    /// <param name="ordered">The accumulating ordered list of distinct variables.</param>
-    /// <param name="seen">The set tracking which variables are already recorded.</param>
-    private static void CollectVisible(AlgebraOperator op, List<SparqlVariable> ordered, HashSet<SparqlVariable> seen)
-    {
-        switch(op)
-        {
-            case Bgp bgp:
-            {
-                foreach(TriplePattern triple in bgp.Patterns)
-                {
-                    CollectTermVariables(triple.Subject, ordered, seen);
-                    CollectTermVariables(triple.Predicate, ordered, seen);
-                    CollectTermVariables(triple.Object, ordered, seen);
-                }
-
-                break;
-            }
-
-            case Path path:
-            {
-                CollectTermVariables(path.Subject, ordered, seen);
-                CollectTermVariables(path.Object, ordered, seen);
-
-                break;
-            }
-
-            case Table table:
-            {
-                foreach(SparqlVariable variable in table.Data.Variables)
-                {
-                    Add(variable, ordered, seen);
-                }
-
-                break;
-            }
-
-            case Minus minus:
-            {
-                //Only the left operand's variables are in scope; the right is matched for compatibility only.
-                CollectVisible(minus.Left, ordered, seen);
-
-                break;
-            }
-
-            case Graph graph:
-            {
-                CollectVisible(graph.Input, ordered, seen);
-                if(graph.Designator is GraphVariableTerm graphVariable)
-                {
-                    Add(graphVariable.Variable, ordered, seen);
-                }
-
-                break;
-            }
-
-            case Extend extend:
-            {
-                CollectVisible(extend.Input, ordered, seen);
-                Add(extend.Variable, ordered, seen);
-
-                break;
-            }
-
-            case Project project:
-            {
-                //A (sub-SELECT) projection caps the visible variables to its projected columns.
-                foreach(SparqlVariable variable in project.Variables)
-                {
-                    Add(variable, ordered, seen);
-                }
-
-                break;
-            }
-
-            default:
-            {
-                //Transparent operators (Join, Union, LeftJoin, Filter, Service, Distinct, Reduced, OrderBy,
-                //Slice, ToList, ToMultiSet) expose exactly their children's variables; UnitTable binds none.
-                foreach(AlgebraOperator child in op.Children)
-                {
-                    CollectVisible(child, ordered, seen);
-                }
-
-                break;
-            }
-        }
-    }
-
-    /// <summary>Appends the variables a triple-pattern term contributes, recursing into a nested triple term.</summary>
+    /// <summary>Appends the variables a triple-pattern term contributes, descending into a nested triple term via an explicit stack (no recursion), preserving subject/predicate/object order.</summary>
     /// <param name="term">The term to scan.</param>
     /// <param name="ordered">The accumulating ordered list of distinct variables.</param>
     /// <param name="seen">The set tracking which variables are already recorded.</param>
     private static void CollectTermVariables(TriplePatternTerm term, List<SparqlVariable> ordered, HashSet<SparqlVariable> seen)
     {
-        switch(term)
+        Stack<TriplePatternTerm> pending = new();
+        pending.Push(term);
+
+        while(pending.Count > 0)
         {
-            case VariableTerm variable:
+            TriplePatternTerm current = pending.Pop();
+            switch(current)
             {
-                Add(variable.Variable, ordered, seen);
+                case VariableTerm variable:
+                {
+                    Add(variable.Variable, ordered, seen);
 
-                break;
-            }
+                    break;
+                }
 
-            case AstTripleTerm tripleTerm:
-            {
-                CollectTermVariables(tripleTerm.Inner.Subject, ordered, seen);
-                CollectTermVariables(tripleTerm.Inner.Predicate, ordered, seen);
-                CollectTermVariables(tripleTerm.Inner.Object, ordered, seen);
+                case AstTripleTerm tripleTerm:
+                {
+                    //Push the inner positions in reverse so they pop — and emit — in subject/predicate/object order.
+                    pending.Push(tripleTerm.Inner.Object);
+                    pending.Push(tripleTerm.Inner.Predicate);
+                    pending.Push(tripleTerm.Inner.Subject);
 
-                break;
-            }
+                    break;
+                }
 
-            default:
-            {
-                //A ConstantTerm, a PropertyPathTerm, and an ErrorTriplePatternTerm bind no variables.
-                break;
+                default:
+                {
+                    //A ConstantTerm, a PropertyPathTerm, and an ErrorTriplePatternTerm bind no variables.
+                    break;
+                }
             }
         }
     }
@@ -497,4 +640,14 @@ public static class SparqlTranslator
     {
         return new SourceSpan(start.StartByte, end.EndByte, start.StartLine, start.StartColumn, end.EndLine, end.EndColumn);
     }
+
+    /// <summary>
+    /// One step of the <see cref="VisibleVariables"/> work stack: either an operator to walk
+    /// (<see cref="Operator"/> non-null) or a variable to emit (<see cref="Operator"/> null). The variable
+    /// form is deferred so a <c>GRAPH</c> designator or <c>BIND</c> target is recorded after the subtree it
+    /// follows, preserving source-appearance order.
+    /// </summary>
+    /// <param name="Operator">The operator to walk, or <see langword="null"/> when the step emits <see cref="Variable"/>.</param>
+    /// <param name="Variable">The variable to emit when <see cref="Operator"/> is <see langword="null"/>.</param>
+    private readonly record struct VisibleStep(AlgebraOperator? Operator, SparqlVariable Variable);
 }
