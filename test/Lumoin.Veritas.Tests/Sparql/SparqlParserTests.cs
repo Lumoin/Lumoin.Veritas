@@ -1209,6 +1209,34 @@ internal sealed class SparqlParserTests
         AssertParseError("PREFIX : <http://e/> SELECT * WHERE { <<( ?s ?p ?o )>> . }", pool, WellKnownDiagnostics.Sparql.ExpectedVerb);
     }
 
+    /// <summary>A standalone reified triple <c>&lt;&lt; … &gt;&gt; .</c> with no property list is a subject-only assertion held in the block's standalone nodes (not a triple).</summary>
+    [TestMethod]
+    public void ParsesStandaloneReifiedTriple()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * WHERE { << ?s ?p ?o ~ :iri >> . }", pool);
+
+        Assert.IsEmpty(SingleBlockTriples(query));
+        IReadOnlyList<TriplePatternTerm> standalone = SingleBlockStandaloneNodes(query);
+        Assert.HasCount(1, standalone);
+        ReifiedTriple reified = (ReifiedTriple)standalone[0];
+        Assert.AreEqual("s", VariableName(reified.Inner.Subject));
+        Assert.AreEqual("http://e/iri", IriValue(reified.Reifier!));
+    }
+
+    /// <summary>A standalone reified triple sits alongside the plain triples of the same basic graph pattern run.</summary>
+    [TestMethod]
+    public void ParsesStandaloneReifiedTripleAlongsideTriples()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQuery query = ParseQuery("PREFIX : <http://e/> SELECT * WHERE { :a :b :c . << ?s ?p ?o >> . }", pool);
+
+        Assert.HasCount(1, SingleBlockTriples(query));
+        IReadOnlyList<TriplePatternTerm> standalone = SingleBlockStandaloneNodes(query);
+        Assert.HasCount(1, standalone);
+        Assert.IsInstanceOfType<ReifiedTriple>(standalone[0]);
+    }
+
     /// <summary>A triple term in an expression (a <c>BIND</c> right-hand side) parses to a <see cref="TripleTermExpression"/> over its inner triple.</summary>
     [TestMethod]
     public void ParsesTripleTermInExpression()
@@ -1495,6 +1523,19 @@ internal sealed class SparqlParserTests
         GroupGraphPattern group = (GroupGraphPattern)query.Where.Pattern;
 
         return ((BasicGraphPatternBlock)group.Members[0]).Triples;
+    }
+
+    /// <summary>
+    /// Returns the standalone reified-triple assertions of the single basic graph pattern block in the
+    /// query's WHERE group.
+    /// </summary>
+    /// <param name="query">The parsed query.</param>
+    /// <returns>The standalone nodes.</returns>
+    private static IReadOnlyList<TriplePatternTerm> SingleBlockStandaloneNodes(SparqlQuery query)
+    {
+        GroupGraphPattern group = (GroupGraphPattern)query.Where.Pattern;
+
+        return ((BasicGraphPatternBlock)group.Members[0]).StandaloneNodes;
     }
 
     /// <summary>

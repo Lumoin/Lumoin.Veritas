@@ -1179,6 +1179,7 @@ public sealed class SparqlParser
 
             frame.Members = [];
             frame.PendingTriples = [];
+            frame.PendingStandaloneNodes = [];
             frame.Stage = 1;
         }
         else if(frame.Stage == 2)
@@ -1200,6 +1201,13 @@ public sealed class SparqlParser
         else if(incoming is List<TriplePattern> triples)
         {
             frame.PendingTriples!.AddRange(triples);
+            ConsumeOptionalDot();
+        }
+        else if(incoming is TriplePatternTerm standaloneNode)
+        {
+            //A standalone RDF 1.2 reified triple (a << … >> with no property list) is a subject-only
+            //assertion; it joins the current basic graph pattern run alongside the plain triples.
+            frame.PendingStandaloneNodes!.Add(standaloneNode);
             ConsumeOptionalDot();
         }
         else if(incoming is GraphPattern member)
@@ -3056,6 +3064,15 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PropertyPath, StartSpan = Current.Span });
         }
 
+        //An RDF 1.2 reified triple may stand alone as a subject with an empty property list
+        //(ReifiedTripleBlockPath): it asserts its inner triple and reifier without further properties.
+        //Hand the faithful term up as a standalone node rather than erroring. A bare triple term <<( … )>>,
+        //a collection, or any other subject still requires a predicate-object list here.
+        if(frame.TripleAccumulator!.Count == 0 && frame.Subject is ReifiedTriple)
+        {
+            return StepResult.Done(frame.Subject);
+        }
+
         //A missing predicate finalises the triple run with the triples gathered so far, plus a
         //diagnostic; junk up to the next separator/closer is skipped.
         _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedVerb, Current.Span, "Expected a predicate or property path.");
@@ -4479,18 +4496,32 @@ public sealed class SparqlParser
     }
 
     /// <summary>
-    /// Moves the frame's pending triple run, if any, into the members list as a single
-    /// <see cref="BasicGraphPatternBlock"/> and resets the run.
+    /// Moves the frame's pending triple run and standalone reified-triple assertions, if any, into the
+    /// members list as a single <see cref="BasicGraphPatternBlock"/> and resets the run.
     /// </summary>
     /// <param name="frame">The group-graph-pattern frame.</param>
     private static void FlushPendingTriples(ParseFrame frame)
     {
-        if(frame.PendingTriples!.Count > 0)
+        List<TriplePattern> triples = frame.PendingTriples!;
+        List<TriplePatternTerm> standaloneNodes = frame.PendingStandaloneNodes!;
+        if(triples.Count == 0 && standaloneNodes.Count == 0)
         {
-            SourceSpan blockSpan = CombineSpans(frame.PendingTriples[0].Span, frame.PendingTriples[^1].Span);
-            frame.Members!.Add(new BasicGraphPatternBlock(blockSpan, frame.PendingTriples));
-            frame.PendingTriples = [];
+            return;
         }
+
+        //Each list is in source order, so the block extent runs from the earlier of the two first
+        //elements to the later of the two last elements (a standalone node may precede or follow the
+        //plain triples).
+        SourceSpan startSpan = standaloneNodes.Count == 0 ? triples[0].Span
+            : triples.Count == 0 ? SpanOf(standaloneNodes[0])
+            : triples[0].Span.StartByte <= SpanOf(standaloneNodes[0]).StartByte ? triples[0].Span : SpanOf(standaloneNodes[0]);
+        SourceSpan endSpan = standaloneNodes.Count == 0 ? triples[^1].Span
+            : triples.Count == 0 ? SpanOf(standaloneNodes[^1])
+            : triples[^1].Span.EndByte >= SpanOf(standaloneNodes[^1]).EndByte ? triples[^1].Span : SpanOf(standaloneNodes[^1]);
+
+        frame.Members!.Add(new BasicGraphPatternBlock(CombineSpans(startSpan, endSpan), triples, standaloneNodes));
+        frame.PendingTriples = [];
+        frame.PendingStandaloneNodes = [];
     }
 
     /// <summary>

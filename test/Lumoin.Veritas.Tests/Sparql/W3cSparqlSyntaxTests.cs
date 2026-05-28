@@ -59,23 +59,6 @@ internal sealed class W3cSparqlSyntaxTests
         ["GROUP BY variable in-scope (2)"] = "GROUP BY scope — requires scope analysis",
         ["Nested aggregate functions"] = "nested aggregates — requires static aggregate analysis",
         ["syntax-propertyPaths-01.rq"] = "standalone blank-node property list — needs the sugar-expansion pass",
-
-        // RDF 1.2 reification (Slice 4b-ii) — features not yet wired; tracked for follow-up.
-        ["basic-anonreifier-08.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
-        ["basic-anonreifier-09.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
-        ["basic-anonreifier-10.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
-        ["basic-anonreifier-11.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
-        ["basic-anonreifier-12.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
-        ["basic-anonreifier-13.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
-        ["basic-reifier-08.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
-        ["basic-reifier-09.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
-        ["basic-reifier-10.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
-        ["basic-reifier-11.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
-        ["basic-reifier-12.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
-        ["basic-reifier-13.rq"] = "standalone reified triple (<< … >> with empty property list) — needs the BGP subject-only assertion",
-        ["version-01.rq"] = "VERSION + standalone reified triple — VERSION parses, but the standalone << … >> still needs the BGP subject-only assertion",
-        ["version-02.rq"] = "VERSION + standalone reified triple — VERSION parses, but the standalone << … >> still needs the BGP subject-only assertion",
-        ["version-05.rq"] = "VERSION + standalone reified triple — VERSION parses, but the standalone << … >> still needs the BGP subject-only assertion",
     };
 
     /// <summary>Runs one SPARQL 1.1 query-syntax test.</summary>

@@ -87,6 +87,9 @@ internal sealed class ParseFrame
     /// <summary>Gets or sets the current contiguous run of triple patterns awaiting flush into a basic graph pattern block.</summary>
     public List<TriplePattern>? PendingTriples { get; set; }
 
+    /// <summary>Gets or sets the RDF 1.2 standalone reified-triple assertions (<c>&lt;&lt; … &gt;&gt;</c> with no property list) awaiting flush alongside the pending triples into a basic graph pattern block.</summary>
+    public List<TriplePatternTerm>? PendingStandaloneNodes { get; set; }
+
     /// <summary>Gets or sets the subject shared by the triples of a <see cref="ParseFrameKind.Triple"/> frame.</summary>
     public TriplePatternTerm? Subject { get; set; }
 
