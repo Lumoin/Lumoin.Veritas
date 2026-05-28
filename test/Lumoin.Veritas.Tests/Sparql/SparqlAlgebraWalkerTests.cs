@@ -126,6 +126,49 @@ internal sealed class SparqlAlgebraWalkerTests
         Assert.AreSame(newRight, rebuilt.Right);
     }
 
+    /// <summary>Tree semantics: two value-equal sibling subtrees are distinct positions and are both visited (no dedupe).</summary>
+    [TestMethod]
+    public void TraverseVisitsValueEqualSiblingsSeparately()
+    {
+        UnitTable first = new();
+        UnitTable second = new();
+        Assert.AreEqual(first, second, "Two UnitTables are value-equal (the record has no fields).");
+        Assert.AreNotSame(first, second, "...but they are distinct instances.");
+        Union union = new(first, second);
+
+        List<AlgebraOperator> visited = new(AlgebraWalker.Traverse(union));
+
+        //A deduping graph walk would yield 2 nodes; the plan walk keeps both positions, so 3.
+        Assert.HasCount(3, visited);
+        Assert.AreSame(union, visited[0]);
+        Assert.AreSame(first, visited[1]);
+        Assert.AreSame(second, visited[2]);
+    }
+
+    /// <summary>A tree far deeper than the call stack tolerates is traversed and transformed iteratively, without overflowing.</summary>
+    [TestMethod]
+    public void TraverseAndTransformHandleDeepTreesWithoutRecursion()
+    {
+        const int depth = 50_000;
+        AlgebraOperator tree = MakeBgp("leaf");
+        for(int i = 0; i < depth; i++)
+        {
+            tree = new Join(tree, MakeBgp("r"));
+        }
+
+        int count = 0;
+        foreach(AlgebraOperator _ in AlgebraWalker.Traverse(tree))
+        {
+            count++;
+        }
+
+        //depth Join operators + depth right-hand BGP leaves + the one initial leaf.
+        Assert.AreEqual((depth * 2) + 1, count);
+
+        AlgebraOperator same = AlgebraWalker.Transform(tree, static op => op);
+        Assert.AreSame(tree, same);
+    }
+
     /// <summary>Builds a single-triple BGP whose subject variable carries the given name (a distinct instance per call).</summary>
     /// <param name="subjectName">The subject variable name.</param>
     /// <returns>The BGP.</returns>
