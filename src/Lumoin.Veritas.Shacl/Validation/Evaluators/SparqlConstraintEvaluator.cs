@@ -44,6 +44,9 @@ public static class SparqlConstraintEvaluator
     /// <summary>The SHACL-SPARQL <c>$this</c> variable, pre-bound to the focus node.</summary>
     private static SparqlVariable ThisVariable { get; } = new(new Utf8String("this"u8.ToArray()));
 
+    /// <summary>The SHACL-SPARQL <c>$PATH</c> variable, pre-bound (on a property shape with a predicate path) to the path predicate IRI (§5.2.1).</summary>
+    private static SparqlVariable PathPreBindingVariable { get; } = new(new Utf8String("PATH"u8.ToArray()));
+
     /// <summary>The SHACL-SPARQL <c>?value</c> result variable, mapped to <c>sh:value</c>.</summary>
     private static SparqlVariable ValueVariable { get; } = new(new Utf8String("value"u8.ToArray()));
 
@@ -83,9 +86,9 @@ public static class SparqlConstraintEvaluator
         SparqlQueryEngine engine = await context.SparqlEngines.GetOrBuildAsync(
             context.DataMatchOps, context.Dictionary, cancellationToken).ConfigureAwait(false);
 
-        //Pre-bind $this to the focus node via a single-row trailing VALUES, then translate and run.
+        //Pre-bind $this (and, on a predicate-path property shape, $PATH) via a single-row trailing VALUES.
         RdfTerm focusTerm = context.Dictionary.Resolve(focusNode);
-        SparqlQuery bound = sparqlConstraint.Query with { Values = BindThis(focusTerm) };
+        SparqlQuery bound = sparqlConstraint.Query with { Values = BuildPreBindings(focusTerm, path, context) };
 
         IReadOnlyList<SparqlSolution> solutions;
         try
@@ -102,9 +105,10 @@ public static class SparqlConstraintEvaluator
         ImmutableArray<ValidationResult>.Builder builder = ImmutableArray.CreateBuilder<ValidationResult>();
         foreach(SparqlSolution solution in solutions)
         {
-            TermId? valueNode = solution.TryGetValue(ValueVariable, out RdfTerm value)
+            //SHACL-SPARQL §5.3: sh:value is the row's ?value binding, or the focus node when ?value is unbound.
+            TermId valueNode = solution.TryGetValue(ValueVariable, out RdfTerm value)
                 ? context.Dictionary.GetOrAdd(value)
-                : null;
+                : focusNode;
 
             builder.Add(new ValidationResult
             {
@@ -141,11 +145,24 @@ public static class SparqlConstraintEvaluator
         return shapePath;
     }
 
-    /// <summary>Builds the single-row trailing <c>VALUES (?this) { (focus) }</c> block that pre-binds <c>$this</c>.</summary>
+    /// <summary>
+    /// Builds the single-row trailing <c>VALUES</c> block that pre-binds <c>$this</c> to the focus node, and — on a
+    /// property shape whose path is a single predicate — <c>$PATH</c> to that predicate IRI (SHACL-SPARQL §5.2.1).
+    /// A complex path (sequence/alternative/inverse/cardinality) is not pre-bound as a single IRI (a later refinement).
+    /// </summary>
     /// <param name="focusTerm">The focus node as an RDF term.</param>
-    /// <returns>The inline-data block binding <c>?this</c> to the focus node.</returns>
-    private static ValuesClause BindThis(RdfTerm focusTerm)
+    /// <param name="path">The property shape's path, or <see langword="null"/> for a node shape.</param>
+    /// <param name="context">The validation context (for resolving the path predicate IRI to a term).</param>
+    /// <returns>The inline-data block pre-binding <c>$this</c> (and <c>$PATH</c> when applicable).</returns>
+    private static ValuesClause BuildPreBindings(RdfTerm focusTerm, PropertyPath? path, ValidationContext context)
     {
+        if(path is PredicatePath predicatePath)
+        {
+            RdfTerm pathTerm = context.Dictionary.Resolve((TermId)predicatePath.Predicate);
+
+            return new ValuesClause(SourceSpan.None, [ThisVariable, PathPreBindingVariable], [new RdfTerm?[] { focusTerm, pathTerm }]);
+        }
+
         return new ValuesClause(SourceSpan.None, [ThisVariable], [new RdfTerm?[] { focusTerm }]);
     }
 
