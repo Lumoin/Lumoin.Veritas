@@ -97,13 +97,20 @@ public static class ShapeLoader
         PathVocabularyIds pathVocabulary = BuildPathVocabularyIds(dictionary);
         RdfsVocabularyIds rdfsVocabulary = BuildRdfsVocabularyIds(dictionary);
 
+        //Discover SPARQL-based constraint components (SHACL-SPARQL §6) declared in the shape graph and register
+        //them alongside the built-ins, so a shape providing a component's parameters gets a
+        //SparqlComponentConstraint. Their parameter paths join the known constraint-parameter ids below.
+        IReadOnlyList<ConstraintComponentInfo> discoveredComponents = await SparqlComponentLoader.DiscoverAsync(
+            shapeGraphMatch, dictionary, populationIds, cancellationToken).ConfigureAwait(false);
+        List<ConstraintComponentInfo> allComponents = [.. registeredComponents, .. discoveredComponents];
+
         //Index the registered components by primary parameter id and
         //build the flat set of every parameter id the loader should
         //recognize as a constraint parameter.
         (IReadOnlyDictionary<IriId, ConstraintComponentInfo> componentsByPrimary,
          IReadOnlyDictionary<IriId, ImmutableArray<IriId>> companionsByPrimary,
          IReadOnlySet<IriId> knownParameterIds,
-         IReadOnlyList<IriId> allConstraintParameterIds) = IndexComponents(dictionary, registeredComponents);
+         IReadOnlyList<IriId> allConstraintParameterIds) = IndexComponents(dictionary, allComponents);
 
         //Discovery. Discovery's vocabulary struct is minimal — just
         //rdf:type — whereas the full RdfsVocabularyIds carries the

@@ -86,9 +86,10 @@ public static class SparqlConstraintEvaluator
         SparqlQueryEngine engine = await context.SparqlEngines.GetOrBuildAsync(
             context.DataMatchOps, context.Dictionary, cancellationToken).ConfigureAwait(false);
 
-        //Pre-bind $this (and, on a predicate-path property shape, $PATH) via a single-row trailing VALUES.
+        //Pre-bind $this (and, on a predicate-path property shape, $PATH) via an inline VALUES at the front of the
+        //WHERE group (so a lifted FILTER sees the bindings — a trailing VALUES would join too late).
         RdfTerm focusTerm = context.Dictionary.Resolve(focusNode);
-        SparqlQuery bound = sparqlConstraint.Query with { Values = BuildPreBindings(focusTerm, path, context) };
+        SparqlQuery bound = SparqlPreBinding.WithInlineValues(sparqlConstraint.Query, BuildPreBindings(focusTerm, path, context));
 
         IReadOnlyList<SparqlSolution> solutions;
         try

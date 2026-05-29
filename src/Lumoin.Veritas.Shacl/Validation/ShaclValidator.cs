@@ -781,7 +781,11 @@ public static class ShaclValidator
                 cancellationToken.ThrowIfCancellationRequested();
 
                 Utf8String componentIri = constraint.ConstraintComponentIri;
-                bool isRegistered = Evaluators.IsRegistered(componentIri);
+
+                //A SPARQL-based constraint component (SHACL-SPARQL §6) has a user-defined component IRI, so it is
+                //dispatched by constraint type rather than by an IRI registered in the evaluator registry.
+                bool isSparqlComponent = constraint is Constraints.SparqlComponentConstraint;
+                bool isRegistered = isSparqlComponent || Evaluators.IsRegistered(componentIri);
 
                 if(traceHandler is not null)
                 {
@@ -804,7 +808,9 @@ public static class ShaclValidator
                     traceHandler(in evt);
                 }
 
-                ConstraintEvaluator evaluator = Evaluators.GetOrDefault(componentIri);
+                ConstraintEvaluator evaluator = isSparqlComponent
+                    ? SparqlComponentConstraintEvaluator.EvaluateAsync
+                    : Evaluators.GetOrDefault(componentIri);
                 ImmutableArray<ValidationResult> results = await evaluator(
                     shape,
                     constraint,

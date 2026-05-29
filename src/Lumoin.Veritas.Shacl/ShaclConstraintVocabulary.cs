@@ -228,4 +228,19 @@ public static class ShaclConstraintVocabulary
 
     /// <summary><c>sh:namespace</c> — the namespace IRI (an <c>xsd:anyURI</c> literal) of a namespace declaration (SHACL-SPARQL §5.2.1).</summary>
     public static Utf8String Namespace { get; } = new("http://www.w3.org/ns/shacl#namespace"u8.ToArray());
+
+    /// <summary><c>sh:parameter</c> — declares a parameter of a SPARQL-based constraint component (SHACL-SPARQL §6).</summary>
+    public static Utf8String Parameter { get; } = new("http://www.w3.org/ns/shacl#parameter"u8.ToArray());
+
+    /// <summary><c>sh:optional</c> — marks a constraint-component parameter as optional (SHACL-SPARQL §6).</summary>
+    public static Utf8String Optional { get; } = new("http://www.w3.org/ns/shacl#optional"u8.ToArray());
+
+    /// <summary><c>sh:validator</c> — a constraint component's generic SPARQL validator (SHACL-SPARQL §6.2).</summary>
+    public static Utf8String Validator { get; } = new("http://www.w3.org/ns/shacl#validator"u8.ToArray());
+
+    /// <summary><c>sh:nodeValidator</c> — a constraint component's node-shape SPARQL validator (SHACL-SPARQL §6.2).</summary>
+    public static Utf8String NodeValidator { get; } = new("http://www.w3.org/ns/shacl#nodeValidator"u8.ToArray());
+
+    /// <summary><c>sh:propertyValidator</c> — a constraint component's property-shape SPARQL validator (SHACL-SPARQL §6.2).</summary>
+    public static Utf8String PropertyValidator { get; } = new("http://www.w3.org/ns/shacl#propertyValidator"u8.ToArray());
 }
