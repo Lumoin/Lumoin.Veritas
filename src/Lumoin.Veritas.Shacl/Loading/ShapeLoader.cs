@@ -224,7 +224,8 @@ public static class ShapeLoader
             Prefixes: dictionary.GetOrAdd(new NamedNode(ShaclConstraintVocabulary.Prefixes)),
             Declare: dictionary.GetOrAdd(new NamedNode(ShaclConstraintVocabulary.Declare)),
             Prefix: dictionary.GetOrAdd(new NamedNode(ShaclConstraintVocabulary.Prefix)),
-            Namespace: dictionary.GetOrAdd(new NamedNode(ShaclConstraintVocabulary.Namespace)));
+            Namespace: dictionary.GetOrAdd(new NamedNode(ShaclConstraintVocabulary.Namespace)),
+            RdfsClass: dictionary.GetOrAdd(new NamedNode(RdfVocabulary.Rdfs.Class)));
     }
 
     private static RdfListIds BuildRdfListIds(TermDictionary dictionary)

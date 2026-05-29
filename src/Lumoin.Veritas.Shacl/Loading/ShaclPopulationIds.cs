@@ -47,6 +47,7 @@ namespace Lumoin.Veritas.Shacl.Loading;
 /// <param name="Declare">The <c>sh:declare</c> predicate identifier (one namespace declaration on a prefix-declaration subject).</param>
 /// <param name="Prefix">The <c>sh:prefix</c> predicate identifier (a declaration's prefix string).</param>
 /// <param name="Namespace">The <c>sh:namespace</c> predicate identifier (a declaration's namespace IRI).</param>
+/// <param name="RdfsClass">The <c>rdfs:Class</c> identifier — a shape that is also an <c>rdfs:Class</c> implicitly targets its instances (§2.1.3.3).</param>
 internal readonly record struct ShaclPopulationIds(
     IriId Path,
     IriId TargetClass,
@@ -64,4 +65,5 @@ internal readonly record struct ShaclPopulationIds(
     IriId Prefixes,
     IriId Declare,
     IriId Prefix,
-    IriId Namespace);
+    IriId Namespace,
+    IriId RdfsClass);

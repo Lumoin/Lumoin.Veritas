@@ -78,6 +78,7 @@ internal static class ShapePopulation
         Dictionary<IriId, List<TermId>> parameterValues = [];
         TermId? pathValue = null;
         List<TermId> sparqlConstraintNodes = [];
+        bool isClass = false;
 
         await foreach(EncodedTriple triple in shapeGraphMatch(builder.Id, TermId.None, TermId.None, cancellationToken).ConfigureAwait(false))
         {
@@ -105,6 +106,12 @@ internal static class ShapePopulation
                 continue;
             }
 
+            //A shape that is also an rdfs:Class implicitly targets every instance of that class (§2.1.3.3).
+            if(predicate.Equals(context.RdfsVocabulary.RdfType) && value.Equals((TermId)context.ShaclIds.RdfsClass))
+            {
+                isClass = true;
+            }
+
             if(TryHandleMetadata(builder, predicate, value, context))
             {
                 continue;
@@ -130,6 +137,15 @@ internal static class ShapePopulation
             //Other predicates are silently ignored — rdf:type for the
             //shape class, custom metadata, extensions not registered
             //with this loader.
+        }
+
+        //A shape that is also an rdfs:Class targets every instance of that class — an implicit class target.
+        if(isClass)
+        {
+            builder.Targets.Add(new ImplicitClassTarget(
+                IriId.FromUnchecked(builder.Id),
+                context.RdfsVocabulary.RdfType,
+                context.RdfsVocabulary.RdfsSubClassOf));
         }
 
         if(builder.IsPropertyShape)
