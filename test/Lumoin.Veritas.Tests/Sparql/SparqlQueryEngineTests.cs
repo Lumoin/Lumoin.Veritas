@@ -584,6 +584,63 @@ internal sealed class SparqlQueryEngineTests
         Assert.AreEqual("en", literal.Language?.ToString());
     }
 
+    /// <summary>The date-time accessors return the integer components of an xsd:dateTime in its own timezone.</summary>
+    [TestMethod]
+    public async Task DateTimeAccessorsReturnComponents()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(new DataTriple(Iri("a"), Iri("p"), DateTimeLiteral("2011-01-10T14:45:13.815-05:00"))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate(
+            "PREFIX : <http://example.org/> SELECT ?y ?mo ?d ?h ?mi ?sec WHERE { ?s :p ?v BIND(YEAR(?v) AS ?y) BIND(MONTH(?v) AS ?mo) BIND(DAY(?v) AS ?d) BIND(HOURS(?v) AS ?h) BIND(MINUTES(?v) AS ?mi) BIND(SECONDS(?v) AS ?sec) }", pool);
+
+        SparqlSolution solution = (await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false)).Single();
+
+        Assert.AreEqual("2011", LiteralValue(solution, "y"));
+        Assert.AreEqual("1", LiteralValue(solution, "mo"));
+        Assert.AreEqual("10", LiteralValue(solution, "d"));
+        Assert.AreEqual("14", LiteralValue(solution, "h"));
+        Assert.AreEqual("45", LiteralValue(solution, "mi"));
+        Assert.AreEqual("13.815", LiteralValue(solution, "sec"));
+    }
+
+    /// <summary>TZ returns the timezone designator and TIMEZONE returns it as an xsd:dayTimeDuration.</summary>
+    [TestMethod]
+    public async Task TzAndTimezoneReturnTheOffset()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(new DataTriple(Iri("a"), Iri("p"), DateTimeLiteral("2011-01-10T14:45:13-05:00"))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?tz ?dur WHERE { ?s :p ?v BIND(TZ(?v) AS ?tz) BIND(TIMEZONE(?v) AS ?dur) }", pool);
+
+        SparqlSolution solution = (await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false)).Single();
+
+        Assert.AreEqual("-05:00", LiteralValue(solution, "tz"));
+        Assert.AreEqual("-PT5H", LiteralValue(solution, "dur"));
+    }
+
+    /// <summary>TRIPLE builds a triple term and SUBJECT/PREDICATE/OBJECT read its components back.</summary>
+    [TestMethod]
+    public async Task TripleBuilderAndComponentAccessorsRoundTrip()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync().ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate(
+            "PREFIX : <http://example.org/> SELECT ?subj ?pred ?obj WHERE { BIND(TRIPLE(:a, :b, :c) AS ?t) BIND(SUBJECT(?t) AS ?subj) BIND(PREDICATE(?t) AS ?pred) BIND(OBJECT(?t) AS ?obj) }", pool);
+
+        SparqlSolution solution = (await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false)).Single();
+
+        Assert.AreEqual(Ex + "a", ValueIri(solution, "subj"));
+        Assert.AreEqual(Ex + "b", ValueIri(solution, "pred"));
+        Assert.AreEqual(Ex + "c", ValueIri(solution, "obj"));
+    }
+
+    /// <summary>Builds an <c>xsd:dateTime</c> literal term.</summary>
+    /// <param name="lexical">The dateTime lexical form.</param>
+    /// <returns>The literal term.</returns>
+    private static Literal DateTimeLiteral(string lexical)
+    {
+        return new Literal(Utf8String.FromString(lexical), new NamedNode(Utf8String.FromString("http://www.w3.org/2001/XMLSchema#dateTime")));
+    }
+
     /// <summary>Builds an engine over a data graph of IRI triples under the example namespace.</summary>
     /// <param name="triples">The triples, each given as local names completed with the example prefix.</param>
     /// <returns>An engine over the graph.</returns>

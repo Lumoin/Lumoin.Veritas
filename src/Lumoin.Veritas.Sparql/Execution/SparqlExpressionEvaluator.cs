@@ -53,6 +53,15 @@ public static class SparqlExpressionEvaluator
     /// <summary>The <c>rdf:langString</c> datatype IRI (the datatype of a language-tagged literal).</summary>
     private static Utf8String RdfLangString { get; } = Utf8String.FromString("http://www.w3.org/1999/02/22-rdf-syntax-ns#langString");
 
+    /// <summary>The <c>xsd:dateTime</c> datatype IRI (the argument type of the date-time accessor functions).</summary>
+    private static Utf8String XsdDateTime { get; } = Utf8String.FromString(XsdNamespace + "dateTime");
+
+    /// <summary>The <c>xsd:decimal</c> datatype IRI (the result type of <c>SECONDS</c>).</summary>
+    private static Utf8String XsdDecimal { get; } = Utf8String.FromString(XsdNamespace + "decimal");
+
+    /// <summary>The <c>xsd:dayTimeDuration</c> datatype IRI (the result type of <c>TIMEZONE</c>).</summary>
+    private static Utf8String XsdDayTimeDuration { get; } = Utf8String.FromString(XsdNamespace + "dayTimeDuration");
+
     /// <summary>The integral numeric datatype IRIs (a literal of one of these is treated as an integer for arithmetic result typing).</summary>
     private static HashSet<string> IntegralDatatypes { get; } = new()
     {
@@ -589,11 +598,23 @@ public static class SparqlExpressionEvaluator
             BuiltInFunction.Iri or BuiltInFunction.Uri => Iri(arguments[0]),
             BuiltInFunction.StrDt => StrDt(arguments),
             BuiltInFunction.StrLang => StrLang(arguments),
+            BuiltInFunction.Year => DateComponent(arguments[0], static dateTime => dateTime.Year),
+            BuiltInFunction.Month => DateComponent(arguments[0], static dateTime => dateTime.Month),
+            BuiltInFunction.Day => DateComponent(arguments[0], static dateTime => dateTime.Day),
+            BuiltInFunction.Hours => DateComponent(arguments[0], static dateTime => dateTime.Hour),
+            BuiltInFunction.Minutes => DateComponent(arguments[0], static dateTime => dateTime.Minute),
+            BuiltInFunction.Seconds => Seconds(arguments[0]),
+            BuiltInFunction.Timezone => Timezone(arguments[0]),
+            BuiltInFunction.Tz => Tz(arguments[0]),
+            BuiltInFunction.Triple => BuildTriple(arguments),
+            BuiltInFunction.Subject => TripleComponent(arguments[0], static triple => triple.Subject),
+            BuiltInFunction.Predicate => TripleComponent(arguments[0], static triple => triple.Predicate),
+            BuiltInFunction.Object => TripleComponent(arguments[0], static triple => triple.Object),
             BuiltInFunction.Abs => UnaryNumeric(arguments[0], static value => Math.Abs(value)),
             BuiltInFunction.Ceil => UnaryNumeric(arguments[0], Math.Ceiling),
             BuiltInFunction.Floor => UnaryNumeric(arguments[0], Math.Floor),
             BuiltInFunction.Round => UnaryNumeric(arguments[0], static value => Math.Round(value, MidpointRounding.AwayFromZero)),
-            _ => throw new NotSupportedException($"SPARQL built-in function '{function}' is not yet evaluable; this slice covers the term-type tests, sameTerm, STR/LANG/LANGMATCHES/DATATYPE, the string functions (STRLEN/UCASE/LCASE/CONTAINS/STRSTARTS/STRENDS/CONCAT/SUBSTR/STRBEFORE/STRAFTER/ENCODE_FOR_URI/REGEX/REPLACE), the term constructors (IRI/URI/STRDT/STRLANG), and ABS/CEIL/FLOOR/ROUND. The remaining functions (BNODE, the date-time accessors, RAND, UUID/STRUUID, the hash functions, and the named functions) and EXISTS/NOT EXISTS land in a later slice.")
+            _ => throw new NotSupportedException($"SPARQL built-in function '{function}' is not yet evaluable; this slice covers the term-type tests, sameTerm, STR/LANG/LANGMATCHES/DATATYPE, the string functions (STRLEN/UCASE/LCASE/CONTAINS/STRSTARTS/STRENDS/CONCAT/SUBSTR/STRBEFORE/STRAFTER/ENCODE_FOR_URI/REGEX/REPLACE), the term constructors (IRI/URI/STRDT/STRLANG), the date-time accessors (YEAR/MONTH/DAY/HOURS/MINUTES/SECONDS/TIMEZONE/TZ), the triple builders (TRIPLE/SUBJECT/PREDICATE/OBJECT), and ABS/CEIL/FLOOR/ROUND. The seam-dependent functions (BNODE, RAND, UUID/STRUUID, NOW, the hash functions — all through the Veritas injection seams) and the named functions and EXISTS/NOT EXISTS land in a later slice.")
         };
     }
 
@@ -1031,6 +1052,150 @@ public static class SparqlExpressionEvaluator
         }
 
         return ExpressionValue.Of(new Literal(lexical.Value, new NamedNode(RdfLangString), tag.Value));
+    }
+
+    /// <summary>Evaluates a date-time accessor (<c>YEAR</c>/<c>MONTH</c>/<c>DAY</c>/<c>HOURS</c>/<c>MINUTES</c>, §17.4.5) that returns an integer component of an <c>xsd:dateTime</c>; a non-dateTime argument errs.</summary>
+    /// <param name="argument">The <c>xsd:dateTime</c> argument.</param>
+    /// <param name="component">The component selector, reading the field in the value's own timezone.</param>
+    /// <returns>The component as an <c>xsd:integer</c>, or an error.</returns>
+    private static ExpressionValue DateComponent(ExpressionValue argument, Func<DateTimeOffset, int> component)
+    {
+        return TryGetDateTime(argument, out DateTimeOffset value, out _) ? Numeric(component(value), integral: true) : ExpressionValue.Error;
+    }
+
+    /// <summary>Evaluates <c>SECONDS</c> (§17.4.5.6): the seconds component of an <c>xsd:dateTime</c> as an <c>xsd:decimal</c> (including a fractional part); a non-dateTime argument errs.</summary>
+    /// <param name="argument">The <c>xsd:dateTime</c> argument.</param>
+    /// <returns>The seconds as an <c>xsd:decimal</c>, or an error.</returns>
+    private static ExpressionValue Seconds(ExpressionValue argument)
+    {
+        if(!TryGetDateTime(argument, out DateTimeOffset value, out _))
+        {
+            return ExpressionValue.Error;
+        }
+
+        decimal seconds = value.Second + (value.Millisecond / 1000m);
+        string lexical = seconds.ToString(value.Millisecond == 0 ? "0" : "0.###", CultureInfo.InvariantCulture);
+
+        return ExpressionValue.Of(new Literal(Utf8String.FromString(lexical), new NamedNode(XsdDecimal)));
+    }
+
+    /// <summary>Evaluates <c>TIMEZONE</c> (§17.4.5.7): the timezone of an <c>xsd:dateTime</c> as an <c>xsd:dayTimeDuration</c>; a value with no timezone (or a non-dateTime argument) errs.</summary>
+    /// <param name="argument">The <c>xsd:dateTime</c> argument.</param>
+    /// <returns>The timezone as an <c>xsd:dayTimeDuration</c>, or an error.</returns>
+    private static ExpressionValue Timezone(ExpressionValue argument)
+    {
+        if(!TryGetDateTime(argument, out DateTimeOffset value, out bool hasTimezone) || !hasTimezone)
+        {
+            return ExpressionValue.Error;
+        }
+
+        return ExpressionValue.Of(new Literal(Utf8String.FromString(FormatDayTimeDuration(value.Offset)), new NamedNode(XsdDayTimeDuration)));
+    }
+
+    /// <summary>Evaluates <c>TZ</c> (§17.4.5.8): the timezone of an <c>xsd:dateTime</c> as a simple literal (<c>"Z"</c>, <c>"±hh:mm"</c>, or <c>""</c> when there is none); a non-dateTime argument errs.</summary>
+    /// <param name="argument">The <c>xsd:dateTime</c> argument.</param>
+    /// <returns>The timezone string, or an error.</returns>
+    private static ExpressionValue Tz(ExpressionValue argument)
+    {
+        if(!TryGetDateTime(argument, out DateTimeOffset value, out bool hasTimezone))
+        {
+            return ExpressionValue.Error;
+        }
+
+        if(!hasTimezone)
+        {
+            return StringLiteral(EmptyText);
+        }
+
+        return StringLiteral(Utf8String.FromString(value.Offset == TimeSpan.Zero ? "Z" : FormatOffset(value.Offset)));
+    }
+
+    /// <summary>Parses an <c>xsd:dateTime</c> argument, reporting whether its lexical form carried a timezone (a tz-less value is parsed as UTC for component extraction).</summary>
+    /// <param name="argument">The argument value.</param>
+    /// <param name="value">Receives the parsed value on success.</param>
+    /// <param name="hasTimezone">Receives whether the lexical form carried a timezone designator.</param>
+    /// <returns><see langword="true"/> when the argument is a parseable <c>xsd:dateTime</c> literal.</returns>
+    private static bool TryGetDateTime(ExpressionValue argument, out DateTimeOffset value, out bool hasTimezone)
+    {
+        value = default;
+        hasTimezone = false;
+        if(argument.IsError || argument.Term is not Literal literal || literal.Datatype.Iri != XsdDateTime)
+        {
+            return false;
+        }
+
+        string lexical = literal.Value.ToString();
+
+        //The timezone designator (Z or ±hh:mm) is in the time part, after 'T' — the date part's '-' separators
+        //must not be mistaken for a negative offset.
+        int timeIndex = lexical.IndexOf('T', StringComparison.Ordinal);
+        ReadOnlySpan<char> timePart = timeIndex >= 0 ? lexical.AsSpan(timeIndex + 1) : lexical.AsSpan();
+        hasTimezone = timePart.EndsWith("Z") || timePart.Contains('+') || timePart.Contains('-');
+
+        return DateTimeOffset.TryParse(lexical, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out value);
+    }
+
+    /// <summary>Formats a timezone offset as an <c>xsd:dayTimeDuration</c> (<c>PT0S</c> for UTC, e.g. <c>-PT5H</c>).</summary>
+    /// <param name="offset">The timezone offset.</param>
+    /// <returns>The duration lexical form.</returns>
+    private static string FormatDayTimeDuration(TimeSpan offset)
+    {
+        if(offset == TimeSpan.Zero)
+        {
+            return "PT0S";
+        }
+
+        TimeSpan magnitude = offset.Duration();
+        StringBuilder builder = new();
+        builder.Append(offset < TimeSpan.Zero ? "-PT" : "PT");
+        if(magnitude.Hours > 0)
+        {
+            builder.Append(magnitude.Hours).Append('H');
+        }
+
+        if(magnitude.Minutes > 0)
+        {
+            builder.Append(magnitude.Minutes).Append('M');
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>Formats a timezone offset as the <c>±hh:mm</c> designator <c>TZ</c> returns.</summary>
+    /// <param name="offset">The timezone offset.</param>
+    /// <returns>The offset designator.</returns>
+    private static string FormatOffset(TimeSpan offset)
+    {
+        TimeSpan magnitude = offset.Duration();
+
+        return string.Create(CultureInfo.InvariantCulture, $"{(offset < TimeSpan.Zero ? '-' : '+')}{magnitude.Hours:D2}:{magnitude.Minutes:D2}");
+    }
+
+    /// <summary>
+    /// Evaluates <c>TRIPLE</c> (RDF 1.2): builds an RDF triple term from a subject, predicate, and object. The
+    /// subject must not be a literal and the predicate must be an IRI; otherwise the result errs.
+    /// </summary>
+    /// <param name="arguments">The arguments: subject, predicate, object.</param>
+    /// <returns>The triple-term value, or an error.</returns>
+    private static ExpressionValue BuildTriple(ExpressionValue[] arguments)
+    {
+        if(arguments[0].IsError || arguments[1].IsError || arguments[2].IsError
+            || arguments[0].Term is Literal
+            || arguments[1].Term is not NamedNode predicate)
+        {
+            return ExpressionValue.Error;
+        }
+
+        return ExpressionValue.Of(new Lumoin.Veritas.Core.TripleTerm(arguments[0].Term, predicate, arguments[2].Term));
+    }
+
+    /// <summary>Evaluates <c>SUBJECT</c>/<c>PREDICATE</c>/<c>OBJECT</c> (RDF 1.2): extracts a component of a triple term; a non-triple-term argument errs.</summary>
+    /// <param name="argument">The argument value (expected to be a triple term).</param>
+    /// <param name="component">The component selector.</param>
+    /// <returns>The selected component, or an error.</returns>
+    private static ExpressionValue TripleComponent(ExpressionValue argument, Func<Lumoin.Veritas.Core.TripleTerm, RdfTerm> component)
+    {
+        return !argument.IsError && argument.Term is Lumoin.Veritas.Core.TripleTerm triple ? ExpressionValue.Of(component(triple)) : ExpressionValue.Error;
     }
 
     /// <summary>Extracts the UTF-8 lexical form and language tag of a string-valued argument (<c>xsd:string</c> or language-tagged); fails for an error or a non-string term.</summary>
