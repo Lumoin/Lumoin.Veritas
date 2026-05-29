@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Sparql.Algebra;
 using Lumoin.Veritas.Sparql.Ast;
@@ -28,11 +29,13 @@ namespace Lumoin.Veritas.Sparql.Translation;
 /// structured <see cref="PropertyPathExpression"/> whole (§18.2.2.4); the <em>decomposition</em> of the
 /// individual path forms — sequence/alternative/inverse into joins/unions/swaps, and the
 /// <c>*</c>/<c>+</c>/<c>?</c>/negated-set evaluation semantics — is a later lowering slice. A sub-<c>SELECT</c>
-/// becomes a <see cref="ToMultiSet"/> over its inner query's algebra, joined into the enclosing group. Aggregation
-/// (<c>GROUP BY</c>/<c>HAVING</c> and aggregate expressions, which require the <c>Group</c>/<c>AggregateJoin</c>
-/// operators) is deferred and raises <see cref="NotSupportedException"/>. An error node in the recovered AST
-/// contributes nothing — a graph-pattern error becomes <see cref="UnitTable"/> and an errored query-form head
-/// translates to the bare pattern algebra. SPARQL 1.2 §18.2 [Translation to the SPARQL Algebra].
+/// becomes a <see cref="ToMultiSet"/> over its inner query's algebra, joined into the enclosing group.
+/// Aggregation (an explicit <c>GROUP BY</c>/<c>HAVING</c>, or an aggregate expression triggering implicit
+/// grouping) becomes <see cref="Group"/> then <see cref="AggregateJoin"/>, with each distinct aggregate bound
+/// to a fresh result variable and the projection/<c>HAVING</c>/<c>ORDER BY</c> expressions rewritten to
+/// reference those variables (§18.2.4.1). An error node in the recovered AST contributes nothing — a
+/// graph-pattern error becomes <see cref="UnitTable"/> and an errored query-form head translates to the bare
+/// pattern algebra. SPARQL 1.2 §18.2 [Translation to the SPARQL Algebra].
 /// </para>
 /// </remarks>
 public static class SparqlTranslator
@@ -42,7 +45,6 @@ public static class SparqlTranslator
     /// </summary>
     /// <param name="query">The query to translate; expected to have been lowered by <see cref="SparqlNormalizer"/>.</param>
     /// <returns>The root of the query's algebra tree.</returns>
-    /// <exception cref="NotSupportedException">A deferred construct (aggregation) is present.</exception>
     public static AlgebraOperator Translate(SparqlQuery query)
     {
         ArgumentNullException.ThrowIfNull(query);
@@ -59,7 +61,6 @@ public static class SparqlTranslator
     /// <param name="query">The query whose head and modifiers are applied.</param>
     /// <param name="pattern">The query's already-translated WHERE pattern.</param>
     /// <returns>The query's algebra.</returns>
-    /// <exception cref="NotSupportedException">Aggregation (<c>GROUP BY</c>/<c>HAVING</c>) is present.</exception>
     private static AlgebraOperator ApplyQueryForm(SparqlQuery query, AlgebraOperator pattern)
     {
         //A trailing VALUES block joins the pattern result (§18.2.5, final VALUES clause).
@@ -67,29 +68,230 @@ public static class SparqlTranslator
             ? Join(pattern, new Table(query.Values))
             : pattern;
 
-        //Grouping and aggregation are a separate slice; refuse them rather than emit a wrong tree.
         SolutionModifier modifier = query.Modifier;
-        if(modifier.Group is not null || modifier.Having is not null)
+
+        //The projection expressions feed both the aggregation trigger (an aggregate forces implicit grouping)
+        //and, when no aggregation applies, the SELECT head; ORDER BY likewise carries through either path.
+        IReadOnlyList<SelectProjection> projections = query.Form is SelectQuery selectForm ? selectForm.Projections : [];
+        OrderClause? order = modifier.Order;
+
+        //Aggregation applies on an explicit GROUP BY / HAVING, or on any aggregate appearing in the projection /
+        //HAVING / ORDER BY expressions (implicit grouping). It rewrites the pattern (Group → AggregateJoin →
+        //HAVING filter) and the projection / ORDER BY expressions (aggregates → their result variables) so the
+        //SELECT / ORDER BY / slice steps below run over the rewritten forms (§18.2.4.1).
+        List<AggregateBinding> aggregates = CollectAggregates(projections, modifier);
+        if(modifier.Group is not null || modifier.Having is not null || aggregates.Count > 0)
         {
-            throw new NotSupportedException("SPARQL aggregation (GROUP BY / HAVING) translation is a separate slice; this translator covers the non-aggregating core of SPARQL 1.2 §18.2.");
+            AggregateRewrite rewrite = ApplyAggregation(current, projections, modifier, aggregates);
+            current = rewrite.Pattern;
+            projections = rewrite.Projections;
+            order = rewrite.Order;
         }
 
         return query.Form switch
         {
-            SelectQuery select => TranslateSelect(select, current, modifier),
+            SelectQuery select => TranslateSelect(select, current, projections, order, modifier),
 
             //ASK reports whether the pattern has any solution; the solution modifiers do not change that.
             AskQuery => current,
 
             //CONSTRUCT and DESCRIBE have no projection; ORDER BY and the slice still shape the solution
             //sequence that feeds template instantiation / resource description (a later, execution-time slice).
-            ConstructQuery => ApplyOrderAndSlice(current, modifier),
-            DescribeQuery => ApplyOrderAndSlice(current, modifier),
+            ConstructQuery => ApplyOrderAndSlice(current, order, modifier),
+            DescribeQuery => ApplyOrderAndSlice(current, order, modifier),
 
             //A recovered query whose form head is an error node still has a parsed WHERE pattern.
             ErrorQueryForm => current,
 
             _ => throw new InvalidOperationException($"Unexpected query-form kind {query.Form.GetType().Name} during SPARQL algebra translation.")
+        };
+    }
+
+    /// <summary>
+    /// Applies the aggregation translation (§18.2.4.1) over the pattern: the input is grouped
+    /// (<see cref="Group"/>) by the explicit <c>GROUP BY</c> conditions (or the single implicit group when there
+    /// are none), the distinct aggregates are computed per group (<see cref="AggregateJoin"/>), <c>HAVING</c>
+    /// becomes a <see cref="Filter"/> over the grouped solutions, and the projection / <c>ORDER BY</c>
+    /// expressions are rewritten so each aggregate refers to its result variable.
+    /// </summary>
+    /// <param name="input">The pattern algebra to group and aggregate.</param>
+    /// <param name="projections">The projection columns whose aggregates are rewritten.</param>
+    /// <param name="modifier">The solution modifiers carrying the <c>GROUP BY</c> / <c>HAVING</c> / <c>ORDER BY</c> clauses.</param>
+    /// <param name="aggregates">The distinct aggregates collected from the projection / <c>HAVING</c> / <c>ORDER BY</c>, each bound to its fresh result variable.</param>
+    /// <returns>The grouped/aggregated pattern with the rewritten projection and ORDER BY.</returns>
+    private static AggregateRewrite ApplyAggregation(AlgebraOperator input, IReadOnlyList<SelectProjection> projections, SolutionModifier modifier, List<AggregateBinding> aggregates)
+    {
+        //The aggregate-to-result-variable lookup the expression rewrites consult; keyed by value equality so the
+        //two occurrences of one repeated aggregate map to the same variable.
+        //Keyed by the source-position-insensitive aggregate so a lookup matches any textually identical
+        //occurrence regardless of where it appears.
+        Dictionary<AggregateExpression, SparqlVariable> bindings = new(aggregates.Count);
+        foreach(AggregateBinding aggregate in aggregates)
+        {
+            bindings[NormalizeAggregate(aggregate.Aggregate)] = aggregate.Variable;
+        }
+
+        //Group then AggregateJoin: an empty GROUP BY is the single implicit group, and an empty aggregation list
+        //(an explicit GROUP BY with no aggregate) still yields one solution per group bound to the grouping keys.
+        AlgebraOperator current = new AggregateJoin(new Group(modifier.Group?.Conditions ?? [], input), aggregates);
+
+        //HAVING constrains the grouped solutions and runs after the aggregate values are bound; its conditions are
+        //conjoined into one filter over the AggregateJoin.
+        if(modifier.Having is not null && modifier.Having.Conditions.Count > 0)
+        {
+            List<ExpressionNode> conditions = new(modifier.Having.Conditions.Count);
+            foreach(ExpressionNode condition in modifier.Having.Conditions)
+            {
+                conditions.Add(RewriteAggregates(condition, bindings));
+            }
+
+            current = new Filter(Conjoin(conditions), current);
+        }
+
+        return new AggregateRewrite(current, RewriteProjections(projections, bindings), RewriteOrder(modifier.Order, bindings));
+    }
+
+    /// <summary>
+    /// Collects the distinct aggregate expressions appearing across the projection, <c>HAVING</c>, and
+    /// <c>ORDER BY</c> expressions (deduplicated independent of source position), in first-appearance order,
+    /// assigning each a fresh internal result variable. The names use a leading <c>.</c> (<c>.agg0</c>,
+    /// <c>.agg1</c>, …), which no user variable can carry, so they cannot collide with a query variable.
+    /// </summary>
+    /// <param name="projections">The projection columns to scan.</param>
+    /// <param name="modifier">The solution modifiers carrying the <c>HAVING</c> / <c>ORDER BY</c> clauses.</param>
+    /// <returns>The distinct aggregates, each bound to its fresh result variable, in first-appearance order; empty when there are none.</returns>
+    private static List<AggregateBinding> CollectAggregates(IReadOnlyList<SelectProjection> projections, SolutionModifier modifier)
+    {
+        List<AggregateBinding> aggregates = [];
+        Dictionary<AggregateExpression, SparqlVariable> seen = [];
+
+        foreach(SelectProjection projection in projections)
+        {
+            if(projection is SelectExpressionAs expressionAs)
+            {
+                CollectAggregatesFrom(expressionAs.Expression, aggregates, seen);
+            }
+        }
+
+        if(modifier.Having is not null)
+        {
+            foreach(ExpressionNode condition in modifier.Having.Conditions)
+            {
+                CollectAggregatesFrom(condition, aggregates, seen);
+            }
+        }
+
+        if(modifier.Order is not null)
+        {
+            foreach(OrderCondition condition in modifier.Order.Conditions)
+            {
+                CollectAggregatesFrom(OrderExpression(condition), aggregates, seen);
+            }
+        }
+
+        return aggregates;
+    }
+
+    /// <summary>Records the not-yet-seen aggregates in an expression tree, in first-appearance order, assigning each its fresh result variable.</summary>
+    /// <param name="root">The expression to scan.</param>
+    /// <param name="aggregates">The accumulating ordered list of distinct aggregate bindings.</param>
+    /// <param name="seen">The map tracking which aggregates (by source-position-insensitive key) are already recorded, and to which variable.</param>
+    private static void CollectAggregatesFrom(ExpressionNode root, List<AggregateBinding> aggregates, Dictionary<AggregateExpression, SparqlVariable> seen)
+    {
+        foreach(ExpressionNode node in ExpressionWalker.Traverse(root))
+        {
+            //Dedup ignores source position: two textually identical aggregates (e.g. COUNT(?o) in both the
+            //projection and HAVING) compute one value, so they share one binding and one result variable.
+            if(node is AggregateExpression aggregate && !seen.ContainsKey(NormalizeAggregate(aggregate)))
+            {
+                SparqlVariable variable = new(Utf8String.FromString($".agg{seen.Count}"));
+                seen.Add(NormalizeAggregate(aggregate), variable);
+                aggregates.Add(new AggregateBinding(variable, aggregate));
+            }
+        }
+    }
+
+    /// <summary>Rewrites the projection columns, replacing each aggregate in an expression column with a reference to its result variable; bare-variable columns are returned unchanged.</summary>
+    /// <param name="projections">The projection columns.</param>
+    /// <param name="bindings">The aggregate-to-result-variable lookup.</param>
+    /// <returns>The rewritten projection columns, in order.</returns>
+    private static List<SelectProjection> RewriteProjections(IReadOnlyList<SelectProjection> projections, Dictionary<AggregateExpression, SparqlVariable> bindings)
+    {
+        List<SelectProjection> rewritten = new(projections.Count);
+        foreach(SelectProjection projection in projections)
+        {
+            rewritten.Add(projection is SelectExpressionAs expressionAs
+                ? new SelectExpressionAs(expressionAs.Span, RewriteAggregates(expressionAs.Expression, bindings), expressionAs.AsVariable)
+                : projection);
+        }
+
+        return rewritten;
+    }
+
+    /// <summary>Rewrites the <c>ORDER BY</c> conditions, replacing each aggregate in a key expression with a reference to its result variable.</summary>
+    /// <param name="order">The <c>ORDER BY</c> clause, or <see langword="null"/>.</param>
+    /// <param name="bindings">The aggregate-to-result-variable lookup.</param>
+    /// <returns>The rewritten clause, or <see langword="null"/> when <paramref name="order"/> is <see langword="null"/>.</returns>
+    private static OrderClause? RewriteOrder(OrderClause? order, Dictionary<AggregateExpression, SparqlVariable> bindings)
+    {
+        if(order is null)
+        {
+            return null;
+        }
+
+        List<OrderCondition> rewritten = new(order.Conditions.Count);
+        foreach(OrderCondition condition in order.Conditions)
+        {
+            rewritten.Add(condition switch
+            {
+                OrderAscending ascending => new OrderAscending(ascending.Span, RewriteAggregates(ascending.Expression, bindings)),
+                OrderDescending descending => new OrderDescending(descending.Span, RewriteAggregates(descending.Expression, bindings)),
+                _ => throw new InvalidOperationException($"Unexpected order-condition kind {condition.GetType().Name} during SPARQL algebra translation.")
+            });
+        }
+
+        return new OrderClause(order.Span, rewritten);
+    }
+
+    /// <summary>Replaces every aggregate in an expression with a reference to its result variable, leaving the rest of the tree intact.</summary>
+    /// <param name="expression">The expression to rewrite.</param>
+    /// <param name="bindings">The aggregate-to-result-variable lookup.</param>
+    /// <returns>The rewritten expression, or the same instance when it holds no aggregate.</returns>
+    private static ExpressionNode RewriteAggregates(ExpressionNode expression, Dictionary<AggregateExpression, SparqlVariable> bindings)
+    {
+        return ExpressionWalker.Transform(expression, node => node is AggregateExpression aggregate && bindings.TryGetValue(NormalizeAggregate(aggregate), out SparqlVariable variable)
+            ? new VariableExpression(aggregate.Span, variable)
+            : node);
+    }
+
+    /// <summary>
+    /// Produces the source-position-insensitive form of an aggregate — its own span and every span inside its
+    /// argument zeroed — used as the dedup / lookup key so two textually identical aggregates at different
+    /// source positions compare equal under the records' value equality.
+    /// </summary>
+    /// <param name="aggregate">The aggregate to normalize.</param>
+    /// <returns>The aggregate with all spans zeroed.</returns>
+    private static AggregateExpression NormalizeAggregate(AggregateExpression aggregate)
+    {
+        //The argument is a general expression descended normally; the aggregate itself is a leaf of the walk,
+        //so its own span is zeroed here rather than by the transform.
+        ExpressionNode? argument = aggregate.Argument is null
+            ? null
+            : ExpressionWalker.Transform(aggregate.Argument, static node => node with { Span = default });
+
+        return aggregate with { Span = default, Argument = argument };
+    }
+
+    /// <summary>Returns the key expression of an order condition, independent of its direction.</summary>
+    /// <param name="condition">The order condition.</param>
+    /// <returns>The condition's key expression.</returns>
+    private static ExpressionNode OrderExpression(OrderCondition condition)
+    {
+        return condition switch
+        {
+            OrderAscending ascending => ascending.Expression,
+            OrderDescending descending => descending.Expression,
+            _ => throw new InvalidOperationException($"Unexpected order-condition kind {condition.GetType().Name} during SPARQL algebra translation.")
         };
     }
 
@@ -364,17 +566,19 @@ public static class SparqlTranslator
     /// columns, or every visible variable for <c>SELECT *</c>), then <c>DISTINCT</c>/<c>REDUCED</c>, then the
     /// <c>OFFSET</c>/<c>LIMIT</c> slice.
     /// </summary>
-    /// <param name="select">The SELECT head.</param>
-    /// <param name="pattern">The translated WHERE pattern (with any trailing VALUES already joined).</param>
-    /// <param name="modifier">The solution modifiers.</param>
+    /// <param name="select">The SELECT head (its <c>DISTINCT</c>/<c>REDUCED</c>/<c>*</c> flags).</param>
+    /// <param name="pattern">The translated WHERE pattern (with any trailing VALUES and aggregation already applied).</param>
+    /// <param name="projections">The projection columns, with any aggregates already rewritten to their result variables.</param>
+    /// <param name="order">The <c>ORDER BY</c> clause, with any aggregates already rewritten, or <see langword="null"/>.</param>
+    /// <param name="modifier">The solution modifiers (the <c>OFFSET</c>/<c>LIMIT</c> slice).</param>
     /// <returns>The projected, modified algebra.</returns>
-    private static AlgebraOperator TranslateSelect(SelectQuery select, AlgebraOperator pattern, SolutionModifier modifier)
+    private static AlgebraOperator TranslateSelect(SelectQuery select, AlgebraOperator pattern, IReadOnlyList<SelectProjection> projections, OrderClause? order, SolutionModifier modifier)
     {
         AlgebraOperator current = pattern;
 
         //Project expressions ((expr AS ?v)) are bound before ORDER BY (so ordering may reference them) and
         //before projection (so it may keep them), in source order.
-        foreach(SelectProjection projection in select.Projections)
+        foreach(SelectProjection projection in projections)
         {
             if(projection is SelectExpressionAs expressionAs)
             {
@@ -382,14 +586,14 @@ public static class SparqlTranslator
             }
         }
 
-        if(modifier.Order is not null)
+        if(order is not null)
         {
-            current = new OrderBy(current, modifier.Order.Conditions);
+            current = new OrderBy(current, order.Conditions);
         }
 
         IReadOnlyList<SparqlVariable> projectionVariables = select.IsStar
             ? VisibleVariables(current)
-            : ProjectionVariables(select.Projections);
+            : ProjectionVariables(projections);
 
         current = new Project(current, projectionVariables);
 
@@ -407,12 +611,13 @@ public static class SparqlTranslator
 
     /// <summary>Applies the <c>ORDER BY</c> and <c>OFFSET</c>/<c>LIMIT</c> modifiers (the ones meaningful without a projection) over an input.</summary>
     /// <param name="input">The input algebra.</param>
-    /// <param name="modifier">The solution modifiers.</param>
+    /// <param name="order">The <c>ORDER BY</c> clause, with any aggregates already rewritten, or <see langword="null"/>.</param>
+    /// <param name="modifier">The solution modifiers (the <c>OFFSET</c>/<c>LIMIT</c> slice).</param>
     /// <returns>The input wrapped in <see cref="OrderBy"/> and/or <see cref="Slice"/> as the modifiers require.</returns>
-    private static AlgebraOperator ApplyOrderAndSlice(AlgebraOperator input, SolutionModifier modifier)
+    private static AlgebraOperator ApplyOrderAndSlice(AlgebraOperator input, OrderClause? order, SolutionModifier modifier)
     {
-        AlgebraOperator current = modifier.Order is not null
-            ? new OrderBy(input, modifier.Order.Conditions)
+        AlgebraOperator current = order is not null
+            ? new OrderBy(input, order.Conditions)
             : input;
 
         return ApplySlice(current, modifier);
@@ -671,4 +876,14 @@ public static class SparqlTranslator
     /// <param name="Operator">The operator to walk, or <see langword="null"/> when the step emits <see cref="Variable"/>.</param>
     /// <param name="Variable">The variable to emit when <see cref="Operator"/> is <see langword="null"/>.</param>
     private readonly record struct VisibleStep(AlgebraOperator? Operator, SparqlVariable Variable);
+
+    /// <summary>
+    /// The result of the aggregation translation: the grouped/aggregated pattern, and the projection and
+    /// <c>ORDER BY</c> with their aggregates rewritten to reference the per-group result variables, so the
+    /// SELECT-expression / ORDER BY / slice steps run over the rewritten forms.
+    /// </summary>
+    /// <param name="Pattern">The pattern after <see cref="Group"/> → <see cref="AggregateJoin"/> → optional <c>HAVING</c> <see cref="Filter"/>.</param>
+    /// <param name="Projections">The projection columns with aggregates rewritten to their result variables.</param>
+    /// <param name="Order">The <c>ORDER BY</c> clause with aggregates rewritten, or <see langword="null"/>.</param>
+    private readonly record struct AggregateRewrite(AlgebraOperator Pattern, IReadOnlyList<SelectProjection> Projections, OrderClause? Order);
 }

@@ -1,5 +1,5 @@
-using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Sparql.Algebra;
@@ -15,7 +15,8 @@ namespace Lumoin.Veritas.Tests.Sparql;
 /// <summary>
 /// Tests for <see cref="SparqlTranslator"/>: the AST-to-algebra translation of SPARQL 1.2 §18.2 — group
 /// graph patterns with filter lifting, OPTIONAL/UNION/GRAPH/MINUS/BIND, the empty group, the trailing
-/// VALUES join, and the query-level solution modifiers — plus the deferral of aggregation and sub-SELECT.
+/// VALUES join, the query-level solution modifiers, sub-SELECT, and the aggregation translation
+/// (Group/AggregateJoin, HAVING, and aggregate-to-result-variable rewriting).
 /// </summary>
 [TestClass]
 internal sealed class SparqlTranslatorTests
@@ -351,14 +352,152 @@ internal sealed class SparqlTranslatorTests
         Cast<Project>(algebra);
     }
 
-    /// <summary>Aggregation (GROUP BY) is a deferred construct and is refused.</summary>
+    /// <summary><c>COUNT(*)</c> with no GROUP BY triggers implicit grouping: an AggregateJoin over a Group with no keys, the count bound to a fresh result variable the projection references.</summary>
     [TestMethod]
-    public void GroupByIsNotSupportedYet()
+    public void CountStarWithoutGroupByBecomesImplicitGroup()
     {
         using Utf8StringPool pool = new();
-        SparqlQuery query = ParseAndNormalize("PREFIX : <http://example.org/> SELECT ?s WHERE { ?s :p ?o } GROUP BY ?s", pool);
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT (COUNT(*) AS ?c) WHERE { ?s :p ?o }", pool);
 
-        _ = Assert.Throws<NotSupportedException>(() => SparqlTranslator.Translate(query));
+        Project project = Cast<Project>(algebra);
+        AssertVariablesInOrder(project.Variables, "c");
+
+        //The (COUNT(*) AS ?c) column became an Extend binding ?c to the aggregate's fresh result variable.
+        Extend extend = Cast<Extend>(project.Input);
+        Assert.AreEqual("c", extend.Variable.Name.ToString());
+        VariableExpression bound = Cast<VariableExpression>(extend.Expression);
+        Assert.AreEqual(".agg0", bound.Variable.Name.ToString());
+
+        AggregateJoin aggregateJoin = Cast<AggregateJoin>(extend.Input);
+        Group group = Cast<Group>(aggregateJoin.Input);
+        Assert.IsEmpty(group.Keys);
+        Cast<Bgp>(group.Input);
+
+        AggregateBinding binding = Assert.ContainsSingle(aggregateJoin.Aggregations);
+        Assert.AreEqual(".agg0", binding.Variable.Name.ToString());
+        Assert.AreEqual(AggregateFunction.Count, binding.Aggregate.Function);
+        Assert.IsTrue(binding.Aggregate.IsCountStar);
+    }
+
+    /// <summary>An explicit GROUP BY groups by its keys; the aggregate result and the grouping key are both visible.</summary>
+    [TestMethod]
+    public void GroupByGroupsByItsKeys()
+    {
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?s (COUNT(?o) AS ?c) WHERE { ?s :p ?o } GROUP BY ?s", pool);
+
+        Project project = Cast<Project>(algebra);
+        AssertVariablesInOrder(project.Variables, "s", "c");
+
+        Extend extend = Cast<Extend>(project.Input);
+        AggregateJoin aggregateJoin = Cast<AggregateJoin>(extend.Input);
+        Group group = Cast<Group>(aggregateJoin.Input);
+
+        GroupCondition key = Assert.ContainsSingle(group.Keys);
+        GroupVariable groupVariable = Cast<GroupVariable>(key);
+        Assert.AreEqual("s", groupVariable.Variable.Name.ToString());
+
+        AggregateBinding binding = Assert.ContainsSingle(aggregateJoin.Aggregations);
+        Assert.AreEqual(AggregateFunction.Count, binding.Aggregate.Function);
+        Assert.IsFalse(binding.Aggregate.IsCountStar);
+        Cast<VariableExpression>(binding.Aggregate.Argument!);
+    }
+
+    /// <summary>An aggregate in HAVING becomes a Filter over the AggregateJoin, its aggregate rewritten to the result variable.</summary>
+    [TestMethod]
+    public void AggregateInHavingBecomesFilterOverAggregateJoin()
+    {
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?s WHERE { ?s :p ?o } GROUP BY ?s HAVING(COUNT(?o) > 1)", pool);
+
+        Project project = Cast<Project>(algebra);
+        AssertVariablesInOrder(project.Variables, "s");
+
+        //HAVING constrains the grouped solutions, so the Filter sits above the AggregateJoin.
+        Filter filter = Cast<Filter>(project.Input);
+        ComparisonExpression comparison = Cast<ComparisonExpression>(filter.Condition);
+        VariableExpression left = Cast<VariableExpression>(comparison.Left);
+        Assert.AreEqual(".agg0", left.Variable.Name.ToString());
+
+        AggregateJoin aggregateJoin = Cast<AggregateJoin>(filter.Input);
+        Cast<Group>(aggregateJoin.Input);
+        Assert.ContainsSingle(aggregateJoin.Aggregations);
+    }
+
+    /// <summary>An aggregate nested inside a SELECT-expression arithmetic is replaced in place by its result variable; one aggregate is computed.</summary>
+    [TestMethod]
+    public void AggregateInsideArithmeticExpressionIsReplacedInPlace()
+    {
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT (COUNT(?o) + 1 AS ?c) WHERE { ?s :p ?o }", pool);
+
+        Project project = Cast<Project>(algebra);
+        Extend extend = Cast<Extend>(project.Input);
+
+        //The COUNT(?o) leaf inside the addition became a reference to its result variable; the addition stands.
+        ArithmeticExpression arithmetic = Cast<ArithmeticExpression>(extend.Expression);
+        Assert.AreEqual(ArithmeticOp.Add, arithmetic.Op);
+        VariableExpression left = Cast<VariableExpression>(arithmetic.Left);
+        Assert.AreEqual(".agg0", left.Variable.Name.ToString());
+
+        AggregateJoin aggregateJoin = Cast<AggregateJoin>(extend.Input);
+        Assert.ContainsSingle(aggregateJoin.Aggregations);
+    }
+
+    /// <summary>A <c>GROUP BY (expr AS ?v)</c> key carries the named binding into the Group.</summary>
+    [TestMethod]
+    public void GroupByExpressionAsKeyCarriesTheName()
+    {
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?d (COUNT(?o) AS ?c) WHERE { ?s :p ?o } GROUP BY (?s AS ?d)", pool);
+
+        Project project = Cast<Project>(algebra);
+        AssertVariablesInOrder(project.Variables, "d", "c");
+
+        Extend extend = Cast<Extend>(project.Input);
+        AggregateJoin aggregateJoin = Cast<AggregateJoin>(extend.Input);
+        Group group = Cast<Group>(aggregateJoin.Input);
+
+        GroupExpressionAs key = Cast<GroupExpressionAs>(Assert.ContainsSingle(group.Keys));
+        Assert.AreEqual("d", key.AsVariable.Name.ToString());
+    }
+
+    /// <summary>The repeated aggregate <c>COUNT(?o)</c> is deduplicated by value: one binding feeds both the projection and HAVING.</summary>
+    [TestMethod]
+    public void RepeatedAggregateIsComputedOnce()
+    {
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?s (COUNT(?o) AS ?c) WHERE { ?s :p ?o } GROUP BY ?s HAVING(COUNT(?o) > 1)", pool);
+
+        //The SELECT-expression Extend is applied after the HAVING filter (§18.2.5), so Extend wraps the Filter.
+        Project project = Cast<Project>(algebra);
+        Extend extend = Cast<Extend>(project.Input);
+        Filter filter = Cast<Filter>(extend.Input);
+        AggregateJoin aggregateJoin = Cast<AggregateJoin>(filter.Input);
+
+        //COUNT(?o) appears in both the projection and HAVING but is one aggregate, so one binding, one variable.
+        AggregateBinding binding = Assert.ContainsSingle(aggregateJoin.Aggregations);
+        VariableExpression projected = Cast<VariableExpression>(extend.Expression);
+        VariableExpression having = Cast<VariableExpression>(Cast<ComparisonExpression>(filter.Condition).Left);
+        Assert.AreEqual(binding.Variable.Name.ToString(), projected.Variable.Name.ToString());
+        Assert.AreEqual(binding.Variable.Name.ToString(), having.Variable.Name.ToString());
+    }
+
+    /// <summary>A deeply nested SELECT-expression holding an aggregate rewrites iteratively — far past the depth a recursive expression transform would overflow.</summary>
+    [TestMethod]
+    public void DeeplyNestedAggregateExpressionRewritesWithoutOverflow()
+    {
+        using Utf8StringPool pool = new();
+        const int depth = 50_000;
+        string query = "PREFIX : <http://example.org/> SELECT (COUNT(?o)" + string.Concat(Enumerable.Repeat(" + 1", depth)) + " AS ?c) WHERE { ?s :p ?o }";
+
+        AlgebraOperator algebra = Translate(query, pool);
+
+        //The aggregate at the bottom of the left-deep addition still becomes the single computed binding.
+        Project project = Cast<Project>(algebra);
+        Extend extend = Cast<Extend>(project.Input);
+        AggregateJoin aggregateJoin = Cast<AggregateJoin>(extend.Input);
+        Assert.ContainsSingle(aggregateJoin.Aggregations);
     }
 
     /// <summary>Parses, normalizes, and translates a query to its algebra.</summary>
