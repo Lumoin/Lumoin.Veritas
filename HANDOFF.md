@@ -374,7 +374,28 @@ need to first classify which of the 50 baseline failures are SPARQL- vs core-SHA
    open:** negated property sets (no encoded-path form — `NotSupportedException`), the native pair-aware closure
    (replaces per-seed both-var enumeration — PROPERTY-PATH plan items 2–4), and **`Graph`** (named-graph
    redirection — the hypertrie store is triple-only, so this needs backend work) / **`Service`** (defer/stub).
-6. **Wire SHACL `sh:sparql`** to the engine → start closing the 50 ShaclValidate baseline failures.
+6. **SHACL-SPARQL — wire `sh:sparql` to the engine → start closing the 50 ShaclValidate baseline failures.**
+   ⚠ **Scope reality (explored 2026-05-29): this is a FEATURE, not a wiring.** `Lumoin.Veritas.Shacl` references
+   only Core + Rdf (NOT Sparql), and is **SHACL 1.2 *Core* only** — there is NO SPARQL-constraint model in the
+   shape graph (`sh:sparql` / `sh:SPARQLConstraint` are not parsed at all). The 50 baseline failures = the W3C
+   SHACL conformance suite; cluster 1 (32 under-validations) is dominated by SHACL-SPARQL (per
+   `shacl-conformance-status.md`). Concrete plan (its own focused session, multi-commit):
+   - **(a)** Add a `ProjectReference` Shacl → Sparql (`src/Lumoin.Veritas.Shacl/*.csproj`).
+   - **(b)** Shape-loader: parse a node/property shape's `sh:sparql` → a new SPARQL-constraint shape-model node
+     (the `sh:SPARQLConstraint`'s `sh:select` query text, `sh:message`, `sh:prefixes`); confirm the loader's
+     constraint-collection seam (the Core constraints live in `src/Lumoin.Veritas.Shacl/Constraints/`).
+   - **(c)** A validator evaluator for it (mirror `ShaclBuiltInEvaluators`/`Components`): parse→normalize→translate
+     the constraint query, **pre-bind `$this`** (and `$PATH`/`$shapesGraph` per SHACL-SPARQL §5.2) to the focus
+     node by substituting/joining a single-row VALUES into the algebra, run via `SparqlQueryEngine`, and map each
+     result row to a `sh:ValidationResult` (`?this`→focusNode, `?value`→`sh:value`, `?path`→`sh:resultPath`,
+     `?message`→`sh:resultMessage`; SHACL-SPARQL §5.3 result conventions).
+   - **(d)** SPARQL-based constraint COMPONENTS (`sh:SPARQLConstraintComponent`, parameterized via `sh:ask`/
+     `sh:select` + `sh:parameter`) are a further step — defer after plain `sh:sparql`.
+   - **Pre-binding caveat:** the 7 skipped conformance tests are `sparql/pre-binding/` *process-failure* cases
+     (pre-binding a disallowed variable must fail validation, not produce a report) — handle pre-binding
+     validation so those stay Inconclusive/skip, not silently pass.
+   The `SparqlQueryEngine`'s public surface (entry name, `SparqlSolution` result model) firms up here as SHACL
+   becomes its first real consumer; revisit naming then.
 **Cross-cuts:** thread the `traceHandler`/`correlationId` (the side-channel) through; carry `Witnesses` for provenance; everything iterative ([[feedback_no_recursion]]).
 
 ### ⏵ PROPERTY-PATH LOWERING — PLAN (design-locked 2026-05-29; confirm shapes vs. §18.2.2.5 if the impl spec is to hand)
