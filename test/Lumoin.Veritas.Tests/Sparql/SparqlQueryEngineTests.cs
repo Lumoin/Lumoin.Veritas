@@ -250,6 +250,53 @@ internal sealed class SparqlQueryEngineTests
         CollectionAssert.AreEqual(new[] { Ex + "a", Ex + "b" }, values);
     }
 
+    /// <summary>A FILTER using the CONTAINS string function keeps only the matching solutions.</summary>
+    [TestMethod]
+    public async Task FilterWithContainsKeepsMatchingStrings()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(
+            new DataTriple(Iri("alice"), Iri("name"), StringLiteral("Alice")),
+            new DataTriple(Iri("bob"), Iri("name"), StringLiteral("Bob"))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?s WHERE { ?s :name ?n FILTER(CONTAINS(?n, \"ice\")) }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        SparqlSolution solution = solutions.Single();
+        Assert.AreEqual(Ex + "alice", ValueIri(solution, "s"));
+    }
+
+    /// <summary>A BIND using the UCASE function binds the upper-cased string.</summary>
+    [TestMethod]
+    public async Task BindWithUpperCaseUpperCasesTheString()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(new DataTriple(Iri("alice"), Iri("name"), StringLiteral("alice"))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?u WHERE { ?s :name ?n BIND(UCASE(?n) AS ?u) }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        SparqlSolution solution = solutions.Single();
+        Assert.IsTrue(solution.TryGetValue(Variable("u"), out RdfTerm value));
+        Assert.AreEqual("ALICE", Cast<Literal>(value).Value.ToString());
+    }
+
+    /// <summary>A FILTER using the isIRI type test keeps only the IRI-bound solutions.</summary>
+    [TestMethod]
+    public async Task FilterWithIsIriKeepsOnlyIriBindings()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(
+            new DataTriple(Iri("alice"), Iri("p"), Iri("bob")),
+            new DataTriple(Iri("alice"), Iri("p"), StringLiteral("a literal"))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?o WHERE { ?s :p ?o FILTER(isIRI(?o)) }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        SparqlSolution solution = solutions.Single();
+        Assert.AreEqual(Ex + "bob", ValueIri(solution, "o"));
+    }
+
     /// <summary>An operator outside the supported set (here a property path) is refused with a descriptive exception.</summary>
     [TestMethod]
     public async Task UnsupportedOperatorIsRefused()
@@ -299,6 +346,14 @@ internal sealed class SparqlQueryEngineTests
     private static Literal IntegerLiteral(int value)
     {
         return new Literal(Utf8String.FromString(value.ToString(System.Globalization.CultureInfo.InvariantCulture)), new NamedNode(Utf8String.FromString("http://www.w3.org/2001/XMLSchema#integer")));
+    }
+
+    /// <summary>Builds an <c>xsd:string</c> literal term.</summary>
+    /// <param name="value">The string value.</param>
+    /// <returns>The literal term.</returns>
+    private static Literal StringLiteral(string value)
+    {
+        return new Literal(Utf8String.FromString(value), new NamedNode(Utf8String.FromString("http://www.w3.org/2001/XMLSchema#string")));
     }
 
     /// <summary>Parses, normalizes, and translates a query to its algebra.</summary>

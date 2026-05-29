@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Sparql.Ast;
@@ -22,10 +23,11 @@ namespace Lumoin.Veritas.Sparql.Execution;
 /// <para>
 /// <b>Scope.</b> This slice covers constants, variables, <c>BOUND</c>, the logical connectives (with §17.2
 /// three-valued truth tables), the relational comparisons (numeric / boolean / string / term equality),
-/// arithmetic, <c>IF</c>, <c>COALESCE</c>, and <c>IN</c>/<c>NOT IN</c>. The named/built-in function library
-/// (<see cref="FunctionCallExpression"/> / <see cref="BuiltInCallExpression"/>), <c>EXISTS</c>/<c>NOT EXISTS</c>
-/// (which evaluate a graph pattern), and the triple-term expression raise <see cref="NotSupportedException"/>
-/// until their later slice. Numeric values are compared and combined as <see cref="double"/>; integer-only
+/// arithmetic, <c>IF</c>, <c>COALESCE</c>, <c>IN</c>/<c>NOT IN</c>, and a core of the built-in function library
+/// (the term-type tests, <c>sameTerm</c>, <c>STR</c>/<c>LANG</c>/<c>DATATYPE</c>, the common string functions, and
+/// the unary numeric functions). The remaining built-ins, the named functions
+/// (<see cref="FunctionCallExpression"/>), <c>EXISTS</c>/<c>NOT EXISTS</c> (which evaluate a graph pattern), and
+/// the triple-term expression raise <see cref="NotSupportedException"/> until their later slice. Numeric values are compared and combined as <see cref="double"/>; integer-only
 /// arithmetic yields an <c>xsd:integer</c>, otherwise an <c>xsd:double</c> (full decimal/precision typing is a
 /// later refinement).
 /// </para>
@@ -241,6 +243,7 @@ public static class SparqlExpressionEvaluator
             CoalesceExpression coalesce => coalesce.Alternatives,
             InExpression test => Prepend(test.Value, test.Set),
             NotInExpression test => Prepend(test.Value, test.Set),
+            BuiltInCallExpression call => call.Arguments,
 
             //Leaves (ConstantExpression, VariableExpression, BoundExpression) and the unsupported forms.
             _ => []
@@ -254,29 +257,15 @@ public static class SparqlExpressionEvaluator
     /// <exception cref="NotSupportedException">The node is an unsupported form (a function call, EXISTS, or a triple-term expression).</exception>
     private static ExpressionValue EvaluateLeaf(ExpressionNode node, SparqlSolution solution)
     {
-        switch(node)
+        return node switch
         {
-            case ConstantExpression constant:
-            {
-                return ExpressionValue.Of(constant.Value);
-            }
+            ConstantExpression constant => ExpressionValue.Of(constant.Value),
 
-            case VariableExpression variable:
-            {
-                //An unbound variable raises an error when its value is needed.
-                return solution.TryGetValue(variable.Variable, out RdfTerm value) ? ExpressionValue.Of(value) : ExpressionValue.Error;
-            }
-
-            case BoundExpression bound:
-            {
-                return Boolean(solution.TryGetValue(bound.Variable, out _));
-            }
-
-            default:
-            {
-                throw new NotSupportedException($"SPARQL expression '{node.GetType().Name}' is not yet evaluable; this slice covers constants, variables, BOUND, the logical/comparison/arithmetic operators, IF, COALESCE, and IN/NOT IN. Named and built-in functions, EXISTS/NOT EXISTS, and triple-term expressions land in a later slice.");
-            }
-        }
+            //An unbound variable raises an error when its value is needed.
+            VariableExpression variable => solution.TryGetValue(variable.Variable, out RdfTerm value) ? ExpressionValue.Of(value) : ExpressionValue.Error,
+            BoundExpression bound => Boolean(solution.TryGetValue(bound.Variable, out _)),
+            _ => throw new NotSupportedException($"SPARQL expression '{node.GetType().Name}' is not yet evaluable; this slice covers constants, variables, BOUND, the logical/comparison/arithmetic operators, IF, COALESCE, IN/NOT IN, and a core of the built-in functions. Named functions, EXISTS/NOT EXISTS, and triple-term expressions land in a later slice.")
+        };
     }
 
     /// <summary>Combines an expression's already-evaluated operand values (read from <paramref name="values"/>) into its own value.</summary>
@@ -285,77 +274,53 @@ public static class SparqlExpressionEvaluator
     /// <returns>The expression's value.</returns>
     private static ExpressionValue CombineValue(ExpressionNode node, Dictionary<ExpressionNode, ExpressionValue> values)
     {
-        switch(node)
+        return node switch
         {
-            case AndExpression and:
+            AndExpression and => LogicalAnd(EffectiveState(values[and.Left]), EffectiveState(values[and.Right])),
+            OrExpression or => LogicalOr(EffectiveState(values[or.Left]), EffectiveState(values[or.Right])),
+            NotExpression not => EffectiveState(values[not.Inner]) is bool state ? Boolean(!state) : ExpressionValue.Error,
+            ComparisonExpression comparison => Compare(values[comparison.Left], values[comparison.Right], comparison.Op),
+            ArithmeticExpression arithmetic => Arithmetic(values[arithmetic.Left], arithmetic.Right is null ? default : values[arithmetic.Right], arithmetic.Op),
+            IfExpression conditional => EffectiveState(values[conditional.Condition]) is bool taken ? (taken ? values[conditional.IfTrue] : values[conditional.IfFalse]) : ExpressionValue.Error,
+            CoalesceExpression coalesce => FirstBound(coalesce.Alternatives, values),
+            InExpression test => Membership(test.Value, test.Set, values, negated: false),
+            NotInExpression test => Membership(test.Value, test.Set, values, negated: true),
+            BuiltInCallExpression call => EvaluateBuiltInCall(call, values),
+            _ => throw new InvalidOperationException($"Expression '{node.GetType().Name}' has operands but no combine rule in the evaluator.")
+        };
+    }
+
+    /// <summary>Returns the first non-error alternative value (the §17.4 <c>COALESCE</c> semantics), or an error when every alternative errs.</summary>
+    /// <param name="alternatives">The candidate expressions, in order.</param>
+    /// <param name="values">The map of already-evaluated operands to their values.</param>
+    /// <returns>The first non-error value, or an error.</returns>
+    private static ExpressionValue FirstBound(IReadOnlyList<ExpressionNode> alternatives, Dictionary<ExpressionNode, ExpressionValue> values)
+    {
+        foreach(ExpressionNode alternative in alternatives)
+        {
+            ExpressionValue value = values[alternative];
+            if(!value.IsError)
             {
-                return LogicalAnd(EffectiveState(values[and.Left]), EffectiveState(values[and.Right]));
-            }
-
-            case OrExpression or:
-            {
-                return LogicalOr(EffectiveState(values[or.Left]), EffectiveState(values[or.Right]));
-            }
-
-            case NotExpression not:
-            {
-                bool? state = EffectiveState(values[not.Inner]);
-
-                return state is null ? ExpressionValue.Error : Boolean(!state.Value);
-            }
-
-            case ComparisonExpression comparison:
-            {
-                return Compare(values[comparison.Left], values[comparison.Right], comparison.Op);
-            }
-
-            case ArithmeticExpression arithmetic:
-            {
-                ExpressionValue right = arithmetic.Right is null ? default : values[arithmetic.Right];
-
-                return Arithmetic(values[arithmetic.Left], right, arithmetic.Op);
-            }
-
-            case IfExpression conditional:
-            {
-                bool? state = EffectiveState(values[conditional.Condition]);
-                if(state is null)
-                {
-                    return ExpressionValue.Error;
-                }
-
-                return state.Value ? values[conditional.IfTrue] : values[conditional.IfFalse];
-            }
-
-            case CoalesceExpression coalesce:
-            {
-                foreach(ExpressionNode alternative in coalesce.Alternatives)
-                {
-                    ExpressionValue value = values[alternative];
-                    if(!value.IsError)
-                    {
-                        return value;
-                    }
-                }
-
-                return ExpressionValue.Error;
-            }
-
-            case InExpression test:
-            {
-                return Membership(test.Value, test.Set, values, negated: false);
-            }
-
-            case NotInExpression test:
-            {
-                return Membership(test.Value, test.Set, values, negated: true);
-            }
-
-            default:
-            {
-                throw new InvalidOperationException($"Expression '{node.GetType().Name}' has operands but no combine rule in the evaluator.");
+                return value;
             }
         }
+
+        return ExpressionValue.Error;
+    }
+
+    /// <summary>Gathers a built-in call's already-evaluated argument values and dispatches to the function.</summary>
+    /// <param name="call">The built-in call.</param>
+    /// <param name="values">The map of already-evaluated operands to their values.</param>
+    /// <returns>The call's value.</returns>
+    private static ExpressionValue EvaluateBuiltInCall(BuiltInCallExpression call, Dictionary<ExpressionNode, ExpressionValue> values)
+    {
+        ExpressionValue[] arguments = new ExpressionValue[call.Arguments.Count];
+        for(int i = 0; i < arguments.Length; i++)
+        {
+            arguments[i] = values[call.Arguments[i]];
+        }
+
+        return EvaluateBuiltIn(call.Function, arguments);
     }
 
     /// <summary>Evaluates <c>IN</c> / <c>NOT IN</c>: membership of the tested value among the candidate set under <c>=</c> semantics.</summary>
@@ -391,6 +356,140 @@ public static class SparqlExpressionEvaluator
 
         //No match: an error in any comparison makes the overall result an error; otherwise it is a clean miss.
         return anyError ? ExpressionValue.Error : Boolean(negated);
+    }
+
+    /// <summary>
+    /// Evaluates a built-in function over its already-evaluated arguments (§17.4). This slice covers the term-type
+    /// tests, <c>sameTerm</c>, <c>STR</c>/<c>LANG</c>/<c>DATATYPE</c>, the common string functions
+    /// (<c>STRLEN</c>/<c>UCASE</c>/<c>LCASE</c>/<c>CONTAINS</c>/<c>STRSTARTS</c>/<c>STRENDS</c>), and the unary
+    /// numeric functions (<c>ABS</c>/<c>CEIL</c>/<c>FLOOR</c>/<c>ROUND</c>); the rest raise
+    /// <see cref="NotSupportedException"/> until their later slice.
+    /// </summary>
+    /// <param name="function">The built-in function.</param>
+    /// <param name="arguments">The evaluated argument values, in order.</param>
+    /// <returns>The function's value, or an error.</returns>
+    /// <exception cref="NotSupportedException">The function is not yet evaluable.</exception>
+    private static ExpressionValue EvaluateBuiltIn(BuiltInFunction function, ExpressionValue[] arguments)
+    {
+        return function switch
+        {
+            BuiltInFunction.IsIri or BuiltInFunction.IsUri => TypeTest(arguments[0], static term => term is NamedNode),
+            BuiltInFunction.IsBlank => TypeTest(arguments[0], static term => term is BlankNode),
+            BuiltInFunction.IsLiteral => TypeTest(arguments[0], static term => term is Literal),
+            BuiltInFunction.IsTriple => TypeTest(arguments[0], static term => term is Lumoin.Veritas.Core.TripleTerm),
+            BuiltInFunction.IsNumeric => TypeTest(arguments[0], static term => TryGetNumeric(term, out _, out _)),
+            BuiltInFunction.SameTerm => arguments[0].IsError || arguments[1].IsError ? ExpressionValue.Error : Boolean(arguments[0].Term.Equals(arguments[1].Term)),
+            BuiltInFunction.Str => Str(arguments[0]),
+            BuiltInFunction.Lang => arguments[0].IsError || arguments[0].Term is not Literal language ? ExpressionValue.Error : StringLiteral(language.Language?.ToString() ?? string.Empty),
+            BuiltInFunction.Datatype => arguments[0].IsError || arguments[0].Term is not Literal datatype ? ExpressionValue.Error : ExpressionValue.Of(datatype.Datatype),
+            BuiltInFunction.StrLen => TryGetLexical(arguments[0], out string text) ? Numeric(text.Length, integral: true) : ExpressionValue.Error,
+            BuiltInFunction.UCase => UpperCase(arguments[0]),
+            BuiltInFunction.LCase => LowerCase(arguments[0]),
+            BuiltInFunction.Contains => StringTest(arguments, static (haystack, needle) => haystack.Contains(needle, StringComparison.Ordinal)),
+            BuiltInFunction.StrStarts => StringTest(arguments, static (text, prefix) => text.StartsWith(prefix, StringComparison.Ordinal)),
+            BuiltInFunction.StrEnds => StringTest(arguments, static (text, suffix) => text.EndsWith(suffix, StringComparison.Ordinal)),
+            BuiltInFunction.Abs => UnaryNumeric(arguments[0], static value => Math.Abs(value)),
+            BuiltInFunction.Ceil => UnaryNumeric(arguments[0], Math.Ceiling),
+            BuiltInFunction.Floor => UnaryNumeric(arguments[0], Math.Floor),
+            BuiltInFunction.Round => UnaryNumeric(arguments[0], static value => Math.Round(value, MidpointRounding.AwayFromZero)),
+            _ => throw new NotSupportedException($"SPARQL built-in function '{function}' is not yet evaluable; this slice covers the term-type tests, sameTerm, STR/LANG/DATATYPE, STRLEN/UCASE/LCASE/CONTAINS/STRSTARTS/STRENDS, and ABS/CEIL/FLOOR/ROUND. The remaining functions land in a later slice.")
+        };
+    }
+
+    /// <summary>Evaluates <c>STR</c>: the lexical form of a literal or the IRI text of a named node as an <c>xsd:string</c>; a blank node or triple term errs.</summary>
+    /// <param name="argument">The argument value.</param>
+    /// <returns>The string value, or an error.</returns>
+    private static ExpressionValue Str(ExpressionValue argument)
+    {
+        if(argument.IsError)
+        {
+            return ExpressionValue.Error;
+        }
+
+        return argument.Term switch
+        {
+            Literal literal => StringLiteral(literal.Value.ToString()),
+            NamedNode named => StringLiteral(named.Iri.ToString()),
+            _ => ExpressionValue.Error
+        };
+    }
+
+    /// <summary>Evaluates <c>UCASE</c>: the upper-cased lexical form of a string argument as an <c>xsd:string</c>.</summary>
+    /// <param name="argument">The argument value.</param>
+    /// <returns>The upper-cased string value, or an error when the argument is not a string.</returns>
+    private static ExpressionValue UpperCase(ExpressionValue argument)
+    {
+        return TryGetLexical(argument, out string text) ? StringLiteral(text.ToUpperInvariant()) : ExpressionValue.Error;
+    }
+
+    /// <summary>Evaluates <c>LCASE</c>: the lower-cased lexical form of a string argument as an <c>xsd:string</c>.</summary>
+    /// <param name="argument">The argument value.</param>
+    /// <returns>The lower-cased string value, or an error when the argument is not a string.</returns>
+    [SuppressMessage("Globalization", "CA1308:Normalize strings to uppercase",
+        Justification = "SPARQL LCASE is a specified transformation that lowercases its argument; this is not normalization for comparison.")]
+    private static ExpressionValue LowerCase(ExpressionValue argument)
+    {
+        return TryGetLexical(argument, out string text) ? StringLiteral(text.ToLowerInvariant()) : ExpressionValue.Error;
+    }
+
+    /// <summary>Applies a term-type predicate to a single argument, propagating an argument error.</summary>
+    /// <param name="argument">The argument value.</param>
+    /// <param name="test">The predicate on the bound term.</param>
+    /// <returns>A boolean value, or an error when the argument errs.</returns>
+    private static ExpressionValue TypeTest(ExpressionValue argument, Func<RdfTerm, bool> test)
+    {
+        return argument.IsError ? ExpressionValue.Error : Boolean(test(argument.Term));
+    }
+
+    /// <summary>Applies a binary string predicate to two lexical-string arguments, erring when either is not a string or errs.</summary>
+    /// <param name="arguments">The argument values (two strings expected).</param>
+    /// <param name="test">The predicate on the two lexical values.</param>
+    /// <returns>A boolean value, or an error.</returns>
+    private static ExpressionValue StringTest(ExpressionValue[] arguments, Func<string, string, bool> test)
+    {
+        return TryGetLexical(arguments[0], out string left) && TryGetLexical(arguments[1], out string right)
+            ? Boolean(test(left, right))
+            : ExpressionValue.Error;
+    }
+
+    /// <summary>Applies a unary numeric operation to a numeric argument, preserving integer typing, erring on a non-numeric argument.</summary>
+    /// <param name="argument">The argument value.</param>
+    /// <param name="operation">The numeric operation.</param>
+    /// <returns>The numeric result, or an error.</returns>
+    private static ExpressionValue UnaryNumeric(ExpressionValue argument, Func<double, double> operation)
+    {
+        if(argument.IsError || !TryGetNumeric(argument.Term, out double value, out bool integral))
+        {
+            return ExpressionValue.Error;
+        }
+
+        return Numeric(operation(value), integral);
+    }
+
+    /// <summary>Builds an <c>xsd:string</c> literal value from a CLR string.</summary>
+    /// <param name="value">The string.</param>
+    /// <returns>The string-literal value.</returns>
+    private static ExpressionValue StringLiteral(string value)
+    {
+        return ExpressionValue.Of(new Literal(Utf8String.FromString(value), new NamedNode(XsdString)));
+    }
+
+    /// <summary>Extracts the lexical string of an argument that is an <c>xsd:string</c> or a language-tagged literal; fails for an error or a non-string term.</summary>
+    /// <param name="argument">The argument value.</param>
+    /// <param name="value">Receives the lexical string on success.</param>
+    /// <returns><see langword="true"/> when the argument is a string-valued literal.</returns>
+    private static bool TryGetLexical(ExpressionValue argument, out string value)
+    {
+        if(!argument.IsError && argument.Term is Literal literal && (literal.Datatype.Iri == XsdString || literal.Language is not null))
+        {
+            value = literal.Value.ToString();
+
+            return true;
+        }
+
+        value = string.Empty;
+
+        return false;
     }
 
     /// <summary>Reduces a value to its effective boolean value (§17.2.2): a boolean, or an error when the value has none.</summary>
