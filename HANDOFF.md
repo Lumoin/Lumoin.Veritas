@@ -247,34 +247,47 @@ Aggregate)`; `AggregateJoin(AlgebraOperator Input /* a Group */, IReadOnlyList<A
 (`OutputVariables` = group keys ∪ each aggregate's result var). Both reuse the AST `GroupCondition`/
 `AggregateExpression`, no spans, full `Children`/`OutputVariables`/`RebuildWithChildren`. 2 `SparqlAlgebraTests`.
 
-▶ **NEXT AFTER A CLEAR:** HEAD `379b36e`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
-unchanged baseline, 0 new). Pipeline is iterative and complete through sub-`SELECT` (normalizer `b70bdb1`, algebra
-hierarchy `6d4d36d`, translator `1eafdc5`, property-path pattern `71e995f`, AlgebraWalker `86d8245`, recursion sweep
-`65386e1`/`7d9c603`/`b683a90`/`e3f08e8`, sub-`SELECT` `79b9447`, aggregation operators `379b36e`). **IMMEDIATE NEXT:
-the aggregation TRANSLATION** — wire the (existing) `Group`/`AggregateJoin` into `SparqlTranslator.ApplyQueryForm`
-(which today throws `NotSupportedException` on `GROUP BY`/`HAVING`). Plan (§18.2.4.1; build to convention, the user
-will correct operator shapes if the spec differs):
-1. Aggregation applies when `modifier.Group != null` OR any `AggregateExpression` appears in the SELECT
-   expressions / HAVING / ORDER BY (implicit grouping).
-2. `current = new Group(modifier.Group?.Conditions ?? [], current)`.
-3. Collect the DISTINCT aggregates (dedup by value equality), assign each a fresh internal var (`?.agg0`,
-   `?.agg1`, … — a leading `.` is collision-free with user vars), build `AggregateBinding`s →
-   `current = new AggregateJoin(current, bindings)`.
-4. Rewrite the SELECT/HAVING/ORDER-BY expressions, replacing each `AggregateExpression` with
-   `VariableExpression(freshVar)`; `HAVING` → `Filter(conjoin(rewritten), current)` AFTER the AggregateJoin.
-5. The existing `(expr AS ?v)` Extends / OrderBy / Project / Distinct / Slice then run on the REWRITTEN
-   projections + order conditions (so `TranslateSelect` must accept the rewritten versions).
-**New piece required:** an iterative (no-recursion, [[feedback_no_recursion]]) expression-tree transformer over
-`ExpressionNode` — a `Children`/`Rebuild`/`Transform` mirroring `AlgebraWalker` (one per-type switch; aggregates
-nest inside comparison / arithmetic / and-or / function / if / coalesce). `AggregateExpression` is a LEAF for the
-walk — do NOT descend into its `Argument`; replace it wholesale. Add `using Lumoin.Veritas.Core;` for
-`Utf8String.FromString` on the fresh-var names (safe — the translator uses the `AstTripleTerm` alias, not bare
-`TripleTerm`). Tests: COUNT(*) with + without GROUP BY (implicit group), aggregate in HAVING, aggregate-in-arithmetic
-SELECT expr, GROUP BY (expr AS ?v), deep-nesting no-overflow. **Re-paste the impl spec's §18.2.4.1 / §5.1 if
-available.** Then **property-path form lowering** remains (likely evaluation-time). Deep-nesting tests guard the
-iterative pipeline (20k nested groups, 10k nested collections, 2k nested sub-SELECTs, 50k Join
-OutputVariables/Transform). Relevant memory: [[feedback_no_recursion]], [[project_sparql_algebra_design]],
-[[project_sparql_reified_triple_no_assert]]. Build/test commands are in the ITEM-4 anchor's build block above.
+**STATUS (cont.): the aggregation TRANSLATION — wire Group/AggregateJoin into `ApplyQueryForm` (§18.2.4.1) — is DONE, committed (`0057e17`), and green.**
+- `SparqlTranslator.ApplyQueryForm` (no longer throws): aggregation applies on an explicit `GROUP BY`/`HAVING`, or
+  on any `AggregateExpression` in the projection / `HAVING` / `ORDER BY` (implicit grouping). Pattern becomes
+  `AggregateJoin(Group(keys ?? [], pattern), bindings)`; `HAVING` → a `Filter` over the `AggregateJoin`; the
+  projection / `ORDER BY` expressions are rewritten so each aggregate refers to its fresh result var (`.agg0`,
+  `.agg1`, … — a leading `.` no user var can carry). The existing `(expr AS ?v)` Extends / OrderBy / Project /
+  Distinct / Slice then run over the rewritten forms (so `TranslateSelect`/`ApplyOrderAndSlice` now take the
+  rewritten `projections`/`order` as params, not `select.Projections`/`modifier.Order`). Order of nesting:
+  HAVING-Filter is applied *inside* the aggregation step, then the SELECT-expr Extend wraps it (§18.2.5).
+- **Distinct-aggregate dedup is SOURCE-POSITION-INSENSITIVE.** `AggregateExpression` record equality includes its
+  `Span` (and its `Argument`'s spans), so two textually identical aggregates at different positions are *not*
+  value-equal. `NormalizeAggregate` zeroes the aggregate's span + every span in its argument (via
+  `ExpressionWalker.Transform(arg, n => n with { Span = default })`; the aggregate itself is a walk leaf so its own
+  span is zeroed directly) — that span-zeroed form is the dedup / lookup key, so `COUNT(?o)` in both the projection
+  and HAVING shares ONE binding / ONE var. (⚠ if you ever change the dedup, note plain record equality would NOT
+  merge cross-position duplicates.)
+- **New `Ast/ExpressionWalker.cs`** — the expression-side analogue of `AlgebraWalker`: iterative (no-recursion,
+  [[feedback_no_recursion]]) `Traverse` (lazy pre-order) / `Transform` (bottom-up rebuild, reference-equality
+  short-circuit) over `ExpressionNode`, driven by a per-type `Children` switch + dual `Rebuild` switch (the switches
+  live in the walker, NOT as members on the records). `AggregateExpression` is a **LEAF** of the walk (its
+  `Argument` is never descended — it is replaced wholesale), as are `ExistsExpression`/`NotExistsExpression` (carry
+  a graph pattern) and `TripleTermExpression` (carries a triple pattern). List-shaped children (`IN`/`NOT IN` set,
+  function args, COALESCE alts) flatten in `Children` and re-split in `Rebuild`.
+- 7 `SparqlTranslatorTests` (COUNT(*) implicit group, GROUP BY keys, aggregate in HAVING → Filter, aggregate inside
+  arithmetic SELECT expr, GROUP BY `(expr AS ?v)`, repeated-aggregate dedup = one binding, 50k-deep aggregate
+  expression no-overflow) replaced the old `GroupByIsNotSupportedYet`. Build clean (0 warnings); full suite at
+  exactly 50 ShaclValidate failures, 0 new.
+
+▶ **NEXT AFTER A CLEAR:** HEAD `0057e17`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
+unchanged baseline, 0 new). The AST→algebra translator is now COMPLETE for SPARQL 1.2 core: groups/modifiers
+(`1eafdc5`), property-path *pattern* translation (`71e995f`), sub-`SELECT`→`ToMultiSet` (`79b9447`), and the full
+aggregation translation (`0057e17`). The only remaining Milestone-B translation item is **property-path form
+*lowering*** — the `Path` operator carries the structured `PropertyPathExpression` whole (seq/alt/inv, `*`/`+`/`?`,
+NPS); decomposing those forms into joins/unions/swaps and defining the `*`/`+`/`?`/negated-set *evaluation*
+semantics is still open and is **likely an evaluation-time concern (Milestone C), not a pure AST→algebra rewrite** —
+confirm against §18.2.2.4 / the path-eval section before deciding whether it belongs in the translator or the
+executor. After that, Milestone B's translation surface is done; the next big piece is the executor / hypertrie
+backend (Milestone C). **Re-paste the impl spec's relevant § (path eval, §5.1) if available.** Deep-nesting tests
+guard the iterative pipeline (20k nested groups, 10k nested collections, 2k nested sub-SELECTs, 50k Join
+OutputVariables/Transform, 50k-deep aggregate expression). Relevant memory: [[feedback_no_recursion]],
+[[project_sparql_algebra_design]], [[project_sparql_reified_triple_no_assert]]. Build/test commands below.
 
 **PERMISSIONS NOTE:** test runs are allowlisted by a *prefix* rule in `.claude/settings.local.json`
 (`PowerShell(& "test\\…\\Lumoin.Veritas.Tests.exe" *)` + the Bash twin). Run tests as
@@ -295,12 +308,10 @@ re-prompt. The old accumulation of ~25 exact per-filter test rules was pruned.
 
 **STILL OPEN (Milestone B remainder) — done so far: group/modifier translator (`1eafdc5`), property-path *pattern*
 translation (`71e995f`), `AlgebraWalker` (`86d8245`), sub-`SELECT` → `ToMultiSet` (`79b9447`), aggregation
-*operators* scaffold (`379b36e`). What remains:** (1) the **aggregation TRANSLATION** — wire `Group`/`AggregateJoin`
-into `ApplyQueryForm` per the §18.2.4.1 plan in the NEXT-AFTER-A-CLEAR block above (needs the iterative
-expression-tree transformer; `ApplyQueryForm` currently throws `NotSupportedException` on `GROUP BY`/`HAVING`).
-(2) **property-path form *lowering*** — the `Path` operator carries the structured path expression whole (`71e995f`);
-decomposing seq/alt/inverse into joins/unions/swaps and defining the `*`/`+`/`?`/negated-set evaluation semantics is
-still open (likely an evaluation-time concern). Scope: full SPARQL 1.2 core, not a SHACL-minimal subset. If §5.1
+*operators* scaffold (`379b36e`), aggregation *translation* (`0057e17`). What remains:** only **property-path form
+*lowering*** — the `Path` operator carries the structured path expression whole (`71e995f`); decomposing
+seq/alt/inverse into joins/unions/swaps and defining the `*`/`+`/`?`/negated-set evaluation semantics is still open
+(likely an evaluation-time concern — Milestone C). Scope: full SPARQL 1.2 core, not a SHACL-minimal subset. If §5.1
 prescribes a different layout/naming, the scaffold is cheap to adjust.
 
 **Build/test (MTP — `dotnet test` does NOT work; exact commands that worked all session):**
