@@ -633,6 +633,87 @@ internal sealed class SparqlQueryEngineTests
         Assert.AreEqual(Ex + "c", ValueIri(solution, "obj"));
     }
 
+    /// <summary>The hash functions return the lowercase hex digest of the value (here exercised through the default in-process digest seam).</summary>
+    [TestMethod]
+    public async Task HashFunctionsReturnHexDigest()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(new DataTriple(Iri("a"), Iri("p"), StringLiteral("abc"))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?md5 ?sha WHERE { ?s :p ?v BIND(MD5(?v) AS ?md5) BIND(SHA256(?v) AS ?sha) }", pool);
+
+        SparqlSolution solution = (await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false)).Single();
+
+        Assert.AreEqual("900150983cd24fb0d6963f7d28e17f72", LiteralValue(solution, "md5"));
+        Assert.AreEqual("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", LiteralValue(solution, "sha"));
+    }
+
+    /// <summary>RAND draws its uniform double from the injected randomness seam.</summary>
+    [TestMethod]
+    public async Task RandUsesInjectedRandomnessSeam()
+    {
+        SparqlExpressionContext context = new(StubRandomness, StubHash, StubNow);
+        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync([new DataTriple(Iri("a"), Iri("p"), Iri("b"))], context, TestContext.CancellationToken).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?r WHERE { ?s :p ?v BIND(RAND() AS ?r) }", pool);
+
+        SparqlSolution solution = (await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false)).Single();
+
+        Assert.AreEqual("0.25", LiteralValue(solution, "r"));
+    }
+
+    /// <summary>UUID and STRUUID draw their UUID from the injected randomness seam (UUID as a urn:uuid: IRI, STRUUID as the bare string).</summary>
+    [TestMethod]
+    public async Task UuidAndStrUuidUseInjectedRandomnessSeam()
+    {
+        SparqlExpressionContext context = new(StubRandomness, StubHash, StubNow);
+        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync([new DataTriple(Iri("a"), Iri("p"), Iri("b"))], context, TestContext.CancellationToken).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?u ?su WHERE { ?s :p ?v BIND(UUID() AS ?u) BIND(STRUUID() AS ?su) }", pool);
+
+        SparqlSolution solution = (await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false)).Single();
+
+        Assert.AreEqual("urn:uuid:" + StubGuid.ToString("D"), ValueIri(solution, "u"));
+        Assert.AreEqual(StubGuid.ToString("D"), LiteralValue(solution, "su"));
+    }
+
+    /// <summary>NOW returns one fixed query-execution instant: every NOW() in a query agrees, and the value is an xsd:dateTime.</summary>
+    [TestMethod]
+    public async Task NowIsConstantAcrossTheQuery()
+    {
+        SparqlExpressionContext context = new(StubRandomness, StubHash, StubNow);
+        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync([new DataTriple(Iri("a"), Iri("p"), Iri("b"))], context, TestContext.CancellationToken).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?a ?b WHERE { ?s :p ?v BIND(NOW() AS ?a) BIND(NOW() AS ?b) }", pool);
+
+        SparqlSolution solution = (await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false)).Single();
+
+        Assert.AreEqual(LiteralValue(solution, "a"), LiteralValue(solution, "b"));
+        Assert.IsTrue(solution.TryGetValue(Variable("a"), out RdfTerm value));
+        Assert.AreEqual("http://www.w3.org/2001/XMLSchema#dateTime", Cast<Literal>(value).Datatype.Iri.ToString());
+    }
+
+    /// <summary>A deterministic stub UUID for the injected-randomness tests.</summary>
+    private static Guid StubGuid { get; } = new("12345678-1234-1234-1234-1234567890ab");
+
+    /// <summary>A fixed query-execution instant for the injected-NOW tests.</summary>
+    private static DateTimeOffset StubNow { get; } = new(2020, 1, 2, 3, 4, 5, TimeSpan.Zero);
+
+    /// <summary>A deterministic randomness seam: a fixed UUID, otherwise the uniform double 0.25.</summary>
+    /// <param name="request">The randomness request.</param>
+    /// <returns>The stubbed value.</returns>
+    private static RandomnessValue StubRandomness(in RandomnessRequest request)
+    {
+        return request.Kind == RandomnessKind.Uuid
+            ? new RandomnessValue(RandomnessKind.Uuid, 0, StubGuid, default)
+            : new RandomnessValue(RandomnessKind.UniformDouble, 0.25, default, default);
+    }
+
+    /// <summary>A no-op digest seam for tests that do not exercise hashing.</summary>
+    /// <param name="algorithm">The (ignored) algorithm.</param>
+    /// <param name="data">The (ignored) data.</param>
+    /// <returns>An empty digest.</returns>
+    private static byte[] StubHash(SparqlHashAlgorithm algorithm, ReadOnlySpan<byte> data) => [];
+
     /// <summary>Builds an <c>xsd:dateTime</c> literal term.</summary>
     /// <param name="lexical">The dateTime lexical form.</param>
     /// <returns>The literal term.</returns>
@@ -652,7 +733,7 @@ internal sealed class SparqlQueryEngineTests
             data.Add(new DataTriple(Iri(subject), Iri(predicate), Iri(@object)));
         }
 
-        return await SparqlQueryEngine.BuildAsync(data, TestContext.CancellationToken).ConfigureAwait(false);
+        return await SparqlQueryEngine.BuildAsync(data, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Builds an engine over an explicit set of data triples (used when objects are literals rather than IRIs).</summary>
@@ -660,7 +741,7 @@ internal sealed class SparqlQueryEngineTests
     /// <returns>An engine over the graph.</returns>
     private async Task<SparqlQueryEngine> EngineFromAsync(params DataTriple[] triples)
     {
-        return await SparqlQueryEngine.BuildAsync(triples, TestContext.CancellationToken).ConfigureAwait(false);
+        return await SparqlQueryEngine.BuildAsync(triples, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Builds an <c>xsd:integer</c> literal term.</summary>

@@ -107,10 +107,11 @@ public static class SparqlExpressionEvaluator
     /// </summary>
     /// <param name="expression">The expression to test.</param>
     /// <param name="solution">The solution the expression is evaluated over.</param>
+    /// <param name="context">The seams (randomness, digests, the query timestamp) the non-pure functions consume.</param>
     /// <returns><see langword="true"/> when the effective boolean value is true; otherwise <see langword="false"/>.</returns>
-    public static bool Satisfies(ExpressionNode expression, SparqlSolution solution)
+    public static bool Satisfies(ExpressionNode expression, SparqlSolution solution, SparqlExpressionContext context)
     {
-        ExpressionValue value = EffectiveBooleanValue(Evaluate(expression, solution));
+        ExpressionValue value = EffectiveBooleanValue(Evaluate(expression, solution, context));
 
         return !value.IsError && ReferenceEquals(value.Term, True);
     }
@@ -122,11 +123,12 @@ public static class SparqlExpressionEvaluator
     /// </summary>
     /// <param name="expression">The expression to evaluate.</param>
     /// <param name="solution">The solution the expression is evaluated over.</param>
+    /// <param name="context">The seams (randomness, digests, the query timestamp) the non-pure functions consume.</param>
     /// <param name="value">Receives the evaluated term on success.</param>
     /// <returns><see langword="true"/> when the expression evaluates to a bound term; otherwise <see langword="false"/>.</returns>
-    public static bool TryEvaluate(ExpressionNode expression, SparqlSolution solution, out RdfTerm value)
+    public static bool TryEvaluate(ExpressionNode expression, SparqlSolution solution, SparqlExpressionContext context, out RdfTerm value)
     {
-        ExpressionValue result = Evaluate(expression, solution);
+        ExpressionValue result = Evaluate(expression, solution, context);
         if(result.IsError)
         {
             value = null!;
@@ -218,8 +220,9 @@ public static class SparqlExpressionEvaluator
     /// </summary>
     /// <param name="aggregate">The aggregate expression.</param>
     /// <param name="group">The group's solutions.</param>
+    /// <param name="context">The seams (randomness, digests, the query timestamp) the argument expression's non-pure functions consume.</param>
     /// <returns>The aggregate's term value, or <see langword="null"/> when it has none.</returns>
-    internal static RdfTerm? EvaluateAggregate(AggregateExpression aggregate, IReadOnlyList<SparqlSolution> group)
+    internal static RdfTerm? EvaluateAggregate(AggregateExpression aggregate, IReadOnlyList<SparqlSolution> group, SparqlExpressionContext context)
     {
         if(aggregate.IsCountStar)
         {
@@ -231,7 +234,7 @@ public static class SparqlExpressionEvaluator
         {
             foreach(SparqlSolution solution in group)
             {
-                if(TryEvaluate(aggregate.Argument, solution, out RdfTerm value))
+                if(TryEvaluate(aggregate.Argument, solution, context, out RdfTerm value))
                 {
                     values.Add(value);
                 }
@@ -391,8 +394,9 @@ public static class SparqlExpressionEvaluator
     /// <summary>Evaluates an expression to a value (a bound term or an error) over an explicit bottom-up work stack.</summary>
     /// <param name="root">The expression to evaluate.</param>
     /// <param name="solution">The solution the expression is evaluated over.</param>
+    /// <param name="context">The seams (randomness, digests, the query timestamp) the non-pure functions consume.</param>
     /// <returns>The evaluated value.</returns>
-    private static ExpressionValue Evaluate(ExpressionNode root, SparqlSolution solution)
+    private static ExpressionValue Evaluate(ExpressionNode root, SparqlSolution solution, SparqlExpressionContext context)
     {
         Dictionary<ExpressionNode, ExpressionValue> values = new(ReferenceEqualityComparer.Instance);
         Stack<(ExpressionNode Node, bool Combine)> work = new();
@@ -403,7 +407,7 @@ public static class SparqlExpressionEvaluator
             (ExpressionNode node, bool combine) = work.Pop();
             if(combine)
             {
-                values[node] = CombineValue(node, values);
+                values[node] = CombineValue(node, values, context);
 
                 continue;
             }
@@ -411,7 +415,7 @@ public static class SparqlExpressionEvaluator
             IReadOnlyList<ExpressionNode> children = Operands(node);
             if(children.Count == 0)
             {
-                values[node] = EvaluateLeaf(node, solution);
+                values[node] = EvaluateLeaf(node, solution, context);
             }
             else
             {
@@ -449,12 +453,13 @@ public static class SparqlExpressionEvaluator
         };
     }
 
-    /// <summary>Evaluates a leaf expression (or rejects an unsupported form): a constant, a variable, or a <c>BOUND</c> test.</summary>
+    /// <summary>Evaluates a leaf expression (or rejects an unsupported form): a constant, a variable, a <c>BOUND</c> test, or a zero-argument built-in (<c>NOW</c>/<c>RAND</c>/<c>UUID</c>/<c>STRUUID</c>).</summary>
     /// <param name="node">The leaf node.</param>
     /// <param name="solution">The solution the expression is evaluated over.</param>
+    /// <param name="context">The seams (randomness, digests, the query timestamp) the non-pure functions consume.</param>
     /// <returns>The leaf's value.</returns>
-    /// <exception cref="NotSupportedException">The node is an unsupported form (a function call, EXISTS, or a triple-term expression).</exception>
-    private static ExpressionValue EvaluateLeaf(ExpressionNode node, SparqlSolution solution)
+    /// <exception cref="NotSupportedException">The node is an unsupported form (a named function, EXISTS, or a triple-term expression).</exception>
+    private static ExpressionValue EvaluateLeaf(ExpressionNode node, SparqlSolution solution, SparqlExpressionContext context)
     {
         return node switch
         {
@@ -463,6 +468,9 @@ public static class SparqlExpressionEvaluator
             //An unbound variable raises an error when its value is needed.
             VariableExpression variable => solution.TryGetValue(variable.Variable, out RdfTerm value) ? ExpressionValue.Of(value) : ExpressionValue.Error,
             BoundExpression bound => Boolean(solution.TryGetValue(bound.Variable, out _)),
+
+            //A zero-argument built-in (NOW/RAND/UUID/STRUUID) has no operands, so it reaches the leaf path.
+            BuiltInCallExpression call => EvaluateBuiltIn(call.Function, [], context),
             _ => throw new NotSupportedException($"SPARQL expression '{node.GetType().Name}' is not yet evaluable; this slice covers constants, variables, BOUND, the logical/comparison/arithmetic operators, IF, COALESCE, IN/NOT IN, and a core of the built-in functions. Named functions, EXISTS/NOT EXISTS, and triple-term expressions land in a later slice.")
         };
     }
@@ -470,8 +478,9 @@ public static class SparqlExpressionEvaluator
     /// <summary>Combines an expression's already-evaluated operand values (read from <paramref name="values"/>) into its own value.</summary>
     /// <param name="node">The expression to combine.</param>
     /// <param name="values">The map of already-evaluated operands to their values.</param>
+    /// <param name="context">The seams (randomness, digests, the query timestamp) the non-pure functions consume.</param>
     /// <returns>The expression's value.</returns>
-    private static ExpressionValue CombineValue(ExpressionNode node, Dictionary<ExpressionNode, ExpressionValue> values)
+    private static ExpressionValue CombineValue(ExpressionNode node, Dictionary<ExpressionNode, ExpressionValue> values, SparqlExpressionContext context)
     {
         return node switch
         {
@@ -484,7 +493,7 @@ public static class SparqlExpressionEvaluator
             CoalesceExpression coalesce => FirstBound(coalesce.Alternatives, values),
             InExpression test => Membership(test.Value, test.Set, values, negated: false),
             NotInExpression test => Membership(test.Value, test.Set, values, negated: true),
-            BuiltInCallExpression call => EvaluateBuiltInCall(call, values),
+            BuiltInCallExpression call => EvaluateBuiltInCall(call, values, context),
             _ => throw new InvalidOperationException($"Expression '{node.GetType().Name}' has operands but no combine rule in the evaluator.")
         };
     }
@@ -510,8 +519,9 @@ public static class SparqlExpressionEvaluator
     /// <summary>Gathers a built-in call's already-evaluated argument values and dispatches to the function.</summary>
     /// <param name="call">The built-in call.</param>
     /// <param name="values">The map of already-evaluated operands to their values.</param>
+    /// <param name="context">The seams (randomness, digests, the query timestamp) the non-pure functions consume.</param>
     /// <returns>The call's value.</returns>
-    private static ExpressionValue EvaluateBuiltInCall(BuiltInCallExpression call, Dictionary<ExpressionNode, ExpressionValue> values)
+    private static ExpressionValue EvaluateBuiltInCall(BuiltInCallExpression call, Dictionary<ExpressionNode, ExpressionValue> values, SparqlExpressionContext context)
     {
         ExpressionValue[] arguments = new ExpressionValue[call.Arguments.Count];
         for(int i = 0; i < arguments.Length; i++)
@@ -519,7 +529,7 @@ public static class SparqlExpressionEvaluator
             arguments[i] = values[call.Arguments[i]];
         }
 
-        return EvaluateBuiltIn(call.Function, arguments);
+        return EvaluateBuiltIn(call.Function, arguments, context);
     }
 
     /// <summary>Evaluates <c>IN</c> / <c>NOT IN</c>: membership of the tested value among the candidate set under <c>=</c> semantics.</summary>
@@ -566,9 +576,10 @@ public static class SparqlExpressionEvaluator
     /// </summary>
     /// <param name="function">The built-in function.</param>
     /// <param name="arguments">The evaluated argument values, in order.</param>
+    /// <param name="context">The seams (randomness, digests, the query timestamp) the non-pure functions consume.</param>
     /// <returns>The function's value, or an error.</returns>
     /// <exception cref="NotSupportedException">The function is not yet evaluable.</exception>
-    private static ExpressionValue EvaluateBuiltIn(BuiltInFunction function, ExpressionValue[] arguments)
+    private static ExpressionValue EvaluateBuiltIn(BuiltInFunction function, ExpressionValue[] arguments, SparqlExpressionContext context)
     {
         return function switch
         {
@@ -610,11 +621,20 @@ public static class SparqlExpressionEvaluator
             BuiltInFunction.Subject => TripleComponent(arguments[0], static triple => triple.Subject),
             BuiltInFunction.Predicate => TripleComponent(arguments[0], static triple => triple.Predicate),
             BuiltInFunction.Object => TripleComponent(arguments[0], static triple => triple.Object),
+            BuiltInFunction.Now => ExpressionValue.Of(new Literal(Utf8String.FromString(context.Now.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffffK", CultureInfo.InvariantCulture)), new NamedNode(XsdDateTime))),
+            BuiltInFunction.Rand => Numeric(context.Randomness(new RandomnessRequest(RandomnessKind.UniformDouble, default, 0, default)).Double, integral: false),
+            BuiltInFunction.Uuid => ExpressionValue.Of(new NamedNode(Utf8String.FromString("urn:uuid:" + context.Randomness(new RandomnessRequest(RandomnessKind.Uuid, default, 0, default)).Uuid.ToString("D", CultureInfo.InvariantCulture)))),
+            BuiltInFunction.StrUuid => StringLiteral(Utf8String.FromString(context.Randomness(new RandomnessRequest(RandomnessKind.Uuid, default, 0, default)).Uuid.ToString("D", CultureInfo.InvariantCulture))),
+            BuiltInFunction.Md5 => Hash(arguments[0], SparqlHashAlgorithm.Md5, context),
+            BuiltInFunction.Sha1 => Hash(arguments[0], SparqlHashAlgorithm.Sha1, context),
+            BuiltInFunction.Sha256 => Hash(arguments[0], SparqlHashAlgorithm.Sha256, context),
+            BuiltInFunction.Sha384 => Hash(arguments[0], SparqlHashAlgorithm.Sha384, context),
+            BuiltInFunction.Sha512 => Hash(arguments[0], SparqlHashAlgorithm.Sha512, context),
             BuiltInFunction.Abs => UnaryNumeric(arguments[0], static value => Math.Abs(value)),
             BuiltInFunction.Ceil => UnaryNumeric(arguments[0], Math.Ceiling),
             BuiltInFunction.Floor => UnaryNumeric(arguments[0], Math.Floor),
             BuiltInFunction.Round => UnaryNumeric(arguments[0], static value => Math.Round(value, MidpointRounding.AwayFromZero)),
-            _ => throw new NotSupportedException($"SPARQL built-in function '{function}' is not yet evaluable; this slice covers the term-type tests, sameTerm, STR/LANG/LANGMATCHES/DATATYPE, the string functions (STRLEN/UCASE/LCASE/CONTAINS/STRSTARTS/STRENDS/CONCAT/SUBSTR/STRBEFORE/STRAFTER/ENCODE_FOR_URI/REGEX/REPLACE), the term constructors (IRI/URI/STRDT/STRLANG), the date-time accessors (YEAR/MONTH/DAY/HOURS/MINUTES/SECONDS/TIMEZONE/TZ), the triple builders (TRIPLE/SUBJECT/PREDICATE/OBJECT), and ABS/CEIL/FLOOR/ROUND. The seam-dependent functions (BNODE, RAND, UUID/STRUUID, NOW, the hash functions — all through the Veritas injection seams) and the named functions and EXISTS/NOT EXISTS land in a later slice.")
+            _ => throw new NotSupportedException($"SPARQL built-in function '{function}' is not yet evaluable; this slice covers the term-type tests, sameTerm, STR/LANG/LANGMATCHES/DATATYPE, the string functions (STRLEN/UCASE/LCASE/CONTAINS/STRSTARTS/STRENDS/CONCAT/SUBSTR/STRBEFORE/STRAFTER/ENCODE_FOR_URI/REGEX/REPLACE), the term constructors (IRI/URI/STRDT/STRLANG), the date-time accessors (YEAR/MONTH/DAY/HOURS/MINUTES/SECONDS/TIMEZONE/TZ), the triple builders (TRIPLE/SUBJECT/PREDICATE/OBJECT), the seam-backed RAND/UUID/STRUUID/NOW and MD5/SHA* hashes, and ABS/CEIL/FLOOR/ROUND. BNODE (per-solution blank-node correlation), the named functions, and EXISTS/NOT EXISTS land in a later slice.")
         };
     }
 
@@ -1052,6 +1072,25 @@ public static class SparqlExpressionEvaluator
         }
 
         return ExpressionValue.Of(new Literal(lexical.Value, new NamedNode(RdfLangString), tag.Value));
+    }
+
+    /// <summary>
+    /// Evaluates a hash function (<c>MD5</c>/<c>SHA1</c>/<c>SHA256</c>/<c>SHA384</c>/<c>SHA512</c>, §17.4): the
+    /// lowercase hex digest of the argument's UTF-8 lexical form, computed through the swappable digest seam. A
+    /// non-simple-string argument errs.
+    /// </summary>
+    /// <param name="argument">The simple-string argument to digest.</param>
+    /// <param name="algorithm">The digest algorithm.</param>
+    /// <param name="context">The context carrying the digest seam.</param>
+    /// <returns>The lowercase hex digest as an <c>xsd:string</c>, or an error.</returns>
+    private static ExpressionValue Hash(ExpressionValue argument, SparqlHashAlgorithm algorithm, SparqlExpressionContext context)
+    {
+        if(argument.IsError || argument.Term is not Literal literal || literal.Language is not null || literal.Datatype.Iri != XsdString)
+        {
+            return ExpressionValue.Error;
+        }
+
+        return StringLiteral(Utf8String.FromString(Convert.ToHexStringLower(context.Hash(algorithm, literal.Value.Span))));
     }
 
     /// <summary>Evaluates a date-time accessor (<c>YEAR</c>/<c>MONTH</c>/<c>DAY</c>/<c>HOURS</c>/<c>MINUTES</c>, §17.4.5) that returns an integer component of an <c>xsd:dateTime</c>; a non-dateTime argument errs.</summary>

@@ -58,17 +58,21 @@ public sealed class SparqlQueryEngine
 
     private readonly TermDictionary dictionary;
 
+    private readonly SparqlExpressionContext expressionContext;
+
     /// <summary>Constructs an engine over an already-built store and the term dictionary that encoded it.</summary>
     /// <param name="store">The hypertrie store holding the data graph.</param>
     /// <param name="dictionary">The term dictionary that encoded <paramref name="store"/>; query constants are resolved against it.</param>
+    /// <param name="expressionContext">The seams (randomness, digests, the query timestamp) the non-pure expression functions consume; <see langword="null"/> uses <see cref="SparqlExpressionContext.CreateDefault"/>.</param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public SparqlQueryEngine(HypertrieGraphStore store, TermDictionary dictionary)
+    public SparqlQueryEngine(HypertrieGraphStore store, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(dictionary);
 
         this.store = store;
         this.dictionary = dictionary;
+        this.expressionContext = expressionContext ?? SparqlExpressionContext.CreateDefault();
     }
 
     /// <summary>
@@ -76,10 +80,11 @@ public sealed class SparqlQueryEngine
     /// dictionary and indexed into a new hypertrie store.
     /// </summary>
     /// <param name="triples">The data-graph triples.</param>
+    /// <param name="expressionContext">The seams (randomness, digests, the query timestamp) the non-pure expression functions consume; <see langword="null"/> uses <see cref="SparqlExpressionContext.CreateDefault"/>.</param>
     /// <param name="cancellationToken">A token that aborts the build.</param>
     /// <returns>An engine ready to evaluate queries against the graph.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="triples"/> is <see langword="null"/>.</exception>
-    public static async ValueTask<SparqlQueryEngine> BuildAsync(IEnumerable<DataTriple> triples, CancellationToken cancellationToken = default)
+    public static async ValueTask<SparqlQueryEngine> BuildAsync(IEnumerable<DataTriple> triples, SparqlExpressionContext? expressionContext = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(triples);
 
@@ -95,7 +100,7 @@ public sealed class SparqlQueryEngine
 
         HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(encoded, VeritasHashing.Default, cancellationToken).ConfigureAwait(false);
 
-        return new SparqlQueryEngine(store, dictionary);
+        return new SparqlQueryEngine(store, dictionary, expressionContext);
     }
 
     /// <summary>
@@ -125,7 +130,7 @@ public sealed class SparqlQueryEngine
             (AlgebraOperator node, bool combine) = work.Pop();
             if(combine)
             {
-                results[node] = Combine(node, results);
+                results[node] = Combine(node, results, expressionContext);
 
                 continue;
             }
@@ -181,8 +186,9 @@ public sealed class SparqlQueryEngine
     /// <summary>Combines an operator's already-evaluated child sequences (read from <paramref name="results"/>) into its own sequence.</summary>
     /// <param name="op">The operator to combine.</param>
     /// <param name="results">The map of already-evaluated operators to their solution sequences.</param>
+    /// <param name="context">The seams the expression-gated operators' non-pure functions consume.</param>
     /// <returns>The operator's solution sequence.</returns>
-    private static IReadOnlyList<SparqlSolution> Combine(AlgebraOperator op, Dictionary<AlgebraOperator, IReadOnlyList<SparqlSolution>> results)
+    private static IReadOnlyList<SparqlSolution> Combine(AlgebraOperator op, Dictionary<AlgebraOperator, IReadOnlyList<SparqlSolution>> results, SparqlExpressionContext context)
     {
         return op switch
         {
@@ -195,10 +201,10 @@ public sealed class SparqlQueryEngine
             Join join => JoinSolutions(results[join.Left], results[join.Right]),
             Union union => UnionSolutions(results[union.Left], results[union.Right]),
             Minus minus => MinusSolutions(results[minus.Left], results[minus.Right]),
-            Filter filter => ApplyFilter(filter, results[filter.Input]),
-            Extend extend => ApplyExtend(extend, results[extend.Input]),
-            LeftJoin leftJoin => LeftJoinSolutions(results[leftJoin.Left], results[leftJoin.Right], leftJoin.Condition),
-            OrderBy orderBy => ApplyOrderBy(orderBy, results[orderBy.Input]),
+            Filter filter => ApplyFilter(filter, results[filter.Input], context),
+            Extend extend => ApplyExtend(extend, results[extend.Input], context),
+            LeftJoin leftJoin => LeftJoinSolutions(results[leftJoin.Left], results[leftJoin.Right], leftJoin.Condition, context),
+            OrderBy orderBy => ApplyOrderBy(orderBy, results[orderBy.Input], context),
 
             //ToMultiSet / ToList are multiset / sequence conversions; with no ORDER BY in scope they pass through.
             ToMultiSet toMultiSet => results[toMultiSet.Input],
@@ -207,7 +213,7 @@ public sealed class SparqlQueryEngine
             //Group leaves the multiset unchanged here; the partitioning into groups happens in the AggregateJoin
             //that wraps it (which reads the Group's keys directly).
             Group group => results[group.Input],
-            AggregateJoin aggregateJoin => EvaluateAggregateJoin(aggregateJoin, results[aggregateJoin.Input]),
+            AggregateJoin aggregateJoin => EvaluateAggregateJoin(aggregateJoin, results[aggregateJoin.Input], context),
             _ => throw new InvalidOperationException($"Operator '{op.GetType().Name}' has children but no combine rule in the executor.")
         };
     }
@@ -402,8 +408,9 @@ public sealed class SparqlQueryEngine
     /// <summary>Orders the solution sequence by the <c>ORDER BY</c> conditions (§15.1), each ascending or descending; ties keep input order (a stable sort by original index).</summary>
     /// <param name="orderBy">The order operator.</param>
     /// <param name="input">The input solution sequence.</param>
+    /// <param name="context">The seams the order expressions' non-pure functions consume.</param>
     /// <returns>The ordered solution sequence.</returns>
-    private static List<SparqlSolution> ApplyOrderBy(OrderBy orderBy, IReadOnlyList<SparqlSolution> input)
+    private static List<SparqlSolution> ApplyOrderBy(OrderBy orderBy, IReadOnlyList<SparqlSolution> input, SparqlExpressionContext context)
     {
         List<SparqlSolution> source = [.. input];
         int[] order = new int[source.Count];
@@ -414,7 +421,7 @@ public sealed class SparqlQueryEngine
 
         Array.Sort(order, (left, right) =>
         {
-            int comparison = CompareByConditions(source[left], source[right], orderBy.Conditions);
+            int comparison = CompareByConditions(source[left], source[right], orderBy.Conditions, context);
 
             //A stable tiebreak on the original index keeps ordering deterministic where the keys are equal.
             return comparison != 0 ? comparison : left.CompareTo(right);
@@ -433,8 +440,9 @@ public sealed class SparqlQueryEngine
     /// <param name="left">The first solution.</param>
     /// <param name="right">The second solution.</param>
     /// <param name="conditions">The order conditions, in priority order.</param>
+    /// <param name="context">The seams the order expressions' non-pure functions consume.</param>
     /// <returns>A negative, zero, or positive value as <paramref name="left"/> orders before, equal to, or after <paramref name="right"/>.</returns>
-    private static int CompareByConditions(SparqlSolution left, SparqlSolution right, IReadOnlyList<OrderCondition> conditions)
+    private static int CompareByConditions(SparqlSolution left, SparqlSolution right, IReadOnlyList<OrderCondition> conditions, SparqlExpressionContext context)
     {
         foreach(OrderCondition condition in conditions)
         {
@@ -445,8 +453,8 @@ public sealed class SparqlQueryEngine
                 _ => throw new InvalidOperationException($"Unexpected order-condition kind {condition.GetType().Name} during SPARQL evaluation.")
             };
 
-            RdfTerm? leftKey = SparqlExpressionEvaluator.TryEvaluate(expression, left, out RdfTerm leftValue) ? leftValue : null;
-            RdfTerm? rightKey = SparqlExpressionEvaluator.TryEvaluate(expression, right, out RdfTerm rightValue) ? rightValue : null;
+            RdfTerm? leftKey = SparqlExpressionEvaluator.TryEvaluate(expression, left, context, out RdfTerm leftValue) ? leftValue : null;
+            RdfTerm? rightKey = SparqlExpressionEvaluator.TryEvaluate(expression, right, context, out RdfTerm rightValue) ? rightValue : null;
             int comparison = SparqlExpressionEvaluator.CompareForOrdering(leftKey, rightKey);
             if(comparison != 0)
             {
@@ -779,13 +787,14 @@ public sealed class SparqlQueryEngine
     /// <summary>Keeps the solutions whose <c>FILTER</c> condition has effective boolean value true (§18.6 Filter); an error or non-boolean value drops the solution.</summary>
     /// <param name="filter">The filter.</param>
     /// <param name="input">The input solution sequence.</param>
+    /// <param name="context">The seams the condition's non-pure functions consume.</param>
     /// <returns>The surviving solutions.</returns>
-    private static List<SparqlSolution> ApplyFilter(Filter filter, IReadOnlyList<SparqlSolution> input)
+    private static List<SparqlSolution> ApplyFilter(Filter filter, IReadOnlyList<SparqlSolution> input, SparqlExpressionContext context)
     {
         List<SparqlSolution> kept = new(input.Count);
         foreach(SparqlSolution solution in input)
         {
-            if(SparqlExpressionEvaluator.Satisfies(filter.Condition, solution))
+            if(SparqlExpressionEvaluator.Satisfies(filter.Condition, solution, context))
             {
                 kept.Add(solution);
             }
@@ -797,13 +806,14 @@ public sealed class SparqlQueryEngine
     /// <summary>Binds an expression's value to a variable on each solution (§18.6 Extend / <c>BIND</c>); a solution whose expression errs is kept with the variable left unbound.</summary>
     /// <param name="extend">The extend.</param>
     /// <param name="input">The input solution sequence.</param>
+    /// <param name="context">The seams the expression's non-pure functions consume.</param>
     /// <returns>The extended solution sequence.</returns>
-    private static List<SparqlSolution> ApplyExtend(Extend extend, IReadOnlyList<SparqlSolution> input)
+    private static List<SparqlSolution> ApplyExtend(Extend extend, IReadOnlyList<SparqlSolution> input, SparqlExpressionContext context)
     {
         List<SparqlSolution> extended = new(input.Count);
         foreach(SparqlSolution solution in input)
         {
-            if(!SparqlExpressionEvaluator.TryEvaluate(extend.Expression, solution, out RdfTerm value))
+            if(!SparqlExpressionEvaluator.TryEvaluate(extend.Expression, solution, context, out RdfTerm value))
             {
                 extended.Add(solution);
 
@@ -827,8 +837,9 @@ public sealed class SparqlQueryEngine
     /// <param name="left">The required (left) solution sequence.</param>
     /// <param name="right">The optional (right) solution sequence.</param>
     /// <param name="condition">The optional join condition (the lifted inner <c>FILTER</c>), or <see langword="null"/> when there is none.</param>
+    /// <param name="context">The seams the condition's non-pure functions consume.</param>
     /// <returns>The left-joined solution sequence.</returns>
-    private static List<SparqlSolution> LeftJoinSolutions(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right, ExpressionNode? condition)
+    private static List<SparqlSolution> LeftJoinSolutions(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right, ExpressionNode? condition, SparqlExpressionContext context)
     {
         List<SparqlSolution> result = [];
         foreach(SparqlSolution outer in left)
@@ -842,7 +853,7 @@ public sealed class SparqlQueryEngine
                 }
 
                 SparqlSolution merged = Merge(outer, inner);
-                if(condition is null || SparqlExpressionEvaluator.Satisfies(condition, merged))
+                if(condition is null || SparqlExpressionEvaluator.Satisfies(condition, merged, context))
                 {
                     result.Add(merged);
                     extended = true;
@@ -866,11 +877,12 @@ public sealed class SparqlQueryEngine
     /// </summary>
     /// <param name="aggregateJoin">The aggregate-join operator (its input is the grouping operator).</param>
     /// <param name="input">The grouped operand's solutions (the Group passthrough).</param>
+    /// <param name="context">The seams the grouping-key and aggregate expressions' non-pure functions consume.</param>
     /// <returns>One solution per group.</returns>
-    private static List<SparqlSolution> EvaluateAggregateJoin(AggregateJoin aggregateJoin, IReadOnlyList<SparqlSolution> input)
+    private static List<SparqlSolution> EvaluateAggregateJoin(AggregateJoin aggregateJoin, IReadOnlyList<SparqlSolution> input, SparqlExpressionContext context)
     {
         IReadOnlyList<GroupCondition> keys = aggregateJoin.Input is Group group ? group.Keys : [];
-        List<AggregateGroup> groups = Partition(keys, input);
+        List<AggregateGroup> groups = Partition(keys, input, context);
 
         //Implicit grouping (no keys) is always a single group, even with no input rows.
         if(keys.Count == 0 && groups.Count == 0)
@@ -884,7 +896,7 @@ public sealed class SparqlQueryEngine
             List<SparqlBinding> bindings = new(aggregateGroup.NamedKeys);
             foreach(AggregateBinding aggregation in aggregateJoin.Aggregations)
             {
-                if(SparqlExpressionEvaluator.EvaluateAggregate(aggregation.Aggregate, aggregateGroup.Members) is RdfTerm value)
+                if(SparqlExpressionEvaluator.EvaluateAggregate(aggregation.Aggregate, aggregateGroup.Members, context) is RdfTerm value)
                 {
                     bindings.Add(new SparqlBinding(aggregation.Variable, value));
                 }
@@ -899,8 +911,9 @@ public sealed class SparqlQueryEngine
     /// <summary>Partitions solutions into groups by their grouping-key values, preserving first-appearance order of groups.</summary>
     /// <param name="keys">The grouping conditions.</param>
     /// <param name="input">The solutions to partition.</param>
+    /// <param name="context">The seams the grouping-key expressions' non-pure functions consume.</param>
     /// <returns>The groups, each carrying its named-key bindings and member solutions.</returns>
-    private static List<AggregateGroup> Partition(IReadOnlyList<GroupCondition> keys, IReadOnlyList<SparqlSolution> input)
+    private static List<AggregateGroup> Partition(IReadOnlyList<GroupCondition> keys, IReadOnlyList<SparqlSolution> input, SparqlExpressionContext context)
     {
         List<AggregateGroup> groups = [];
         foreach(SparqlSolution solution in input)
@@ -909,7 +922,7 @@ public sealed class SparqlQueryEngine
             List<SparqlBinding> namedKeys = [];
             for(int i = 0; i < keys.Count; i++)
             {
-                (RdfTerm? value, SparqlVariable? named) = EvaluateGroupKey(keys[i], solution);
+                (RdfTerm? value, SparqlVariable? named) = EvaluateGroupKey(keys[i], solution, context);
                 keyValues[i] = value;
                 if(named is SparqlVariable variable && value is RdfTerm term)
                 {
@@ -944,8 +957,9 @@ public sealed class SparqlQueryEngine
     /// <summary>Evaluates one grouping condition over a solution, returning the key value and the variable it names (if any).</summary>
     /// <param name="condition">The grouping condition.</param>
     /// <param name="solution">The solution.</param>
+    /// <param name="context">The seams the grouping expression's non-pure functions consume.</param>
     /// <returns>The key value (or <see langword="null"/> when unbound/errored) and the named variable the group binds, or <see langword="null"/> for a bare grouping expression.</returns>
-    private static (RdfTerm? Value, SparqlVariable? Named) EvaluateGroupKey(GroupCondition condition, SparqlSolution solution)
+    private static (RdfTerm? Value, SparqlVariable? Named) EvaluateGroupKey(GroupCondition condition, SparqlSolution solution, SparqlExpressionContext context)
     {
         switch(condition)
         {
@@ -956,12 +970,12 @@ public sealed class SparqlQueryEngine
 
             case GroupExpressionAs expressionAs:
             {
-                return (SparqlExpressionEvaluator.TryEvaluate(expressionAs.Expression, solution, out RdfTerm value) ? value : null, expressionAs.AsVariable);
+                return (SparqlExpressionEvaluator.TryEvaluate(expressionAs.Expression, solution, context, out RdfTerm value) ? value : null, expressionAs.AsVariable);
             }
 
             case GroupExpression expression:
             {
-                return (SparqlExpressionEvaluator.TryEvaluate(expression.Expression, solution, out RdfTerm value) ? value : null, null);
+                return (SparqlExpressionEvaluator.TryEvaluate(expression.Expression, solution, context, out RdfTerm value) ? value : null, null);
             }
 
             default:

@@ -60,7 +60,7 @@ public sealed class SparqlEngineCache
                 dictionary.Resolve(triple.Object)));
         }
 
-        engine = await SparqlQueryEngine.BuildAsync(triples, cancellationToken).ConfigureAwait(false);
+        engine = await SparqlQueryEngine.BuildAsync(triples, cancellationToken: cancellationToken).ConfigureAwait(false);
 
         return engine;
     }
