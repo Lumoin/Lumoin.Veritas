@@ -195,4 +195,7 @@ public static class ShaclComponentVocabulary
 
     /// <summary><c>sh:UniqueMembersConstraintComponent</c> (SHACL 1.2).</summary>
     public static Utf8String UniqueMembers { get; } = new(UniqueMembersComponentBytes);
+
+    /// <summary><c>sh:SPARQLConstraintComponent</c> — the source constraint component of a violation produced by a <c>sh:sparql</c> constraint (SHACL-SPARQL §5.1).</summary>
+    public static Utf8String SparqlConstraint { get; } = new("http://www.w3.org/ns/shacl#SPARQLConstraintComponent"u8.ToArray());
 }

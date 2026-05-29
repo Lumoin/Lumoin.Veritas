@@ -47,6 +47,7 @@ public static class ValidationReportSerializer
     private static readonly NamedNode ResultPath = new(ShaclResultsVocabulary.ResultPath);
     private static readonly NamedNode SourceShape = new(ShaclResultsVocabulary.SourceShape);
     private static readonly NamedNode SourceConstraintComponent = new(ShaclResultsVocabulary.SourceConstraintComponent);
+    private static readonly NamedNode SourceConstraint = new(ShaclResultsVocabulary.SourceConstraint);
     private static readonly NamedNode ResultSeverity = new(ShaclResultsVocabulary.ResultSeverity);
     private static readonly NamedNode ResultMessage = new(ShaclResultsVocabulary.ResultMessage);
 
@@ -97,6 +98,11 @@ public static class ValidationReportSerializer
             quads.Add(new Quad(resultNode, ResultSeverity, SeverityNode(result.Severity)));
             quads.Add(new Quad(resultNode, SourceConstraintComponent, new NamedNode(result.SourceConstraintComponent)));
             quads.Add(new Quad(resultNode, SourceShape, dictionary.Resolve(result.SourceShape)));
+
+            if(result.SourceConstraint is TermId sourceConstraint)
+            {
+                quads.Add(new Quad(resultNode, SourceConstraint, dictionary.Resolve(sourceConstraint)));
+            }
 
             if(result.ValueNode is TermId valueNode)
             {

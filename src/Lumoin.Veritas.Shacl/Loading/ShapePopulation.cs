@@ -77,6 +77,7 @@ internal static class ShapePopulation
 
         Dictionary<IriId, List<TermId>> parameterValues = [];
         TermId? pathValue = null;
+        List<TermId> sparqlConstraintNodes = [];
 
         await foreach(EncodedTriple triple in shapeGraphMatch(builder.Id, TermId.None, TermId.None, cancellationToken).ConfigureAwait(false))
         {
@@ -92,6 +93,15 @@ internal static class ShapePopulation
                 }
 
                 pathValue = value;
+                continue;
+            }
+
+            //sh:sparql links to a SPARQL-based constraint whose query/message/prefixes live in a sub-graph on
+            //the linked node — like sh:path, this is parsed structurally (after the scan), not as a parameter
+            //scalar through the constraint-factory mechanism.
+            if(predicate.Equals(context.ShaclIds.Sparql))
+            {
+                sparqlConstraintNodes.Add(value);
                 continue;
             }
 
@@ -174,6 +184,23 @@ internal static class ShapePopulation
 
                 ConstraintComponent component = info.Factory(bag);
                 builder.Constraints.Add(component);
+            }
+        }
+
+        foreach(TermId sparqlConstraintNode in sparqlConstraintNodes)
+        {
+            SparqlConstraint? sparqlConstraint = await SparqlConstraintParser.ParseAsync(
+                sparqlConstraintNode,
+                shapeGraphMatch,
+                context.Dictionary,
+                context.ShaclIds,
+                cancellationToken).ConfigureAwait(false);
+
+            //A null result is a not-yet-enforceable constraint (deactivated, ask-only, or unparseable); skip it
+            //rather than add a constraint with no query.
+            if(sparqlConstraint is not null)
+            {
+                builder.Constraints.Add(sparqlConstraint);
             }
         }
     }

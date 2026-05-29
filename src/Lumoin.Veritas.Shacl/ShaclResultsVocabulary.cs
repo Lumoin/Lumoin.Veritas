@@ -51,6 +51,9 @@ public static class ShaclResultsVocabulary
     /// <summary><c>sh:sourceConstraintComponent</c></summary>
     public static Utf8String SourceConstraintComponent { get; } = new(SourceConstraintComponentBytes);
 
+    /// <summary><c>sh:sourceConstraint</c> — the SPARQL-based constraint node a result came from (SHACL-SPARQL §5.3).</summary>
+    public static Utf8String SourceConstraint { get; } = new("http://www.w3.org/ns/shacl#sourceConstraint"u8.ToArray());
+
     /// <summary><c>sh:resultSeverity</c></summary>
     public static Utf8String ResultSeverity { get; } = new(ResultSeverityBytes);
 

@@ -110,10 +110,15 @@ public static class ShapeLoader
         //broader set used by population-time factories. Wrap.
         RdfsDiscoveryIds rdfsDiscoveryIds = new(rdfsVocabulary.RdfType);
 
+        //sh:sparql is not a registered constraint-component primary (its constraint is parsed from a
+        //sub-graph, not a parameter scalar — see ShapePopulation), so it is absent from
+        //allConstraintParameterIds. Add it here so a node bearing sh:sparql is discovered as a shape.
+        List<IriId> discoveryConstraintIds = [.. allConstraintParameterIds, populationIds.Sparql];
+
         Dictionary<TermId, ShapeBuilder> builders = await ShapeDiscovery.DiscoverAsync(
             shapeGraphMatch,
             discoveryIds,
-            allConstraintParameterIds,
+            discoveryConstraintIds,
             rdfsDiscoveryIds,
             rdfListIds,
             cancellationToken).ConfigureAwait(false);
@@ -206,7 +211,13 @@ public static class ShapeLoader
             Message: dictionary.GetOrAdd(new NamedNode(ShaclCoreVocabulary.Message)),
             Violation: dictionary.GetOrAdd(new NamedNode(ShaclSeverityVocabulary.Violation)),
             Warning: dictionary.GetOrAdd(new NamedNode(ShaclSeverityVocabulary.Warning)),
-            Info: dictionary.GetOrAdd(new NamedNode(ShaclSeverityVocabulary.Info)));
+            Info: dictionary.GetOrAdd(new NamedNode(ShaclSeverityVocabulary.Info)),
+            Sparql: dictionary.GetOrAdd(new NamedNode(ShaclConstraintVocabulary.Sparql)),
+            Select: dictionary.GetOrAdd(new NamedNode(ShaclConstraintVocabulary.Select)),
+            Prefixes: dictionary.GetOrAdd(new NamedNode(ShaclConstraintVocabulary.Prefixes)),
+            Declare: dictionary.GetOrAdd(new NamedNode(ShaclConstraintVocabulary.Declare)),
+            Prefix: dictionary.GetOrAdd(new NamedNode(ShaclConstraintVocabulary.Prefix)),
+            Namespace: dictionary.GetOrAdd(new NamedNode(ShaclConstraintVocabulary.Namespace)));
     }
 
     private static RdfListIds BuildRdfListIds(TermDictionary dictionary)

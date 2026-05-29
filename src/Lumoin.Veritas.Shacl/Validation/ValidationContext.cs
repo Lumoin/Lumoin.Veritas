@@ -106,6 +106,14 @@ public sealed record ValidationContext
     public SubclassClosureCache SubclassClosureCache { get; init; } = new();
 
     /// <summary>
+    /// Per-run cache for the SPARQL query engine backing <c>sh:sparql</c>
+    /// constraint evaluation. The data graph is indexed into the engine at
+    /// most once per run and re-used across every SPARQL constraint and
+    /// focus node.
+    /// </summary>
+    public SparqlEngineCache SparqlEngines { get; init; } = new();
+
+    /// <summary>
     /// Recursive shape-validation delegate. <c>null</c> when the
     /// orchestrator has not wired it — evaluators that depend on it
     /// (the six recursion evaluators) must guard with a null check and

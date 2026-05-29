@@ -122,5 +122,9 @@ public static class ShaclBuiltInEvaluators
             //triple-term plumbing.
             [ShaclComponentVocabulary.UniqueValuesFor] = UniqueValuesForEvaluator.EvaluateAsync,
             [ShaclComponentVocabulary.ReifierShape] = ReifierShapeEvaluator.EvaluateAsync,
+
+            //SHACL-SPARQL constraints. The constraint's SELECT query runs against the data graph with $this
+            //pre-bound to the focus node; each result row is a violation (SHACL-SPARQL §5).
+            [ShaclComponentVocabulary.SparqlConstraint] = SparqlConstraintEvaluator.EvaluateAsync,
         });
 }

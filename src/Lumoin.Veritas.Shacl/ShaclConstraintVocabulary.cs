@@ -207,4 +207,25 @@ public static class ShaclConstraintVocabulary
 
     /// <summary><c>sh:uniqueMembers</c> (SHACL 1.2).</summary>
     public static Utf8String UniqueMembers { get; } = new(UniqueMembersBytes);
+
+    /// <summary><c>sh:sparql</c> — links a shape to a SPARQL-based constraint (SHACL-SPARQL §5.1).</summary>
+    public static Utf8String Sparql { get; } = new("http://www.w3.org/ns/shacl#sparql"u8.ToArray());
+
+    /// <summary><c>sh:select</c> — the SELECT query text of a SPARQL-based constraint (SHACL-SPARQL §5.1).</summary>
+    public static Utf8String Select { get; } = new("http://www.w3.org/ns/shacl#select"u8.ToArray());
+
+    /// <summary><c>sh:ask</c> — the ASK query text of a SPARQL-based constraint validator (SHACL-SPARQL §6); not yet evaluated.</summary>
+    public static Utf8String Ask { get; } = new("http://www.w3.org/ns/shacl#ask"u8.ToArray());
+
+    /// <summary><c>sh:prefixes</c> — links a SPARQL-based constraint to the prefix-declaration subject(s) whose <c>sh:declare</c> triples supply its namespace bindings (SHACL-SPARQL §5.2.1).</summary>
+    public static Utf8String Prefixes { get; } = new("http://www.w3.org/ns/shacl#prefixes"u8.ToArray());
+
+    /// <summary><c>sh:declare</c> — links a prefix-declaration subject to one namespace declaration (SHACL-SPARQL §5.2.1).</summary>
+    public static Utf8String Declare { get; } = new("http://www.w3.org/ns/shacl#declare"u8.ToArray());
+
+    /// <summary><c>sh:prefix</c> — the prefix string of a namespace declaration (SHACL-SPARQL §5.2.1).</summary>
+    public static Utf8String Prefix { get; } = new("http://www.w3.org/ns/shacl#prefix"u8.ToArray());
+
+    /// <summary><c>sh:namespace</c> — the namespace IRI (an <c>xsd:anyURI</c> literal) of a namespace declaration (SHACL-SPARQL §5.2.1).</summary>
+    public static Utf8String Namespace { get; } = new("http://www.w3.org/ns/shacl#namespace"u8.ToArray());
 }

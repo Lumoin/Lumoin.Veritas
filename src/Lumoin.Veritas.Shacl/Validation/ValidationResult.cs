@@ -48,6 +48,10 @@ namespace Lumoin.Veritas.Shacl.Validation;
 ///     <description><c>sh:sourceConstraintComponent</c></description>
 ///   </item>
 ///   <item>
+///     <term><see cref="SourceConstraint"/></term>
+///     <description><c>sh:sourceConstraint</c> (SPARQL-based constraints only)</description>
+///   </item>
+///   <item>
 ///     <term><see cref="Messages"/></term>
 ///     <description><c>sh:resultMessage</c> (possibly multi-lingual)</description>
 ///   </item>
@@ -100,6 +104,16 @@ public sealed record ValidationResult
     /// for example <c>sh:MinCountConstraintComponent</c>.
     /// </summary>
     public required Utf8String SourceConstraintComponent { get; init; }
+
+    /// <summary>
+    /// The term id of the specific constraint that produced this result,
+    /// emitted as <c>sh:sourceConstraint</c>. Set only by SPARQL-based
+    /// constraints (SHACL-SPARQL §5.3), where it points at the
+    /// <c>sh:sparql</c> constraint node; <c>null</c> for the Core
+    /// constraint components, which identify their source by component IRI
+    /// and shape alone.
+    /// </summary>
+    public TermId? SourceConstraint { get; init; }
 
     /// <summary>
     /// Human-readable messages attached to this result, keyed by

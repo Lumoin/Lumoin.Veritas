@@ -41,6 +41,12 @@ namespace Lumoin.Veritas.Shacl.Loading;
 /// <param name="Violation">The <c>sh:Violation</c> severity-level identifier.</param>
 /// <param name="Warning">The <c>sh:Warning</c> severity-level identifier.</param>
 /// <param name="Info">The <c>sh:Info</c> severity-level identifier.</param>
+/// <param name="Sparql">The <c>sh:sparql</c> predicate identifier (links a shape to a SPARQL-based constraint).</param>
+/// <param name="Select">The <c>sh:select</c> predicate identifier (the constraint's SELECT query text).</param>
+/// <param name="Prefixes">The <c>sh:prefixes</c> predicate identifier (the constraint's prefix-declaration subjects).</param>
+/// <param name="Declare">The <c>sh:declare</c> predicate identifier (one namespace declaration on a prefix-declaration subject).</param>
+/// <param name="Prefix">The <c>sh:prefix</c> predicate identifier (a declaration's prefix string).</param>
+/// <param name="Namespace">The <c>sh:namespace</c> predicate identifier (a declaration's namespace IRI).</param>
 internal readonly record struct ShaclPopulationIds(
     IriId Path,
     IriId TargetClass,
@@ -52,4 +58,10 @@ internal readonly record struct ShaclPopulationIds(
     IriId Message,
     IriId Violation,
     IriId Warning,
-    IriId Info);
+    IriId Info,
+    IriId Sparql,
+    IriId Select,
+    IriId Prefixes,
+    IriId Declare,
+    IriId Prefix,
+    IriId Namespace);
