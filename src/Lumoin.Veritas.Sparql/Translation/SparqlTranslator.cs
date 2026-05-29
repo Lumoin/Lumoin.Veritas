@@ -27,12 +27,12 @@ namespace Lumoin.Veritas.Sparql.Translation;
 /// A triple whose predicate is a complex property path becomes a <see cref="Path"/> operator carrying the
 /// structured <see cref="PropertyPathExpression"/> whole (§18.2.2.4); the <em>decomposition</em> of the
 /// individual path forms — sequence/alternative/inverse into joins/unions/swaps, and the
-/// <c>*</c>/<c>+</c>/<c>?</c>/negated-set evaluation semantics — is a later lowering slice. Two constructs are
-/// deferred and raise <see cref="NotSupportedException"/>: aggregation (<c>GROUP BY</c>/<c>HAVING</c> and
-/// aggregate expressions, which require the <c>Group</c>/<c>AggregateJoin</c> operators) and sub-<c>SELECT</c>
-/// translation. An error node in the recovered AST contributes nothing — a graph-pattern error becomes
-/// <see cref="UnitTable"/> and an errored query-form head translates to the bare pattern algebra. SPARQL 1.2
-/// §18.2 [Translation to the SPARQL Algebra].
+/// <c>*</c>/<c>+</c>/<c>?</c>/negated-set evaluation semantics — is a later lowering slice. A sub-<c>SELECT</c>
+/// becomes a <see cref="ToMultiSet"/> over its inner query's algebra, joined into the enclosing group. Aggregation
+/// (<c>GROUP BY</c>/<c>HAVING</c> and aggregate expressions, which require the <c>Group</c>/<c>AggregateJoin</c>
+/// operators) is deferred and raises <see cref="NotSupportedException"/>. An error node in the recovered AST
+/// contributes nothing — a graph-pattern error becomes <see cref="UnitTable"/> and an errored query-form head
+/// translates to the bare pattern algebra. SPARQL 1.2 §18.2 [Translation to the SPARQL Algebra].
 /// </para>
 /// </remarks>
 public static class SparqlTranslator
@@ -42,19 +42,30 @@ public static class SparqlTranslator
     /// </summary>
     /// <param name="query">The query to translate; expected to have been lowered by <see cref="SparqlNormalizer"/>.</param>
     /// <returns>The root of the query's algebra tree.</returns>
-    /// <exception cref="NotSupportedException">A deferred construct (aggregation or a sub-<c>SELECT</c>) is present.</exception>
+    /// <exception cref="NotSupportedException">A deferred construct (aggregation) is present.</exception>
     public static AlgebraOperator Translate(SparqlQuery query)
     {
         ArgumentNullException.ThrowIfNull(query);
 
         //The WHERE group pattern is translated first (§18.2.2); the form-specific head then wraps it.
-        AlgebraOperator pattern = TranslatePattern(query.Where.Pattern);
+        return ApplyQueryForm(query, TranslatePattern(query.Where.Pattern));
+    }
 
+    /// <summary>
+    /// Applies a query's trailing <c>VALUES</c>, form-specific head, and solution modifiers over its
+    /// already-translated WHERE pattern (§18.2.4 / §18.2.5). Used for the top-level query and, wrapped in
+    /// <see cref="ToMultiSet"/>, for a sub-<c>SELECT</c>.
+    /// </summary>
+    /// <param name="query">The query whose head and modifiers are applied.</param>
+    /// <param name="pattern">The query's already-translated WHERE pattern.</param>
+    /// <returns>The query's algebra.</returns>
+    /// <exception cref="NotSupportedException">Aggregation (<c>GROUP BY</c>/<c>HAVING</c>) is present.</exception>
+    private static AlgebraOperator ApplyQueryForm(SparqlQuery query, AlgebraOperator pattern)
+    {
         //A trailing VALUES block joins the pattern result (§18.2.5, final VALUES clause).
-        if(query.Values is not null)
-        {
-            pattern = Join(pattern, new Table(query.Values));
-        }
+        AlgebraOperator current = query.Values is not null
+            ? Join(pattern, new Table(query.Values))
+            : pattern;
 
         //Grouping and aggregation are a separate slice; refuse them rather than emit a wrong tree.
         SolutionModifier modifier = query.Modifier;
@@ -65,18 +76,18 @@ public static class SparqlTranslator
 
         return query.Form switch
         {
-            SelectQuery select => TranslateSelect(select, pattern, modifier),
+            SelectQuery select => TranslateSelect(select, current, modifier),
 
             //ASK reports whether the pattern has any solution; the solution modifiers do not change that.
-            AskQuery => pattern,
+            AskQuery => current,
 
             //CONSTRUCT and DESCRIBE have no projection; ORDER BY and the slice still shape the solution
             //sequence that feeds template instantiation / resource description (a later, execution-time slice).
-            ConstructQuery => ApplyOrderAndSlice(pattern, modifier),
-            DescribeQuery => ApplyOrderAndSlice(pattern, modifier),
+            ConstructQuery => ApplyOrderAndSlice(current, modifier),
+            DescribeQuery => ApplyOrderAndSlice(current, modifier),
 
             //A recovered query whose form head is an error node still has a parsed WHERE pattern.
-            ErrorQueryForm => pattern,
+            ErrorQueryForm => current,
 
             _ => throw new InvalidOperationException($"Unexpected query-form kind {query.Form.GetType().Name} during SPARQL algebra translation.")
         };
@@ -191,9 +202,17 @@ public static class SparqlTranslator
                 return [service.Inner];
             }
 
+            case SubSelectPattern subSelect:
+            {
+                //A sub-SELECT's inner WHERE pattern is translated first; its head/modifiers and the ToMultiSet
+                //wrapper are applied when the SubSelectPattern combines. Routing it through the same post-order
+                //keeps arbitrarily deep sub-SELECT nesting iterative.
+                return [subSelect.InnerQuery.Where.Pattern];
+            }
+
             default:
             {
-                //Leaves: BasicGraphPatternBlock, ValuesPattern, ErrorGraphPattern, SubSelectPattern.
+                //Leaves: BasicGraphPatternBlock, ValuesPattern, ErrorGraphPattern.
                 return [];
             }
         }
@@ -217,7 +236,9 @@ public static class SparqlTranslator
             //An error graph pattern carries its own diagnostics and contributes nothing to the algebra.
             ErrorGraphPattern => new UnitTable(),
 
-            SubSelectPattern => throw new NotSupportedException("Sub-SELECT translation is a separate slice (SPARQL 1.2 §18.2.2 / §18.2.4)."),
+            //A sub-SELECT becomes the multiset of its inner query's solutions joined into the enclosing group
+            //(§18.2.4); the inner Project caps the visible variables, so only the inner projection is in scope.
+            SubSelectPattern subSelect => new ToMultiSet(ApplyQueryForm(subSelect.InnerQuery, results[subSelect.InnerQuery.Where.Pattern])),
 
             //OPTIONAL / MINUS / BIND / FILTER are only meaningful relative to their enclosing group and are
             //handled in CombineGroup; reaching one here is a structural invariant violation.

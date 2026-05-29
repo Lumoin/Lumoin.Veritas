@@ -299,14 +299,56 @@ internal sealed class SparqlTranslatorTests
         Cast<Bgp>(project.Input);
     }
 
-    /// <summary>A sub-SELECT is a deferred construct and is refused.</summary>
+    /// <summary>A sub-SELECT becomes a ToMultiSet over the inner query's projection.</summary>
     [TestMethod]
-    public void SubSelectIsNotSupportedYet()
+    public void SubSelectBecomesToMultiSetOverProjection()
     {
         using Utf8StringPool pool = new();
-        SparqlQuery query = ParseAndNormalize("PREFIX : <http://example.org/> SELECT * WHERE { SELECT ?s WHERE { ?s :p ?o } }", pool);
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { SELECT ?s WHERE { ?s :p ?o } }", pool);
 
-        _ = Assert.Throws<NotSupportedException>(() => SparqlTranslator.Translate(query));
+        Project outer = Cast<Project>(algebra);
+        AssertVariablesInOrder(outer.Variables, "s");
+
+        ToMultiSet toMultiSet = Cast<ToMultiSet>(outer.Input);
+        Project inner = Cast<Project>(toMultiSet.Input);
+        AssertVariablesInOrder(inner.Variables, "s");
+        Cast<Bgp>(inner.Input);
+    }
+
+    /// <summary>A sub-SELECT joins into the enclosing group, and its non-projected variables stay out of scope.</summary>
+    [TestMethod]
+    public void SubSelectJoinsWithOuterPatternAndCapsScope()
+    {
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?a :q ?b . { SELECT ?s WHERE { ?s :p ?o } } }", pool);
+
+        Project project = Cast<Project>(algebra);
+        Join join = Cast<Join>(project.Input);
+        Cast<Bgp>(join.Left);
+        Cast<ToMultiSet>(join.Right);
+
+        //?o and ?p live only inside the sub-SELECT (not projected), so SELECT * sees only ?a, ?b, and ?s.
+        AssertVariablesInOrder(project.Variables, "a", "b", "s");
+    }
+
+    /// <summary>Deeply nested sub-SELECTs translate iteratively — the head/modifier application does not recurse per level.</summary>
+    [TestMethod]
+    public void DeeplyNestedSubSelectsTranslateWithoutOverflow()
+    {
+        using Utf8StringPool pool = new();
+        const int depth = 2_000;
+        StringBuilder builder = new("PREFIX : <http://example.org/> SELECT * WHERE ");
+        for(int i = 0; i < depth; i++)
+        {
+            builder.Append("{ SELECT * WHERE ");
+        }
+
+        builder.Append("{ ?s :p ?o }").Append('}', depth);
+
+        AlgebraOperator algebra = Translate(builder.ToString(), pool);
+
+        //Each level wraps the previous in Project(ToMultiSet(...)); the outermost is a Project.
+        Cast<Project>(algebra);
     }
 
     /// <summary>Aggregation (GROUP BY) is a deferred construct and is refused.</summary>
