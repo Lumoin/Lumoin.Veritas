@@ -275,15 +275,33 @@ Aggregate)`; `AggregateJoin(AlgebraOperator Input /* a Group */, IReadOnlyList<A
   expression no-overflow) replaced the old `GroupByIsNotSupportedYet`. Build clean (0 warnings); full suite at
   exactly 50 ShaclValidate failures, 0 new.
 
-▶ **NEXT AFTER A CLEAR:** HEAD `0057e17`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
-unchanged baseline, 0 new). The AST→algebra translator is now COMPLETE for SPARQL 1.2 core: groups/modifiers
-(`1eafdc5`), property-path *pattern* translation (`71e995f`), sub-`SELECT`→`ToMultiSet` (`79b9447`), and the full
-aggregation translation (`0057e17`). The only remaining Milestone-B translation item is **property-path form
-*lowering*** — see the LOCKED plan immediately below. After that, Milestone B's translation surface is done; the
-next big piece is the executor / hypertrie backend (Milestone C). Deep-nesting tests guard the iterative pipeline
-(20k nested groups, 10k nested collections, 2k nested sub-SELECTs, 50k Join OutputVariables/Transform, 50k-deep
-aggregate expression). Relevant memory: [[feedback_no_recursion]], [[project_sparql_algebra_design]],
-[[project_sparql_reified_triple_no_assert]], [[project_trace_bus_extensions]]. Build/test commands below.
+**STATUS (cont.): property-path form *lowering* (§18.2.2.5) — translate-time decomposition is DONE, committed (`6b6e4f2`), and green.**
+- `SparqlTranslator.TranslateBlock` now lowers a complex path predicate via the new iterative (explicit
+  expand/combine work stack, no recursion) `TranslatePathPattern`: `seq`→left-associated `Join` chained through
+  fresh internal join vars; `inv`→endpoint swap; `alt`→`Union` of branches over the same endpoints; a single
+  link→a one-triple `Bgp`. The four non-relational forms stay opaque `Path` leaves: `PathZeroOrMore`,
+  `PathOneOrMore`, `PathZeroOrOne`, `PathNegatedSet`.
+- Fresh seq join vars come from a query-wide `FreshVariables` allocator (names `.path0`, `.path1`, …; one
+  instance per `Translate` so they never alias across unrelated paths). `VisibleVariables.Add` now filters
+  `.`-prefixed internal vars (the `.pathN` join vars AND the `.aggN` aggregate results) out of `SELECT *`.
+- 6 path tests (seq→Join-through-fresh-var + fresh var hidden from `SELECT *`, inverse swap, alt→Union, NPS
+  stays Path, nested `(:a/^:b)|:c+` mixes Join/swap/Union + closure leaf, 20k-step seq no-overflow); the old
+  "carried whole into Path" test was replaced. Build clean; full suite at exactly 50 ShaclValidate failures, 0 new.
+
+▶ **NEXT AFTER A CLEAR:** HEAD `6b6e4f2`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
+unchanged baseline, 0 new). **The AST→algebra translator is now COMPLETE for SPARQL 1.2 core — Milestone B's
+translation surface is DONE:** groups/modifiers (`1eafdc5`), property-path pattern (`71e995f`), sub-`SELECT`
+(`79b9447`), aggregation (`0057e17`), property-path form lowering (`6b6e4f2`). **The next big piece is Milestone C
+— the executor / hypertrie backend** that evaluates the algebra: a `SparqlQueryEngine`/`ExecuteAsync` (still does
+NOT exist), BGP→hypertrie triejoin, the algebra operators' evaluation, and the property-path `Path`-leaf closure
+evaluation (items 2–4 of the PROPERTY-PATH LOWERING plan below: the native pair-aware closure on
+`Rdf.PropertyPathEvaluator`, reused by SPARQL both-var mode + OWL; plus the IriRef→IriId resolution at the
+term-dictionary boundary). The trace-bus extensions ([[project_trace_bus_extensions]]) ride alongside. **Confirm
+the impl spec's §5.1 / executor design + §7 `ExecuteAsync` contract before starting Milestone C.** Deep-nesting
+tests guard the iterative pipeline (20k nested groups, 10k nested collections, 2k nested sub-SELECTs, 50k Join
+OutputVariables/Transform, 50k-deep aggregate expression, 20k-step sequence path). Relevant memory:
+[[feedback_no_recursion]], [[project_sparql_algebra_design]], [[project_sparql_reified_triple_no_assert]],
+[[project_trace_bus_extensions]]. Build/test commands below.
 
 ### ⏵ PROPERTY-PATH LOWERING — PLAN (design-locked 2026-05-29; confirm shapes vs. §18.2.2.5 if the impl spec is to hand)
 
@@ -292,7 +310,9 @@ the `Core/Diagnostics` trace bus). **The split is principled, not a compromise:*
 trie side (optimizer-visible, pushdown-friendly, pairing-preserving), only the inherently-fixpoint forms stay
 opaque and call the closure oracle.
 
-1. **Translate-time decomposition (a pure AST→algebra rewrite — belongs in `SparqlTranslator`, NOT the executor).**
+1. **Translate-time decomposition (a pure AST→algebra rewrite in `SparqlTranslator`).** ✅ **DONE (`6b6e4f2`)** —
+   implemented exactly as planned below (`TranslatePathPattern`, iterative; `FreshVariables` `.pathN`; `SELECT *`
+   filter). The plan text is kept as the record of the decision.
    The parser already collapses a single link to a `ConstantTerm`, so a `PropertyPathTerm` is always a genuinely
    complex path. Decompose a path *pattern* `X path Y` (must be **iterative**, work-stack, no recursion —
    [[feedback_no_recursion]], mirroring `TranslatePattern`):
@@ -343,11 +363,11 @@ re-prompt. The old accumulation of ~25 exact per-filter test rules was pruned.
 
 **STILL OPEN (Milestone B remainder) — done so far: group/modifier translator (`1eafdc5`), property-path *pattern*
 translation (`71e995f`), `AlgebraWalker` (`86d8245`), sub-`SELECT` → `ToMultiSet` (`79b9447`), aggregation
-*operators* scaffold (`379b36e`), aggregation *translation* (`0057e17`). What remains:** only **property-path form
-*lowering*** — now design-locked (see the PROPERTY-PATH LOWERING — PLAN block above): translate-time decompose
-`seq`→Join(fresh var) / `inv`→swap / `alt`→Union, keep `*`/`+`/`?`/NPS as `Path` leaves; their *evaluation* (incl.
-native pair-aware closure for the both-var mode, reused by OWL) is Milestone C. Scope: full SPARQL 1.2 core, not a
-SHACL-minimal subset.
+*operators* scaffold (`379b36e`), aggregation *translation* (`0057e17`), property-path form lowering (`6b6e4f2`).
+**Milestone B's AST→algebra translation surface is now COMPLETE.** What remains is Milestone C (the executor): the
+`Path`-leaf closure *evaluation* (incl. the native pair-aware closure for the both-var mode, reused by OWL — items
+2–4 of the PROPERTY-PATH LOWERING plan above) lands there with the rest of the algebra evaluator. Scope: full
+SPARQL 1.2 core, not a SHACL-minimal subset.
 
 **Build/test (MTP — `dotnet test` does NOT work; exact commands that worked all session):**
 - Build: `dotnet build src/Lumoin.Veritas.Sparql/Lumoin.Veritas.Sparql.csproj -clp:ErrorsOnly --nologo`,
