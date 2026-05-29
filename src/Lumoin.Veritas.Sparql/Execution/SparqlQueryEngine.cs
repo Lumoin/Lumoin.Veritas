@@ -26,13 +26,16 @@ namespace Lumoin.Veritas.Sparql.Execution;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Slice scope.</b> This first slice executes basic graph patterns (a <see cref="Bgp"/>, the translator already
-/// merges consecutive plain triples into one) under the projection/sequence modifiers that need no expression
-/// evaluation: <see cref="Project"/>, <see cref="Distinct"/>, <see cref="Reduced"/>, <see cref="Slice"/>, and the
-/// <see cref="UnitTable"/> identity. Every other operator (joins across non-BGP operands, <c>FILTER</c>,
-/// <c>OPTIONAL</c>, <c>UNION</c>, <c>MINUS</c>, paths, aggregation, named graphs, <c>SERVICE</c>, sub-<c>SELECT</c>)
-/// raises <see cref="NotSupportedException"/> until its later slice lands. The public surface (entry naming, result
-/// model, streaming) is provisional pending the implementation spec's §5.1/§7.
+/// <b>Slice scope.</b> The executor covers basic graph patterns (a <see cref="Bgp"/>, the translator already merges
+/// consecutive plain triples into one), the expression-free relational operators (<see cref="Join"/>,
+/// <see cref="Union"/>, <see cref="Minus"/>), sub-<c>SELECT</c> (<see cref="ToMultiSet"/> / <see cref="ToList"/>),
+/// and the projection/sequence modifiers that need no expression evaluation (<see cref="Project"/>,
+/// <see cref="Distinct"/>, <see cref="Reduced"/>, <see cref="Slice"/>, and the <see cref="UnitTable"/> identity).
+/// The operators that need expression evaluation (<c>FILTER</c>, <c>OPTIONAL</c>'s <see cref="LeftJoin"/>,
+/// <c>BIND</c>/<see cref="Extend"/>, <c>ORDER BY</c>), property paths, aggregation, named graphs, and
+/// <c>SERVICE</c> raise <see cref="NotSupportedException"/> until their later slice lands. The public surface (entry naming, result
+/// model, streaming) is provisional and follows codebase convention; the W3C SPARQL 1.2 specification governs the
+/// evaluation semantics.
 /// </para>
 /// <para>
 /// <b>No recursion.</b> The algebra is evaluated over an explicit two-phase (expand/combine) work stack, mirroring
@@ -174,6 +177,13 @@ public sealed class SparqlQueryEngine
             //REDUCED permits but does not require duplicate elimination; passing the sequence through is conformant.
             Reduced reduced => results[reduced.Input],
             Slice slice => ApplySlice(slice, results[slice.Input]),
+            Join join => JoinSolutions(results[join.Left], results[join.Right]),
+            Union union => UnionSolutions(results[union.Left], results[union.Right]),
+            Minus minus => MinusSolutions(results[minus.Left], results[minus.Right]),
+
+            //ToMultiSet / ToList are multiset / sequence conversions; with no ORDER BY in scope they pass through.
+            ToMultiSet toMultiSet => results[toMultiSet.Input],
+            ToList toList => results[toList.Input],
             _ => throw new InvalidOperationException($"Operator '{op.GetType().Name}' has children but no combine rule in the executor.")
         };
     }
@@ -365,6 +375,127 @@ public sealed class SparqlQueryEngine
         return [.. windowed];
     }
 
+    /// <summary>Joins two solution sequences (§18.6 Join): the merge of every pair of compatible solutions, one from each side.</summary>
+    /// <param name="left">The left solution sequence.</param>
+    /// <param name="right">The right solution sequence.</param>
+    /// <returns>The joined solution sequence.</returns>
+    private static List<SparqlSolution> JoinSolutions(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right)
+    {
+        List<SparqlSolution> joined = [];
+        foreach(SparqlSolution outer in left)
+        {
+            foreach(SparqlSolution inner in right)
+            {
+                if(AreCompatible(outer, inner))
+                {
+                    joined.Add(Merge(outer, inner));
+                }
+            }
+        }
+
+        return joined;
+    }
+
+    /// <summary>Unions two solution sequences (§18.6 Union): the multiset of all solutions of either side, left before right.</summary>
+    /// <param name="left">The left solution sequence.</param>
+    /// <param name="right">The right solution sequence.</param>
+    /// <returns>The unioned solution sequence.</returns>
+    private static List<SparqlSolution> UnionSolutions(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right)
+    {
+        List<SparqlSolution> all = new(left.Count + right.Count);
+        all.AddRange(left);
+        all.AddRange(right);
+
+        return all;
+    }
+
+    /// <summary>
+    /// Subtracts the right sequence from the left (§18.6 Minus): a left solution is removed only when some right
+    /// solution is compatible with it <em>and</em> shares at least one variable. The shared-variable requirement is
+    /// the spec's disjoint-domain exception — a left solution with no variable in common with any right solution is
+    /// kept even though disjoint mappings are technically compatible.
+    /// </summary>
+    /// <param name="left">The left (kept) solution sequence.</param>
+    /// <param name="right">The right (subtracting) solution sequence.</param>
+    /// <returns>The left solutions that survive the subtraction.</returns>
+    private static List<SparqlSolution> MinusSolutions(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right)
+    {
+        List<SparqlSolution> kept = new(left.Count);
+        foreach(SparqlSolution candidate in left)
+        {
+            bool removed = false;
+            foreach(SparqlSolution subtractor in right)
+            {
+                if(SharesVariable(candidate, subtractor) && AreCompatible(candidate, subtractor))
+                {
+                    removed = true;
+
+                    break;
+                }
+            }
+
+            if(!removed)
+            {
+                kept.Add(candidate);
+            }
+        }
+
+        return kept;
+    }
+
+    /// <summary>Returns whether two solutions are compatible (§18.1): every variable bound in both maps to the same term.</summary>
+    /// <param name="left">The first solution.</param>
+    /// <param name="right">The second solution.</param>
+    /// <returns><see langword="true"/> when the solutions agree on every shared variable.</returns>
+    private static bool AreCompatible(SparqlSolution left, SparqlSolution right)
+    {
+        foreach(SparqlBinding binding in left.Bindings)
+        {
+            if(right.TryGetValue(binding.Variable, out RdfTerm value) && !value.Equals(binding.Value))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>Returns whether two solutions bind at least one variable in common (their domains intersect).</summary>
+    /// <param name="left">The first solution.</param>
+    /// <param name="right">The second solution.</param>
+    /// <returns><see langword="true"/> when some variable is bound in both.</returns>
+    private static bool SharesVariable(SparqlSolution left, SparqlSolution right)
+    {
+        foreach(SparqlBinding binding in left.Bindings)
+        {
+            if(right.TryGetValue(binding.Variable, out _))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Merges two compatible solutions: every binding of <paramref name="left"/>, plus each binding of <paramref name="right"/> for a variable the left does not bind.</summary>
+    /// <param name="left">The left solution.</param>
+    /// <param name="right">The right solution.</param>
+    /// <returns>The merged solution.</returns>
+    private static SparqlSolution Merge(SparqlSolution left, SparqlSolution right)
+    {
+        List<SparqlBinding> merged = new(left.Bindings.Count + right.Bindings.Count);
+        merged.AddRange(left.Bindings);
+        foreach(SparqlBinding binding in right.Bindings)
+        {
+            if(!left.TryGetValue(binding.Variable, out _))
+            {
+                merged.Add(binding);
+            }
+        }
+
+        return new SparqlSolution(merged);
+    }
+
     /// <summary>Verifies every operator in the algebra is one this slice can execute, throwing a descriptive <see cref="NotSupportedException"/> on the first that is not.</summary>
     /// <param name="algebra">The algebra to check.</param>
     /// <exception cref="NotSupportedException">An operator outside this slice's supported set is present.</exception>
@@ -372,10 +503,10 @@ public sealed class SparqlQueryEngine
     {
         foreach(AlgebraOperator op in AlgebraWalker.Traverse(algebra))
         {
-            bool supported = op is Bgp or UnitTable or Project or Distinct or Reduced or Slice;
+            bool supported = op is Bgp or UnitTable or Project or Distinct or Reduced or Slice or Join or Union or Minus or ToMultiSet or ToList;
             if(!supported)
             {
-                throw new NotSupportedException($"SPARQL algebra operator '{op.GetType().Name}' is not yet executable. This Milestone-C slice covers basic-graph-pattern SELECT/ASK with DISTINCT/REDUCED/OFFSET/LIMIT; joins across non-BGP operands, FILTER, OPTIONAL, UNION, MINUS, property paths, aggregation, named graphs, SERVICE, and sub-SELECT land in later slices.");
+                throw new NotSupportedException($"SPARQL algebra operator '{op.GetType().Name}' is not yet executable. This executor covers basic graph patterns, JOIN/UNION/MINUS, sub-SELECT (ToMultiSet), and the projection/DISTINCT/REDUCED/OFFSET/LIMIT modifiers; FILTER, OPTIONAL (LeftJoin), BIND/Extend, ORDER BY, property paths, aggregation, named graphs, and SERVICE land in later slices.");
             }
         }
     }

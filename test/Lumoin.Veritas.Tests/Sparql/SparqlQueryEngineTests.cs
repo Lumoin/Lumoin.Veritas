@@ -117,6 +117,49 @@ internal sealed class SparqlQueryEngineTests
         Assert.ContainsSingle(await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false));
     }
 
+    /// <summary>A UNION yields the solutions of either branch.</summary>
+    [TestMethod]
+    public async Task UnionYieldsSolutionsOfEitherBranch()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(("alice", "p", "bob"), ("carol", "q", "dave")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { { ?s :p ?o } UNION { ?s :q ?o } }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(2, solutions);
+    }
+
+    /// <summary>MINUS removes left solutions that have a compatible right solution sharing a variable, and keeps the rest.</summary>
+    [TestMethod]
+    public async Task MinusRemovesCompatibleSharedVariableSolutions()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(("alice", "p", "x"), ("bob", "p", "y"), ("alice", "q", "x")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?s WHERE { ?s :p ?o MINUS { ?s :q ?o } }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //{?s=alice,?o=x} is removed (the MINUS branch has it); {?s=bob,?o=y} stays (no compatible right solution).
+        SparqlSolution solution = solutions.Single();
+        Assert.AreEqual(Ex + "bob", ValueIri(solution, "s"));
+    }
+
+    /// <summary>A sub-SELECT joins into the enclosing pattern (Join over a ToMultiSet), correlating on the shared variable.</summary>
+    [TestMethod]
+    public async Task SubSelectJoinsIntoEnclosingPattern()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(("alice", "q", "bob"), ("alice", "p", "thing")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?a :q ?b . { SELECT ?a WHERE { ?a :p ?o } } }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        SparqlSolution solution = solutions.Single();
+        Assert.AreEqual(Ex + "alice", ValueIri(solution, "a"));
+        Assert.AreEqual(Ex + "bob", ValueIri(solution, "b"));
+    }
+
     /// <summary>An operator outside this slice's supported set (here FILTER) is refused with a descriptive exception.</summary>
     [TestMethod]
     public async Task UnsupportedOperatorIsRefused()
