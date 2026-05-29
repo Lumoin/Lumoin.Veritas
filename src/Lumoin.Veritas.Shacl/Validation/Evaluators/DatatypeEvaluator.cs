@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Rdf;
+using Lumoin.Veritas.Rdf.Values;
 using Lumoin.Veritas.Shacl.Constraints;
 
 namespace Lumoin.Veritas.Shacl.Validation.Evaluators;
@@ -26,9 +27,10 @@ namespace Lumoin.Veritas.Shacl.Validation.Evaluators;
 /// <b>Lexical-form validity.</b> The SHACL spec additionally requires
 /// the literal's lexical form to be a valid value of the datatype (for
 /// example, <c>"abc"^^xsd:integer</c> fails even though the datatype
-/// IRI matches). This evaluator currently checks only the datatype IRI;
-/// lexical-form validation is a separate responsibility that will land
-/// alongside datatype-specific parsers in the core library.
+/// IRI matches). This is enforced via
+/// <see cref="XsdLexicalValidity.IsValidLexicalForm"/>, which validates
+/// the lexical form against the datatype's lexical space (and the
+/// value-range bounds of the derived integer types).
 /// </para>
 /// </remarks>
 public static class DatatypeEvaluator
@@ -63,7 +65,9 @@ public static class DatatypeEvaluator
         foreach(TermId value in valueNodes)
         {
             RdfTerm term = context.Dictionary.Resolve(value);
-            bool matches = term is Literal literal && literal.Datatype == expectedDatatype;
+            bool matches = term is Literal literal
+                && literal.Datatype == expectedDatatype
+                && XsdLexicalValidity.IsValidLexicalForm(literal.Value, literal.Datatype.Iri);
             if(matches)
             {
                 continue;
