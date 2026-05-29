@@ -288,16 +288,18 @@ Aggregate)`; `AggregateJoin(AlgebraOperator Input /* a Group */, IReadOnlyList<A
   stays Path, nested `(:a/^:b)|:c+` mixes Join/swap/Union + closure leaf, 20k-step seq no-overflow); the old
   "carried whole into Path" test was replaced. Build clean; full suite at exactly 50 ShaclValidate failures, 0 new.
 
-▶ **NEXT AFTER A CLEAR:** HEAD `6b6e4f2`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
-unchanged baseline, 0 new). **The AST→algebra translator is now COMPLETE for SPARQL 1.2 core — Milestone B's
-translation surface is DONE:** groups/modifiers (`1eafdc5`), property-path pattern (`71e995f`), sub-`SELECT`
-(`79b9447`), aggregation (`0057e17`), property-path form lowering (`6b6e4f2`). **The next big piece is Milestone C
-— the executor / hypertrie backend** that evaluates the algebra: a `SparqlQueryEngine`/`ExecuteAsync` (still does
-NOT exist), BGP→hypertrie triejoin, the algebra operators' evaluation, and the property-path `Path`-leaf closure
-evaluation (items 2–4 of the PROPERTY-PATH LOWERING plan below: the native pair-aware closure on
-`Rdf.PropertyPathEvaluator`, reused by SPARQL both-var mode + OWL; plus the IriRef→IriId resolution at the
-term-dictionary boundary). The trace-bus extensions ([[project_trace_bus_extensions]]) ride alongside. **Confirm
-the impl spec's §5.1 / executor design + §7 `ExecuteAsync` contract before starting Milestone C.** Deep-nesting
+▶ **NEXT AFTER A CLEAR:** HEAD `de58edf`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
+unchanged baseline, 0 new). **Milestone B (AST→algebra translation) is COMPLETE; Milestone C (the executor) is
+UNDERWAY — slice 1 done (`de58edf`).** `Sparql/Execution/SparqlQueryEngine` now executes BGP SELECT/ASK end-to-end
+(parse→normalize→translate→execute) via the encoding bridge + the WCOJ engine; see the MILESTONE C — EXECUTOR
+KICKOFF anchor below for the substrate map and the 6-slice plan (slice 1 ✅). **IMMEDIATE NEXT = slice 2:**
+solution-sequence operators that need no expression evaluation — `Join` (non-BGP, solution merge-join on shared
+vars), `Union`, `Minus`, `ToMultiSet`/`ToList`, trailing `Table` (VALUES) — added to `SparqlQueryEngine`'s
+`Combine`/leaf dispatch (iterative, no recursion). Then slice 3 = the expression evaluator + `Filter`/`Extend`/
+`LeftJoin`-condition/`OrderBy`. ⚠ Engine entry name / result model / streaming stay **provisional pending impl-spec
+§5.1/§7** — but the bridge + solution model are spec-independent, so slices 2–4 can proceed on convention. The
+property-path `Path`-leaf closure (slice 5) reuses `Rdf.PropertyPathEvaluator` + the native pair-aware closure
+(PROPERTY-PATH plan items 2–4 below). The trace-bus extensions ([[project_trace_bus_extensions]]) ride alongside. Deep-nesting
 tests guard the iterative pipeline (20k nested groups, 10k nested collections, 2k nested sub-SELECTs, 50k Join
 OutputVariables/Transform, 50k-deep aggregate expression, 20k-step sequence path). Relevant memory:
 [[feedback_no_recursion]], [[project_sparql_algebra_design]], [[project_sparql_reified_triple_no_assert]],
@@ -318,7 +320,16 @@ need to first classify which of the 50 baseline failures are SPARQL- vs core-SHA
 **The bridge (spec-independent, build first):** SPARQL algebra is over `SparqlVariable`/`RdfTerm` (`NamedNode`/literals/blank); the store is over `Variable`/`TermId`. Need: (a) build a store + `TermDictionary` from the data graph's AST triples; (b) `SparqlVariable`↔`Variable` map (via a `VariableRegistry`, `GetOrAdd(name.ToString())`); (c) encode an algebra `Bgp` → `BasicGraphPattern` (`ConstantTerm.Term`→`GetIdOrDefault`; `VariableTerm`→`OfVariable`; a missing constant short-circuits the BGP to empty); (d) decode a `Solution` → a SPARQL binding (`SparqlVariable`→`RdfTerm` via the inverse var-map + dict decode). Note nested `Ast.TripleTerm` terms encode via `TermDictionary.GetOrAdd(TripleTerm)`.
 
 **Sliced plan (each slice: build to convention, green at the 50-SHACL baseline, commit):**
-1. **Encoding bridge + pure-BGP SELECT/ASK end-to-end** — the bridge above + a minimal evaluator for `Project(Bgp)` / `Bgp` (+ `Distinct`/`Reduced`/`Slice`/`UnitTable`, and a `Join` of BGP subtrees **merged into one `BasicGraphPattern`** so the WCOJ engine runs once — §18.2.2.7 BGP-merge); decode to a SPARQL solution model. Proves parse→normalize→translate→execute. (Engine entry name provisional pending §7.)
+1. ✅ **DONE (`de58edf`) — Encoding bridge + pure-BGP SELECT/ASK end-to-end.** New `Sparql/Execution/`:
+   `SparqlSolution`+`SparqlBinding` (decoded solution model), `DataTriple` (provisional in-memory data graph),
+   `SparqlQueryEngine` (`BuildAsync(triples)` → TermDictionary+store; `EvaluateAsync(algebra)` → iterative
+   expand/combine work-stack over the algebra; `Bgp` encoded to `BasicGraphPattern` + `SparqlVariable`↔`Variable`
+   map, run through `HypertrieGraphStore.Query` (WCOJ), decoded back; a constant absent from the data short-circuits
+   the BGP to empty). Supported: `Bgp`/`Project`/`Distinct`/`Reduced`/`Slice`/`UnitTable`; every other op →
+   descriptive `NotSupportedException`. 7 `SparqlQueryEngineTests`, green at the 50-SHACL baseline. ⚠ Engine entry
+   name / result model / streaming are **provisional pending §7** — the bridge + solution model are spec-independent.
+   *(Note: `Join`-of-BGP merge into one `BasicGraphPattern` was NOT needed for this slice — the translator already
+   merges consecutive plain triples into one `Bgp`; cross-operator `Join` is slice 2.)*
 2. **Solution-sequence operators** that don't need expressions: `Join` (non-BGP, solution merge-join on shared vars), `Union`, `Minus`, `ToMultiSet`/`ToList`, trailing `Table` (VALUES). Iterative, no recursion.
 3. **Expression evaluator** (`ExpressionNode` → value; effective boolean value, type coercion, the built-in fn set) — then `Filter`, `Extend` (BIND), `LeftJoin` condition, `OrderBy`. This is the big sub-component.
 4. **Aggregation** evaluation: `Group` partition + `AggregateJoin` (COUNT/SUM/MIN/MAX/AVG/SAMPLE/GROUP_CONCAT, DISTINCT) over the rewritten projections.
