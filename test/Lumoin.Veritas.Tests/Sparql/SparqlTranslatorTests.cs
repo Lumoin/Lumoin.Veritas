@@ -172,17 +172,112 @@ internal sealed class SparqlTranslatorTests
         AssertVariablesInOrder(project.Variables, "s", "o");
     }
 
-    /// <summary>A sequence path is carried whole into the Path operator; its decomposition is a later slice.</summary>
+    /// <summary>A sequence path decomposes to a Join of one-triple BGPs chained through a fresh internal join variable (§18.2.2.5); that fresh variable is not visible to SELECT *.</summary>
     [TestMethod]
-    public void SequencePathIsCarriedWholeIntoPath()
+    public void SequencePathDecomposesToJoinThroughFreshVariable()
     {
         using Utf8StringPool pool = new();
         AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?s :p/:q ?o }", pool);
 
         Project project = Cast<Project>(algebra);
+        Join join = Cast<Join>(project.Input);
+
+        //?s :p V and V :q ?o, joined; the midpoint V is the same fresh variable in both triples.
+        TriplePattern first = SingleTriple(Cast<Bgp>(join.Left));
+        TriplePattern second = SingleTriple(Cast<Bgp>(join.Right));
+        Assert.AreEqual("s", VariableName(first.Subject));
+        string midpoint = VariableName(first.Object);
+        Assert.AreEqual(midpoint, VariableName(second.Subject));
+        Assert.AreEqual("o", VariableName(second.Object));
+        Assert.StartsWith(".", midpoint, "The sequence join variable should use the collision-free internal-name prefix.");
+
+        //The fresh midpoint is internal and stays out of SELECT *.
+        AssertVariablesInOrder(project.Variables, "s", "o");
+    }
+
+    /// <summary>An inverse path swaps the endpoints: <c>?s ^:p ?o</c> becomes the BGP triple <c>?o :p ?s</c>.</summary>
+    [TestMethod]
+    public void InversePathSwapsEndpoints()
+    {
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?s ^:p ?o }", pool);
+
+        Project project = Cast<Project>(algebra);
+        TriplePattern triple = SingleTriple(Cast<Bgp>(project.Input));
+        Assert.AreEqual("o", VariableName(triple.Subject));
+        Assert.AreEqual("s", VariableName(triple.Object));
+    }
+
+    /// <summary>An alternative path decomposes to a Union of its branches over the same endpoints (§18.2.2.5).</summary>
+    [TestMethod]
+    public void AlternativePathDecomposesToUnion()
+    {
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?s :p|:q ?o }", pool);
+
+        Project project = Cast<Project>(algebra);
+        Union union = Cast<Union>(project.Input);
+
+        //Each branch is the same-endpoints one-triple BGP for one alternative.
+        TriplePattern left = SingleTriple(Cast<Bgp>(union.Left));
+        TriplePattern right = SingleTriple(Cast<Bgp>(union.Right));
+        Assert.AreEqual("s", VariableName(left.Subject));
+        Assert.AreEqual("o", VariableName(left.Object));
+        Assert.AreEqual("s", VariableName(right.Subject));
+        Assert.AreEqual("o", VariableName(right.Object));
+        AssertVariablesInOrder(project.Variables, "s", "o");
+    }
+
+    /// <summary>A negated property set is non-relational and stays an opaque Path operator (closure evaluation is an executor concern).</summary>
+    [TestMethod]
+    public void NegatedPropertySetStaysPath()
+    {
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?s !:p ?o }", pool);
+
+        Project project = Cast<Project>(algebra);
         AlgebraPath path = Cast<AlgebraPath>(project.Input);
 
-        Cast<PathSequence>(path.PathExpression);
+        Cast<PathNegatedSet>(path.PathExpression);
+    }
+
+    /// <summary>A nested sequence/inverse/alternative path decomposes into the matching Join/swap/Union tree, with closures left as Path leaves.</summary>
+    [TestMethod]
+    public void NestedPathDecomposesRelationalFormsAndKeepsClosureLeaf()
+    {
+        using Utf8StringPool pool = new();
+        //(:a / ^:b) on the sequence, then | :c+ as an alternative: Union( Join(Bgp, Bgp-swapped), Path(:c+) ).
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?s (:a/^:b)|:c+ ?o }", pool);
+
+        Project project = Cast<Project>(algebra);
+        Union union = Cast<Union>(project.Input);
+
+        //Left alternative: the :a/^:b sequence is a join of a forward and a swapped triple.
+        Join sequence = Cast<Join>(union.Left);
+        Cast<Bgp>(sequence.Left);
+        Cast<Bgp>(sequence.Right);
+
+        //Right alternative: :c+ is a closure that stays an opaque Path leaf.
+        AlgebraPath closure = Cast<AlgebraPath>(union.Right);
+        Cast<PathOneOrMore>(closure.PathExpression);
+    }
+
+    /// <summary>A long sequence path decomposes iteratively — far past the depth a recursive lowering would overflow — folding into a left-deep Join chain.</summary>
+    [TestMethod]
+    public void LongSequencePathDecomposesWithoutOverflow()
+    {
+        using Utf8StringPool pool = new();
+        const int steps = 20_000;
+        string path = string.Join("/", Enumerable.Range(0, steps).Select(static i => $":p{i}"));
+        AlgebraOperator algebra = Translate($"PREFIX : <http://example.org/> SELECT * WHERE {{ ?s {path} ?o }}", pool);
+
+        //The steps fold left-associatively, so the outermost operator is a Join over the last step's BGP.
+        Project project = Cast<Project>(algebra);
+        Join join = Cast<Join>(project.Input);
+        Cast<Bgp>(join.Right);
+
+        //Only the user endpoints survive; the 19,999 fresh midpoints are internal.
+        AssertVariablesInOrder(project.Variables, "s", "o");
     }
 
     /// <summary>Plain triples and a path triple in one block join as BGP runs and a Path, in source order.</summary>
@@ -519,6 +614,24 @@ internal sealed class SparqlTranslatorTests
         SparqlParser parser = new(lexer.Tokenize(), pool);
 
         return (SparqlQuery)new SparqlNormalizer(pool).Normalize(parser.ParseRequest());
+    }
+
+    /// <summary>Asserts a BGP holds exactly one triple and returns it.</summary>
+    /// <param name="bgp">The BGP to inspect.</param>
+    /// <returns>The BGP's single triple pattern.</returns>
+    private static TriplePattern SingleTriple(Bgp bgp)
+    {
+        Assert.HasCount(1, bgp.Patterns);
+
+        return bgp.Patterns[0];
+    }
+
+    /// <summary>Returns the name of a variable term, asserting the term is a variable.</summary>
+    /// <param name="term">The term, expected to be a <see cref="VariableTerm"/>.</param>
+    /// <returns>The variable's name.</returns>
+    private static string VariableName(TriplePatternTerm term)
+    {
+        return Cast<VariableTerm>(term).Variable.Name.ToString();
     }
 
     /// <summary>Asserts a value is of the expected type and returns it cast to that type.</summary>

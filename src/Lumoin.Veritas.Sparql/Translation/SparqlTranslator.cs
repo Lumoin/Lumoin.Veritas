@@ -25,11 +25,11 @@ namespace Lumoin.Veritas.Sparql.Translation;
 /// pure function of the AST and carries no state, so the type is static.
 /// </para>
 /// <para>
-/// A triple whose predicate is a complex property path becomes a <see cref="Path"/> operator carrying the
-/// structured <see cref="PropertyPathExpression"/> whole (§18.2.2.4); the <em>decomposition</em> of the
-/// individual path forms — sequence/alternative/inverse into joins/unions/swaps, and the
-/// <c>*</c>/<c>+</c>/<c>?</c>/negated-set evaluation semantics — is a later lowering slice. A sub-<c>SELECT</c>
-/// becomes a <see cref="ToMultiSet"/> over its inner query's algebra, joined into the enclosing group.
+/// A triple whose predicate is a complex property path is lowered by §18.2.2.5: a sequence becomes a
+/// <see cref="Join"/> chained through fresh internal join variables, an inverse swaps the endpoints, and an
+/// alternative becomes a <see cref="Union"/>; only the arbitrary-length forms (<c>*</c>/<c>+</c>/<c>?</c>) and a
+/// negated property set remain opaque <see cref="Path"/> operators, whose closure evaluation is an executor
+/// concern. A sub-<c>SELECT</c> becomes a <see cref="ToMultiSet"/> over its inner query's algebra, joined into the enclosing group.
 /// Aggregation (an explicit <c>GROUP BY</c>/<c>HAVING</c>, or an aggregate expression triggering implicit
 /// grouping) becomes <see cref="Group"/> then <see cref="AggregateJoin"/>, with each distinct aggregate bound
 /// to a fresh result variable and the projection/<c>HAVING</c>/<c>ORDER BY</c> expressions rewritten to
@@ -49,8 +49,12 @@ public static class SparqlTranslator
     {
         ArgumentNullException.ThrowIfNull(query);
 
+        //A single fresh-variable allocator spans the whole query (including sub-SELECTs) so the internal join
+        //variables introduced by property-path sequence decomposition are unique everywhere and never alias.
+        FreshVariables fresh = new();
+
         //The WHERE group pattern is translated first (§18.2.2); the form-specific head then wraps it.
-        return ApplyQueryForm(query, TranslatePattern(query.Where.Pattern));
+        return ApplyQueryForm(query, TranslatePattern(query.Where.Pattern, fresh));
     }
 
     /// <summary>
@@ -301,8 +305,9 @@ public static class SparqlTranslator
     /// combines, so arbitrarily deep pattern nesting cannot overflow the stack.
     /// </summary>
     /// <param name="root">The graph pattern to translate.</param>
+    /// <param name="fresh">The query-wide allocator for the internal join variables of property-path sequence decomposition.</param>
     /// <returns>The algebra for the pattern.</returns>
-    private static AlgebraOperator TranslatePattern(GraphPattern root)
+    private static AlgebraOperator TranslatePattern(GraphPattern root, FreshVariables fresh)
     {
         //Results are keyed by reference: two value-equal sibling patterns are distinct positions that must map
         //to distinct algebra. A parsed pattern is a tree, so each instance appears exactly once as a key.
@@ -315,7 +320,7 @@ public static class SparqlTranslator
             (GraphPattern node, bool combine) = work.Pop();
             if(combine)
             {
-                results[node] = TranslateNode(node, results);
+                results[node] = TranslateNode(node, results, fresh);
 
                 continue;
             }
@@ -325,7 +330,7 @@ public static class SparqlTranslator
             {
                 //A leaf (block / VALUES / error / sub-SELECT), or a group whose only members are FILTER/BIND,
                 //translates without awaiting any child result.
-                results[node] = TranslateNode(node, results);
+                results[node] = TranslateNode(node, results, fresh);
             }
             else
             {
@@ -423,13 +428,14 @@ public static class SparqlTranslator
     /// <summary>Builds the algebra for a single pattern node, given its already-translated sub-patterns (looked up by reference).</summary>
     /// <param name="node">The pattern node to translate.</param>
     /// <param name="results">The map of already-translated sub-patterns to their algebra.</param>
+    /// <param name="fresh">The query-wide allocator for property-path sequence join variables.</param>
     /// <returns>The node's algebra.</returns>
-    private static AlgebraOperator TranslateNode(GraphPattern node, Dictionary<GraphPattern, AlgebraOperator> results)
+    private static AlgebraOperator TranslateNode(GraphPattern node, Dictionary<GraphPattern, AlgebraOperator> results, FreshVariables fresh)
     {
         return node switch
         {
             GroupGraphPattern group => CombineGroup(group, results),
-            BasicGraphPatternBlock block => TranslateBlock(block),
+            BasicGraphPatternBlock block => TranslateBlock(block, fresh),
             UnionPattern union => new Union(results[union.Left], results[union.Right]),
             GraphGraphPattern graph => new Graph(graph.GraphTerm, results[graph.Inner]),
             ServicePattern service => new Service(service.Endpoint, results[service.Inner], service.IsSilent),
@@ -520,12 +526,13 @@ public static class SparqlTranslator
 
     /// <summary>
     /// Translates a basic graph pattern block (§18.2.2.4 / §18.2.2.5): triples with a plain predicate
-    /// accumulate into <see cref="Bgp"/> runs, while each triple whose predicate is a property path becomes a
-    /// <see cref="Path"/> operator, and the runs and paths join in source order.
+    /// accumulate into <see cref="Bgp"/> runs, while each triple whose predicate is a property path is lowered by
+    /// <see cref="TranslatePathPattern"/>, and the runs and lowered paths join in source order.
     /// </summary>
     /// <param name="block">The normalized block; its triples are over core terms and its standalone nodes are empty.</param>
-    /// <returns>The block's algebra: a single <see cref="Bgp"/> in the common all-plain case, a join of BGP runs and paths when paths are present, or <see cref="UnitTable"/> (the join identity) for an empty block.</returns>
-    private static AlgebraOperator TranslateBlock(BasicGraphPatternBlock block)
+    /// <param name="fresh">The query-wide allocator for property-path sequence join variables.</param>
+    /// <returns>The block's algebra: a single <see cref="Bgp"/> in the common all-plain case, a join of BGP runs and lowered paths when paths are present, or <see cref="UnitTable"/> (the join identity) for an empty block.</returns>
+    private static AlgebraOperator TranslateBlock(BasicGraphPatternBlock block, FreshVariables fresh)
     {
         AlgebraOperator result = new UnitTable();
         List<TriplePattern>? bgpRun = null;
@@ -533,8 +540,8 @@ public static class SparqlTranslator
         foreach(TriplePattern triple in block.Triples)
         {
             //The parser collapses a single-link path to a ConstantTerm predicate, so a PropertyPathTerm is
-            //always a genuine complex path that earns its own Path operator (the path-form decomposition /
-            //evaluation is a later lowering slice). A plain IRI or variable predicate stays a BGP triple.
+            //always a genuinely complex path; it is lowered to algebra (§18.2.2.5). A plain IRI or variable
+            //predicate stays a BGP triple.
             if(triple.Predicate is PropertyPathTerm pathTerm)
             {
                 if(bgpRun is not null)
@@ -543,7 +550,7 @@ public static class SparqlTranslator
                     bgpRun = null;
                 }
 
-                result = Join(result, new Path(triple.Subject, pathTerm.Path, triple.Object));
+                result = Join(result, TranslatePathPattern(triple.Subject, pathTerm.Path, triple.Object, pathTerm.Span, fresh));
             }
             else
             {
@@ -558,6 +565,169 @@ public static class SparqlTranslator
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Lowers a property-path pattern <c>subject path object</c> to algebra (§18.2.2.5) over an explicit work
+    /// stack (no call-stack recursion, mirroring <see cref="TranslatePattern"/>), so an arbitrarily deep path
+    /// cannot overflow the stack. The relational
+    /// path forms decompose: a sequence becomes a left-associated <see cref="Join"/> chained through fresh
+    /// internal join variables, an inverse swaps the endpoints, and an alternative becomes a
+    /// <see cref="Union"/> of its branches over the same endpoints. A single link becomes a one-triple
+    /// <see cref="Bgp"/>. The inherently non-relational forms — <c>*</c>/<c>+</c>/<c>?</c> and a negated
+    /// property set — stay opaque <see cref="Path"/> operators, whose closure evaluation is an executor concern.
+    /// </summary>
+    /// <param name="subject">The path pattern's subject endpoint.</param>
+    /// <param name="path">The property-path expression connecting the endpoints.</param>
+    /// <param name="object">The path pattern's object endpoint.</param>
+    /// <param name="span">The source span of the path term, stamped on every synthesized triple.</param>
+    /// <param name="fresh">The query-wide allocator for the sequence join variables.</param>
+    /// <returns>The path pattern's algebra.</returns>
+    private static AlgebraOperator TranslatePathPattern(TriplePatternTerm subject, PropertyPathExpression path, TriplePatternTerm @object, SourceSpan span, FreshVariables fresh)
+    {
+        //Two-phase expand/combine over an explicit stack (mirrors AlgebraWalker.Transform): a node first
+        //schedules its sub-path patterns, then combines their results. Each sub-pattern leaves exactly one
+        //operator on the results stack, so a combine pops its children off the top in source order.
+        Stack<PathFrame> work = new();
+        Stack<AlgebraOperator> results = new();
+        work.Push(new PathFrame(subject, path, @object, Combine: false));
+
+        while(work.Count > 0)
+        {
+            PathFrame frame = work.Pop();
+            if(frame.Combine)
+            {
+                results.Push(CombinePath(frame, results));
+
+                continue;
+            }
+
+            switch(frame.Path)
+            {
+                case PathInverse inverse:
+                {
+                    //^P between S and O is P between O and S.
+                    work.Push(frame with { Combine = true });
+                    work.Push(new PathFrame(frame.Object, inverse.Inner, frame.Subject, Combine: false));
+
+                    break;
+                }
+
+                case PathSequence sequence:
+                {
+                    //P1/P2/.../Pn: chain the steps through fresh intermediate endpoints, joined in order.
+                    IReadOnlyList<PropertyPathExpression> steps = sequence.Steps;
+                    TriplePatternTerm[] endpoints = new TriplePatternTerm[steps.Count + 1];
+                    endpoints[0] = frame.Subject;
+                    endpoints[steps.Count] = frame.Object;
+                    for(int i = 1; i < steps.Count; i++)
+                    {
+                        endpoints[i] = new VariableTerm(span, fresh.Next());
+                    }
+
+                    work.Push(frame with { Combine = true });
+                    for(int i = steps.Count - 1; i >= 0; i--)
+                    {
+                        work.Push(new PathFrame(endpoints[i], steps[i], endpoints[i + 1], Combine: false));
+                    }
+
+                    break;
+                }
+
+                case PathAlternative alternative:
+                {
+                    //P1|P2|...: each branch holds between the same endpoints; their union is the result.
+                    IReadOnlyList<PropertyPathExpression> alternatives = alternative.Alternatives;
+                    work.Push(frame with { Combine = true });
+                    for(int i = alternatives.Count - 1; i >= 0; i--)
+                    {
+                        work.Push(new PathFrame(frame.Subject, alternatives[i], frame.Object, Combine: false));
+                    }
+
+                    break;
+                }
+
+                case PathPredicate predicate:
+                {
+                    //A single link is a plain triple pattern; the IRI becomes a constant predicate.
+                    TriplePattern triple = new(span, frame.Subject, new ConstantTerm(predicate.Predicate.Span, new NamedNode(predicate.Predicate.Value)), frame.Object);
+                    results.Push(new Bgp([triple]));
+
+                    break;
+                }
+
+                default:
+                {
+                    //The arbitrary-length forms (* + ?) and the negated property set stay opaque Path operators;
+                    //their closure evaluation against the property-path oracle is an executor concern.
+                    results.Push(new Path(frame.Subject, frame.Path, frame.Object));
+
+                    break;
+                }
+            }
+        }
+
+        return results.Pop();
+    }
+
+    /// <summary>Combines a relational path node's already-translated sub-patterns (read off the top of the results stack) into its operator.</summary>
+    /// <param name="frame">The combine frame, carrying the path form that determines how many children to pop and how to combine them.</param>
+    /// <param name="results">The results stack holding the children on top, last child topmost.</param>
+    /// <returns>The combined operator.</returns>
+    private static AlgebraOperator CombinePath(PathFrame frame, Stack<AlgebraOperator> results)
+    {
+        switch(frame.Path)
+        {
+            case PathInverse:
+            {
+                //The inverse's single swapped-endpoint child is its translation.
+                return results.Pop();
+            }
+
+            case PathSequence sequence:
+            {
+                AlgebraOperator[] children = PopInOrder(results, sequence.Steps.Count);
+                AlgebraOperator joined = children[0];
+                for(int i = 1; i < children.Length; i++)
+                {
+                    joined = Join(joined, children[i]);
+                }
+
+                return joined;
+            }
+
+            case PathAlternative alternative:
+            {
+                AlgebraOperator[] children = PopInOrder(results, alternative.Alternatives.Count);
+                AlgebraOperator unioned = children[0];
+                for(int i = 1; i < children.Length; i++)
+                {
+                    unioned = new Union(unioned, children[i]);
+                }
+
+                return unioned;
+            }
+
+            default:
+            {
+                throw new InvalidOperationException($"Path form {frame.Path.GetType().Name} does not combine children and should not have a combine frame.");
+            }
+        }
+    }
+
+    /// <summary>Pops the top <paramref name="count"/> operators off the results stack and returns them in source order (the stack holds them last-first).</summary>
+    /// <param name="results">The results stack.</param>
+    /// <param name="count">The number of operators to pop.</param>
+    /// <returns>The popped operators, restored to source order.</returns>
+    private static AlgebraOperator[] PopInOrder(Stack<AlgebraOperator> results, int count)
+    {
+        AlgebraOperator[] children = new AlgebraOperator[count];
+        for(int i = count - 1; i >= 0; i--)
+        {
+            children[i] = results.Pop();
+        }
+
+        return children;
     }
 
     /// <summary>
@@ -846,12 +1016,21 @@ public static class SparqlTranslator
         }
     }
 
-    /// <summary>Records a variable in first-appearance order, skipping one already seen.</summary>
+    /// <summary>Records a variable in first-appearance order, skipping one already seen and any internal variable synthesized by translation.</summary>
     /// <param name="variable">The variable to record.</param>
     /// <param name="ordered">The accumulating ordered list of distinct variables.</param>
     /// <param name="seen">The set tracking which variables are already recorded.</param>
     private static void Add(SparqlVariable variable, List<SparqlVariable> ordered, HashSet<SparqlVariable> seen)
     {
+        //Internal variables synthesized by translation — the property-path sequence join variables (.pathN) and
+        //the aggregate result variables (.aggN) — use a leading '.' that no user variable can carry; they are
+        //never visible to SELECT *.
+        ReadOnlySpan<byte> name = variable.Name.Span;
+        if(name.Length > 0 && name[0] == (byte)'.')
+        {
+            return;
+        }
+
         if(seen.Add(variable))
         {
             ordered.Add(variable);
@@ -886,4 +1065,34 @@ public static class SparqlTranslator
     /// <param name="Projections">The projection columns with aggregates rewritten to their result variables.</param>
     /// <param name="Order">The <c>ORDER BY</c> clause with aggregates rewritten, or <see langword="null"/>.</param>
     private readonly record struct AggregateRewrite(AlgebraOperator Pattern, IReadOnlyList<SelectProjection> Projections, OrderClause? Order);
+
+    /// <summary>
+    /// One frame of the <see cref="TranslatePathPattern"/> work stack: a property-path pattern
+    /// <c>Subject Path Object</c> to lower, in either the expand phase (<see cref="Combine"/> false) or the
+    /// combine phase (<see cref="Combine"/> true, after its sub-patterns have been translated).
+    /// </summary>
+    /// <param name="Subject">The pattern's subject endpoint.</param>
+    /// <param name="Path">The path connecting the endpoints.</param>
+    /// <param name="Object">The pattern's object endpoint.</param>
+    /// <param name="Combine">Whether this is the combine phase (children already on the results stack) rather than the expand phase.</param>
+    private readonly record struct PathFrame(TriplePatternTerm Subject, PropertyPathExpression Path, TriplePatternTerm Object, bool Combine);
+
+    /// <summary>
+    /// Allocates the internal join variables introduced by property-path sequence decomposition. The names use a
+    /// leading <c>.</c> (<c>.path0</c>, <c>.path1</c>, …) that no user variable can carry, so they never collide
+    /// with a query variable and are filtered from <c>SELECT *</c>. One instance spans a whole query so the
+    /// names stay unique across every path pattern (a shared name would alias two unrelated paths in a join).
+    /// </summary>
+    private sealed class FreshVariables
+    {
+        /// <summary>The index of the next variable to allocate.</summary>
+        private int next;
+
+        /// <summary>Allocates the next fresh internal join variable.</summary>
+        /// <returns>A variable named <c>.path&lt;n&gt;</c> for a monotonically increasing <c>n</c>.</returns>
+        public SparqlVariable Next()
+        {
+            return new SparqlVariable(Utf8String.FromString($".path{next++}"));
+        }
+    }
 }
