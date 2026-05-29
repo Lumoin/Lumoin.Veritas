@@ -85,6 +85,12 @@ internal static class PairOrderingEvaluatorCore
                     continue;
                 }
 
+                //Per-pair result (§4.8.x): a value node compared against N
+                //comparison-set members yields one result per non-conforming
+                //pair, not one per value. The comparison-set member is not
+                //surfaced (the result vocabulary has no slot for it), so
+                //distinct non-conforming pairs of the same value produce
+                //value-equal results — that multiplicity is intended.
                 builder.Add(new ValidationResult
                 {
                     FocusNode = focusNode,
@@ -95,11 +101,6 @@ internal static class PairOrderingEvaluatorCore
                     SourceConstraintComponent = constraint.ConstraintComponentIri,
                     Messages = shape.Messages,
                 });
-
-                //Don't bother emitting more results for the same value
-                //against further comparison-set members; one violation
-                //per value is sufficient information.
-                break;
             }
         }
 

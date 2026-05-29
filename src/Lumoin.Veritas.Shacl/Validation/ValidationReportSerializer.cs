@@ -33,40 +33,36 @@ namespace Lumoin.Veritas.Shacl.Validation;
 /// </remarks>
 public static class ValidationReportSerializer
 {
-    private static readonly NamedNode RdfType = new(Vocabulary.Rdf.Type);
-    private static readonly NamedNode RdfFirst = new(RdfVocabulary.Rdf.First);
-    private static readonly NamedNode RdfRest = new(RdfVocabulary.Rdf.Rest);
-    private static readonly NamedNode RdfNil = new(RdfVocabulary.Rdf.Nil);
+    private static NamedNode RdfType { get; } = new(Vocabulary.Rdf.Type);
+    private static NamedNode RdfFirst { get; } = new(RdfVocabulary.Rdf.First);
+    private static NamedNode RdfRest { get; } = new(RdfVocabulary.Rdf.Rest);
+    private static NamedNode RdfNil { get; } = new(RdfVocabulary.Rdf.Nil);
 
-    private static readonly NamedNode ValidationReportClass = new(ShaclResultsVocabulary.ValidationReport);
-    private static readonly NamedNode ValidationResultClass = new(ShaclResultsVocabulary.ValidationResult);
-    private static readonly NamedNode Conforms = new(ShaclResultsVocabulary.Conforms);
-    private static readonly NamedNode Result = new(ShaclResultsVocabulary.Result);
-    private static readonly NamedNode FocusNode = new(ShaclResultsVocabulary.FocusNode);
-    private static readonly NamedNode Value = new(ShaclResultsVocabulary.Value);
-    private static readonly NamedNode ResultPath = new(ShaclResultsVocabulary.ResultPath);
-    private static readonly NamedNode SourceShape = new(ShaclResultsVocabulary.SourceShape);
-    private static readonly NamedNode SourceConstraintComponent = new(ShaclResultsVocabulary.SourceConstraintComponent);
-    private static readonly NamedNode SourceConstraint = new(ShaclResultsVocabulary.SourceConstraint);
-    private static readonly NamedNode ResultSeverity = new(ShaclResultsVocabulary.ResultSeverity);
-    private static readonly NamedNode ResultMessage = new(ShaclResultsVocabulary.ResultMessage);
+    private static NamedNode ValidationReportClass { get; } = new(ShaclResultsVocabulary.ValidationReport);
+    private static NamedNode ValidationResultClass { get; } = new(ShaclResultsVocabulary.ValidationResult);
+    private static NamedNode Conforms { get; } = new(ShaclResultsVocabulary.Conforms);
+    private static NamedNode Result { get; } = new(ShaclResultsVocabulary.Result);
+    private static NamedNode FocusNode { get; } = new(ShaclResultsVocabulary.FocusNode);
+    private static NamedNode Value { get; } = new(ShaclResultsVocabulary.Value);
+    private static NamedNode ResultPath { get; } = new(ShaclResultsVocabulary.ResultPath);
+    private static NamedNode SourceShape { get; } = new(ShaclResultsVocabulary.SourceShape);
+    private static NamedNode SourceConstraintComponent { get; } = new(ShaclResultsVocabulary.SourceConstraintComponent);
+    private static NamedNode SourceConstraint { get; } = new(ShaclResultsVocabulary.SourceConstraint);
+    private static NamedNode ResultSeverity { get; } = new(ShaclResultsVocabulary.ResultSeverity);
+    private static NamedNode ResultMessage { get; } = new(ShaclResultsVocabulary.ResultMessage);
 
-    private static readonly NamedNode InversePath = new(ShaclPathVocabulary.InversePath);
-    private static readonly NamedNode AlternativePath = new(ShaclPathVocabulary.AlternativePath);
-    private static readonly NamedNode ZeroOrMorePath = new(ShaclPathVocabulary.ZeroOrMorePath);
-    private static readonly NamedNode OneOrMorePath = new(ShaclPathVocabulary.OneOrMorePath);
-    private static readonly NamedNode ZeroOrOnePath = new(ShaclPathVocabulary.ZeroOrOnePath);
+    private static NamedNode InversePath { get; } = new(ShaclPathVocabulary.InversePath);
+    private static NamedNode AlternativePath { get; } = new(ShaclPathVocabulary.AlternativePath);
+    private static NamedNode ZeroOrMorePath { get; } = new(ShaclPathVocabulary.ZeroOrMorePath);
+    private static NamedNode OneOrMorePath { get; } = new(ShaclPathVocabulary.OneOrMorePath);
+    private static NamedNode ZeroOrOnePath { get; } = new(ShaclPathVocabulary.ZeroOrOnePath);
 
-    private static readonly NamedNode SeverityViolation = new(ShaclSeverityVocabulary.Violation);
-    private static readonly NamedNode SeverityWarning = new(ShaclSeverityVocabulary.Warning);
-    private static readonly NamedNode SeverityInfo = new(ShaclSeverityVocabulary.Info);
+    private static NamedNode XsdBoolean { get; } = new(Vocabulary.Xsd.Boolean);
+    private static NamedNode XsdString { get; } = new(Vocabulary.Xsd.String);
+    private static NamedNode RdfLangString { get; } = new(Vocabulary.Rdf.LangString);
 
-    private static readonly NamedNode XsdBoolean = new(Vocabulary.Xsd.Boolean);
-    private static readonly NamedNode XsdString = new(Vocabulary.Xsd.String);
-    private static readonly NamedNode RdfLangString = new(Vocabulary.Rdf.LangString);
-
-    private static readonly Utf8String TrueValue = new("true"u8.ToArray());
-    private static readonly Utf8String FalseValue = new("false"u8.ToArray());
+    private static Utf8String TrueValue { get; } = new("true"u8.ToArray());
+    private static Utf8String FalseValue { get; } = new("false"u8.ToArray());
 
     /// <summary>
     /// Serializes <paramref name="report"/> into the quads of its
@@ -237,12 +233,9 @@ public static class ValidationReportSerializer
     /// <returns>The severity IRI node.</returns>
     private static NamedNode SeverityNode(Severity severity)
     {
-        return severity switch
-        {
-            Severity.Warning => SeverityWarning,
-            Severity.Info => SeverityInfo,
-            _ => SeverityViolation
-        };
+        //SHACL §4.6 severity is an IRI carried through verbatim — including
+        //user-defined severities outside the standard three.
+        return new NamedNode(severity.Iri);
     }
 
     /// <summary>

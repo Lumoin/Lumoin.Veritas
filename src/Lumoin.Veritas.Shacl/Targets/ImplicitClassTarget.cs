@@ -30,10 +30,13 @@ public sealed record ImplicitClassTarget(IriId ShapeClassId, IriId RdfTypeId, Ir
     {
         HashSet<TermId> yielded = [];
 
+        //Walk rdfs:subClassOf *backward* (object→subject) so the class set
+        //is C and its transitive subclasses — the SHACL instances of C are
+        //the nodes typed with any of those, not with C's superclasses.
         HashSet<TermId> classSet = [ShapeClassId];
         RdfAdjacencyAdapter adapter = new(dataMatch);
         await foreach(TermId subClass in TraversalPrimitives.TransitiveClosureAsync(
-            ShapeClassId.Value, RdfsSubClassOfId, adapter.ForwardAsync, cancellationToken).ConfigureAwait(false))
+            ShapeClassId.Value, RdfsSubClassOfId, adapter.BackwardAsync, cancellationToken).ConfigureAwait(false))
         {
             classSet.Add(subClass);
         }

@@ -561,7 +561,13 @@ public static class ShaclValidator
                 {
                     case PropertyConstraint property:
                     {
-                        dependencies.Add((property.PropertyShapeId, focus));
+                        //sh:property validates each value node, as a focus node,
+                        //against the nested property shape (SHACL §4.8.1) — the
+                        //same per-value-node descent as sh:node. On a node shape
+                        //the value-node set is the focus itself, so this is one
+                        //dependency at the focus; on a property shape it is one
+                        //per path-reached node. Mirrors PropertyEvaluator.
+                        AddAtValueNodes(dependencies, property.PropertyShapeId, valueNodes);
                         break;
                     }
 

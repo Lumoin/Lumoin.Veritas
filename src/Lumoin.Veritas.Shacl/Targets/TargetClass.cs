@@ -35,14 +35,16 @@ public sealed record TargetClass(IriId ClassId, IriId RdfTypeId, IriId RdfsSubCl
     {
         HashSet<TermId> yielded = [];
 
-        //Build the class set by walking rdfs:subClassOf forward from
-        //ClassId and adding every reached class. The start class is
-        //seeded in directly because TransitiveClosureAsync yields
-        //strictly the proper descendants.
+        //Build the class set by walking rdfs:subClassOf *backward* from
+        //ClassId: the SHACL instances of C are the nodes typed with C or
+        //any subclass X (X rdfs:subClassOf* C), so we descend the
+        //subclass hierarchy (object→subject), not ascend to superclasses.
+        //The start class is seeded in directly because
+        //TransitiveClosureAsync yields strictly the proper descendants.
         HashSet<TermId> classSet = [ClassId];
         RdfAdjacencyAdapter adapter = new(dataMatch);
         await foreach(TermId subClass in TraversalPrimitives.TransitiveClosureAsync(
-            ClassId.Value, RdfsSubClassOfId, adapter.ForwardAsync, cancellationToken).ConfigureAwait(false))
+            ClassId.Value, RdfsSubClassOfId, adapter.BackwardAsync, cancellationToken).ConfigureAwait(false))
         {
             classSet.Add(subClass);
         }

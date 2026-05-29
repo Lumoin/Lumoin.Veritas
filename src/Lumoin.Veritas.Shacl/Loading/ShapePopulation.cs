@@ -198,8 +198,15 @@ internal static class ShapePopulation
                     context.Options,
                     context.PatternMemo);
 
-                ConstraintComponent component = info.Factory(bag);
-                builder.Constraints.Add(component);
+                //A null return means the component declined to instantiate
+                //because a mandatory companion parameter is absent (e.g. a
+                //sh:qualifiedMinCount with no sh:qualifiedValueShape) — skip it
+                //rather than recording a constraint that cannot be evaluated.
+                ConstraintComponent? component = info.Factory(bag);
+                if(component is not null)
+                {
+                    builder.Constraints.Add(component);
+                }
             }
         }
 
@@ -295,40 +302,33 @@ internal static class ShapePopulation
 
     private static Severity ResolveSeverity(TermId value, ShapePopulationContext context)
     {
-        ShaclPopulationIds ids = context.ShaclIds;
-
-        if(value.Equals((TermId)ids.Violation))
+        //SHACL §4.6: sh:severity is an IRI. The three standard levels are the
+        //common case, but any IRI is permitted and carried through verbatim to
+        //sh:resultSeverity. So the severity is simply the referenced IRI.
+        if(context.Dictionary.Resolve(value) is NamedNode named)
         {
-            return Severity.Violation;
-        }
-
-        if(value.Equals((TermId)ids.Warning))
-        {
-            return Severity.Warning;
-        }
-
-        if(value.Equals((TermId)ids.Info))
-        {
-            return Severity.Info;
+            return new Severity(named.Iri);
         }
 
         throw new FormatException(
-            $"Unknown sh:severity value {context.Dictionary.Resolve(value)}; expected sh:Violation, sh:Warning, or sh:Info.");
+            $"sh:severity value {context.Dictionary.Resolve(value)} is not an IRI.");
     }
 
     private static bool ParseBoolLiteral(TermId value, TermDictionary dictionary)
     {
         if(dictionary.Resolve(value) is Literal literal)
         {
-            //The xsd:boolean lexical space is exactly {true, false, 1, 0},
-            //case-sensitive.
+            //SHACL activation switch (sh:deactivated): on only for the literal
+            //"true". "1"^^xsd:boolean is a valid xsd:boolean whose value is
+            //true, but does not activate the switch — see ParameterBag.ParseBool
+            //and W3C core/property/uniqueLang-002.
             ReadOnlySpan<byte> lexical = literal.Value.Span;
-            if(lexical.SequenceEqual("true"u8) || lexical.SequenceEqual("1"u8))
+            if(lexical.SequenceEqual("true"u8))
             {
                 return true;
             }
 
-            if(lexical.SequenceEqual("false"u8) || lexical.SequenceEqual("0"u8))
+            if(lexical.SequenceEqual("false"u8) || lexical.SequenceEqual("0"u8) || lexical.SequenceEqual("1"u8))
             {
                 return false;
             }

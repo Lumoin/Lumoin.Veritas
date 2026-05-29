@@ -165,7 +165,7 @@ public static class RdfCanonicalizer
                 }
             }
 
-            List<(string NdHash, string BlankId)> groupResults = [];
+            List<(string NdHash, IdentifierIssuer Issuer)> groupResults = [];
 
             foreach(string blankId in groupMembers)
             {
@@ -174,17 +174,33 @@ public static class RdfCanonicalizer
                     continue;
                 }
 
+                //RDFC-1.0 §4.5.3 step 6.2: seed the temporary issuer with an
+                //identifier for this blank node, THEN compute its n-degree hash
+                //(which issues identifiers for the related blank nodes reached
+                //along the chosen path, in order, into the same issuer).
                 IdentifierIssuer tempIssuer = new("b");
+                tempIssuer.Issue(blankId);
                 string ndHash = HashNDegreeQuads(blankId, blankNodeToQuads, simpleMap, canonicalMap, tempIssuer, hash);
-                groupResults.Add((ndHash, blankId));
+                groupResults.Add((ndHash, tempIssuer));
             }
 
-            //Assign canonical identifiers in n-degree hash order.
+            //Step 6.3: process the results in n-degree hash order and, for each,
+            //assign canonical identifiers for EVERY blank node in that result's
+            //issuer in its issued order — not just the group member. This path
+            //ordering is what canonically (input-order-independently) resolves
+            //automorphic blank nodes; assigning only the group member would leak
+            //the input ordering when two members share an n-degree hash.
             groupResults.Sort(static (a, b) => StringComparer.Ordinal.Compare(a.NdHash, b.NdHash));
 
-            foreach((string _, string blankId) in groupResults)
+            foreach((string _, IdentifierIssuer resultIssuer) in groupResults)
             {
-                canonicalMap[blankId] = canonicalIssuer.Issue(blankId);
+                foreach(string original in resultIssuer.IssuedOrder)
+                {
+                    if(!canonicalMap.ContainsKey(original))
+                    {
+                        canonicalMap[original] = canonicalIssuer.Issue(original);
+                    }
+                }
             }
         }
 

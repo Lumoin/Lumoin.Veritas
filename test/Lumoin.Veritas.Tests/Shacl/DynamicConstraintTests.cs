@@ -40,14 +40,14 @@ internal sealed class DynamicConstraintTests
             resolvedLists: EmptyResolvedLists,
             dictionary: dictionary);
 
-        ConstraintComponent builtIn = ShaclBuiltInComponents.MinCount.Factory(bag);
+        ConstraintComponent builtIn = ShaclBuiltInComponents.MinCount.Factory(bag)!;
         MinCountConstraint typed = (MinCountConstraint)builtIn;
 
         ConstraintComponentInfo dynamicInfo = ConstraintComponentInfo.CreateDynamic(
             componentIri: Utf8String.FromString("http://www.w3.org/ns/shacl#MinCountConstraintComponent"),
             primaryParameter: minCountIri,
             shapeTypedParameters: []);
-        ConstraintComponent dynamic = dynamicInfo.Factory(bag);
+        ConstraintComponent dynamic = dynamicInfo.Factory(bag)!;
         DynamicConstraint dyn = (DynamicConstraint)dynamic;
 
         Assert.AreEqual(builtIn.ConstraintComponentIri, dyn.ConstraintComponentIri);
@@ -97,7 +97,7 @@ internal sealed class DynamicConstraintTests
             shapeTypedParameters: [],
             optionalCompanions: flagsIri);
 
-        DynamicConstraint dyn = (DynamicConstraint)dynamicInfo.Factory(bag);
+        DynamicConstraint dyn = (DynamicConstraint)dynamicInfo.Factory(bag)!;
 
         Assert.IsTrue(dyn.TryGetScalar(patternId, out TermId capturedPattern));
         Assert.IsTrue(dyn.TryGetScalar(flagsId, out TermId capturedFlags));
@@ -130,7 +130,7 @@ internal sealed class DynamicConstraintTests
             componentIri: Utf8String.FromString("http://www.w3.org/ns/shacl#NodeConstraintComponent"),
             primaryParameter: nodeIri,
             shapeTypedParameters: [nodeIri]);
-        DynamicConstraint dyn = (DynamicConstraint)dynamicInfo.Factory(bag);
+        DynamicConstraint dyn = (DynamicConstraint)dynamicInfo.Factory(bag)!;
 
         List<TermId> refs = [];
         foreach(TermId refId in dyn.ReferencedShapeIds)
@@ -169,7 +169,7 @@ internal sealed class DynamicConstraintTests
             componentIri: Utf8String.FromString("http://www.w3.org/ns/shacl#AndConstraintComponent"),
             primaryParameter: andIri,
             shapeTypedParameters: [andIri]);
-        DynamicConstraint dyn = (DynamicConstraint)dynamicInfo.Factory(bag);
+        DynamicConstraint dyn = (DynamicConstraint)dynamicInfo.Factory(bag)!;
 
         Assert.IsEmpty(dyn.ScalarParameters);
         Assert.HasCount(1, dyn.ListParameters);

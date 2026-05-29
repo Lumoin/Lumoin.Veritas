@@ -281,10 +281,12 @@ public static class ShaclBuiltInComponents
     public static ConstraintComponentInfo QualifiedMinCount { get; } = ConstraintComponentInfo.Create(
         ShaclComponentVocabulary.QualifiedMinCount,
         ShaclConstraintVocabulary.QualifiedMinCount,
-        static bag => new QualifiedMinCountConstraint(
-            ValueShapeId: bag.RequireShapeId(ShaclConstraintVocabulary.QualifiedValueShape),
-            MinCount: bag.RequirePrimaryInt(),
-            Disjoint: bag.OptionalBool(ShaclConstraintVocabulary.QualifiedValueShapesDisjoint) ?? false),
+        static bag => bag.OptionalShapeId(ShaclConstraintVocabulary.QualifiedValueShape) is TermId minValueShape
+            ? new QualifiedMinCountConstraint(
+                ValueShapeId: minValueShape,
+                MinCount: bag.RequirePrimaryInt(),
+                Disjoint: bag.OptionalBool(ShaclConstraintVocabulary.QualifiedValueShapesDisjoint) ?? false)
+            : null,
         ShaclConstraintVocabulary.QualifiedValueShape,
         ShaclConstraintVocabulary.QualifiedValueShapesDisjoint);
 
@@ -297,10 +299,12 @@ public static class ShaclBuiltInComponents
     public static ConstraintComponentInfo QualifiedMaxCount { get; } = ConstraintComponentInfo.Create(
         ShaclComponentVocabulary.QualifiedMaxCount,
         ShaclConstraintVocabulary.QualifiedMaxCount,
-        static bag => new QualifiedMaxCountConstraint(
-            ValueShapeId: bag.RequireShapeId(ShaclConstraintVocabulary.QualifiedValueShape),
-            MaxCount: bag.RequirePrimaryInt(),
-            Disjoint: bag.OptionalBool(ShaclConstraintVocabulary.QualifiedValueShapesDisjoint) ?? false),
+        static bag => bag.OptionalShapeId(ShaclConstraintVocabulary.QualifiedValueShape) is TermId maxValueShape
+            ? new QualifiedMaxCountConstraint(
+                ValueShapeId: maxValueShape,
+                MaxCount: bag.RequirePrimaryInt(),
+                Disjoint: bag.OptionalBool(ShaclConstraintVocabulary.QualifiedValueShapesDisjoint) ?? false)
+            : null,
         ShaclConstraintVocabulary.QualifiedValueShape,
         ShaclConstraintVocabulary.QualifiedValueShapesDisjoint);
 

@@ -40,5 +40,16 @@ namespace Lumoin.Veritas.Shacl.Components;
 /// parameter's value for this specific constraint instance plus all
 /// companion parameters declared on the owning shape.
 /// </param>
-/// <returns>The constructed constraint-component record.</returns>
-public delegate ConstraintComponent ConstraintComponentFactory(ParameterBag bag);
+/// <returns>
+/// The constructed constraint-component record, or <see langword="null"/>
+/// when the component declines to instantiate because a mandatory
+/// companion parameter is absent. Per SHACL 1.2 Core §3.2 a constraint
+/// component is only invoked when <em>all</em> its mandatory parameters
+/// are present on the shape; the loader dispatches on the single primary
+/// parameter, so a component with more than one mandatory parameter (the
+/// qualified-value-shape pair, whose <c>sh:qualifiedValueShape</c> is
+/// mandatory alongside <c>sh:qualifiedMinCount</c>/<c>MaxCount</c>)
+/// returns <see langword="null"/> when the companion is missing rather
+/// than producing a spurious constraint or throwing.
+/// </returns>
+public delegate ConstraintComponent? ConstraintComponentFactory(ParameterBag bag);

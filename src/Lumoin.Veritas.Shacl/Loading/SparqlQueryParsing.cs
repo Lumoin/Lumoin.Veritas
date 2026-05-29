@@ -21,6 +21,9 @@ namespace Lumoin.Veritas.Shacl.Loading;
 /// </summary>
 internal static class SparqlQueryParsing
 {
+    /// <summary>The <c>owl:imports</c> predicate IRI, followed transitively to gather imported prefix declarations (SHACL-SPARQL §5.2.1).</summary>
+    private static Utf8String OwlImports { get; } = new("http://www.w3.org/2002/07/owl#imports"u8.ToArray());
+
     /// <summary>
     /// Resolves the <c>sh:prefixes</c> subjects' namespace declarations, prepends them to the query text, and
     /// parses + normalizes the result. Returns <see langword="null"/> when the text does not parse cleanly to a
@@ -84,12 +87,37 @@ internal static class SparqlQueryParsing
     {
         List<(Utf8String Prefix, Utf8String Namespace)> declarations = [];
 
+        //SHACL-SPARQL §5.2.1: a prefix-declaration subject may pull in further
+        //declarations through owl:imports (transitively). Expand the subject set
+        //by following owl:imports with an explicit work-list (no recursion),
+        //guarding against import cycles with a visited set.
+        TermId owlImportsId = dictionary.GetIdOrDefault(new NamedNode(OwlImports));
+        HashSet<TermId> visited = [];
+        Queue<TermId> pending = new();
         foreach(TermId prefixSubject in prefixSubjects)
         {
-            List<TermId> declarationNodes = [];
-            await foreach(EncodedTriple triple in shapeGraphMatch(prefixSubject, declareId, TermId.None, cancellationToken).ConfigureAwait(false))
+            if(visited.Add(prefixSubject))
             {
-                declarationNodes.Add(triple.Object);
+                pending.Enqueue(prefixSubject);
+            }
+        }
+
+        while(pending.Count > 0)
+        {
+            TermId prefixSubject = pending.Dequeue();
+
+            List<TermId> declarationNodes = [];
+            await foreach(EncodedTriple triple in shapeGraphMatch(prefixSubject, TermId.None, TermId.None, cancellationToken).ConfigureAwait(false))
+            {
+                IriId subjectPredicate = IriId.FromUnchecked(triple.Predicate);
+                if(subjectPredicate.Equals(declareId))
+                {
+                    declarationNodes.Add(triple.Object);
+                }
+                else if(!owlImportsId.IsNone && triple.Predicate.Equals(owlImportsId) && visited.Add(triple.Object))
+                {
+                    pending.Enqueue(triple.Object);
+                }
             }
 
             foreach(TermId declarationNode in declarationNodes)

@@ -294,6 +294,18 @@ public readonly struct ParameterBag: IEquatable<ParameterBag>
     public TermId RequireShapeId(Utf8String parameter) => RequireShapeId(Dictionary.GetOrAdd(new NamedNode(parameter)));
 
     /// <summary>
+    /// Resolves a shape-valued companion parameter to the term id of the
+    /// referenced shape, or <see langword="null"/> when the parameter is
+    /// absent on the shape. Used by components whose shape reference is a
+    /// mandatory companion that gates instantiation (the qualified-value-shape
+    /// pair).
+    /// </summary>
+    public TermId? OptionalShapeId(Utf8String parameter)
+    {
+        return TryGetSingle(Dictionary.GetOrAdd(new NamedNode(parameter)), out TermId value) ? value : null;
+    }
+
+    /// <summary>
     /// Returns the members of an optional RDF list companion, typed as
     /// <see cref="IriId"/> handles, or <c>null</c> if the parameter is
     /// absent. Used by optional list companions such as
@@ -709,16 +721,21 @@ public readonly struct ParameterBag: IEquatable<ParameterBag>
                 $"Expected boolean literal for parameter '{forParameter}', got {Dictionary.Resolve(value)}.");
         }
 
-        //The xsd:boolean lexical space is exactly {true, false, 1, 0}, case-
-        //sensitive — broader than Utf8Parser's bool grammar (which omits 1/0)
-        //and narrower (it would accept "True").
+        //SHACL boolean parameters are activation switches: a constraint is
+        //active only when the value is the literal "true". This is lexical,
+        //not value-based — "1"^^xsd:boolean is a valid xsd:boolean whose
+        //value is true, yet it does NOT activate the switch (W3C
+        //core/property/uniqueLang-002: "Only true is mentioned in the spec,
+        //meaning that '1' will not activate the constraint"). The other
+        //three lexical forms of the xsd:boolean space ("false", "0", "1")
+        //all leave the switch off.
         ReadOnlySpan<byte> lexical = literal.Value.Span;
-        if(lexical.SequenceEqual("true"u8) || lexical.SequenceEqual("1"u8))
+        if(lexical.SequenceEqual("true"u8))
         {
             return true;
         }
 
-        if(lexical.SequenceEqual("false"u8) || lexical.SequenceEqual("0"u8))
+        if(lexical.SequenceEqual("false"u8) || lexical.SequenceEqual("0"u8) || lexical.SequenceEqual("1"u8))
         {
             return false;
         }

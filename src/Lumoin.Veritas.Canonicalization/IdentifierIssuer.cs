@@ -18,6 +18,7 @@ internal sealed class IdentifierIssuer
     private readonly string prefix;
     private int counter;
     private readonly Dictionary<string, string> issuedMap = [];
+    private readonly List<string> issuedOrder = [];
 
     /// <summary>
     /// Initializes a new <see cref="IdentifierIssuer"/> with the given prefix and starting counter.
@@ -46,8 +47,17 @@ internal sealed class IdentifierIssuer
         string issued = $"{prefix}{counter}";
         counter++;
         issuedMap[original] = issued;
+        issuedOrder.Add(original);
         return issued;
     }
+
+    /// <summary>
+    /// The original blank node labels in the order identifiers were issued
+    /// for them. RDFC-1.0 §4.5.3 step 6.3.1 assigns canonical identifiers in
+    /// exactly this order, which is what disambiguates automorphic blank
+    /// nodes deterministically.
+    /// </summary>
+    internal IReadOnlyList<string> IssuedOrder => issuedOrder;
 
     /// <summary>
     /// Determines whether an identifier has already been issued for the given label.
@@ -74,7 +84,10 @@ internal sealed class IdentifierIssuer
     /// <param name="issued">The issued identifier to record.</param>
     internal void Adopt(string original, string issued)
     {
-        issuedMap.TryAdd(original, issued);
+        if(issuedMap.TryAdd(original, issued))
+        {
+            issuedOrder.Add(original);
+        }
     }
 
     /// <summary>
@@ -84,9 +97,10 @@ internal sealed class IdentifierIssuer
     internal IdentifierIssuer Clone()
     {
         IdentifierIssuer clone = new(prefix, counter);
-        foreach ((string original, string issued) in issuedMap)
+        foreach(string original in issuedOrder)
         {
-            clone.issuedMap[original] = issued;
+            clone.issuedMap[original] = issuedMap[original];
+            clone.issuedOrder.Add(original);
         }
 
         return clone;
