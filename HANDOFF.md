@@ -290,18 +290,20 @@ Aggregate)`; `AggregateJoin(AlgebraOperator Input /* a Group */, IReadOnlyList<A
 
 ▶ **NEXT AFTER A CLEAR:** HEAD `81500b4`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
 unchanged baseline, 0 new). **Milestone B (AST→algebra translation) is COMPLETE; Milestone C (the executor) is
-UNDERWAY — slices 1–4 done (`de58edf`, `d0bffff`, `497e9db`, `0baf32a`, `81500b4`, UTF-8 rework `34bed22`, aggregation `0b3f9c8`).**
+UNDERWAY — slices 1–5 done (`de58edf`, `d0bffff`, `497e9db`, `0baf32a`, `81500b4`, UTF-8 rework `34bed22`, aggregation `0b3f9c8`, property-path eval `156e4de`).**
 `Sparql/Execution/SparqlQueryEngine` now executes BGP + JOIN/UNION/MINUS + FILTER + BIND + OPTIONAL + ORDER BY +
 inline VALUES + sub-SELECT SELECT/ASK end-to-end (parse→normalize→translate→execute), with
 `SparqlExpressionEvaluator` (logical/comparison/arithmetic/IF/COALESCE/IN + a core built-in function set) for the
 expression-gated operators; see the MILESTONE C — EXECUTOR KICKOFF anchor below (slices 1–2 ✅, 3a–3c ✅).
-**IMMEDIATE NEXT = slice 5: property-path `Path`-leaf evaluation** (the four opaque leaves `PathZeroOrMore`/
-`PathOneOrMore`/`PathZeroOrOne`/`PathNegatedSet` — resolve `IriRef`→`IriId` against the engine's `TermDictionary`,
-build the `Rdf.PropertyPath`, and evaluate via `Rdf.PropertyPathEvaluator` over `store.AsMatchOps()`; the both-var
-binding mode needs the native pair-aware closure — PROPERTY-PATH plan items 2–4 below) + **`Graph`** (named-graph
-redirection) / **`Service`** (defer or stub). Then slice 6 = wire SHACL `sh:sparql`. **Deferred (slice 3d, lower
-priority): the function-library tail (REGEX/SUBSTR/CONCAT/date/hash/…) + named functions + `EXISTS`/`NOT EXISTS`
-(engine re-entry).** Slice 4 (aggregation, `0b3f9c8`) and the slice-3c UTF-8 string rework (`34bed22`) are done.
+**IMMEDIATE NEXT = slice 6: wire SHACL `sh:sparql` to the engine** — the original Batch-1 goal (SHACL-SPARQL
+unlock). SHACL SPARQL-based constraints / constraint components run a SPARQL query against the data graph and
+interpret the result rows (a violation per row, with `?this`/`?value`/`?path`/`?message` conventions). Find the
+SHACL validator's constraint-evaluation seam, translate the constraint's query through the
+parse→normalize→translate→`SparqlQueryEngine` pipeline against the shape's data, and surface violations — then
+the SPARQL-dependent subset of the 50 ShaclValidate baseline failures becomes addressable. **Deferred:** negated
+property sets, named graphs (`GRAPH` — needs triple-store→quad-store backend work), `SERVICE`, `EXISTS`/`NOT
+EXISTS` (engine re-entry), the function-library tail (REGEX/SUBSTR/CONCAT/date/hash/…) + named functions, and the
+native pair-aware closure (path both-var optimization). Slices 1–5 are done.
 **No external spec needed: consult the online W3C SPARQL 1.2 spec for semantics, the codebase for C# conventions.**
 Build/test as SEPARATE PowerShell calls ([[feedback_build_test_command_shape]]): `dotnet build … -clp:ErrorsOnly
 --nologo` and `& "test\…\Lumoin.Veritas.Tests.exe" … 2>&1 | …` (no `cd`, no `$out =`). **No external spec needed: consult the online W3C SPARQL 1.2
@@ -366,7 +368,12 @@ need to first classify which of the 50 baseline failures are SPARQL- vs core-SHA
    slice-3c string handling was reworked UTF-8-native (`34bed22`)** — comparison/predicates/ordering over
    `Utf8String` bytes (codepoint order, zero-alloc, astral-correct), UCASE/LCASE via runes (CA1308 suppression
    removed), STRLEN by code point; see [[feedback_utf8string_no_roundtrip]].
-5. **`Path`-leaf closure** evaluation via `PropertyPathEvaluator` + the native pair-aware closure (PROPERTY-PATH plan items 2–4); **`Graph`** (named-graph redirection) + **`Service`** (defer/stub).
+5. ⏳ **PARTIAL — `Path`-leaf evaluation DONE (`156e4de`):** `SparqlQueryEngine.ConvertPath` (AST→`Rdf.PropertyPath`,
+   iterative) + `EvaluatePathAsync` (delegates to `PropertyPathEvaluator`; binding modes: bound-subject→objects,
+   bound-object→subjects via inverse, both-bound→existence, both-var→per-seed over all nodes). 3 tests. **Still
+   open:** negated property sets (no encoded-path form — `NotSupportedException`), the native pair-aware closure
+   (replaces per-seed both-var enumeration — PROPERTY-PATH plan items 2–4), and **`Graph`** (named-graph
+   redirection — the hypertrie store is triple-only, so this needs backend work) / **`Service`** (defer/stub).
 6. **Wire SHACL `sh:sparql`** to the engine → start closing the 50 ShaclValidate baseline failures.
 **Cross-cuts:** thread the `traceHandler`/`correlationId` (the side-channel) through; carry `Witnesses` for provenance; everything iterative ([[feedback_no_recursion]]).
 
