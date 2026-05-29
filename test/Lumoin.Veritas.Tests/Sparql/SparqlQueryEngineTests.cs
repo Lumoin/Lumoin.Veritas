@@ -633,6 +633,32 @@ internal sealed class SparqlQueryEngineTests
         Assert.AreEqual(Ex + "c", ValueIri(solution, "obj"));
     }
 
+    /// <summary>FILTER EXISTS keeps only the solutions for which the sub-pattern (under the current bindings) has a match.</summary>
+    [TestMethod]
+    public async Task FilterExistsKeepsSolutionsWithAMatch()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(("alice", "p", "o1"), ("alice", "q", "o2"), ("bob", "p", "o3")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?s WHERE { ?s :p ?o FILTER EXISTS { ?s :q ?x } }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(Ex + "alice", ValueIri(solutions.Single(), "s"));
+    }
+
+    /// <summary>FILTER NOT EXISTS keeps only the solutions for which the sub-pattern (under the current bindings) has no match.</summary>
+    [TestMethod]
+    public async Task FilterNotExistsKeepsSolutionsWithoutAMatch()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(("alice", "p", "o1"), ("alice", "q", "o2"), ("bob", "p", "o3")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?s WHERE { ?s :p ?o FILTER NOT EXISTS { ?s :q ?x } }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(Ex + "bob", ValueIri(solutions.Single(), "s"));
+    }
+
     /// <summary>The hash functions return the lowercase hex digest of the value (here exercised through the default in-process digest seam).</summary>
     [TestMethod]
     public async Task HashFunctionsReturnHexDigest()

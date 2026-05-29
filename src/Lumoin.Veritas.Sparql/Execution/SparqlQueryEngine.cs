@@ -11,9 +11,11 @@ using Lumoin.Veritas.Core.Hypertrie.Execution;
 using Lumoin.Veritas.Core.Hypertrie.Planning;
 using Lumoin.Veritas.Core.Hypertrie.Query;
 using Lumoin.Veritas.Core.Hypertrie.Storage;
+using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Rdf;
 using Lumoin.Veritas.Sparql.Algebra;
 using Lumoin.Veritas.Sparql.Ast;
+using Lumoin.Veritas.Sparql.Translation;
 using AstTriplePattern = Lumoin.Veritas.Sparql.Ast.TriplePattern;
 using EncodedTriplePattern = Lumoin.Veritas.Core.Hypertrie.Query.TriplePattern;
 
@@ -53,6 +55,15 @@ public sealed class SparqlQueryEngine
 {
     /// <summary>A solution sequence holding the single empty solution — the result of the <see cref="UnitTable"/> identity.</summary>
     private static IReadOnlyList<SparqlSolution> SingleEmptySolution { get; } = [new SparqlSolution([])];
+
+    /// <summary>The <c>xsd:boolean</c> datatype node, for the constant an <c>EXISTS</c>/<c>NOT EXISTS</c> rewrites to.</summary>
+    private static NamedNode XsdBooleanType { get; } = new(Utf8String.FromString("http://www.w3.org/2001/XMLSchema#boolean"));
+
+    /// <summary>The <c>true</c> boolean literal an <c>EXISTS</c> rewrites to once resolved.</summary>
+    private static Literal BooleanTrue { get; } = new(Utf8String.FromString("true"), XsdBooleanType);
+
+    /// <summary>The <c>false</c> boolean literal an <c>EXISTS</c> rewrites to once resolved.</summary>
+    private static Literal BooleanFalse { get; } = new(Utf8String.FromString("false"), XsdBooleanType);
 
     private readonly HypertrieGraphStore store;
 
@@ -130,7 +141,11 @@ public sealed class SparqlQueryEngine
             (AlgebraOperator node, bool combine) = work.Pop();
             if(combine)
             {
-                results[node] = Combine(node, results, expressionContext);
+                //The expression-gated operators may carry EXISTS/NOT EXISTS, whose evaluation re-enters the engine
+                //(async), so they take the async path; every other operator combines synchronously.
+                results[node] = node is Filter or Extend or LeftJoin
+                    ? await CombineExpressionOperatorAsync(node, results, cancellationToken).ConfigureAwait(false)
+                    : Combine(node, results, expressionContext);
 
                 continue;
             }
@@ -201,9 +216,6 @@ public sealed class SparqlQueryEngine
             Join join => JoinSolutions(results[join.Left], results[join.Right]),
             Union union => UnionSolutions(results[union.Left], results[union.Right]),
             Minus minus => MinusSolutions(results[minus.Left], results[minus.Right]),
-            Filter filter => ApplyFilter(filter, results[filter.Input], context),
-            Extend extend => ApplyExtend(extend, results[extend.Input], context),
-            LeftJoin leftJoin => LeftJoinSolutions(results[leftJoin.Left], results[leftJoin.Right], leftJoin.Condition, context),
             OrderBy orderBy => ApplyOrderBy(orderBy, results[orderBy.Input], context),
 
             //ToMultiSet / ToList are multiset / sequence conversions; with no ORDER BY in scope they pass through.
@@ -784,17 +796,49 @@ public sealed class SparqlQueryEngine
         return kept;
     }
 
-    /// <summary>Keeps the solutions whose <c>FILTER</c> condition has effective boolean value true (§18.6 Filter); an error or non-boolean value drops the solution.</summary>
+    /// <summary>Combines an expression-gated operator (<see cref="Filter"/>/<see cref="Extend"/>/<see cref="LeftJoin"/>) asynchronously, since its expression may carry <c>EXISTS</c>/<c>NOT EXISTS</c> that re-enter the engine.</summary>
+    /// <param name="op">The operator to combine (a filter, extend, or left join).</param>
+    /// <param name="results">The map of already-evaluated operators to their solution sequences.</param>
+    /// <param name="cancellationToken">A token that aborts evaluation.</param>
+    /// <returns>The operator's solution sequence.</returns>
+    private async ValueTask<IReadOnlyList<SparqlSolution>> CombineExpressionOperatorAsync(AlgebraOperator op, Dictionary<AlgebraOperator, IReadOnlyList<SparqlSolution>> results, CancellationToken cancellationToken)
+    {
+        switch(op)
+        {
+            case Filter filter:
+            {
+                return await ApplyFilterAsync(filter, results[filter.Input], cancellationToken).ConfigureAwait(false);
+            }
+
+            case Extend extend:
+            {
+                return await ApplyExtendAsync(extend, results[extend.Input], cancellationToken).ConfigureAwait(false);
+            }
+
+            case LeftJoin leftJoin:
+            {
+                return await LeftJoinSolutionsAsync(results[leftJoin.Left], results[leftJoin.Right], leftJoin.Condition, cancellationToken).ConfigureAwait(false);
+            }
+
+            default:
+            {
+                throw new InvalidOperationException($"Operator '{op.GetType().Name}' is not an expression-gated operator.");
+            }
+        }
+    }
+
+    /// <summary>Keeps the solutions whose <c>FILTER</c> condition has effective boolean value true (§18.6 Filter); an error or non-boolean value drops the solution. Any <c>EXISTS</c>/<c>NOT EXISTS</c> in the condition is resolved per solution first.</summary>
     /// <param name="filter">The filter.</param>
     /// <param name="input">The input solution sequence.</param>
-    /// <param name="context">The seams the condition's non-pure functions consume.</param>
+    /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The surviving solutions.</returns>
-    private static List<SparqlSolution> ApplyFilter(Filter filter, IReadOnlyList<SparqlSolution> input, SparqlExpressionContext context)
+    private async ValueTask<IReadOnlyList<SparqlSolution>> ApplyFilterAsync(Filter filter, IReadOnlyList<SparqlSolution> input, CancellationToken cancellationToken)
     {
         List<SparqlSolution> kept = new(input.Count);
         foreach(SparqlSolution solution in input)
         {
-            if(SparqlExpressionEvaluator.Satisfies(filter.Condition, solution, context))
+            ExpressionNode condition = await ResolveExistsAsync(filter.Condition, solution, cancellationToken).ConfigureAwait(false);
+            if(SparqlExpressionEvaluator.Satisfies(condition, solution, expressionContext))
             {
                 kept.Add(solution);
             }
@@ -803,17 +847,18 @@ public sealed class SparqlQueryEngine
         return kept;
     }
 
-    /// <summary>Binds an expression's value to a variable on each solution (§18.6 Extend / <c>BIND</c>); a solution whose expression errs is kept with the variable left unbound.</summary>
+    /// <summary>Binds an expression's value to a variable on each solution (§18.6 Extend / <c>BIND</c>); a solution whose expression errs is kept with the variable left unbound. Any <c>EXISTS</c>/<c>NOT EXISTS</c> in the expression is resolved per solution first.</summary>
     /// <param name="extend">The extend.</param>
     /// <param name="input">The input solution sequence.</param>
-    /// <param name="context">The seams the expression's non-pure functions consume.</param>
+    /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The extended solution sequence.</returns>
-    private static List<SparqlSolution> ApplyExtend(Extend extend, IReadOnlyList<SparqlSolution> input, SparqlExpressionContext context)
+    private async ValueTask<IReadOnlyList<SparqlSolution>> ApplyExtendAsync(Extend extend, IReadOnlyList<SparqlSolution> input, CancellationToken cancellationToken)
     {
         List<SparqlSolution> extended = new(input.Count);
         foreach(SparqlSolution solution in input)
         {
-            if(!SparqlExpressionEvaluator.TryEvaluate(extend.Expression, solution, context, out RdfTerm value))
+            ExpressionNode expression = await ResolveExistsAsync(extend.Expression, solution, cancellationToken).ConfigureAwait(false);
+            if(!SparqlExpressionEvaluator.TryEvaluate(expression, solution, expressionContext, out RdfTerm value))
             {
                 extended.Add(solution);
 
@@ -837,9 +882,9 @@ public sealed class SparqlQueryEngine
     /// <param name="left">The required (left) solution sequence.</param>
     /// <param name="right">The optional (right) solution sequence.</param>
     /// <param name="condition">The optional join condition (the lifted inner <c>FILTER</c>), or <see langword="null"/> when there is none.</param>
-    /// <param name="context">The seams the condition's non-pure functions consume.</param>
+    /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The left-joined solution sequence.</returns>
-    private static List<SparqlSolution> LeftJoinSolutions(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right, ExpressionNode? condition, SparqlExpressionContext context)
+    private async ValueTask<IReadOnlyList<SparqlSolution>> LeftJoinSolutionsAsync(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right, ExpressionNode? condition, CancellationToken cancellationToken)
     {
         List<SparqlSolution> result = [];
         foreach(SparqlSolution outer in left)
@@ -853,7 +898,8 @@ public sealed class SparqlQueryEngine
                 }
 
                 SparqlSolution merged = Merge(outer, inner);
-                if(condition is null || SparqlExpressionEvaluator.Satisfies(condition, merged, context))
+                ExpressionNode? resolved = condition is null ? null : await ResolveExistsAsync(condition, merged, cancellationToken).ConfigureAwait(false);
+                if(resolved is null || SparqlExpressionEvaluator.Satisfies(resolved, merged, expressionContext))
                 {
                     result.Add(merged);
                     extended = true;
@@ -1063,6 +1109,110 @@ public sealed class SparqlQueryEngine
         }
 
         return new SparqlSolution(merged);
+    }
+
+    /// <summary>
+    /// Resolves every <c>EXISTS</c>/<c>NOT EXISTS</c> in an expression for one solution and rewrites them to the
+    /// constant boolean they evaluate to, yielding an <c>EXISTS</c>-free expression the synchronous evaluator can
+    /// handle. Returns the expression unchanged when it carries no <c>EXISTS</c> (the fast path).
+    /// </summary>
+    /// <param name="expression">The expression (a <c>FILTER</c> condition, <c>BIND</c> expression, or join condition).</param>
+    /// <param name="solution">The current solution the <c>EXISTS</c> sub-patterns are evaluated under.</param>
+    /// <param name="cancellationToken">A token that aborts evaluation.</param>
+    /// <returns>The expression with each <c>EXISTS</c>/<c>NOT EXISTS</c> replaced by its constant boolean result.</returns>
+    private async ValueTask<ExpressionNode> ResolveExistsAsync(ExpressionNode expression, SparqlSolution solution, CancellationToken cancellationToken)
+    {
+        Dictionary<ExpressionNode, bool> truths = new(ReferenceEqualityComparer.Instance);
+        foreach(ExpressionNode node in ExpressionWalker.Traverse(expression))
+        {
+            switch(node)
+            {
+                case ExistsExpression exists:
+                {
+                    truths[exists] = await ExistsAsync(exists.Inner, solution, cancellationToken).ConfigureAwait(false);
+
+                    break;
+                }
+
+                case NotExistsExpression notExists:
+                {
+                    truths[notExists] = !await ExistsAsync(notExists.Inner, solution, cancellationToken).ConfigureAwait(false);
+
+                    break;
+                }
+
+                default:
+                {
+                    break;
+                }
+            }
+        }
+
+        if(truths.Count == 0)
+        {
+            return expression;
+        }
+
+        return ExpressionWalker.Transform(
+            expression,
+            node => truths.TryGetValue(node, out bool truth) ? new ConstantExpression(node.Span, truth ? BooleanTrue : BooleanFalse) : node);
+    }
+
+    /// <summary>
+    /// Evaluates an <c>EXISTS</c> sub-pattern under a solution (§18.6): the pattern is wrapped in a synthetic
+    /// <c>SELECT *</c> with the solution pre-bound as a single-row <c>VALUES</c> (so it sees the current bindings),
+    /// normalized, translated, and run; <c>EXISTS</c> holds when the result is non-empty.
+    /// </summary>
+    /// <param name="pattern">The <c>EXISTS</c> sub-pattern.</param>
+    /// <param name="solution">The current solution to pre-bind.</param>
+    /// <param name="cancellationToken">A token that aborts evaluation.</param>
+    /// <returns><see langword="true"/> when the pattern has at least one solution compatible with the current bindings.</returns>
+    private async ValueTask<bool> ExistsAsync(GraphPattern pattern, SparqlSolution solution, CancellationToken cancellationToken)
+    {
+        SparqlQuery query = SynthesizeExistsQuery(pattern, solution);
+        using Utf8StringPool pool = new();
+        SparqlQuery normalized = (SparqlQuery)new SparqlNormalizer(pool).Normalize(query);
+        AlgebraOperator algebra = SparqlTranslator.Translate(normalized);
+        IReadOnlyList<SparqlSolution> solutions = await EvaluateAsync(algebra, cancellationToken).ConfigureAwait(false);
+
+        return solutions.Count > 0;
+    }
+
+    /// <summary>Wraps an <c>EXISTS</c> sub-pattern in a minimal <c>SELECT *</c> query, pre-binding the current solution as a trailing single-row <c>VALUES</c>.</summary>
+    /// <param name="pattern">The sub-pattern to wrap.</param>
+    /// <param name="solution">The solution to pre-bind, or empty for no pre-binding.</param>
+    /// <returns>The synthetic query.</returns>
+    private static SparqlQuery SynthesizeExistsQuery(GraphPattern pattern, SparqlSolution solution)
+    {
+        return new SparqlQuery(
+            SourceSpan.None,
+            new Prologue(SourceSpan.None, [], [], []),
+            new SelectQuery(SourceSpan.None, IsDistinct: false, IsReduced: false, IsStar: true, []),
+            new DatasetClause(SourceSpan.None, [], []),
+            new WhereClause(SourceSpan.None, pattern),
+            new SolutionModifier(SourceSpan.None, null, null, null, null, null),
+            BuildSolutionValues(solution));
+    }
+
+    /// <summary>Builds the single-row trailing <c>VALUES</c> that pre-binds a solution's bindings, or <see langword="null"/> when the solution binds nothing.</summary>
+    /// <param name="solution">The solution to pre-bind.</param>
+    /// <returns>The inline-data block, or <see langword="null"/>.</returns>
+    private static ValuesClause? BuildSolutionValues(SparqlSolution solution)
+    {
+        if(solution.Bindings.Count == 0)
+        {
+            return null;
+        }
+
+        List<SparqlVariable> variables = new(solution.Bindings.Count);
+        List<RdfTerm?> row = new(solution.Bindings.Count);
+        foreach(SparqlBinding binding in solution.Bindings)
+        {
+            variables.Add(binding.Variable);
+            row.Add(binding.Value);
+        }
+
+        return new ValuesClause(SourceSpan.None, variables, [row]);
     }
 
     /// <summary>One group during aggregation: its grouping-key values (for partitioning), the named-key bindings it contributes to the output solution, and its member solutions.</summary>
