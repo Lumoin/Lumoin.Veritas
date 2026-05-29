@@ -117,6 +117,76 @@ public static class SparqlExpressionEvaluator
         return true;
     }
 
+    /// <summary>
+    /// Compares two RDF terms for <c>ORDER BY</c> (§15.1): the ascending order is unbound (a <see langword="null"/>
+    /// term — an unbound variable or an errored key) &lt; blank node &lt; IRI &lt; literal; within a category, blank
+    /// nodes and IRIs order by their label/IRI text, and literals order by value (numeric / boolean / string) or, for
+    /// otherwise-incomparable literals, deterministically by datatype IRI then lexical form.
+    /// </summary>
+    /// <param name="left">The left term, or <see langword="null"/> for an unbound/errored key.</param>
+    /// <param name="right">The right term, or <see langword="null"/> for an unbound/errored key.</param>
+    /// <returns>A negative, zero, or positive value as <paramref name="left"/> orders before, equal to, or after <paramref name="right"/>.</returns>
+    internal static int CompareForOrdering(RdfTerm? left, RdfTerm? right)
+    {
+        int leftRank = OrderRank(left);
+        int rightRank = OrderRank(right);
+        if(leftRank != rightRank)
+        {
+            return leftRank.CompareTo(rightRank);
+        }
+
+        return leftRank switch
+        {
+            1 => string.CompareOrdinal(((BlankNode)left!).Label.ToString(), ((BlankNode)right!).Label.ToString()),
+            2 => string.CompareOrdinal(((NamedNode)left!).Iri.ToString(), ((NamedNode)right!).Iri.ToString()),
+            3 => CompareLiterals((Literal)left!, (Literal)right!),
+
+            //Both unbound (0) or both triple terms (4) — treat as equal for ordering.
+            _ => 0
+        };
+    }
+
+    /// <summary>Returns the <c>ORDER BY</c> category rank of a term: unbound 0, blank node 1, IRI 2, literal 3, triple term 4.</summary>
+    /// <param name="term">The term, or <see langword="null"/> for unbound.</param>
+    /// <returns>The category rank.</returns>
+    private static int OrderRank(RdfTerm? term)
+    {
+        return term switch
+        {
+            null => 0,
+            BlankNode => 1,
+            NamedNode => 2,
+            Literal => 3,
+            _ => 4
+        };
+    }
+
+    /// <summary>Orders two literals by value where a common value space exists, else deterministically by datatype IRI then lexical form.</summary>
+    /// <param name="left">The left literal.</param>
+    /// <param name="right">The right literal.</param>
+    /// <returns>A negative, zero, or positive value as <paramref name="left"/> orders before, equal to, or after <paramref name="right"/>.</returns>
+    private static int CompareLiterals(Literal left, Literal right)
+    {
+        if(TryGetNumeric(left, out double leftNumber, out _) && TryGetNumeric(right, out double rightNumber, out _))
+        {
+            return leftNumber.CompareTo(rightNumber);
+        }
+
+        if(TryGetBoolean(left, out bool leftBoolean) && TryGetBoolean(right, out bool rightBoolean))
+        {
+            return leftBoolean.CompareTo(rightBoolean);
+        }
+
+        if(TryGetString(left, out string leftText) && TryGetString(right, out string rightText))
+        {
+            return string.CompareOrdinal(leftText, rightText);
+        }
+
+        int byDatatype = string.CompareOrdinal(left.Datatype.Iri.ToString(), right.Datatype.Iri.ToString());
+
+        return byDatatype != 0 ? byDatatype : string.CompareOrdinal(left.Value.ToString(), right.Value.ToString());
+    }
+
     /// <summary>Evaluates an expression to a value (a bound term or an error) over an explicit bottom-up work stack.</summary>
     /// <param name="root">The expression to evaluate.</param>
     /// <param name="solution">The solution the expression is evaluated over.</param>

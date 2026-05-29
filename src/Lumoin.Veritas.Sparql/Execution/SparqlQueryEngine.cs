@@ -30,11 +30,11 @@ namespace Lumoin.Veritas.Sparql.Execution;
 /// consecutive plain triples into one), the expression-free relational operators (<see cref="Join"/>,
 /// <see cref="Union"/>, <see cref="Minus"/>), sub-<c>SELECT</c> (<see cref="ToMultiSet"/> / <see cref="ToList"/>),
 /// the expression-gated operators (<see cref="Filter"/>, <c>BIND</c>/<see cref="Extend"/>, <c>OPTIONAL</c>'s
-/// <see cref="LeftJoin"/> — via <see cref="SparqlExpressionEvaluator"/>), and the projection/sequence modifiers
-/// (<see cref="Project"/>, <see cref="Distinct"/>, <see cref="Reduced"/>, <see cref="Slice"/>, and the
-/// <see cref="UnitTable"/> identity). <c>ORDER BY</c>, the inline <c>VALUES</c> table, property paths,
-/// aggregation, named graphs, and <c>SERVICE</c> raise <see cref="NotSupportedException"/> until their later
-/// slice lands. The public surface (entry naming, result
+/// <see cref="LeftJoin"/> — via <see cref="SparqlExpressionEvaluator"/>), the inline <c>VALUES</c>
+/// <see cref="Table"/>, and the projection/sequence modifiers (<see cref="Project"/>, <see cref="Distinct"/>,
+/// <see cref="Reduced"/>, <see cref="OrderBy"/>, <see cref="Slice"/>, and the <see cref="UnitTable"/> identity).
+/// The built-in function library, <c>EXISTS</c>/<c>NOT EXISTS</c>, property paths, aggregation, named graphs, and
+/// <c>SERVICE</c> raise <see cref="NotSupportedException"/> until their later slice lands. The public surface (entry naming, result
 /// model, streaming) is provisional and follows codebase convention; the W3C SPARQL 1.2 specification governs the
 /// evaluation semantics.
 /// </para>
@@ -160,6 +160,11 @@ public sealed class SparqlQueryEngine
             return SingleEmptySolution;
         }
 
+        if(op is Table table)
+        {
+            return BuildTableSolutions(table.Data);
+        }
+
         //The supported-operator guard runs first, so any other leaf reaching here is an executor bug, not input.
         throw new InvalidOperationException($"Leaf operator '{op.GetType().Name}' has no evaluation rule in the executor.");
     }
@@ -184,6 +189,7 @@ public sealed class SparqlQueryEngine
             Filter filter => ApplyFilter(filter, results[filter.Input]),
             Extend extend => ApplyExtend(extend, results[extend.Input]),
             LeftJoin leftJoin => LeftJoinSolutions(results[leftJoin.Left], results[leftJoin.Right], leftJoin.Condition),
+            OrderBy orderBy => ApplyOrderBy(orderBy, results[orderBy.Input]),
 
             //ToMultiSet / ToList are multiset / sequence conversions; with no ORDER BY in scope they pass through.
             ToMultiSet toMultiSet => results[toMultiSet.Input],
@@ -377,6 +383,87 @@ public sealed class SparqlQueryEngine
         }
 
         return [.. windowed];
+    }
+
+    /// <summary>Orders the solution sequence by the <c>ORDER BY</c> conditions (§15.1), each ascending or descending; ties keep input order (a stable sort by original index).</summary>
+    /// <param name="orderBy">The order operator.</param>
+    /// <param name="input">The input solution sequence.</param>
+    /// <returns>The ordered solution sequence.</returns>
+    private static List<SparqlSolution> ApplyOrderBy(OrderBy orderBy, IReadOnlyList<SparqlSolution> input)
+    {
+        List<SparqlSolution> source = [.. input];
+        int[] order = new int[source.Count];
+        for(int i = 0; i < order.Length; i++)
+        {
+            order[i] = i;
+        }
+
+        Array.Sort(order, (left, right) =>
+        {
+            int comparison = CompareByConditions(source[left], source[right], orderBy.Conditions);
+
+            //A stable tiebreak on the original index keeps ordering deterministic where the keys are equal.
+            return comparison != 0 ? comparison : left.CompareTo(right);
+        });
+
+        List<SparqlSolution> ordered = new(source.Count);
+        foreach(int index in order)
+        {
+            ordered.Add(source[index]);
+        }
+
+        return ordered;
+    }
+
+    /// <summary>Compares two solutions by the order conditions in priority order, applying each condition's direction.</summary>
+    /// <param name="left">The first solution.</param>
+    /// <param name="right">The second solution.</param>
+    /// <param name="conditions">The order conditions, in priority order.</param>
+    /// <returns>A negative, zero, or positive value as <paramref name="left"/> orders before, equal to, or after <paramref name="right"/>.</returns>
+    private static int CompareByConditions(SparqlSolution left, SparqlSolution right, IReadOnlyList<OrderCondition> conditions)
+    {
+        foreach(OrderCondition condition in conditions)
+        {
+            (ExpressionNode expression, bool descending) = condition switch
+            {
+                OrderAscending ascending => (ascending.Expression, false),
+                OrderDescending descendingCondition => (descendingCondition.Expression, true),
+                _ => throw new InvalidOperationException($"Unexpected order-condition kind {condition.GetType().Name} during SPARQL evaluation.")
+            };
+
+            RdfTerm? leftKey = SparqlExpressionEvaluator.TryEvaluate(expression, left, out RdfTerm leftValue) ? leftValue : null;
+            RdfTerm? rightKey = SparqlExpressionEvaluator.TryEvaluate(expression, right, out RdfTerm rightValue) ? rightValue : null;
+            int comparison = SparqlExpressionEvaluator.CompareForOrdering(leftKey, rightKey);
+            if(comparison != 0)
+            {
+                return descending ? -comparison : comparison;
+            }
+        }
+
+        return 0;
+    }
+
+    /// <summary>Builds the solution sequence of an inline <c>VALUES</c> block: one solution per row, binding each variable to its row value and leaving <c>UNDEF</c> (a <see langword="null"/> entry) unbound.</summary>
+    /// <param name="data">The inline-data block.</param>
+    /// <returns>The block's solution sequence.</returns>
+    private static List<SparqlSolution> BuildTableSolutions(ValuesClause data)
+    {
+        List<SparqlSolution> solutions = new(data.Rows.Count);
+        foreach(IReadOnlyList<RdfTerm?> row in data.Rows)
+        {
+            List<SparqlBinding> bindings = new(data.Variables.Count);
+            for(int i = 0; i < data.Variables.Count && i < row.Count; i++)
+            {
+                if(row[i] is RdfTerm term)
+                {
+                    bindings.Add(new SparqlBinding(data.Variables[i], term));
+                }
+            }
+
+            solutions.Add(new SparqlSolution(bindings));
+        }
+
+        return solutions;
     }
 
     /// <summary>Joins two solution sequences (§18.6 Join): the merge of every pair of compatible solutions, one from each side.</summary>
@@ -589,10 +676,10 @@ public sealed class SparqlQueryEngine
     {
         foreach(AlgebraOperator op in AlgebraWalker.Traverse(algebra))
         {
-            bool supported = op is Bgp or UnitTable or Project or Distinct or Reduced or Slice or Join or Union or Minus or ToMultiSet or ToList or Filter or Extend or LeftJoin;
+            bool supported = op is Bgp or UnitTable or Table or Project or Distinct or Reduced or Slice or OrderBy or Join or Union or Minus or ToMultiSet or ToList or Filter or Extend or LeftJoin;
             if(!supported)
             {
-                throw new NotSupportedException($"SPARQL algebra operator '{op.GetType().Name}' is not yet executable. This executor covers basic graph patterns, JOIN/UNION/MINUS, FILTER, BIND (Extend), OPTIONAL (LeftJoin), sub-SELECT (ToMultiSet), and the projection/DISTINCT/REDUCED/OFFSET/LIMIT modifiers; ORDER BY, the inline VALUES table, property paths, aggregation, named graphs, and SERVICE land in later slices.");
+                throw new NotSupportedException($"SPARQL algebra operator '{op.GetType().Name}' is not yet executable. This executor covers basic graph patterns, JOIN/UNION/MINUS, FILTER, BIND (Extend), OPTIONAL (LeftJoin), inline VALUES, ORDER BY, sub-SELECT (ToMultiSet), and the projection/DISTINCT/REDUCED/OFFSET/LIMIT modifiers; the built-in function library, EXISTS, property paths, aggregation, named graphs, and SERVICE land in later slices.");
             }
         }
     }

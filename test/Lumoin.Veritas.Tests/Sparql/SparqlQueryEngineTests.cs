@@ -209,6 +209,47 @@ internal sealed class SparqlQueryEngineTests
         Assert.IsFalse(bob.TryGetValue(Variable("v"), out _));
     }
 
+    /// <summary>ORDER BY sorts solutions by the key; DESC reverses the order.</summary>
+    [TestMethod]
+    public async Task OrderBySortsByKeyAscendingAndDescending()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(
+            new DataTriple(Iri("a"), Iri("p"), IntegerLiteral(3)),
+            new DataTriple(Iri("b"), Iri("p"), IntegerLiteral(1)),
+            new DataTriple(Iri("c"), Iri("p"), IntegerLiteral(2))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+
+        AlgebraOperator ascending = Translate("PREFIX : <http://example.org/> SELECT ?s WHERE { ?s :p ?o } ORDER BY ?o", pool);
+        AlgebraOperator descending = Translate("PREFIX : <http://example.org/> SELECT ?s WHERE { ?s :p ?o } ORDER BY DESC(?o)", pool);
+
+        IReadOnlyList<SparqlSolution> ascendingSolutions = await engine.EvaluateAsync(ascending, TestContext.CancellationToken).ConfigureAwait(false);
+        IReadOnlyList<SparqlSolution> descendingSolutions = await engine.EvaluateAsync(descending, TestContext.CancellationToken).ConfigureAwait(false);
+
+        CollectionAssert.AreEqual(new[] { Ex + "b", Ex + "c", Ex + "a" }, Subjects(ascendingSolutions));
+        CollectionAssert.AreEqual(new[] { Ex + "a", Ex + "c", Ex + "b" }, Subjects(descendingSolutions));
+    }
+
+    /// <summary>An inline VALUES block yields one solution per row, binding the listed variable.</summary>
+    [TestMethod]
+    public async Task InlineValuesYieldsOneSolutionPerRow()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync().ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?x WHERE { VALUES ?x { :a :b } }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(2, solutions);
+        List<string> values = new(solutions.Count);
+        foreach(SparqlSolution solution in solutions)
+        {
+            values.Add(ValueIri(solution, "x"));
+        }
+
+        values.Sort(StringComparer.Ordinal);
+        CollectionAssert.AreEqual(new[] { Ex + "a", Ex + "b" }, values);
+    }
+
     /// <summary>An operator outside the supported set (here a property path) is refused with a descriptive exception.</summary>
     [TestMethod]
     public async Task UnsupportedOperatorIsRefused()
@@ -287,6 +328,20 @@ internal sealed class SparqlQueryEngineTests
     private static SparqlVariable Variable(string name)
     {
         return new SparqlVariable(Utf8String.FromString(name));
+    }
+
+    /// <summary>Returns the <c>?s</c> IRI of each solution, in order — for asserting an ORDER BY result sequence.</summary>
+    /// <param name="solutions">The solutions, in result order.</param>
+    /// <returns>The bound <c>?s</c> IRIs, in order.</returns>
+    private static string[] Subjects(IReadOnlyList<SparqlSolution> solutions)
+    {
+        string[] subjects = new string[solutions.Count];
+        for(int i = 0; i < solutions.Count; i++)
+        {
+            subjects[i] = ValueIri(solutions[i], "s");
+        }
+
+        return subjects;
     }
 
     /// <summary>Returns the IRI string the named variable is bound to, asserting it is bound to a named node.</summary>
