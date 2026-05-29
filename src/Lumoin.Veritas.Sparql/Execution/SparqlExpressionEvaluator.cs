@@ -1,7 +1,8 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Text;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Sparql.Ast;
 
@@ -80,6 +81,9 @@ public static class SparqlExpressionEvaluator
     /// <summary>The boolean literal <c>"false"^^xsd:boolean</c>.</summary>
     private static Literal False { get; } = new(Utf8String.FromString("false"), new NamedNode(XsdBoolean));
 
+    /// <summary>The empty UTF-8 lexical form (the <c>LANG</c> of a non-language literal, the failure value of a string lookup).</summary>
+    private static Utf8String EmptyText { get; } = Utf8String.FromString(string.Empty);
+
     /// <summary>
     /// Returns whether an expression's effective boolean value is <see langword="true"/> over a solution. An
     /// error or a value with no effective boolean value yields <see langword="false"/> — the behaviour
@@ -139,8 +143,8 @@ public static class SparqlExpressionEvaluator
 
         return leftRank switch
         {
-            1 => string.CompareOrdinal(((BlankNode)left!).Label.ToString(), ((BlankNode)right!).Label.ToString()),
-            2 => string.CompareOrdinal(((NamedNode)left!).Iri.ToString(), ((NamedNode)right!).Iri.ToString()),
+            1 => ((BlankNode)left!).Label.CompareTo(((BlankNode)right!).Label),
+            2 => ((NamedNode)left!).Iri.CompareTo(((NamedNode)right!).Iri),
             3 => CompareLiterals((Literal)left!, (Literal)right!),
 
             //Both unbound (0) or both triple terms (4) — treat as equal for ordering.
@@ -179,14 +183,14 @@ public static class SparqlExpressionEvaluator
             return leftBoolean.CompareTo(rightBoolean);
         }
 
-        if(TryGetString(left, out string leftText) && TryGetString(right, out string rightText))
+        if(TryGetText(left, out Utf8String leftText) && TryGetText(right, out Utf8String rightText))
         {
-            return string.CompareOrdinal(leftText, rightText);
+            return leftText.CompareTo(rightText);
         }
 
-        int byDatatype = string.CompareOrdinal(left.Datatype.Iri.ToString(), right.Datatype.Iri.ToString());
+        int byDatatype = left.Datatype.Iri.CompareTo(right.Datatype.Iri);
 
-        return byDatatype != 0 ? byDatatype : string.CompareOrdinal(left.Value.ToString(), right.Value.ToString());
+        return byDatatype != 0 ? byDatatype : left.Value.CompareTo(right.Value);
     }
 
     /// <summary>Evaluates an expression to a value (a bound term or an error) over an explicit bottom-up work stack.</summary>
@@ -380,14 +384,14 @@ public static class SparqlExpressionEvaluator
             BuiltInFunction.IsNumeric => TypeTest(arguments[0], static term => TryGetNumeric(term, out _, out _)),
             BuiltInFunction.SameTerm => arguments[0].IsError || arguments[1].IsError ? ExpressionValue.Error : Boolean(arguments[0].Term.Equals(arguments[1].Term)),
             BuiltInFunction.Str => Str(arguments[0]),
-            BuiltInFunction.Lang => arguments[0].IsError || arguments[0].Term is not Literal language ? ExpressionValue.Error : StringLiteral(language.Language?.ToString() ?? string.Empty),
+            BuiltInFunction.Lang => arguments[0].IsError || arguments[0].Term is not Literal language ? ExpressionValue.Error : StringLiteral(language.Language ?? EmptyText),
             BuiltInFunction.Datatype => arguments[0].IsError || arguments[0].Term is not Literal datatype ? ExpressionValue.Error : ExpressionValue.Of(datatype.Datatype),
-            BuiltInFunction.StrLen => TryGetLexical(arguments[0], out string text) ? Numeric(text.Length, integral: true) : ExpressionValue.Error,
-            BuiltInFunction.UCase => UpperCase(arguments[0]),
-            BuiltInFunction.LCase => LowerCase(arguments[0]),
-            BuiltInFunction.Contains => StringTest(arguments, static (haystack, needle) => haystack.Contains(needle, StringComparison.Ordinal)),
-            BuiltInFunction.StrStarts => StringTest(arguments, static (text, prefix) => text.StartsWith(prefix, StringComparison.Ordinal)),
-            BuiltInFunction.StrEnds => StringTest(arguments, static (text, suffix) => text.EndsWith(suffix, StringComparison.Ordinal)),
+            BuiltInFunction.StrLen => TryGetLexicalText(arguments[0], out Utf8String text) ? Numeric(CodePointCount(text), integral: true) : ExpressionValue.Error,
+            BuiltInFunction.UCase => MapCaseValue(arguments[0], toUpper: true),
+            BuiltInFunction.LCase => MapCaseValue(arguments[0], toUpper: false),
+            BuiltInFunction.Contains => StringTest(arguments, static (haystack, needle) => haystack.Span.IndexOf(needle.Span) >= 0),
+            BuiltInFunction.StrStarts => StringTest(arguments, static (text, prefix) => text.Span.StartsWith(prefix.Span)),
+            BuiltInFunction.StrEnds => StringTest(arguments, static (text, suffix) => text.Span.EndsWith(suffix.Span)),
             BuiltInFunction.Abs => UnaryNumeric(arguments[0], static value => Math.Abs(value)),
             BuiltInFunction.Ceil => UnaryNumeric(arguments[0], Math.Ceiling),
             BuiltInFunction.Floor => UnaryNumeric(arguments[0], Math.Floor),
@@ -408,28 +412,19 @@ public static class SparqlExpressionEvaluator
 
         return argument.Term switch
         {
-            Literal literal => StringLiteral(literal.Value.ToString()),
-            NamedNode named => StringLiteral(named.Iri.ToString()),
+            Literal literal => StringLiteral(literal.Value),
+            NamedNode named => StringLiteral(named.Iri),
             _ => ExpressionValue.Error
         };
     }
 
-    /// <summary>Evaluates <c>UCASE</c>: the upper-cased lexical form of a string argument as an <c>xsd:string</c>.</summary>
+    /// <summary>Evaluates <c>UCASE</c>/<c>LCASE</c>: the cased lexical form of a string argument as an <c>xsd:string</c>, mapping over Unicode runes (locale-independent, per the XPath case functions SPARQL defers to).</summary>
     /// <param name="argument">The argument value.</param>
-    /// <returns>The upper-cased string value, or an error when the argument is not a string.</returns>
-    private static ExpressionValue UpperCase(ExpressionValue argument)
+    /// <param name="toUpper">Whether to upper-case (otherwise lower-case).</param>
+    /// <returns>The cased string value, or an error when the argument is not a string.</returns>
+    private static ExpressionValue MapCaseValue(ExpressionValue argument, bool toUpper)
     {
-        return TryGetLexical(argument, out string text) ? StringLiteral(text.ToUpperInvariant()) : ExpressionValue.Error;
-    }
-
-    /// <summary>Evaluates <c>LCASE</c>: the lower-cased lexical form of a string argument as an <c>xsd:string</c>.</summary>
-    /// <param name="argument">The argument value.</param>
-    /// <returns>The lower-cased string value, or an error when the argument is not a string.</returns>
-    [SuppressMessage("Globalization", "CA1308:Normalize strings to uppercase",
-        Justification = "SPARQL LCASE is a specified transformation that lowercases its argument; this is not normalization for comparison.")]
-    private static ExpressionValue LowerCase(ExpressionValue argument)
-    {
-        return TryGetLexical(argument, out string text) ? StringLiteral(text.ToLowerInvariant()) : ExpressionValue.Error;
+        return TryGetLexicalText(argument, out Utf8String text) ? StringLiteral(MapCase(text, toUpper)) : ExpressionValue.Error;
     }
 
     /// <summary>Applies a term-type predicate to a single argument, propagating an argument error.</summary>
@@ -441,13 +436,13 @@ public static class SparqlExpressionEvaluator
         return argument.IsError ? ExpressionValue.Error : Boolean(test(argument.Term));
     }
 
-    /// <summary>Applies a binary string predicate to two lexical-string arguments, erring when either is not a string or errs.</summary>
+    /// <summary>Applies a binary predicate over two string arguments' UTF-8 values, erring when either is not a string or errs.</summary>
     /// <param name="arguments">The argument values (two strings expected).</param>
-    /// <param name="test">The predicate on the two lexical values.</param>
+    /// <param name="test">The predicate over the two UTF-8 values (operates on their byte spans).</param>
     /// <returns>A boolean value, or an error.</returns>
-    private static ExpressionValue StringTest(ExpressionValue[] arguments, Func<string, string, bool> test)
+    private static ExpressionValue StringTest(ExpressionValue[] arguments, Func<Utf8String, Utf8String, bool> test)
     {
-        return TryGetLexical(arguments[0], out string left) && TryGetLexical(arguments[1], out string right)
+        return TryGetLexicalText(arguments[0], out Utf8String left) && TryGetLexicalText(arguments[1], out Utf8String right)
             ? Boolean(test(left, right))
             : ExpressionValue.Error;
     }
@@ -466,30 +461,96 @@ public static class SparqlExpressionEvaluator
         return Numeric(operation(value), integral);
     }
 
-    /// <summary>Builds an <c>xsd:string</c> literal value from a CLR string.</summary>
-    /// <param name="value">The string.</param>
+    /// <summary>Builds an <c>xsd:string</c> literal value from a UTF-8 lexical form (no <see cref="string"/> round-trip).</summary>
+    /// <param name="value">The UTF-8 lexical form.</param>
     /// <returns>The string-literal value.</returns>
-    private static ExpressionValue StringLiteral(string value)
+    private static ExpressionValue StringLiteral(Utf8String value)
     {
-        return ExpressionValue.Of(new Literal(Utf8String.FromString(value), new NamedNode(XsdString)));
+        return ExpressionValue.Of(new Literal(value, new NamedNode(XsdString)));
     }
 
-    /// <summary>Extracts the lexical string of an argument that is an <c>xsd:string</c> or a language-tagged literal; fails for an error or a non-string term.</summary>
+    /// <summary>Extracts the UTF-8 lexical form of an argument that is an <c>xsd:string</c> or a language-tagged literal; fails for an error or a non-string term.</summary>
     /// <param name="argument">The argument value.</param>
-    /// <param name="value">Receives the lexical string on success.</param>
+    /// <param name="value">Receives the UTF-8 lexical form on success.</param>
     /// <returns><see langword="true"/> when the argument is a string-valued literal.</returns>
-    private static bool TryGetLexical(ExpressionValue argument, out string value)
+    private static bool TryGetLexicalText(ExpressionValue argument, out Utf8String value)
     {
         if(!argument.IsError && argument.Term is Literal literal && (literal.Datatype.Iri == XsdString || literal.Language is not null))
         {
-            value = literal.Value.ToString();
+            value = literal.Value;
 
             return true;
         }
 
-        value = string.Empty;
+        value = EmptyText;
 
         return false;
+    }
+
+    /// <summary>
+    /// Maps a UTF-8 string to upper or lower case rune-by-rune (§17.4.4.3/4 <c>LCASE</c>/<c>UCASE</c>).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why rune-by-rune over UTF-8, and why no culture.</b> SPARQL defines <c>LCASE</c>/<c>UCASE</c> by
+    /// reference to the XPath/XQuery functions <c>fn:lower-case</c>/<c>fn:upper-case</c>, which apply the Unicode
+    /// <em>default</em> case mappings and are explicitly <em>not</em> locale-sensitive — there is no collation or
+    /// culture parameter. <see cref="Rune.ToUpperInvariant(Rune)"/>/<see cref="Rune.ToLowerInvariant(Rune)"/> are
+    /// exactly that: the invariant, per-codepoint Unicode mapping. Working over runes (a) stays in UTF-8 with no
+    /// <see cref="string"/> (UTF-16) round-trip, matching the project's <c>Utf8String</c> discipline, and (b)
+    /// avoids <c>string.ToLowerInvariant</c> — so CA1308 (which guards lower-casing for <em>normalization</em>,
+    /// a different concern) never applies and needs no suppression. A case mapping can change the byte length
+    /// (e.g. U+212A KELVIN SIGN → U+006B 'k'), so the result is accumulated rather than written in place.
+    /// </para>
+    /// </remarks>
+    /// <param name="value">The UTF-8 lexical form.</param>
+    /// <param name="toUpper">Whether to upper-case (otherwise lower-case).</param>
+    /// <returns>The cased UTF-8 lexical form.</returns>
+    private static Utf8String MapCase(Utf8String value, bool toUpper)
+    {
+        ReadOnlySpan<byte> source = value.Span;
+        List<byte> mapped = new(source.Length);
+        Span<byte> encoded = stackalloc byte[4];
+        int index = 0;
+        while(index < source.Length)
+        {
+            if(Rune.DecodeFromUtf8(source[index..], out Rune rune, out int consumed) != OperationStatus.Done)
+            {
+                //Ill-formed UTF-8 (not expected in a well-formed literal): pass the byte through and advance.
+                mapped.Add(source[index]);
+                index++;
+
+                continue;
+            }
+
+            Rune cased = toUpper ? Rune.ToUpperInvariant(rune) : Rune.ToLowerInvariant(rune);
+            int written = cased.EncodeToUtf8(encoded);
+            for(int i = 0; i < written; i++)
+            {
+                mapped.Add(encoded[i]);
+            }
+
+            index += consumed;
+        }
+
+        return new Utf8String(mapped.ToArray());
+    }
+
+    /// <summary>Counts the Unicode code points (runes) in a UTF-8 string — the character count <c>STRLEN</c> returns, not the byte length.</summary>
+    /// <param name="value">The UTF-8 lexical form.</param>
+    /// <returns>The number of code points.</returns>
+    private static int CodePointCount(Utf8String value)
+    {
+        ReadOnlySpan<byte> source = value.Span;
+        int count = 0;
+        int index = 0;
+        while(index < source.Length)
+        {
+            index += Rune.DecodeFromUtf8(source[index..], out _, out int consumed) == OperationStatus.Done ? consumed : 1;
+            count++;
+        }
+
+        return count;
     }
 
     /// <summary>Reduces a value to its effective boolean value (§17.2.2): a boolean, or an error when the value has none.</summary>
@@ -512,9 +573,9 @@ public static class SparqlExpressionEvaluator
             return Boolean(number != 0 && !double.IsNaN(number));
         }
 
-        if(TryGetString(value.Term, out string text))
+        if(TryGetText(value.Term, out Utf8String text))
         {
-            return Boolean(text.Length > 0);
+            return Boolean(!text.IsEmpty);
         }
 
         return ExpressionValue.Error;
@@ -597,9 +658,12 @@ public static class SparqlExpressionEvaluator
             return Boolean(CompareOrdered(ba.CompareTo(bb), op));
         }
 
-        if(TryGetString(a, out string sa) && TryGetString(b, out string sb))
+        //String comparison is by UTF-8 bytes, which is the Unicode code-point order the XPath codepoint collation
+        //(SPARQL's default string ordering) mandates — and which a UTF-16 ordinal compare would get wrong for
+        //astral (> U+FFFF) characters. No string allocation, no culture.
+        if(TryGetText(a, out Utf8String sa) && TryGetText(b, out Utf8String sb))
         {
-            return Boolean(CompareOrdered(string.CompareOrdinal(sa, sb), op));
+            return Boolean(CompareOrdered(sa.CompareTo(sb), op));
         }
 
         //Outside a common value space only equality is defined, via RDF term identity (sameTerm).
@@ -746,20 +810,20 @@ public static class SparqlExpressionEvaluator
         return false;
     }
 
-    /// <summary>Returns whether a term is a plain string literal (<c>xsd:string</c>), yielding its text.</summary>
+    /// <summary>Returns whether a term is a plain string literal (<c>xsd:string</c>), yielding its UTF-8 lexical form.</summary>
     /// <param name="term">The term to inspect.</param>
-    /// <param name="value">Receives the string value on success.</param>
+    /// <param name="value">Receives the UTF-8 lexical form on success.</param>
     /// <returns><see langword="true"/> when the term is an <c>xsd:string</c> literal.</returns>
-    private static bool TryGetString(RdfTerm term, out string value)
+    private static bool TryGetText(RdfTerm term, out Utf8String value)
     {
         if(term is Literal literal && literal.Language is null && literal.Datatype.Iri == XsdString)
         {
-            value = literal.Value.ToString();
+            value = literal.Value;
 
             return true;
         }
 
-        value = string.Empty;
+        value = EmptyText;
 
         return false;
     }

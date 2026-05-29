@@ -297,6 +297,36 @@ internal sealed class SparqlQueryEngineTests
         Assert.AreEqual(Ex + "bob", ValueIri(solution, "o"));
     }
 
+    /// <summary>STRLEN counts Unicode code points, not UTF-8 bytes (here "café" — four code points, five bytes).</summary>
+    [TestMethod]
+    public async Task StrLenCountsCodePointsNotBytes()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(new DataTriple(Iri("alice"), Iri("name"), StringLiteral("café"))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?len WHERE { ?s :name ?n BIND(STRLEN(?n) AS ?len) }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        SparqlSolution solution = solutions.Single();
+        Assert.IsTrue(solution.TryGetValue(Variable("len"), out RdfTerm value));
+        Assert.AreEqual("4", Cast<Literal>(value).Value.ToString());
+    }
+
+    /// <summary>UCASE maps non-ASCII characters by the locale-independent Unicode case mapping ("café" → "CAFÉ").</summary>
+    [TestMethod]
+    public async Task UpperCaseMapsNonAsciiByUnicode()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(new DataTriple(Iri("alice"), Iri("name"), StringLiteral("café"))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?u WHERE { ?s :name ?n BIND(UCASE(?n) AS ?u) }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        SparqlSolution solution = solutions.Single();
+        Assert.IsTrue(solution.TryGetValue(Variable("u"), out RdfTerm value));
+        Assert.AreEqual("CAFÉ", Cast<Literal>(value).Value.ToString());
+    }
+
     /// <summary>An operator outside the supported set (here a property path) is refused with a descriptive exception.</summary>
     [TestMethod]
     public async Task UnsupportedOperatorIsRefused()
