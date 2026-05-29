@@ -567,6 +567,7 @@ public static class SparqlExpressionEvaluator
             BuiltInFunction.SameTerm => arguments[0].IsError || arguments[1].IsError ? ExpressionValue.Error : Boolean(arguments[0].Term.Equals(arguments[1].Term)),
             BuiltInFunction.Str => Str(arguments[0]),
             BuiltInFunction.Lang => arguments[0].IsError || arguments[0].Term is not Literal language ? ExpressionValue.Error : StringLiteral(language.Language ?? EmptyText),
+            BuiltInFunction.LangMatches => LangMatches(arguments[0], arguments[1]),
             BuiltInFunction.Datatype => arguments[0].IsError || arguments[0].Term is not Literal datatype ? ExpressionValue.Error : ExpressionValue.Of(datatype.Datatype),
             BuiltInFunction.StrLen => TryGetLexicalText(arguments[0], out Utf8String text) ? Numeric(CodePointCount(text), integral: true) : ExpressionValue.Error,
             BuiltInFunction.UCase => MapCaseValue(arguments[0], toUpper: true),
@@ -578,7 +579,7 @@ public static class SparqlExpressionEvaluator
             BuiltInFunction.Ceil => UnaryNumeric(arguments[0], Math.Ceiling),
             BuiltInFunction.Floor => UnaryNumeric(arguments[0], Math.Floor),
             BuiltInFunction.Round => UnaryNumeric(arguments[0], static value => Math.Round(value, MidpointRounding.AwayFromZero)),
-            _ => throw new NotSupportedException($"SPARQL built-in function '{function}' is not yet evaluable; this slice covers the term-type tests, sameTerm, STR/LANG/DATATYPE, STRLEN/UCASE/LCASE/CONTAINS/STRSTARTS/STRENDS, and ABS/CEIL/FLOOR/ROUND. The remaining functions land in a later slice.")
+            _ => throw new NotSupportedException($"SPARQL built-in function '{function}' is not yet evaluable; this slice covers the term-type tests, sameTerm, STR/LANG/LANGMATCHES/DATATYPE, STRLEN/UCASE/LCASE/CONTAINS/STRSTARTS/STRENDS, and ABS/CEIL/FLOOR/ROUND. The remaining functions (CONCAT/SUBSTR/REPLACE/REGEX/STRBEFORE/STRAFTER/ENCODE_FOR_URI, IRI/STRDT/STRLANG/BNODE, the date-time accessors, RAND, and the hash functions) land in a later slice.")
         };
     }
 
@@ -627,6 +628,45 @@ public static class SparqlExpressionEvaluator
         return TryGetLexicalText(arguments[0], out Utf8String left) && TryGetLexicalText(arguments[1], out Utf8String right)
             ? Boolean(test(left, right))
             : ExpressionValue.Error;
+    }
+
+    /// <summary>
+    /// Evaluates <c>LANGMATCHES</c> (§17.4.1.10): whether a language tag matches a language range under RFC 4647
+    /// basic filtering. The range <c>"*"</c> matches any non-empty tag; otherwise the tag matches when it equals
+    /// the range or extends it at a subtag boundary (<c>"-"</c>), compared case-insensitively (language tags are
+    /// ASCII). Both arguments must be string-valued; otherwise the result is an error.
+    /// </summary>
+    /// <param name="tagValue">The language-tag argument (typically <c>LANG(?x)</c>).</param>
+    /// <param name="rangeValue">The language-range argument.</param>
+    /// <returns>A boolean value, or an error when either argument is not a string.</returns>
+    private static ExpressionValue LangMatches(ExpressionValue tagValue, ExpressionValue rangeValue)
+    {
+        if(!TryGetLexicalText(tagValue, out Utf8String tag) || !TryGetLexicalText(rangeValue, out Utf8String range))
+        {
+            return ExpressionValue.Error;
+        }
+
+        return Boolean(LanguageRangeMatches(tag.Span, range.Span));
+    }
+
+    /// <summary>Returns whether a language tag matches a language range under RFC 4647 basic filtering.</summary>
+    /// <param name="tag">The language tag's UTF-8 bytes.</param>
+    /// <param name="range">The language range's UTF-8 bytes.</param>
+    /// <returns><see langword="true"/> when the tag matches the range.</returns>
+    private static bool LanguageRangeMatches(ReadOnlySpan<byte> tag, ReadOnlySpan<byte> range)
+    {
+        if(range.Length == 1 && range[0] == (byte)'*')
+        {
+            return tag.Length > 0;
+        }
+
+        if(tag.Length < range.Length || !Ascii.EqualsIgnoreCase(tag[..range.Length], range))
+        {
+            return false;
+        }
+
+        //A match is the whole tag or a prefix ending at a subtag boundary ('-'), so "de" matches "de-DE" but "den".
+        return tag.Length == range.Length || tag[range.Length] == (byte)'-';
     }
 
     /// <summary>Applies a unary numeric operation to a numeric argument, preserving integer typing, erring on a non-numeric argument.</summary>
