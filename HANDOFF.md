@@ -288,28 +288,31 @@ Aggregate)`; `AggregateJoin(AlgebraOperator Input /* a Group */, IReadOnlyList<A
   stays Path, nested `(:a/^:b)|:c+` mixes Join/swap/Union + closure leaf, 20k-step seq no-overflow); the old
   "carried whole into Path" test was replaced. Build clean; full suite at exactly 50 ShaclValidate failures, 0 new.
 
-▶ **NEXT AFTER A CLEAR:** HEAD `81500b4`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
+▶ **NEXT AFTER A CLEAR:** HEAD `139d8ab`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
 unchanged baseline, 0 new). **Milestone B (AST→algebra translation) is COMPLETE; Milestone C (the executor) is
 UNDERWAY — slices 1–5 done (`de58edf`, `d0bffff`, `497e9db`, `0baf32a`, `81500b4`, UTF-8 rework `34bed22`, aggregation `0b3f9c8`, property-path eval `156e4de`).**
 `Sparql/Execution/SparqlQueryEngine` now executes BGP + JOIN/UNION/MINUS + FILTER + BIND + OPTIONAL + ORDER BY +
 inline VALUES + sub-SELECT SELECT/ASK end-to-end (parse→normalize→translate→execute), with
 `SparqlExpressionEvaluator` (logical/comparison/arithmetic/IF/COALESCE/IN + a core built-in function set) for the
 expression-gated operators; see the MILESTONE C — EXECUTOR KICKOFF anchor below (slices 1–2 ✅, 3a–3c ✅).
-**IMMEDIATE NEXT = slice 6: wire SHACL `sh:sparql` to the engine** — the original Batch-1 goal (SHACL-SPARQL
-unlock). SHACL SPARQL-based constraints / constraint components run a SPARQL query against the data graph and
-interpret the result rows (a violation per row, with `?this`/`?value`/`?path`/`?message` conventions). Find the
-SHACL validator's constraint-evaluation seam, translate the constraint's query through the
-parse→normalize→translate→`SparqlQueryEngine` pipeline against the shape's data, and surface violations — then
-the SPARQL-dependent subset of the 50 ShaclValidate baseline failures becomes addressable. **Deferred:** negated
-property sets, named graphs (`GRAPH` — needs triple-store→quad-store backend work), `SERVICE`, `EXISTS`/`NOT
-EXISTS` (engine re-entry), the function-library tail (REGEX/SUBSTR/CONCAT/date/hash/…) + named functions, and the
-native pair-aware closure (path both-var optimization). Slices 1–5 are done.
-**No external spec needed: consult the online W3C SPARQL 1.2 spec for semantics, the codebase for C# conventions.**
-Build/test as SEPARATE PowerShell calls ([[feedback_build_test_command_shape]]): `dotnet build … -clp:ErrorsOnly
---nologo` and `& "test\…\Lumoin.Veritas.Tests.exe" … 2>&1 | …` (no `cd`, no `$out =`). **No external spec needed: consult the online W3C SPARQL 1.2
-spec for semantics (§16 Query Forms, §17 Expressions, §18.6 evaluation), the codebase for C# conventions.** The
-property-path `Path`-leaf closure (slice 5) reuses `Rdf.PropertyPathEvaluator` + the native pair-aware closure
-(PROPERTY-PATH plan items 2–4 below). The trace-bus extensions ([[project_trace_bus_extensions]]) ride alongside. Deep-nesting
+**IMMEDIATE NEXT = slice 6: SHACL-SPARQL — wire `sh:sparql` to the engine** (the original Batch-1 goal). ⚠ It is a
+FEATURE, not a wiring: `Lumoin.Veritas.Shacl` is SHACL 1.2 *Core* only, references Core+Rdf (NOT Sparql), and has
+NO `sh:sparql`/`sh:SPARQLConstraint` shape model. **See the concrete (a)–(d) plan in item 6 of the EXECUTOR
+KICKOFF plan below** (add Shacl→Sparql reference; shape-loader parses `sh:sparql`; an evaluator pre-binds `$this`
+and maps SELECT result rows → `sh:ValidationResult`; pre-binding process-failure caveat). The 50 baseline failures
+are the W3C SHACL suite; cluster 1 (32 under-validations) is dominated by SHACL-SPARQL (`shacl-conformance-status.md`),
+so this is the lever that moves the baseline. **Recommended: start on a FRESH context** — it spans the SHACL shape
+loader + validator + the engine and deserves a clean session; explore `src/Lumoin.Veritas.Shacl/` (the shape loader,
+`Constraints/`, `Validation/Evaluators/`, ValidationResult/report) first. **Deferred:** negated property sets,
+named graphs (`GRAPH` — needs triple→quad backend work), `SERVICE`, `EXISTS`/`NOT EXISTS` (engine re-entry), the
+function-library tail (REGEX/SUBSTR/CONCAT/date/hash/…) + named functions, and the native pair-aware closure (path
+both-var optimization). Slices 1–5 are done. **No external spec: consult the online W3C SPARQL 1.2 spec (§16/§17/§18.6)
++ the SHACL-SPARQL spec for semantics, the codebase for C# conventions.** Build/test as SEPARATE PowerShell calls
+([[feedback_build_test_command_shape]]): `dotnet build … -clp:ErrorsOnly --nologo` and
+`& "test\…\Lumoin.Veritas.Tests.exe" … 2>&1 | …` (no `cd`, no `$out =`). The
+property-path `Path`-leaf evaluation (slice 5, `156e4de`) already uses `Rdf.PropertyPathEvaluator` (per-seed for the
+both-var mode; the native pair-aware closure of PROPERTY-PATH plan items 2–4 is a deferred optimization). The
+trace-bus extensions ([[project_trace_bus_extensions]]) ride alongside. Deep-nesting
 tests guard the iterative pipeline (20k nested groups, 10k nested collections, 2k nested sub-SELECTs, 50k Join
 OutputVariables/Transform, 50k-deep aggregate expression, 20k-step sequence path). Relevant memory:
 [[feedback_no_recursion]], [[project_sparql_algebra_design]], [[project_sparql_reified_triple_no_assert]],
