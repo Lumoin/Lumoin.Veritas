@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -10,6 +11,7 @@ using Lumoin.Veritas.Core.Hypertrie.Execution;
 using Lumoin.Veritas.Core.Hypertrie.Planning;
 using Lumoin.Veritas.Core.Hypertrie.Query;
 using Lumoin.Veritas.Core.Hypertrie.Storage;
+using Lumoin.Veritas.Rdf;
 using Lumoin.Veritas.Sparql.Algebra;
 using Lumoin.Veritas.Sparql.Ast;
 using AstTriplePattern = Lumoin.Veritas.Sparql.Ast.TriplePattern;
@@ -33,8 +35,10 @@ namespace Lumoin.Veritas.Sparql.Execution;
 /// <see cref="LeftJoin"/> — via <see cref="SparqlExpressionEvaluator"/>), aggregation (<see cref="Group"/> +
 /// <see cref="AggregateJoin"/>), the inline <c>VALUES</c> <see cref="Table"/>, and the projection/sequence
 /// modifiers (<see cref="Project"/>, <see cref="Distinct"/>, <see cref="Reduced"/>, <see cref="OrderBy"/>,
-/// <see cref="Slice"/>, and the <see cref="UnitTable"/> identity). Property paths, named graphs, <c>SERVICE</c>,
-/// and <c>EXISTS</c>/<c>NOT EXISTS</c> raise <see cref="NotSupportedException"/> until their later slice lands. The public surface (entry naming, result
+/// <see cref="Slice"/>, and the <see cref="UnitTable"/> identity), and property-path <see cref="Path"/> leaves
+/// (via <see cref="PropertyPathEvaluator"/>; negated property sets excepted). Named graphs (<c>GRAPH</c>),
+/// <c>SERVICE</c>, and <c>EXISTS</c>/<c>NOT EXISTS</c> raise <see cref="NotSupportedException"/> until their later
+/// slice lands. The public surface (entry naming, result
 /// model, streaming) is provisional and follows codebase convention; the W3C SPARQL 1.2 specification governs the
 /// evaluation semantics.
 /// </para>
@@ -163,6 +167,11 @@ public sealed class SparqlQueryEngine
         if(op is Table table)
         {
             return BuildTableSolutions(table.Data);
+        }
+
+        if(op is Path pathOperator)
+        {
+            return await EvaluatePathAsync(pathOperator, cancellationToken).ConfigureAwait(false);
         }
 
         //The supported-operator guard runs first, so any other leaf reaching here is an executor bug, not input.
@@ -469,6 +478,234 @@ public sealed class SparqlQueryEngine
         }
 
         return solutions;
+    }
+
+    /// <summary>
+    /// Evaluates a property-path <see cref="Path"/> leaf (§18.6) by resolving the AST path to an
+    /// <see cref="Rdf.PropertyPath"/> over encoded ids and delegating to <see cref="PropertyPathEvaluator"/>
+    /// (forward reachability over the store's match operations). It enumerates the matching subject/object pairs
+    /// per binding mode and binds the variable endpoints: a bound subject enumerates objects; a bound object
+    /// enumerates subjects via the inverse path; both bound is an existence check; both variable seeds from every
+    /// graph node (the per-seed enumeration — the native pair-aware closure is a later optimization).
+    /// </summary>
+    /// <param name="path">The path operator.</param>
+    /// <param name="cancellationToken">A token that aborts evaluation.</param>
+    /// <returns>The path's solution sequence.</returns>
+    private async ValueTask<IReadOnlyList<SparqlSolution>> EvaluatePathAsync(Path path, CancellationToken cancellationToken)
+    {
+        PropertyPath rdfPath = ConvertPath(path.PathExpression);
+        GraphMatchOps ops = store.AsMatchOps();
+        (TermId? subjectId, SparqlVariable? subjectVariable) = ResolveEndpoint(path.Subject);
+        (TermId? objectId, SparqlVariable? objectVariable) = ResolveEndpoint(path.Object);
+        List<SparqlSolution> solutions = [];
+
+        if(subjectId is TermId subject)
+        {
+            //Bound subject: enumerate reachable objects (filtering to the object when it too is bound).
+            if(subject.IsNone)
+            {
+                return solutions;
+            }
+
+            await foreach(TermId reached in PropertyPathEvaluator.EvaluateAsync(subject, rdfPath, ops, cancellationToken).ConfigureAwait(false))
+            {
+                if(objectId is TermId fixedObject && reached != fixedObject)
+                {
+                    continue;
+                }
+
+                BindPathPair(solutions, subjectVariable, subject, objectVariable, reached);
+            }
+        }
+        else if(objectId is TermId @object)
+        {
+            //Bound object, variable subject: enumerate reachable subjects via the inverse path.
+            if(@object.IsNone)
+            {
+                return solutions;
+            }
+
+            await foreach(TermId reached in PropertyPathEvaluator.EvaluateAsync(@object, new InversePath(rdfPath), ops, cancellationToken).ConfigureAwait(false))
+            {
+                BindPathPair(solutions, subjectVariable, reached, objectVariable, @object);
+            }
+        }
+        else
+        {
+            //Both endpoints variable: seed forward reachability from every node in the graph.
+            foreach(TermId seed in AllNodes())
+            {
+                await foreach(TermId reached in PropertyPathEvaluator.EvaluateAsync(seed, rdfPath, ops, cancellationToken).ConfigureAwait(false))
+                {
+                    BindPathPair(solutions, subjectVariable, seed, objectVariable, reached);
+                }
+            }
+        }
+
+        return solutions;
+    }
+
+    /// <summary>Resolves a path endpoint to its bound term id (a constant) or the variable it binds.</summary>
+    /// <param name="term">The endpoint term (a constant or a variable after normalization).</param>
+    /// <returns>The bound term id (a constant — possibly <see cref="TermId.None"/> when absent from the data) and no variable, or no id and the variable.</returns>
+    /// <exception cref="NotSupportedException">The endpoint is neither a constant nor a variable.</exception>
+    private (TermId? Id, SparqlVariable? Variable) ResolveEndpoint(TriplePatternTerm term)
+    {
+        return term switch
+        {
+            ConstantTerm constant => (dictionary.GetIdOrDefault(constant.Term), (SparqlVariable?)null),
+            VariableTerm variable => ((TermId?)null, variable.Variable),
+            _ => throw new NotSupportedException($"Property-path endpoint '{term.GetType().Name}' is not supported by the executor.")
+        };
+    }
+
+    /// <summary>Emits a solution for one matched subject/object pair, binding whichever endpoints are variables and decoding their values; a pair with the same variable on both ends matches only when the two values coincide.</summary>
+    /// <param name="solutions">The accumulating solution list.</param>
+    /// <param name="subjectVariable">The subject variable, or <see langword="null"/> when the subject is a constant.</param>
+    /// <param name="subjectValue">The matched subject term id.</param>
+    /// <param name="objectVariable">The object variable, or <see langword="null"/> when the object is a constant.</param>
+    /// <param name="objectValue">The matched object term id.</param>
+    private void BindPathPair(List<SparqlSolution> solutions, SparqlVariable? subjectVariable, TermId subjectValue, SparqlVariable? objectVariable, TermId objectValue)
+    {
+        //The same variable on both ends (e.g. ?x path ?x) matches only the pairs where the endpoints coincide.
+        if(subjectVariable is SparqlVariable both && objectVariable == both && subjectValue != objectValue)
+        {
+            return;
+        }
+
+        List<SparqlBinding> bindings = new(2);
+        if(subjectVariable is SparqlVariable subject)
+        {
+            bindings.Add(new SparqlBinding(subject, dictionary.Resolve(subjectValue)));
+        }
+
+        if(objectVariable is SparqlVariable @object && @object != subjectVariable)
+        {
+            bindings.Add(new SparqlBinding(@object, dictionary.Resolve(objectValue)));
+        }
+
+        solutions.Add(new SparqlSolution(bindings));
+    }
+
+    /// <summary>Collects every distinct node appearing as a subject or object in the graph — the seed set for a both-variable path (so <c>*</c> is reflexive over all nodes).</summary>
+    /// <returns>The distinct nodes.</returns>
+    private HashSet<TermId> AllNodes()
+    {
+        HashSet<TermId> nodes = [];
+        foreach(EncodedTriple triple in store.Match(TermId.None, TermId.None, TermId.None))
+        {
+            nodes.Add(triple.Subject);
+            nodes.Add(triple.Object);
+        }
+
+        return nodes;
+    }
+
+    /// <summary>
+    /// Converts an AST property-path expression to the encoded <see cref="Rdf.PropertyPath"/> the
+    /// <see cref="PropertyPathEvaluator"/> consumes, over an explicit post-order stack (no recursion). Predicate
+    /// IRIs resolve through the term dictionary; one absent from the data becomes a <see cref="TermId.None"/>
+    /// predicate that matches nothing.
+    /// </summary>
+    /// <param name="root">The AST path expression.</param>
+    /// <returns>The encoded property path.</returns>
+    /// <exception cref="NotSupportedException">The path uses a negated property set (no encoded-path representation yet).</exception>
+    private PropertyPath ConvertPath(PropertyPathExpression root)
+    {
+        Dictionary<PropertyPathExpression, PropertyPath> results = new(ReferenceEqualityComparer.Instance);
+        Stack<(PropertyPathExpression Node, bool Combine)> work = new();
+        work.Push((root, Combine: false));
+
+        while(work.Count > 0)
+        {
+            (PropertyPathExpression node, bool combine) = work.Pop();
+            if(combine)
+            {
+                results[node] = CombinePath(node, results);
+
+                continue;
+            }
+
+            IReadOnlyList<PropertyPathExpression> children = PathChildren(node);
+            if(children.Count == 0)
+            {
+                results[node] = ConvertLeafPath(node);
+            }
+            else
+            {
+                work.Push((node, Combine: true));
+                for(int i = children.Count - 1; i >= 0; i--)
+                {
+                    work.Push((children[i], Combine: false));
+                }
+            }
+        }
+
+        return results[root];
+    }
+
+    /// <summary>Returns the sub-paths of an AST path expression; empty for a single predicate or a negated set.</summary>
+    /// <param name="node">The path expression.</param>
+    /// <returns>The sub-paths.</returns>
+    private static IReadOnlyList<PropertyPathExpression> PathChildren(PropertyPathExpression node)
+    {
+        return node switch
+        {
+            PathInverse inverse => [inverse.Inner],
+            PathSequence sequence => sequence.Steps,
+            PathAlternative alternative => alternative.Alternatives,
+            PathZeroOrMore zeroOrMore => [zeroOrMore.Inner],
+            PathOneOrMore oneOrMore => [oneOrMore.Inner],
+            PathZeroOrOne zeroOrOne => [zeroOrOne.Inner],
+            _ => []
+        };
+    }
+
+    /// <summary>Converts a leaf path expression: a single predicate to a <see cref="PredicatePath"/> over its encoded id.</summary>
+    /// <param name="node">The leaf path expression.</param>
+    /// <returns>The encoded path.</returns>
+    /// <exception cref="NotSupportedException">The leaf is a negated property set.</exception>
+    private PredicatePath ConvertLeafPath(PropertyPathExpression node)
+    {
+        return node switch
+        {
+            PathPredicate predicate => new PredicatePath(IriId.FromUnchecked(dictionary.GetIdOrDefault(new NamedNode(predicate.Predicate.Value)))),
+            PathNegatedSet => throw new NotSupportedException("SPARQL negated property sets are not yet executable; the encoded property-path representation has no negated-set form."),
+            _ => throw new InvalidOperationException($"Path expression '{node.GetType().Name}' has sub-paths but reached the leaf converter.")
+        };
+    }
+
+    /// <summary>Combines a composite path expression from its already-converted sub-paths.</summary>
+    /// <param name="node">The composite path expression.</param>
+    /// <param name="results">The map of already-converted sub-paths.</param>
+    /// <returns>The encoded path.</returns>
+    private static PropertyPath CombinePath(PropertyPathExpression node, Dictionary<PropertyPathExpression, PropertyPath> results)
+    {
+        return node switch
+        {
+            PathInverse inverse => new InversePath(results[inverse.Inner]),
+            PathSequence sequence => new SequencePath(ToPathArray(sequence.Steps, results)),
+            PathAlternative alternative => new AlternativePath(ToPathArray(alternative.Alternatives, results)),
+            PathZeroOrMore zeroOrMore => new ZeroOrMorePath(results[zeroOrMore.Inner]),
+            PathOneOrMore oneOrMore => new OneOrMorePath(results[oneOrMore.Inner]),
+            PathZeroOrOne zeroOrOne => new ZeroOrOnePath(results[zeroOrOne.Inner]),
+            _ => throw new InvalidOperationException($"Path expression '{node.GetType().Name}' has no combine rule.")
+        };
+    }
+
+    /// <summary>Collects the converted sub-paths of a sequence/alternative into an immutable array, in order.</summary>
+    /// <param name="steps">The AST sub-paths.</param>
+    /// <param name="results">The map of already-converted sub-paths.</param>
+    /// <returns>The converted sub-paths.</returns>
+    private static ImmutableArray<PropertyPath> ToPathArray(IReadOnlyList<PropertyPathExpression> steps, Dictionary<PropertyPathExpression, PropertyPath> results)
+    {
+        ImmutableArray<PropertyPath>.Builder builder = ImmutableArray.CreateBuilder<PropertyPath>(steps.Count);
+        foreach(PropertyPathExpression step in steps)
+        {
+            builder.Add(results[step]);
+        }
+
+        return builder.ToImmutable();
     }
 
     /// <summary>Joins two solution sequences (§18.6 Join): the merge of every pair of compatible solutions, one from each side.</summary>
@@ -843,10 +1080,10 @@ public sealed class SparqlQueryEngine
     {
         foreach(AlgebraOperator op in AlgebraWalker.Traverse(algebra))
         {
-            bool supported = op is Bgp or UnitTable or Table or Project or Distinct or Reduced or Slice or OrderBy or Join or Union or Minus or ToMultiSet or ToList or Filter or Extend or LeftJoin or Group or AggregateJoin;
+            bool supported = op is Bgp or UnitTable or Table or Project or Distinct or Reduced or Slice or OrderBy or Join or Union or Minus or ToMultiSet or ToList or Filter or Extend or LeftJoin or Group or AggregateJoin or Path;
             if(!supported)
             {
-                throw new NotSupportedException($"SPARQL algebra operator '{op.GetType().Name}' is not yet executable. This executor covers basic graph patterns, JOIN/UNION/MINUS, FILTER, BIND (Extend), OPTIONAL (LeftJoin), inline VALUES, ORDER BY, aggregation (GROUP BY / HAVING), sub-SELECT (ToMultiSet), and the projection/DISTINCT/REDUCED/OFFSET/LIMIT modifiers; property paths, named graphs, SERVICE, and EXISTS land in later slices.");
+                throw new NotSupportedException($"SPARQL algebra operator '{op.GetType().Name}' is not yet executable. This executor covers basic graph patterns, property paths, JOIN/UNION/MINUS, FILTER, BIND (Extend), OPTIONAL (LeftJoin), inline VALUES, ORDER BY, aggregation (GROUP BY / HAVING), sub-SELECT (ToMultiSet), and the projection/DISTINCT/REDUCED/OFFSET/LIMIT modifiers; named graphs (GRAPH), SERVICE, and EXISTS land in later slices.");
             }
         }
     }

@@ -389,13 +389,58 @@ internal sealed class SparqlQueryEngineTests
         Assert.AreEqual(Ex + "alice", ValueIri(solution, "s"));
     }
 
-    /// <summary>An operator outside the supported set (here a property path) is refused with a descriptive exception.</summary>
+    /// <summary>A one-or-more property path between two variables enumerates every connected (subject, object) pair, including transitive reach.</summary>
+    [TestMethod]
+    public async Task OneOrMorePathEnumeratesConnectedPairs()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(("a", "p", "b"), ("b", "p", "c")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?s ?o WHERE { ?s :p+ ?o }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //a→b, a→c (transitively), b→c.
+        Assert.HasCount(3, solutions);
+        Assert.Contains(s => ValueIri(s, "s") == Ex + "a" && ValueIri(s, "o") == Ex + "c", solutions, "Expected the transitive a→c pair.");
+    }
+
+    /// <summary>A one-or-more path from a bound subject enumerates the reachable objects.</summary>
+    [TestMethod]
+    public async Task OneOrMorePathFromBoundSubjectEnumeratesReachable()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(("a", "p", "b"), ("b", "p", "c")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?o WHERE { :a :p+ ?o }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(2, solutions);
+        Assert.Contains(s => ValueIri(s, "o") == Ex + "b", solutions);
+        Assert.Contains(s => ValueIri(s, "o") == Ex + "c", solutions);
+    }
+
+    /// <summary>A zero-or-more path is reflexive: every node reaches itself in zero steps.</summary>
+    [TestMethod]
+    public async Task ZeroOrMorePathIsReflexive()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(("a", "p", "b")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?s ?o WHERE { ?s :p* ?o }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //(a,a), (a,b), (b,b) — both nodes reach themselves, and a reaches b.
+        Assert.HasCount(3, solutions);
+        Assert.Contains(s => ValueIri(s, "s") == Ex + "a" && ValueIri(s, "o") == Ex + "a", solutions, "Expected the reflexive a→a pair.");
+    }
+
+    /// <summary>An operator outside the supported set (here a GRAPH named-graph block) is refused with a descriptive exception.</summary>
     [TestMethod]
     public async Task UnsupportedOperatorIsRefused()
     {
         SparqlQueryEngine engine = await BuildEngineAsync(("alice", "p", "bob")).ConfigureAwait(false);
         using Utf8StringPool pool = new();
-        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?s :p+ ?o }", pool);
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { GRAPH ?g { ?s :p ?o } }", pool);
 
         NotSupportedException? caught = null;
         try
