@@ -160,13 +160,62 @@ internal sealed class SparqlQueryEngineTests
         Assert.AreEqual(Ex + "bob", ValueIri(solution, "b"));
     }
 
-    /// <summary>An operator outside this slice's supported set (here FILTER) is refused with a descriptive exception.</summary>
+    /// <summary>A FILTER keeps only the solutions whose numeric condition holds.</summary>
+    [TestMethod]
+    public async Task FilterKeepsSolutionsSatisfyingTheCondition()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(
+            new DataTriple(Iri("alice"), Iri("age"), IntegerLiteral(20)),
+            new DataTriple(Iri("bob"), Iri("age"), IntegerLiteral(15))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?s WHERE { ?s :age ?a FILTER(?a > 18) }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        SparqlSolution solution = solutions.Single();
+        Assert.AreEqual(Ex + "alice", ValueIri(solution, "s"));
+    }
+
+    /// <summary>A BIND binds a computed value to a variable; integer arithmetic yields an xsd:integer.</summary>
+    [TestMethod]
+    public async Task BindBindsAComputedValue()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(new DataTriple(Iri("alice"), Iri("age"), IntegerLiteral(20))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?x WHERE { ?s :age ?a BIND(?a + 1 AS ?x) }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        SparqlSolution solution = solutions.Single();
+        Assert.IsTrue(solution.TryGetValue(Variable("x"), out RdfTerm value));
+        Assert.AreEqual("21", Cast<Literal>(value).Value.ToString());
+    }
+
+    /// <summary>An OPTIONAL extends solutions with the optional values where present, and keeps the others unextended.</summary>
+    [TestMethod]
+    public async Task OptionalExtendsWherePresentAndKeepsOtherwise()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(("alice", "p", "x"), ("alice", "q", "y"), ("bob", "p", "z")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?s :p ?o OPTIONAL { ?s :q ?v } }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //alice has the optional ?v; bob does not but is still kept.
+        Assert.HasCount(2, solutions);
+        SparqlSolution alice = solutions.Single(s => ValueIri(s, "s") == Ex + "alice");
+        SparqlSolution bob = solutions.Single(s => ValueIri(s, "s") == Ex + "bob");
+        Assert.AreEqual(Ex + "y", ValueIri(alice, "v"));
+        Assert.IsFalse(bob.TryGetValue(Variable("v"), out _));
+    }
+
+    /// <summary>An operator outside the supported set (here a property path) is refused with a descriptive exception.</summary>
     [TestMethod]
     public async Task UnsupportedOperatorIsRefused()
     {
         SparqlQueryEngine engine = await BuildEngineAsync(("alice", "p", "bob")).ConfigureAwait(false);
         using Utf8StringPool pool = new();
-        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?s :p ?o FILTER(?o = ?o) }", pool);
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?s :p+ ?o }", pool);
 
         NotSupportedException? caught = null;
         try
@@ -193,6 +242,22 @@ internal sealed class SparqlQueryEngineTests
         }
 
         return await SparqlQueryEngine.BuildAsync(data, TestContext.CancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Builds an engine over an explicit set of data triples (used when objects are literals rather than IRIs).</summary>
+    /// <param name="triples">The data triples.</param>
+    /// <returns>An engine over the graph.</returns>
+    private async Task<SparqlQueryEngine> EngineFromAsync(params DataTriple[] triples)
+    {
+        return await SparqlQueryEngine.BuildAsync(triples, TestContext.CancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Builds an <c>xsd:integer</c> literal term.</summary>
+    /// <param name="value">The integer value.</param>
+    /// <returns>The literal term.</returns>
+    private static Literal IntegerLiteral(int value)
+    {
+        return new Literal(Utf8String.FromString(value.ToString(System.Globalization.CultureInfo.InvariantCulture)), new NamedNode(Utf8String.FromString("http://www.w3.org/2001/XMLSchema#integer")));
     }
 
     /// <summary>Parses, normalizes, and translates a query to its algebra.</summary>

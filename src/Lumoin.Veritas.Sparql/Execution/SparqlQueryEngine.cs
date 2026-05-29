@@ -29,11 +29,12 @@ namespace Lumoin.Veritas.Sparql.Execution;
 /// <b>Slice scope.</b> The executor covers basic graph patterns (a <see cref="Bgp"/>, the translator already merges
 /// consecutive plain triples into one), the expression-free relational operators (<see cref="Join"/>,
 /// <see cref="Union"/>, <see cref="Minus"/>), sub-<c>SELECT</c> (<see cref="ToMultiSet"/> / <see cref="ToList"/>),
-/// and the projection/sequence modifiers that need no expression evaluation (<see cref="Project"/>,
-/// <see cref="Distinct"/>, <see cref="Reduced"/>, <see cref="Slice"/>, and the <see cref="UnitTable"/> identity).
-/// The operators that need expression evaluation (<c>FILTER</c>, <c>OPTIONAL</c>'s <see cref="LeftJoin"/>,
-/// <c>BIND</c>/<see cref="Extend"/>, <c>ORDER BY</c>), property paths, aggregation, named graphs, and
-/// <c>SERVICE</c> raise <see cref="NotSupportedException"/> until their later slice lands. The public surface (entry naming, result
+/// the expression-gated operators (<see cref="Filter"/>, <c>BIND</c>/<see cref="Extend"/>, <c>OPTIONAL</c>'s
+/// <see cref="LeftJoin"/> — via <see cref="SparqlExpressionEvaluator"/>), and the projection/sequence modifiers
+/// (<see cref="Project"/>, <see cref="Distinct"/>, <see cref="Reduced"/>, <see cref="Slice"/>, and the
+/// <see cref="UnitTable"/> identity). <c>ORDER BY</c>, the inline <c>VALUES</c> table, property paths,
+/// aggregation, named graphs, and <c>SERVICE</c> raise <see cref="NotSupportedException"/> until their later
+/// slice lands. The public surface (entry naming, result
 /// model, streaming) is provisional and follows codebase convention; the W3C SPARQL 1.2 specification governs the
 /// evaluation semantics.
 /// </para>
@@ -180,6 +181,9 @@ public sealed class SparqlQueryEngine
             Join join => JoinSolutions(results[join.Left], results[join.Right]),
             Union union => UnionSolutions(results[union.Left], results[union.Right]),
             Minus minus => MinusSolutions(results[minus.Left], results[minus.Right]),
+            Filter filter => ApplyFilter(filter, results[filter.Input]),
+            Extend extend => ApplyExtend(extend, results[extend.Input]),
+            LeftJoin leftJoin => LeftJoinSolutions(results[leftJoin.Left], results[leftJoin.Right], leftJoin.Condition),
 
             //ToMultiSet / ToList are multiset / sequence conversions; with no ORDER BY in scope they pass through.
             ToMultiSet toMultiSet => results[toMultiSet.Input],
@@ -443,6 +447,88 @@ public sealed class SparqlQueryEngine
         return kept;
     }
 
+    /// <summary>Keeps the solutions whose <c>FILTER</c> condition has effective boolean value true (§18.6 Filter); an error or non-boolean value drops the solution.</summary>
+    /// <param name="filter">The filter.</param>
+    /// <param name="input">The input solution sequence.</param>
+    /// <returns>The surviving solutions.</returns>
+    private static List<SparqlSolution> ApplyFilter(Filter filter, IReadOnlyList<SparqlSolution> input)
+    {
+        List<SparqlSolution> kept = new(input.Count);
+        foreach(SparqlSolution solution in input)
+        {
+            if(SparqlExpressionEvaluator.Satisfies(filter.Condition, solution))
+            {
+                kept.Add(solution);
+            }
+        }
+
+        return kept;
+    }
+
+    /// <summary>Binds an expression's value to a variable on each solution (§18.6 Extend / <c>BIND</c>); a solution whose expression errs is kept with the variable left unbound.</summary>
+    /// <param name="extend">The extend.</param>
+    /// <param name="input">The input solution sequence.</param>
+    /// <returns>The extended solution sequence.</returns>
+    private static List<SparqlSolution> ApplyExtend(Extend extend, IReadOnlyList<SparqlSolution> input)
+    {
+        List<SparqlSolution> extended = new(input.Count);
+        foreach(SparqlSolution solution in input)
+        {
+            if(!SparqlExpressionEvaluator.TryEvaluate(extend.Expression, solution, out RdfTerm value))
+            {
+                extended.Add(solution);
+
+                continue;
+            }
+
+            List<SparqlBinding> bindings = new(solution.Bindings.Count + 1);
+            bindings.AddRange(solution.Bindings);
+            bindings.Add(new SparqlBinding(extend.Variable, value));
+            extended.Add(new SparqlSolution(bindings));
+        }
+
+        return extended;
+    }
+
+    /// <summary>
+    /// Evaluates an <c>OPTIONAL</c> (§18.6 LeftJoin): each left solution is extended by every compatible right
+    /// solution that also satisfies the optional condition, and a left solution with no such extension is kept
+    /// unchanged.
+    /// </summary>
+    /// <param name="left">The required (left) solution sequence.</param>
+    /// <param name="right">The optional (right) solution sequence.</param>
+    /// <param name="condition">The optional join condition (the lifted inner <c>FILTER</c>), or <see langword="null"/> when there is none.</param>
+    /// <returns>The left-joined solution sequence.</returns>
+    private static List<SparqlSolution> LeftJoinSolutions(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right, ExpressionNode? condition)
+    {
+        List<SparqlSolution> result = [];
+        foreach(SparqlSolution outer in left)
+        {
+            bool extended = false;
+            foreach(SparqlSolution inner in right)
+            {
+                if(!AreCompatible(outer, inner))
+                {
+                    continue;
+                }
+
+                SparqlSolution merged = Merge(outer, inner);
+                if(condition is null || SparqlExpressionEvaluator.Satisfies(condition, merged))
+                {
+                    result.Add(merged);
+                    extended = true;
+                }
+            }
+
+            if(!extended)
+            {
+                result.Add(outer);
+            }
+        }
+
+        return result;
+    }
+
     /// <summary>Returns whether two solutions are compatible (§18.1): every variable bound in both maps to the same term.</summary>
     /// <param name="left">The first solution.</param>
     /// <param name="right">The second solution.</param>
@@ -503,10 +589,10 @@ public sealed class SparqlQueryEngine
     {
         foreach(AlgebraOperator op in AlgebraWalker.Traverse(algebra))
         {
-            bool supported = op is Bgp or UnitTable or Project or Distinct or Reduced or Slice or Join or Union or Minus or ToMultiSet or ToList;
+            bool supported = op is Bgp or UnitTable or Project or Distinct or Reduced or Slice or Join or Union or Minus or ToMultiSet or ToList or Filter or Extend or LeftJoin;
             if(!supported)
             {
-                throw new NotSupportedException($"SPARQL algebra operator '{op.GetType().Name}' is not yet executable. This executor covers basic graph patterns, JOIN/UNION/MINUS, sub-SELECT (ToMultiSet), and the projection/DISTINCT/REDUCED/OFFSET/LIMIT modifiers; FILTER, OPTIONAL (LeftJoin), BIND/Extend, ORDER BY, property paths, aggregation, named graphs, and SERVICE land in later slices.");
+                throw new NotSupportedException($"SPARQL algebra operator '{op.GetType().Name}' is not yet executable. This executor covers basic graph patterns, JOIN/UNION/MINUS, FILTER, BIND (Extend), OPTIONAL (LeftJoin), sub-SELECT (ToMultiSet), and the projection/DISTINCT/REDUCED/OFFSET/LIMIT modifiers; ORDER BY, the inline VALUES table, property paths, aggregation, named graphs, and SERVICE land in later slices.");
             }
         }
     }
