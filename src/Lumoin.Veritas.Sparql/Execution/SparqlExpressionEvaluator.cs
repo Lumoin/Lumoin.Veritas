@@ -3,6 +3,7 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Sparql.Ast;
 
@@ -48,6 +49,9 @@ public static class SparqlExpressionEvaluator
 
     /// <summary>The <c>xsd:double</c> datatype IRI.</summary>
     private static Utf8String XsdDouble { get; } = Utf8String.FromString(XsdNamespace + "double");
+
+    /// <summary>The <c>rdf:langString</c> datatype IRI (the datatype of a language-tagged literal).</summary>
+    private static Utf8String RdfLangString { get; } = Utf8String.FromString("http://www.w3.org/1999/02/22-rdf-syntax-ns#langString");
 
     /// <summary>The integral numeric datatype IRIs (a literal of one of these is treated as an integer for arithmetic result typing).</summary>
     private static HashSet<string> IntegralDatatypes { get; } = new()
@@ -575,11 +579,21 @@ public static class SparqlExpressionEvaluator
             BuiltInFunction.Contains => StringTest(arguments, static (haystack, needle) => haystack.Span.IndexOf(needle.Span) >= 0),
             BuiltInFunction.StrStarts => StringTest(arguments, static (text, prefix) => text.Span.StartsWith(prefix.Span)),
             BuiltInFunction.StrEnds => StringTest(arguments, static (text, suffix) => text.Span.EndsWith(suffix.Span)),
+            BuiltInFunction.Concat => Concat(arguments),
+            BuiltInFunction.Substr => Substr(arguments),
+            BuiltInFunction.StrBefore => StrBeforeAfter(arguments, before: true),
+            BuiltInFunction.StrAfter => StrBeforeAfter(arguments, before: false),
+            BuiltInFunction.EncodeForUri => EncodeForUri(arguments[0]),
+            BuiltInFunction.Regex => RegexMatch(arguments),
+            BuiltInFunction.Replace => Replace(arguments),
+            BuiltInFunction.Iri or BuiltInFunction.Uri => Iri(arguments[0]),
+            BuiltInFunction.StrDt => StrDt(arguments),
+            BuiltInFunction.StrLang => StrLang(arguments),
             BuiltInFunction.Abs => UnaryNumeric(arguments[0], static value => Math.Abs(value)),
             BuiltInFunction.Ceil => UnaryNumeric(arguments[0], Math.Ceiling),
             BuiltInFunction.Floor => UnaryNumeric(arguments[0], Math.Floor),
             BuiltInFunction.Round => UnaryNumeric(arguments[0], static value => Math.Round(value, MidpointRounding.AwayFromZero)),
-            _ => throw new NotSupportedException($"SPARQL built-in function '{function}' is not yet evaluable; this slice covers the term-type tests, sameTerm, STR/LANG/LANGMATCHES/DATATYPE, STRLEN/UCASE/LCASE/CONTAINS/STRSTARTS/STRENDS, and ABS/CEIL/FLOOR/ROUND. The remaining functions (CONCAT/SUBSTR/REPLACE/REGEX/STRBEFORE/STRAFTER/ENCODE_FOR_URI, IRI/STRDT/STRLANG/BNODE, the date-time accessors, RAND, and the hash functions) land in a later slice.")
+            _ => throw new NotSupportedException($"SPARQL built-in function '{function}' is not yet evaluable; this slice covers the term-type tests, sameTerm, STR/LANG/LANGMATCHES/DATATYPE, the string functions (STRLEN/UCASE/LCASE/CONTAINS/STRSTARTS/STRENDS/CONCAT/SUBSTR/STRBEFORE/STRAFTER/ENCODE_FOR_URI/REGEX/REPLACE), the term constructors (IRI/URI/STRDT/STRLANG), and ABS/CEIL/FLOOR/ROUND. The remaining functions (BNODE, the date-time accessors, RAND, UUID/STRUUID, the hash functions, and the named functions) and EXISTS/NOT EXISTS land in a later slice.")
         };
     }
 
@@ -667,6 +681,406 @@ public static class SparqlExpressionEvaluator
 
         //A match is the whole tag or a prefix ending at a subtag boundary ('-'), so "de" matches "de-DE" but "den".
         return tag.Length == range.Length || tag[range.Length] == (byte)'-';
+    }
+
+    /// <summary>
+    /// Evaluates <c>CONCAT</c> (§17.4.3.4): the concatenation of the string arguments' lexical forms. The result
+    /// keeps a common language tag when every argument shares it, otherwise it is a plain <c>xsd:string</c>; a
+    /// non-string argument errs.
+    /// </summary>
+    /// <param name="arguments">The string arguments.</param>
+    /// <returns>The concatenated string value, or an error.</returns>
+    private static ExpressionValue Concat(ExpressionValue[] arguments)
+    {
+        ArrayBufferWriter<byte> buffer = new();
+        Utf8String? commonLanguage = null;
+        bool languageConsistent = arguments.Length > 0;
+        for(int i = 0; i < arguments.Length; i++)
+        {
+            if(!TryGetStringArgument(arguments[i], out Utf8String text, out Utf8String? language))
+            {
+                return ExpressionValue.Error;
+            }
+
+            buffer.Write(text.Span);
+            if(i == 0)
+            {
+                commonLanguage = language;
+            }
+            else if(!SameLanguage(language, commonLanguage))
+            {
+                languageConsistent = false;
+            }
+        }
+
+        return StringLiteral(new Utf8String(buffer.WrittenSpan.ToArray()), languageConsistent ? commonLanguage : null);
+    }
+
+    /// <summary>
+    /// Evaluates <c>SUBSTR</c> (§17.4.3.3): the code-point substring of the source from a 1-based start for an
+    /// optional length, with the XPath rounding/clamping of <c>fn:substring</c>. The result keeps the source's
+    /// language tag; a non-string source or non-numeric index errs.
+    /// </summary>
+    /// <param name="arguments">The arguments: source string, 1-based start, optional length.</param>
+    /// <returns>The substring value, or an error.</returns>
+    private static ExpressionValue Substr(ExpressionValue[] arguments)
+    {
+        if(!TryGetStringArgument(arguments[0], out Utf8String source, out Utf8String? language)
+            || arguments[1].IsError || !TryGetNumeric(arguments[1].Term, out double startValue, out _))
+        {
+            return ExpressionValue.Error;
+        }
+
+        int start = (int)Math.Round(startValue, MidpointRounding.AwayFromZero);
+        int? upperExclusive = null;
+        if(arguments.Length >= 3)
+        {
+            if(arguments[2].IsError || !TryGetNumeric(arguments[2].Term, out double lengthValue, out _))
+            {
+                return ExpressionValue.Error;
+            }
+
+            upperExclusive = start + (int)Math.Round(lengthValue, MidpointRounding.AwayFromZero);
+        }
+
+        return StringLiteral(SliceByCodePoint(source, start, upperExclusive), language);
+    }
+
+    /// <summary>Returns the code points of a UTF-8 string whose 1-based positions fall in <c>[from, upperExclusive)</c> (the whole tail when <paramref name="upperExclusive"/> is <see langword="null"/>).</summary>
+    /// <param name="source">The source UTF-8 string.</param>
+    /// <param name="from">The 1-based start position (inclusive).</param>
+    /// <param name="upperExclusive">The 1-based end position (exclusive), or <see langword="null"/> for the whole tail.</param>
+    /// <returns>The selected substring as UTF-8.</returns>
+    private static Utf8String SliceByCodePoint(Utf8String source, int from, int? upperExclusive)
+    {
+        ReadOnlySpan<byte> span = source.Span;
+        ArrayBufferWriter<byte> buffer = new();
+        int position = 0;
+        int index = 0;
+        while(index < span.Length)
+        {
+            int consumed = Rune.DecodeFromUtf8(span[index..], out _, out int width) == OperationStatus.Done ? width : 1;
+            position++;
+            if(position >= from && (upperExclusive is not int upper || position < upper))
+            {
+                buffer.Write(span.Slice(index, consumed));
+            }
+
+            index += consumed;
+        }
+
+        return new Utf8String(buffer.WrittenSpan.ToArray());
+    }
+
+    /// <summary>
+    /// Evaluates <c>STRBEFORE</c>/<c>STRAFTER</c> (§17.4.3.8/9): the part of the first argument before (or after)
+    /// the first occurrence of the second. The result keeps the first argument's language tag; a not-found match
+    /// yields the empty <c>xsd:string</c>; incompatible argument languages (the matcher tagged differently from
+    /// the source) err.
+    /// </summary>
+    /// <param name="arguments">The arguments: the source string and the substring to locate.</param>
+    /// <param name="before">Whether to return the part before the match (otherwise after).</param>
+    /// <returns>The resulting string value, or an error.</returns>
+    private static ExpressionValue StrBeforeAfter(ExpressionValue[] arguments, bool before)
+    {
+        if(!TryGetStringArgument(arguments[0], out Utf8String source, out Utf8String? language)
+            || !TryGetStringArgument(arguments[1], out Utf8String needle, out Utf8String? needleLanguage)
+            || !Compatible(language, needleLanguage))
+        {
+            return ExpressionValue.Error;
+        }
+
+        //An empty needle matches at the start: STRBEFORE yields "" (with the source's tag), STRAFTER yields the whole source.
+        if(needle.Span.Length == 0)
+        {
+            return before ? StringLiteral(EmptyText, language) : StringLiteral(source, language);
+        }
+
+        int index = source.Span.IndexOf(needle.Span);
+        if(index < 0)
+        {
+            return StringLiteral(EmptyText);
+        }
+
+        ReadOnlySpan<byte> part = before ? source.Span[..index] : source.Span[(index + needle.Span.Length)..];
+
+        return StringLiteral(new Utf8String(part.ToArray()), language);
+    }
+
+    /// <summary>
+    /// Evaluates <c>ENCODE_FOR_URI</c> (§17.4.3.5): percent-encodes a string's UTF-8 bytes, leaving the unreserved
+    /// characters (<c>ALPHA</c>/<c>DIGIT</c>/<c>-</c>/<c>_</c>/<c>.</c>/<c>~</c>) intact. The result is an
+    /// <c>xsd:string</c>; a non-string argument errs.
+    /// </summary>
+    /// <param name="argument">The string argument.</param>
+    /// <returns>The percent-encoded string value, or an error.</returns>
+    private static ExpressionValue EncodeForUri(ExpressionValue argument)
+    {
+        if(!TryGetLexicalText(argument, out Utf8String text))
+        {
+            return ExpressionValue.Error;
+        }
+
+        ReadOnlySpan<byte> hex = "0123456789ABCDEF"u8;
+        ReadOnlySpan<byte> source = text.Span;
+        ArrayBufferWriter<byte> buffer = new();
+        Span<byte> escape = stackalloc byte[3];
+        escape[0] = (byte)'%';
+        foreach(byte value in source)
+        {
+            if(IsUnreservedUriByte(value))
+            {
+                buffer.Write([value]);
+
+                continue;
+            }
+
+            escape[1] = hex[value >> 4];
+            escape[2] = hex[value & 0xF];
+            buffer.Write(escape);
+        }
+
+        return StringLiteral(new Utf8String(buffer.WrittenSpan.ToArray()));
+    }
+
+    /// <summary>Returns whether a byte is an unreserved URI character (left un-escaped by <c>ENCODE_FOR_URI</c>): ASCII letter, digit, or one of <c>- _ . ~</c>.</summary>
+    /// <param name="value">The byte to classify.</param>
+    /// <returns><see langword="true"/> when the byte is unreserved.</returns>
+    private static bool IsUnreservedUriByte(byte value)
+    {
+        return value is (>= (byte)'A' and <= (byte)'Z')
+            or (>= (byte)'a' and <= (byte)'z')
+            or (>= (byte)'0' and <= (byte)'9')
+            or (byte)'-' or (byte)'_' or (byte)'.' or (byte)'~';
+    }
+
+    /// <summary>
+    /// Evaluates <c>REGEX</c> (§17.4.3.14): whether the text matches the pattern under the optional flags. The
+    /// pattern is compiled non-backtracking (ReDoS-safe, mirroring the SHACL pattern constraint); an unparseable
+    /// or unsupported pattern, an unknown flag, or a non-string argument errs.
+    /// </summary>
+    /// <param name="arguments">The arguments: the text, the pattern, and an optional flag string.</param>
+    /// <returns>A boolean value, or an error.</returns>
+    private static ExpressionValue RegexMatch(ExpressionValue[] arguments)
+    {
+        if(!TryGetStringArgument(arguments[0], out Utf8String text, out _)
+            || !TryGetStringArgument(arguments[1], out Utf8String pattern, out _)
+            || !TryGetOptionalFlags(arguments, 2, out string? flags)
+            || !TryBuildRegex(pattern.ToString(), flags, out Regex regex))
+        {
+            return ExpressionValue.Error;
+        }
+
+        return Boolean(regex.IsMatch(text.ToString()));
+    }
+
+    /// <summary>
+    /// Evaluates <c>REPLACE</c> (§17.4.3.15): replaces every match of the pattern in the source with the
+    /// replacement (with <c>$N</c> group references), keeping the source's language tag. An unparseable or
+    /// unsupported pattern, an unknown flag, or a non-string argument errs.
+    /// </summary>
+    /// <param name="arguments">The arguments: the source, the pattern, the replacement, and an optional flag string.</param>
+    /// <returns>The replaced string value, or an error.</returns>
+    private static ExpressionValue Replace(ExpressionValue[] arguments)
+    {
+        if(!TryGetStringArgument(arguments[0], out Utf8String source, out Utf8String? language)
+            || !TryGetStringArgument(arguments[1], out Utf8String pattern, out _)
+            || !TryGetStringArgument(arguments[2], out Utf8String replacement, out _)
+            || !TryGetOptionalFlags(arguments, 3, out string? flags)
+            || !TryBuildRegex(pattern.ToString(), flags, out Regex regex))
+        {
+            return ExpressionValue.Error;
+        }
+
+        try
+        {
+            return StringLiteral(Utf8String.FromString(regex.Replace(source.ToString(), replacement.ToString())), language);
+        }
+        catch(ArgumentException)
+        {
+            //A malformed replacement (e.g. a bad $-group reference) is a value error, not a crash.
+            return ExpressionValue.Error;
+        }
+    }
+
+    /// <summary>Reads an optional trailing flag-string argument at <paramref name="index"/>, if present.</summary>
+    /// <param name="arguments">The argument values.</param>
+    /// <param name="index">The position of the optional flag argument.</param>
+    /// <param name="flags">Receives the flag string, or <see langword="null"/> when absent.</param>
+    /// <returns><see langword="true"/> when the flag argument is absent or a valid string; <see langword="false"/> when present but not a string.</returns>
+    private static bool TryGetOptionalFlags(ExpressionValue[] arguments, int index, out string? flags)
+    {
+        if(arguments.Length <= index)
+        {
+            flags = null;
+
+            return true;
+        }
+
+        if(TryGetStringArgument(arguments[index], out Utf8String flagText, out _))
+        {
+            flags = flagText.ToString();
+
+            return true;
+        }
+
+        flags = null;
+
+        return false;
+    }
+
+    /// <summary>Builds a non-backtracking <see cref="Regex"/> from a pattern and XPath flag string (<c>i</c>/<c>s</c>/<c>m</c>/<c>x</c>); a bad pattern, an unsupported construct, or an unknown flag fails.</summary>
+    /// <param name="pattern">The regex pattern.</param>
+    /// <param name="flags">The XPath flag string, or <see langword="null"/>.</param>
+    /// <param name="regex">Receives the compiled regex on success.</param>
+    /// <returns><see langword="true"/> when the regex compiled.</returns>
+    private static bool TryBuildRegex(string pattern, string? flags, out Regex regex)
+    {
+        RegexOptions options = RegexOptions.NonBacktracking | RegexOptions.CultureInvariant;
+        if(flags is not null)
+        {
+            foreach(char flag in flags)
+            {
+                RegexOptions? mapped = flag switch
+                {
+                    'i' => RegexOptions.IgnoreCase,
+                    's' => RegexOptions.Singleline,
+                    'm' => RegexOptions.Multiline,
+                    'x' => RegexOptions.IgnorePatternWhitespace,
+                    _ => null
+                };
+
+                if(mapped is not RegexOptions option)
+                {
+                    regex = null!;
+
+                    return false;
+                }
+
+                options |= option;
+            }
+        }
+
+        try
+        {
+            regex = new Regex(pattern, options);
+
+            return true;
+        }
+        catch(Exception exception) when(exception is ArgumentException or NotSupportedException)
+        {
+            regex = null!;
+
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Evaluates <c>IRI</c>/<c>URI</c> (§17.4.2.8): an IRI argument passes through; a plain-string argument becomes
+    /// an IRI of that lexical form. (Resolution of a relative IRI against the query base is a later refinement.) A
+    /// blank node, a tagged/typed literal, or an error argument errs.
+    /// </summary>
+    /// <param name="argument">The argument value.</param>
+    /// <returns>The IRI value, or an error.</returns>
+    private static ExpressionValue Iri(ExpressionValue argument)
+    {
+        if(argument.IsError)
+        {
+            return ExpressionValue.Error;
+        }
+
+        return argument.Term switch
+        {
+            NamedNode named => ExpressionValue.Of(named),
+            Literal literal when literal.Language is null && literal.Datatype.Iri == XsdString => ExpressionValue.Of(new NamedNode(literal.Value)),
+            _ => ExpressionValue.Error
+        };
+    }
+
+    /// <summary>
+    /// Evaluates <c>STRDT</c> (§17.4.2.9): builds a literal from a simple-string lexical form and an IRI datatype.
+    /// A non-simple-string first argument or a non-IRI datatype errs.
+    /// </summary>
+    /// <param name="arguments">The arguments: the lexical form (a simple string) and the datatype IRI.</param>
+    /// <returns>The typed-literal value, or an error.</returns>
+    private static ExpressionValue StrDt(ExpressionValue[] arguments)
+    {
+        if(arguments[0].IsError || arguments[1].IsError
+            || arguments[0].Term is not Literal lexical || lexical.Language is not null || lexical.Datatype.Iri != XsdString
+            || arguments[1].Term is not NamedNode datatype)
+        {
+            return ExpressionValue.Error;
+        }
+
+        return ExpressionValue.Of(new Literal(lexical.Value, datatype));
+    }
+
+    /// <summary>
+    /// Evaluates <c>STRLANG</c> (§17.4.2.10): builds a language-tagged literal from a simple-string lexical form
+    /// and a simple-string language tag. A non-simple-string argument errs.
+    /// </summary>
+    /// <param name="arguments">The arguments: the lexical form and the language tag (both simple strings).</param>
+    /// <returns>The language-tagged-literal value, or an error.</returns>
+    private static ExpressionValue StrLang(ExpressionValue[] arguments)
+    {
+        if(arguments[0].IsError || arguments[1].IsError
+            || arguments[0].Term is not Literal lexical || lexical.Language is not null || lexical.Datatype.Iri != XsdString
+            || arguments[1].Term is not Literal tag || tag.Language is not null || tag.Datatype.Iri != XsdString)
+        {
+            return ExpressionValue.Error;
+        }
+
+        return ExpressionValue.Of(new Literal(lexical.Value, new NamedNode(RdfLangString), tag.Value));
+    }
+
+    /// <summary>Extracts the UTF-8 lexical form and language tag of a string-valued argument (<c>xsd:string</c> or language-tagged); fails for an error or a non-string term.</summary>
+    /// <param name="argument">The argument value.</param>
+    /// <param name="text">Receives the UTF-8 lexical form on success.</param>
+    /// <param name="language">Receives the language tag (or <see langword="null"/> for a plain string) on success.</param>
+    /// <returns><see langword="true"/> when the argument is a string-valued literal.</returns>
+    private static bool TryGetStringArgument(ExpressionValue argument, out Utf8String text, out Utf8String? language)
+    {
+        if(!argument.IsError && argument.Term is Literal literal && (literal.Datatype.Iri == XsdString || literal.Language is not null))
+        {
+            text = literal.Value;
+            language = literal.Language;
+
+            return true;
+        }
+
+        text = EmptyText;
+        language = null;
+
+        return false;
+    }
+
+    /// <summary>Builds a string literal value: a language-tagged literal when <paramref name="language"/> is present, otherwise an <c>xsd:string</c>.</summary>
+    /// <param name="value">The UTF-8 lexical form.</param>
+    /// <param name="language">The language tag, or <see langword="null"/> for a plain string.</param>
+    /// <returns>The string-literal value.</returns>
+    private static ExpressionValue StringLiteral(Utf8String value, Utf8String? language)
+    {
+        return language is Utf8String tag
+            ? ExpressionValue.Of(new Literal(value, new NamedNode(RdfLangString), tag))
+            : StringLiteral(value);
+    }
+
+    /// <summary>Returns whether two optional language tags are the same (both absent, or both present and byte-equal).</summary>
+    /// <param name="left">The first language tag, or <see langword="null"/>.</param>
+    /// <param name="right">The second language tag, or <see langword="null"/>.</param>
+    /// <returns><see langword="true"/> when the tags match.</returns>
+    private static bool SameLanguage(Utf8String? left, Utf8String? right)
+    {
+        return left is Utf8String l && right is Utf8String r ? l == r : left is null && right is null;
+    }
+
+    /// <summary>Returns whether a matcher argument's language is compatible with a source's (§17.4.3): a plain matcher always is; a tagged matcher requires the same tag on the source.</summary>
+    /// <param name="sourceLanguage">The source argument's language tag, or <see langword="null"/>.</param>
+    /// <param name="matchLanguage">The matcher argument's language tag, or <see langword="null"/>.</param>
+    /// <returns><see langword="true"/> when the arguments are compatible.</returns>
+    private static bool Compatible(Utf8String? sourceLanguage, Utf8String? matchLanguage)
+    {
+        return matchLanguage is null || SameLanguage(sourceLanguage, matchLanguage);
     }
 
     /// <summary>Applies a unary numeric operation to a numeric argument, preserving integer typing, erring on a non-numeric argument.</summary>

@@ -455,6 +455,135 @@ internal sealed class SparqlQueryEngineTests
         Assert.IsNotNull(caught);
     }
 
+    /// <summary>CONCAT joins its string arguments' lexical forms.</summary>
+    [TestMethod]
+    public async Task ConcatJoinsStringArguments()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(new DataTriple(Iri("a"), Iri("p"), StringLiteral("hello"))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?x WHERE { ?s :p ?v BIND(CONCAT(?v, \" \", \"world\") AS ?x) }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual("hello world", LiteralValue(solutions.Single(), "x"));
+    }
+
+    /// <summary>SUBSTR takes a 1-based code-point substring of the given length.</summary>
+    [TestMethod]
+    public async Task SubstrTakesCodePointSubstring()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(new DataTriple(Iri("a"), Iri("p"), StringLiteral("hello"))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?x WHERE { ?s :p ?v BIND(SUBSTR(?v, 2, 3) AS ?x) }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual("ell", LiteralValue(solutions.Single(), "x"));
+    }
+
+    /// <summary>STRBEFORE and STRAFTER split a string at the first occurrence of the separator.</summary>
+    [TestMethod]
+    public async Task StrBeforeAndStrAfterSplitAtSeparator()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(new DataTriple(Iri("a"), Iri("p"), StringLiteral("user@host"))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate(
+            "PREFIX : <http://example.org/> SELECT ?before ?after WHERE { ?s :p ?v BIND(STRBEFORE(?v, \"@\") AS ?before) BIND(STRAFTER(?v, \"@\") AS ?after) }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        SparqlSolution solution = solutions.Single();
+        Assert.AreEqual("user", LiteralValue(solution, "before"));
+        Assert.AreEqual("host", LiteralValue(solution, "after"));
+    }
+
+    /// <summary>ENCODE_FOR_URI percent-encodes the reserved characters and leaves the unreserved ones intact.</summary>
+    [TestMethod]
+    public async Task EncodeForUriPercentEncodesReservedCharacters()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(new DataTriple(Iri("a"), Iri("p"), StringLiteral("a b/c"))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?x WHERE { ?s :p ?v BIND(ENCODE_FOR_URI(?v) AS ?x) }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual("a%20b%2Fc", LiteralValue(solutions.Single(), "x"));
+    }
+
+    /// <summary>REGEX in a FILTER keeps only the solutions whose value matches the pattern.</summary>
+    [TestMethod]
+    public async Task RegexFilterKeepsMatchingSolutions()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(
+            new DataTriple(Iri("a"), Iri("p"), StringLiteral("hello")),
+            new DataTriple(Iri("b"), Iri("p"), StringLiteral("world"))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?s WHERE { ?s :p ?v FILTER(REGEX(?v, \"^h\")) }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(Ex + "a", ValueIri(solutions.Single(), "s"));
+    }
+
+    /// <summary>REPLACE rewrites every regex match in the value.</summary>
+    [TestMethod]
+    public async Task ReplaceRewritesEveryMatch()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(new DataTriple(Iri("a"), Iri("p"), StringLiteral("hello"))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?x WHERE { ?s :p ?v BIND(REPLACE(?v, \"l\", \"L\") AS ?x) }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual("heLLo", LiteralValue(solutions.Single(), "x"));
+    }
+
+    /// <summary>IRI builds a named node from a string lexical form.</summary>
+    [TestMethod]
+    public async Task IriBuildsNamedNodeFromString()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(new DataTriple(Iri("a"), Iri("p"), StringLiteral(Ex + "z"))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?x WHERE { ?s :p ?v BIND(IRI(?v) AS ?x) }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(Ex + "z", ValueIri(solutions.Single(), "x"));
+    }
+
+    /// <summary>STRDT builds a literal with the given datatype from a simple-string lexical form.</summary>
+    [TestMethod]
+    public async Task StrDtBuildsTypedLiteral()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(new DataTriple(Iri("a"), Iri("p"), StringLiteral("42"))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate(
+            "PREFIX : <http://example.org/> PREFIX xsd: <http://www.w3.org/2001/XMLSchema#> SELECT ?x WHERE { ?s :p ?v BIND(STRDT(?v, xsd:integer) AS ?x) }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.IsTrue(solutions.Single().TryGetValue(Variable("x"), out RdfTerm value));
+        Literal literal = Cast<Literal>(value);
+        Assert.AreEqual("42", literal.Value.ToString());
+        Assert.AreEqual("http://www.w3.org/2001/XMLSchema#integer", literal.Datatype.Iri.ToString());
+    }
+
+    /// <summary>STRLANG builds a language-tagged literal from a simple-string lexical form and tag.</summary>
+    [TestMethod]
+    public async Task StrLangBuildsLanguageTaggedLiteral()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(new DataTriple(Iri("a"), Iri("p"), StringLiteral("hi"))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?x WHERE { ?s :p ?v BIND(STRLANG(?v, \"en\") AS ?x) }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.IsTrue(solutions.Single().TryGetValue(Variable("x"), out RdfTerm value));
+        Literal literal = Cast<Literal>(value);
+        Assert.AreEqual("hi", literal.Value.ToString());
+        Assert.AreEqual("en", literal.Language?.ToString());
+    }
+
     /// <summary>Builds an engine over a data graph of IRI triples under the example namespace.</summary>
     /// <param name="triples">The triples, each given as local names completed with the example prefix.</param>
     /// <returns>An engine over the graph.</returns>
