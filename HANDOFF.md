@@ -288,18 +288,19 @@ Aggregate)`; `AggregateJoin(AlgebraOperator Input /* a Group */, IReadOnlyList<A
   stays Path, nested `(:a/^:b)|:c+` mixes Join/swap/Union + closure leaf, 20k-step seq no-overflow); the old
   "carried whole into Path" test was replaced. Build clean; full suite at exactly 50 ShaclValidate failures, 0 new.
 
-▶ **NEXT AFTER A CLEAR:** HEAD `de58edf`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
+▶ **NEXT AFTER A CLEAR:** HEAD `d0bffff`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
 unchanged baseline, 0 new). **Milestone B (AST→algebra translation) is COMPLETE; Milestone C (the executor) is
-UNDERWAY — slice 1 done (`de58edf`).** `Sparql/Execution/SparqlQueryEngine` now executes BGP SELECT/ASK end-to-end
-(parse→normalize→translate→execute) via the encoding bridge + the WCOJ engine; see the MILESTONE C — EXECUTOR
-KICKOFF anchor below for the substrate map and the 6-slice plan (slice 1 ✅). **IMMEDIATE NEXT = slice 2:**
-solution-sequence operators that need no expression evaluation — `Join` (non-BGP, solution merge-join on shared
-vars), `Union`, `Minus`, `ToMultiSet`/`ToList`, trailing `Table` (VALUES) — added to `SparqlQueryEngine`'s
-`Combine`/leaf dispatch (iterative, no recursion). Then slice 3 = the expression evaluator + `Filter`/`Extend`/
-`LeftJoin`-condition/`OrderBy`. ⚠ Engine entry name / result model / streaming stay **provisional pending impl-spec
-§5.1/§7** — but the bridge + solution model are spec-independent, so slices 2–4 can proceed on convention. The
-property-path `Path`-leaf closure (slice 5) reuses `Rdf.PropertyPathEvaluator` + the native pair-aware closure
-(PROPERTY-PATH plan items 2–4 below). The trace-bus extensions ([[project_trace_bus_extensions]]) ride alongside. Deep-nesting
+UNDERWAY — slices 1–2 done (`de58edf`, `d0bffff`).** `Sparql/Execution/SparqlQueryEngine` now executes BGP +
+JOIN/UNION/MINUS + sub-SELECT SELECT/ASK end-to-end (parse→normalize→translate→execute); see the MILESTONE C —
+EXECUTOR KICKOFF anchor below for the substrate map and the 6-slice plan (slices 1–2 ✅). **IMMEDIATE NEXT = slice
+3: the expression evaluator** — an iterative (no-recursion) `ExpressionNode` → value evaluator (effective boolean
+value, type coercion, the built-in function set; reuse the `ExpressionWalker` shape) — then wire `Filter`,
+`Extend` (BIND), the `LeftJoin` condition (OPTIONAL), and `OrderBy`. Fold in the small deferred `Table` (VALUES →
+solutions, UNDEF handling) here too. Then slice 4 = aggregation, slice 5 = `Path`-leaf closure + `Graph`/`Service`,
+slice 6 = wire SHACL `sh:sparql`. **No external spec needed: consult the online W3C SPARQL 1.2 spec for semantics
+(§17 Expressions, §18.6 evaluation), the codebase for C# conventions.** The property-path `Path`-leaf closure
+(slice 5) reuses `Rdf.PropertyPathEvaluator` + the native pair-aware closure (PROPERTY-PATH plan items 2–4 below).
+The trace-bus extensions ([[project_trace_bus_extensions]]) ride alongside. Deep-nesting
 tests guard the iterative pipeline (20k nested groups, 10k nested collections, 2k nested sub-SELECTs, 50k Join
 OutputVariables/Transform, 50k-deep aggregate expression, 20k-step sequence path). Relevant memory:
 [[feedback_no_recursion]], [[project_sparql_algebra_design]], [[project_sparql_reified_triple_no_assert]],
@@ -330,7 +331,11 @@ need to first classify which of the 50 baseline failures are SPARQL- vs core-SHA
    name / result model / streaming are **provisional pending §7** — the bridge + solution model are spec-independent.
    *(Note: `Join`-of-BGP merge into one `BasicGraphPattern` was NOT needed for this slice — the translator already
    merges consecutive plain triples into one `Bgp`; cross-operator `Join` is slice 2.)*
-2. **Solution-sequence operators** that don't need expressions: `Join` (non-BGP, solution merge-join on shared vars), `Union`, `Minus`, `ToMultiSet`/`ToList`, trailing `Table` (VALUES). Iterative, no recursion.
+2. ✅ **DONE (`d0bffff`) — Solution-sequence operators** that don't need expressions: `Join` (compatible merge-join),
+   `Union` (multiset, left-before-right), `Minus` (with the disjoint-domain exception — remove only when compatible
+   AND shares a variable), `ToMultiSet`/`ToList` (sub-SELECT / passthrough). Helpers `AreCompatible`/`SharesVariable`/
+   `Merge`. 3 tests (UNION, MINUS, sub-SELECT Join). **Still deferred to a later slice: trailing `Table` (VALUES)** —
+   needs the `ValuesClause` → solutions conversion (UNDEF handling); small, do with slice 3.
 3. **Expression evaluator** (`ExpressionNode` → value; effective boolean value, type coercion, the built-in fn set) — then `Filter`, `Extend` (BIND), `LeftJoin` condition, `OrderBy`. This is the big sub-component.
 4. **Aggregation** evaluation: `Group` partition + `AggregateJoin` (COUNT/SUM/MIN/MAX/AVG/SAMPLE/GROUP_CONCAT, DISTINCT) over the rewritten projections.
 5. **`Path`-leaf closure** evaluation via `PropertyPathEvaluator` + the native pair-aware closure (PROPERTY-PATH plan items 2–4); **`Graph`** (named-graph redirection) + **`Service`** (defer/stub).
