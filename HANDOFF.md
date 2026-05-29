@@ -290,16 +290,21 @@ Aggregate)`; `AggregateJoin(AlgebraOperator Input /* a Group */, IReadOnlyList<A
 
 ▶ **NEXT AFTER A CLEAR:** HEAD `81500b4`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
 unchanged baseline, 0 new). **Milestone B (AST→algebra translation) is COMPLETE; Milestone C (the executor) is
-UNDERWAY — slices 1, 2, 3a, 3b, 3c done (`de58edf`, `d0bffff`, `497e9db`, `0baf32a`, `81500b4`).**
+UNDERWAY — slices 1–4 done (`de58edf`, `d0bffff`, `497e9db`, `0baf32a`, `81500b4`, UTF-8 rework `34bed22`, aggregation `0b3f9c8`).**
 `Sparql/Execution/SparqlQueryEngine` now executes BGP + JOIN/UNION/MINUS + FILTER + BIND + OPTIONAL + ORDER BY +
 inline VALUES + sub-SELECT SELECT/ASK end-to-end (parse→normalize→translate→execute), with
 `SparqlExpressionEvaluator` (logical/comparison/arithmetic/IF/COALESCE/IN + a core built-in function set) for the
 expression-gated operators; see the MILESTONE C — EXECUTOR KICKOFF anchor below (slices 1–2 ✅, 3a–3c ✅).
-**IMMEDIATE NEXT = slice 4: aggregation** (`Group`/`AggregateJoin` evaluation — COUNT/SUM/MIN/MAX/AVG/SAMPLE/
-GROUP_CONCAT, with DISTINCT, over the translator's fresh `.aggN` result vars). Then slice 5 = `Path`-leaf closure +
-`Graph`/`Service`, slice 6 = wire SHACL `sh:sparql`. **Deferred (slice 3d, lower priority): the function-library
-tail (REGEX/SUBSTR/CONCAT/date/hash/…) + named functions + `EXISTS`/`NOT EXISTS` (engine re-entry).**
-**No external spec needed: consult the online W3C SPARQL 1.2 spec for semantics, the codebase for C# conventions.** **No external spec needed: consult the online W3C SPARQL 1.2
+**IMMEDIATE NEXT = slice 5: property-path `Path`-leaf evaluation** (the four opaque leaves `PathZeroOrMore`/
+`PathOneOrMore`/`PathZeroOrOne`/`PathNegatedSet` — resolve `IriRef`→`IriId` against the engine's `TermDictionary`,
+build the `Rdf.PropertyPath`, and evaluate via `Rdf.PropertyPathEvaluator` over `store.AsMatchOps()`; the both-var
+binding mode needs the native pair-aware closure — PROPERTY-PATH plan items 2–4 below) + **`Graph`** (named-graph
+redirection) / **`Service`** (defer or stub). Then slice 6 = wire SHACL `sh:sparql`. **Deferred (slice 3d, lower
+priority): the function-library tail (REGEX/SUBSTR/CONCAT/date/hash/…) + named functions + `EXISTS`/`NOT EXISTS`
+(engine re-entry).** Slice 4 (aggregation, `0b3f9c8`) and the slice-3c UTF-8 string rework (`34bed22`) are done.
+**No external spec needed: consult the online W3C SPARQL 1.2 spec for semantics, the codebase for C# conventions.**
+Build/test as SEPARATE PowerShell calls ([[feedback_build_test_command_shape]]): `dotnet build … -clp:ErrorsOnly
+--nologo` and `& "test\…\Lumoin.Veritas.Tests.exe" … 2>&1 | …` (no `cd`, no `$out =`). **No external spec needed: consult the online W3C SPARQL 1.2
 spec for semantics (§16 Query Forms, §17 Expressions, §18.6 evaluation), the codebase for C# conventions.** The
 property-path `Path`-leaf closure (slice 5) reuses `Rdf.PropertyPathEvaluator` + the native pair-aware closure
 (PROPERTY-PATH plan items 2–4 below). The trace-bus extensions ([[project_trace_bus_extensions]]) ride alongside. Deep-nesting
@@ -354,7 +359,13 @@ need to first classify which of the 50 baseline failures are SPARQL- vs core-SHA
    `SparqlQueryEngine` with the EXISTS pattern's algebra under the current solution — give the evaluator an
    engine/delegate handle + substitute the solution's bindings into the pattern). Numeric is double-based
    (integer-only arithmetic → xsd:integer, else xsd:double); full decimal/precision typing is a refinement.
-4. **Aggregation** evaluation: `Group` partition + `AggregateJoin` (COUNT/SUM/MIN/MAX/AVG/SAMPLE/GROUP_CONCAT, DISTINCT) over the rewritten projections.
+4. ✅ **DONE (`0b3f9c8`) — Aggregation** evaluation: `SparqlExpressionEvaluator.EvaluateAggregate`
+   (COUNT/COUNT(*)/SUM/AVG/MIN/MAX/SAMPLE/GROUP_CONCAT, DISTINCT; empty-set/non-numeric → unbound; GROUP_CONCAT
+   UTF-8-native); engine evaluates `Group` (passthrough) + `AggregateJoin` (partition by keys, one solution/group;
+   implicit group always yields one group so COUNT(*)-over-empty = 0). 4 tests. **Also landed this session: the
+   slice-3c string handling was reworked UTF-8-native (`34bed22`)** — comparison/predicates/ordering over
+   `Utf8String` bytes (codepoint order, zero-alloc, astral-correct), UCASE/LCASE via runes (CA1308 suppression
+   removed), STRLEN by code point; see [[feedback_utf8string_no_roundtrip]].
 5. **`Path`-leaf closure** evaluation via `PropertyPathEvaluator` + the native pair-aware closure (PROPERTY-PATH plan items 2–4); **`Graph`** (named-graph redirection) + **`Service`** (defer/stub).
 6. **Wire SHACL `sh:sparql`** to the engine → start closing the 50 ShaclValidate baseline failures.
 **Cross-cuts:** thread the `traceHandler`/`correlationId` (the side-channel) through; carry `Witnesses` for provenance; everything iterative ([[feedback_no_recursion]]).
