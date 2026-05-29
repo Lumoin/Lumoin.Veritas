@@ -45,7 +45,9 @@ namespace Lumoin.Veritas.Shacl.Validation;
 /// and validates every <c>(shape, focus)</c> pair. A pair conforms
 /// (§3.6,
 /// <a href="https://www.w3.org/TR/shacl12-core/#results-conforms">Conformance</a>)
-/// when no <see cref="Severity.Violation"/> result is produced for it.
+/// when no validation result of any severity is produced for it —
+/// <c>sh:conforms</c> is the absence of results, not the absence of
+/// violations; severity is advisory metadata on each result.
 /// </para>
 /// <para>
 /// <b>Iteration, not recursion.</b> Shape-referencing constraints
@@ -132,14 +134,13 @@ public static class ShaclValidator
                 break;
             }
 
-            if(result.Severity == Severity.Violation)
-            {
-                conforms = false;
-            }
-
+            //SHACL 1.2 Core §3.6: the report conforms iff the validation produced no validation results at all —
+            //any result, of any severity (Violation, Warning, or Info), makes it non-conforming. Severity is
+            //advisory metadata on each result and does not factor into sh:conforms.
+            conforms = false;
             collected.Add(result);
 
-            if(result.Severity == Severity.Violation && effectiveOptions.FailFast)
+            if(effectiveOptions.FailFast)
             {
                 break;
             }
@@ -774,7 +775,6 @@ public static class ShaclValidator
             }
 
             ImmutableArray<ValidationResult>.Builder builder = ImmutableArray.CreateBuilder<ValidationResult>();
-            bool conforms = true;
 
             foreach(ConstraintComponent constraint in shape.Constraints)
             {
@@ -830,11 +830,6 @@ public static class ShaclValidator
                         traceHandler(in evt);
                     }
 
-                    if(result.Severity == Severity.Violation)
-                    {
-                        conforms = false;
-                    }
-
                     builder.Add(result);
                 }
 
@@ -855,9 +850,10 @@ public static class ShaclValidator
                 }
             }
 
+            //§3.6: the pair conforms iff it produced no results (any severity), not only on violations.
             return new ValidationReport
             {
-                Conforms = conforms,
+                Conforms = builder.Count == 0,
                 Results = builder.ToImmutable(),
             };
         }

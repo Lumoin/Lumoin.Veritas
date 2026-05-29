@@ -25,7 +25,12 @@ namespace Lumoin.Veritas.Shacl.Validation.Evaluators;
 /// <see cref="Severity.Violation"/> would mislead consumers into
 /// thinking real data failures were present; emitting no result at all
 /// would silently skip the constraint. <see cref="Severity.Info"/>
-/// makes the omission visible without distorting the conformance flag.
+/// makes the omission visible. Note that under SHACL §3.6 any result —
+/// including this Info — makes the report non-conforming, so an
+/// unimplemented constraint correctly forces <c>sh:conforms = false</c>
+/// (the validator did not establish conformance) rather than silently
+/// passing. With the Core component set now fully implemented this
+/// evaluator is reached only for genuinely unregistered components.
 /// </para>
 /// <para>
 /// <b>Not a conformance failure.</b> SHACL 1.2 §4.8 says a conforming

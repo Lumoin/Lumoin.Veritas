@@ -84,8 +84,8 @@ internal sealed class ShaclValidatorTests
             VeritasClock.System,
             cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
-        //Info severity; conformance unaffected.
-        Assert.IsTrue(report.Conforms);
+        //sh:conforms is the absence of any result (§3.6), so one Info result ⇒ Conforms == false.
+        Assert.IsFalse(report.Conforms);
         Assert.HasCount(1, report.Results);
 
         ValidationResult result = report.Results[0];
@@ -415,8 +415,8 @@ internal sealed class ShaclValidatorTests
             options,
             cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
-        //Info results don't flip conforms; we just observe the cap.
-        Assert.IsTrue(report.Conforms);
+        //This test pins the MaxResults cap; Conforms is false because results were produced (§3.6).
+        Assert.IsFalse(report.Conforms);
         Assert.HasCount(2, report.Results);
     }
 
@@ -457,7 +457,8 @@ internal sealed class ShaclValidatorTests
             options,
             cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
-        Assert.IsTrue(report.Conforms);
+        //This test pins the trace-event sequence; Conforms is false because a result was produced (§3.6).
+        Assert.IsFalse(report.Conforms);
         Assert.HasCount(1, report.Results);
 
         Assert.HasCount(4, events);

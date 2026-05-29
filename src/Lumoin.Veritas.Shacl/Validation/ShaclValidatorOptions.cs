@@ -32,8 +32,10 @@ public sealed record ShaclValidatorOptions
 
     /// <summary>
     /// When <c>true</c>, the validator halts as soon as the first
-    /// <see cref="Severity.Violation"/> result is produced. Useful for
-    /// CI gates that only care whether the data conforms at all.
+    /// validation result is produced — of any severity. Since
+    /// <c>sh:conforms</c> is the absence of <em>any</em> result (SHACL §3.6),
+    /// the first result already settles conformance. Useful for CI gates
+    /// that only care whether the data conforms at all.
     /// </summary>
     public bool FailFast { get; init; }
 

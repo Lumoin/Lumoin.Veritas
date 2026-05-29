@@ -10,8 +10,9 @@ namespace Lumoin.Veritas.Tests.Shacl;
 /// <summary>
 /// Tests for <see cref="ReifierShapeEvaluator"/>. The evaluator is a
 /// stub pending RDF 1.2 triple-term plumbing; it must emit a
-/// single <see cref="Severity.Info"/> result per invocation, leave
-/// <see cref="ValidationReport.Conforms"/> intact, and never throw.
+/// single <see cref="Severity.Info"/> result per invocation and never
+/// throw. Per SHACL §3.6 that Info result, like any result, makes the
+/// report non-conforming.
 /// </summary>
 [TestClass]
 internal sealed class ReifierShapeEvaluatorTests
@@ -43,17 +44,14 @@ internal sealed class ReifierShapeEvaluatorTests
     }
 
     [TestMethod]
-    public async Task ReifierShapeStubDoesNotBreakConformance()
+    public async Task ReifierShapeStubInfoResultMakesReportNonConforming()
     {
-        //Severity.Info results don't affect Conforms, per the
-        //NotImplementedEvaluator convention. This test pins that
-        //behavior so a future regression that promotes the stub to
-        //Violation is caught.
+        //sh:conforms is the absence of any result (§3.6), so the stub's one Info result ⇒ Conforms == false.
         (ValidationReport report, ValidationTrace trace) = await RunAsync(
             TestContext.CancellationToken).ConfigureAwait(false);
 
-        Assert.IsTrue(report.Conforms,
-            $"Info-severity stub result must not flip Conforms to false. Trace:\n{trace}");
+        Assert.IsFalse(report.Conforms,
+            $"A produced result (any severity) makes Conforms false under §3.6. Trace:\n{trace}");
     }
 
     //Helper. Builds a property shape with sh:reifierShape pointing
