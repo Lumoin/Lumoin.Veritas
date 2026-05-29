@@ -279,15 +279,50 @@ Aggregate)`; `AggregateJoin(AlgebraOperator Input /* a Group */, IReadOnlyList<A
 unchanged baseline, 0 new). The AST→algebra translator is now COMPLETE for SPARQL 1.2 core: groups/modifiers
 (`1eafdc5`), property-path *pattern* translation (`71e995f`), sub-`SELECT`→`ToMultiSet` (`79b9447`), and the full
 aggregation translation (`0057e17`). The only remaining Milestone-B translation item is **property-path form
-*lowering*** — the `Path` operator carries the structured `PropertyPathExpression` whole (seq/alt/inv, `*`/`+`/`?`,
-NPS); decomposing those forms into joins/unions/swaps and defining the `*`/`+`/`?`/negated-set *evaluation*
-semantics is still open and is **likely an evaluation-time concern (Milestone C), not a pure AST→algebra rewrite** —
-confirm against §18.2.2.4 / the path-eval section before deciding whether it belongs in the translator or the
-executor. After that, Milestone B's translation surface is done; the next big piece is the executor / hypertrie
-backend (Milestone C). **Re-paste the impl spec's relevant § (path eval, §5.1) if available.** Deep-nesting tests
-guard the iterative pipeline (20k nested groups, 10k nested collections, 2k nested sub-SELECTs, 50k Join
-OutputVariables/Transform, 50k-deep aggregate expression). Relevant memory: [[feedback_no_recursion]],
-[[project_sparql_algebra_design]], [[project_sparql_reified_triple_no_assert]]. Build/test commands below.
+*lowering*** — see the LOCKED plan immediately below. After that, Milestone B's translation surface is done; the
+next big piece is the executor / hypertrie backend (Milestone C). Deep-nesting tests guard the iterative pipeline
+(20k nested groups, 10k nested collections, 2k nested sub-SELECTs, 50k Join OutputVariables/Transform, 50k-deep
+aggregate expression). Relevant memory: [[feedback_no_recursion]], [[project_sparql_algebra_design]],
+[[project_sparql_reified_triple_no_assert]], [[project_trace_bus_extensions]]. Build/test commands below.
+
+### ⏵ PROPERTY-PATH LOWERING — PLAN (design-locked 2026-05-29; confirm shapes vs. §18.2.2.5 if the impl spec is to hand)
+
+Decided after studying the existing substrate (`Rdf.PropertyPathEvaluator` + the leapfrog `TriejoinIterator` +
+the `Core/Diagnostics` trace bus). **The split is principled, not a compromise:** relational path forms go to the
+trie side (optimizer-visible, pushdown-friendly, pairing-preserving), only the inherently-fixpoint forms stay
+opaque and call the closure oracle.
+
+1. **Translate-time decomposition (a pure AST→algebra rewrite — belongs in `SparqlTranslator`, NOT the executor).**
+   The parser already collapses a single link to a `ConstantTerm`, so a `PropertyPathTerm` is always a genuinely
+   complex path. Decompose a path *pattern* `X path Y` (must be **iterative**, work-stack, no recursion —
+   [[feedback_no_recursion]], mirroring `TranslatePattern`):
+   - `seq(P1,P2)` → fresh internal var `V`; `Join(translate(X,P1,V), translate(V,P2,Y))`.
+   - `inv(P)` → translate `(Y, P, X)` (endpoint swap).
+   - **`alt(P,Q)` → `Union(translate(X,P,Y), translate(X,Q,Y))`** (LOCKED — distributes over both endpoints
+     regardless of branch shape; this is distinct from a negated set, which the AST already separates as
+     `PathNegatedSet`, NOT `PathAlternative`). So **all of seq/inv/alt decompose**, and ONLY these four stay as
+     `Path` leaves: `PathZeroOrMore`, `PathOneOrMore`, `PathZeroOrOne`, `PathNegatedSet`.
+   - **Fresh seq vars** use the collision-free internal-name convention (a leading `.`, as `.aggN` does — e.g.
+     `.pathN`); they must be filtered from `SELECT *` scope (the `VisibleVariables` / `ProjectionVariables`
+     collectors skip `.`-prefixed names — add that filter when this lands, since seq vars are real BGP join vars).
+2. **Evaluation of the remaining `Path` leaves = Milestone C (executor), reusing `Rdf.PropertyPathEvaluator`** (the
+   iterative set-at-a-time BFS closure). Binding modes: X-bound/Y-var → forward `EvaluateAsync(X)`; X-var/Y-bound →
+   `EvaluateAsync(Y, inv)`; both-bound → forward + membership test; **both-var → needs (start, reached) PAIRS**,
+   which the current flat-`HashSet` API erases.
+3. **Add a native pair-aware closure to `Rdf.PropertyPathEvaluator`** rather than wrapping per-seed at the SPARQL
+   level (per-seed wrapping throws away the batch predicate-rooted descent — near-quadratic on small-world graphs).
+   Shape: a **semantic value type, not a raw tuple** (the user's call — zero perf cost vs. `ValueTuple<TermId,TermId>`,
+   but named fields and, crucially, room to later hang a provenance/witness handle for the trace/OWL-justification
+   plan; a tuple leaks arity and can't grow). Working name `readonly record struct PathPair(TermId Start, TermId
+   Reached)` (bikeshed the name). **The existing flat-set API becomes a projection of the pair API** (`.Reached`,
+   deduped) — one closure implementation, a pairing mode toggled by need; SHACL keeps the cheap set path.
+   **OWL reuses the same pair-aware closure** (subPropertyOf/subClassOf/TransitiveProperty = `+`/`*`,
+   propertyChainAxiom = `seq`, inverseOf = `inv`, SymmetricProperty = `p|^p`) — it needs the pairs to materialise
+   `(a,q,b)`, so pairing MUST be native or SPARQL and OWL both re-write the wrapper.
+4. **Pushdown (Parquet/DB) reinforces all of the above:** the seam is `GraphMatchOps.MatchTriplesBySubjects(set,
+   predicate,…)` — set-at-a-time + encoded `TermId`/`IriId` (→ Parquet dictionary pages). A *decomposed* path
+   becomes BGP triples a backend can semijoin into one scan; an *opaque* whole-path operator can only be evaluated
+   engine-side with per-step pushdown. So decomposition is the pushdown-friendly choice too.
 
 **PERMISSIONS NOTE:** test runs are allowlisted by a *prefix* rule in `.claude/settings.local.json`
 (`PowerShell(& "test\\…\\Lumoin.Veritas.Tests.exe" *)` + the Bash twin). Run tests as
@@ -309,10 +344,10 @@ re-prompt. The old accumulation of ~25 exact per-filter test rules was pruned.
 **STILL OPEN (Milestone B remainder) — done so far: group/modifier translator (`1eafdc5`), property-path *pattern*
 translation (`71e995f`), `AlgebraWalker` (`86d8245`), sub-`SELECT` → `ToMultiSet` (`79b9447`), aggregation
 *operators* scaffold (`379b36e`), aggregation *translation* (`0057e17`). What remains:** only **property-path form
-*lowering*** — the `Path` operator carries the structured path expression whole (`71e995f`); decomposing
-seq/alt/inverse into joins/unions/swaps and defining the `*`/`+`/`?`/negated-set evaluation semantics is still open
-(likely an evaluation-time concern — Milestone C). Scope: full SPARQL 1.2 core, not a SHACL-minimal subset. If §5.1
-prescribes a different layout/naming, the scaffold is cheap to adjust.
+*lowering*** — now design-locked (see the PROPERTY-PATH LOWERING — PLAN block above): translate-time decompose
+`seq`→Join(fresh var) / `inv`→swap / `alt`→Union, keep `*`/`+`/`?`/NPS as `Path` leaves; their *evaluation* (incl.
+native pair-aware closure for the both-var mode, reused by OWL) is Milestone C. Scope: full SPARQL 1.2 core, not a
+SHACL-minimal subset.
 
 **Build/test (MTP — `dotnet test` does NOT work; exact commands that worked all session):**
 - Build: `dotnet build src/Lumoin.Veritas.Sparql/Lumoin.Veritas.Sparql.csproj -clp:ErrorsOnly --nologo`,
