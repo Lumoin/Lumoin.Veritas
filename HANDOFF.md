@@ -288,17 +288,18 @@ Aggregate)`; `AggregateJoin(AlgebraOperator Input /* a Group */, IReadOnlyList<A
   stays Path, nested `(:a/^:b)|:c+` mixes Join/swap/Union + closure leaf, 20k-step seq no-overflow); the old
   "carried whole into Path" test was replaced. Build clean; full suite at exactly 50 ShaclValidate failures, 0 new.
 
-▶ **NEXT AFTER A CLEAR:** HEAD `497e9db`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
+▶ **NEXT AFTER A CLEAR:** HEAD `0baf32a`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
 unchanged baseline, 0 new). **Milestone B (AST→algebra translation) is COMPLETE; Milestone C (the executor) is
-UNDERWAY — slices 1, 2, 3a done (`de58edf`, `d0bffff`, `497e9db`).** `Sparql/Execution/SparqlQueryEngine` now
-executes BGP + JOIN/UNION/MINUS + FILTER + BIND + OPTIONAL + sub-SELECT SELECT/ASK end-to-end
-(parse→normalize→translate→execute), with `SparqlExpressionEvaluator` for the expression-gated operators; see the
-MILESTONE C — EXECUTOR KICKOFF anchor below (slices 1–2 ✅, slice 3a ✅). **IMMEDIATE NEXT = slice 3b:** `OrderBy`
-(SPARQL total ordering — unbound < blank < IRI < literal, then by value), the inline `Table` (VALUES → solutions,
-UNDEF), and the built-in **function library** (`FunctionCallExpression`/`BuiltInCallExpression` — STR/LANG/DATATYPE/
-sameTerm/isIRI/regex/string/numeric/date/hash…) + `EXISTS`/`NOT EXISTS` (evaluate a graph pattern — engine
-re-entry). Then slice 4 = aggregation (`Group`/`AggregateJoin` evaluation), slice 5 = `Path`-leaf closure +
-`Graph`/`Service`, slice 6 = wire SHACL `sh:sparql`. **No external spec needed: consult the online W3C SPARQL 1.2
+UNDERWAY — slices 1, 2, 3a, 3b done (`de58edf`, `d0bffff`, `497e9db`, `0baf32a`).** `Sparql/Execution/SparqlQueryEngine`
+now executes BGP + JOIN/UNION/MINUS + FILTER + BIND + OPTIONAL + ORDER BY + inline VALUES + sub-SELECT SELECT/ASK
+end-to-end (parse→normalize→translate→execute), with `SparqlExpressionEvaluator` for the expression-gated operators;
+see the MILESTONE C — EXECUTOR KICKOFF anchor below (slices 1–2 ✅, 3a–3b ✅). **IMMEDIATE NEXT = slice 3c:** the
+built-in **function library** (`FunctionCallExpression`/`BuiltInCallExpression` in `SparqlExpressionEvaluator` —
+STR/LANG/DATATYPE/sameTerm/isIRI/isBlank/isLiteral/isNumeric/STRLEN/UCASE/LCASE/CONTAINS/STRSTARTS/STRENDS/REGEX/
+numeric/…) + `EXISTS`/`NOT EXISTS` (the evaluator calls back into `SparqlQueryEngine` with the EXISTS pattern's
+algebra under the current solution — needs a small engine handle on the evaluator or a delegate seam). Then slice 4
+= aggregation (`Group`/`AggregateJoin` evaluation), slice 5 = `Path`-leaf closure + `Graph`/`Service`, slice 6 =
+wire SHACL `sh:sparql`. **No external spec needed: consult the online W3C SPARQL 1.2
 spec for semantics (§16 Query Forms, §17 Expressions, §18.6 evaluation), the codebase for C# conventions.** The
 property-path `Path`-leaf closure (slice 5) reuses `Rdf.PropertyPathEvaluator` + the native pair-aware closure
 (PROPERTY-PATH plan items 2–4 below). The trace-bus extensions ([[project_trace_bus_extensions]]) ride alongside. Deep-nesting
@@ -341,11 +342,14 @@ need to first classify which of the 50 baseline failures are SPARQL- vs core-SHA
    `Execution/SparqlExpressionEvaluator` (bottom-up iterative, no recursion; §17 operator mapping / EBV / error
    propagation) covers constants, variables, BOUND, logical (3-valued), comparison (numeric/boolean/string/term),
    arithmetic, IF, COALESCE, IN/NOT IN; API `Satisfies` (FILTER / OPTIONAL condition) + `TryEvaluate` (BIND). Engine
-   wires `Filter`/`Extend`/`LeftJoin`. **Slice 3b STILL OPEN:** `OrderBy` (needs SPARQL total ordering: unbound <
-   blank < IRI < literal, then by value), the inline `Table` (VALUES → solutions, UNDEF handling), and the built-in
-   **function library** (`FunctionCallExpression`/`BuiltInCallExpression` — STR/LANG/DATATYPE/sameTerm/isIRI/regex/
-   string/numeric/date/hash…) + `EXISTS`/`NOT EXISTS` (evaluate a graph pattern — needs engine re-entry). Numeric is
-   double-based (integer-only arithmetic → xsd:integer, else xsd:double); full decimal/precision typing is a refinement.
+   wires `Filter`/`Extend`/`LeftJoin`. **Slice 3b DONE (`0baf32a`):** `OrderBy` (SPARQL §15.1 total ordering —
+   unbound < blank < IRI < literal, then by value, via `SparqlExpressionEvaluator.CompareForOrdering`; stable
+   multi-key sort) + the inline `Table` (VALUES → solutions, UNDEF = null row entry). **Slice 3c STILL OPEN:** the
+   built-in **function library** (`FunctionCallExpression`/`BuiltInCallExpression` — STR/LANG/DATATYPE/sameTerm/
+   isIRI/isBlank/isLiteral/isNumeric/regex/string/numeric/date/hash…) + `EXISTS`/`NOT EXISTS` (evaluate a graph
+   pattern — needs engine re-entry: the evaluator must call back into `SparqlQueryEngine` with the EXISTS pattern's
+   algebra under the current solution). Numeric is double-based (integer-only arithmetic → xsd:integer, else
+   xsd:double); full decimal/precision typing is a refinement.
 4. **Aggregation** evaluation: `Group` partition + `AggregateJoin` (COUNT/SUM/MIN/MAX/AVG/SAMPLE/GROUP_CONCAT, DISTINCT) over the rewritten projections.
 5. **`Path`-leaf closure** evaluation via `PropertyPathEvaluator` + the native pair-aware closure (PROPERTY-PATH plan items 2–4); **`Graph`** (named-graph redirection) + **`Service`** (defer/stub).
 6. **Wire SHACL `sh:sparql`** to the engine → start closing the 50 ShaclValidate baseline failures.
