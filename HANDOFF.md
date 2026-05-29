@@ -301,7 +301,30 @@ the impl spec's §5.1 / executor design + §7 `ExecuteAsync` contract before sta
 tests guard the iterative pipeline (20k nested groups, 10k nested collections, 2k nested sub-SELECTs, 50k Join
 OutputVariables/Transform, 50k-deep aggregate expression, 20k-step sequence path). Relevant memory:
 [[feedback_no_recursion]], [[project_sparql_algebra_design]], [[project_sparql_reified_triple_no_assert]],
-[[project_trace_bus_extensions]]. Build/test commands below.
+[[project_trace_bus_extensions]]. Build/test commands below. **Ordering decided (user, 2026-05-29): build the FULL
+SPARQL executor first, THEN attack the SHACL conformance failures — the executor is the SHACL-SPARQL unlock, no
+need to first classify which of the 50 baseline failures are SPARQL- vs core-SHACL.**
+
+### ⏵ MILESTONE C — EXECUTOR KICKOFF (substrate mapped 2026-05-29; ⚠ confirm impl-spec §5.1 layout + §7 `ExecuteAsync` contract before fixing the PUBLIC surface — the bridge/solution model below is spec-independent and safe to build now)
+
+**Substrate that already exists (read these first — the executor wires them together, it does not reinvent them):**
+- **BGP evaluation (WCOJ):** `HypertrieGraphStore.Query(BasicGraphPattern, TimeProvider, planner?, accessControl?, accessContext?, traceHandler?, correlationId?, …)` → `IAsyncEnumerable<Solution>` (`Core/Hypertrie/HypertrieGraphStore.cs:346`), backed by `BasicGraphPatternEvaluator` (iterative leapfrog triejoin + `Planner` + `LeapfrogIntersection`). Default planner `Planners.FirstOccurrence(query)`.
+- **Solution model (encoded):** `Solution` (`Core/Hypertrie/Execution/Solution.cs`) = `IReadOnlyList<VariableBinding>` (`VariableBinding(Variable, TermId)`) + optional `Witnesses` (`IReadOnlyList<EmittedQuad>?` — **provenance: the triples that produced the answer**, for proof-system witness assembly; wire this into [[project_trace_bus_extensions]] / signing later). `Solution.TryGetValue(Variable, out TermId)`.
+- **Term dictionary (the bridge):** `Core/TermDictionary.cs` — `GetOrAdd(RdfTerm)→TermId`, `GetIdOrDefault(RdfTerm)→TermId|None` (a constant absent from the dict ⇒ BGP yields nothing), and decode back (`Quad.Encode/Decode(TermDictionary)`). `TermId.Encoded` (uint) / `TermId.FromEncoded`. `EncodedTriple.FromEncoded(uint,uint,uint)`.
+- **Encoded query types (`Core/Hypertrie/Query/`):** `BasicGraphPattern(IReadOnlyList<TriplePattern>, VariableRegistry)`; `TriplePattern(PatternPosition Subject, Predicate, Object)`; `PatternPosition.Bound(TermId)` / `PatternPosition.OfVariable(Variable)`; `Variable(int Id)`; `VariableRegistry.GetOrAdd(string name)→Variable`.
+- **Store build:** `HypertrieGraphStore.BuildAsync(IEnumerable<EncodedTriple>, VeritasHashing.Default, ct)`. `AsMatchOps()` → `GraphMatchOps` for the path evaluator.
+- **Property paths:** `Rdf.PropertyPathEvaluator.EvaluateAsync(start, Rdf.PropertyPath, GraphMatchOps, ct)` / `EvaluateFromSetAsync(starts,…)` — forward set-at-a-time BFS closure (see items 2–4 of the PROPERTY-PATH plan below for the binding-mode wrapper + native pair-aware closure needed for SPARQL both-var + OWL).
+
+**The bridge (spec-independent, build first):** SPARQL algebra is over `SparqlVariable`/`RdfTerm` (`NamedNode`/literals/blank); the store is over `Variable`/`TermId`. Need: (a) build a store + `TermDictionary` from the data graph's AST triples; (b) `SparqlVariable`↔`Variable` map (via a `VariableRegistry`, `GetOrAdd(name.ToString())`); (c) encode an algebra `Bgp` → `BasicGraphPattern` (`ConstantTerm.Term`→`GetIdOrDefault`; `VariableTerm`→`OfVariable`; a missing constant short-circuits the BGP to empty); (d) decode a `Solution` → a SPARQL binding (`SparqlVariable`→`RdfTerm` via the inverse var-map + dict decode). Note nested `Ast.TripleTerm` terms encode via `TermDictionary.GetOrAdd(TripleTerm)`.
+
+**Sliced plan (each slice: build to convention, green at the 50-SHACL baseline, commit):**
+1. **Encoding bridge + pure-BGP SELECT/ASK end-to-end** — the bridge above + a minimal evaluator for `Project(Bgp)` / `Bgp` (+ `Distinct`/`Reduced`/`Slice`/`UnitTable`, and a `Join` of BGP subtrees **merged into one `BasicGraphPattern`** so the WCOJ engine runs once — §18.2.2.7 BGP-merge); decode to a SPARQL solution model. Proves parse→normalize→translate→execute. (Engine entry name provisional pending §7.)
+2. **Solution-sequence operators** that don't need expressions: `Join` (non-BGP, solution merge-join on shared vars), `Union`, `Minus`, `ToMultiSet`/`ToList`, trailing `Table` (VALUES). Iterative, no recursion.
+3. **Expression evaluator** (`ExpressionNode` → value; effective boolean value, type coercion, the built-in fn set) — then `Filter`, `Extend` (BIND), `LeftJoin` condition, `OrderBy`. This is the big sub-component.
+4. **Aggregation** evaluation: `Group` partition + `AggregateJoin` (COUNT/SUM/MIN/MAX/AVG/SAMPLE/GROUP_CONCAT, DISTINCT) over the rewritten projections.
+5. **`Path`-leaf closure** evaluation via `PropertyPathEvaluator` + the native pair-aware closure (PROPERTY-PATH plan items 2–4); **`Graph`** (named-graph redirection) + **`Service`** (defer/stub).
+6. **Wire SHACL `sh:sparql`** to the engine → start closing the 50 ShaclValidate baseline failures.
+**Cross-cuts:** thread the `traceHandler`/`correlationId` (the side-channel) through; carry `Witnesses` for provenance; everything iterative ([[feedback_no_recursion]]).
 
 ### ⏵ PROPERTY-PATH LOWERING — PLAN (design-locked 2026-05-29; confirm shapes vs. §18.2.2.5 if the impl spec is to hand)
 
