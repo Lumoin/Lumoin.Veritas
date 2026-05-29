@@ -30,11 +30,11 @@ namespace Lumoin.Veritas.Sparql.Execution;
 /// consecutive plain triples into one), the expression-free relational operators (<see cref="Join"/>,
 /// <see cref="Union"/>, <see cref="Minus"/>), sub-<c>SELECT</c> (<see cref="ToMultiSet"/> / <see cref="ToList"/>),
 /// the expression-gated operators (<see cref="Filter"/>, <c>BIND</c>/<see cref="Extend"/>, <c>OPTIONAL</c>'s
-/// <see cref="LeftJoin"/> — via <see cref="SparqlExpressionEvaluator"/>), the inline <c>VALUES</c>
-/// <see cref="Table"/>, and the projection/sequence modifiers (<see cref="Project"/>, <see cref="Distinct"/>,
-/// <see cref="Reduced"/>, <see cref="OrderBy"/>, <see cref="Slice"/>, and the <see cref="UnitTable"/> identity).
-/// The built-in function library, <c>EXISTS</c>/<c>NOT EXISTS</c>, property paths, aggregation, named graphs, and
-/// <c>SERVICE</c> raise <see cref="NotSupportedException"/> until their later slice lands. The public surface (entry naming, result
+/// <see cref="LeftJoin"/> — via <see cref="SparqlExpressionEvaluator"/>), aggregation (<see cref="Group"/> +
+/// <see cref="AggregateJoin"/>), the inline <c>VALUES</c> <see cref="Table"/>, and the projection/sequence
+/// modifiers (<see cref="Project"/>, <see cref="Distinct"/>, <see cref="Reduced"/>, <see cref="OrderBy"/>,
+/// <see cref="Slice"/>, and the <see cref="UnitTable"/> identity). Property paths, named graphs, <c>SERVICE</c>,
+/// and <c>EXISTS</c>/<c>NOT EXISTS</c> raise <see cref="NotSupportedException"/> until their later slice lands. The public surface (entry naming, result
 /// model, streaming) is provisional and follows codebase convention; the W3C SPARQL 1.2 specification governs the
 /// evaluation semantics.
 /// </para>
@@ -194,6 +194,11 @@ public sealed class SparqlQueryEngine
             //ToMultiSet / ToList are multiset / sequence conversions; with no ORDER BY in scope they pass through.
             ToMultiSet toMultiSet => results[toMultiSet.Input],
             ToList toList => results[toList.Input],
+
+            //Group leaves the multiset unchanged here; the partitioning into groups happens in the AggregateJoin
+            //that wraps it (which reads the Group's keys directly).
+            Group group => results[group.Input],
+            AggregateJoin aggregateJoin => EvaluateAggregateJoin(aggregateJoin, results[aggregateJoin.Input]),
             _ => throw new InvalidOperationException($"Operator '{op.GetType().Name}' has children but no combine rule in the executor.")
         };
     }
@@ -616,6 +621,146 @@ public sealed class SparqlQueryEngine
         return result;
     }
 
+    /// <summary>
+    /// Evaluates an <c>AggregateJoin</c> (§18.5): partitions the input solutions into groups by the wrapped
+    /// <see cref="Group"/>'s keys, then emits one solution per group binding the named grouping keys and each
+    /// aggregate's per-group result. An empty <c>GROUP BY</c> (implicit grouping) always yields exactly one group,
+    /// even over no input solutions, so <c>COUNT(*)</c> over an empty pattern is 0.
+    /// </summary>
+    /// <param name="aggregateJoin">The aggregate-join operator (its input is the grouping operator).</param>
+    /// <param name="input">The grouped operand's solutions (the Group passthrough).</param>
+    /// <returns>One solution per group.</returns>
+    private static List<SparqlSolution> EvaluateAggregateJoin(AggregateJoin aggregateJoin, IReadOnlyList<SparqlSolution> input)
+    {
+        IReadOnlyList<GroupCondition> keys = aggregateJoin.Input is Group group ? group.Keys : [];
+        List<AggregateGroup> groups = Partition(keys, input);
+
+        //Implicit grouping (no keys) is always a single group, even with no input rows.
+        if(keys.Count == 0 && groups.Count == 0)
+        {
+            groups.Add(new AggregateGroup([], []));
+        }
+
+        List<SparqlSolution> result = new(groups.Count);
+        foreach(AggregateGroup aggregateGroup in groups)
+        {
+            List<SparqlBinding> bindings = new(aggregateGroup.NamedKeys);
+            foreach(AggregateBinding aggregation in aggregateJoin.Aggregations)
+            {
+                if(SparqlExpressionEvaluator.EvaluateAggregate(aggregation.Aggregate, aggregateGroup.Members) is RdfTerm value)
+                {
+                    bindings.Add(new SparqlBinding(aggregation.Variable, value));
+                }
+            }
+
+            result.Add(new SparqlSolution(bindings));
+        }
+
+        return result;
+    }
+
+    /// <summary>Partitions solutions into groups by their grouping-key values, preserving first-appearance order of groups.</summary>
+    /// <param name="keys">The grouping conditions.</param>
+    /// <param name="input">The solutions to partition.</param>
+    /// <returns>The groups, each carrying its named-key bindings and member solutions.</returns>
+    private static List<AggregateGroup> Partition(IReadOnlyList<GroupCondition> keys, IReadOnlyList<SparqlSolution> input)
+    {
+        List<AggregateGroup> groups = [];
+        foreach(SparqlSolution solution in input)
+        {
+            RdfTerm?[] keyValues = new RdfTerm?[keys.Count];
+            List<SparqlBinding> namedKeys = [];
+            for(int i = 0; i < keys.Count; i++)
+            {
+                (RdfTerm? value, SparqlVariable? named) = EvaluateGroupKey(keys[i], solution);
+                keyValues[i] = value;
+                if(named is SparqlVariable variable && value is RdfTerm term)
+                {
+                    namedKeys.Add(new SparqlBinding(variable, term));
+                }
+            }
+
+            AggregateGroup? match = null;
+            foreach(AggregateGroup candidate in groups)
+            {
+                if(KeysEqual(candidate.KeyValues, keyValues))
+                {
+                    match = candidate;
+
+                    break;
+                }
+            }
+
+            if(match is null)
+            {
+                groups.Add(new AggregateGroup(keyValues, namedKeys) { Members = { solution } });
+            }
+            else
+            {
+                match.Members.Add(solution);
+            }
+        }
+
+        return groups;
+    }
+
+    /// <summary>Evaluates one grouping condition over a solution, returning the key value and the variable it names (if any).</summary>
+    /// <param name="condition">The grouping condition.</param>
+    /// <param name="solution">The solution.</param>
+    /// <returns>The key value (or <see langword="null"/> when unbound/errored) and the named variable the group binds, or <see langword="null"/> for a bare grouping expression.</returns>
+    private static (RdfTerm? Value, SparqlVariable? Named) EvaluateGroupKey(GroupCondition condition, SparqlSolution solution)
+    {
+        switch(condition)
+        {
+            case GroupVariable variable:
+            {
+                return (solution.TryGetValue(variable.Variable, out RdfTerm value) ? value : null, variable.Variable);
+            }
+
+            case GroupExpressionAs expressionAs:
+            {
+                return (SparqlExpressionEvaluator.TryEvaluate(expressionAs.Expression, solution, out RdfTerm value) ? value : null, expressionAs.AsVariable);
+            }
+
+            case GroupExpression expression:
+            {
+                return (SparqlExpressionEvaluator.TryEvaluate(expression.Expression, solution, out RdfTerm value) ? value : null, null);
+            }
+
+            default:
+            {
+                throw new InvalidOperationException($"Unexpected grouping-condition kind {condition.GetType().Name} during SPARQL evaluation.");
+            }
+        }
+    }
+
+    /// <summary>Returns whether two grouping-key tuples are equal position-by-position (unbound matches unbound; bound matches an equal term).</summary>
+    /// <param name="left">The first key tuple.</param>
+    /// <param name="right">The second key tuple.</param>
+    /// <returns><see langword="true"/> when the tuples are equal.</returns>
+    private static bool KeysEqual(RdfTerm?[] left, RdfTerm?[] right)
+    {
+        if(left.Length != right.Length)
+        {
+            return false;
+        }
+
+        for(int i = 0; i < left.Length; i++)
+        {
+            if(left[i] is null != (right[i] is null))
+            {
+                return false;
+            }
+
+            if(left[i] is RdfTerm leftTerm && !leftTerm.Equals(right[i]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     /// <summary>Returns whether two solutions are compatible (§18.1): every variable bound in both maps to the same term.</summary>
     /// <param name="left">The first solution.</param>
     /// <param name="right">The second solution.</param>
@@ -669,6 +814,28 @@ public sealed class SparqlQueryEngine
         return new SparqlSolution(merged);
     }
 
+    /// <summary>One group during aggregation: its grouping-key values (for partitioning), the named-key bindings it contributes to the output solution, and its member solutions.</summary>
+    private sealed class AggregateGroup
+    {
+        /// <summary>Constructs a group with its key tuple and named-key bindings; members start empty.</summary>
+        /// <param name="keyValues">The grouping-key values, in condition order (an entry is <see langword="null"/> for an unbound/errored key).</param>
+        /// <param name="namedKeys">The bindings the group's named keys contribute to its output solution.</param>
+        public AggregateGroup(RdfTerm?[] keyValues, List<SparqlBinding> namedKeys)
+        {
+            KeyValues = keyValues;
+            NamedKeys = namedKeys;
+        }
+
+        /// <summary>The grouping-key values used to match solutions into this group.</summary>
+        public RdfTerm?[] KeyValues { get; }
+
+        /// <summary>The named grouping-key bindings the group contributes to its output solution.</summary>
+        public List<SparqlBinding> NamedKeys { get; }
+
+        /// <summary>The solutions partitioned into this group.</summary>
+        public List<SparqlSolution> Members { get; } = [];
+    }
+
     /// <summary>Verifies every operator in the algebra is one this slice can execute, throwing a descriptive <see cref="NotSupportedException"/> on the first that is not.</summary>
     /// <param name="algebra">The algebra to check.</param>
     /// <exception cref="NotSupportedException">An operator outside this slice's supported set is present.</exception>
@@ -676,10 +843,10 @@ public sealed class SparqlQueryEngine
     {
         foreach(AlgebraOperator op in AlgebraWalker.Traverse(algebra))
         {
-            bool supported = op is Bgp or UnitTable or Table or Project or Distinct or Reduced or Slice or OrderBy or Join or Union or Minus or ToMultiSet or ToList or Filter or Extend or LeftJoin;
+            bool supported = op is Bgp or UnitTable or Table or Project or Distinct or Reduced or Slice or OrderBy or Join or Union or Minus or ToMultiSet or ToList or Filter or Extend or LeftJoin or Group or AggregateJoin;
             if(!supported)
             {
-                throw new NotSupportedException($"SPARQL algebra operator '{op.GetType().Name}' is not yet executable. This executor covers basic graph patterns, JOIN/UNION/MINUS, FILTER, BIND (Extend), OPTIONAL (LeftJoin), inline VALUES, ORDER BY, sub-SELECT (ToMultiSet), and the projection/DISTINCT/REDUCED/OFFSET/LIMIT modifiers; the built-in function library, EXISTS, property paths, aggregation, named graphs, and SERVICE land in later slices.");
+                throw new NotSupportedException($"SPARQL algebra operator '{op.GetType().Name}' is not yet executable. This executor covers basic graph patterns, JOIN/UNION/MINUS, FILTER, BIND (Extend), OPTIONAL (LeftJoin), inline VALUES, ORDER BY, aggregation (GROUP BY / HAVING), sub-SELECT (ToMultiSet), and the projection/DISTINCT/REDUCED/OFFSET/LIMIT modifiers; property paths, named graphs, SERVICE, and EXISTS land in later slices.");
             }
         }
     }

@@ -327,6 +327,68 @@ internal sealed class SparqlQueryEngineTests
         Assert.AreEqual("CAFÉ", Cast<Literal>(value).Value.ToString());
     }
 
+    /// <summary>GROUP BY with COUNT(*) yields one solution per group with the group's count.</summary>
+    [TestMethod]
+    public async Task GroupByWithCountCountsPerGroup()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(("alice", "knows", "bob"), ("alice", "knows", "carol"), ("dave", "knows", "eve")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?s (COUNT(*) AS ?c) WHERE { ?s :knows ?o } GROUP BY ?s", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(2, solutions);
+        Assert.AreEqual("2", LiteralValue(solutions.Single(s => ValueIri(s, "s") == Ex + "alice"), "c"));
+        Assert.AreEqual("1", LiteralValue(solutions.Single(s => ValueIri(s, "s") == Ex + "dave"), "c"));
+    }
+
+    /// <summary>An implicit-group COUNT(*) (no GROUP BY) yields one solution counting all matches, and 0 over an empty pattern.</summary>
+    [TestMethod]
+    public async Task ImplicitGroupCountCountsAllAndZeroWhenEmpty()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(("alice", "knows", "bob"), ("alice", "knows", "carol"), ("dave", "knows", "eve")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+
+        AlgebraOperator all = Translate("PREFIX : <http://example.org/> SELECT (COUNT(*) AS ?c) WHERE { ?s :knows ?o }", pool);
+        AlgebraOperator none = Translate("PREFIX : <http://example.org/> SELECT (COUNT(*) AS ?c) WHERE { ?s :nobody ?o }", pool);
+
+        Assert.AreEqual("3", LiteralValue((await engine.EvaluateAsync(all, TestContext.CancellationToken).ConfigureAwait(false)).Single(), "c"));
+        Assert.AreEqual("0", LiteralValue((await engine.EvaluateAsync(none, TestContext.CancellationToken).ConfigureAwait(false)).Single(), "c"));
+    }
+
+    /// <summary>GROUP BY with SUM totals the grouped numeric values.</summary>
+    [TestMethod]
+    public async Task GroupByWithSumTotalsPerGroup()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(
+            new DataTriple(Iri("a"), Iri("val"), IntegerLiteral(1)),
+            new DataTriple(Iri("a"), Iri("val"), IntegerLiteral(2)),
+            new DataTriple(Iri("b"), Iri("val"), IntegerLiteral(5))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?s (SUM(?v) AS ?t) WHERE { ?s :val ?v } GROUP BY ?s", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(2, solutions);
+        Assert.AreEqual("3", LiteralValue(solutions.Single(s => ValueIri(s, "s") == Ex + "a"), "t"));
+        Assert.AreEqual("5", LiteralValue(solutions.Single(s => ValueIri(s, "s") == Ex + "b"), "t"));
+    }
+
+    /// <summary>HAVING filters the groups by an aggregate condition.</summary>
+    [TestMethod]
+    public async Task HavingFiltersGroupsByAggregate()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(("alice", "knows", "bob"), ("alice", "knows", "carol"), ("dave", "knows", "eve")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?s WHERE { ?s :knows ?o } GROUP BY ?s HAVING(COUNT(*) > 1)", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //Only alice has more than one match.
+        SparqlSolution solution = solutions.Single();
+        Assert.AreEqual(Ex + "alice", ValueIri(solution, "s"));
+    }
+
     /// <summary>An operator outside the supported set (here a property path) is refused with a descriptive exception.</summary>
     [TestMethod]
     public async Task UnsupportedOperatorIsRefused()
@@ -427,6 +489,17 @@ internal sealed class SparqlQueryEngineTests
         }
 
         return subjects;
+    }
+
+    /// <summary>Returns the lexical value of the literal the named variable is bound to, asserting it is bound to a literal.</summary>
+    /// <param name="solution">The solution to read.</param>
+    /// <param name="variableName">The variable name.</param>
+    /// <returns>The bound literal's lexical value.</returns>
+    private static string LiteralValue(SparqlSolution solution, string variableName)
+    {
+        Assert.IsTrue(solution.TryGetValue(Variable(variableName), out RdfTerm value), $"Expected ?{variableName} to be bound.");
+
+        return Cast<Literal>(value).Value.ToString();
     }
 
     /// <summary>Returns the IRI string the named variable is bound to, asserting it is bound to a named node.</summary>

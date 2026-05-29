@@ -84,6 +84,9 @@ public static class SparqlExpressionEvaluator
     /// <summary>The empty UTF-8 lexical form (the <c>LANG</c> of a non-language literal, the failure value of a string lookup).</summary>
     private static Utf8String EmptyText { get; } = Utf8String.FromString(string.Empty);
 
+    /// <summary>The single-space UTF-8 string — the default <c>GROUP_CONCAT</c> separator.</summary>
+    private static Utf8String SpaceText { get; } = Utf8String.FromString(" ");
+
     /// <summary>
     /// Returns whether an expression's effective boolean value is <see langword="true"/> over a solution. An
     /// error or a value with no effective boolean value yields <see langword="false"/> — the behaviour
@@ -191,6 +194,185 @@ public static class SparqlExpressionEvaluator
         int byDatatype = left.Datatype.Iri.CompareTo(right.Datatype.Iri);
 
         return byDatatype != 0 ? byDatatype : left.Value.CompareTo(right.Value);
+    }
+
+    /// <summary>
+    /// Computes one aggregate over a group's solutions (§18.5 set functions): the argument expression is evaluated
+    /// per solution and the bound values gathered (deduplicated when <c>DISTINCT</c>), then reduced by the
+    /// function. <c>COUNT(*)</c> counts solutions; <c>MIN</c>/<c>MAX</c>/<c>SAMPLE</c> over an empty value set, and
+    /// <c>SUM</c>/<c>AVG</c> over a non-numeric value, yield <see langword="null"/> (an unbound result, left out of
+    /// the group's solution).
+    /// </summary>
+    /// <param name="aggregate">The aggregate expression.</param>
+    /// <param name="group">The group's solutions.</param>
+    /// <returns>The aggregate's term value, or <see langword="null"/> when it has none.</returns>
+    internal static RdfTerm? EvaluateAggregate(AggregateExpression aggregate, IReadOnlyList<SparqlSolution> group)
+    {
+        if(aggregate.IsCountStar)
+        {
+            return Numeric(group.Count, integral: true).Term;
+        }
+
+        List<RdfTerm> values = [];
+        if(aggregate.Argument is not null)
+        {
+            foreach(SparqlSolution solution in group)
+            {
+                if(TryEvaluate(aggregate.Argument, solution, out RdfTerm value))
+                {
+                    values.Add(value);
+                }
+            }
+        }
+
+        if(aggregate.IsDistinct)
+        {
+            values = DistinctTerms(values);
+        }
+
+        return aggregate.Function switch
+        {
+            AggregateFunction.Count => Numeric(values.Count, integral: true).Term,
+            AggregateFunction.Sum => SumTerm(values),
+            AggregateFunction.Avg => AverageTerm(values),
+            AggregateFunction.Min => Extremum(values, minimum: true),
+            AggregateFunction.Max => Extremum(values, minimum: false),
+            AggregateFunction.Sample => values.Count > 0 ? values[0] : null,
+            AggregateFunction.GroupConcat => GroupConcatTerm(values, aggregate.GroupConcatSeparator),
+            _ => throw new NotSupportedException($"SPARQL aggregate function '{aggregate.Function}' is not yet evaluable.")
+        };
+    }
+
+    /// <summary>Deduplicates a value list by RDF term equality, preserving first-appearance order.</summary>
+    /// <param name="values">The values.</param>
+    /// <returns>The distinct values.</returns>
+    private static List<RdfTerm> DistinctTerms(List<RdfTerm> values)
+    {
+        List<RdfTerm> distinct = new(values.Count);
+        HashSet<RdfTerm> seen = [];
+        foreach(RdfTerm value in values)
+        {
+            if(seen.Add(value))
+            {
+                distinct.Add(value);
+            }
+        }
+
+        return distinct;
+    }
+
+    /// <summary>Sums numeric values (xsd:integer when every value is integral, else xsd:double); an empty set sums to 0, a non-numeric value yields an error (null).</summary>
+    /// <param name="values">The values to sum.</param>
+    /// <returns>The sum term, or <see langword="null"/> on a non-numeric value.</returns>
+    private static RdfTerm? SumTerm(List<RdfTerm> values)
+    {
+        double sum = 0;
+        bool integral = true;
+        foreach(RdfTerm value in values)
+        {
+            if(!TryGetNumeric(value, out double number, out bool valueIntegral))
+            {
+                return null;
+            }
+
+            sum += number;
+            integral &= valueIntegral;
+        }
+
+        return Numeric(sum, integral).Term;
+    }
+
+    /// <summary>Averages numeric values as an xsd:double; an empty set averages to 0, a non-numeric value yields an error (null).</summary>
+    /// <param name="values">The values to average.</param>
+    /// <returns>The average term, or <see langword="null"/> on a non-numeric value.</returns>
+    private static RdfTerm? AverageTerm(List<RdfTerm> values)
+    {
+        if(values.Count == 0)
+        {
+            return Numeric(0, integral: true).Term;
+        }
+
+        double sum = 0;
+        foreach(RdfTerm value in values)
+        {
+            if(!TryGetNumeric(value, out double number, out _))
+            {
+                return null;
+            }
+
+            sum += number;
+        }
+
+        return Numeric(sum / values.Count, integral: false).Term;
+    }
+
+    /// <summary>Returns the minimum or maximum value by the ORDER BY ordering, or <see langword="null"/> for an empty set.</summary>
+    /// <param name="values">The values.</param>
+    /// <param name="minimum">Whether to take the minimum (otherwise the maximum).</param>
+    /// <returns>The extreme value, or <see langword="null"/> when there are none.</returns>
+    private static RdfTerm? Extremum(List<RdfTerm> values, bool minimum)
+    {
+        if(values.Count == 0)
+        {
+            return null;
+        }
+
+        RdfTerm best = values[0];
+        for(int i = 1; i < values.Count; i++)
+        {
+            int comparison = CompareForOrdering(values[i], best);
+            if(minimum ? comparison < 0 : comparison > 0)
+            {
+                best = values[i];
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>Concatenates the lexical forms of the values with a separator (default a single space) as an xsd:string, accumulating UTF-8 bytes (no <see cref="string"/> round-trip).</summary>
+    /// <param name="values">The values to concatenate.</param>
+    /// <param name="separator">The separator, or <see langword="null"/> for the default single space.</param>
+    /// <returns>The concatenated string term.</returns>
+    private static Literal GroupConcatTerm(List<RdfTerm> values, Utf8String? separator)
+    {
+        Utf8String delimiter = separator ?? SpaceText;
+        List<byte> output = [];
+        for(int i = 0; i < values.Count; i++)
+        {
+            if(i > 0)
+            {
+                AppendBytes(output, delimiter.Span);
+            }
+
+            AppendBytes(output, LexicalForm(values[i]).Span);
+        }
+
+        return new Literal(new Utf8String(output.ToArray()), new NamedNode(XsdString));
+    }
+
+    /// <summary>Appends a byte span to a byte list.</summary>
+    /// <param name="output">The accumulating byte list.</param>
+    /// <param name="bytes">The bytes to append.</param>
+    private static void AppendBytes(List<byte> output, ReadOnlySpan<byte> bytes)
+    {
+        foreach(byte value in bytes)
+        {
+            output.Add(value);
+        }
+    }
+
+    /// <summary>Returns the UTF-8 lexical form of a term for string contexts: a literal's value, a named node's IRI, otherwise empty.</summary>
+    /// <param name="term">The term.</param>
+    /// <returns>The UTF-8 lexical form.</returns>
+    private static Utf8String LexicalForm(RdfTerm term)
+    {
+        return term switch
+        {
+            Literal literal => literal.Value,
+            NamedNode named => named.Iri,
+            _ => EmptyText
+        };
     }
 
     /// <summary>Evaluates an expression to a value (a bound term or an error) over an explicit bottom-up work stack.</summary>
