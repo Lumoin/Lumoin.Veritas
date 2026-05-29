@@ -136,6 +136,30 @@ internal sealed class SparqlAlgebraTests
         Assert.AreEqual(traversed, fresh);
     }
 
+    /// <summary>A Group exposes its named grouping keys; a bare grouping expression names nothing.</summary>
+    [TestMethod]
+    public void GroupExposesKeyVariables()
+    {
+        Bgp inner = new([Triple(Var("s"), Iri("p"), Var("o"))]);
+        Group group = new([new GroupVariable(default, new SparqlVariable(Utf8String.FromString("o")))], inner);
+
+        Assert.HasCount(1, group.Children);
+        AssertVariables(group.OutputVariables, "o");
+    }
+
+    /// <summary>An AggregateJoin exposes the grouping keys plus each aggregate's result variable.</summary>
+    [TestMethod]
+    public void AggregateJoinExposesKeysAndAggregateVariables()
+    {
+        Bgp inner = new([Triple(Var("s"), Iri("p"), Var("o"))]);
+        Group group = new([new GroupVariable(default, new SparqlVariable(Utf8String.FromString("o")))], inner);
+        AggregateExpression countStar = new(default, AggregateFunction.Count, Argument: null, IsDistinct: false, IsCountStar: true, GroupConcatSeparator: null);
+        AggregateJoin aggregateJoin = new(group, [new AggregateBinding(new SparqlVariable(Utf8String.FromString("c")), countStar)]);
+
+        CollectionAssert.AreEqual(new List<AlgebraOperator> { group }, new List<AlgebraOperator>(aggregateJoin.Children));
+        AssertVariables(aggregateJoin.OutputVariables, "o", "c");
+    }
+
     /// <summary>OutputVariables on a tree far deeper than the call stack tolerates is computed bottom-up without overflowing.</summary>
     [TestMethod]
     public void OutputVariablesOnDeepTreeDoesNotOverflow()

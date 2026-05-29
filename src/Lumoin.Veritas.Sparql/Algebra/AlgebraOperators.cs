@@ -426,3 +426,89 @@ public sealed record ToMultiSet(AlgebraOperator Input) : AlgebraOperator
     /// <inheritdoc/>
     internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => new ToMultiSet(children[0]);
 }
+
+/// <summary>
+/// A <c>GROUP BY</c>: partitions the input solutions into groups keyed by the grouping conditions (§18.2.4.1).
+/// An empty <see cref="Keys"/> list is the single implicit group of an aggregate query with no explicit
+/// <c>GROUP BY</c>. The per-group aggregate values are computed by the enclosing <see cref="AggregateJoin"/>.
+/// </summary>
+/// <param name="Keys">The grouping conditions, in order (the AST <see cref="GroupCondition"/> forms); empty for the single implicit group.</param>
+/// <param name="Input">The operand whose solutions are grouped.</param>
+/// <remarks>SPARQL 1.2 §18.6 [Group].</remarks>
+public sealed record Group(IReadOnlyList<GroupCondition> Keys, AlgebraOperator Input) : AlgebraOperator
+{
+    /// <inheritdoc/>
+    protected override IReadOnlyList<AlgebraOperator> ComputeChildren() => AlgebraScope.Children(Input);
+
+    /// <inheritdoc/>
+    protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables()
+    {
+        //After grouping only the named grouping keys are in scope (a bare grouping expression has no name).
+        HashSet<SparqlVariable> set = [];
+        foreach(GroupCondition key in Keys)
+        {
+            switch(key)
+            {
+                case GroupVariable variable:
+                {
+                    set.Add(variable.Variable);
+
+                    break;
+                }
+
+                case GroupExpressionAs expressionAs:
+                {
+                    set.Add(expressionAs.AsVariable);
+
+                    break;
+                }
+
+                default:
+                {
+                    //A bare GroupExpression contributes a key with no variable name.
+                    break;
+                }
+            }
+        }
+
+        return set;
+    }
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => new Group(Keys, children[0]);
+}
+
+/// <summary>One per-group aggregate computation: the aggregate expression and the variable its value binds to.</summary>
+/// <param name="Variable">The variable the aggregate's per-group value binds to.</param>
+/// <param name="Aggregate">The aggregate expression (function, argument, <c>DISTINCT</c>, <c>COUNT(*)</c>, separator).</param>
+/// <remarks>SPARQL 1.2 §18.6 [Aggregation].</remarks>
+public sealed record AggregateBinding(SparqlVariable Variable, AggregateExpression Aggregate);
+
+/// <summary>
+/// An <c>AggregateJoin</c>: computes the aggregate bindings over the grouped input, producing one solution per
+/// group bound to the grouping keys and the aggregate-result variables (§18.2.4.1).
+/// </summary>
+/// <param name="Input">The grouped operand (a <see cref="Group"/>).</param>
+/// <param name="Aggregations">The per-group aggregate computations, each binding its value to a variable.</param>
+/// <remarks>SPARQL 1.2 §18.6 [AggregateJoin].</remarks>
+public sealed record AggregateJoin(AlgebraOperator Input, IReadOnlyList<AggregateBinding> Aggregations) : AlgebraOperator
+{
+    /// <inheritdoc/>
+    protected override IReadOnlyList<AlgebraOperator> ComputeChildren() => AlgebraScope.Children(Input);
+
+    /// <inheritdoc/>
+    protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables()
+    {
+        //The grouping keys (from the Group input) plus each aggregate's result variable.
+        HashSet<SparqlVariable> set = new(Input.OutputVariables);
+        foreach(AggregateBinding binding in Aggregations)
+        {
+            set.Add(binding.Variable);
+        }
+
+        return set;
+    }
+
+    /// <inheritdoc/>
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => new AggregateJoin(children[0], Aggregations);
+}
