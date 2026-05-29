@@ -252,7 +252,13 @@ internal static class W3cShaclRunner
             foreach(Quad quad in owned)
             {
                 subgraph.Add(quad);
-                if(quad.Object is BlankNode blank && reached.Add(blank))
+
+                //Follow report-structural blank nodes (sh:result, sh:resultPath path nodes, RDF list cells) but
+                //NOT the data/shape nodes a result merely references (sh:focusNode/sh:value/sh:sourceShape/
+                //sh:sourceConstraint): those nodes' own triples live in the data/shapes graph, not the report, so
+                //traversing a blank focus/value/shape would pull data triples (e.g. its rdf:type) into the
+                //"expected report" and wrongly fail the structural comparison.
+                if(quad.Object is BlankNode blank && !IsDataReference(quad.Predicate) && reached.Add(blank))
                 {
                     frontier.Enqueue(blank);
                 }
@@ -260,6 +266,22 @@ internal static class W3cShaclRunner
         }
 
         return subgraph;
+    }
+
+    /// <summary>
+    /// Returns whether a predicate links a result to a data/shape node it only references (not report structure):
+    /// <c>sh:focusNode</c>, <c>sh:value</c>, <c>sh:sourceShape</c>, <c>sh:sourceConstraint</c>. The report-subgraph
+    /// walk does not descend into the objects of these, so a blank focus/value/shape contributes only its
+    /// reference, not its own (data-graph) triples.
+    /// </summary>
+    /// <param name="predicate">The predicate to classify.</param>
+    /// <returns><c>true</c> when the predicate is a data/shape reference.</returns>
+    private static bool IsDataReference(NamedNode predicate)
+    {
+        return predicate.Iri.Equals(ShaclResultsVocabulary.FocusNode)
+            || predicate.Iri.Equals(ShaclResultsVocabulary.Value)
+            || predicate.Iri.Equals(ShaclResultsVocabulary.SourceShape)
+            || predicate.Iri.Equals(ShaclResultsVocabulary.SourceConstraint);
     }
 
     /// <summary>
