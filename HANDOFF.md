@@ -239,18 +239,24 @@ triple terms) resolved by a local post-order stack in `ResolveCore`/`BuildQuoted
 **must stay FIFO** — a LIFO stack reverses triple order and breaks `SELECT *` variable order. Deep-nesting tests
 guard all of it (50k Join `OutputVariables`/Transform, 20k nested groups end-to-end, 10k nested collections).
 
-▶ **NEXT AFTER A CLEAR:** HEAD `e3f08e8`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
+▶ **NEXT AFTER A CLEAR:** HEAD `79b9447`, tree clean, full suite green (exactly 50 ShaclValidate failures = the
 unchanged baseline, 0 new). Milestone B's pattern/modifier core + traversal layer are in place and fully iterative
 (normalizer `b70bdb1`, algebra hierarchy `6d4d36d`, group/modifier translator `1eafdc5`, property-path pattern
-translation `71e995f`, iterative AlgebraWalker `86d8245`, recursion sweep `65386e1`/`7d9c603`/`b683a90`/`e3f08e8`).
-**Next: the remaining Milestone-B slices**, each its own fresh-context unit (see "STILL OPEN" below): **(1) aggregation**
+translation `71e995f`, iterative AlgebraWalker `86d8245`, recursion sweep `65386e1`/`7d9c603`/`b683a90`/`e3f08e8`,
+sub-`SELECT` → `ToMultiSet` `79b9447`). **Remaining Milestone-B slices** (see "STILL OPEN" below): **(1) aggregation**
 (`Group`/`AggregateJoin` + §18.2.4.1 grouping/scope + implicit-grouping detection — the design-heavy one; re-paste
-the impl spec), **(2) sub-`SELECT`** (`ToMultiSet` + §18.2.1 scope), and **(3) property-path form *lowering***
-(decompose seq/alt/inv + define `*`/`+`/`?`/NPS evaluation — deferred from `71e995f`, likely an evaluation-time
-concern; `AlgebraWalker.Transform` now exists to drive it). A 20k-deep nested-group test now guards the iterative
-parse→normalize→translate path. Relevant memory: [[feedback_no_recursion]],
+the impl spec) and **(2) property-path form *lowering*** (decompose seq/alt/inv + define `*`/`+`/`?`/NPS evaluation —
+deferred from `71e995f`, likely an evaluation-time concern; `AlgebraWalker.Transform` now exists to drive it).
+Deep-nesting tests guard the iterative pipeline (20k nested groups, 10k nested collections, 2k nested sub-SELECTs,
+50k Join OutputVariables/Transform). Relevant memory: [[feedback_no_recursion]],
 [[project_sparql_reified_triple_no_assert]], [[project_sparql_algebra_design]]. Build/test commands are in
 the ITEM-4 anchor's build block above.
+
+**PERMISSIONS NOTE:** test runs are allowlisted by a *prefix* rule in `.claude/settings.local.json`
+(`PowerShell(& "test\\…\\Lumoin.Veritas.Tests.exe" *)` + the Bash twin). Run tests as
+`& "test\Lumoin.Veritas.Tests\bin\Debug\net10.0\Lumoin.Veritas.Tests.exe" [--filter …] 2>&1 | …` (start with the
+exe, never a `$out = …` capture) and builds as standalone `dotnet build … -clp:ErrorsOnly --nologo`, so they don't
+re-prompt. The old accumulation of ~25 exact per-filter test rules was pruned.
 - New `Algebra/AlgebraOperator.cs` (abstract record base) + `Algebra/AlgebraOperators.cs` (operator records +
   `AlgebraScope` helpers). The base exposes **lazy/cached `Children`** (the uniform traversal surface the future
   `AlgebraWalker` §10.5 drives — no per-operator walking code) and **`OutputVariables`** (scope analysis +
@@ -263,13 +269,12 @@ the ITEM-4 anchor's build block above.
   Slice, ToList, ToMultiSet. 9 `SparqlAlgebraTests` pin Children/OutputVariables per shape, caching, and
   value-equality-after-traversal. Build clean; full suite at exactly 50 ShaclValidate failures, 0 new.
 
-**STILL OPEN (Milestone B remainder) — the group/modifier translator core landed in `1eafdc5` and property-path
-*pattern* translation in `71e995f`; what remains:** (1) the **aggregation operators** (`Group`/`AggregateJoin` —
-deferred because their shape needs the aggregate-expression + §18.2.4.1 grouping/scope design; also wire
-implicit-grouping + HAVING/ORDER-BY aggregate detection, currently a documented gap in `SparqlTranslator`). (2)
-**sub-`SELECT` translation** (`ToMultiSet` + the §18.2.1 in-scope-variable renaming the translator's
-`NotSupportedException` defers). (3) the **`AlgebraWalker`** (§10.5 `Traverse`/`Transform`, driving the base
-`Children` surface). (4) **property-path form *lowering*** — the `Path` operator now carries the structured path
+**STILL OPEN (Milestone B remainder) — done so far: group/modifier translator (`1eafdc5`), property-path *pattern*
+translation (`71e995f`), `AlgebraWalker` (`86d8245`), sub-`SELECT` → `ToMultiSet` (`79b9447`). What remains:**
+(1) the **aggregation operators** (`Group`/`AggregateJoin` — deferred because their shape needs the
+aggregate-expression + §18.2.4.1 grouping/scope design; also wire implicit-grouping + HAVING/ORDER-BY aggregate
+detection, currently a documented gap in `SparqlTranslator` — `ApplyQueryForm` throws `NotSupportedException` on
+`GROUP BY`/`HAVING`). (2) **property-path form *lowering*** — the `Path` operator now carries the structured path
 expression whole (`71e995f`); decomposing seq/alt/inverse into joins/unions/swaps and defining the
 `*`/`+`/`?`/negated-set evaluation semantics is still open (likely an evaluation-time concern). Scope: full SPARQL
 1.2 core, not a SHACL-minimal subset. If §5.1 prescribes a different layout/naming, the scaffold is cheap to adjust.
