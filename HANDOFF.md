@@ -6,6 +6,41 @@ AST → algebra → translator → hypertrie backend + executor subset → SHACL
 unlock). **Batch 2 = Milestones D–F** (full algebra/aggregation, CONSTRUCT/
 DESCRIBE/JSON results, conformance push).
 
+## ⏵ SESSION 2026-05-30 — SPARQL evaluation-conformance gate (foundation BUILT; corpus vendoring is the open task)
+
+The IMMEDIATE-NEXT "complete SPARQL 1.2 + its eval-conformance gate" is underway. The gate's spec-independent
+foundation is **built, committed, green** (baseline unchanged at 6 ShaclValidate failures, 0 regressions):
+- **`6394292` — results reader + eval comparer.** New **production** `src/Lumoin.Veritas.Sparql/Results/`:
+  `SparqlResultSet` (the SELECT head+solutions / ASK boolean model shared by the W3C results serializations) +
+  `SparqlResultsXmlReader` (reads the `.srx` XML: uri/literal/typed/lang/bnode/**triple** binding values + ASK
+  boolean; DTD prohibited; triple terms parsed over an explicit stack). **User decision: results serialization is
+  first-class SPARQL 1.2 — build the FULL reader/writer family in final form (XML + JSON readers AND writers, then
+  CSV/TSV).** So still TODO in production: `SparqlResultsJsonReader` (`.srj`), and the XML/JSON/CSV/TSV **writers**.
+  Test-only `SparqlResultComparer` (Conformance/): SELECT multiset (bag) equivalence under blank-node isomorphism via
+  iterative backtracking (no recursion), ordered compare for ORDER BY, ASK boolean; ground fast-path by row-key count.
+  13 unit tests.
+- **`632c3d5` — eval harness wired end-to-end.** `W3cTestType.SparqlQueryEvaluation` + `W3cTestCase.QueryDataPath`;
+  `W3cManifestLoader` classifies `mf:QueryEvaluationTest` and builds its case from the `qt:query`/`qt:data` action
+  bnode (+ `mf:result`); `W3cSparqlEvalRunner` builds the engine over `qt:data`, runs parse→normalize→translate→
+  execute, builds a `SparqlResultSet`, reads the expected `.srx`, compares. **Honest skips** (Inconclusive, not pass):
+  CONSTRUCT/DESCRIBE (no graph construction yet), `.srj` (no JSON reader yet), any `NotSupportedException` operator;
+  a wrong answer FAILS. `W3cSparqlEvalTests` runs the hand-authored `Material/Sparql/eval-smoke` manifest (SELECT bag,
+  ASK, ORDER BY ordered, FILTER) — 4 tests green.
+
+▶ **NEXT (this is task #4, IN PROGRESS): vendor the real W3C SPARQL evaluation corpus and drive it green.** The user
+chose **smoke-fixtures-first** (done) **then vendor as a follow-up**. Concretely: vendor `sparql11/data-sparql11/` +
+the `sparql12/*` eval dirs from the W3C rdf-tests repo under `test/Lumoin.Veritas.Tests/Material/Sparql/<suite>/`
+(with an `ATTRIBUTION.md`), add a `[W3cManifestData("Sparql","<suite>")]` method per vendored suite to
+`W3cSparqlEvalTests`, then measure and classify. Expect to need, in rough order: the `.srj` JSON results reader (many
+sparql12 expected files are JSON); CONSTRUCT/DESCRIBE **result construction** (engine yields solutions, not quads —
+needs a template-instantiation step producing a graph, then compare via the existing CONSTRUCT/quad path);
+`BNODE`/named-graphs(`GRAPH`+quad backend)/`SERVICE`(exclude offline)/negated-property-set/directional fns; full
+numeric/decimal typing. The 5 SHACL-SPARQL **pre-binding** tests fall out of SPARQL pre-binding substitution/scoping
+([[feedback_sparql_before_shacl]]); `nodeKind property 001` is the separate RDFC-1.0 rewrite ([[project_rdfc_automorphism_gap]]).
+The engine (`SparqlQueryEngine`) already executes BGP/JOIN/UNION/MINUS/FILTER/BIND/OPTIONAL/ORDER BY/VALUES/sub-SELECT/
+aggregation/property-paths/EXISTS; its public surface firms up as the gate's first real consumer. Build/test per
+[[feedback_build_test_command_shape]] (PowerShell; `& "test\…\Lumoin.Veritas.Tests.exe" --filter …`).
+
 ## ⏵ CURRENT WORK — Parser error-recovery batch (prerequisite before Milestone B)
 
 A separate handoff doc, **"Parser error recovery — Handoff"** (companion to
