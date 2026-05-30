@@ -93,21 +93,26 @@ lives on `SparqlExpressionContext` (`BaseIri` + `WithBaseIri`, the per-query eva
 resolved via Core `IriResolver`; the eval runner derives the effective base from the prologue's last `BASE` (else the
 external file-URL base). The whole `functions` suite is green.
 
-▶ **NEXT (task #4 cont.): RATCHET THE 12 EVAL REDS DOWN.** Clusters, biggest-yield first (read failing names: run
-the Tests.exe **via the Bash tool** `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe" --filter
-"FullyQualifiedName~W3cSparqlEval" > tempdocs/test-run.txt 2>&1` then Grep the file — see [[feedback_build_test_command_shape]];
-PowerShell pipes/redirects and Bash `cd &&` compounds all PROMPT, the Bash-exe-with-`>` form does not; if the Bash
-cwd drifts, a bare `cd /c/projektit/Lumoin.Veritas` resets it):
-**(1) property-path on empty dataset** — `* / ? with start/end constant on the empty dataset` (4) — `?s :p* :o` over
-an EMPTY graph must yield `?s=:o` (the ZERO-LENGTH path is reflexive over the endpoint, even when the endpoint is a
-constant absent from the data). Today an absent constant short-circuits the path to empty (`EvaluatePathAsync` /
-`ResolveEndpoint` — a `TermId.None` endpoint returns no rows). The `*`/`?` reflexive case must bind the endpoint to
-itself regardless. **(2) RDF-star tail** — `Reified triples - Pattern - Nesting 1` (nested reified triple as subject —
-the inner reifier join must chain), `Embedded triple - value-equality` & `ordering` (triple-term value comparison in
-FILTER/ORDER BY), plus `triple on triple terms` and the variable-bearing quoted-triple-term structural matching
-(currently skipped — the real remaining executor slice). **(3) correlated `NOT EXISTS`** — `Calculate proper subset`.
-**(4) `xsd:boolean` non-canonical lexicals** (`case-insensitive booleans` — TRUE/FALSE/1/0 EBV). **(5) sub-SELECT
-scoping** (sq11/sq13). Bigger backends behind many skips: CONSTRUCT/DESCRIBE **result
+✅ **MORE CLUSTERS CLEARED (2026-05-31): eval reds 12 → 6.** (a) zero-length `*`/`?` path is reflexive over an absent
+constant endpoint (`dd79dde` — `?s :p* :o` over an empty graph yields `?s=:o`; `EmitReflexiveSelfBinding` in
+`EvaluatePathAsync`) — property-path suite green; (b) boolean literals `TRUE`/`False` are case-insensitive keywords
+(`c461789` — lexer `Ci`-matches, canonical lower-case); (c) triple terms compare for `=` by value, component-wise
+(`897379f` — `TripleTermValueEqual`; `<<( :a :b 123 )>> = <<( :a :b 123.0 )>>`).
+
+▶ **NEXT (task #4 cont.): THE LAST 6 EVAL REDS** — each is a substantial, specialized slice (deserves focused work,
+not a tail-of-session rush). Read failing names via the Bash tool `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe"
+--filter "FullyQualifiedName~W3cSparqlEval" > tempdocs/test-run.txt 2>&1` then Grep (see [[feedback_build_test_command_shape]];
+no PowerShell pipes/redirects, no Bash `cd &&` compounds; bare `cd /c/projektit/Lumoin.Veritas` resets a drifted cwd):
+**(1) directional language strings (RDF 1.2 `rdf:dirLangString`)** — `STRLANG` (3-arg with base direction) +
+`CONCAT and rdf:dirLangString` (`lang-basedir` suite): needs `"x"@en--ltr` lexing, the `Literal.BaseDirection`
+already on the term model, CONCAT/STRLANG dir-aware result typing, and the `.srj` reader's `its:dir`. A small but
+multi-part feature. **(2) RDF-star tail** — `Reified triples - Pattern - Nesting 1` (nested reified-triple SUBJECT —
+the inner reifier join must chain), `Embedded triple - ordering` (`order-by.rq` — a 20-way UNION of
+sub-SELECT/ORDER BY/OFFSET/LIMIT slices; really a sub-SELECT-ordering test), `triple on triple terms` (the TRIPLE()
+constructor / variable-bearing quoted-triple structural matching — the real remaining executor slice, currently
+skipped when a quoted triple term contains a variable). **(3) correlated `NOT EXISTS`** — `Calculate proper subset`
+(`subset-03.rq`: nested MINUS-of-MINUS with `FILTER NOT EXISTS`; the other 3 `Calculate…` set tests pass). **(4)
+sub-SELECT scoping** — sq11 (LIMIT-per-resource), sq13 (no binding injection). Bigger backends behind many skips: CONSTRUCT/DESCRIBE **result
 construction** (template-instantiation → graph, compare via the quad path), named graphs/`GRAPH`+`FROM NAMED`
 (**quad/dataset backend** — the hypertrie store is triple-only), `SERVICE` (offline-excluded), `BNODE`, directional
 fns, negated property sets, and an **RDF/XML + TriG data reader** (currently those data graphs are skipped). The
