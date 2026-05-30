@@ -37,18 +37,20 @@ internal static class SparqlKeywords
     /// <returns><c>true</c> when the identifier is a reserved word.</returns>
     public static bool TryClassify(ReadOnlySpan<byte> identifier, out SparqlTokenKind kind, out ReadOnlySpan<byte> canonical)
     {
-        //Case-sensitive forms first: the predicate shorthand and the boolean literals.
+        //The predicate shorthand `a` is case-sensitive (lower-case only). The boolean literals are case-INSENSITIVE
+        //SPARQL keywords (the W3C suite asserts TRUE/False/etc. are valid and canonicalize to lower-case "true"/
+        //"false"); match them ignoring case and intern the canonical lower-case payload.
         if(identifier.SequenceEqual("a"u8))
         {
             return Yield(SparqlTokenKind.A, "a"u8, out kind, out canonical);
         }
 
-        if(identifier.SequenceEqual("true"u8))
+        if(Ci(identifier, "true"u8))
         {
             return Yield(SparqlTokenKind.BooleanLiteral, "true"u8, out kind, out canonical);
         }
 
-        if(identifier.SequenceEqual("false"u8))
+        if(Ci(identifier, "false"u8))
         {
             return Yield(SparqlTokenKind.BooleanLiteral, "false"u8, out kind, out canonical);
         }
