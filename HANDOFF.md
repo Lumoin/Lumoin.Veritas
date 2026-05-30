@@ -37,19 +37,35 @@ foundation is **built, committed, green** (baseline unchanged at 6 ShaclValidate
   a wrong answer FAILS. `W3cSparqlEvalTests` runs the hand-authored `Material/Sparql/eval-smoke` manifest (SELECT bag,
   ASK, ORDER BY ordered, FILTER) — 4 tests green.
 
-▶ **NEXT (this is task #4, IN PROGRESS): vendor the real W3C SPARQL evaluation corpus and drive it green.** The user
-chose **smoke-fixtures-first** (done) **then vendor as a follow-up**. Concretely: vendor `sparql11/data-sparql11/` +
-the `sparql12/*` eval dirs from the W3C rdf-tests repo under `test/Lumoin.Veritas.Tests/Material/Sparql/<suite>/`
-(with an `ATTRIBUTION.md`), add a `[W3cManifestData("Sparql","<suite>")]` method per vendored suite to
-`W3cSparqlEvalTests`, then measure and classify. Expect to need, in rough order: the `.srj` JSON results reader (many
-sparql12 expected files are JSON); CONSTRUCT/DESCRIBE **result construction** (engine yields solutions, not quads —
-needs a template-instantiation step producing a graph, then compare via the existing CONSTRUCT/quad path);
-`BNODE`/named-graphs(`GRAPH`+quad backend)/`SERVICE`(exclude offline)/negated-property-set/directional fns; full
-numeric/decimal typing. The 5 SHACL-SPARQL **pre-binding** tests fall out of SPARQL pre-binding substitution/scoping
-([[feedback_sparql_before_shacl]]); `nodeKind property 001` is the separate RDFC-1.0 rewrite ([[project_rdfc_automorphism_gap]]).
-The engine (`SparqlQueryEngine`) already executes BGP/JOIN/UNION/MINUS/FILTER/BIND/OPTIONAL/ORDER BY/VALUES/sub-SELECT/
-aggregation/property-paths/EXISTS; its public surface firms up as the gate's first real consumer. Build/test per
-[[feedback_build_test_command_shape]] (PowerShell; `& "test\…\Lumoin.Veritas.Tests.exe" --filter …`).
+✅ **Result writers (full family) landed** (`698c208` XML+JSON; `f44598b` unified streaming CSV/TSV — one
+`SparqlResultsDelimitedWriter` over `IAsyncEnumerable<SparqlSolution>`, in `Sparql` since no bannable dep). XML/JSON
+read+write round-trip; CSV/TSV are write-only (CSV read-back is lossy/undefined; a TSV reader needs a Turtle-term
+parser — deferred).
+
+✅ **Conformance suite SET UP and GREEN** (`e57a988`). Vendored 10 query-eval suites from the same pinned commit
+`674da26` (`Material/Sparql/{aggregates,bind,bindings,exists,grouping,negation,project-expression,subquery}` +
+sparql12 `{expression,eval-triple-terms}`; ATTRIBUTION updated). `W3cSparqlEvalTests` has one `[W3cManifestData]`
+method per suite + a `KnownGaps` dict (keyed by `mf:name`) mirroring the syntax suite. **89 SPARQL evaluation tests
+pass, 0 fail**, rest inconclusive. The runner skips structurally on CONSTRUCT/DESCRIBE, unsupported operators
+(`GRAPH`/`SERVICE`), non-query-eval manifest entries, and unreadable data graphs (RDF/XML, TriG).
+
+▶ **NEXT (task #4 cont.): DRIVE THE EVAL GAPS DOWN + widen the corpus.** The documented `KnownGaps` frontier (in
+`W3cSparqlEvalTests`), by cluster, biggest-yield first: **(1) aggregate/arithmetic numeric-tower typing** (SUM/AVG
+over xsd:decimal/integer must promote properly, not go double — ~9 tests + GROUP_CONCAT ×3); **(2) RDF-star
+triple-term pattern matching** (the BGP matcher can't bind vars inside quoted triple terms — ~17 tests, a real
+executor slice; the engine's `TryEncodePosition` throws on nested triple terms today); **(3) correlated `NOT EXISTS`
+set semantics** (4 negation tests); **(4) sub-SELECT scoping** (sq11/sq13); **(5) `xsd:boolean` non-canonical
+lexicals**; **(6) trailing VALUES + UNDEF**. Then widen: vendor more suites (`functions`, `cast`, `property-path`,
+sparql12 `grouping`/`lang-basedir`/`codepoint-escapes`) — beware the sparql11/sparql12 `grouping` name collision
+(prefix the sparql12 one). Bigger backends still deferred: CONSTRUCT/DESCRIBE **result construction**
+(template-instantiation → graph, compare via the quad path), named graphs/`GRAPH`+`FROM NAMED` (**quad/dataset
+backend** — a real change; the hypertrie store is triple-only), `SERVICE` (exclude offline), `BNODE`, directional
+fns, negated property sets. The 5 SHACL-SPARQL **pre-binding** tests fall out of SPARQL pre-binding
+substitution/scoping ([[feedback_sparql_before_shacl]]); `nodeKind property 001` is the separate RDFC-1.0 rewrite
+([[project_rdfc_automorphism_gap]]). To re-vendor, shallow-fetch the pinned commit:
+`git init … && git fetch --depth 1 origin 674da267646573441808560564451fe5cc77aef7 && git checkout FETCH_HEAD`, then
+copy `sparql/sparql11/<dir>` / `sparql/sparql12/<dir>` into `Material/Sparql/<dir>`. Build/test per
+[[feedback_build_test_command_shape]] (PowerShell; `& "test\…\Lumoin.Veritas.Tests.exe" --filter "FullyQualifiedName~W3cSparqlEval"`).
 
 ## ⏵ CURRENT WORK — Parser error-recovery batch (prerequisite before Milestone B)
 
