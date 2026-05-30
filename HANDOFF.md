@@ -24,9 +24,27 @@ direction-aware (keeps the `(lang, dir)` pair only when every arg shares it exac
 **(d)** NEW canonical `TextDirections` helper in `Lumoin.Veritas.Core` (beside the `TextDirection` enum):
 `LtrToken`/`RtlToken`, UTF-8 `Ltr`/`Rtl`, `ToToken`, `TryParse(ReadOnlySpan<byte>)`/`TryParse(string)` — the single
 home for the `"ltr"`/`"rtl"` tokens (the user enforced: no re-typed raw literals —
-[[feedback_centralize_wellknown_constants]]); evaluator + JSON reader + `RdfTermJsonConverter` route through it
-(NQuads/Canonicalization still inline — a follow-up consolidation). The SPARQL lexer/parser already produced
-`Literal.BaseDirection` for `"x"@en--ltr`, so no parser work was needed.
+[[feedback_centralize_wellknown_constants]]); evaluator + JSON reader + `RdfTermJsonConverter` + `NQuadsReader` +
+Canonicalization `NQuadsSerializer` route through it. The SPARQL lexer/parser already produced
+`Literal.BaseDirection` for `"x"@en--ltr`, so no parser work was needed. **Follow-on commits this session:**
+`d1b4655` (TextDirections given the full `WellKnownMediaTypes` shape — `static readonly` canonical instances `Ltr`/
+`Rtl`, `IsLtr`/`IsRtl`, `Equals` with a `ReferenceEquals` fast-path + ORDINAL compare since RDF directions are
+case-sensitive, `GetCanonicalizedValue`, `ToToken`/`ToText`/`TryParse`, UTF-8 `LtrUtf8`/`RtlUtf8`); `65820b1`
+(`SparqlResultsJsonWriter` emits `its:dir` — a dirLangString round-trip fix, the writer was dropping direction);
+`79c4533` (`SparqlResultsJsonWriter`/`SparqlResultsXmlWriter` `WriteToBytes`→`WriteToUtf8String` returning
+`Utf8String`, not a naked `byte[]` — [[feedback_no_naked_byte_arrays]]). HEAD `79c4533`, tree clean.
+
+⏸ **DEFERRED CLEANUPS (user 2026-05-31: "do these fixes as the LAST thing — feature work first").** Three
+raw-string / well-known issues to mop up after the eval reds: **(1)** `SparqlExpressionEvaluator` re-defines ~9
+XSD/RDF datatype IRIs (`XsdString`/`XsdInteger`/`XsdDouble`/`XsdBoolean`/`RdfLangString`/`RdfDirLangString`/
+`XsdDateTime`/`XsdDecimal`/`XsdDayTimeDuration`) as local `Utf8String`s — all already in `Vocabulary.Xsd.*`/
+`Vocabulary.Rdf.*` (Core); route through `Vocabulary`, delete the dupes ([[feedback_centralize_wellknown_constants]]).
+**(2)** SPARQL-Results JSON/XML format names: the JSON reader inlines ~18 well-known SRJ tokens (`type`/`value`/
+`head`/`vars`/`results`/`bindings`/`boolean`/`uri`/`bnode`/`literal`/`typed-literal`/`triple`/`subject`/`predicate`/
+`object`/`xml:lang`/`its:dir`/`datatype`) while the writer has only 5 constants — centralize into a shared names
+holder (both `string` for the STJ reader and UTF-8 `u8` for the writer). **(3)** `.srx` reader+writer have NO
+base-direction support (same round-trip gap the `.srj` writer just had) — first verify the SPARQL 1.2 Results XML
+representation of base direction (no `.srx` directional fixtures in the corpus), then implement read+write.
 
 ▶ **NEXT: the last 4 eval reds** — see the "THE LAST 6 EVAL REDS" block further down for per-test pointers. In
 brief: nested reified-triple subject matching + variable-bearing quoted-triple structural matching (`triple on
