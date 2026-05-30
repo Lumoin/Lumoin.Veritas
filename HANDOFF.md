@@ -6,7 +6,28 @@ AST → algebra → translator → hypertrie backend + executor subset → SHACL
 unlock). **Batch 2 = Milestones D–F** (full algebra/aggregation, CONSTRUCT/
 DESCRIBE/JSON results, conformance push).
 
-## ⏵ SESSION 2026-05-30 — SPARQL evaluation-conformance gate (foundation BUILT; corpus vendoring is the open task)
+## ⭐ CURRENT STATE (2026-05-31, HEAD `0125d4e`, tree clean)
+
+Driving the **complete official W3C SPARQL query-evaluation corpus** to green (red-baseline + ratchet — the whole
+suite is the fixed stick, NOT a curated subset; see [[project_sparql_conformance_baseline]]). **Full suite = 12
+failures (6 ShaclValidate long-standing baseline + 6 SparqlQueryEvaluation), ~3015 pass, 129 skip; 0 regressions.**
+SPARQL eval reds driven **53 → 6** across 2026-05-30/31. The results-serialization family (XML/JSON readers+writers,
+streaming CSV/TSV writer) is built; the eval harness + complete corpus are vendored and wired.
+
+▶ **NEXT: the last 6 eval reds** — each a specialized slice; see the "THE LAST 6 EVAL REDS" block further down for
+per-test pointers. In brief: directional language strings (`rdf:dirLangString`), nested reified-triple subject
+matching + variable-bearing quoted-triple structural matching (`triple on triple terms`), the `order-by.rq` 20-way
+sub-SELECT-ordering test, correlated `NOT EXISTS` (`subset-03`), sub-SELECT scoping (sq11/sq13). Then the 5
+SHACL-SPARQL pre-binding tests + the SHACL `nodeKind` RDFC-1.0 case ([[project_rdfc_automorphism_gap]]).
+
+⚙ **Build/test without permission prompts** ([[feedback_build_test_command_shape]]): bare `dotnet build <proj>
+-clp:ErrorsOnly --nologo` (no pipe); run the exe via the **Bash tool** `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe"
+--filter "FullyQualifiedName~W3cSparqlEval" > tempdocs/test-run.txt 2>&1` then Grep/Read the file. NO PowerShell
+pipes/redirects, NO Bash `cd &&` compounds (all prompt). If the Bash cwd drifts, a bare `cd /c/projektit/Lumoin.Veritas`
+resets it. Run the suite once per batch. Style: switch EXPRESSIONS not switch-statements; no `ToUpper`/`ToLower`;
+compact `case` blocks (no blank lines); prefer the sound architecture over minimizing churn (0 backward-compat need).
+
+## ⏵ SESSION 2026-05-30/31 — SPARQL evaluation-conformance gate (historical log; see ⭐ CURRENT STATE above for the live status)
 
 The IMMEDIATE-NEXT "complete SPARQL 1.2 + its eval-conformance gate" is underway. The gate's spec-independent
 foundation is **built, committed, green** (baseline unchanged at 6 ShaclValidate failures, 0 regressions):
