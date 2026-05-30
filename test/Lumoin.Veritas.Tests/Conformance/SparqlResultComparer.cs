@@ -259,6 +259,16 @@ internal static class SparqlResultComparer
             return actualNumber.Kind == expectedNumber.Kind && NumericValue.Compare(actualNumber, expectedNumber) == ComparisonResult.Equal;
         }
 
+        //Language-tagged literals match on the same lexical value and a CASE-INSENSITIVE language tag: BCP47 tags
+        //are case-insensitive (RDF compares them so), and the W3C expected files often canonicalize a tag to
+        //lower-case (e.g. STRLANG(?o,"en-US") expected as @en-us). Datatype + value must still match exactly.
+        if(actual is Literal actualLang && actualLang.Language is { } al
+            && expected is Literal expectedLang && expectedLang.Language is { } el)
+        {
+            return actualLang.Value.Equals(expectedLang.Value)
+                && string.Equals(al.ToString(), el.ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+
         return actual.Equals(expected);
     }
 
@@ -389,29 +399,43 @@ internal static class SparqlResultComparer
     /// <returns>The rendered term.</returns>
     private static string RenderLeaf(RdfTerm term)
     {
-        switch(term)
+        return term switch
         {
-            case NamedNode named:
-            {
-                return "<" + named.Iri.ToString() + ">";
-            }
-            case Literal literal when literal.Language is { } language:
-            {
-                return "\"" + literal.Value.ToString() + "\"@" + language.ToString();
-            }
-            case Literal literal when NumericValue.TryParse(literal.Value.ToString(), literal.Datatype.Iri, out NumericValue number):
-            {
-                return "#" + number.Kind + ":" + number.ToCanonicalLexical();
-            }
-            case Literal literal:
-            {
-                return "\"" + literal.Value.ToString() + "\"^^<" + literal.Datatype.Iri.ToString() + ">";
-            }
-            default:
-            {
-                return term.ToString() ?? string.Empty;
-            }
+            NamedNode named => "<" + named.Iri.ToString() + ">",
+
+            //Case-fold the BCP47 tag (ASCII by definition) so two rows differing only in tag case share one key,
+            //matching the case-insensitive compare in TermsMatch.
+            Literal { Language: { } language } literal => "\"" + literal.Value.ToString() + "\"@" + FoldAsciiCase(language.ToString()),
+            Literal literal when NumericValue.TryParse(literal.Value.ToString(), literal.Datatype.Iri, out NumericValue number) => "#" + number.Kind + ":" + number.ToCanonicalLexical(),
+            Literal literal => "\"" + literal.Value.ToString() + "\"^^<" + literal.Datatype.Iri.ToString() + ">",
+            _ => term.ToString() ?? string.Empty
+        };
+    }
+
+    /// <summary>Folds an ASCII string to upper case for use as a canonical key, without a culture-sensitive case transform (BCP47 language tags are ASCII letters, digits, and hyphens). Returns the input unchanged — allocating nothing — when it has no lower-case letter.</summary>
+    /// <param name="value">The ASCII string.</param>
+    /// <returns>The case-folded string.</returns>
+    private static string FoldAsciiCase(string value)
+    {
+        ReadOnlySpan<char> span = value;
+        int first = span.IndexOfAnyInRange('a', 'z');
+        if(first < 0)
+        {
+            return value;
         }
+
+        return string.Create(value.Length, (value, first), static (destination, state) =>
+        {
+            (string source, int from) = state;
+            source.AsSpan().CopyTo(destination);
+            for(int i = from; i < destination.Length; i++)
+            {
+                if(destination[i] is >= 'a' and <= 'z')
+                {
+                    destination[i] = (char)(destination[i] - 32);
+                }
+            }
+        });
     }
 
     /// <summary>Returns whether any solution binds a term that is, or transitively contains, a blank node.</summary>
