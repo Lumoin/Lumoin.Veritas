@@ -64,18 +64,27 @@ comparison, ABS/CEIL/FLOOR/ROUND (kind-preserving), COUNT/STRLEN/date→integer,
 `SparqlResultComparer` now matches numeric literals by VALUE within a kind (W3C expected files use non-canonical
 forms like `"2100"` for xsd:double). **Full-suite baseline now 6 ShaclValidate + 40 eval; 0 regressions.**
 
-▶ **NEXT (task #4 cont.): RATCHET THE 40 EVAL REDS DOWN.** Clusters, biggest-yield first (read failing names: run
+✅ **WCOJ CROSS-PRODUCT BUG FIXED (2026-05-30, `d891fc4`): eval reds 40 → 33.** A real Core correctness bug (not just
+a conformance gap): a BGP with two patterns sharing a variable but each carrying its own INDEPENDENT further variable
+— `{?s :p ?o1 ; :q ?o2}` — collapsed to the first outer value's slice (3 rows, not the 9-row cross product). In the
+leapfrog driver (`BasicGraphPatternEvaluator`), when an outer variable re-bound during backtracking an iterator
+enumerating only a deeper independent variable was left `AtEnd` and off the open-frames stack; the planner's Rule 1
+(any iterator `AtEnd` → SkipBranch) then skipped the whole branch. Fix: `TryAdvance` now reseeds (resets the current
+level of) every non-participant iterator left `AtEnd` after a re-bind, via new `EdgeMapKeyCursor.Reset()` +
+`TriejoinIterator.RestartCurrentLevel()`. Cleared COUNT 8b, 3 of 4 negation set-tests, a reifier test. Core-level
+regression test added (the hypertrie suite had none for this shape). **⚠ This silently corrupted ANY query with
+independent object variables on a shared subject — worth noting for the verifiable sister project.**
+
+▶ **NEXT (task #4 cont.): RATCHET THE 33 EVAL REDS DOWN.** Clusters, biggest-yield first (read failing names: run
 the Tests.exe **via the Bash tool** `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe" --filter
 "FullyQualifiedName~W3cSparqlEval" > tempdocs/test-run.txt 2>&1` then Grep the file — see [[feedback_build_test_command_shape]];
 PowerShell pipes/redirects and Bash `cd &&` compounds all PROMPT, the Bash-exe-with-`>` form does not):
-**(1) sub-SELECT-with-aggregate / GROUP-BY-expression** — the 4 remaining aggregate reds (GROUP_CONCAT ×3 + COUNT 8b)
-are NOT the aggregate fns (a standalone GROUP_CONCAT engine test passes, `f59e0ec`); they fail when an aggregated
-SELECT is nested in a sub-SELECT (`ToMultiSet`) and FILTERed, and COUNT 8b groups by `((?O1+?O2) AS ?O12)` — produces
-3 groups vs expected 5, so a `GroupExpressionAs` key partitions wrong (look at `SparqlQueryEngine.EvaluateGroupKey`/
-`Partition` and how `ToMultiSet` over an `AggregateJoin` evaluates). Shared with `sq08`. **(2) RDF-star triple-term
-pattern matching** (~17 `Reified triples - …`/`eval-triple-terms`)
+**(1) RDF-star triple-term pattern matching** (~17 `Reified triples - …`/`eval-triple-terms` — now the BIGGEST cluster)
 — the BGP matcher can't bind vars inside quoted triple terms; `SparqlQueryEngine.TryEncodePosition` throws on a
 nested `Ast.TripleTerm` today — a real executor slice (encode/decode quoted-triple positions through the term dict).
+**(1b) sub-SELECT-with-aggregate** — GROUP_CONCAT ×3 (a standalone GROUP_CONCAT engine test passes, `f59e0ec`; they
+fail only when an aggregated SELECT is nested in a sub-SELECT (`ToMultiSet`) and FILTERed) + `sq08`. (COUNT 8b is now
+FIXED by the WCOJ fix — the 3-vs-5 groups was the cross-product collapse, not a grouping bug.)
 **(3) `functions`/`cast`** — remaining built-in/cast gaps now that the numeric tower is in: `UCASE`/`LCASE`/`STRLANG`/
 `IRI()/URI()`/`CONCAT() 2`/`CONCAT and rdf:dirLangString` (string/lang-tag handling), plus `* / ? with start/end
 constant on the empty dataset` (property-path on empty data). **(4) correlated `NOT EXISTS` set semantics** (4
