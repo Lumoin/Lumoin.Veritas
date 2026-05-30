@@ -85,19 +85,29 @@ runner SKIPS it (structural matching = a later slice). `eval-triple-terms` 15→
 `ReifiedTripleSubjectMatchesViaBlankNodeJoin`. **⚠ The blank-node-as-join-variable fix is general — it affects every
 query with a blank node, not just RDF-star; relevant to the verifiable sister project.**
 
-▶ **NEXT (task #4 cont.): RATCHET THE 16 EVAL REDS DOWN.** Clusters, biggest-yield first (read failing names: run
+✅ **FUNCTIONS/CAST CLUSTER GREEN (2026-05-31): eval reds 16 → 12.** (a) UCASE/LCASE preserve the argument's language
+tag (`12faaa4` — was dropping it to xsd:string); (b) `SparqlResultComparer` matches language tags case-insensitively
+(`e26ab2e` — BCP47 tags are case-insensitive, W3C expected files canonicalize to lower-case) — cleared STRLANG/CONCAT
++ STRLANG TypeErrors; (c) IRI()/URI() resolve a relative argument against the query base (`6abb035`) — base IRI now
+lives on `SparqlExpressionContext` (`BaseIri` + `WithBaseIri`, the per-query evaluation environment alongside NOW),
+resolved via Core `IriResolver`; the eval runner derives the effective base from the prologue's last `BASE` (else the
+external file-URL base). The whole `functions` suite is green.
+
+▶ **NEXT (task #4 cont.): RATCHET THE 12 EVAL REDS DOWN.** Clusters, biggest-yield first (read failing names: run
 the Tests.exe **via the Bash tool** `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe" --filter
 "FullyQualifiedName~W3cSparqlEval" > tempdocs/test-run.txt 2>&1` then Grep the file — see [[feedback_build_test_command_shape]];
 PowerShell pipes/redirects and Bash `cd &&` compounds all PROMPT, the Bash-exe-with-`>` form does not; if the Bash
 cwd drifts, a bare `cd /c/projektit/Lumoin.Veritas` resets it):
-**(1) `functions`/`cast` string+lang gaps** — `UCASE`/`LCASE`/`STRLANG`/`STRLANG() TypeErrors`/`IRI()/URI()`/`CONCAT
-and rdf:dirLangString` (string + language-tag/dir handling). **(2) property-path on empty dataset** — `* / ? with
-start/end constant on the empty dataset` (4). **(3) RDF-star tail** — `Reified triples - Pattern - Nesting 1`
-(nested reified triple as subject — the inner reifier join must chain), `Embedded triple - value-equality` &
-`ordering` (triple-term value comparison in FILTER/ORDER BY), plus `triple on triple terms` and the variable-bearing
-quoted-triple-term structural matching (currently skipped — the real remaining executor slice). **(4) correlated
-`NOT EXISTS`** — `Calculate proper subset`. **(5) `xsd:boolean` non-canonical lexicals** (`case-insensitive booleans`
-— TRUE/FALSE/1/0 EBV). **(6) sub-SELECT scoping** (sq11/sq13). Bigger backends behind many skips: CONSTRUCT/DESCRIBE **result
+**(1) property-path on empty dataset** — `* / ? with start/end constant on the empty dataset` (4) — `?s :p* :o` over
+an EMPTY graph must yield `?s=:o` (the ZERO-LENGTH path is reflexive over the endpoint, even when the endpoint is a
+constant absent from the data). Today an absent constant short-circuits the path to empty (`EvaluatePathAsync` /
+`ResolveEndpoint` — a `TermId.None` endpoint returns no rows). The `*`/`?` reflexive case must bind the endpoint to
+itself regardless. **(2) RDF-star tail** — `Reified triples - Pattern - Nesting 1` (nested reified triple as subject —
+the inner reifier join must chain), `Embedded triple - value-equality` & `ordering` (triple-term value comparison in
+FILTER/ORDER BY), plus `triple on triple terms` and the variable-bearing quoted-triple-term structural matching
+(currently skipped — the real remaining executor slice). **(3) correlated `NOT EXISTS`** — `Calculate proper subset`.
+**(4) `xsd:boolean` non-canonical lexicals** (`case-insensitive booleans` — TRUE/FALSE/1/0 EBV). **(5) sub-SELECT
+scoping** (sq11/sq13). Bigger backends behind many skips: CONSTRUCT/DESCRIBE **result
 construction** (template-instantiation → graph, compare via the quad path), named graphs/`GRAPH`+`FROM NAMED`
 (**quad/dataset backend** — the hypertrie store is triple-only), `SERVICE` (offline-excluded), `BNODE`, directional
 fns, negated property sets, and an **RDF/XML + TriG data reader** (currently those data graphs are skipped). The
