@@ -47,6 +47,7 @@ internal static class W3cManifestLoader
     private const string RdfNamespace = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
     private const string RdfsNamespace = "http://www.w3.org/2000/01/rdf-schema#";
     private const string ShtNamespace = "http://www.w3.org/ns/shacl-test#";
+    private const string QtNamespace = "http://www.w3.org/2001/sw/DataAccess/tests/test-query#";
 
     /// <summary>
     /// Loads a manifest synchronously, suitable for use from
@@ -343,6 +344,17 @@ internal static class W3cManifestLoader
                 continue;
             }
 
+            if(type == W3cTestType.SparqlQueryEvaluation)
+            {
+                W3cTestCase? evalTest = BuildSparqlEvalTest(entry, properties, bySubject, manifestUri, typeIri, name, comment, originManifest);
+                if(evalTest is not null)
+                {
+                    builder.Add(evalTest);
+                }
+
+                continue;
+            }
+
             string? actionTerm = FindObject(properties, MfNamespace + "action");
             string? resultTerm = FindObject(properties, MfNamespace + "result");
 
@@ -437,6 +449,73 @@ internal static class W3cManifestLoader
             ExpectedReportTerm: expectedReportTerm);
     }
 
+    /// <summary>
+    /// Builds one SPARQL <c>mf:QueryEvaluationTest</c> case from its action and result. The action is a blank node
+    /// carrying <c>qt:query</c> (the query file) and an optional <c>qt:data</c> (the default-graph data file); the
+    /// <c>mf:result</c> is the expected-result sibling file. Returns <c>null</c> when the query reference is absent
+    /// or unresolvable.
+    /// </summary>
+    /// <remarks>
+    /// A test with <c>qt:graphData</c> (named-graph data) is still built — its default-graph data and expected
+    /// result resolve normally — and the runner decides whether it can execute it; this loader does not yet thread
+    /// named-graph files through, so such a test runs against its default graph only.
+    /// </remarks>
+    /// <param name="entry">The test entry subject key.</param>
+    /// <param name="properties">The entry subject's quads.</param>
+    /// <param name="bySubject">The per-subject quad index.</param>
+    /// <param name="manifestUri">The manifest's absolute file URI.</param>
+    /// <param name="typeIri">The raw <c>rdf:type</c> IRI.</param>
+    /// <param name="name">The test name.</param>
+    /// <param name="comment">The test comment.</param>
+    /// <param name="originManifest">The declaring manifest's local path.</param>
+    /// <returns>The SPARQL evaluation test case, or <c>null</c> when it cannot be built.</returns>
+    private static W3cTestCase? BuildSparqlEvalTest(
+        string entry,
+        List<Quad> properties,
+        Dictionary<string, List<Quad>> bySubject,
+        Uri manifestUri,
+        string typeIri,
+        string name,
+        string comment,
+        string originManifest)
+    {
+        string? actionTerm = FindObject(properties, MfNamespace + "action");
+        if(actionTerm is null)
+        {
+            return null;
+        }
+
+        //The action is normally a blank node holding qt:query (+ qt:data); some manifests point mf:action straight
+        //at the query file. Resolve the query from the action node when it has one, else treat the action as the query.
+        string? queryTerm = bySubject.TryGetValue(actionTerm, out List<Quad>? actionProperties)
+            ? FindObject(actionProperties, QtNamespace + "query")
+            : null;
+        string? dataTerm = actionProperties is null ? null : FindObject(actionProperties, QtNamespace + "data");
+
+        string? queryPath = ResolveSiblingPath(queryTerm ?? actionTerm, manifestUri);
+        if(queryPath is null)
+        {
+            return null;
+        }
+
+        string? dataPath = dataTerm is null ? null : ResolveSiblingPath(dataTerm, manifestUri);
+        string? resultTerm = FindObject(properties, MfNamespace + "result");
+        string? expectedPath = resultTerm is null ? null : ResolveSiblingPath(resultTerm, manifestUri);
+
+        Uri testUri = TryBuildAbsoluteUri(entry) ?? new Uri(manifestUri, "#" + entry);
+
+        return new W3cTestCase(
+            testUri,
+            W3cTestType.SparqlQueryEvaluation,
+            typeIri,
+            name,
+            comment,
+            InputPath: queryPath,
+            ExpectedPath: expectedPath,
+            OriginManifest: originManifest,
+            QueryDataPath: dataPath);
+    }
+
     private static ImmutableArray<string> ResolveIncludesToPaths(List<string> rawIncludes, Uri manifestUri)
     {
         ImmutableArray<string>.Builder builder = ImmutableArray.CreateBuilder<string>(rawIncludes.Count);
@@ -523,6 +602,13 @@ internal static class W3cManifestLoader
         if(typeIri == ShtNamespace + "Validate")
         {
             return W3cTestType.ShaclValidate;
+        }
+
+        //SPARQL evaluation tests are an exact marker; matched before the generic "...Eval" / syntax arms so the
+        //"...EvaluationTest" suffix is not mistaken for a syntax or RDF-eval test.
+        if(typeIri == MfNamespace + "QueryEvaluationTest")
+        {
+            return W3cTestType.SparqlQueryEvaluation;
         }
 
         if(typeIri.Contains("PositiveSyntax", StringComparison.Ordinal))

@@ -60,6 +60,16 @@ internal enum W3cTestType
     ShaclValidate,
 
     /// <summary>
+    /// A SPARQL query-evaluation test (<c>mf:QueryEvaluationTest</c>): the
+    /// query (<c>qt:query</c>) is executed against the data graph
+    /// (<c>qt:data</c>) and its result compared to the expected
+    /// <c>mf:result</c> fixture — a SPARQL Query Results serialization for
+    /// <c>SELECT</c>/<c>ASK</c>, or an RDF graph for <c>CONSTRUCT</c>/
+    /// <c>DESCRIBE</c>.
+    /// </summary>
+    SparqlQueryEvaluation,
+
+    /// <summary>
     /// The manifest used a test type the harness does not know
     /// how to dispatch. The runner reports
     /// <see cref="W3cOutcomeStatus.Skipped"/> with the original

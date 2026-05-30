@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<sparql xmlns="http://www.w3.org/2005/sparql-results#">
+  <head><variable name="p"/><variable name="age"/></head>
+  <results>
+    <result>
+      <binding name="p"><uri>http://example.org/carol</uri></binding>
+      <binding name="age"><literal datatype="http://www.w3.org/2001/XMLSchema#integer">25</literal></binding>
+    </result>
+    <result>
+      <binding name="p"><uri>http://example.org/bob</uri></binding>
+      <binding name="age"><literal datatype="http://www.w3.org/2001/XMLSchema#integer">30</literal></binding>
+    </result>
+  </results>
+</sparql>
