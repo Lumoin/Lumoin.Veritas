@@ -1623,6 +1623,23 @@ public static class SparqlExpressionEvaluator
             return Boolean(CompareOrdered(sa.CompareTo(sb), op));
         }
 
+        //Two triple terms compare for equality by VALUE, component-wise (§17.4.1.x): the subjects, predicates, and
+        //objects each compare under these same rules — so <<( :a :b 123 )>> = <<( :a :b 123.0 )>> (integer vs decimal
+        //value-equal), even though the terms are not identical. Ordering of triple terms is not defined here.
+        if(a is Lumoin.Veritas.Core.TripleTerm ta && b is Lumoin.Veritas.Core.TripleTerm tb)
+        {
+            bool? equal = TripleTermValueEqual(ta, tb);
+
+            return equal is bool result
+                ? op switch
+                {
+                    ComparisonOp.Equal => Boolean(result),
+                    ComparisonOp.NotEqual => Boolean(!result),
+                    _ => ExpressionValue.Error
+                }
+                : ExpressionValue.Error;
+        }
+
         //Outside a common value space only equality is defined, via RDF term identity (sameTerm).
         return op switch
         {
@@ -1630,6 +1647,57 @@ public static class SparqlExpressionEvaluator
             ComparisonOp.NotEqual => Boolean(!a.Equals(b)),
             _ => ExpressionValue.Error
         };
+    }
+
+    /// <summary>
+    /// Compares two triple terms for SPARQL <c>=</c> value equality, component-wise over an explicit stack (no
+    /// recursion): predicates compare as IRIs (term identity); subjects and objects compare by value via
+    /// <see cref="Compare"/>'s rules (numeric value across the tower, string by code point, nested triple terms
+    /// recursively). Returns <see langword="null"/> when a component comparison is a type error (no shared value
+    /// space and not term-identical) so the caller can propagate the error.
+    /// </summary>
+    /// <param name="left">The left triple term.</param>
+    /// <param name="right">The right triple term.</param>
+    /// <returns><see langword="true"/>/<see langword="false"/> for a decided comparison, or <see langword="null"/> for a type error.</returns>
+    private static bool? TripleTermValueEqual(Lumoin.Veritas.Core.TripleTerm left, Lumoin.Veritas.Core.TripleTerm right)
+    {
+        Stack<(RdfTerm Left, RdfTerm Right)> work = new();
+        work.Push((left, right));
+
+        while(work.Count > 0)
+        {
+            (RdfTerm a, RdfTerm b) = work.Pop();
+            switch(a)
+            {
+                case Lumoin.Veritas.Core.TripleTerm at when b is Lumoin.Veritas.Core.TripleTerm bt:
+                {
+                    work.Push((at.Subject, bt.Subject));
+                    work.Push((at.Predicate, bt.Predicate));
+                    work.Push((at.Object, bt.Object));
+                    break;
+                }
+                case Lumoin.Veritas.Core.TripleTerm:
+                {
+                    return false;
+                }
+                default:
+                {
+                    ExpressionValue comparison = Compare(ExpressionValue.Of(a), ExpressionValue.Of(b), ComparisonOp.Equal);
+                    if(comparison.IsError)
+                    {
+                        return null;
+                    }
+
+                    if(!TryGetBoolean(comparison.Term, out bool componentEqual) || !componentEqual)
+                    {
+                        return false;
+                    }
+                    break;
+                }
+            }
+        }
+
+        return true;
     }
 
     /// <summary>Maps a sign-of-comparison (<c>&lt;0</c>/<c>0</c>/<c>&gt;0</c>) and an operator to the boolean the operator asserts.</summary>
