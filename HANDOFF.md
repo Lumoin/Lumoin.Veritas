@@ -75,21 +75,29 @@ level of) every non-participant iterator left `AtEnd` after a re-bind, via new `
 regression test added (the hypertrie suite had none for this shape). **⚠ This silently corrupted ANY query with
 independent object variables on a shared subject — worth noting for the verifiable sister project.**
 
-▶ **NEXT (task #4 cont.): RATCHET THE 33 EVAL REDS DOWN.** Clusters, biggest-yield first (read failing names: run
+✅ **RDF-STAR REIFIED-TRIPLE MATCHING (2026-05-31, `0b5bd52`): eval reds 33 → 16.** Two executor fixes: (a) a query
+blank node is now a non-distinguished JOIN VARIABLE (was wrongly a ground constant) — `TryEncodePosition` maps a
+`ConstantTerm(BlankNode)` to a fresh backend variable keyed by label, never projected; this makes a reified-triple
+subject `<< :a :b :c >>` match the data's reifier (both lower to a fresh reifier joined via `rdf:reifies <<(…)>>`).
+(b) a fully-GROUND quoted triple term `<<( … )>>` encodes as a single RDF 1.2 triple-term `TermId`
+(`TryBuildGroundTripleTerm`). A quoted triple term CONTAINING a variable still raises `NotSupportedException` → the
+runner SKIPS it (structural matching = a later slice). `eval-triple-terms` 15→3 failing. Regression test
+`ReifiedTripleSubjectMatchesViaBlankNodeJoin`. **⚠ The blank-node-as-join-variable fix is general — it affects every
+query with a blank node, not just RDF-star; relevant to the verifiable sister project.**
+
+▶ **NEXT (task #4 cont.): RATCHET THE 16 EVAL REDS DOWN.** Clusters, biggest-yield first (read failing names: run
 the Tests.exe **via the Bash tool** `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe" --filter
 "FullyQualifiedName~W3cSparqlEval" > tempdocs/test-run.txt 2>&1` then Grep the file — see [[feedback_build_test_command_shape]];
-PowerShell pipes/redirects and Bash `cd &&` compounds all PROMPT, the Bash-exe-with-`>` form does not):
-**(1) RDF-star triple-term pattern matching** (~17 `Reified triples - …`/`eval-triple-terms` — now the BIGGEST cluster)
-— the BGP matcher can't bind vars inside quoted triple terms; `SparqlQueryEngine.TryEncodePosition` throws on a
-nested `Ast.TripleTerm` today — a real executor slice (encode/decode quoted-triple positions through the term dict).
-**(1b) sub-SELECT-with-aggregate** — GROUP_CONCAT ×3 (a standalone GROUP_CONCAT engine test passes, `f59e0ec`; they
-fail only when an aggregated SELECT is nested in a sub-SELECT (`ToMultiSet`) and FILTERed) + `sq08`. (COUNT 8b is now
-FIXED by the WCOJ fix — the 3-vs-5 groups was the cross-product collapse, not a grouping bug.)
-**(3) `functions`/`cast`** — remaining built-in/cast gaps now that the numeric tower is in: `UCASE`/`LCASE`/`STRLANG`/
-`IRI()/URI()`/`CONCAT() 2`/`CONCAT and rdf:dirLangString` (string/lang-tag handling), plus `* / ? with start/end
-constant on the empty dataset` (property-path on empty data). **(4) correlated `NOT EXISTS` set semantics** (4
-`Calculate …` negation tests). **(5) sub-SELECT scoping** (sq11/sq13), **`xsd:boolean` non-canonical lexicals**
-(`case-insensitive booleans` — TRUE/FALSE/1/0 EBV), **trailing VALUES+UNDEF**. Bigger backends behind many skips: CONSTRUCT/DESCRIBE **result
+PowerShell pipes/redirects and Bash `cd &&` compounds all PROMPT, the Bash-exe-with-`>` form does not; if the Bash
+cwd drifts, a bare `cd /c/projektit/Lumoin.Veritas` resets it):
+**(1) `functions`/`cast` string+lang gaps** — `UCASE`/`LCASE`/`STRLANG`/`STRLANG() TypeErrors`/`IRI()/URI()`/`CONCAT
+and rdf:dirLangString` (string + language-tag/dir handling). **(2) property-path on empty dataset** — `* / ? with
+start/end constant on the empty dataset` (4). **(3) RDF-star tail** — `Reified triples - Pattern - Nesting 1`
+(nested reified triple as subject — the inner reifier join must chain), `Embedded triple - value-equality` &
+`ordering` (triple-term value comparison in FILTER/ORDER BY), plus `triple on triple terms` and the variable-bearing
+quoted-triple-term structural matching (currently skipped — the real remaining executor slice). **(4) correlated
+`NOT EXISTS`** — `Calculate proper subset`. **(5) `xsd:boolean` non-canonical lexicals** (`case-insensitive booleans`
+— TRUE/FALSE/1/0 EBV). **(6) sub-SELECT scoping** (sq11/sq13). Bigger backends behind many skips: CONSTRUCT/DESCRIBE **result
 construction** (template-instantiation → graph, compare via the quad path), named graphs/`GRAPH`+`FROM NAMED`
 (**quad/dataset backend** — the hypertrie store is triple-only), `SERVICE` (offline-excluded), `BNODE`, directional
 fns, negated property sets, and an **RDF/XML + TriG data reader** (currently those data graphs are skipped). The
