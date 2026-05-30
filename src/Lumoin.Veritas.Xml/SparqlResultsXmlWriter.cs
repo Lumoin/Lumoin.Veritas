@@ -1,0 +1,229 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+using System.Xml;
+using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Sparql.Execution;
+using Lumoin.Veritas.Sparql.Results;
+using TripleTerm = Lumoin.Veritas.Core.TripleTerm;
+
+namespace Lumoin.Veritas.Xml;
+
+/// <summary>
+/// Writes a <see cref="SparqlResultSet"/> in the
+/// <see href="https://www.w3.org/TR/rdf-sparql-XMLres/">SPARQL Query Results XML Format</see> (the <c>.srx</c>
+/// serialization): the <c>head</c> variables and <c>results</c> bindings of a <c>SELECT</c> result, or the
+/// <c>boolean</c> of an <c>ASK</c> result. RDF 1.2 triple-term binding values are emitted as nested
+/// <c>&lt;triple&gt;</c> elements. It is the inverse of <see cref="SparqlResultsXmlReader"/>.
+/// </summary>
+public static class SparqlResultsXmlWriter
+{
+    private const string ResultsNamespace = "http://www.w3.org/2005/sparql-results#";
+
+    private const string XmlNamespace = "http://www.w3.org/XML/1998/namespace";
+
+    /// <summary>Serializes a result set to its <c>.srx</c> bytes.</summary>
+    /// <param name="results">The result set to serialize.</param>
+    /// <returns>The UTF-8 <c>.srx</c> document bytes.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="results"/> is <see langword="null"/>.</exception>
+    public static byte[] WriteToBytes(SparqlResultSet results)
+    {
+        ArgumentNullException.ThrowIfNull(results);
+
+        using MemoryStream stream = new();
+        Write(results, stream);
+
+        return stream.ToArray();
+    }
+
+    /// <summary>Writes a result set as SPARQL Results XML to a stream.</summary>
+    /// <param name="results">The result set to serialize.</param>
+    /// <param name="stream">The destination stream.</param>
+    /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
+    public static void Write(SparqlResultSet results, Stream stream)
+    {
+        ArgumentNullException.ThrowIfNull(results);
+        ArgumentNullException.ThrowIfNull(stream);
+
+        XmlWriterSettings settings = new()
+        {
+            Indent = true,
+            Encoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)
+        };
+
+        using XmlWriter writer = XmlWriter.Create(stream, settings);
+        writer.WriteStartDocument();
+        writer.WriteStartElement("sparql", ResultsNamespace);
+
+        writer.WriteStartElement("head", ResultsNamespace);
+        foreach(Utf8String variable in results.Variables)
+        {
+            writer.WriteStartElement("variable", ResultsNamespace);
+            writer.WriteAttributeString("name", variable.ToString());
+            writer.WriteEndElement();
+        }
+
+        writer.WriteEndElement();
+
+        if(results.IsBoolean)
+        {
+            writer.WriteStartElement("boolean", ResultsNamespace);
+            writer.WriteString(results.Boolean!.Value ? "true" : "false");
+            writer.WriteEndElement();
+        }
+        else
+        {
+            WriteResults(writer, results.Solutions);
+        }
+
+        writer.WriteEndElement();
+        writer.WriteEndDocument();
+    }
+
+    /// <summary>Writes the <c>results</c> element with one <c>result</c> per solution.</summary>
+    /// <param name="writer">The XML writer.</param>
+    /// <param name="solutions">The solution sequence.</param>
+    private static void WriteResults(XmlWriter writer, IReadOnlyList<SparqlSolution> solutions)
+    {
+        writer.WriteStartElement("results", ResultsNamespace);
+        foreach(SparqlSolution solution in solutions)
+        {
+            writer.WriteStartElement("result", ResultsNamespace);
+            foreach(SparqlBinding binding in solution.Bindings)
+            {
+                writer.WriteStartElement("binding", ResultsNamespace);
+                writer.WriteAttributeString("name", binding.Variable.Name.ToString());
+                WriteTerm(writer, binding.Value);
+                writer.WriteEndElement();
+            }
+
+            writer.WriteEndElement();
+        }
+
+        writer.WriteEndElement();
+    }
+
+    /// <summary>
+    /// Writes a binding value, descending into triple terms over an explicit op stack (no recursion). A forward-only
+    /// <see cref="XmlWriter"/> needs start/end calls in order, so the stack carries explicit start/end-element ops
+    /// around each nested component.
+    /// </summary>
+    /// <param name="writer">The XML writer.</param>
+    /// <param name="root">The term to write.</param>
+    private static void WriteTerm(XmlWriter writer, RdfTerm root)
+    {
+        Stack<XmlOp> work = new();
+        work.Push(new XmlOp(XmlOpKind.Term, root, null));
+
+        while(work.Count > 0)
+        {
+            XmlOp op = work.Pop();
+            switch(op.Kind)
+            {
+                case XmlOpKind.End:
+                {
+                    writer.WriteEndElement();
+                    break;
+                }
+                case XmlOpKind.Start:
+                {
+                    writer.WriteStartElement(op.Element!, ResultsNamespace);
+                    break;
+                }
+                default:
+                {
+                    if(op.Term is TripleTerm triple)
+                    {
+                        writer.WriteStartElement("triple", ResultsNamespace);
+                        work.Push(new XmlOp(XmlOpKind.End, null, null));
+                        PushComponent(work, "object", triple.Object);
+                        PushComponent(work, "predicate", triple.Predicate);
+                        PushComponent(work, "subject", triple.Subject);
+                    }
+                    else
+                    {
+                        WriteLeaf(writer, op.Term!);
+                    }
+
+                    break;
+                }
+            }
+        }
+    }
+
+    /// <summary>Pushes the ops that write a triple component wrapper (<c>&lt;subject&gt;</c>/<c>&lt;predicate&gt;</c>/<c>&lt;object&gt;</c>) around its term, so they pop in start/term/end order.</summary>
+    /// <param name="work">The op stack.</param>
+    /// <param name="element">The wrapper element name.</param>
+    /// <param name="term">The component term.</param>
+    private static void PushComponent(Stack<XmlOp> work, string element, RdfTerm term)
+    {
+        work.Push(new XmlOp(XmlOpKind.End, null, null));
+        work.Push(new XmlOp(XmlOpKind.Term, term, null));
+        work.Push(new XmlOp(XmlOpKind.Start, null, element));
+    }
+
+    /// <summary>Writes a leaf term (an IRI, blank node, or literal) as its complete value element.</summary>
+    /// <param name="writer">The XML writer.</param>
+    /// <param name="term">The leaf term.</param>
+    /// <exception cref="NotSupportedException">The term is not a writable binding value.</exception>
+    private static void WriteLeaf(XmlWriter writer, RdfTerm term)
+    {
+        switch(term)
+        {
+            case NamedNode named:
+            {
+                writer.WriteStartElement("uri", ResultsNamespace);
+                writer.WriteString(named.Iri.ToString());
+                writer.WriteEndElement();
+                break;
+            }
+            case BlankNode blank:
+            {
+                writer.WriteStartElement("bnode", ResultsNamespace);
+                writer.WriteString(blank.Label.ToString());
+                writer.WriteEndElement();
+                break;
+            }
+            case Literal literal:
+            {
+                writer.WriteStartElement("literal", ResultsNamespace);
+                if(literal.Language is { } language)
+                {
+                    writer.WriteAttributeString("xml", "lang", XmlNamespace, language.ToString());
+                }
+                else if(!literal.Datatype.Iri.Equals(Vocabulary.Xsd.String))
+                {
+                    writer.WriteAttributeString("datatype", literal.Datatype.Iri.ToString());
+                }
+
+                writer.WriteString(literal.Value.ToString());
+                writer.WriteEndElement();
+                break;
+            }
+            default:
+            {
+                throw new NotSupportedException($"Cannot serialize term '{term.GetType().Name}' as a SPARQL Results XML binding value.");
+            }
+        }
+    }
+
+    /// <summary>The kind of an <see cref="XmlOp"/> on the term-writing stack.</summary>
+    private enum XmlOpKind
+    {
+        /// <summary>Write a term (a leaf element, or open a triple and schedule its components).</summary>
+        Term,
+
+        /// <summary>Open a named element.</summary>
+        Start,
+
+        /// <summary>Close the current element.</summary>
+        End
+    }
+
+    /// <summary>One operation on the explicit term-writing stack.</summary>
+    /// <param name="Kind">Whether to write a term, open an element, or close one.</param>
+    /// <param name="Term">The term to write (for <see cref="XmlOpKind.Term"/>).</param>
+    /// <param name="Element">The element name to open (for <see cref="XmlOpKind.Start"/>).</param>
+    private readonly record struct XmlOp(XmlOpKind Kind, RdfTerm? Term, string? Element);
+}
