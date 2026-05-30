@@ -105,7 +105,13 @@ internal static class W3cSparqlEvalRunner
         SparqlResultSet actual;
         try
         {
-            SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(data, cancellationToken: cancellationToken).ConfigureAwait(false);
+            //IRI()/URI() resolve a relative argument against the query's effective base — the last in-query BASE,
+            //else the external (file-URL) base the parser was given. Thread it through the expression context.
+            Utf8String? baseIri = query.Prologue.Bases is { Count: > 0 } bases
+                ? bases[^1].Iri.Value
+                : Utf8String.FromString(new Uri(IoPath.GetFullPath(testCase.InputPath)).AbsoluteUri);
+            SparqlExpressionContext context = SparqlExpressionContext.CreateDefault().WithBaseIri(baseIri);
+            SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(data, context, cancellationToken).ConfigureAwait(false);
             SparqlQuery normalized = (SparqlQuery)new SparqlNormalizer(pool).Normalize(query);
             AlgebraOperator algebra = SparqlTranslator.Translate(normalized);
             IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, cancellationToken).ConfigureAwait(false);

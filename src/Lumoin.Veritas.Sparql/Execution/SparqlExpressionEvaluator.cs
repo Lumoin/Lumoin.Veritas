@@ -6,6 +6,7 @@ using System.Numerics;
 using System.Text;
 using System.Text.RegularExpressions;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Iris;
 using Lumoin.Veritas.Rdf.Values;
 using Lumoin.Veritas.Sparql.Ast;
 
@@ -616,7 +617,7 @@ public static class SparqlExpressionEvaluator
             BuiltInFunction.EncodeForUri => EncodeForUri(arguments[0]),
             BuiltInFunction.Regex => RegexMatch(arguments),
             BuiltInFunction.Replace => Replace(arguments),
-            BuiltInFunction.Iri or BuiltInFunction.Uri => Iri(arguments[0]),
+            BuiltInFunction.Iri or BuiltInFunction.Uri => Iri(arguments[0], context),
             BuiltInFunction.StrDt => StrDt(arguments),
             BuiltInFunction.StrLang => StrLang(arguments),
             BuiltInFunction.Year => DateComponent(arguments[0], static dateTime => dateTime.Year),
@@ -1030,12 +1031,14 @@ public static class SparqlExpressionEvaluator
 
     /// <summary>
     /// Evaluates <c>IRI</c>/<c>URI</c> (§17.4.2.8): an IRI argument passes through; a plain-string argument becomes
-    /// an IRI of that lexical form. (Resolution of a relative IRI against the query base is a later refinement.) A
-    /// blank node, a tagged/typed literal, or an error argument errs.
+    /// an IRI, resolving a relative reference against the query's base IRI (<see cref="SparqlExpressionContext.BaseIri"/>)
+    /// per RFC 3986. A relative reference with no base in scope, a blank node, a tagged/typed literal, or an error
+    /// argument errs.
     /// </summary>
     /// <param name="argument">The argument value.</param>
+    /// <param name="context">The evaluation context supplying the query's base IRI.</param>
     /// <returns>The IRI value, or an error.</returns>
-    private static ExpressionValue Iri(ExpressionValue argument)
+    private static ExpressionValue Iri(ExpressionValue argument, SparqlExpressionContext context)
     {
         if(argument.IsError)
         {
@@ -1045,9 +1048,30 @@ public static class SparqlExpressionEvaluator
         return argument.Term switch
         {
             NamedNode named => ExpressionValue.Of(named),
-            Literal literal when literal.Language is null && literal.Datatype.Iri == XsdString => ExpressionValue.Of(new NamedNode(literal.Value)),
+            Literal literal when literal.Language is null && literal.Datatype.Iri == XsdString => ResolveIri(literal.Value, context.BaseIri),
             _ => ExpressionValue.Error
         };
+    }
+
+    /// <summary>Builds the IRI value of an <c>IRI</c>/<c>URI</c> string argument: an absolute reference unchanged, a relative reference resolved against <paramref name="baseIri"/> (an error when no base is in scope).</summary>
+    /// <param name="reference">The IRI reference's lexical form.</param>
+    /// <param name="baseIri">The query's base IRI, or <see langword="null"/> when none is in scope.</param>
+    /// <returns>The IRI value, or an error.</returns>
+    private static ExpressionValue ResolveIri(Utf8String reference, Utf8String? baseIri)
+    {
+        string text = reference.ToString();
+        if(IriResolver.IsAbsoluteIri(text))
+        {
+            return ExpressionValue.Of(new NamedNode(reference));
+        }
+
+        if(baseIri is not Utf8String @base)
+        {
+            //A relative IRI with no base to resolve against is an error per §17.4.2.8.
+            return ExpressionValue.Error;
+        }
+
+        return ExpressionValue.Of(new NamedNode(Utf8String.FromString(IriResolver.ResolveIri(@base.ToString(), text))));
     }
 
     /// <summary>

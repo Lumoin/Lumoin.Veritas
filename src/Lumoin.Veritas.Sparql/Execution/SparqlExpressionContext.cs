@@ -60,8 +60,9 @@ public sealed class SparqlExpressionContext
     /// <param name="randomness">The randomness seam for <c>RAND</c>/<c>UUID</c>/<c>STRUUID</c>.</param>
     /// <param name="hash">The cryptographic-digest seam for <c>MD5</c>/<c>SHA*</c>.</param>
     /// <param name="now">The query-execution instant <c>NOW()</c> returns.</param>
+    /// <param name="baseIri">The query's effective base IRI that <c>IRI</c>/<c>URI</c> resolve a relative argument against, or <see langword="null"/> when the query has no base (a relative argument then yields an error).</param>
     /// <exception cref="ArgumentNullException">A required seam is <see langword="null"/>.</exception>
-    public SparqlExpressionContext(RandomnessDelegate randomness, SparqlHashDelegate hash, DateTimeOffset now)
+    public SparqlExpressionContext(RandomnessDelegate randomness, SparqlHashDelegate hash, DateTimeOffset now, Utf8String? baseIri = null)
     {
         ArgumentNullException.ThrowIfNull(randomness);
         ArgumentNullException.ThrowIfNull(hash);
@@ -69,6 +70,7 @@ public sealed class SparqlExpressionContext
         Randomness = randomness;
         Hash = hash;
         Now = now;
+        BaseIri = baseIri;
     }
 
     /// <summary>The randomness seam backing <c>RAND</c> (uniform double) and <c>UUID</c>/<c>STRUUID</c> (a fresh UUID).</summary>
@@ -79,6 +81,21 @@ public sealed class SparqlExpressionContext
 
     /// <summary>The query-execution instant <c>NOW()</c> returns, fixed for this context.</summary>
     public DateTimeOffset Now { get; }
+
+    /// <summary>
+    /// The query's effective base IRI — the value <c>IRI(rel)</c>/<c>URI(rel)</c> (§17.4.2.8) resolve a relative
+    /// argument against — or <see langword="null"/> when the query declares no base. A relative argument with no
+    /// base in scope is an error (an unbound result), per the function definition.
+    /// </summary>
+    public Utf8String? BaseIri { get; }
+
+    /// <summary>Returns a copy of this context with the base IRI replaced — the per-query derivation, since a query carries its own <c>BASE</c> while the seams (randomness, hash, clock) are shared.</summary>
+    /// <param name="baseIri">The query's effective base IRI, or <see langword="null"/> for none.</param>
+    /// <returns>A context identical to this one but for <see cref="BaseIri"/>.</returns>
+    public SparqlExpressionContext WithBaseIri(Utf8String? baseIri)
+    {
+        return new SparqlExpressionContext(Randomness, Hash, Now, baseIri);
+    }
 
     /// <summary>
     /// Creates a context over the default seams: <see cref="VeritasRandomness.System"/>, the in-process digest
