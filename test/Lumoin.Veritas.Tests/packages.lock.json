@@ -404,7 +404,8 @@
           "Lumoin.Veritas.Core": "[0.0.0, )",
           "Lumoin.Veritas.JsonLd": "[0.0.0, )",
           "Lumoin.Veritas.NQuads": "[0.0.0, )",
-          "Lumoin.Veritas.Skos": "[0.0.0, )"
+          "Lumoin.Veritas.Skos": "[0.0.0, )",
+          "Lumoin.Veritas.Sparql": "[0.0.0, )"
         }
       },
       "lumoin.veritas.jsonld": {

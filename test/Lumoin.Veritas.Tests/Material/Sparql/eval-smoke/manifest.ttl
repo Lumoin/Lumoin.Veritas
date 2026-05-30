@@ -10,12 +10,17 @@
 
 <> a mf:Manifest ;
    rdfs:comment "Lumoin.Veritas SPARQL evaluation harness smoke tests." ;
-   mf:entries ( :select-knows :ask-knows :select-order :select-filter ) .
+   mf:entries ( :select-knows :select-knows-json :ask-knows :select-order :select-filter ) .
 
 :select-knows a mf:QueryEvaluationTest ;
    mf:name "SELECT objects of :alice :knows (bag)" ;
    mf:action [ qt:query <select-knows.rq> ; qt:data <data.ttl> ] ;
    mf:result <select-knows.srx> .
+
+:select-knows-json a mf:QueryEvaluationTest ;
+   mf:name "SELECT objects of :alice :knows (JSON results)" ;
+   mf:action [ qt:query <select-knows.rq> ; qt:data <data.ttl> ] ;
+   mf:result <select-knows.srj> .
 
 :ask-knows a mf:QueryEvaluationTest ;
    mf:name "ASK whether :alice :knows :bob" ;

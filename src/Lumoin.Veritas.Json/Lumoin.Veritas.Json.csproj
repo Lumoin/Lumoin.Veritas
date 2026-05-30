@@ -12,6 +12,7 @@
     <ProjectReference Include="..\Lumoin.Veritas.JsonLd\Lumoin.Veritas.JsonLd.csproj" />
     <ProjectReference Include="..\Lumoin.Veritas.NQuads\Lumoin.Veritas.NQuads.csproj" />
     <ProjectReference Include="..\Lumoin.Veritas.Skos\Lumoin.Veritas.Skos.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Sparql\Lumoin.Veritas.Sparql.csproj" />
   </ItemGroup>
  
 </Project>

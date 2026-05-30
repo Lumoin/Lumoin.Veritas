@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
+using Lumoin.Veritas.Json;
 using Lumoin.Veritas.Sparql.Algebra;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
@@ -103,14 +104,15 @@ internal static class W3cSparqlEvalRunner
             return new W3cOutcome(W3cOutcomeStatus.Skipped, $"Query uses a feature the executor does not yet support: {ex.Message}");
         }
 
-        //Only the SPARQL Results XML (.srx) fixtures are compared today; a switch expression classifies the rest
-        //(case-insensitively) into the honest-skip outcome, leaving null to mean "this is .srx — proceed and read it".
+        //Only the SPARQL Query Results serializations (.srx / .srj) are compared today; a switch expression
+        //classifies the rest (case-insensitively) into the honest-skip outcome, leaving null to mean "this is a
+        //solution-result format — proceed and read it below".
         string extension = IoPath.GetExtension(testCase.ExpectedPath);
+        bool isJson = string.Equals(extension, ".srj", StringComparison.OrdinalIgnoreCase);
         W3cOutcome? unsupported = extension switch
         {
             _ when string.Equals(extension, ".srx", StringComparison.OrdinalIgnoreCase) => null,
-            _ when string.Equals(extension, ".srj", StringComparison.OrdinalIgnoreCase)
-                => new W3cOutcome(W3cOutcomeStatus.Skipped, "The SPARQL Results JSON (.srj) reader is not yet implemented."),
+            _ when isJson => null,
             _ => new W3cOutcome(W3cOutcomeStatus.Skipped, $"Expected result format '{extension}' (a graph result) is not yet compared.")
         };
         if(unsupported is not null)
@@ -118,14 +120,17 @@ internal static class W3cSparqlEvalRunner
             return unsupported;
         }
 
+        byte[] expectedBytes = await File.ReadAllBytesAsync(testCase.ExpectedPath, cancellationToken).ConfigureAwait(false);
         SparqlResultSet expected;
         try
         {
-            expected = SparqlResultsXmlReader.Read(await File.ReadAllBytesAsync(testCase.ExpectedPath, cancellationToken).ConfigureAwait(false));
+            expected = isJson
+                ? SparqlResultsJsonReader.Read(expectedBytes)
+                : SparqlResultsXmlReader.Read(expectedBytes);
         }
         catch(FormatException ex)
         {
-            return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expected SPARQL Results XML did not parse: {ex.Message}");
+            return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expected SPARQL results fixture did not parse: {ex.Message}");
         }
 
         bool ordered = query.Modifier.Order is not null;
