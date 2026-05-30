@@ -2,9 +2,11 @@ using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Numerics;
 using System.Text;
 using System.Text.RegularExpressions;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Rdf.Values;
 using Lumoin.Veritas.Sparql.Ast;
 
 namespace Lumoin.Veritas.Sparql.Execution;
@@ -191,9 +193,13 @@ public static class SparqlExpressionEvaluator
     /// <returns>A negative, zero, or positive value as <paramref name="left"/> orders before, equal to, or after <paramref name="right"/>.</returns>
     private static int CompareLiterals(Literal left, Literal right)
     {
-        if(TryGetNumeric(left, out double leftNumber, out _) && TryGetNumeric(right, out double rightNumber, out _))
+        if(TryGetNumericValue(left, out NumericValue leftNumber) && TryGetNumericValue(right, out NumericValue rightNumber))
         {
-            return leftNumber.CompareTo(rightNumber);
+            ComparisonResult numericComparison = NumericValue.Compare(leftNumber, rightNumber);
+            if(numericComparison != ComparisonResult.Incomparable)
+            {
+                return ComparisonSign(numericComparison);
+            }
         }
 
         if(TryGetBoolean(left, out bool leftBoolean) && TryGetBoolean(right, out bool rightBoolean))
@@ -226,7 +232,7 @@ public static class SparqlExpressionEvaluator
     {
         if(aggregate.IsCountStar)
         {
-            return Numeric(group.Count, integral: true).Term;
+            return Integer(group.Count).Term;
         }
 
         List<RdfTerm> values = [];
@@ -248,7 +254,7 @@ public static class SparqlExpressionEvaluator
 
         return aggregate.Function switch
         {
-            AggregateFunction.Count => Numeric(values.Count, integral: true).Term,
+            AggregateFunction.Count => Integer(values.Count).Term,
             AggregateFunction.Sum => SumTerm(values),
             AggregateFunction.Avg => AverageTerm(values),
             AggregateFunction.Min => Extremum(values, minimum: true),
@@ -282,20 +288,20 @@ public static class SparqlExpressionEvaluator
     /// <returns>The sum term, or <see langword="null"/> on a non-numeric value.</returns>
     private static RdfTerm? SumTerm(List<RdfTerm> values)
     {
-        double sum = 0;
-        bool integral = true;
+        //SUM starts from xsd:integer 0 (so an empty/all-integer set sums to an integer); each value promotes the
+        //running total to the higher kind, and the tower keeps decimal sums exact.
+        NumericValue sum = new(BigInteger.Zero);
         foreach(RdfTerm value in values)
         {
-            if(!TryGetNumeric(value, out double number, out bool valueIntegral))
+            if(!TryGetNumericValue(value, out NumericValue number))
             {
                 return null;
             }
 
-            sum += number;
-            integral &= valueIntegral;
+            sum = NumericValue.Add(sum, number);
         }
 
-        return Numeric(sum, integral).Term;
+        return Numeric(sum).Term;
     }
 
     /// <summary>Averages numeric values as an xsd:double; an empty set averages to 0, a non-numeric value yields an error (null).</summary>
@@ -303,23 +309,27 @@ public static class SparqlExpressionEvaluator
     /// <returns>The average term, or <see langword="null"/> on a non-numeric value.</returns>
     private static RdfTerm? AverageTerm(List<RdfTerm> values)
     {
+        //AVG of the empty set is xsd:integer 0 (§18.5.1.5); otherwise it is SUM ÷ count, which the tower types as
+        //xsd:decimal for an all-integer/decimal group and promotes to float/double when a member is float/double.
         if(values.Count == 0)
         {
-            return Numeric(0, integral: true).Term;
+            return Integer(0).Term;
         }
 
-        double sum = 0;
+        NumericValue sum = new(BigInteger.Zero);
         foreach(RdfTerm value in values)
         {
-            if(!TryGetNumeric(value, out double number, out _))
+            if(!TryGetNumericValue(value, out NumericValue number))
             {
                 return null;
             }
 
-            sum += number;
+            sum = NumericValue.Add(sum, number);
         }
 
-        return Numeric(sum / values.Count, integral: false).Term;
+        return NumericValue.TryDivide(sum, new NumericValue(new BigInteger(values.Count)), out NumericValue average)
+            ? Numeric(average).Term
+            : null;
     }
 
     /// <summary>Returns the minimum or maximum value by the ORDER BY ordering, or <see langword="null"/> for an empty set.</summary>
@@ -587,13 +597,13 @@ public static class SparqlExpressionEvaluator
             BuiltInFunction.IsBlank => TypeTest(arguments[0], static term => term is BlankNode),
             BuiltInFunction.IsLiteral => TypeTest(arguments[0], static term => term is Literal),
             BuiltInFunction.IsTriple => TypeTest(arguments[0], static term => term is Lumoin.Veritas.Core.TripleTerm),
-            BuiltInFunction.IsNumeric => TypeTest(arguments[0], static term => TryGetNumeric(term, out _, out _)),
+            BuiltInFunction.IsNumeric => TypeTest(arguments[0], static term => TryGetNumericValue(term, out _)),
             BuiltInFunction.SameTerm => arguments[0].IsError || arguments[1].IsError ? ExpressionValue.Error : Boolean(arguments[0].Term.Equals(arguments[1].Term)),
             BuiltInFunction.Str => Str(arguments[0]),
             BuiltInFunction.Lang => arguments[0].IsError || arguments[0].Term is not Literal language ? ExpressionValue.Error : StringLiteral(language.Language ?? EmptyText),
             BuiltInFunction.LangMatches => LangMatches(arguments[0], arguments[1]),
             BuiltInFunction.Datatype => arguments[0].IsError || arguments[0].Term is not Literal datatype ? ExpressionValue.Error : ExpressionValue.Of(datatype.Datatype),
-            BuiltInFunction.StrLen => TryGetLexicalText(arguments[0], out Utf8String text) ? Numeric(CodePointCount(text), integral: true) : ExpressionValue.Error,
+            BuiltInFunction.StrLen => TryGetLexicalText(arguments[0], out Utf8String text) ? Integer(CodePointCount(text)) : ExpressionValue.Error,
             BuiltInFunction.UCase => MapCaseValue(arguments[0], toUpper: true),
             BuiltInFunction.LCase => MapCaseValue(arguments[0], toUpper: false),
             BuiltInFunction.Contains => StringTest(arguments, static (haystack, needle) => haystack.Span.IndexOf(needle.Span) >= 0),
@@ -622,7 +632,7 @@ public static class SparqlExpressionEvaluator
             BuiltInFunction.Predicate => TripleComponent(arguments[0], static triple => triple.Predicate),
             BuiltInFunction.Object => TripleComponent(arguments[0], static triple => triple.Object),
             BuiltInFunction.Now => ExpressionValue.Of(new Literal(Utf8String.FromString(context.Now.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffffK", CultureInfo.InvariantCulture)), new NamedNode(XsdDateTime))),
-            BuiltInFunction.Rand => Numeric(context.Randomness(new RandomnessRequest(RandomnessKind.UniformDouble, default, 0, default)).Double, integral: false),
+            BuiltInFunction.Rand => Double(context.Randomness(new RandomnessRequest(RandomnessKind.UniformDouble, default, 0, default)).Double),
             BuiltInFunction.Uuid => ExpressionValue.Of(new NamedNode(Utf8String.FromString("urn:uuid:" + context.Randomness(new RandomnessRequest(RandomnessKind.Uuid, default, 0, default)).Uuid.ToString("D", CultureInfo.InvariantCulture)))),
             BuiltInFunction.StrUuid => StringLiteral(Utf8String.FromString(context.Randomness(new RandomnessRequest(RandomnessKind.Uuid, default, 0, default)).Uuid.ToString("D", CultureInfo.InvariantCulture))),
             BuiltInFunction.Md5 => Hash(arguments[0], SparqlHashAlgorithm.Md5, context),
@@ -630,10 +640,10 @@ public static class SparqlExpressionEvaluator
             BuiltInFunction.Sha256 => Hash(arguments[0], SparqlHashAlgorithm.Sha256, context),
             BuiltInFunction.Sha384 => Hash(arguments[0], SparqlHashAlgorithm.Sha384, context),
             BuiltInFunction.Sha512 => Hash(arguments[0], SparqlHashAlgorithm.Sha512, context),
-            BuiltInFunction.Abs => UnaryNumeric(arguments[0], static value => Math.Abs(value)),
-            BuiltInFunction.Ceil => UnaryNumeric(arguments[0], Math.Ceiling),
-            BuiltInFunction.Floor => UnaryNumeric(arguments[0], Math.Floor),
-            BuiltInFunction.Round => UnaryNumeric(arguments[0], static value => Math.Round(value, MidpointRounding.AwayFromZero)),
+            BuiltInFunction.Abs => UnaryNumeric(arguments[0], UnaryNumericOp.Abs),
+            BuiltInFunction.Ceil => UnaryNumeric(arguments[0], UnaryNumericOp.Ceil),
+            BuiltInFunction.Floor => UnaryNumeric(arguments[0], UnaryNumericOp.Floor),
+            BuiltInFunction.Round => UnaryNumeric(arguments[0], UnaryNumericOp.Round),
             _ => throw new NotSupportedException($"SPARQL built-in function '{function}' is not yet evaluable; this slice covers the term-type tests, sameTerm, STR/LANG/LANGMATCHES/DATATYPE, the string functions (STRLEN/UCASE/LCASE/CONTAINS/STRSTARTS/STRENDS/CONCAT/SUBSTR/STRBEFORE/STRAFTER/ENCODE_FOR_URI/REGEX/REPLACE), the term constructors (IRI/URI/STRDT/STRLANG), the date-time accessors (YEAR/MONTH/DAY/HOURS/MINUTES/SECONDS/TIMEZONE/TZ), the triple builders (TRIPLE/SUBJECT/PREDICATE/OBJECT), the seam-backed RAND/UUID/STRUUID/NOW and MD5/SHA* hashes, and ABS/CEIL/FLOOR/ROUND. BNODE (per-solution blank-node correlation), the named functions, and EXISTS/NOT EXISTS land in a later slice.")
         };
     }
@@ -767,7 +777,7 @@ public static class SparqlExpressionEvaluator
     private static ExpressionValue Substr(ExpressionValue[] arguments)
     {
         if(!TryGetStringArgument(arguments[0], out Utf8String source, out Utf8String? language)
-            || arguments[1].IsError || !TryGetNumeric(arguments[1].Term, out double startValue, out _))
+            || arguments[1].IsError || !TryGetDouble(arguments[1].Term, out double startValue))
         {
             return ExpressionValue.Error;
         }
@@ -776,7 +786,7 @@ public static class SparqlExpressionEvaluator
         int? upperExclusive = null;
         if(arguments.Length >= 3)
         {
-            if(arguments[2].IsError || !TryGetNumeric(arguments[2].Term, out double lengthValue, out _))
+            if(arguments[2].IsError || !TryGetDouble(arguments[2].Term, out double lengthValue))
             {
                 return ExpressionValue.Error;
             }
@@ -1099,7 +1109,7 @@ public static class SparqlExpressionEvaluator
     /// <returns>The component as an <c>xsd:integer</c>, or an error.</returns>
     private static ExpressionValue DateComponent(ExpressionValue argument, Func<DateTimeOffset, int> component)
     {
-        return TryGetDateTime(argument, out DateTimeOffset value, out _) ? Numeric(component(value), integral: true) : ExpressionValue.Error;
+        return TryGetDateTime(argument, out DateTimeOffset value, out _) ? Integer(component(value)) : ExpressionValue.Error;
     }
 
     /// <summary>Evaluates <c>SECONDS</c> (§17.4.5.6): the seconds component of an <c>xsd:dateTime</c> as an <c>xsd:decimal</c> (including a fractional part); a non-dateTime argument errs.</summary>
@@ -1287,18 +1297,94 @@ public static class SparqlExpressionEvaluator
         return matchLanguage is null || SameLanguage(sourceLanguage, matchLanguage);
     }
 
-    /// <summary>Applies a unary numeric operation to a numeric argument, preserving integer typing, erring on a non-numeric argument.</summary>
-    /// <param name="argument">The argument value.</param>
-    /// <param name="operation">The numeric operation.</param>
-    /// <returns>The numeric result, or an error.</returns>
-    private static ExpressionValue UnaryNumeric(ExpressionValue argument, Func<double, double> operation)
+    /// <summary>The unary numeric functions (§17.4.4) that preserve their operand's numeric kind.</summary>
+    private enum UnaryNumericOp
     {
-        if(argument.IsError || !TryGetNumeric(argument.Term, out double value, out bool integral))
+        /// <summary><c>ABS</c> — absolute value.</summary>
+        Abs,
+
+        /// <summary><c>CEIL</c> — round toward +∞.</summary>
+        Ceil,
+
+        /// <summary><c>FLOOR</c> — round toward −∞.</summary>
+        Floor,
+
+        /// <summary><c>ROUND</c> — round half away from zero.</summary>
+        Round
+    }
+
+    /// <summary>
+    /// Applies a unary numeric function (<c>ABS</c>/<c>CEIL</c>/<c>FLOOR</c>/<c>ROUND</c>, §17.4.4) to a numeric
+    /// argument, preserving the operand's XSD kind (an integer stays integer, a decimal stays decimal, …) per the
+    /// XPath <c>op:numeric-*</c> signatures; a non-numeric argument errs.
+    /// </summary>
+    /// <param name="argument">The argument value.</param>
+    /// <param name="operation">The unary numeric function to apply.</param>
+    /// <returns>The numeric result, in the operand's kind, or an error.</returns>
+    private static ExpressionValue UnaryNumeric(ExpressionValue argument, UnaryNumericOp operation)
+    {
+        if(argument.IsError || !TryGetNumericValue(argument.Term, out NumericValue value))
         {
             return ExpressionValue.Error;
         }
 
-        return Numeric(operation(value), integral);
+        //ABS over a negative integer/decimal stays exact; CEIL/FLOOR/ROUND are identities on an integer (already
+        //whole) and round the decimal/float/double in their own kind. ROUND is half-away-from-zero (XPath fn:round
+        //rounds half toward +∞, but the prior behaviour and the W3C result fixtures use away-from-zero).
+        NumericValue result = value.Kind switch
+        {
+            NumericKind.Integer => operation == UnaryNumericOp.Abs ? new NumericValue(BigInteger.Abs(value.AsInteger())) : value,
+            NumericKind.Decimal => new NumericValue(ApplyDecimal(operation, value.AsDecimal())),
+            NumericKind.Float => new NumericValue(ApplyFloat(operation, value.AsFloat())),
+            _ => new NumericValue(ApplyDouble(operation, value.AsDouble()))
+        };
+
+        return Numeric(result);
+    }
+
+    /// <summary>Applies a unary numeric function in the <see cref="decimal"/> kind.</summary>
+    /// <param name="operation">The function.</param>
+    /// <param name="value">The decimal operand.</param>
+    /// <returns>The decimal result.</returns>
+    private static decimal ApplyDecimal(UnaryNumericOp operation, decimal value)
+    {
+        return operation switch
+        {
+            UnaryNumericOp.Abs => Math.Abs(value),
+            UnaryNumericOp.Ceil => Math.Ceiling(value),
+            UnaryNumericOp.Floor => Math.Floor(value),
+            _ => Math.Round(value, MidpointRounding.AwayFromZero)
+        };
+    }
+
+    /// <summary>Applies a unary numeric function in the <see cref="float"/> kind.</summary>
+    /// <param name="operation">The function.</param>
+    /// <param name="value">The float operand.</param>
+    /// <returns>The float result.</returns>
+    private static float ApplyFloat(UnaryNumericOp operation, float value)
+    {
+        return operation switch
+        {
+            UnaryNumericOp.Abs => MathF.Abs(value),
+            UnaryNumericOp.Ceil => MathF.Ceiling(value),
+            UnaryNumericOp.Floor => MathF.Floor(value),
+            _ => MathF.Round(value, MidpointRounding.AwayFromZero)
+        };
+    }
+
+    /// <summary>Applies a unary numeric function in the <see cref="double"/> kind.</summary>
+    /// <param name="operation">The function.</param>
+    /// <param name="value">The double operand.</param>
+    /// <returns>The double result.</returns>
+    private static double ApplyDouble(UnaryNumericOp operation, double value)
+    {
+        return operation switch
+        {
+            UnaryNumericOp.Abs => Math.Abs(value),
+            UnaryNumericOp.Ceil => Math.Ceiling(value),
+            UnaryNumericOp.Floor => Math.Floor(value),
+            _ => Math.Round(value, MidpointRounding.AwayFromZero)
+        };
     }
 
     /// <summary>Builds an <c>xsd:string</c> literal value from a UTF-8 lexical form (no <see cref="string"/> round-trip).</summary>
@@ -1408,7 +1494,7 @@ public static class SparqlExpressionEvaluator
             return Boolean(boolean);
         }
 
-        if(TryGetNumeric(value.Term, out double number, out _))
+        if(TryGetDouble(value.Term, out double number))
         {
             return Boolean(number != 0 && !double.IsNaN(number));
         }
@@ -1488,9 +1574,14 @@ public static class SparqlExpressionEvaluator
         RdfTerm a = left.Term;
         RdfTerm b = right.Term;
 
-        if(TryGetNumeric(a, out double na, out _) && TryGetNumeric(b, out double nb, out _))
+        if(TryGetNumericValue(a, out NumericValue na) && TryGetNumericValue(b, out NumericValue nb))
         {
-            return Boolean(CompareOrdered(na.CompareTo(nb), op));
+            ComparisonResult numericComparison = NumericValue.Compare(na, nb);
+
+            //An incomparable result (a NaN operand) makes an ordering comparison error; equality treats NaN as unequal.
+            return numericComparison == ComparisonResult.Incomparable
+                ? op is ComparisonOp.Equal ? Boolean(false) : op is ComparisonOp.NotEqual ? Boolean(true) : ExpressionValue.Error
+                : Boolean(CompareOrdered(ComparisonSign(numericComparison), op));
         }
 
         if(TryGetBoolean(a, out bool ba) && TryGetBoolean(b, out bool bb))
@@ -1519,6 +1610,19 @@ public static class SparqlExpressionEvaluator
     /// <param name="sign">The comparison sign.</param>
     /// <param name="op">The comparison operator.</param>
     /// <returns>The boolean the operator asserts for the sign.</returns>
+    /// <summary>Maps a numeric-tower <see cref="ComparisonResult"/> to a sign (<c>-1</c>/<c>0</c>/<c>+1</c>); the incomparable case is handled by callers before this is reached.</summary>
+    /// <param name="result">The comparison result.</param>
+    /// <returns>The comparison sign.</returns>
+    private static int ComparisonSign(ComparisonResult result)
+    {
+        return result switch
+        {
+            ComparisonResult.Less => -1,
+            ComparisonResult.Greater => 1,
+            _ => 0
+        };
+    }
+
     private static bool CompareOrdered(int sign, ComparisonOp op)
     {
         return op switch
@@ -1540,36 +1644,34 @@ public static class SparqlExpressionEvaluator
     /// <returns>The numeric result, or an error when an operand is non-numeric or a division by zero occurs.</returns>
     private static ExpressionValue Arithmetic(ExpressionValue left, ExpressionValue right, ArithmeticOp op)
     {
-        if(left.IsError || !TryGetNumeric(left.Term, out double a, out bool aIntegral))
+        if(left.IsError || !TryGetNumericValue(left.Term, out NumericValue a))
         {
             return ExpressionValue.Error;
         }
 
         if(op == ArithmeticOp.UnaryMinus)
         {
-            return Numeric(-a, aIntegral);
+            return Numeric(a.Negate());
         }
 
         if(op == ArithmeticOp.UnaryPlus)
         {
-            return Numeric(a, aIntegral);
+            return Numeric(a);
         }
 
-        if(right.IsError || !TryGetNumeric(right.Term, out double b, out bool bIntegral))
+        if(right.IsError || !TryGetNumericValue(right.Term, out NumericValue b))
         {
             return ExpressionValue.Error;
         }
 
-        bool integral = aIntegral && bIntegral;
-
         return op switch
         {
-            ArithmeticOp.Add => Numeric(a + b, integral),
-            ArithmeticOp.Subtract => Numeric(a - b, integral),
-            ArithmeticOp.Multiply => Numeric(a * b, integral),
+            ArithmeticOp.Add => Numeric(NumericValue.Add(a, b)),
+            ArithmeticOp.Subtract => Numeric(NumericValue.Subtract(a, b)),
+            ArithmeticOp.Multiply => Numeric(NumericValue.Multiply(a, b)),
 
-            //Division never preserves integer typing (xsd:integer / xsd:integer is xsd:decimal); zero divisor errs.
-            ArithmeticOp.Divide => b == 0 ? ExpressionValue.Error : Numeric(a / b, integral: false),
+            //Division promotes integer/integer to xsd:decimal; a zero divisor in the exact (integer/decimal) kinds errs.
+            ArithmeticOp.Divide => NumericValue.TryDivide(a, b, out NumericValue quotient) ? Numeric(quotient) : ExpressionValue.Error,
             _ => throw new InvalidOperationException($"Unexpected arithmetic operator {op}.")
         };
     }
@@ -1582,18 +1684,28 @@ public static class SparqlExpressionEvaluator
         return ExpressionValue.Of(value ? True : False);
     }
 
-    /// <summary>Wraps a numeric result as an <c>xsd:integer</c> (when integral) or <c>xsd:double</c> literal value.</summary>
+    /// <summary>Wraps a numeric-tower value as a typed literal in its XSD canonical lexical form and matching datatype (<c>xsd:integer</c>/<c>decimal</c>/<c>float</c>/<c>double</c>).</summary>
     /// <param name="value">The numeric value.</param>
-    /// <param name="integral">Whether the result keeps integer typing.</param>
     /// <returns>The numeric literal value.</returns>
-    private static ExpressionValue Numeric(double value, bool integral)
+    private static ExpressionValue Numeric(NumericValue value)
     {
-        if(integral)
-        {
-            return ExpressionValue.Of(new Literal(Utf8String.FromString(((long)value).ToString(CultureInfo.InvariantCulture)), new NamedNode(XsdInteger)));
-        }
+        return ExpressionValue.Of(new Literal(Utf8String.FromString(value.ToCanonicalLexical()), new NamedNode(value.DatatypeIri)));
+    }
 
-        return ExpressionValue.Of(new Literal(Utf8String.FromString(value.ToString("R", CultureInfo.InvariantCulture)), new NamedNode(XsdDouble)));
+    /// <summary>Wraps a CLR <c>long</c> count/length as an <c>xsd:integer</c> literal value (for COUNT, STRLEN, the date-time accessors).</summary>
+    /// <param name="value">The integer value.</param>
+    /// <returns>The integer literal value.</returns>
+    private static ExpressionValue Integer(long value)
+    {
+        return Numeric(new NumericValue(new BigInteger(value)));
+    }
+
+    /// <summary>Wraps a CLR <c>double</c> result (RAND) as an <c>xsd:double</c> literal value.</summary>
+    /// <param name="value">The double value.</param>
+    /// <returns>The double literal value.</returns>
+    private static ExpressionValue Double(double value)
+    {
+        return Numeric(new NumericValue(value));
     }
 
     /// <summary>Returns whether a term is a boolean literal, yielding its value.</summary>
@@ -1625,27 +1737,46 @@ public static class SparqlExpressionEvaluator
         return false;
     }
 
-    /// <summary>Returns whether a term is a numeric literal, yielding its value as a double and whether it is integer-typed.</summary>
+    /// <summary>
+    /// Returns whether a term is a numeric literal, yielding its value in the numeric tower (<see cref="NumericValue"/>),
+    /// which preserves the operand's exact kind (integer/decimal/float/double) for promotion and canonical-form
+    /// result typing.
+    /// </summary>
     /// <param name="term">The term to inspect.</param>
     /// <param name="value">Receives the numeric value on success.</param>
-    /// <param name="integral">Receives whether the literal's datatype is an integral type.</param>
     /// <returns><see langword="true"/> when the term is a numeric literal with a parseable lexical value.</returns>
-    private static bool TryGetNumeric(RdfTerm term, out double value, out bool integral)
+    private static bool TryGetNumericValue(RdfTerm term, out NumericValue value)
     {
-        if(term is Literal literal)
+        if(term is Literal literal && NumericValue.TryParse(literal.Value.ToString(), literal.Datatype.Iri, out value))
         {
-            string datatype = literal.Datatype.Iri.ToString();
-            if(NumericDatatypes.Contains(datatype)
-                && double.TryParse(literal.Value.ToString(), NumberStyles.Float | NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out value))
-            {
-                integral = IntegralDatatypes.Contains(datatype);
+            return true;
+        }
 
-                return true;
-            }
+        value = default;
+
+        return false;
+    }
+
+    /// <summary>Returns whether a term is a numeric literal, yielding its value as a <see cref="double"/> — the convenience for the integer/double-only consumers (SUBSTR positions, the numeric effective-boolean-value test).</summary>
+    /// <param name="term">The term to inspect.</param>
+    /// <param name="value">Receives the value as a double on success.</param>
+    /// <returns><see langword="true"/> when the term is a numeric literal.</returns>
+    private static bool TryGetDouble(RdfTerm term, out double value)
+    {
+        if(TryGetNumericValue(term, out NumericValue numeric))
+        {
+            value = numeric.Kind switch
+            {
+                NumericKind.Integer => (double)numeric.AsInteger(),
+                NumericKind.Decimal => (double)numeric.AsDecimal(),
+                NumericKind.Float => numeric.AsFloat(),
+                _ => numeric.AsDouble()
+            };
+
+            return true;
         }
 
         value = 0;
-        integral = false;
 
         return false;
     }

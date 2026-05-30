@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Rdf.Values;
 using Lumoin.Veritas.Sparql.Execution;
 using Lumoin.Veritas.Sparql.Results;
 
@@ -221,8 +222,11 @@ internal static class SparqlResultComparer
                 }
                 default:
                 {
-                    //Ground terms (IRIs, literals) — and the IRI predicate of a triple term — match by value.
-                    if(e is BlankNode or TripleTerm || !a.Equals(e))
+                    //Ground terms (IRIs, literals) — and the IRI predicate of a triple term — match. Numeric and
+                    //boolean literals match by VALUE (the W3C suite's expected files use non-canonical lexical forms
+                    //like "2100" for an xsd:double, so a lexical compare would spuriously fail); everything else
+                    //matches by RDF term identity.
+                    if(e is BlankNode or TripleTerm || !TermsMatch(a, e))
                     {
                         return false;
                     }
@@ -232,6 +236,30 @@ internal static class SparqlResultComparer
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Matches two ground terms: two numeric literals by their numeric value under the SPARQL promotion lattice (so
+    /// <c>"2100"^^xsd:double</c> equals the canonical <c>"2.1E3"^^xsd:double</c>, and <c>1</c> equals <c>1.0</c>
+    /// only across compatible types is NOT asserted here — the W3C result comparison keeps datatype distinctions
+    /// except for lexical-vs-canonical form, so values match only when both are numeric), and everything else by RDF
+    /// term identity.
+    /// </summary>
+    /// <param name="actual">The actual term.</param>
+    /// <param name="expected">The expected term.</param>
+    /// <returns><see langword="true"/> when the terms match.</returns>
+    private static bool TermsMatch(RdfTerm actual, RdfTerm expected)
+    {
+        if(actual is Literal actualLiteral && expected is Literal expectedLiteral
+            && NumericValue.TryParse(actualLiteral.Value.ToString(), actualLiteral.Datatype.Iri, out NumericValue actualNumber)
+            && NumericValue.TryParse(expectedLiteral.Value.ToString(), expectedLiteral.Datatype.Iri, out NumericValue expectedNumber))
+        {
+            //Same numeric kind (datatype family) AND equal value: a double result compares to a double expectation
+            //regardless of canonical-vs-non-canonical lexical form, but xsd:integer 1 does not match xsd:double 1.0E0.
+            return actualNumber.Kind == expectedNumber.Kind && NumericValue.Compare(actualNumber, expectedNumber) == ComparisonResult.Equal;
+        }
+
+        return actual.Equals(expected);
     }
 
     /// <summary>Binds an actual blank node to an expected one, consistent with prior bindings; records a new binding for undo.</summary>
@@ -356,18 +384,34 @@ internal static class SparqlResultComparer
         return rendered[root];
     }
 
-    /// <summary>Renders a leaf ground term (an IRI or a literal) to its canonical string.</summary>
+    /// <summary>Renders a leaf ground term (an IRI or a literal) to its canonical string; a numeric literal renders in its kind plus canonical value so value-equal numbers (e.g. <c>"2100"</c> and <c>"2.1E3"</c> as <c>xsd:double</c>) share one key.</summary>
     /// <param name="term">The leaf term.</param>
     /// <returns>The rendered term.</returns>
     private static string RenderLeaf(RdfTerm term)
     {
-        return term switch
+        switch(term)
         {
-            NamedNode named => "<" + named.Iri.ToString() + ">",
-            Literal literal when literal.Language is { } language => "\"" + literal.Value.ToString() + "\"@" + language.ToString(),
-            Literal literal => "\"" + literal.Value.ToString() + "\"^^<" + literal.Datatype.Iri.ToString() + ">",
-            _ => term.ToString() ?? string.Empty
-        };
+            case NamedNode named:
+            {
+                return "<" + named.Iri.ToString() + ">";
+            }
+            case Literal literal when literal.Language is { } language:
+            {
+                return "\"" + literal.Value.ToString() + "\"@" + language.ToString();
+            }
+            case Literal literal when NumericValue.TryParse(literal.Value.ToString(), literal.Datatype.Iri, out NumericValue number):
+            {
+                return "#" + number.Kind + ":" + number.ToCanonicalLexical();
+            }
+            case Literal literal:
+            {
+                return "\"" + literal.Value.ToString() + "\"^^<" + literal.Datatype.Iri.ToString() + ">";
+            }
+            default:
+            {
+                return term.ToString() ?? string.Empty;
+            }
+        }
     }
 
     /// <summary>Returns whether any solution binds a term that is, or transitively contains, a blank node.</summary>

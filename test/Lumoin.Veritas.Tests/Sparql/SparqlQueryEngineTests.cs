@@ -684,7 +684,8 @@ internal sealed class SparqlQueryEngineTests
 
         SparqlSolution solution = (await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false)).Single();
 
-        Assert.AreEqual("0.25", LiteralValue(solution, "r"));
+        //RAND() returns an xsd:double; its canonical lexical form for 0.25 is the mantissa-and-exponent "2.5E-1".
+        Assert.AreEqual("2.5E-1", LiteralValue(solution, "r"));
     }
 
     /// <summary>UUID and STRUUID draw their UUID from the injected randomness seam (UUID as a urn:uuid: IRI, STRUUID as the bare string).</summary>
