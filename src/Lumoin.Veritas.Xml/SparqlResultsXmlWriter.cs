@@ -23,18 +23,18 @@ public static class SparqlResultsXmlWriter
 
     private const string XmlNamespace = "http://www.w3.org/XML/1998/namespace";
 
-    /// <summary>Serializes a result set to its <c>.srx</c> bytes.</summary>
+    /// <summary>Serializes a result set to its <c>.srx</c> document as an owned UTF-8 string.</summary>
     /// <param name="results">The result set to serialize.</param>
-    /// <returns>The UTF-8 <c>.srx</c> document bytes.</returns>
+    /// <returns>The <c>.srx</c> document as a <see cref="Utf8String"/>.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="results"/> is <see langword="null"/>.</exception>
-    public static byte[] WriteToBytes(SparqlResultSet results)
+    public static Utf8String WriteToUtf8String(SparqlResultSet results)
     {
         ArgumentNullException.ThrowIfNull(results);
 
         using MemoryStream stream = new();
         Write(results, stream);
 
-        return stream.ToArray();
+        return new Utf8String(stream.ToArray());
     }
 
     /// <summary>Writes a result set as SPARQL Results XML to a stream.</summary>

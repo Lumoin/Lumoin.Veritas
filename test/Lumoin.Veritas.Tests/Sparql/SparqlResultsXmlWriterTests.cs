@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Text;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
@@ -43,7 +42,7 @@ internal sealed class SparqlResultsXmlWriterTests
         List<Utf8String> variables = [Utf8String.FromString("iri"), Utf8String.FromString("num"), Utf8String.FromString("lang"), Utf8String.FromString("plain"), Utf8String.FromString("b"), Utf8String.FromString("t")];
         SparqlResultSet original = SparqlResultSet.ForSelect(variables, [solution]);
 
-        SparqlResultSet roundTrip = SparqlResultsXmlReader.Read(SparqlResultsXmlWriter.WriteToBytes(original));
+        SparqlResultSet roundTrip = SparqlResultsXmlReader.Read(SparqlResultsXmlWriter.WriteToUtf8String(original).Memory);
 
         Assert.IsTrue(SparqlResultComparer.AreEquivalent(original, roundTrip, ordered: true));
     }
@@ -52,10 +51,10 @@ internal sealed class SparqlResultsXmlWriterTests
     [TestMethod]
     public void AskRoundTrips()
     {
-        string xml = Encoding.UTF8.GetString(SparqlResultsXmlWriter.WriteToBytes(SparqlResultSet.ForAsk(true)));
+        string xml = SparqlResultsXmlWriter.WriteToUtf8String(SparqlResultSet.ForAsk(true)).ToString();
         Assert.Contains("<boolean>true</boolean>", xml);
 
-        SparqlResultSet roundTrip = SparqlResultsXmlReader.Read(SparqlResultsXmlWriter.WriteToBytes(SparqlResultSet.ForAsk(false)));
+        SparqlResultSet roundTrip = SparqlResultsXmlReader.Read(SparqlResultsXmlWriter.WriteToUtf8String(SparqlResultSet.ForAsk(false)).Memory);
         Assert.IsTrue(roundTrip.IsBoolean);
         Assert.IsFalse(roundTrip.Boolean!.Value);
     }

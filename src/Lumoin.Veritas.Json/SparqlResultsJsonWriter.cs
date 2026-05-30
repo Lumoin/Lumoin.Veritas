@@ -32,19 +32,19 @@ public static class SparqlResultsJsonWriter
 
     private static ReadOnlySpan<byte> DirectionProperty => "its:dir"u8;
 
-    /// <summary>Serializes a result set to its <c>.srj</c> bytes.</summary>
+    /// <summary>Serializes a result set to its <c>.srj</c> document as an owned UTF-8 string.</summary>
     /// <param name="results">The result set to serialize.</param>
     /// <param name="indented">Whether to pretty-print the JSON.</param>
-    /// <returns>The UTF-8 <c>.srj</c> document bytes.</returns>
+    /// <returns>The <c>.srj</c> document as a <see cref="Utf8String"/>.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="results"/> is <see langword="null"/>.</exception>
-    public static byte[] WriteToBytes(SparqlResultSet results, bool indented = true)
+    public static Utf8String WriteToUtf8String(SparqlResultSet results, bool indented = true)
     {
         ArgumentNullException.ThrowIfNull(results);
 
         using MemoryStream stream = new();
         Write(results, stream, indented);
 
-        return stream.ToArray();
+        return new Utf8String(stream.ToArray());
     }
 
     /// <summary>Writes a result set as SPARQL Results JSON to a stream.</summary>

@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Text;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Json;
 using Lumoin.Veritas.Sparql.Ast;
@@ -45,7 +44,7 @@ internal sealed class SparqlResultsJsonWriterTests
         List<Utf8String> variables = [Utf8String.FromString("iri"), Utf8String.FromString("num"), Utf8String.FromString("lang"), Utf8String.FromString("plain"), Utf8String.FromString("b"), Utf8String.FromString("t")];
         SparqlResultSet original = SparqlResultSet.ForSelect(variables, [solution]);
 
-        SparqlResultSet roundTrip = SparqlResultsJsonReader.Read(SparqlResultsJsonWriter.WriteToBytes(original));
+        SparqlResultSet roundTrip = SparqlResultsJsonReader.Read(SparqlResultsJsonWriter.WriteToUtf8String(original).Memory);
 
         Assert.IsTrue(SparqlResultComparer.AreEquivalent(original, roundTrip, ordered: true));
     }
@@ -57,10 +56,10 @@ internal sealed class SparqlResultsJsonWriterTests
         SparqlSolution solution = new([Bind("d", LangDir("abc", "en", TextDirection.Ltr))]);
         SparqlResultSet original = SparqlResultSet.ForSelect([Utf8String.FromString("d")], [solution]);
 
-        byte[] bytes = SparqlResultsJsonWriter.WriteToBytes(original);
-        Assert.Contains("\"its:dir\": \"ltr\"", Encoding.UTF8.GetString(bytes));
+        Utf8String document = SparqlResultsJsonWriter.WriteToUtf8String(original);
+        Assert.Contains("\"its:dir\": \"ltr\"", document.ToString());
 
-        SparqlResultSet roundTrip = SparqlResultsJsonReader.Read(bytes);
+        SparqlResultSet roundTrip = SparqlResultsJsonReader.Read(document.Memory);
         Assert.IsTrue(SparqlResultComparer.AreEquivalent(original, roundTrip, ordered: true));
     }
 
@@ -68,10 +67,10 @@ internal sealed class SparqlResultsJsonWriterTests
     [TestMethod]
     public void AskRoundTrips()
     {
-        string json = Encoding.UTF8.GetString(SparqlResultsJsonWriter.WriteToBytes(SparqlResultSet.ForAsk(true)));
+        string json = SparqlResultsJsonWriter.WriteToUtf8String(SparqlResultSet.ForAsk(true)).ToString();
         Assert.Contains("\"boolean\": true", json);
 
-        SparqlResultSet roundTrip = SparqlResultsJsonReader.Read(SparqlResultsJsonWriter.WriteToBytes(SparqlResultSet.ForAsk(false)));
+        SparqlResultSet roundTrip = SparqlResultsJsonReader.Read(SparqlResultsJsonWriter.WriteToUtf8String(SparqlResultSet.ForAsk(false)).Memory);
         Assert.IsTrue(roundTrip.IsBoolean);
         Assert.IsFalse(roundTrip.Boolean!.Value);
     }
