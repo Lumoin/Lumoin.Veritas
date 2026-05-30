@@ -166,18 +166,20 @@ constant endpoint (`dd79dde` — `?s :p* :o` over an empty graph yields `?s=:o`;
 (`c461789` — lexer `Ci`-matches, canonical lower-case); (c) triple terms compare for `=` by value, component-wise
 (`897379f` — `TripleTermValueEqual`; `<<( :a :b 123 )>> = <<( :a :b 123.0 )>>`).
 
-▶ **NEXT (task #4 cont.): THE LAST 6 EVAL REDS** — each is a substantial, specialized slice (deserves focused work,
-not a tail-of-session rush). Read failing names via the Bash tool `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe"
+▶ **THE LAST 6 EVAL REDS (HISTORICAL — SUPERSEDED).** ⚠ This block is the 2026-05-30/31 snapshot when 6 reds
+remained; the **live list of the 3 remaining reds is the ⭐ CURRENT STATE block at the top** (directional language
+strings + `triple on triple terms` are now DONE). Kept for the per-test pointers and the broader backend/skip
+inventory below. Read failing names via the Bash tool `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe"
 --filter "FullyQualifiedName~W3cSparqlEval" > tempdocs/test-run.txt 2>&1` then Grep (see [[feedback_build_test_command_shape]];
 no PowerShell pipes/redirects, no Bash `cd &&` compounds; bare `cd /c/projektit/Lumoin.Veritas` resets a drifted cwd):
-**(1) directional language strings (RDF 1.2 `rdf:dirLangString`)** — `STRLANG` (3-arg with base direction) +
+**(1) directional language strings (RDF 1.2 `rdf:dirLangString`) — ✅ DONE `55bea88`** — `STRLANG` (3-arg with base direction) +
 `CONCAT and rdf:dirLangString` (`lang-basedir` suite): needs `"x"@en--ltr` lexing, the `Literal.BaseDirection`
 already on the term model, CONCAT/STRLANG dir-aware result typing, and the `.srj` reader's `its:dir`. A small but
 multi-part feature. **(2) RDF-star tail** — `Reified triples - Pattern - Nesting 1` (nested reified-triple SUBJECT —
 the inner reifier join must chain), `Embedded triple - ordering` (`order-by.rq` — a 20-way UNION of
-sub-SELECT/ORDER BY/OFFSET/LIMIT slices; really a sub-SELECT-ordering test), `triple on triple terms` (the TRIPLE()
-constructor / variable-bearing quoted-triple structural matching — the real remaining executor slice, currently
-skipped when a quoted triple term contains a variable). **(3) correlated `NOT EXISTS`** — `Calculate proper subset`
+sub-SELECT/ORDER BY/OFFSET/LIMIT slices; really a sub-SELECT-ordering test), `triple on triple terms` (**✅ DONE
+`756aa77`** — was the TRIPLE() builtin's subject validation, NOT structural matching; the real
+variable-bearing-quoted-triple executor slice is `Pattern - Nesting 1`). **(3) correlated `NOT EXISTS`** — `Calculate proper subset`
 (`subset-03.rq`: nested MINUS-of-MINUS with `FILTER NOT EXISTS`; the other 3 `Calculate…` set tests pass). **(4)
 sub-SELECT scoping** — sq11 (LIMIT-per-resource), sq13 (no binding injection). Bigger backends behind many skips: CONSTRUCT/DESCRIBE **result
 construction** (template-instantiation → graph, compare via the quad path), named graphs/`GRAPH`+`FROM NAMED`
