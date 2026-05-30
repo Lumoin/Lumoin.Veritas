@@ -4,9 +4,12 @@ using System.IO;
 using System.Xml;
 using System.Xml.Linq;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
+using Lumoin.Veritas.Sparql.Results;
+using TripleTerm = Lumoin.Veritas.Core.TripleTerm;
 
-namespace Lumoin.Veritas.Sparql.Results;
+namespace Lumoin.Veritas.Xml;
 
 /// <summary>
 /// Reads the <see href="https://www.w3.org/TR/rdf-sparql-XMLres/">SPARQL Query Results XML Format</see> (the
@@ -137,7 +140,7 @@ public static class SparqlResultsXmlReader
             XElement value = OnlyChildElement(binding)
                 ?? throw new FormatException($"The <binding name=\"{name}\"> has no value element.");
 
-            bindings.Add(new SparqlBinding(new Ast.SparqlVariable(Utf8String.FromString(name)), ParseTerm(value)));
+            bindings.Add(new SparqlBinding(new SparqlVariable(Utf8String.FromString(name)), ParseTerm(value)));
         }
 
         return new SparqlSolution(bindings);

@@ -3,6 +3,7 @@ using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
 using Lumoin.Veritas.Sparql.Results;
+using Lumoin.Veritas.Xml;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using TripleTerm = Lumoin.Veritas.Core.TripleTerm;
 

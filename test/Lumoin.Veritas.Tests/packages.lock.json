@@ -475,6 +475,13 @@
           "Lumoin.Veritas.NQuads": "[0.0.0, )"
         }
       },
+      "lumoin.veritas.xml": {
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Veritas.Core": "[0.0.0, )",
+          "Lumoin.Veritas.Sparql": "[0.0.0, )"
+        }
+      },
       "System.IO.Hashing": {
         "type": "CentralTransitive",
         "requested": "[10.0.8, )",

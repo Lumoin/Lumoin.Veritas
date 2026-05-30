@@ -13,6 +13,7 @@ using Lumoin.Veritas.Sparql.Parser;
 using Lumoin.Veritas.Sparql.Results;
 using Lumoin.Veritas.Sparql.Translation;
 using Lumoin.Veritas.Turtle;
+using Lumoin.Veritas.Xml;
 using IoPath = System.IO.Path;
 
 namespace Lumoin.Veritas.Tests.Conformance;

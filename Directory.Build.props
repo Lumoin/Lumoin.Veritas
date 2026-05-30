@@ -103,6 +103,11 @@ See full changelog at https://github.com/lumoin/Veritas/blob/main/CHANGELOG.md.]
     exempt for the JSON ban; uniform discipline matches the clock ban
     above.
 
+    BannedSymbols.Xml.txt bans the System.Xml / System.Xml.Linq
+    namespaces; it is added to every project except Lumoin.Veritas.Xml,
+    which owns the System.Xml dependency (the SPARQL Query Results XML
+    reader lives there). Tests are not exempt, matching the JSON ban.
+
     BannedSymbols.Cbor.txt bans the System.Formats.Cbor namespace; it
     is added to every project except Lumoin.Veritas.Cbor itself and
     any *.Tests project. The test exemption exists so the project's
@@ -135,6 +140,10 @@ See full changelog at https://github.com/lumoin/Veritas/blob/main/CHANGELOG.md.]
 
   <ItemGroup Condition="'$(MSBuildProjectName)' != 'Lumoin.Veritas.Json' AND '$(MSBuildProjectName)' != 'Lumoin.Veritas.Cbor'">
     <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.Serialization.txt" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(MSBuildProjectName)' != 'Lumoin.Veritas.Xml'">
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.Xml.txt" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(MSBuildProjectName)' != 'Lumoin.Veritas.Cbor' AND !$(MSBuildProjectName.EndsWith('.Tests'))">
