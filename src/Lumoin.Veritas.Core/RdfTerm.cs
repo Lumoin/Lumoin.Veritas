@@ -102,22 +102,59 @@ public enum TextDirection
 /// </remarks>
 public static class TextDirections
 {
-    /// <summary>The canonical lexical token for <see cref="TextDirection.Ltr"/>.</summary>
-    public const string LtrToken = "ltr";
+    /// <summary>The canonical lexical token for <see cref="TextDirection.Ltr"/> — <c>"ltr"</c>. A <c>static readonly</c> instance (not a <c>const</c>) so <see cref="GetCanonicalizedValue"/> can hand back one stable reference that callers compare by <see cref="object.ReferenceEquals"/>.</summary>
+    public static readonly string Ltr = "ltr";
 
-    /// <summary>The canonical lexical token for <see cref="TextDirection.Rtl"/>.</summary>
-    public const string RtlToken = "rtl";
+    /// <summary>The canonical lexical token for <see cref="TextDirection.Rtl"/> — <c>"rtl"</c>.</summary>
+    public static readonly string Rtl = "rtl";
 
-    /// <summary>The canonical <see cref="TextDirection.Ltr"/> token as a UTF-8 string.</summary>
-    public static Utf8String Ltr { get; } = Utf8String.FromString(LtrToken);
+    /// <summary>The canonical <see cref="TextDirection.Ltr"/> token as a UTF-8 string (for byte-level serializers and the expression evaluator).</summary>
+    public static Utf8String LtrUtf8 { get; } = Utf8String.FromString(Ltr);
 
     /// <summary>The canonical <see cref="TextDirection.Rtl"/> token as a UTF-8 string.</summary>
-    public static Utf8String Rtl { get; } = Utf8String.FromString(RtlToken);
+    public static Utf8String RtlUtf8 { get; } = Utf8String.FromString(Rtl);
+
+    /// <summary>Returns whether a token is the <see cref="Ltr"/> token.</summary>
+    /// <param name="token">The candidate token.</param>
+    /// <returns><see langword="true"/> when <paramref name="token"/> equals <see cref="Ltr"/>.</returns>
+    public static bool IsLtr(string token) => Equals(token, Ltr);
+
+    /// <summary>Returns whether a token is the <see cref="Rtl"/> token.</summary>
+    /// <param name="token">The candidate token.</param>
+    /// <returns><see langword="true"/> when <paramref name="token"/> equals <see cref="Rtl"/>.</returns>
+    public static bool IsRtl(string token) => Equals(token, Rtl);
+
+    /// <summary>Returns the equivalent canonical static instance of a direction token, or the original instance when it is neither <see cref="Ltr"/> nor <see cref="Rtl"/>. Canonicalizing lets downstream comparisons take the <see cref="object.ReferenceEquals"/> fast-path.</summary>
+    /// <param name="token">The token to canonicalize.</param>
+    /// <returns>The canonical instance, or <paramref name="token"/> unchanged.</returns>
+    public static string GetCanonicalizedValue(string token) => token switch
+    {
+        _ when IsLtr(token) => Ltr,
+        _ when IsRtl(token) => Rtl,
+        _ => token
+    };
+
+    /// <summary>Returns whether two direction tokens are the same, with a <see cref="object.ReferenceEquals"/> fast-path then an <b>ordinal</b> (case-sensitive) compare — RDF 1.2 base directions are lower-case <c>"ltr"</c>/<c>"rtl"</c> only (unlike case-insensitive RFC media types).</summary>
+    /// <param name="tokenA">The first token.</param>
+    /// <param name="tokenB">The second token.</param>
+    /// <returns><see langword="true"/> when the tokens are equal.</returns>
+    public static bool Equals(string tokenA, string tokenB)
+    {
+        return ReferenceEquals(tokenA, tokenB) || StringComparer.Ordinal.Equals(tokenA, tokenB);
+    }
 
     /// <summary>Returns the canonical lexical token of a base direction as a UTF-8 string.</summary>
     /// <param name="direction">The base direction.</param>
-    /// <returns>The <see cref="Ltr"/> or <see cref="Rtl"/> token.</returns>
+    /// <returns>The <see cref="LtrUtf8"/> or <see cref="RtlUtf8"/> token.</returns>
     public static Utf8String ToToken(TextDirection direction)
+    {
+        return direction == TextDirection.Ltr ? LtrUtf8 : RtlUtf8;
+    }
+
+    /// <summary>Returns the canonical lexical token of a base direction as a string.</summary>
+    /// <param name="direction">The base direction.</param>
+    /// <returns>The <see cref="Ltr"/> or <see cref="Rtl"/> token.</returns>
+    public static string ToText(TextDirection direction)
     {
         return direction == TextDirection.Ltr ? Ltr : Rtl;
     }
@@ -128,14 +165,14 @@ public static class TextDirections
     /// <returns><see langword="true"/> when the token is a recognised base direction.</returns>
     public static bool TryParse(ReadOnlySpan<byte> token, out TextDirection direction)
     {
-        if(token.SequenceEqual(Ltr.Span))
+        if(token.SequenceEqual(LtrUtf8.Span))
         {
             direction = TextDirection.Ltr;
 
             return true;
         }
 
-        if(token.SequenceEqual(Rtl.Span))
+        if(token.SequenceEqual(RtlUtf8.Span))
         {
             direction = TextDirection.Rtl;
 
@@ -155,8 +192,8 @@ public static class TextDirections
     {
         (bool recognised, direction) = token switch
         {
-            LtrToken => (true, TextDirection.Ltr),
-            RtlToken => (true, TextDirection.Rtl),
+            not null when IsLtr(token) => (true, TextDirection.Ltr),
+            not null when IsRtl(token) => (true, TextDirection.Rtl),
             _ => (false, default(TextDirection))
         };
 

@@ -165,7 +165,7 @@ public sealed class RdfTermJsonConverter: JsonConverter<RdfTerm>
                 }
                 if(dir is { } d)
                 {
-                    writer.WriteString(DirectionProperty, d == TextDirection.Ltr ? TextDirections.LtrToken : TextDirections.RtlToken);
+                    writer.WriteString(DirectionProperty, TextDirections.ToText(d));
                 }
                 break;
             }

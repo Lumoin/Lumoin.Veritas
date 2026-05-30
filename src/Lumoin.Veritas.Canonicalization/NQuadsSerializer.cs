@@ -155,7 +155,7 @@ internal static class NQuadsSerializer
             if(literal.BaseDirection is { } direction)
             {
                 sb.Append("--");
-                sb.Append(direction == TextDirection.Ltr ? TextDirections.LtrToken : TextDirections.RtlToken);
+                sb.Append(TextDirections.ToText(direction));
             }
 
             return;
