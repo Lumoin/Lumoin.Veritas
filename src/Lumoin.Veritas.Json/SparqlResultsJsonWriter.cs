@@ -30,6 +30,8 @@ public static class SparqlResultsJsonWriter
 
     private static ReadOnlySpan<byte> LangProperty => "xml:lang"u8;
 
+    private static ReadOnlySpan<byte> DirectionProperty => "its:dir"u8;
+
     /// <summary>Serializes a result set to its <c>.srj</c> bytes.</summary>
     /// <param name="results">The result set to serialize.</param>
     /// <param name="indented">Whether to pretty-print the JSON.</param>
@@ -202,6 +204,11 @@ public static class SparqlResultsJsonWriter
                 if(literal.Language is { } language)
                 {
                     writer.WriteString(LangProperty, language.Span);
+
+                    if(literal.BaseDirection is { } direction)
+                    {
+                        writer.WriteString(DirectionProperty, TextDirections.ToToken(direction).Span);
+                    }
                 }
                 else if(!literal.Datatype.Iri.Equals(Vocabulary.Xsd.String))
                 {

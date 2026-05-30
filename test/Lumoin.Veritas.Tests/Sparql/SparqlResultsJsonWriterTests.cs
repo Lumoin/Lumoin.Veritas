@@ -25,6 +25,8 @@ internal sealed class SparqlResultsJsonWriterTests
 
     private static Literal Lang(string value, string language) => new(Utf8String.FromString(value), new NamedNode(Vocabulary.Rdf.LangString), Utf8String.FromString(language));
 
+    private static Literal LangDir(string value, string language, TextDirection direction) => new(Utf8String.FromString(value), new NamedNode(Vocabulary.Rdf.DirLangString), Utf8String.FromString(language), direction);
+
     private static SparqlBinding Bind(string variable, RdfTerm value) => new(new SparqlVariable(Utf8String.FromString(variable)), value);
 
     /// <summary>A SELECT result with every binding value form round-trips through write then read.</summary>
@@ -45,6 +47,20 @@ internal sealed class SparqlResultsJsonWriterTests
 
         SparqlResultSet roundTrip = SparqlResultsJsonReader.Read(SparqlResultsJsonWriter.WriteToBytes(original));
 
+        Assert.IsTrue(SparqlResultComparer.AreEquivalent(original, roundTrip, ordered: true));
+    }
+
+    /// <summary>A directional language-tagged literal (RDF 1.2) writes <c>its:dir</c> and round-trips with its base direction intact.</summary>
+    [TestMethod]
+    public void DirectionalLanguageLiteralRoundTrips()
+    {
+        SparqlSolution solution = new([Bind("d", LangDir("abc", "en", TextDirection.Ltr))]);
+        SparqlResultSet original = SparqlResultSet.ForSelect([Utf8String.FromString("d")], [solution]);
+
+        byte[] bytes = SparqlResultsJsonWriter.WriteToBytes(original);
+        Assert.Contains("\"its:dir\": \"ltr\"", Encoding.UTF8.GetString(bytes));
+
+        SparqlResultSet roundTrip = SparqlResultsJsonReader.Read(bytes);
         Assert.IsTrue(SparqlResultComparer.AreEquivalent(original, roundTrip, ordered: true));
     }
 
