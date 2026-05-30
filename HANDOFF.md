@@ -15,7 +15,7 @@ foundation is **built, committed, green** (baseline unchanged at 6 ShaclValidate
   `SparqlResultsXmlReader` (reads the `.srx` XML: uri/literal/typed/lang/bnode/**triple** binding values + ASK
   boolean; DTD prohibited; triple terms parsed over an explicit stack). **User decision: results serialization is
   first-class SPARQL 1.2 — build the FULL reader/writer family in final form (XML + JSON readers AND writers, then
-  CSV/TSV).** So still TODO in production: `SparqlResultsJsonReader` (`.srj`), and the XML/JSON/CSV/TSV **writers**.
+  CSV/TSV).** The `.srj` JSON reader landed (`eb7400b`, `SparqlResultsJsonReader` in **`Lumoin.Veritas.Json`** — that project owns STJ, banned in `Lumoin.Veritas.Sparql`; a Json→Sparql ref produces the shared `SparqlResultSet`). Still TODO in production: the XML/JSON/CSV/TSV **writers** + CSV/TSV readers.
   Test-only `SparqlResultComparer` (Conformance/): SELECT multiset (bag) equivalence under blank-node isomorphism via
   iterative backtracking (no recursion), ordered compare for ORDER BY, ASK boolean; ground fast-path by row-key count.
   13 unit tests.
