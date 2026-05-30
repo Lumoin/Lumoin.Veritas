@@ -90,10 +90,21 @@ internal static class W3cSparqlEvalRunner
             return new W3cOutcome(W3cOutcomeStatus.Skipped, "CONSTRUCT/DESCRIBE result construction is not yet implemented.");
         }
 
+        List<DataTriple> data;
+        try
+        {
+            data = await LoadDataAsync(testCase.QueryDataPath, cancellationToken).ConfigureAwait(false);
+        }
+        catch(InvalidOperationException ex)
+        {
+            //The data graph is in a format this harness cannot read (RDF/XML, TriG/named graphs) or is malformed:
+            //the test cannot be set up, so it is skipped structurally rather than reported as an engine failure.
+            return new W3cOutcome(W3cOutcomeStatus.Skipped, $"Could not load the data graph (unsupported format or malformed): {ex.Message}");
+        }
+
         SparqlResultSet actual;
         try
         {
-            List<DataTriple> data = await LoadDataAsync(testCase.QueryDataPath, cancellationToken).ConfigureAwait(false);
             SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(data, cancellationToken: cancellationToken).ConfigureAwait(false);
             SparqlQuery normalized = (SparqlQuery)new SparqlNormalizer(pool).Normalize(query);
             AlgebraOperator algebra = SparqlTranslator.Translate(normalized);

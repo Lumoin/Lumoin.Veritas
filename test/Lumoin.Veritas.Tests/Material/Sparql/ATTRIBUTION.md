@@ -6,11 +6,26 @@ commit `674da267646573441808560564451fe5cc77aef7`, snapshotted on
 
 Original paths within the upstream repository:
 
+Query-syntax suites:
+
 - `sparql/sparql11/syntax-query/` → `Material/Sparql/syntax-query/`
 - `sparql/sparql12/syntax/` → `Material/Sparql/syntax/`
 - `sparql/sparql12/syntax-triple-terms-positive/` → `Material/Sparql/syntax-triple-terms-positive/`
 - `sparql/sparql12/syntax-triple-terms-negative/` → `Material/Sparql/syntax-triple-terms-negative/`
 - `sparql/sparql12/version/` → `Material/Sparql/version/`
+
+Query-evaluation suites (snapshotted 2026-05-30, same pinned commit):
+
+- `sparql/sparql11/aggregates/` → `Material/Sparql/aggregates/`
+- `sparql/sparql11/bind/` → `Material/Sparql/bind/`
+- `sparql/sparql11/bindings/` → `Material/Sparql/bindings/`
+- `sparql/sparql11/exists/` → `Material/Sparql/exists/`
+- `sparql/sparql11/grouping/` → `Material/Sparql/grouping/`
+- `sparql/sparql11/negation/` → `Material/Sparql/negation/`
+- `sparql/sparql11/project-expression/` → `Material/Sparql/project-expression/`
+- `sparql/sparql11/subquery/` → `Material/Sparql/subquery/`
+- `sparql/sparql12/expression/` → `Material/Sparql/expression/`
+- `sparql/sparql12/eval-triple-terms/` → `Material/Sparql/eval-triple-terms/`
 
 Licensed under the dual W3C Test Suite licence and W3C 3-clause
 BSD licence per the upstream `LICENSE.md`:
@@ -43,9 +58,23 @@ expression positions, and the `VERSION` declaration itself — are recorded as
 self-correcting known-gaps in `W3cSparqlSyntaxTests.KnownGaps` (reported
 inconclusive; the run fails if any starts passing) until those slices land.
 
+An initial set of query-**evaluation** suites is now vendored and run by
+`W3cSparqlEvalTests` (parse → normalize → translate → execute → compare). A
+`SELECT`/`ASK` test with a SPARQL Results fixture (`.srx`/`.srj`) is executed;
+`CONSTRUCT`/`DESCRIBE` (RDF-graph results), update entries in mixed manifests,
+queries using an unsupported operator, and tests whose data graph is in a format
+the harness cannot read (RDF/XML, TriG) are reported inconclusive, not failed.
+Genuine engine gaps are recorded in `W3cSparqlEvalTests.KnownGaps` (the
+conformance frontier to drive down): aggregate numeric-tower typing,
+`GROUP_CONCAT`, correlated `NOT EXISTS` set semantics, some sub-`SELECT`
+semantics, `xsd:boolean` non-canonical lexicals, and RDF-star triple-term
+pattern matching.
+
 Deferred:
 
-- SPARQL **Update** syntax tests (`mf:*UpdateSyntaxTest*`) are out of scope —
-  this build parses queries, not update requests — and the conformance loader
-  classifies those test types as unknown, so the runner skips them.
-- Evaluation suites (query results) wait on the algebra/executor milestones.
+- SPARQL **Update** syntax/evaluation tests are out of scope — this build parses
+  and evaluates queries, not update requests.
+- Evaluation suites that need the quad/dataset backend (`GRAPH`/`FROM NAMED`),
+  federation (`SERVICE`), entailment regimes, or RDF/XML data are not yet
+  vendored or are skipped structurally. `construct`/`describe`, `service`,
+  `entailment`, `csv-tsv-res`, and `json-res` remain unvendored.
