@@ -56,16 +56,31 @@ manifest entries, unreadable data graphs RDF/XML+TriG). **Conformance now: 178 S
 no NEW failures (ratchet the 53 down, never up).** (codepoint-escapes' 5 parser-gap failures are in
 `W3cSparqlSyntaxTests.KnownGaps` — the syntax suite keeps its KnownGaps/green convention.)
 
-▶ **NEXT (task #4 cont.): RATCHET THE 53 EVAL REDS DOWN by implementing features.** Clusters, biggest-yield first
-(read the failing names via `& "test\…\Tests.exe" --filter "FullyQualifiedName~W3cSparqlEval"` then `Select-String
-"^failed "`): **(1) aggregate/arithmetic numeric-tower typing** — SUM/AVG over xsd:decimal/integer must promote
-(not collapse to double); the evaluator is double-based (`SparqlExpressionEvaluator` / `EvaluateAggregate`). Also
-GROUP_CONCAT assembly. **(2) RDF-star triple-term pattern matching** (~17 `Reified triples - …`/`eval-triple-terms`)
+✅ **NUMERIC TOWER DONE (2026-05-30): eval reds 53 → 40.** `Rdf.Values.NumericValue` made public and extended with
+arithmetic (Add/Subtract/Multiply/TryDivide/Negate, §17.4.1 promotion over BigInteger/decimal/float/double) +
+`ToCanonicalLexical()`/`DatatypeIri` + value-equality (`28e51f6`, 10 unit tests). `SparqlExpressionEvaluator` rewired
+off the lossy double+integral model onto the tower — arithmetic, SUM/AVG (exact decimal, promoted typing),
+comparison, ABS/CEIL/FLOOR/ROUND (kind-preserving), COUNT/STRLEN/date→integer, RAND→double (`d8dc0e9`).
+`SparqlResultComparer` now matches numeric literals by VALUE within a kind (W3C expected files use non-canonical
+forms like `"2100"` for xsd:double). **Full-suite baseline now 6 ShaclValidate + 40 eval; 0 regressions.**
+
+▶ **NEXT (task #4 cont.): RATCHET THE 40 EVAL REDS DOWN.** Clusters, biggest-yield first (read failing names: run
+the Tests.exe **via the Bash tool** `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe" --filter
+"FullyQualifiedName~W3cSparqlEval" > tempdocs/test-run.txt 2>&1` then Grep the file — see [[feedback_build_test_command_shape]];
+PowerShell pipes/redirects and Bash `cd &&` compounds all PROMPT, the Bash-exe-with-`>` form does not):
+**(1) sub-SELECT-with-aggregate / GROUP-BY-expression** — the 4 remaining aggregate reds (GROUP_CONCAT ×3 + COUNT 8b)
+are NOT the aggregate fns (a standalone GROUP_CONCAT engine test passes, `f59e0ec`); they fail when an aggregated
+SELECT is nested in a sub-SELECT (`ToMultiSet`) and FILTERed, and COUNT 8b groups by `((?O1+?O2) AS ?O12)` — produces
+3 groups vs expected 5, so a `GroupExpressionAs` key partitions wrong (look at `SparqlQueryEngine.EvaluateGroupKey`/
+`Partition` and how `ToMultiSet` over an `AggregateJoin` evaluates). Shared with `sq08`. **(2) RDF-star triple-term
+pattern matching** (~17 `Reified triples - …`/`eval-triple-terms`)
 — the BGP matcher can't bind vars inside quoted triple terms; `SparqlQueryEngine.TryEncodePosition` throws on a
 nested `Ast.TripleTerm` today — a real executor slice (encode/decode quoted-triple positions through the term dict).
-**(3) `functions`/`cast`** — many built-in/cast gaps (numeric tower again, plus missing fns). **(4) correlated
-`NOT EXISTS` set semantics** (4 negation). **(5) sub-SELECT scoping**, **`xsd:boolean` non-canonical lexicals**,
-**trailing VALUES+UNDEF**, **property-path** tail. Bigger backends behind many skips: CONSTRUCT/DESCRIBE **result
+**(3) `functions`/`cast`** — remaining built-in/cast gaps now that the numeric tower is in: `UCASE`/`LCASE`/`STRLANG`/
+`IRI()/URI()`/`CONCAT() 2`/`CONCAT and rdf:dirLangString` (string/lang-tag handling), plus `* / ? with start/end
+constant on the empty dataset` (property-path on empty data). **(4) correlated `NOT EXISTS` set semantics** (4
+`Calculate …` negation tests). **(5) sub-SELECT scoping** (sq11/sq13), **`xsd:boolean` non-canonical lexicals**
+(`case-insensitive booleans` — TRUE/FALSE/1/0 EBV), **trailing VALUES+UNDEF**. Bigger backends behind many skips: CONSTRUCT/DESCRIBE **result
 construction** (template-instantiation → graph, compare via the quad path), named graphs/`GRAPH`+`FROM NAMED`
 (**quad/dataset backend** — the hypertrie store is triple-only), `SERVICE` (offline-excluded), `BNODE`, directional
 fns, negated property sets, and an **RDF/XML + TriG data reader** (currently those data graphs are skipped). The
@@ -73,7 +88,10 @@ fns, negated property sets, and an **RDF/XML + TriG data reader** (currently tho
 substitution/scoping ([[feedback_sparql_before_shacl]]); `nodeKind property 001` is the separate RDFC-1.0 rewrite
 ([[project_rdfc_automorphism_gap]]). To re-vendor, shallow-fetch the pinned commit:
 `git init … && git fetch --depth 1 origin 674da267646573441808560564451fe5cc77aef7 && git checkout FETCH_HEAD`, then
-copy `sparql/sparql11/<dir>` / `sparql/sparql12/<dir>` into `Material/Sparql/<dir>`. Build/test per
+copy `sparql/sparql11/<dir>` / `sparql/sparql12/<dir>` into `Material/Sparql/<dir>`. ⚠ **Build/test command shape is
+a recurring pain — see [[feedback_build_test_command_shape]]: use the Bash tool for the test exe with a `>` redirect
+to `tempdocs/test-run.txt` and read with Grep/Read; bare `dotnet build` (no pipe); NEVER PowerShell pipes/redirects
+or Bash `cd &&` compounds (all prompt). Run the suite once per batch.** Build/test per
 [[feedback_build_test_command_shape]] (PowerShell; `& "test\…\Lumoin.Veritas.Tests.exe" --filter "FullyQualifiedName~W3cSparqlEval"`).
 
 **Tooling note (2026-05-30):** the build/test permission allowlist in `.claude/settings.local.json` was broadened
