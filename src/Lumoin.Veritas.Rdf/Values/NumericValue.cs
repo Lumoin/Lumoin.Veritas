@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
 using Lumoin.Veritas.Core;
@@ -33,8 +34,18 @@ namespace Lumoin.Veritas.Rdf.Values;
 /// <see cref="ComparisonResult.Incomparable"/>. <c>+INF</c> and
 /// <c>-INF</c> are well-ordered relative to all finite values.
 /// </para>
+/// <para>
+/// Beyond parse and compare, the type carries the SPARQL §17.4 arithmetic
+/// (<see cref="Add"/>/<see cref="Subtract"/>/<see cref="Multiply"/>/
+/// <see cref="Divide"/>/<see cref="Negate"/>, each promoting to the higher
+/// operand kind) and renders back to the XSD canonical lexical form
+/// (<see cref="ToCanonicalLexical"/>) with its result datatype IRI
+/// (<see cref="DatatypeIri"/>) — so the same numeric tower drives the SPARQL
+/// expression evaluator, SHACL value-range checks, and OWL.
+/// </para>
 /// </remarks>
-internal readonly struct NumericValue
+[DebuggerDisplay("{ToCanonicalLexical(),nq} ({Kind})")]
+public readonly struct NumericValue: IEquatable<NumericValue>
 {
     /// <summary>Which slot of the union carries the value.</summary>
     public NumericKind Kind { get; }
@@ -44,7 +55,9 @@ internal readonly struct NumericValue
     private readonly float floatValue;
     private readonly double doubleValue;
 
-    private NumericValue(BigInteger value)
+    /// <summary>Constructs an <c>xsd:integer</c>-kind value.</summary>
+    /// <param name="value">The integer value.</param>
+    public NumericValue(BigInteger value)
     {
         Kind = NumericKind.Integer;
         integerValue = value;
@@ -53,7 +66,9 @@ internal readonly struct NumericValue
         doubleValue = default;
     }
 
-    private NumericValue(decimal value)
+    /// <summary>Constructs an <c>xsd:decimal</c>-kind value.</summary>
+    /// <param name="value">The decimal value.</param>
+    public NumericValue(decimal value)
     {
         Kind = NumericKind.Decimal;
         integerValue = default;
@@ -62,7 +77,9 @@ internal readonly struct NumericValue
         doubleValue = default;
     }
 
-    private NumericValue(float value)
+    /// <summary>Constructs an <c>xsd:float</c>-kind value.</summary>
+    /// <param name="value">The float value.</param>
+    public NumericValue(float value)
     {
         Kind = NumericKind.Float;
         integerValue = default;
@@ -71,7 +88,9 @@ internal readonly struct NumericValue
         doubleValue = default;
     }
 
-    private NumericValue(double value)
+    /// <summary>Constructs an <c>xsd:double</c>-kind value.</summary>
+    /// <param name="value">The double value.</param>
+    public NumericValue(double value)
     {
         Kind = NumericKind.Double;
         integerValue = default;
@@ -80,10 +99,30 @@ internal readonly struct NumericValue
         doubleValue = value;
     }
 
+    /// <summary>Returns the value as a <see cref="BigInteger"/> (meaningful when <see cref="Kind"/> is <see cref="NumericKind.Integer"/>).</summary>
+    /// <returns>The integer slot.</returns>
     public BigInteger AsInteger() => integerValue;
+
+    /// <summary>Returns the value as a <see cref="decimal"/> (meaningful when <see cref="Kind"/> is <see cref="NumericKind.Decimal"/>).</summary>
+    /// <returns>The decimal slot.</returns>
     public decimal AsDecimal() => decimalValue;
+
+    /// <summary>Returns the value as a <see cref="float"/> (meaningful when <see cref="Kind"/> is <see cref="NumericKind.Float"/>).</summary>
+    /// <returns>The float slot.</returns>
     public float AsFloat() => floatValue;
+
+    /// <summary>Returns the value as a <see cref="double"/> (meaningful when <see cref="Kind"/> is <see cref="NumericKind.Double"/>).</summary>
+    /// <returns>The double slot.</returns>
     public double AsDouble() => doubleValue;
+
+    /// <summary>The XSD datatype IRI matching this value's <see cref="Kind"/> (<c>xsd:integer</c>/<c>decimal</c>/<c>float</c>/<c>double</c>).</summary>
+    public Utf8String DatatypeIri => Kind switch
+    {
+        NumericKind.Integer => Vocabulary.Xsd.Integer,
+        NumericKind.Decimal => Vocabulary.Xsd.Decimal,
+        NumericKind.Float => Vocabulary.Xsd.Float,
+        _ => Vocabulary.Xsd.Double
+    };
 
     /// <summary>
     /// Parses the lexical form of a numeric literal whose datatype
@@ -177,6 +216,30 @@ internal readonly struct NumericValue
         return false;
     }
 
+    /// <summary>Returns whether this value is numerically equal to another under the SPARQL promotion lattice (so <c>1</c> integer equals <c>1.0</c> decimal); a NaN operand is never equal.</summary>
+    /// <param name="other">The value to compare against.</param>
+    /// <returns><see langword="true"/> when the two are numerically equal.</returns>
+    public bool Equals(NumericValue other) => Compare(this, other) == ComparisonResult.Equal;
+
+    /// <inheritdoc/>
+    public override bool Equals(object? obj) => obj is NumericValue other && Equals(other);
+
+    /// <summary>Computes a hash consistent with numeric equality by hashing the value promoted to <see cref="double"/> (so equal values across kinds collide).</summary>
+    /// <returns>The hash code.</returns>
+    public override int GetHashCode() => ToDouble(this).GetHashCode();
+
+    /// <summary>Returns whether two numeric values are numerically equal under the promotion lattice.</summary>
+    /// <param name="left">The left value.</param>
+    /// <param name="right">The right value.</param>
+    /// <returns><see langword="true"/> when numerically equal.</returns>
+    public static bool operator ==(NumericValue left, NumericValue right) => left.Equals(right);
+
+    /// <summary>Returns whether two numeric values are not numerically equal under the promotion lattice.</summary>
+    /// <param name="left">The left value.</param>
+    /// <param name="right">The right value.</param>
+    /// <returns><see langword="true"/> when not numerically equal.</returns>
+    public static bool operator !=(NumericValue left, NumericValue right) => !left.Equals(right);
+
     /// <summary>
     /// Compares two numeric values under the SPARQL promotion lattice.
     /// </summary>
@@ -266,6 +329,258 @@ internal readonly struct NumericValue
             _ => ComparisonResult.Equal,
         };
 
+    /// <summary>Adds two numeric values, promoting to the higher operand kind (SPARQL §17.4).</summary>
+    /// <param name="left">The left operand.</param>
+    /// <param name="right">The right operand.</param>
+    /// <returns>The sum, in the promoted kind.</returns>
+    public static NumericValue Add(NumericValue left, NumericValue right)
+    {
+        return Combine(left, right,
+            static (a, b) => a + b,
+            static (a, b) => a + b,
+            static (a, b) => a + b,
+            static (a, b) => a + b);
+    }
+
+    /// <summary>Subtracts the right value from the left, promoting to the higher operand kind.</summary>
+    /// <param name="left">The left operand.</param>
+    /// <param name="right">The right operand.</param>
+    /// <returns>The difference, in the promoted kind.</returns>
+    public static NumericValue Subtract(NumericValue left, NumericValue right)
+    {
+        return Combine(left, right,
+            static (a, b) => a - b,
+            static (a, b) => a - b,
+            static (a, b) => a - b,
+            static (a, b) => a - b);
+    }
+
+    /// <summary>Multiplies two numeric values, promoting to the higher operand kind.</summary>
+    /// <param name="left">The left operand.</param>
+    /// <param name="right">The right operand.</param>
+    /// <returns>The product, in the promoted kind.</returns>
+    public static NumericValue Multiply(NumericValue left, NumericValue right)
+    {
+        return Combine(left, right,
+            static (a, b) => a * b,
+            static (a, b) => a * b,
+            static (a, b) => a * b,
+            static (a, b) => a * b);
+    }
+
+    /// <summary>
+    /// Divides the left value by the right (SPARQL §17.4 / XPath <c>op:numeric-divide</c>): integer/integer yields an
+    /// <c>xsd:decimal</c>, decimal/decimal stays decimal, float and double divide in their kind. A zero divisor in
+    /// the integer or decimal kind yields <see langword="false"/> (the caller raises an error); float/double divide
+    /// by zero produces the IEEE infinity/NaN, which is a valid result.
+    /// </summary>
+    /// <param name="left">The dividend.</param>
+    /// <param name="right">The divisor.</param>
+    /// <param name="result">Receives the quotient on success.</param>
+    /// <returns><see langword="true"/> on success; <see langword="false"/> for an exact-kind division by zero.</returns>
+    public static bool TryDivide(NumericValue left, NumericValue right, out NumericValue result)
+    {
+        NumericKind target = left.Kind > right.Kind ? left.Kind : right.Kind;
+
+        //integer ÷ integer is defined to be xsd:decimal (it is not integer division).
+        if(target == NumericKind.Integer)
+        {
+            target = NumericKind.Decimal;
+        }
+
+        switch(target)
+        {
+            case NumericKind.Decimal:
+            {
+                decimal divisor = ToDecimal(right);
+                if(divisor == 0m)
+                {
+                    result = default;
+
+                    return false;
+                }
+
+                result = new NumericValue(ToDecimal(left) / divisor);
+
+                return true;
+            }
+            case NumericKind.Float:
+            {
+                result = new NumericValue(ToFloat(left) / ToFloat(right));
+
+                return true;
+            }
+            default:
+            {
+                result = new NumericValue(ToDouble(left) / ToDouble(right));
+
+                return true;
+            }
+        }
+    }
+
+    /// <summary>Negates the value, preserving its kind.</summary>
+    /// <returns>The negated value.</returns>
+    public NumericValue Negate()
+    {
+        return Kind switch
+        {
+            NumericKind.Integer => new NumericValue(-integerValue),
+            NumericKind.Decimal => new NumericValue(-decimalValue),
+            NumericKind.Float => new NumericValue(-floatValue),
+            _ => new NumericValue(-doubleValue)
+        };
+    }
+
+    /// <summary>Applies the kind-specific binary operation after promoting both operands to the higher of the two kinds.</summary>
+    /// <param name="left">The left operand.</param>
+    /// <param name="right">The right operand.</param>
+    /// <param name="onInteger">The operation in the integer kind.</param>
+    /// <param name="onDecimal">The operation in the decimal kind.</param>
+    /// <param name="onFloat">The operation in the float kind.</param>
+    /// <param name="onDouble">The operation in the double kind.</param>
+    /// <returns>The result in the promoted kind.</returns>
+    private static NumericValue Combine(
+        NumericValue left,
+        NumericValue right,
+        Func<BigInteger, BigInteger, BigInteger> onInteger,
+        Func<decimal, decimal, decimal> onDecimal,
+        Func<float, float, float> onFloat,
+        Func<double, double, double> onDouble)
+    {
+        NumericKind target = left.Kind > right.Kind ? left.Kind : right.Kind;
+
+        return target switch
+        {
+            NumericKind.Integer => new NumericValue(onInteger(left.integerValue, right.integerValue)),
+            NumericKind.Decimal => new NumericValue(onDecimal(ToDecimal(left), ToDecimal(right))),
+            NumericKind.Float => new NumericValue(onFloat(ToFloat(left), ToFloat(right))),
+            _ => new NumericValue(onDouble(ToDouble(left), ToDouble(right)))
+        };
+    }
+
+    private static decimal ToDecimal(NumericValue v)
+        => v.Kind switch
+        {
+            NumericKind.Integer => (decimal)v.integerValue,
+            NumericKind.Decimal => v.decimalValue,
+            NumericKind.Float => (decimal)v.floatValue,
+            _ => (decimal)v.doubleValue
+        };
+
+    /// <summary>
+    /// Renders this value in its XSD canonical lexical form: <c>xsd:integer</c> as digits; <c>xsd:decimal</c> always
+    /// with a decimal point (e.g. <c>1.0</c>, <c>11.1</c>); <c>xsd:float</c>/<c>xsd:double</c> in the mantissa-and-
+    /// exponent form the W3C results fixtures use (e.g. <c>3.21E4</c>, <c>4.0E-1</c>, <c>1.0E2</c>), with <c>INF</c>/
+    /// <c>-INF</c>/<c>NaN</c> for the specials.
+    /// </summary>
+    /// <returns>The canonical lexical form.</returns>
+    public string ToCanonicalLexical()
+    {
+        //Copy the relevant field to a local: a struct's instance fields cannot be captured by the rendering lambda.
+        float f = floatValue;
+        double d = doubleValue;
+
+        return Kind switch
+        {
+            NumericKind.Integer => integerValue.ToString(CultureInfo.InvariantCulture),
+            NumericKind.Decimal => CanonicalDecimal(decimalValue),
+            NumericKind.Float => CanonicalFloating(f, float.IsNaN(f), float.IsPositiveInfinity(f), float.IsNegativeInfinity(f), () => ((double)f).ToString("R", CultureInfo.InvariantCulture)),
+            _ => CanonicalFloating(d, double.IsNaN(d), double.IsPositiveInfinity(d), double.IsNegativeInfinity(d), () => d.ToString("R", CultureInfo.InvariantCulture))
+        };
+    }
+
+    /// <summary>Renders an <c>xsd:decimal</c> in canonical form: a mandatory decimal point, trailing fractional zeros trimmed to one (so an integral decimal is <c>N.0</c>).</summary>
+    /// <param name="value">The decimal value.</param>
+    /// <returns>The canonical decimal lexical form.</returns>
+    private static string CanonicalDecimal(decimal value)
+    {
+        //decimal preserves trailing zeros from its scale; normalize so e.g. 2.20 → "2.2" and 6 → "6.0".
+        decimal normalized = value / 1.000000000000000000000000000000000m;
+        string text = normalized.ToString(CultureInfo.InvariantCulture);
+
+        return text.Contains('.', StringComparison.Ordinal) ? text : text + ".0";
+    }
+
+    /// <summary>Renders an <c>xsd:float</c>/<c>xsd:double</c> in XSD canonical scientific form (one digit before the point, an <c>E</c> exponent), or the <c>INF</c>/<c>-INF</c>/<c>NaN</c> specials.</summary>
+    /// <param name="value">The numeric value (used only to test for zero).</param>
+    /// <param name="isNaN">Whether the value is NaN.</param>
+    /// <param name="isPositiveInfinity">Whether the value is +∞.</param>
+    /// <param name="isNegativeInfinity">Whether the value is −∞.</param>
+    /// <param name="roundTrip">Produces the round-trip ("R") rendering of the value.</param>
+    /// <returns>The canonical floating lexical form.</returns>
+    private static string CanonicalFloating(double value, bool isNaN, bool isPositiveInfinity, bool isNegativeInfinity, Func<string> roundTrip)
+    {
+        if(isNaN)
+        {
+            return "NaN";
+        }
+
+        if(isPositiveInfinity)
+        {
+            return "INF";
+        }
+
+        if(isNegativeInfinity)
+        {
+            return "-INF";
+        }
+
+        return ToScientific(roundTrip(), value == 0);
+    }
+
+    /// <summary>
+    /// Normalizes a .NET round-trip numeric rendering into the XSD canonical mantissa<c>E</c>exponent form: exactly
+    /// one (possibly signed) digit before the decimal point, a fractional part with at least one digit, and a
+    /// base-ten exponent with a sign (e.g. <c>3.21E4</c>, <c>4.0E-1</c>, <c>1.0E2</c>, <c>0.0E0</c>).
+    /// </summary>
+    /// <param name="roundTrip">The .NET "R"-format rendering (e.g. <c>32100</c>, <c>0.4</c>, <c>1E-10</c>).</param>
+    /// <param name="isZero">Whether the value is zero (rendered <c>0.0E0</c>).</param>
+    /// <returns>The canonical scientific form.</returns>
+    private static string ToScientific(string roundTrip, bool isZero)
+    {
+        if(isZero)
+        {
+            return "0.0E0";
+        }
+
+        bool negative = roundTrip[0] == '-';
+        string magnitude = negative ? roundTrip[1..] : roundTrip;
+
+        //Split any existing exponent off the .NET rendering, then re-derive a single-leading-digit mantissa.
+        int exponent = 0;
+        int eIndex = magnitude.IndexOfAny(['E', 'e']);
+        if(eIndex >= 0)
+        {
+            exponent = int.Parse(magnitude[(eIndex + 1)..], CultureInfo.InvariantCulture);
+            magnitude = magnitude[..eIndex];
+        }
+
+        //Collect all significant digits and the position of the decimal point within them.
+        int pointIndex = magnitude.IndexOf('.', StringComparison.Ordinal);
+        string digits = pointIndex >= 0 ? magnitude.Remove(pointIndex, 1) : magnitude;
+        int integerDigits = pointIndex >= 0 ? pointIndex : magnitude.Length;
+
+        //The decimal point currently sits after `integerDigits` digits; canonical form puts it after the first
+        //significant digit, so the exponent shifts by (leading-zero-trimmed integerDigits - 1).
+        int firstSignificant = 0;
+        while(firstSignificant < digits.Length - 1 && digits[firstSignificant] == '0')
+        {
+            firstSignificant++;
+        }
+
+        digits = digits[firstSignificant..].TrimEnd('0');
+        if(digits.Length == 0)
+        {
+            digits = "0";
+        }
+
+        exponent += integerDigits - firstSignificant - 1;
+        string mantissa = digits.Length == 1 ? digits + ".0" : digits[..1] + "." + digits[1..];
+
+        return (negative ? "-" : string.Empty) + mantissa + "E" + exponent.ToString(CultureInfo.InvariantCulture);
+    }
+
     //XSD §3.2.4 short forms for xsd:float. Pattern-matched as a
     //switch expression with a tuple result so the out parameter is
     //assigned in one place.
@@ -327,7 +642,7 @@ internal readonly struct NumericValue
 /// Ordered so that <c>(int)</c> comparison gives the SPARQL
 /// promotion target.
 /// </summary>
-internal enum NumericKind
+public enum NumericKind
 {
     Integer = 0,
     Decimal = 1,
