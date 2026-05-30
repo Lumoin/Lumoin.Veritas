@@ -259,14 +259,16 @@ internal static class SparqlResultComparer
             return actualNumber.Kind == expectedNumber.Kind && NumericValue.Compare(actualNumber, expectedNumber) == ComparisonResult.Equal;
         }
 
-        //Language-tagged literals match on the same lexical value and a CASE-INSENSITIVE language tag: BCP47 tags
-        //are case-insensitive (RDF compares them so), and the W3C expected files often canonicalize a tag to
-        //lower-case (e.g. STRLANG(?o,"en-US") expected as @en-us). Datatype + value must still match exactly.
+        //Language-tagged literals match on the same lexical value, a CASE-INSENSITIVE language tag, and the same
+        //base direction (RDF 1.2 — "ab"@en--ltr ≠ "ab"@en--rtl ≠ "ab"@en): BCP47 tags are case-insensitive (RDF
+        //compares them so), and the W3C expected files often canonicalize a tag to lower-case (e.g.
+        //STRLANG(?o,"en-US") expected as @en-us). Datatype + value must still match exactly.
         if(actual is Literal actualLang && actualLang.Language is { } al
             && expected is Literal expectedLang && expectedLang.Language is { } el)
         {
             return actualLang.Value.Equals(expectedLang.Value)
-                && string.Equals(al.ToString(), el.ToString(), StringComparison.OrdinalIgnoreCase);
+                && string.Equals(al.ToString(), el.ToString(), StringComparison.OrdinalIgnoreCase)
+                && actualLang.BaseDirection == expectedLang.BaseDirection;
         }
 
         return actual.Equals(expected);
@@ -404,12 +406,21 @@ internal static class SparqlResultComparer
             NamedNode named => "<" + named.Iri.ToString() + ">",
 
             //Case-fold the BCP47 tag (ASCII by definition) so two rows differing only in tag case share one key,
-            //matching the case-insensitive compare in TermsMatch.
-            Literal { Language: { } language } literal => "\"" + literal.Value.ToString() + "\"@" + FoldAsciiCase(language.ToString()),
+            //matching the case-insensitive compare in TermsMatch; the base direction (RDF 1.2) is part of the key so
+            //"ab"@en--ltr, "ab"@en--rtl, and "ab"@en stay distinct.
+            Literal { Language: { } language } literal => "\"" + literal.Value.ToString() + "\"@" + FoldAsciiCase(language.ToString()) + DirectionSuffix(literal.BaseDirection),
             Literal literal when NumericValue.TryParse(literal.Value.ToString(), literal.Datatype.Iri, out NumericValue number) => "#" + number.Kind + ":" + number.ToCanonicalLexical(),
             Literal literal => "\"" + literal.Value.ToString() + "\"^^<" + literal.Datatype.Iri.ToString() + ">",
             _ => term.ToString() ?? string.Empty
         };
+    }
+
+    /// <summary>Renders an optional base direction as a canonical-key suffix: <c>--ltr</c>/<c>--rtl</c> (RDF 1.2), or the empty string when absent.</summary>
+    /// <param name="direction">The literal's base direction, or <see langword="null"/>.</param>
+    /// <returns>The direction suffix.</returns>
+    private static string DirectionSuffix(TextDirection? direction)
+    {
+        return direction is TextDirection baseDirection ? "--" + TextDirections.ToToken(baseDirection).ToString() : string.Empty;
     }
 
     /// <summary>Folds an ASCII string to upper case for use as a canonical key, without a culture-sensitive case transform (BCP47 language tags are ASCII letters, digits, and hyphens). Returns the input unchanged — allocating nothing — when it has no lower-case letter.</summary>

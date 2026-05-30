@@ -830,13 +830,13 @@ public static class NQuadsReader
         {
             languagePart = tag[..directionIndex];
             ReadOnlySpan<byte> directionPart = tag[(directionIndex + 2)..];
-            direction = directionPart switch
+            if(!TextDirections.TryParse(directionPart, out TextDirection parsedDirection))
             {
-                _ when directionPart.SequenceEqual("ltr"u8) => TextDirection.Ltr,
-                _ when directionPart.SequenceEqual("rtl"u8) => TextDirection.Rtl,
-                _ => throw new NQuadsParseException(
-                    $"Invalid base direction '{Encoding.UTF8.GetString(directionPart)}' on line {lineNumber}; expected 'ltr' or 'rtl'.", lineNumber)
-            };
+                throw new NQuadsParseException(
+                    $"Invalid base direction '{Encoding.UTF8.GetString(directionPart)}' on line {lineNumber}; expected 'ltr' or 'rtl'.", lineNumber);
+            }
+
+            direction = parsedDirection;
         }
 
         ValidateLanguageSubtags(languagePart, lineNumber);

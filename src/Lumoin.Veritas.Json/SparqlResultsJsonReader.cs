@@ -36,6 +36,8 @@ public static class SparqlResultsJsonReader
 
     private static NamedNode RdfLangString { get; } = new(Vocabulary.Rdf.LangString);
 
+    private static NamedNode RdfDirLangString { get; } = new(Vocabulary.Rdf.DirLangString);
+
     /// <summary>Reads a result set from the in-memory JSON bytes.</summary>
     /// <param name="bytes">The <c>.srj</c> document bytes.</param>
     /// <returns>The parsed result set.</returns>
@@ -244,7 +246,7 @@ public static class SparqlResultsJsonReader
         };
     }
 
-    /// <summary>Parses a literal value: <c>rdf:langString</c> when it carries <c>xml:lang</c>, its declared <c>datatype</c>, or <c>xsd:string</c> otherwise.</summary>
+    /// <summary>Parses a literal value: <c>rdf:dirLangString</c> when it carries both <c>xml:lang</c> and <c>its:dir</c> (RDF 1.2), <c>rdf:langString</c> for <c>xml:lang</c> alone, its declared <c>datatype</c>, or <c>xsd:string</c> otherwise.</summary>
     /// <param name="value">The value object.</param>
     /// <param name="lexical">The literal's lexical form.</param>
     /// <returns>The literal term.</returns>
@@ -252,7 +254,13 @@ public static class SparqlResultsJsonReader
     {
         if(value.TryGetProperty("xml:lang", out JsonElement language) && language.ValueKind == JsonValueKind.String)
         {
-            return new Literal(Utf8String.FromString(lexical), RdfLangString, Utf8String.FromString(language.GetString()!));
+            Utf8String tag = Utf8String.FromString(language.GetString()!);
+            if(value.TryGetProperty("its:dir", out JsonElement direction) && direction.ValueKind == JsonValueKind.String && TextDirections.TryParse(direction.GetString(), out TextDirection baseDirection))
+            {
+                return new Literal(Utf8String.FromString(lexical), RdfDirLangString, tag, baseDirection);
+            }
+
+            return new Literal(Utf8String.FromString(lexical), RdfLangString, tag);
         }
 
         if(value.TryGetProperty("datatype", out JsonElement datatype) && datatype.ValueKind == JsonValueKind.String)

@@ -165,7 +165,7 @@ public sealed class RdfTermJsonConverter: JsonConverter<RdfTerm>
                 }
                 if(dir is { } d)
                 {
-                    writer.WriteString(DirectionProperty, d == TextDirection.Ltr ? "ltr" : "rtl");
+                    writer.WriteString(DirectionProperty, d == TextDirection.Ltr ? TextDirections.LtrToken : TextDirections.RtlToken);
                 }
                 break;
             }
@@ -187,12 +187,7 @@ public sealed class RdfTermJsonConverter: JsonConverter<RdfTerm>
 
     private static Literal CreateLiteral(string value, string? datatype, string? language, string? direction)
     {
-        TextDirection? dir = direction switch
-        {
-            "ltr" => TextDirection.Ltr,
-            "rtl" => TextDirection.Rtl,
-            _ => null
-        };
+        TextDirection? dir = TextDirections.TryParse(direction, out TextDirection parsed) ? parsed : null;
 
         Utf8String lexical = Utf8String.FromString(value);
         NamedNode dt = new(Utf8String.FromString(datatype ?? "http://www.w3.org/2001/XMLSchema#string"));

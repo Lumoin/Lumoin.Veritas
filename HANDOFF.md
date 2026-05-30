@@ -6,19 +6,33 @@ AST → algebra → translator → hypertrie backend + executor subset → SHACL
 unlock). **Batch 2 = Milestones D–F** (full algebra/aggregation, CONSTRUCT/
 DESCRIBE/JSON results, conformance push).
 
-## ⭐ CURRENT STATE (2026-05-31, HEAD `0125d4e`, tree clean)
+## ⭐ CURRENT STATE (2026-05-31, directional-language slice DONE + committed on `sparql-query-engine`, tree clean)
 
 Driving the **complete official W3C SPARQL query-evaluation corpus** to green (red-baseline + ratchet — the whole
-suite is the fixed stick, NOT a curated subset; see [[project_sparql_conformance_baseline]]). **Full suite = 12
-failures (6 ShaclValidate long-standing baseline + 6 SparqlQueryEvaluation), ~3015 pass, 129 skip; 0 regressions.**
-SPARQL eval reds driven **53 → 6** across 2026-05-30/31. The results-serialization family (XML/JSON readers+writers,
+suite is the fixed stick, NOT a curated subset; see [[project_sparql_conformance_baseline]]). **Full suite = 10
+failures (6 ShaclValidate long-standing baseline + 4 SparqlQueryEvaluation), 3156 total, 124 skip; 0 regressions.**
+SPARQL eval reds driven **53 → 4** across 2026-05-30/31. The results-serialization family (XML/JSON readers+writers,
 streaming CSV/TSV writer) is built; the eval harness + complete corpus are vendored and wired.
 
-▶ **NEXT: the last 6 eval reds** — each a specialized slice; see the "THE LAST 6 EVAL REDS" block further down for
-per-test pointers. In brief: directional language strings (`rdf:dirLangString`), nested reified-triple subject
-matching + variable-bearing quoted-triple structural matching (`triple on triple terms`), the `order-by.rq` 20-way
-sub-SELECT-ordering test, correlated `NOT EXISTS` (`subset-03`), sub-SELECT scoping (sq11/sq13). Then the 5
-SHACL-SPARQL pre-binding tests + the SHACL `nodeKind` RDFC-1.0 case ([[project_rdfc_automorphism_gap]]).
+✅ **DIRECTIONAL LANGUAGE STRINGS (`rdf:dirLangString`) DONE (2026-05-31): eval reds 6 → 4, and the whole
+`lang-basedir` suite is green** (the 4 previously-skipped functions now run+pass too: HASLANG/HASLANGDIR/LANGDIR/
+STRLANGDIR). Four touch points: **(a)** new `BuiltInFunction` arms in `SparqlExpressionEvaluator` —
+`LangDir`/`HasLang`/`HasLangDir`/`StrLangDir`; `StrLang` now errs on an empty language tag; `Concat` is
+direction-aware (keeps the `(lang, dir)` pair only when every arg shares it exactly, else drops to `xsd:string`).
+**(b)** `SparqlResultsJsonReader.ParseLiteral` reads `its:dir` → `rdf:dirLangString`. **(c)** test
+`SparqlResultComparer` compares base direction (`TermsMatch` + the ground-key `RenderLeaf` `--ltr`/`--rtl` suffix).
+**(d)** NEW canonical `TextDirections` helper in `Lumoin.Veritas.Core` (beside the `TextDirection` enum):
+`LtrToken`/`RtlToken`, UTF-8 `Ltr`/`Rtl`, `ToToken`, `TryParse(ReadOnlySpan<byte>)`/`TryParse(string)` — the single
+home for the `"ltr"`/`"rtl"` tokens (the user enforced: no re-typed raw literals —
+[[feedback_centralize_wellknown_constants]]); evaluator + JSON reader + `RdfTermJsonConverter` route through it
+(NQuads/Canonicalization still inline — a follow-up consolidation). The SPARQL lexer/parser already produced
+`Literal.BaseDirection` for `"x"@en--ltr`, so no parser work was needed.
+
+▶ **NEXT: the last 4 eval reds** — see the "THE LAST 6 EVAL REDS" block further down for per-test pointers. In
+brief: nested reified-triple subject matching + variable-bearing quoted-triple structural matching (`triple on
+triple terms`), the `order-by.rq` 20-way sub-SELECT-ordering test (`Reified triples - Embedded triple - ordering`),
+`Reified triples - Pattern - Nesting 1`, correlated `NOT EXISTS` (`Calculate proper subset` / `subset-03`). Then
+the 5 SHACL-SPARQL pre-binding tests + the SHACL `nodeKind` RDFC-1.0 case ([[project_rdfc_automorphism_gap]]).
 
 ⚙ **Build/test without permission prompts** ([[feedback_build_test_command_shape]]): bare `dotnet build <proj>
 -clp:ErrorsOnly --nologo` (no pipe); run the exe via the **Bash tool** `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe"

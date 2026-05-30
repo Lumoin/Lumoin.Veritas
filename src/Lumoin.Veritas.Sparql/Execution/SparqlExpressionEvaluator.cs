@@ -56,6 +56,9 @@ public static class SparqlExpressionEvaluator
     /// <summary>The <c>rdf:langString</c> datatype IRI (the datatype of a language-tagged literal).</summary>
     private static Utf8String RdfLangString { get; } = Utf8String.FromString("http://www.w3.org/1999/02/22-rdf-syntax-ns#langString");
 
+    /// <summary>The <c>rdf:dirLangString</c> datatype IRI (the datatype of a directional language-tagged literal, RDF 1.2).</summary>
+    private static Utf8String RdfDirLangString { get; } = Utf8String.FromString("http://www.w3.org/1999/02/22-rdf-syntax-ns#dirLangString");
+
     /// <summary>The <c>xsd:dateTime</c> datatype IRI (the argument type of the date-time accessor functions).</summary>
     private static Utf8String XsdDateTime { get; } = Utf8String.FromString(XsdNamespace + "dateTime");
 
@@ -602,6 +605,9 @@ public static class SparqlExpressionEvaluator
             BuiltInFunction.SameTerm => arguments[0].IsError || arguments[1].IsError ? ExpressionValue.Error : Boolean(arguments[0].Term.Equals(arguments[1].Term)),
             BuiltInFunction.Str => Str(arguments[0]),
             BuiltInFunction.Lang => arguments[0].IsError || arguments[0].Term is not Literal language ? ExpressionValue.Error : StringLiteral(language.Language ?? EmptyText),
+            BuiltInFunction.LangDir => arguments[0].IsError || arguments[0].Term is not Literal directional ? ExpressionValue.Error : StringLiteral(DirectionText(directional.BaseDirection)),
+            BuiltInFunction.HasLang => arguments[0].IsError ? ExpressionValue.Error : Boolean(arguments[0].Term is Literal { Language: not null }),
+            BuiltInFunction.HasLangDir => arguments[0].IsError ? ExpressionValue.Error : Boolean(arguments[0].Term is Literal { BaseDirection: not null }),
             BuiltInFunction.LangMatches => LangMatches(arguments[0], arguments[1]),
             BuiltInFunction.Datatype => arguments[0].IsError || arguments[0].Term is not Literal datatype ? ExpressionValue.Error : ExpressionValue.Of(datatype.Datatype),
             BuiltInFunction.StrLen => TryGetLexicalText(arguments[0], out Utf8String text) ? Integer(CodePointCount(text)) : ExpressionValue.Error,
@@ -620,6 +626,7 @@ public static class SparqlExpressionEvaluator
             BuiltInFunction.Iri or BuiltInFunction.Uri => Iri(arguments[0], context),
             BuiltInFunction.StrDt => StrDt(arguments),
             BuiltInFunction.StrLang => StrLang(arguments),
+            BuiltInFunction.StrLangDir => StrLangDir(arguments),
             BuiltInFunction.Year => DateComponent(arguments[0], static dateTime => dateTime.Year),
             BuiltInFunction.Month => DateComponent(arguments[0], static dateTime => dateTime.Month),
             BuiltInFunction.Day => DateComponent(arguments[0], static dateTime => dateTime.Day),
@@ -739,8 +746,10 @@ public static class SparqlExpressionEvaluator
 
     /// <summary>
     /// Evaluates <c>CONCAT</c> (§17.4.3.4): the concatenation of the string arguments' lexical forms. The result
-    /// keeps a common language tag when every argument shares it, otherwise it is a plain <c>xsd:string</c>; a
-    /// non-string argument errs.
+    /// keeps a common language tag <em>and</em> base direction when every argument shares the same (tag, direction)
+    /// pair (RDF 1.2 — a left-to-right concatenation of <c>"a"@en--ltr</c> and <c>"b"@en--ltr</c> stays
+    /// <c>rdf:dirLangString</c>); a differing direction (or a plain/typed-string argument) drops the result to a
+    /// plain <c>xsd:string</c>. A non-string argument errs.
     /// </summary>
     /// <param name="arguments">The string arguments.</param>
     /// <returns>The concatenated string value, or an error.</returns>
@@ -748,10 +757,11 @@ public static class SparqlExpressionEvaluator
     {
         ArrayBufferWriter<byte> buffer = new();
         Utf8String? commonLanguage = null;
-        bool languageConsistent = arguments.Length > 0;
+        TextDirection? commonDirection = null;
+        bool tagConsistent = arguments.Length > 0;
         for(int i = 0; i < arguments.Length; i++)
         {
-            if(!TryGetStringArgument(arguments[i], out Utf8String text, out Utf8String? language))
+            if(!TryGetStringArgument(arguments[i], out Utf8String text, out Utf8String? language, out TextDirection? direction))
             {
                 return ExpressionValue.Error;
             }
@@ -760,14 +770,17 @@ public static class SparqlExpressionEvaluator
             if(i == 0)
             {
                 commonLanguage = language;
+                commonDirection = direction;
             }
-            else if(!SameLanguage(language, commonLanguage))
+            else if(!SameLanguage(language, commonLanguage) || direction != commonDirection)
             {
-                languageConsistent = false;
+                tagConsistent = false;
             }
         }
 
-        return StringLiteral(new Utf8String(buffer.WrittenSpan.ToArray()), languageConsistent ? commonLanguage : null);
+        return tagConsistent
+            ? StringLiteral(new Utf8String(buffer.WrittenSpan.ToArray()), commonLanguage, commonDirection)
+            : StringLiteral(new Utf8String(buffer.WrittenSpan.ToArray()));
     }
 
     /// <summary>
@@ -1094,7 +1107,8 @@ public static class SparqlExpressionEvaluator
 
     /// <summary>
     /// Evaluates <c>STRLANG</c> (§17.4.2.10): builds a language-tagged literal from a simple-string lexical form
-    /// and a simple-string language tag. A non-simple-string argument errs.
+    /// and a simple-string, non-empty language tag. A non-simple-string argument or an empty language tag errs (RDF
+    /// has no empty language tag).
     /// </summary>
     /// <param name="arguments">The arguments: the lexical form and the language tag (both simple strings).</param>
     /// <returns>The language-tagged-literal value, or an error.</returns>
@@ -1102,12 +1116,42 @@ public static class SparqlExpressionEvaluator
     {
         if(arguments[0].IsError || arguments[1].IsError
             || arguments[0].Term is not Literal lexical || lexical.Language is not null || lexical.Datatype.Iri != XsdString
-            || arguments[1].Term is not Literal tag || tag.Language is not null || tag.Datatype.Iri != XsdString)
+            || arguments[1].Term is not Literal tag || tag.Language is not null || tag.Datatype.Iri != XsdString || tag.Value.Span.Length == 0)
         {
             return ExpressionValue.Error;
         }
 
         return ExpressionValue.Of(new Literal(lexical.Value, new NamedNode(RdfLangString), tag.Value));
+    }
+
+    /// <summary>
+    /// Evaluates <c>STRLANGDIR</c> (RDF 1.2): builds a directional language-tagged literal
+    /// (<c>rdf:dirLangString</c>) from a simple-string lexical form, a non-empty simple-string language tag, and a
+    /// base direction that must be exactly <c>"ltr"</c> or <c>"rtl"</c> (lower-case). A non-simple-string argument,
+    /// an empty language tag, or an unrecognised direction errs.
+    /// </summary>
+    /// <param name="arguments">The arguments: the lexical form, the language tag, and the base direction (all simple strings).</param>
+    /// <returns>The directional language-tagged-literal value, or an error.</returns>
+    private static ExpressionValue StrLangDir(ExpressionValue[] arguments)
+    {
+        if(arguments[0].IsError || arguments[1].IsError || arguments[2].IsError
+            || arguments[0].Term is not Literal lexical || lexical.Language is not null || lexical.Datatype.Iri != XsdString
+            || arguments[1].Term is not Literal tag || tag.Language is not null || tag.Datatype.Iri != XsdString || tag.Value.Span.Length == 0
+            || arguments[2].Term is not Literal direction || direction.Language is not null || direction.Datatype.Iri != XsdString
+            || !TextDirections.TryParse(direction.Value.Span, out TextDirection baseDirection))
+        {
+            return ExpressionValue.Error;
+        }
+
+        return ExpressionValue.Of(new Literal(lexical.Value, new NamedNode(RdfDirLangString), tag.Value, baseDirection));
+    }
+
+    /// <summary>Returns the <c>LANGDIR</c> string form of an optional base direction: the canonical <c>"ltr"</c>/<c>"rtl"</c> token, or the empty string when absent.</summary>
+    /// <param name="direction">The base direction, or <see langword="null"/>.</param>
+    /// <returns>The direction's string form.</returns>
+    private static Utf8String DirectionText(TextDirection? direction)
+    {
+        return direction is TextDirection baseDirection ? TextDirections.ToToken(baseDirection) : EmptyText;
     }
 
     /// <summary>
@@ -1280,16 +1324,29 @@ public static class SparqlExpressionEvaluator
     /// <returns><see langword="true"/> when the argument is a string-valued literal.</returns>
     private static bool TryGetStringArgument(ExpressionValue argument, out Utf8String text, out Utf8String? language)
     {
+        return TryGetStringArgument(argument, out text, out language, out _);
+    }
+
+    /// <summary>Extracts the UTF-8 lexical form, language tag, and base direction of a string-valued argument (<c>xsd:string</c>, language-tagged, or directional language-tagged); fails for an error or a non-string term.</summary>
+    /// <param name="argument">The argument value.</param>
+    /// <param name="text">Receives the UTF-8 lexical form on success.</param>
+    /// <param name="language">Receives the language tag (or <see langword="null"/> for a plain string) on success.</param>
+    /// <param name="direction">Receives the base direction (or <see langword="null"/> for a non-directional string) on success.</param>
+    /// <returns><see langword="true"/> when the argument is a string-valued literal.</returns>
+    private static bool TryGetStringArgument(ExpressionValue argument, out Utf8String text, out Utf8String? language, out TextDirection? direction)
+    {
         if(!argument.IsError && argument.Term is Literal literal && (literal.Datatype.Iri == XsdString || literal.Language is not null))
         {
             text = literal.Value;
             language = literal.Language;
+            direction = literal.BaseDirection;
 
             return true;
         }
 
         text = EmptyText;
         language = null;
+        direction = null;
 
         return false;
     }
@@ -1303,6 +1360,18 @@ public static class SparqlExpressionEvaluator
         return language is Utf8String tag
             ? ExpressionValue.Of(new Literal(value, new NamedNode(RdfLangString), tag))
             : StringLiteral(value);
+    }
+
+    /// <summary>Builds a string literal value: a directional language-tagged literal (<c>rdf:dirLangString</c>) when both a language tag and a base direction are present, a plain language-tagged literal when only the tag is, otherwise an <c>xsd:string</c>.</summary>
+    /// <param name="value">The UTF-8 lexical form.</param>
+    /// <param name="language">The language tag, or <see langword="null"/> for a plain string.</param>
+    /// <param name="direction">The base direction, or <see langword="null"/> for a non-directional string.</param>
+    /// <returns>The string-literal value.</returns>
+    private static ExpressionValue StringLiteral(Utf8String value, Utf8String? language, TextDirection? direction)
+    {
+        return language is Utf8String tag && direction is TextDirection baseDirection
+            ? ExpressionValue.Of(new Literal(value, new NamedNode(RdfDirLangString), tag, baseDirection))
+            : StringLiteral(value, language);
     }
 
     /// <summary>Returns whether two optional language tags are the same (both absent, or both present and byte-equal).</summary>

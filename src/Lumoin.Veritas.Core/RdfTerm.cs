@@ -92,6 +92,79 @@ public enum TextDirection
 }
 
 /// <summary>
+/// The canonical lexical tokens for <see cref="TextDirection"/> (the RDF 1.2 base directions <c>"ltr"</c> and
+/// <c>"rtl"</c>) and the conversions between the enum and those tokens. The tokens are defined here once so every
+/// serializer, parser, and expression evaluator references the same well-known constants rather than re-typing the
+/// raw strings.
+/// </summary>
+/// <remarks>
+/// Defined in <see href="https://www.w3.org/TR/rdf12-concepts/#section-Graph-Literal">RDF 1.2 Concepts §3.3</see>.
+/// </remarks>
+public static class TextDirections
+{
+    /// <summary>The canonical lexical token for <see cref="TextDirection.Ltr"/>.</summary>
+    public const string LtrToken = "ltr";
+
+    /// <summary>The canonical lexical token for <see cref="TextDirection.Rtl"/>.</summary>
+    public const string RtlToken = "rtl";
+
+    /// <summary>The canonical <see cref="TextDirection.Ltr"/> token as a UTF-8 string.</summary>
+    public static Utf8String Ltr { get; } = Utf8String.FromString(LtrToken);
+
+    /// <summary>The canonical <see cref="TextDirection.Rtl"/> token as a UTF-8 string.</summary>
+    public static Utf8String Rtl { get; } = Utf8String.FromString(RtlToken);
+
+    /// <summary>Returns the canonical lexical token of a base direction as a UTF-8 string.</summary>
+    /// <param name="direction">The base direction.</param>
+    /// <returns>The <see cref="Ltr"/> or <see cref="Rtl"/> token.</returns>
+    public static Utf8String ToToken(TextDirection direction)
+    {
+        return direction == TextDirection.Ltr ? Ltr : Rtl;
+    }
+
+    /// <summary>Parses a base-direction lexical token (<c>"ltr"</c> or <c>"rtl"</c>) from its UTF-8 bytes.</summary>
+    /// <param name="token">The candidate token's UTF-8 bytes.</param>
+    /// <param name="direction">Receives the parsed direction on success.</param>
+    /// <returns><see langword="true"/> when the token is a recognised base direction.</returns>
+    public static bool TryParse(ReadOnlySpan<byte> token, out TextDirection direction)
+    {
+        if(token.SequenceEqual(Ltr.Span))
+        {
+            direction = TextDirection.Ltr;
+
+            return true;
+        }
+
+        if(token.SequenceEqual(Rtl.Span))
+        {
+            direction = TextDirection.Rtl;
+
+            return true;
+        }
+
+        direction = default;
+
+        return false;
+    }
+
+    /// <summary>Parses a base-direction lexical token (<c>"ltr"</c> or <c>"rtl"</c>) from a string.</summary>
+    /// <param name="token">The candidate token, or <see langword="null"/>.</param>
+    /// <param name="direction">Receives the parsed direction on success.</param>
+    /// <returns><see langword="true"/> when the token is a recognised base direction.</returns>
+    public static bool TryParse(string? token, out TextDirection direction)
+    {
+        (bool recognised, direction) = token switch
+        {
+            LtrToken => (true, TextDirection.Ltr),
+            RtlToken => (true, TextDirection.Rtl),
+            _ => (false, default(TextDirection))
+        };
+
+        return recognised;
+    }
+}
+
+/// <summary>
 /// An RDF literal value with a datatype IRI, an optional language tag, and an optional base direction.
 /// </summary>
 /// <remarks>
