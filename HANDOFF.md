@@ -76,6 +76,13 @@ substitution/scoping ([[feedback_sparql_before_shacl]]); `nodeKind property 001`
 copy `sparql/sparql11/<dir>` / `sparql/sparql12/<dir>` into `Material/Sparql/<dir>`. Build/test per
 [[feedback_build_test_command_shape]] (PowerShell; `& "test\…\Lumoin.Veritas.Tests.exe" --filter "FullyQualifiedName~W3cSparqlEval"`).
 
+**Tooling note (2026-05-30):** the build/test permission allowlist in `.claude/settings.local.json` was broadened
+(common safe PowerShell pipeline cmdlets — `Select-Object`/`Select-String`/`Out-Null`/`ConvertFrom-Json`/… in BOTH
+`X *` and bare `X` forms — plus `dotnet build *`, `dotnet test *`, the test-exe prefix). `settings.local.json` is
+read at session START only, so this applies from THIS session onward. Keep commands allowlist-clean: NO
+`Set-Location`/`cd` prefix (cwd is already the repo root), NO `; "echo"` suffixes, build and test as SEPARATE calls.
+See [[feedback_build_test_command_shape]].
+
 ## ⏵ CURRENT WORK — Parser error-recovery batch (prerequisite before Milestone B)
 
 A separate handoff doc, **"Parser error recovery — Handoff"** (companion to
