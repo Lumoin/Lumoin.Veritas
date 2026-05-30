@@ -1292,14 +1292,16 @@ public static class SparqlExpressionEvaluator
 
     /// <summary>
     /// Evaluates <c>TRIPLE</c> (RDF 1.2): builds an RDF triple term from a subject, predicate, and object. The
-    /// subject must not be a literal and the predicate must be an IRI; otherwise the result errs.
+    /// subject must be an IRI or a blank node (not a literal and not itself a triple term), and the predicate must
+    /// be an IRI; the object may be any term (including a triple term). Any other shape errs (RDF 1.2 Concepts §3.5
+    /// — a triple term's subject is an IRI or blank node, its predicate an IRI, its object any term).
     /// </summary>
     /// <param name="arguments">The arguments: subject, predicate, object.</param>
     /// <returns>The triple-term value, or an error.</returns>
     private static ExpressionValue BuildTriple(ExpressionValue[] arguments)
     {
         if(arguments[0].IsError || arguments[1].IsError || arguments[2].IsError
-            || arguments[0].Term is Literal
+            || arguments[0].Term is not (NamedNode or BlankNode)
             || arguments[1].Term is not NamedNode predicate)
         {
             return ExpressionValue.Error;
