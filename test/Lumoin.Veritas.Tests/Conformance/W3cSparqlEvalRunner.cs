@@ -103,33 +103,29 @@ internal static class W3cSparqlEvalRunner
             return new W3cOutcome(W3cOutcomeStatus.Skipped, $"Query uses a feature the executor does not yet support: {ex.Message}");
         }
 
-        SparqlResultSet expected;
-        string extension = IoPath.GetExtension(testCase.ExpectedPath).ToUpperInvariant();
-        switch(extension)
+        //Only the SPARQL Results XML (.srx) fixtures are compared today; a switch expression classifies the rest
+        //(case-insensitively) into the honest-skip outcome, leaving null to mean "this is .srx — proceed and read it".
+        string extension = IoPath.GetExtension(testCase.ExpectedPath);
+        W3cOutcome? unsupported = extension switch
         {
-            case ".SRX":
-            {
-                try
-                {
-                    expected = SparqlResultsXmlReader.Read(await File.ReadAllBytesAsync(testCase.ExpectedPath, cancellationToken).ConfigureAwait(false));
-                }
-                catch(FormatException ex)
-                {
-                    return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expected SPARQL Results XML did not parse: {ex.Message}");
-                }
+            _ when string.Equals(extension, ".srx", StringComparison.OrdinalIgnoreCase) => null,
+            _ when string.Equals(extension, ".srj", StringComparison.OrdinalIgnoreCase)
+                => new W3cOutcome(W3cOutcomeStatus.Skipped, "The SPARQL Results JSON (.srj) reader is not yet implemented."),
+            _ => new W3cOutcome(W3cOutcomeStatus.Skipped, $"Expected result format '{extension}' (a graph result) is not yet compared.")
+        };
+        if(unsupported is not null)
+        {
+            return unsupported;
+        }
 
-                break;
-            }
-
-            case ".SRJ":
-            {
-                return new W3cOutcome(W3cOutcomeStatus.Skipped, "The SPARQL Results JSON (.srj) reader is not yet implemented.");
-            }
-
-            default:
-            {
-                return new W3cOutcome(W3cOutcomeStatus.Skipped, $"Expected result format '{extension}' (a graph result) is not yet compared.");
-            }
+        SparqlResultSet expected;
+        try
+        {
+            expected = SparqlResultsXmlReader.Read(await File.ReadAllBytesAsync(testCase.ExpectedPath, cancellationToken).ConfigureAwait(false));
+        }
+        catch(FormatException ex)
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expected SPARQL Results XML did not parse: {ex.Message}");
         }
 
         bool ordered = query.Modifier.Order is not null;
@@ -164,17 +160,13 @@ internal static class W3cSparqlEvalRunner
                     case SelectVariable variable:
                     {
                         variables.Add(variable.Variable.Name);
-
                         break;
                     }
-
                     case SelectExpressionAs expressionAs:
                     {
                         variables.Add(expressionAs.AsVariable.Name);
-
                         break;
                     }
-
                     default:
                     {
                         break;

@@ -202,29 +202,23 @@ internal static class SparqlResultComparer
                     {
                         return false;
                     }
-
                     break;
                 }
-
                 case BlankNode:
                 {
                     return false;
                 }
-
                 case TripleTerm actualTriple when e is TripleTerm expectedTriple:
                 {
                     work.Push((actualTriple.Subject, expectedTriple.Subject));
                     work.Push((actualTriple.Predicate, expectedTriple.Predicate));
                     work.Push((actualTriple.Object, expectedTriple.Object));
-
                     break;
                 }
-
                 case TripleTerm:
                 {
                     return false;
                 }
-
                 default:
                 {
                     //Ground terms (IRIs, literals) — and the IRI predicate of a triple term — match by value.
@@ -232,7 +226,6 @@ internal static class SparqlResultComparer
                     {
                         return false;
                     }
-
                     break;
                 }
             }
@@ -411,15 +404,12 @@ internal static class SparqlResultComparer
                 {
                     return true;
                 }
-
                 case TripleTerm triple:
                 {
                     work.Push(triple.Subject);
                     work.Push(triple.Object);
-
                     break;
                 }
-
                 default:
                 {
                     break;
