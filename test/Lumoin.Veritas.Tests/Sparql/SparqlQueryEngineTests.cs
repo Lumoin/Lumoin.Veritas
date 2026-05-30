@@ -374,6 +374,23 @@ internal sealed class SparqlQueryEngineTests
         Assert.AreEqual("5", LiteralValue(solutions.Single(s => ValueIri(s, "s") == Ex + "b"), "t"));
     }
 
+    /// <summary>GROUP_CONCAT over an implicit group joins the values' lexical forms with the default single space.</summary>
+    [TestMethod]
+    public async Task GroupConcatJoinsWithDefaultSpace()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(
+            new DataTriple(Iri("s"), Iri("p"), StringLiteral("1")),
+            new DataTriple(Iri("s"), Iri("p"), StringLiteral("22"))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT (GROUP_CONCAT(?o) AS ?g) WHERE { ?s :p ?o }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        SparqlSolution solution = solutions.Single();
+        string concatenated = LiteralValue(solution, "g");
+        Assert.IsTrue(concatenated is "1 22" or "22 1", $"Expected '1 22' or '22 1' but got '{concatenated}'.");
+    }
+
     /// <summary>HAVING filters the groups by an aggregate condition.</summary>
     [TestMethod]
     public async Task HavingFiltersGroupsByAggregate()
