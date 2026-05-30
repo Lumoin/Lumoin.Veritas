@@ -20,8 +20,12 @@ foundation is **built, committed, green** (baseline unchanged at 6 ShaclValidate
     bans `System.Xml`/`System.Xml.Linq` everywhere else). Reads uri/literal/typed/lang/bnode/**triple** values + ASK
     boolean; DTD prohibited; triple terms over an explicit stack.
   - `SparqlResultsJsonReader` (`.srj`) → **`Lumoin.Veritas.Json`** (`eb7400b`; that project owns STJ). Same value forms.
-  Both projects reference `Sparql` for the model. **Still TODO in production: the XML/JSON/CSV/TSV writers + CSV/TSV
-  readers** (CSV/TSV will need their own owner project too if a BCL dep warrants it — else they can sit in `Sparql`).
+  Both projects reference `Sparql` for the model. **Writers landed** (`698c208` XML+JSON; `f44598b` CSV/TSV):
+  `SparqlResultsXmlWriter`/`SparqlResultsJsonWriter` (round-trip with their readers), and the **unified streaming**
+  `SparqlResultsDelimitedWriter` (`SparqlDelimitedResultsFormat {Csv, Tsv}` — CSV/TSV are one format up to a
+  `DelimitedFormatSpec`; `WriteLinesAsync` consumes `IAsyncEnumerable<SparqlSolution>` and yields lines, never
+  buffering the whole result; lives in `Sparql` since it needs no bannable dep). **Remaining family: CSV/TSV
+  readers** (CSV read-back is lossy/undefined — none provided; a TSV reader needs a Turtle-term parser — deferred).
   Test-only `SparqlResultComparer` (Conformance/): SELECT multiset (bag) equivalence under blank-node isomorphism via
   iterative backtracking (no recursion), ordered compare for ORDER BY, ASK boolean; ground fast-path by row-key count.
   13 unit tests.
