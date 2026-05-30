@@ -86,6 +86,56 @@ internal sealed class HypertrieGraphStoreQueryTests
     }
 
     [TestMethod]
+    public async Task SharedSubjectDistinctObjectVariablesYieldCrossProduct()
+    {
+        //(s :p ?o1) ∧ (s :q ?o2) sharing only the (bound) subject and with DISTINCT object variables must yield
+        //the full cross product of ?o1 × ?o2. With :p {0,1,2} and :q {0,1,2} that is 9 pairs. Regression for the
+        //leapfrog driver leaving an independent inner variable's iterator stranded at end after the outer
+        //(here ?o1) re-binds — which collapsed the result to 3 (the first ?o1 crossed with all ?o2).
+        EncodedTriple[] triples =
+        [
+            EncodedTriple.FromEncoded(1, 10, 0),
+            EncodedTriple.FromEncoded(1, 10, 1),
+            EncodedTriple.FromEncoded(1, 10, 2),
+            EncodedTriple.FromEncoded(1, 20, 0),
+            EncodedTriple.FromEncoded(1, 20, 1),
+            EncodedTriple.FromEncoded(1, 20, 2),
+        ];
+
+        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(triples, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+        VariableRegistry registry = new();
+        Variable o1 = registry.GetOrAdd("o1");
+        Variable o2 = registry.GetOrAdd("o2");
+
+        TriplePattern p1 = new(
+            PatternPosition.Bound(TermId.FromEncoded(1)),
+            PatternPosition.Bound(TermId.FromEncoded(10)),
+            PatternPosition.OfVariable(o1));
+
+        TriplePattern p2 = new(
+            PatternPosition.Bound(TermId.FromEncoded(1)),
+            PatternPosition.Bound(TermId.FromEncoded(20)),
+            PatternPosition.OfVariable(o2));
+
+        BasicGraphPattern bgp = new([p1, p2], registry);
+
+        List<Solution> solutions = await CollectAsync(store.Query(bgp, VeritasClock.System, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+
+        HashSet<(TermId, TermId)> pairs = [.. solutions.Select(sol => (sol.Get(o1), sol.Get(o2)))];
+        HashSet<(TermId, TermId)> expected = [];
+        for(uint a = 0; a <= 2; a++)
+        {
+            for(uint b = 0; b <= 2; b++)
+            {
+                expected.Add((TermId.FromEncoded(a), TermId.FromEncoded(b)));
+            }
+        }
+
+        Assert.HasCount(9, solutions);
+        Assert.IsTrue(pairs.SetEquals(expected));
+    }
+
+    [TestMethod]
     public async Task ThreePatternTriangleJoin()
     {
         //(?a knows ?b) ∧ (?b knows ?c) ∧ (?a livesIn ?city) ∧

@@ -356,6 +356,45 @@ internal sealed class SparqlQueryEngineTests
         Assert.AreEqual("0", LiteralValue((await engine.EvaluateAsync(none, TestContext.CancellationToken).ConfigureAwait(false)).Single(), "c"));
     }
 
+    /// <summary>GROUP BY an arithmetic expression bound to a variable partitions by the expression's value (the cross product of :p {0,1,2} × :q {0,1,2} sums to 0..4, five groups).</summary>
+    [TestMethod]
+    public async Task GroupByArithmeticExpressionPartitionsByValue()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(
+            new DataTriple(Iri("s"), Iri("p"), IntegerLiteral(0)),
+            new DataTriple(Iri("s"), Iri("p"), IntegerLiteral(1)),
+            new DataTriple(Iri("s"), Iri("p"), IntegerLiteral(2)),
+            new DataTriple(Iri("s"), Iri("q"), IntegerLiteral(0)),
+            new DataTriple(Iri("s"), Iri("q"), IntegerLiteral(1)),
+            new DataTriple(Iri("s"), Iri("q"), IntegerLiteral(2))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?o12 (COUNT(?o1) AS ?c) WHERE { ?s :p ?o1 ; :q ?o2 } GROUP BY ((?o1 + ?o2) AS ?o12)", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //Sums 0,1,2,3,4 — five groups; counts 1,2,3,2,1.
+        Assert.HasCount(5, solutions);
+    }
+
+    /// <summary>Two predicates on one subject with distinct object variables yield the full cross product of their objects (3 × 3 = 9).</summary>
+    [TestMethod]
+    public async Task SharedSubjectDistinctObjectsCrossProduct()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(
+            new DataTriple(Iri("s"), Iri("p"), IntegerLiteral(0)),
+            new DataTriple(Iri("s"), Iri("p"), IntegerLiteral(1)),
+            new DataTriple(Iri("s"), Iri("p"), IntegerLiteral(2)),
+            new DataTriple(Iri("s"), Iri("q"), IntegerLiteral(0)),
+            new DataTriple(Iri("s"), Iri("q"), IntegerLiteral(1)),
+            new DataTriple(Iri("s"), Iri("q"), IntegerLiteral(2))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?o1 ?o2 WHERE { ?s :p ?o1 ; :q ?o2 }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(9, solutions);
+    }
+
     /// <summary>GROUP BY with SUM totals the grouped numeric values.</summary>
     [TestMethod]
     public async Task GroupByWithSumTotalsPerGroup()

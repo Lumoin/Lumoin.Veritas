@@ -460,6 +460,40 @@ public sealed class TriejoinIterator: IDisposable
     }
 
     /// <summary>
+    /// Rebuilds the current variable level's cursor from scratch, re-positioning it at its first key, without
+    /// changing <see cref="DescendedLevels"/> or any deeper bound value.
+    /// </summary>
+    /// <remarks>
+    /// The worst-case-optimal join driver uses this to re-enumerate an <em>independent</em> variable when another
+    /// variable this iterator does not share has just been re-bound. Without it the iterator, left exhausted
+    /// (<see cref="AtEnd"/>) from the previous binding of that other variable, would wrongly contribute nothing for
+    /// the new binding — collapsing a cross product (e.g. <c>{?s :p ?o1 ; :q ?o2}</c> yielding the diagonal instead
+    /// of every <c>?o1</c>×<c>?o2</c> pair). The deepest frame's node and remaining positions are unchanged by
+    /// exhausting its cursor, so rebuilding the cursor over the same edge map restores enumeration from the first
+    /// key; the snapshot is immutable so the keys are exactly as before.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">There is no frame to rebuild (the iterator never descended, or is in a fully-bound state with no current level).</exception>
+    public void RestartCurrentLevel()
+    {
+        if(Frames.Count == 0)
+        {
+            throw new InvalidOperationException("Cannot restart the current level: the iterator has no descent frame to rebuild.");
+        }
+
+        if(DescendedLevels >= VariableOrder.Count)
+        {
+            throw new InvalidOperationException("Cannot restart the current level: all variables are bound, so there is no current level.");
+        }
+
+        //The deepest frame walks the current level. Resetting its cursor re-presents the same (immutable) key
+        //sequence from the first key — works uniformly for a synthetic single-key cursor and a real edge-map cursor.
+        DescentFrame frame = Frames[Frames.Count - 1];
+        EdgeMapKeyCursor cursor = frame.Cursor;
+        cursor.Reset();
+        frame.Cursor = cursor;
+    }
+
+    /// <summary>
     /// Advances the cursor at the current level to the next key.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token.</param>

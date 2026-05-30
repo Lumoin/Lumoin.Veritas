@@ -165,6 +165,25 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
     }
 
     /// <summary>
+    /// Rewinds the cursor to its first key. After this call
+    /// <see cref="CurrentKey"/> is the first key of the underlying
+    /// edge map (or the synthetic single key), regardless of where
+    /// the cursor had advanced to — including from
+    /// <see cref="AtEnd"/>.
+    /// </summary>
+    /// <remarks>
+    /// The underlying edge map (or synthetic key) is immutable, so
+    /// resetting the position re-presents exactly the same key
+    /// sequence. Used by the worst-case-optimal join driver to
+    /// re-enumerate an independent variable's level when an
+    /// unrelated variable re-binds.
+    /// </remarks>
+    public void Reset()
+    {
+        position = 0;
+    }
+
+    /// <summary>
     /// Advances to the next key. The cursor reaches
     /// <see cref="AtEnd"/> when called from the last key.
     /// </summary>

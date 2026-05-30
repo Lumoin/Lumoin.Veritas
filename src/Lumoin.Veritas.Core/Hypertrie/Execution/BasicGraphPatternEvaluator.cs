@@ -274,7 +274,7 @@ public sealed class BasicGraphPatternEvaluator
 
             if(needsAdvance)
             {
-                bool advanced = TryAdvance(bindings, openFrames, cancellationToken);
+                bool advanced = TryAdvance(iterators, bindings, openFrames, cancellationToken);
 
                 if(!advanced)
                 {
@@ -346,6 +346,7 @@ public sealed class BasicGraphPatternEvaluator
     //found and the frame was re-pushed; returns false when every
     //frame has been unwound (no more solutions).
     private static bool TryAdvance(
+        TriejoinIterator[] iterators,
         List<VariableBinding> bindings,
         List<TriejoinIterator[]> openFrames,
         CancellationToken cancellationToken)
@@ -395,6 +396,14 @@ public sealed class BasicGraphPatternEvaluator
 
                 bindings.Add(new VariableBinding(variable, commonKey));
 
+                //Re-binding this level supersedes the binding under which independent iterators (those NOT in this
+                //frame) enumerated their own deeper variables. Such an iterator may have fully unwound to an
+                //exhausted (AtEnd) state during this same TryAdvance pass and dropped off the open-frames stack —
+                //the planner would then see it AtEnd and skip the whole branch, so the inner variable never
+                //re-enumerates for the new binding (a cross product collapsing to its first-key slice). Reset the
+                //current level of every such iterator so it presents its first key again under the new binding.
+                ReseedIndependentIterators(iterators, frame);
+
                 return true;
             }
 
@@ -404,6 +413,29 @@ public sealed class BasicGraphPatternEvaluator
         }
 
         return false;
+    }
+
+    //Resets the current variable level of every iterator that is exhausted (AtEnd) and is NOT a participant of the
+    //just-re-bound frame, so it re-enumerates from its first key under the new binding. An iterator with all
+    //variables already bound (no current level) is left untouched — its at-end state is a fully-bound constraint,
+    //not an unstarted enumeration. The participants of the re-bound frame were re-opened by the caller and must not
+    //be reset.
+    private static void ReseedIndependentIterators(TriejoinIterator[] iterators, TriejoinIterator[] reboundFrame)
+    {
+        for(int i = 0; i < iterators.Length; i++)
+        {
+            TriejoinIterator iterator = iterators[i];
+
+            if(Array.IndexOf(reboundFrame, iterator) >= 0)
+            {
+                continue;
+            }
+
+            if(iterator.AtEnd && iterator.DescendedLevels < iterator.VariableOrder.Count)
+            {
+                iterator.RestartCurrentLevel();
+            }
+        }
     }
 
     //Attempts to descend by binding `target`. Identifies which
