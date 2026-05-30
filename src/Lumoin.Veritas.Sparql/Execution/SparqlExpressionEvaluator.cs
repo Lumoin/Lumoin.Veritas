@@ -666,13 +666,15 @@ public static class SparqlExpressionEvaluator
         };
     }
 
-    /// <summary>Evaluates <c>UCASE</c>/<c>LCASE</c>: the cased lexical form of a string argument as an <c>xsd:string</c>, mapping over Unicode runes (locale-independent, per the XPath case functions SPARQL defers to).</summary>
+    /// <summary>Evaluates <c>UCASE</c>/<c>LCASE</c> (§17.4.4.3/4): the cased lexical form of a string argument, mapping over Unicode runes (locale-independent, per the XPath case functions SPARQL defers to). The result keeps the argument's language tag (a plain or <c>xsd:string</c> argument yields an <c>xsd:string</c>).</summary>
     /// <param name="argument">The argument value.</param>
     /// <param name="toUpper">Whether to upper-case (otherwise lower-case).</param>
     /// <returns>The cased string value, or an error when the argument is not a string.</returns>
     private static ExpressionValue MapCaseValue(ExpressionValue argument, bool toUpper)
     {
-        return TryGetLexicalText(argument, out Utf8String text) ? StringLiteral(MapCase(text, toUpper)) : ExpressionValue.Error;
+        return TryGetStringArgument(argument, out Utf8String text, out Utf8String? language)
+            ? StringLiteral(MapCase(text, toUpper), language)
+            : ExpressionValue.Error;
     }
 
     /// <summary>Applies a term-type predicate to a single argument, propagating an argument error.</summary>
