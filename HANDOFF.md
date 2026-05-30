@@ -10,12 +10,18 @@ DESCRIBE/JSON results, conformance push).
 
 The IMMEDIATE-NEXT "complete SPARQL 1.2 + its eval-conformance gate" is underway. The gate's spec-independent
 foundation is **built, committed, green** (baseline unchanged at 6 ShaclValidate failures, 0 regressions):
-- **`6394292` — results reader + eval comparer.** New **production** `src/Lumoin.Veritas.Sparql/Results/`:
-  `SparqlResultSet` (the SELECT head+solutions / ASK boolean model shared by the W3C results serializations) +
-  `SparqlResultsXmlReader` (reads the `.srx` XML: uri/literal/typed/lang/bnode/**triple** binding values + ASK
-  boolean; DTD prohibited; triple terms parsed over an explicit stack). **User decision: results serialization is
-  first-class SPARQL 1.2 — build the FULL reader/writer family in final form (XML + JSON readers AND writers, then
-  CSV/TSV).** The `.srj` JSON reader landed (`eb7400b`, `SparqlResultsJsonReader` in **`Lumoin.Veritas.Json`** — that project owns STJ, banned in `Lumoin.Veritas.Sparql`; a Json→Sparql ref produces the shared `SparqlResultSet`). Still TODO in production: the XML/JSON/CSV/TSV **writers** + CSV/TSV readers.
+- **`6394292` — results reader + eval comparer.** The shared model `SparqlResultSet` (the SELECT head+solutions /
+  ASK boolean model) stays **production** in `src/Lumoin.Veritas.Sparql/Results/`. **User decision: results
+  serialization is first-class SPARQL 1.2 — build the FULL reader/writer family in final form (XML + JSON readers AND
+  writers, then CSV/TSV).** **Architecture (user-enforced): each serialization dependency lives in its own owner
+  project, banned elsewhere via `BannedSymbols.*.txt` (Json owns STJ, Cbor owns CBOR, Xml owns System.Xml).** So the
+  readers live OUTSIDE `Sparql` and both produce `SparqlResultSet`:
+  - `SparqlResultsXmlReader` (`.srx`) → **`Lumoin.Veritas.Xml`** (`6b2c624`; new project, `BannedSymbols.Xml.txt`
+    bans `System.Xml`/`System.Xml.Linq` everywhere else). Reads uri/literal/typed/lang/bnode/**triple** values + ASK
+    boolean; DTD prohibited; triple terms over an explicit stack.
+  - `SparqlResultsJsonReader` (`.srj`) → **`Lumoin.Veritas.Json`** (`eb7400b`; that project owns STJ). Same value forms.
+  Both projects reference `Sparql` for the model. **Still TODO in production: the XML/JSON/CSV/TSV writers + CSV/TSV
+  readers** (CSV/TSV will need their own owner project too if a BCL dep warrants it — else they can sit in `Sparql`).
   Test-only `SparqlResultComparer` (Conformance/): SELECT multiset (bag) equivalence under blank-node isomorphism via
   iterative backtracking (no recursion), ordered compare for ORDER BY, ASK boolean; ground fast-path by row-key count.
   13 unit tests.
