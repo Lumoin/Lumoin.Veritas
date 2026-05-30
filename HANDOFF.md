@@ -6,13 +6,19 @@ AST → algebra → translator → hypertrie backend + executor subset → SHACL
 unlock). **Batch 2 = Milestones D–F** (full algebra/aggregation, CONSTRUCT/
 DESCRIBE/JSON results, conformance push).
 
-## ⭐ CURRENT STATE (2026-05-31, directional-language slice DONE + committed on `sparql-query-engine`, tree clean)
+## ⭐ CURRENT STATE (2026-05-31, directional-language + TRIPLE-subject slices DONE on `sparql-query-engine`, tree clean)
 
 Driving the **complete official W3C SPARQL query-evaluation corpus** to green (red-baseline + ratchet — the whole
-suite is the fixed stick, NOT a curated subset; see [[project_sparql_conformance_baseline]]). **Full suite = 10
-failures (6 ShaclValidate long-standing baseline + 4 SparqlQueryEvaluation), 3156 total, 124 skip; 0 regressions.**
-SPARQL eval reds driven **53 → 4** across 2026-05-30/31. The results-serialization family (XML/JSON readers+writers,
+suite is the fixed stick, NOT a curated subset; see [[project_sparql_conformance_baseline]]). **Full suite = 9
+failures (6 ShaclValidate long-standing baseline + 3 SparqlQueryEvaluation), 3157 total, 124 skip; 0 regressions.**
+SPARQL eval reds driven **53 → 3** across 2026-05-30/31. The results-serialization family (XML/JSON readers+writers,
 streaming CSV/TSV writer) is built; the eval harness + complete corpus are vendored and wired.
+
+✅ **`TRIPLE()` SUBJECT VALIDATION (2026-05-31, `756aa77`): eval reds 4 → 3.** RDF 1.2 §3.5 — a triple term's
+subject is an IRI or blank node (never a literal OR a triple term). `BuildTriple` only rejected a literal subject,
+so it wrongly bound when the subject was a triple term; the guard is now `not (NamedNode or BlankNode)`. Closed the
+`triple on triple terms` eval test (its quoted triple terms are all ground VALUES data — this was the builtin's
+validation, NOT pattern structural matching, so a one-liner).
 
 ✅ **DIRECTIONAL LANGUAGE STRINGS (`rdf:dirLangString`) DONE (2026-05-31): eval reds 6 → 4, and the whole
 `lang-basedir` suite is green** (the 4 previously-skipped functions now run+pass too: HASLANG/HASLANGDIR/LANGDIR/
@@ -32,7 +38,8 @@ Canonicalization `NQuadsSerializer` route through it. The SPARQL lexer/parser al
 case-sensitive, `GetCanonicalizedValue`, `ToToken`/`ToText`/`TryParse`, UTF-8 `LtrUtf8`/`RtlUtf8`); `65820b1`
 (`SparqlResultsJsonWriter` emits `its:dir` — a dirLangString round-trip fix, the writer was dropping direction);
 `79c4533` (`SparqlResultsJsonWriter`/`SparqlResultsXmlWriter` `WriteToBytes`→`WriteToUtf8String` returning
-`Utf8String`, not a naked `byte[]` — [[feedback_no_naked_byte_arrays]]). HEAD `79c4533`, tree clean.
+`Utf8String`, not a naked `byte[]` — [[feedback_no_naked_byte_arrays]]); `756aa77` (`TRIPLE()` subject validation,
+see ✅ below). Tree clean.
 
 ⏸ **DEFERRED CLEANUPS (user 2026-05-31: "do these fixes as the LAST thing — feature work first").** Three
 raw-string / well-known issues to mop up after the eval reds: **(1)** `SparqlExpressionEvaluator` re-defines ~9
@@ -46,11 +53,18 @@ holder (both `string` for the STJ reader and UTF-8 `u8` for the writer). **(3)**
 base-direction support (same round-trip gap the `.srj` writer just had) — first verify the SPARQL 1.2 Results XML
 representation of base direction (no `.srx` directional fixtures in the corpus), then implement read+write.
 
-▶ **NEXT: the last 4 eval reds** — see the "THE LAST 6 EVAL REDS" block further down for per-test pointers. In
-brief: nested reified-triple subject matching + variable-bearing quoted-triple structural matching (`triple on
-triple terms`), the `order-by.rq` 20-way sub-SELECT-ordering test (`Reified triples - Embedded triple - ordering`),
-`Reified triples - Pattern - Nesting 1`, correlated `NOT EXISTS` (`Calculate proper subset` / `subset-03`). Then
-the 5 SHACL-SPARQL pre-binding tests + the SHACL `nodeKind` RDFC-1.0 case ([[project_rdfc_automorphism_gap]]).
+▶ **NEXT: the last 3 eval reds** — all three are design-heavy slices (each deserves a fresh-context focus, not a
+tail-of-session rush): **(1) `Reified triples - Pattern - Nesting 1`** (`pattern-06.rq`) — the genuine
+**variable-bearing quoted-triple-term matching** executor slice: `<< <<:s :p2 :o>> :p3 :z>> :q ?q` lowers to a BGP
+where the inner query reifier is a join VARIABLE appearing inside the outer quoted triple term `<<(?r :p3 :z)>>`;
+the hypertrie must match a triple-term pattern whose components are variables that join the rest of the BGP
+(currently a ground-only `TryBuildGroundTripleTerm`; a variable inside raises NotSupported). **(2) `Reified triples
+- Embedded triple - ordering`** (`order-by.rq`) — a 20-way UNION of sub-SELECT/ORDER BY/OFFSET/LIMIT slices; really
+a sub-SELECT-ordering test. **(3) `Calculate proper subset`** (`subset-03.rq`, `.srx` result) — nested
+MINUS-of-MINUS with `FILTER NOT EXISTS` correlating `?x`; MINUS/NOT-EXISTS are implemented so this is a *correctness*
+bug in the nested-MINUS semantics, needs query-level debugging (the other `Calculate…` set tests pass). Then the
+3 deferred raw-string cleanups (see ⏸ below), the 5 SHACL-SPARQL pre-binding tests + the SHACL `nodeKind` RDFC-1.0
+case ([[project_rdfc_automorphism_gap]]).
 
 ⚙ **Build/test without permission prompts** ([[feedback_build_test_command_shape]]): bare `dotnet build <proj>
 -clp:ErrorsOnly --nologo` (no pipe); run the exe via the **Bash tool** `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe"
