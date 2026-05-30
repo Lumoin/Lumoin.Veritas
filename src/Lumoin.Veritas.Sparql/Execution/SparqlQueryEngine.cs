@@ -649,6 +649,13 @@ public sealed class SparqlQueryEngine
         GraphMatchOps ops = store.AsMatchOps();
         (TermId? subjectId, SparqlVariable? subjectVariable) = ResolveEndpoint(path.Subject);
         (TermId? objectId, SparqlVariable? objectVariable) = ResolveEndpoint(path.Object);
+
+        //A top-level *-or-?-path is REFLEXIVE: its zero-length path pairs every term with itself, independent of the
+        //data (§18.2.2.5). When an endpoint is a bound constant the reflexive contribution is that constant paired
+        //with itself — and it must be emitted even when the constant is absent from the data graph (e.g. `?s :p* :o`
+        //over an empty graph yields `?s = :o`). The path evaluator already includes a present start node reflexively;
+        //this handles the absent-constant gap, where the dictionary look-up short-circuited the whole path to empty.
+        bool reflexive = path.PathExpression is PathZeroOrMore or PathZeroOrOne;
         List<SparqlSolution> solutions = [];
 
         if(subjectId is TermId subject)
@@ -656,6 +663,8 @@ public sealed class SparqlQueryEngine
             //Bound subject: enumerate reachable objects (filtering to the object when it too is bound).
             if(subject.IsNone)
             {
+                EmitReflexiveSelfBinding(solutions, reflexive, path.Subject, path.Object, subjectVariable, objectVariable);
+
                 return solutions;
             }
 
@@ -674,6 +683,8 @@ public sealed class SparqlQueryEngine
             //Bound object, variable subject: enumerate reachable subjects via the inverse path.
             if(@object.IsNone)
             {
+                EmitReflexiveSelfBinding(solutions, reflexive, path.Subject, path.Object, subjectVariable, objectVariable);
+
                 return solutions;
             }
 
@@ -695,6 +706,60 @@ public sealed class SparqlQueryEngine
         }
 
         return solutions;
+    }
+
+    /// <summary>
+    /// Emits the zero-length (reflexive) self-binding of a <c>*</c>/<c>?</c> path when a bound-constant endpoint is
+    /// absent from the data graph (so the normal data-driven evaluation found nothing): the constant pairs with
+    /// itself. For one bound + one variable endpoint, the variable binds to the constant's term; for two constants,
+    /// a single empty solution when they are the same term (reflexive match), nothing otherwise. Does nothing for a
+    /// non-reflexive path.
+    /// </summary>
+    /// <param name="solutions">The accumulating solution list.</param>
+    /// <param name="reflexive">Whether the top-level path is reflexive (<c>*</c> or <c>?</c>).</param>
+    /// <param name="subjectTerm">The subject endpoint AST term.</param>
+    /// <param name="objectTerm">The object endpoint AST term.</param>
+    /// <param name="subjectVariable">The subject variable, or <see langword="null"/> when the subject is a constant.</param>
+    /// <param name="objectVariable">The object variable, or <see langword="null"/> when the object is a constant.</param>
+    private static void EmitReflexiveSelfBinding(
+        List<SparqlSolution> solutions,
+        bool reflexive,
+        TriplePatternTerm subjectTerm,
+        TriplePatternTerm objectTerm,
+        SparqlVariable? subjectVariable,
+        SparqlVariable? objectVariable)
+    {
+        if(!reflexive)
+        {
+            return;
+        }
+
+        //The constant endpoint that drove us here is the one whose dictionary id was None; its RDF term is taken
+        //straight from the AST (it need not be in the data). The zero-length path binds the OTHER endpoint to it.
+        RdfTerm? subjectConstant = subjectTerm is ConstantTerm s ? s.Term : null;
+        RdfTerm? objectConstant = objectTerm is ConstantTerm o ? o.Term : null;
+
+        if(subjectVariable is SparqlVariable subjectVar && objectConstant is RdfTerm objectValue)
+        {
+            //?s :p* :o  →  ?s = :o.
+            solutions.Add(new SparqlSolution([new SparqlBinding(subjectVar, objectValue)]));
+
+            return;
+        }
+
+        if(objectVariable is SparqlVariable objectVar && subjectConstant is RdfTerm subjectValue)
+        {
+            //:s :p* ?o  →  ?o = :s.
+            solutions.Add(new SparqlSolution([new SparqlBinding(objectVar, subjectValue)]));
+
+            return;
+        }
+
+        //Both constants: a reflexive zero-length match holds iff they are the same term.
+        if(subjectConstant is RdfTerm a && objectConstant is RdfTerm b && a.Equals(b))
+        {
+            solutions.Add(new SparqlSolution([]));
+        }
     }
 
     /// <summary>Resolves a path endpoint to its bound term id (a constant) or the variable it binds.</summary>
