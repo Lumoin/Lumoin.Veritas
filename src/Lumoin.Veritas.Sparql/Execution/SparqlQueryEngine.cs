@@ -17,6 +17,7 @@ using Lumoin.Veritas.Sparql.Algebra;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Translation;
 using AstTriplePattern = Lumoin.Veritas.Sparql.Ast.TriplePattern;
+using AstTripleTerm = Lumoin.Veritas.Sparql.Ast.TripleTerm;
 using EncodedTriplePattern = Lumoin.Veritas.Core.Hypertrie.Query.TriplePattern;
 
 namespace Lumoin.Veritas.Sparql.Execution;
@@ -239,14 +240,19 @@ public sealed class SparqlQueryEngine
         VariableRegistry registry = new();
         Dictionary<SparqlVariable, Variable> toBackend = [];
         Dictionary<Variable, SparqlVariable> toSparql = [];
+
+        //A blank node in a query pattern is a non-distinguished (existential) join variable: occurrences sharing a
+        //label join like a variable, but it is never projected. Map each label to a fresh backend variable that is
+        //registered for the join yet absent from `toSparql`, so Decode leaves it out of the output solution.
+        Dictionary<Utf8String, Variable> blankToBackend = [];
         List<EncodedTriplePattern> patterns = new(bgp.Patterns.Count);
 
         foreach(AstTriplePattern triple in bgp.Patterns)
         {
             //A constant absent from the data graph can never match, so the whole BGP yields nothing.
-            if(!TryEncodePosition(triple.Subject, registry, toBackend, toSparql, out PatternPosition subject)
-                || !TryEncodePosition(triple.Predicate, registry, toBackend, toSparql, out PatternPosition predicate)
-                || !TryEncodePosition(triple.Object, registry, toBackend, toSparql, out PatternPosition @object))
+            if(!TryEncodePosition(triple.Subject, registry, toBackend, toSparql, blankToBackend, out PatternPosition subject)
+                || !TryEncodePosition(triple.Predicate, registry, toBackend, toSparql, blankToBackend, out PatternPosition predicate)
+                || !TryEncodePosition(triple.Object, registry, toBackend, toSparql, blankToBackend, out PatternPosition @object))
             {
                 return [];
             }
@@ -280,6 +286,7 @@ public sealed class SparqlQueryEngine
         VariableRegistry registry,
         Dictionary<SparqlVariable, Variable> toBackend,
         Dictionary<Variable, SparqlVariable> toSparql,
+        Dictionary<Utf8String, Variable> blankToBackend,
         out PatternPosition position)
     {
         switch(term)
@@ -287,6 +294,15 @@ public sealed class SparqlQueryEngine
             case VariableTerm variableTerm:
             {
                 position = PatternPosition.OfVariable(GetOrAddVariable(variableTerm.Variable, registry, toBackend, toSparql));
+
+                return true;
+            }
+
+            //A blank node in a query pattern is a non-distinguished join variable, not a ground value: occurrences
+            //of the same label join, but it is never projected (it is not added to `toSparql`).
+            case ConstantTerm { Term: BlankNode blank }:
+            {
+                position = PatternPosition.OfVariable(GetOrAddBlankVariable(blank.Label, registry, blankToBackend));
 
                 return true;
             }
@@ -306,11 +322,104 @@ public sealed class SparqlQueryEngine
                 return true;
             }
 
+            case AstTripleTerm tripleTerm when TryBuildGroundTripleTerm(tripleTerm, out Core.TripleTerm ground):
+            {
+                //A fully-ground quoted triple term (no variables inside) is a single RDF 1.2 triple term value:
+                //encode it as one bound TermId, exactly as the data-graph triple term was interned, so it matches by
+                //value. A quoted triple term that contains a variable needs structural matching against the stored
+                //triple term and is a later slice.
+                TermId id = dictionary.GetIdOrDefault(ground);
+                if(id.IsNone)
+                {
+                    position = default;
+
+                    return false;
+                }
+
+                position = PatternPosition.Bound(id);
+
+                return true;
+            }
+
             default:
             {
-                throw new NotSupportedException($"Triple-pattern term '{term.GetType().Name}' is not yet executable; this slice handles constants and variables. Nested triple terms / RDF-star quoted patterns are a later slice.");
+                throw new NotSupportedException($"Triple-pattern term '{term.GetType().Name}' is not yet executable; this slice handles constants, variables, and fully-ground quoted triple terms. A quoted triple term containing a variable needs structural matching (a later slice).");
             }
         }
+    }
+
+    /// <summary>
+    /// Builds the RDF 1.2 <see cref="Core.TripleTerm"/> value of a quoted triple term whose every position is a
+    /// constant (its subject may itself be a ground quoted triple term), walking the nesting over an explicit stack
+    /// (no recursion). Returns <see langword="false"/> when any position is a variable or otherwise non-constant —
+    /// such a pattern needs structural matching rather than a single encoded value.
+    /// </summary>
+    /// <param name="tripleTerm">The quoted triple term.</param>
+    /// <param name="ground">Receives the ground triple-term value on success.</param>
+    /// <returns><see langword="true"/> when the quoted triple term is fully ground.</returns>
+    private static bool TryBuildGroundTripleTerm(AstTripleTerm tripleTerm, out Core.TripleTerm ground)
+    {
+        ground = null!;
+
+        //Post-order build: a position is either a constant (its RdfTerm taken directly), or a nested quoted triple
+        //term (built first, then used as this term's subject/object). A predicate must resolve to a NamedNode.
+        Dictionary<AstTripleTerm, Core.TripleTerm> built = new(ReferenceEqualityComparer.Instance);
+        Stack<(AstTripleTerm Term, bool Build)> work = new();
+        work.Push((tripleTerm, Build: false));
+
+        while(work.Count > 0)
+        {
+            (AstTripleTerm term, bool build) = work.Pop();
+            AstTriplePattern inner = term.Inner;
+
+            if(!build)
+            {
+                work.Push((term, Build: true));
+
+                //Only a nested quoted triple term needs to be built before this one; constants are read in place.
+                if(inner.Subject is AstTripleTerm nestedSubject)
+                {
+                    work.Push((nestedSubject, Build: false));
+                }
+
+                if(inner.Object is AstTripleTerm nestedObject)
+                {
+                    work.Push((nestedObject, Build: false));
+                }
+
+                continue;
+            }
+
+            if(!TryGroundPosition(inner.Subject, built, out RdfTerm subjectTerm)
+                || inner.Predicate is not ConstantTerm { Term: NamedNode predicateNode }
+                || !TryGroundPosition(inner.Object, built, out RdfTerm objectTerm))
+            {
+                return false;
+            }
+
+            built[term] = new Core.TripleTerm(subjectTerm, predicateNode, objectTerm);
+        }
+
+        ground = built[tripleTerm];
+
+        return true;
+    }
+
+    /// <summary>Resolves a quoted-triple-term inner position to its ground RDF term: a constant's term, or an already-built nested triple term; fails on a variable or other non-ground term.</summary>
+    /// <param name="position">The inner position.</param>
+    /// <param name="built">The map of already-built nested triple terms.</param>
+    /// <param name="term">Receives the ground term on success.</param>
+    /// <returns><see langword="true"/> when the position is ground.</returns>
+    private static bool TryGroundPosition(TriplePatternTerm position, Dictionary<AstTripleTerm, Core.TripleTerm> built, out RdfTerm term)
+    {
+        term = position switch
+        {
+            ConstantTerm constant => constant.Term,
+            AstTripleTerm nested => built[nested],
+            _ => null!
+        };
+
+        return term is not null;
     }
 
     /// <summary>Returns the backend variable for a SPARQL variable, minting and recording it (both map directions) on first sight.</summary>
@@ -333,6 +442,29 @@ public sealed class SparqlQueryEngine
         Variable backend = registry.GetOrAdd(variable.Name.ToString());
         toBackend[variable] = backend;
         toSparql[backend] = variable;
+
+        return backend;
+    }
+
+    /// <summary>
+    /// Returns the backend join variable for a query blank node, minting one per distinct label on first sight.
+    /// Unlike <see cref="GetOrAddVariable"/> it records no entry in the backend→SPARQL map, so the blank node joins
+    /// across its occurrences but is never decoded into the output solution (a blank node is non-distinguished).
+    /// </summary>
+    /// <param name="label">The blank node's label.</param>
+    /// <param name="registry">The registry minting backend variables.</param>
+    /// <param name="blankToBackend">The blank-label to backend-variable map.</param>
+    /// <returns>The backend variable for the blank node.</returns>
+    private static Variable GetOrAddBlankVariable(Utf8String label, VariableRegistry registry, Dictionary<Utf8String, Variable> blankToBackend)
+    {
+        if(blankToBackend.TryGetValue(label, out Variable existing))
+        {
+            return existing;
+        }
+
+        //A label that can never collide with a real SPARQL variable name (which never contains a space).
+        Variable backend = registry.GetOrAdd("_:bnode " + label.ToString());
+        blankToBackend[label] = backend;
 
         return backend;
     }

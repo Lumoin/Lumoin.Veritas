@@ -744,6 +744,28 @@ internal sealed class SparqlQueryEngineTests
         Assert.AreEqual("2.5E-1", LiteralValue(solution, "r"));
     }
 
+    /// <summary>
+    /// A blank node in a query pattern is a non-distinguished join variable, not a ground value: it joins across its
+    /// occurrences and is never projected. Here a reified-triple subject <c>&lt;&lt;:a :b :c&gt;&gt;</c> (which
+    /// normalizes to a fresh-reifier blank node joined via <c>rdf:reifies</c>) matches the reifier the data's reified
+    /// triple introduced, yielding both that reifier's triples.
+    /// </summary>
+    [TestMethod]
+    public async Task ReifiedTripleSubjectMatchesViaBlankNodeJoin()
+    {
+        //Data: << :a :b :c >> :q :z .  →  _:r rdf:reifies <<(:a :b :c)>> ; _:r :q :z .
+        SparqlQueryEngine engine = await EngineFromTurtleAsync("PREFIX : <http://example.org/>\n<< :a :b :c >> :q :z .\n").ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { << :a :b :c >> ?p ?o }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //Two rows: (?p = rdf:reifies, ?o = <<(:a :b :c)>>) and (?p = :q, ?o = :z).
+        Assert.HasCount(2, solutions);
+        Assert.Contains(s => ValueIri(s, "p") == "http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies", solutions, "Expected a row binding ?p to rdf:reifies.");
+        Assert.Contains(s => ValueIri(s, "p") == Ex + "q" && ValueIri(s, "o") == Ex + "z", solutions, "Expected a row binding ?p=:q, ?o=:z.");
+    }
+
     /// <summary>UUID and STRUUID draw their UUID from the injected randomness seam (UUID as a urn:uuid: IRI, STRUUID as the bare string).</summary>
     [TestMethod]
     public async Task UuidAndStrUuidUseInjectedRandomnessSeam()
@@ -825,6 +847,29 @@ internal sealed class SparqlQueryEngineTests
     private async Task<SparqlQueryEngine> EngineFromAsync(params DataTriple[] triples)
     {
         return await SparqlQueryEngine.BuildAsync(triples, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Builds an engine over a data graph given as Turtle text (parsed through the production reader, so RDF-1.2 reification/triple-term sugar lowers exactly as in the conformance harness).</summary>
+    /// <param name="turtle">The Turtle data-graph source.</param>
+    /// <returns>An engine over the parsed graph.</returns>
+    private async Task<SparqlQueryEngine> EngineFromTurtleAsync(string turtle)
+    {
+        Lumoin.Veritas.Core.Diagnostics.DiagnosticBag diagnostics = new();
+        List<DataTriple> data = [];
+        await foreach(Quad quad in Lumoin.Veritas.Turtle.TurtleReader.ReadAsync(
+            System.Text.Encoding.UTF8.GetBytes(turtle),
+            Lumoin.Veritas.Turtle.TurtleSyntax.Turtle,
+            diagnostics,
+            pool: null,
+            baseIri: "http://example.org/",
+            cancellationToken: TestContext.CancellationToken).ConfigureAwait(false))
+        {
+            data.Add(new DataTriple(quad.Subject, quad.Predicate, quad.Object));
+        }
+
+        Assert.IsFalse(diagnostics.HasErrors, "The Turtle data graph should parse without error.");
+
+        return await SparqlQueryEngine.BuildAsync(data, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Builds an <c>xsd:integer</c> literal term.</summary>
