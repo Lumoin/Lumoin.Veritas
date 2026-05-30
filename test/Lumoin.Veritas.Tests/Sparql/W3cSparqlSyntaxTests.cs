@@ -59,6 +59,11 @@ internal sealed class W3cSparqlSyntaxTests
         ["GROUP BY variable in-scope (2)"] = "GROUP BY scope — requires scope analysis",
         ["Nested aggregate functions"] = "nested aggregates — requires static aggregate analysis",
         ["syntax-propertyPaths-01.rq"] = "standalone blank-node property list — needs the sugar-expansion pass",
+        ["codepoint-esc-01.rq"] = "numeric codepoint escapes (\\uXXXX / \\UXXXXXXXX) in tokens — lexer refinement",
+        ["codepoint-esc-02.rq"] = "numeric codepoint escapes (\\uXXXX / \\UXXXXXXXX) in tokens — lexer refinement",
+        ["codepoint-esc-bad-03.rq"] = "ill-formed numeric codepoint escape must be rejected — lexer refinement",
+        ["codepoint-esc-07.rq"] = "numeric codepoint escapes (\\uXXXX / \\UXXXXXXXX) in tokens — lexer refinement",
+        ["codepoint-esc-08.rq"] = "numeric codepoint escapes (\\uXXXX / \\UXXXXXXXX) in tokens — lexer refinement",
     };
 
     /// <summary>Runs one SPARQL 1.1 query-syntax test.</summary>
@@ -95,6 +100,13 @@ internal sealed class W3cSparqlSyntaxTests
     [TestMethod]
     [W3cManifestData("Sparql", "version")]
     public Task RunW3cSparql12VersionTest(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
+    /// <summary>Runs one SPARQL 1.2 codepoint-escape syntax test.</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "codepoint-escapes")]
+    public Task RunW3cSparql12CodepointEscapesTest(W3cTestCase testCase) => RunAndAssertAsync(testCase);
 
     /// <summary>
     /// Runs a test case and applies the outcome, translating a known gap into an inconclusive result

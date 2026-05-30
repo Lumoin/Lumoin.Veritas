@@ -14,18 +14,31 @@ Query-syntax suites:
 - `sparql/sparql12/syntax-triple-terms-negative/` → `Material/Sparql/syntax-triple-terms-negative/`
 - `sparql/sparql12/version/` → `Material/Sparql/version/`
 
-Query-evaluation suites (snapshotted 2026-05-30, same pinned commit):
+Query-syntax (cont.):
+
+- `sparql/sparql12/codepoint-escapes/` → `Material/Sparql/codepoint-escapes/`
+
+Query-evaluation suites — the complete set the upstream
+`manifest-sparql11-query.ttl` / sparql12 `manifest.ttl` reference
+(snapshotted 2026-05-30, same pinned commit):
 
 - `sparql/sparql11/aggregates/` → `Material/Sparql/aggregates/`
 - `sparql/sparql11/bind/` → `Material/Sparql/bind/`
 - `sparql/sparql11/bindings/` → `Material/Sparql/bindings/`
+- `sparql/sparql11/cast/` → `Material/Sparql/cast/`
+- `sparql/sparql11/construct/` → `Material/Sparql/construct/`
 - `sparql/sparql11/exists/` → `Material/Sparql/exists/`
+- `sparql/sparql11/functions/` → `Material/Sparql/functions/`
 - `sparql/sparql11/grouping/` → `Material/Sparql/grouping/`
 - `sparql/sparql11/negation/` → `Material/Sparql/negation/`
 - `sparql/sparql11/project-expression/` → `Material/Sparql/project-expression/`
+- `sparql/sparql11/property-path/` → `Material/Sparql/property-path/`
 - `sparql/sparql11/subquery/` → `Material/Sparql/subquery/`
 - `sparql/sparql12/expression/` → `Material/Sparql/expression/`
 - `sparql/sparql12/eval-triple-terms/` → `Material/Sparql/eval-triple-terms/`
+- `sparql/sparql12/grouping/` → `Material/Sparql/sparql12-grouping/` (renamed to avoid the sparql11 `grouping` collision)
+- `sparql/sparql12/rdf11/` → `Material/Sparql/sparql12-rdf11/`
+- `sparql/sparql12/lang-basedir/` → `Material/Sparql/lang-basedir/`
 
 Licensed under the dual W3C Test Suite licence and W3C 3-clause
 BSD licence per the upstream `LICENSE.md`:
