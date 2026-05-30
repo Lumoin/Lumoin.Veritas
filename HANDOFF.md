@@ -42,25 +42,34 @@ foundation is **built, committed, green** (baseline unchanged at 6 ShaclValidate
 read+write round-trip; CSV/TSV are write-only (CSV read-back is lossy/undefined; a TSV reader needs a Turtle-term
 parser — deferred).
 
-✅ **Conformance suite SET UP and GREEN** (`e57a988`). Vendored 10 query-eval suites from the same pinned commit
-`674da26` (`Material/Sparql/{aggregates,bind,bindings,exists,grouping,negation,project-expression,subquery}` +
-sparql12 `{expression,eval-triple-terms}`; ATTRIBUTION updated). `W3cSparqlEvalTests` has one `[W3cManifestData]`
-method per suite + a `KnownGaps` dict (keyed by `mf:name`) mirroring the syntax suite. **89 SPARQL evaluation tests
-pass, 0 fail**, rest inconclusive. The runner skips structurally on CONSTRUCT/DESCRIBE, unsupported operators
-(`GRAPH`/`SERVICE`), non-query-eval manifest entries, and unreadable data graphs (RDF/XML, TriG).
+✅ **COMPLETE conformance corpus SET UP; red-baseline measure** (`e57a988` initial 10 suites → `bf884fc` complete).
+The **whole official SPARQL query-evaluation corpus** the upstream `manifest-sparql11-query.ttl` / sparql12
+`manifest.ttl` reference is vendored (pinned `674da26`): sparql11 `{aggregates,bind,bindings,cast,construct,exists,
+functions,grouping,negation,project-expression,property-path,subquery}` + sparql12 `{expression,eval-triple-terms,
+grouping→sparql12-grouping,rdf11→sparql12-rdf11,lang-basedir}`; sparql12 `codepoint-escapes` → the **syntax** suite.
+**Decision (user, 2026-05-30): the complete official suite is the FIXED measuring stick, NOT a curated subset; use a
+RED BASELINE + ratchet (like SHACL), NOT KnownGaps.** So `W3cSparqlEvalTests` dropped its KnownGaps — a wrong answer
+FAILS (red); the failing count is the honest distance to full conformance, driven to zero by implementing features.
+Structural non-runnables stay inconclusive (CONSTRUCT/DESCRIBE, unsupported operators `GRAPH`/`SERVICE`, non-eval
+manifest entries, unreadable data graphs RDF/XML+TriG). **Conformance now: 178 SPARQL eval tests PASS.**
+**FULL-SUITE BASELINE = 59 failures (6 ShaclValidate + 53 SparqlQueryEvaluation), 2965 pass, 117 skip — success =
+no NEW failures (ratchet the 53 down, never up).** (codepoint-escapes' 5 parser-gap failures are in
+`W3cSparqlSyntaxTests.KnownGaps` — the syntax suite keeps its KnownGaps/green convention.)
 
-▶ **NEXT (task #4 cont.): DRIVE THE EVAL GAPS DOWN + widen the corpus.** The documented `KnownGaps` frontier (in
-`W3cSparqlEvalTests`), by cluster, biggest-yield first: **(1) aggregate/arithmetic numeric-tower typing** (SUM/AVG
-over xsd:decimal/integer must promote properly, not go double — ~9 tests + GROUP_CONCAT ×3); **(2) RDF-star
-triple-term pattern matching** (the BGP matcher can't bind vars inside quoted triple terms — ~17 tests, a real
-executor slice; the engine's `TryEncodePosition` throws on nested triple terms today); **(3) correlated `NOT EXISTS`
-set semantics** (4 negation tests); **(4) sub-SELECT scoping** (sq11/sq13); **(5) `xsd:boolean` non-canonical
-lexicals**; **(6) trailing VALUES + UNDEF**. Then widen: vendor more suites (`functions`, `cast`, `property-path`,
-sparql12 `grouping`/`lang-basedir`/`codepoint-escapes`) — beware the sparql11/sparql12 `grouping` name collision
-(prefix the sparql12 one). Bigger backends still deferred: CONSTRUCT/DESCRIBE **result construction**
-(template-instantiation → graph, compare via the quad path), named graphs/`GRAPH`+`FROM NAMED` (**quad/dataset
-backend** — a real change; the hypertrie store is triple-only), `SERVICE` (exclude offline), `BNODE`, directional
-fns, negated property sets. The 5 SHACL-SPARQL **pre-binding** tests fall out of SPARQL pre-binding
+▶ **NEXT (task #4 cont.): RATCHET THE 53 EVAL REDS DOWN by implementing features.** Clusters, biggest-yield first
+(read the failing names via `& "test\…\Tests.exe" --filter "FullyQualifiedName~W3cSparqlEval"` then `Select-String
+"^failed "`): **(1) aggregate/arithmetic numeric-tower typing** — SUM/AVG over xsd:decimal/integer must promote
+(not collapse to double); the evaluator is double-based (`SparqlExpressionEvaluator` / `EvaluateAggregate`). Also
+GROUP_CONCAT assembly. **(2) RDF-star triple-term pattern matching** (~17 `Reified triples - …`/`eval-triple-terms`)
+— the BGP matcher can't bind vars inside quoted triple terms; `SparqlQueryEngine.TryEncodePosition` throws on a
+nested `Ast.TripleTerm` today — a real executor slice (encode/decode quoted-triple positions through the term dict).
+**(3) `functions`/`cast`** — many built-in/cast gaps (numeric tower again, plus missing fns). **(4) correlated
+`NOT EXISTS` set semantics** (4 negation). **(5) sub-SELECT scoping**, **`xsd:boolean` non-canonical lexicals**,
+**trailing VALUES+UNDEF**, **property-path** tail. Bigger backends behind many skips: CONSTRUCT/DESCRIBE **result
+construction** (template-instantiation → graph, compare via the quad path), named graphs/`GRAPH`+`FROM NAMED`
+(**quad/dataset backend** — the hypertrie store is triple-only), `SERVICE` (offline-excluded), `BNODE`, directional
+fns, negated property sets, and an **RDF/XML + TriG data reader** (currently those data graphs are skipped). The
+5 SHACL-SPARQL **pre-binding** tests fall out of SPARQL pre-binding
 substitution/scoping ([[feedback_sparql_before_shacl]]); `nodeKind property 001` is the separate RDFC-1.0 rewrite
 ([[project_rdfc_automorphism_gap]]). To re-vendor, shallow-fetch the pinned commit:
 `git init … && git fetch --depth 1 origin 674da267646573441808560564451fe5cc77aef7 && git checkout FETCH_HEAD`, then
