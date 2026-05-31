@@ -9,10 +9,23 @@ DESCRIBE/JSON results, conformance push).
 ## ⭐ CURRENT STATE (2026-05-31, **SPARQL eval corpus GREEN (53 → 0)** on `sparql-query-engine`, tree clean)
 
 Drove the **complete official W3C SPARQL query-evaluation corpus** to green (red-baseline + ratchet — the whole
-suite is the fixed stick, NOT a curated subset; see [[project_sparql_conformance_baseline]]). **Full suite = 6
-failures, ALL long-standing ShaclValidate baseline (0 SparqlQueryEvaluation), 3160 total, 111 skip; 0 regressions.**
-SPARQL eval reds driven **53 → 0** across 2026-05-30/31. The results-serialization family (XML/JSON readers+writers,
-streaming CSV/TSV writer) is built; the eval harness + complete corpus are vendored and wired.
+suite is the fixed stick, NOT a curated subset; see [[project_sparql_conformance_baseline]]). **Full suite = 2
+failures (both ShaclValidate: `$shapesGraph/$currentShape` + `nodeKind` RDFC-1.0), 3161 total, 111 skip; 0 regressions.**
+SPARQL eval reds driven **53 → 0**, and the SHACL baseline **6 → 2** (the 5 SHACL-SPARQL pre-binding reds closed),
+across 2026-05-30/31. The results-serialization family (XML/JSON readers+writers, streaming CSV/TSV writer) is built;
+the eval harness + complete corpus are vendored and wired.
+
+✅ **SHACL-SPARQL PRE-BINDING BY SUBSTITUTION (2026-05-31, `891483d`): SHACL baseline 6 → 2.** SHACL §5.2.1
+pre-binding is variable **substitution**, not an injected `VALUES` join. The old `SparqlPreBinding.WithInlineValues`
+bound the pre-bound variables only at the outer WHERE group (via join), so `$this` referenced inside a `UNION`
+branch / nested `{…}` block / sub-`SELECT` (a fresh scope) was unbound there → under-validation. Replaced with
+`SparqlPreBinding.Substitute`: walks the whole query (every triple-pattern position, FILTER/BIND/projection/GROUP BY/
+HAVING/ORDER BY expression, and recursively UNION branches, nested groups, sub-SELECTs) over an explicit stack (no
+recursion), replacing each pre-bound variable by its value; **`BOUND(pre-bound)` folds to `true`** (a pre-bound
+variable is always bound, which a substituted constant cannot express); binding-target positions (projection vars,
+`BIND…AS`, `VALUES` vars) are left per the §5.2.1 restrictions. Both the `sh:sparql` constraint and the
+`sh:SPARQLConstraintComponent` validator evaluators route through it. Closed `pre-binding` UNION / inner-blocks /
+BGP-and-FILTER / nested-SELECT (the W3C pre-binding ratchet covers it).
 
 ✅ **VARIABLE-BEARING QUOTED TRIPLE-TERM MATCHING (2026-05-31, `02ee9f9`): eval reds 1 → 0 — the eval corpus is GREEN.**
 The last red, `Reified triples - Pattern - Nesting 1` (`pattern-06.rq`), needed a pattern `?r2 rdf:reifies <<(?r1 :p3 :z)>>`
@@ -28,11 +41,14 @@ side a blank node is a join variable). 13 previously NotSupported-skipped triple
 **Tests:** `SparqlQueryEngineTests.VariableBearingTripleTermBindsComponentAndJoins`.
 
 ▶ **NEXT (per [[project_correctness_harness_before_rework]] — finish the conformance harness, THEN perf-rework):**
-the remaining **6 ShaclValidate baseline** failures — the 5 SHACL-SPARQL **pre-binding** tests
-(`pre-binding in BGP and FILTER` / `UNION` / `inner {…} blocks` / `nested SELECT`, + `$shapesGraph and $currentShape`)
-which fall out of SPARQL pre-binding substitution/scoping ([[feedback_sparql_before_shacl]]), and `sh:nodeKind property 001`
-(the RDFC-1.0 automorphism rewrite — [[project_rdfc_automorphism_gap]]). Then the 3 deferred raw-string cleanups
-(⏸ below). The large-graph **performance rework** (Layer-2 columnar `TermId` rows + hash/merge join + SIMD;
+the **2 remaining ShaclValidate** failures, both substantial separate features (NOT pre-binding):
+**(1) `$shapesGraph and $currentShape`** (`shapesGraph-001.ttl`) — its `sh:select` uses `GRAPH $shapesGraph { … }`
+to query the **shapes graph as a named graph**; needs `GRAPH` execution over a **dataset** (data graph + shapes
+graph as a named graph). The engine is **triple-only** (no quad/dataset backend), so `GRAPH` raises `NotSupported`
+→ the evaluator under-validates → conforms. Pre-binding `$shapesGraph`/`$currentShape` is easy (add to
+`BuildPreBindings`); the blocker is the dataset/`GRAPH` backend. **(2) `sh:nodeKind property 001`** — the RDFC-1.0
+automorphism rewrite ([[project_rdfc_automorphism_gap]]). Then the 3 deferred raw-string cleanups (⏸ below). The
+large-graph **performance rework** (Layer-2 columnar `TermId` rows + hash/merge join + SIMD;
 [[project_scale_performance_target]]) is deferred behind the complete correctness harness — see
 `docs/decisions/sparql-join-and-triple-term-matching.md`.
 
