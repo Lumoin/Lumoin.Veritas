@@ -88,9 +88,14 @@ side a blank node is a join variable). 13 previously NotSupported-skipped triple
 
 ▶ **NEXT — the conformance harness is COMPLETE (all SPARQL eval + SHACL + rdf-canon GREEN), so the gate that deferred
 perf-rework is satisfied ([[project_correctness_harness_before_rework]]).** Candidate tracks, no forced order:
-**(1) The large-graph performance rework** — Layer-2 columnar `TermId` rows + hash/merge join + SIMD
-([[project_scale_performance_target]]); the quad/order-4 dataset optimization is deferred to revisit *with the OWL
-reasoner work* ([[project_graph_dataset_backend]]). **(2) SPARQL completeness** — reduce the ~57 eval skips
+**(1) The large-graph performance rework** — now framed as **pluggable WCOJ backends via delegate seams**
+(`docs/decisions/pluggable-wcoj-backends.md`, [[project_pluggable_wcoj_backends]]): generalize the join/index
+machinery into 4 delegate seams (index/cursor · driver/plan · filter · parallel-partition) hosting
+CLTJ/Sonic/CoCo/Diamond/SieveJoin/HoneyComb and measured vs the hypertrie via the existing BenchmarkDotNet
+vehicle. Phase 1 = behaviour-identical extraction of the seam from the hypertrie path, harness-guarded. Subsumes
+the earlier "Layer-2 columnar `TermId` rows + hash/merge join + SIMD" framing ([[project_scale_performance_target]]);
+the quad/order-4 dataset optimization is deferred to revisit *with the OWL reasoner work*
+([[project_graph_dataset_backend]]). **(2) SPARQL completeness** — reduce the ~57 eval skips
 (CONSTRUCT/DESCRIBE result construction, named functions, BNODE, negated property sets, sub-SELECT scoping) toward
 full SPARQL 1.2 (Batch 2 / Milestones D–F). **(3)** the rdf-canon `RDFC10MapTest` family (needs a canonicalizer
 surface returning the issued-identifier map; currently skipped), in-query `FROM`/`FROM NAMED` wiring, and a shapes
