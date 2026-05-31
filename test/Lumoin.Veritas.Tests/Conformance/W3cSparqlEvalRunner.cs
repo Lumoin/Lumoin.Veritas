@@ -652,7 +652,20 @@ internal static class W3cSparqlEvalRunner
             return quads;
         }
 
-        throw new InvalidOperationException($"Graph fixture format '{extension}' (e.g. RDF/XML) is not readable by this harness.");
+        if(string.Equals(extension, ".rdf", StringComparison.OrdinalIgnoreCase))
+        {
+            string baseIri = new Uri(IoPath.GetFullPath(path)).AbsoluteUri;
+            DiagnosticBag diagnostics = new();
+            quads.AddRange(RdfXmlReader.Read(bytes, diagnostics, baseIri));
+            if(diagnostics.HasErrors)
+            {
+                throw new InvalidOperationException($"Graph '{path}' did not parse: {DescribeFirstError(diagnostics.Diagnostics)}");
+            }
+
+            return quads;
+        }
+
+        throw new InvalidOperationException($"Graph fixture format '{extension}' is not readable by this harness.");
     }
 
     /// <summary>Loads the merge of an in-query <c>FROM</c> clause's graphs as the default-graph triples.</summary>
