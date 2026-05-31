@@ -72,7 +72,7 @@ public static class ShaclPipelineExtensions
             evaluators,
             timeProvider,
             options: null,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -99,7 +99,7 @@ public static class ShaclPipelineExtensions
             state.Dictionary,
             evaluators,
             timeProvider,
-            options,
-            cancellationToken).ConfigureAwait(false);
+            options: options,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 }

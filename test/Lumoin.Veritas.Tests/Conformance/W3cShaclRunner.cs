@@ -107,8 +107,14 @@ internal static class W3cShaclRunner
         {
             ShapeRegistry registry = await ShapeLoader.LoadAsync(
                 shapesStore.AsMatchDelegate(), dictionary, ShaclBuiltInComponents.All, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            //Expose the shapes graph as the named graph a SPARQL constraint's $shapesGraph designates (SHACL-SPARQL
+            //§5.2.1). The graph name is the shapes file's document IRI — the value sht:shapesGraph <> resolves to —
+            //so a query's GRAPH <shapes-file> and the pre-bound $shapesGraph key the same named graph.
+            RdfTerm shapesGraphIri = new NamedNode(Utf8String.FromString(new Uri(Path.GetFullPath(testCase.ShapesGraphPath)).AbsoluteUri));
             report = await ShaclValidator.ValidateAsync(
-                registry, dataStore.AsMatchOps(), dictionary, ShaclBuiltInEvaluators.All, TimeProvider.System, cancellationToken: cancellationToken).ConfigureAwait(false);
+                registry, dataStore.AsMatchOps(), dictionary, ShaclBuiltInEvaluators.All, TimeProvider.System,
+                shapesGraphMatchOps: shapesStore.AsMatchOps(), shapesGraphIri: shapesGraphIri, cancellationToken: cancellationToken).ConfigureAwait(false);
         }
         catch(Exception ex) when(ex is not OperationCanceledException)
         {

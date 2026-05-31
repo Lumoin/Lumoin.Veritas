@@ -6,14 +6,39 @@ AST → algebra → translator → hypertrie backend + executor subset → SHACL
 unlock). **Batch 2 = Milestones D–F** (full algebra/aggregation, CONSTRUCT/
 DESCRIBE/JSON results, conformance push).
 
-## ⭐ CURRENT STATE (2026-05-31, **SPARQL eval corpus GREEN (53 → 0)** on `sparql-query-engine`, tree clean)
+## ⭐ CURRENT STATE (2026-05-31, **dataset/`GRAPH` backend DONE — SHACL baseline 2 → 1; eval corpus still GREEN** on `sparql-query-engine`, tree clean)
 
-Drove the **complete official W3C SPARQL query-evaluation corpus** to green (red-baseline + ratchet — the whole
-suite is the fixed stick, NOT a curated subset; see [[project_sparql_conformance_baseline]]). **Full suite = 2
-failures (both ShaclValidate: `$shapesGraph/$currentShape` + `nodeKind` RDFC-1.0), 3161 total, 111 skip; 0 regressions.**
-SPARQL eval reds driven **53 → 0**, and the SHACL baseline **6 → 2** (the 5 SHACL-SPARQL pre-binding reds closed),
-across 2026-05-30/31. The results-serialization family (XML/JSON readers+writers, streaming CSV/TSV writer) is built;
-the eval harness + complete corpus are vendored and wired.
+Built a **SPARQL dataset / named-graph (`GRAPH`) execution backend** (composing the 3-position hypertrie, NOT a
+depth-4 rewrite — the WCOJ construction cost is untouched, [[project_wcoj_construction_cost]]) and wired it into both
+SHACL-SPARQL and the eval corpus. **Full suite = 1 failure (`nodeKind` RDFC-1.0 only), 3164 total, 104 skip; 0
+regressions.** The SHACL baseline is **2 → 1** (`shapesGraph-001` closed); the SPARQL eval corpus stays **GREEN (0
+reds)** with the named-graph (`qt:graphData`) tests now running+passing instead of skipped.
+
+✅ **SPARQL DATASET / `GRAPH` BACKEND (2026-05-31): SHACL baseline 2 → 1; closed `shapesGraph-001`.** A
+**`SparqlDataset`** (`src/Lumoin.Veritas.Sparql/Execution/SparqlDataset.cs`) = a default graph + named graphs, each a
+separate `HypertrieGraphStore` keyed by graph-name `TermId` over ONE shared `TermDictionary` (composition, no
+hypertrie change). `SparqlQueryEngine` now holds a dataset (single-store ctor + `BuildAsync` kept as the
+default-only convenience; new `BuildDatasetAsync`), threads an **active-graph `TermId` on the work stack and into the
+results-cache key** (`(operator-ref, graph)` via a reference-identity `ResultKeyComparer` — algebra records have
+value equality), and special-cases the `Graph` operator in expand/combine (no recursion): `GRAPH <iri>` re-roots its
+child under that one named graph (skipped when the dataset lacks it → empty, never the default); `GRAPH ?g` re-roots a
+copy under EACH named graph, then unions binding `?g` per graph (§18.2.2.7 `eval(P,g) ⋈ {(?g,g)}`). `EXISTS`
+re-enters in the enclosing active graph. Leaf BGP/Path/AllNodes resolve `dataset.Resolve(graph)`. `GuardSupported`
+now allows `Graph` (keeps `Service` rejected). **SHACL wiring:** `SparqlEngineCache.GetOrBuildAsync` takes the shapes
+graph + its IRI and builds the engine over `{default: data, named: {shapesGraphIri: shapes}}`; `ValidationContext`
+gained `ShapesGraphMatchOps`/`ShapesGraphIri` (optional — a validation with no SPARQL constraint never queries them);
+`ShaclValidator.ValidateAsync`/`ValidateStreamAsync` gained the two optional inputs (wired by `W3cShaclRunner` to the
+shapes store + shapes-file IRI); both SPARQL evaluators now pre-bind **`$currentShape` = shape.Id (always)** and
+**`$shapesGraph` (when supplied)**, on top of `$this`/`$PATH`. **Eval-corpus wiring:** `W3cTestCase.GraphDataPaths`
++ `W3cManifestLoader` reads all `qt:graphData`; `W3cSparqlEvalRunner` builds a dataset (default `qt:data` + each
+`qt:graphData` as a named graph keyed by its file IRI — the IRI a query's `GRAPH <file>`/`?g` resolves to, since
+IriRef values are absolute post-parse). **Tests:** `SparqlQueryEngineTests.GraphWithConstantIriQueriesThatNamedGraph`
+/ `GraphWithVariableBindsGraphNameAndRangesOverNamedGraphs` / `GraphWithIriNotInDatasetYieldsNoSolutions`
+(`UnsupportedOperatorIsRefused` retargeted GRAPH→SERVICE). ⚠ In-query `FROM`/`FROM NAMED` (the `DatasetClause`) is
+still **parsed but ignored** — the dataset is harness-supplied; honoring it is a later slice. The production
+`ShaclPipelineExtensions` forwards no shapes graph yet (its `ShaclPipelineDataState` carries none), so `$shapesGraph`
+via the pipeline is a follow-up. Remaining eval `GRAPH` skips are data/result-format limits only (TriG `.trig`,
+RDF/XML `.rdf`, `.ttl` graph results), never `GRAPH` execution.
 
 ✅ **SHACL-SPARQL PRE-BINDING BY SUBSTITUTION (2026-05-31, `891483d`): SHACL baseline 6 → 2.** SHACL §5.2.1
 pre-binding is variable **substitution**, not an injected `VALUES` join. The old `SparqlPreBinding.WithInlineValues`
@@ -41,16 +66,15 @@ side a blank node is a join variable). 13 previously NotSupported-skipped triple
 **Tests:** `SparqlQueryEngineTests.VariableBearingTripleTermBindsComponentAndJoins`.
 
 ▶ **NEXT (per [[project_correctness_harness_before_rework]] — finish the conformance harness, THEN perf-rework):**
-the **2 remaining ShaclValidate** failures, both substantial separate features (NOT pre-binding):
-**(1) `$shapesGraph and $currentShape`** (`shapesGraph-001.ttl`) — its `sh:select` uses `GRAPH $shapesGraph { … }`
-to query the **shapes graph as a named graph**; needs `GRAPH` execution over a **dataset** (data graph + shapes
-graph as a named graph). The engine is **triple-only** (no quad/dataset backend), so `GRAPH` raises `NotSupported`
-→ the evaluator under-validates → conforms. Pre-binding `$shapesGraph`/`$currentShape` is easy (add to
-`BuildPreBindings`); the blocker is the dataset/`GRAPH` backend. **(2) `sh:nodeKind property 001`** — the RDFC-1.0
-automorphism rewrite ([[project_rdfc_automorphism_gap]]). Then the 3 deferred raw-string cleanups (⏸ below). The
-large-graph **performance rework** (Layer-2 columnar `TermId` rows + hash/merge join + SIMD;
-[[project_scale_performance_target]]) is deferred behind the complete correctness harness — see
-`docs/decisions/sparql-join-and-triple-term-matching.md`.
+the **1 remaining ShaclValidate** failure — **`sh:nodeKind property 001`**, the RDFC-1.0 automorphism rewrite
+([[project_rdfc_automorphism_gap]]); `RdfCanonicalizer.HashNDegreeQuads` mis-canonicalizes automorphic blank nodes,
+so the produced report's 27 results disagree by blank-node labelling with the expected 218-quad report. Then the 3
+deferred raw-string cleanups (⏸ below). After that the correctness harness is complete and the large-graph
+**performance rework** (Layer-2 columnar `TermId` rows + hash/merge join + SIMD; [[project_scale_performance_target]])
+opens — see `docs/decisions/sparql-join-and-triple-term-matching.md`. Smaller follow-ups the dataset slice left open:
+wire in-query `FROM`/`FROM NAMED` (the parsed `DatasetClause`, currently ignored) into the translator/runtime
+dataset; and thread a shapes graph through `ShaclPipelineDataState` so `$shapesGraph` works via the production
+pipeline (only the W3C runner supplies it today).
 
 ✅ **WCOJ INDEPENDENT-LEADING-VARIABLE FIX (2026-05-31, `123c017`): eval reds 3 → 2.** A second manifestation of the
 cross-product collapse (sibling of `d891fc4`): `ReseedIndependentIterators` (Core `BasicGraphPatternEvaluator`)

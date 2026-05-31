@@ -530,13 +530,13 @@ internal sealed class SparqlQueryEngineTests
         Assert.Contains(s => ValueIri(s, "s") == Ex + "a" && ValueIri(s, "o") == Ex + "a", solutions, "Expected the reflexive a→a pair.");
     }
 
-    /// <summary>An operator outside the supported set (here a GRAPH named-graph block) is refused with a descriptive exception.</summary>
+    /// <summary>An operator outside the supported set (here a SERVICE remote-endpoint block) is refused with a descriptive exception.</summary>
     [TestMethod]
     public async Task UnsupportedOperatorIsRefused()
     {
         SparqlQueryEngine engine = await BuildEngineAsync(("alice", "p", "bob")).ConfigureAwait(false);
         using Utf8StringPool pool = new();
-        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { GRAPH ?g { ?s :p ?o } }", pool);
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { SERVICE <http://example.org/sparql> { ?s :p ?o } }", pool);
 
         NotSupportedException? caught = null;
         try
@@ -549,6 +549,56 @@ internal sealed class SparqlQueryEngineTests
         }
 
         Assert.IsNotNull(caught);
+    }
+
+    /// <summary>A constant <c>GRAPH &lt;iri&gt;</c> queries exactly that named graph — never the default graph or a sibling named graph.</summary>
+    [TestMethod]
+    public async Task GraphWithConstantIriQueriesThatNamedGraph()
+    {
+        SparqlQueryEngine engine = await DatasetEngineAsync(
+            [new DataTriple(Iri("d"), Iri("p"), Iri("default"))],
+            ("g1", new DataTriple(Iri("s"), Iri("p"), Iri("one"))),
+            ("g2", new DataTriple(Iri("s"), Iri("p"), Iri("two")))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?o WHERE { GRAPH :g1 { ?s :p ?o } }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(Ex + "one", ValueIri(solutions.Single(), "o"));
+    }
+
+    /// <summary>A variable <c>GRAPH ?g</c> ranges over every named graph (never the default), binding <c>?g</c> to each graph's name and unioning the per-graph matches.</summary>
+    [TestMethod]
+    public async Task GraphWithVariableBindsGraphNameAndRangesOverNamedGraphs()
+    {
+        SparqlQueryEngine engine = await DatasetEngineAsync(
+            [new DataTriple(Iri("d"), Iri("p"), Iri("default"))],
+            ("g1", new DataTriple(Iri("s"), Iri("p"), Iri("one"))),
+            ("g2", new DataTriple(Iri("s"), Iri("p"), Iri("two")))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?g ?o WHERE { GRAPH ?g { ?s :p ?o } }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //One row per named graph; the default graph's :default triple is excluded, and ?g binds each graph name.
+        Assert.HasCount(2, solutions);
+        Assert.Contains(s => ValueIri(s, "g") == Ex + "g1" && ValueIri(s, "o") == Ex + "one", solutions, "Expected the g1 row.");
+        Assert.Contains(s => ValueIri(s, "g") == Ex + "g2" && ValueIri(s, "o") == Ex + "two", solutions, "Expected the g2 row.");
+    }
+
+    /// <summary>A constant <c>GRAPH</c> naming an IRI that is not a named graph in the dataset contributes no solutions (it does not fall back to the default graph).</summary>
+    [TestMethod]
+    public async Task GraphWithIriNotInDatasetYieldsNoSolutions()
+    {
+        SparqlQueryEngine engine = await DatasetEngineAsync(
+            [new DataTriple(Iri("s"), Iri("p"), Iri("default"))],
+            ("g1", new DataTriple(Iri("s"), Iri("p"), Iri("one")))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?o WHERE { GRAPH :missing { ?s :p ?o } }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.IsEmpty(solutions);
     }
 
     /// <summary>CONCAT joins its string arguments' lexical forms.</summary>
@@ -887,6 +937,21 @@ internal sealed class SparqlQueryEngineTests
     private async Task<SparqlQueryEngine> EngineFromAsync(params DataTriple[] triples)
     {
         return await SparqlQueryEngine.BuildAsync(triples, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Builds an engine over a dataset: a default graph plus named graphs, each named by an example-namespace IRI local name.</summary>
+    /// <param name="defaultGraph">The default-graph triples.</param>
+    /// <param name="namedGraphs">The named graphs, each a graph-name local name paired with its triples.</param>
+    /// <returns>An engine over the dataset.</returns>
+    private async Task<SparqlQueryEngine> DatasetEngineAsync(IEnumerable<DataTriple> defaultGraph, params (string GraphName, DataTriple Triple)[] namedGraphs)
+    {
+        List<(RdfTerm Name, IEnumerable<DataTriple> Triples)> named = new(namedGraphs.Length);
+        foreach((string graphName, DataTriple triple) in namedGraphs)
+        {
+            named.Add((Iri(graphName), new[] { triple }));
+        }
+
+        return await SparqlQueryEngine.BuildDatasetAsync(defaultGraph, named, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Builds an engine over a data graph given as Turtle text (parsed through the production reader, so RDF-1.2 reification/triple-term sugar lowers exactly as in the conformance harness).</summary>

@@ -64,6 +64,23 @@ public sealed record ValidationContext
     /// </summary>
     public required GraphMatchOps DataMatchOps { get; init; }
 
+    /// <summary>
+    /// Match-op bundle against the shapes graph, made available to
+    /// SPARQL-based constraints as the named graph their
+    /// <c>$shapesGraph</c> variable designates (SHACL-SPARQL §5.2.1).
+    /// <c>null</c> when the run supplies no shapes graph — a validation
+    /// with no SPARQL constraint never queries it, and a SPARQL
+    /// constraint that does will simply not match (under-validate).
+    /// </summary>
+    public GraphMatchOps? ShapesGraphMatchOps { get; init; }
+
+    /// <summary>
+    /// The IRI naming the shapes graph: pre-bound to <c>$shapesGraph</c>
+    /// and used as the key of the shapes named graph in the SPARQL
+    /// dataset. <c>null</c> when <see cref="ShapesGraphMatchOps"/> is.
+    /// </summary>
+    public RdfTerm? ShapesGraphIri { get; init; }
+
     /// <summary>The loaded shape registry.</summary>
     public required ShapeRegistry Shapes { get; init; }
 

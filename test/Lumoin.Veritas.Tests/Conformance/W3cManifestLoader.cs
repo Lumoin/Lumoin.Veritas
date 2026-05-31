@@ -456,9 +456,9 @@ internal static class W3cManifestLoader
     /// or unresolvable.
     /// </summary>
     /// <remarks>
-    /// A test with <c>qt:graphData</c> (named-graph data) is still built — its default-graph data and expected
-    /// result resolve normally — and the runner decides whether it can execute it; this loader does not yet thread
-    /// named-graph files through, so such a test runs against its default graph only.
+    /// A test with <c>qt:graphData</c> (named-graph data) carries each named-graph file through
+    /// <see cref="W3cTestCase.GraphDataPaths"/>; the runner loads each as a named graph keyed by its own file IRI,
+    /// which is the IRI a query's <c>GRAPH &lt;file&gt;</c> (or projected <c>?g</c>) resolves to.
     /// </remarks>
     /// <param name="entry">The test entry subject key.</param>
     /// <param name="properties">The entry subject's quads.</param>
@@ -502,6 +502,20 @@ internal static class W3cManifestLoader
         string? resultTerm = FindObject(properties, MfNamespace + "result");
         string? expectedPath = resultTerm is null ? null : ResolveSiblingPath(resultTerm, manifestUri);
 
+        //Each qt:graphData is one named graph; its file resolves like qt:data, and the runner keys it by its own
+        //file IRI (the IRI a query's GRAPH <file> resolves to).
+        List<string> graphDataPaths = [];
+        if(actionProperties is not null)
+        {
+            foreach(string graphDataTerm in FindObjects(actionProperties, QtNamespace + "graphData"))
+            {
+                if(ResolveSiblingPath(graphDataTerm, manifestUri) is string graphDataPath)
+                {
+                    graphDataPaths.Add(graphDataPath);
+                }
+            }
+        }
+
         Uri testUri = TryBuildAbsoluteUri(entry) ?? new Uri(manifestUri, "#" + entry);
 
         return new W3cTestCase(
@@ -513,7 +527,8 @@ internal static class W3cManifestLoader
             InputPath: queryPath,
             ExpectedPath: expectedPath,
             OriginManifest: originManifest,
-            QueryDataPath: dataPath);
+            QueryDataPath: dataPath,
+            GraphDataPaths: graphDataPaths);
     }
 
     private static ImmutableArray<string> ResolveIncludesToPaths(List<string> rawIncludes, Uri manifestUri)

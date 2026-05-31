@@ -91,15 +91,17 @@ internal static class W3cSparqlEvalRunner
         }
 
         List<DataTriple> data;
+        List<(RdfTerm Name, IEnumerable<DataTriple> Triples)> namedGraphs;
         try
         {
             data = await LoadDataAsync(testCase.QueryDataPath, cancellationToken).ConfigureAwait(false);
+            namedGraphs = await LoadNamedGraphsAsync(testCase.GraphDataPaths, cancellationToken).ConfigureAwait(false);
         }
         catch(InvalidOperationException ex)
         {
-            //The data graph is in a format this harness cannot read (RDF/XML, TriG/named graphs) or is malformed:
+            //A graph (default or named) is in a format this harness cannot read (RDF/XML, TriG) or is malformed:
             //the test cannot be set up, so it is skipped structurally rather than reported as an engine failure.
-            return new W3cOutcome(W3cOutcomeStatus.Skipped, $"Could not load the data graph (unsupported format or malformed): {ex.Message}");
+            return new W3cOutcome(W3cOutcomeStatus.Skipped, $"Could not load a graph (unsupported format or malformed): {ex.Message}");
         }
 
         SparqlResultSet actual;
@@ -111,7 +113,12 @@ internal static class W3cSparqlEvalRunner
                 ? bases[^1].Iri.Value
                 : Utf8String.FromString(new Uri(IoPath.GetFullPath(testCase.InputPath)).AbsoluteUri);
             SparqlExpressionContext context = SparqlExpressionContext.CreateDefault().WithBaseIri(baseIri);
-            SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(data, context, cancellationToken).ConfigureAwait(false);
+
+            //A test with qt:graphData evaluates against a dataset (default graph + named graphs); otherwise the
+            //single default graph. GRAPH forms resolve their designator against the same file-URL space.
+            SparqlQueryEngine engine = namedGraphs.Count == 0
+                ? await SparqlQueryEngine.BuildAsync(data, context, cancellationToken).ConfigureAwait(false)
+                : await SparqlQueryEngine.BuildDatasetAsync(data, namedGraphs, context, cancellationToken).ConfigureAwait(false);
             SparqlQuery normalized = (SparqlQuery)new SparqlNormalizer(pool).Normalize(query);
             AlgebraOperator algebra = SparqlTranslator.Translate(normalized);
             IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, cancellationToken).ConfigureAwait(false);
@@ -228,6 +235,29 @@ internal static class W3cSparqlEvalRunner
         }
 
         return data;
+    }
+
+    /// <summary>Loads each <c>qt:graphData</c> named-graph file, keyed by its own file IRI — the IRI a query's <c>GRAPH &lt;file&gt;</c> (or projected graph variable) resolves to.</summary>
+    /// <param name="graphDataPaths">The named-graph data files, or <see langword="null"/>/empty when the test declares none.</param>
+    /// <param name="cancellationToken">A token to cancel reading.</param>
+    /// <returns>The named graphs as (graph-name, triples) pairs.</returns>
+    /// <exception cref="InvalidOperationException">A named-graph file did not parse.</exception>
+    private static async Task<List<(RdfTerm Name, IEnumerable<DataTriple> Triples)>> LoadNamedGraphsAsync(IReadOnlyList<string>? graphDataPaths, CancellationToken cancellationToken)
+    {
+        List<(RdfTerm Name, IEnumerable<DataTriple> Triples)> namedGraphs = [];
+        if(graphDataPaths is null)
+        {
+            return namedGraphs;
+        }
+
+        foreach(string path in graphDataPaths)
+        {
+            RdfTerm name = new NamedNode(Utf8String.FromString(new Uri(IoPath.GetFullPath(path)).AbsoluteUri));
+            List<DataTriple> triples = await LoadDataAsync(path, cancellationToken).ConfigureAwait(false);
+            namedGraphs.Add((name, triples));
+        }
+
+        return namedGraphs;
     }
 
     /// <summary>Describes the first error-severity diagnostic for a failure message.</summary>

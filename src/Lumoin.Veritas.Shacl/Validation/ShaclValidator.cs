@@ -100,6 +100,8 @@ public static class ShaclValidator
     /// </param>
     /// <param name="evaluators">The evaluator registry.</param>
     /// <param name="timeProvider">Clock used to stamp Ticks on emitted trace events. Pass <see cref="TimeProvider.System"/> in production; tests pinning trace timing pass a <c>FakeTimeProvider</c>.</param>
+    /// <param name="shapesGraphMatchOps">Match-op bundle over the shapes graph, exposed to SPARQL constraints as the named graph their <c>$shapesGraph</c> designates; <c>null</c> to omit it (a validation with no SPARQL constraint never queries it).</param>
+    /// <param name="shapesGraphIri">The IRI naming the shapes graph (pre-bound to <c>$shapesGraph</c>); <c>null</c> when <paramref name="shapesGraphMatchOps"/> is.</param>
     /// <param name="options">Tuning options; <c>null</c> uses <see cref="ShaclValidatorOptions.Default"/>.</param>
     /// <param name="cancellationToken">Cancellation.</param>
     /// <returns>A populated <see cref="ValidationReport"/>.</returns>
@@ -110,6 +112,8 @@ public static class ShaclValidator
         TermDictionary dictionary,
         ConstraintEvaluatorRegistry evaluators,
         TimeProvider timeProvider,
+        GraphMatchOps? shapesGraphMatchOps = null,
+        RdfTerm? shapesGraphIri = null,
         ShaclValidatorOptions? options = null,
         CancellationToken cancellationToken = default)
     {
@@ -124,7 +128,7 @@ public static class ShaclValidator
         bool conforms = true;
 
         await foreach(ValidationResult result in ValidateStreamAsync(
-            shapes, dataMatchOps, dictionary, evaluators, timeProvider, effectiveOptions, cancellationToken).ConfigureAwait(false))
+            shapes, dataMatchOps, dictionary, evaluators, timeProvider, shapesGraphMatchOps, shapesGraphIri, effectiveOptions, cancellationToken).ConfigureAwait(false))
         {
             //Cap stops collection (and, with it, the conformance scan) once
             //MaxResults is reached — matching the documented "diagnose the
@@ -165,6 +169,8 @@ public static class ShaclValidator
     /// <param name="dictionary">The term dictionary shared by the shape graph and the data graph.</param>
     /// <param name="evaluators">The evaluator registry.</param>
     /// <param name="timeProvider">Clock used to stamp Ticks on emitted trace events.</param>
+    /// <param name="shapesGraphMatchOps">Match-op bundle over the shapes graph, exposed to SPARQL constraints as the named graph their <c>$shapesGraph</c> designates; <c>null</c> to omit it.</param>
+    /// <param name="shapesGraphIri">The IRI naming the shapes graph (pre-bound to <c>$shapesGraph</c>); <c>null</c> when <paramref name="shapesGraphMatchOps"/> is.</param>
     /// <param name="options">Tuning options; <c>null</c> uses <see cref="ShaclValidatorOptions.Default"/>.</param>
     /// <param name="cancellationToken">Cancellation.</param>
     /// <returns>The validation results, streamed.</returns>
@@ -175,6 +181,8 @@ public static class ShaclValidator
         TermDictionary dictionary,
         ConstraintEvaluatorRegistry evaluators,
         TimeProvider timeProvider,
+        GraphMatchOps? shapesGraphMatchOps = null,
+        RdfTerm? shapesGraphIri = null,
         ShaclValidatorOptions? options = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -216,6 +224,8 @@ public static class ShaclValidator
         runState.Context = new ValidationContext
         {
             DataMatchOps = dataMatchOps,
+            ShapesGraphMatchOps = shapesGraphMatchOps,
+            ShapesGraphIri = shapesGraphIri,
             Shapes = shapes,
             Dictionary = dictionary,
             Options = effectiveOptions,

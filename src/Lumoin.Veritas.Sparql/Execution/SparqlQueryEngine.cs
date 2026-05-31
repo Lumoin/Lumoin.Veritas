@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Globalization;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
@@ -67,25 +68,35 @@ public sealed class SparqlQueryEngine
     /// <summary>The <c>false</c> boolean literal an <c>EXISTS</c> rewrites to once resolved.</summary>
     private static Literal BooleanFalse { get; } = new(Utf8String.FromString("false"), XsdBooleanType);
 
-    private readonly HypertrieGraphStore store;
+    private readonly SparqlDataset dataset;
 
     private readonly TermDictionary dictionary;
 
     private readonly SparqlExpressionContext expressionContext;
 
-    /// <summary>Constructs an engine over an already-built store and the term dictionary that encoded it.</summary>
-    /// <param name="store">The hypertrie store holding the data graph.</param>
-    /// <param name="dictionary">The term dictionary that encoded <paramref name="store"/>; query constants are resolved against it.</param>
+    /// <summary>Constructs an engine over an already-built dataset (default graph + named graphs) and the term dictionary that encoded it.</summary>
+    /// <param name="dataset">The dataset the query evaluates against; its graphs are all encoded by <paramref name="dictionary"/>.</param>
+    /// <param name="dictionary">The term dictionary that encoded <paramref name="dataset"/>; query constants are resolved against it.</param>
     /// <param name="expressionContext">The seams (randomness, digests, the query timestamp) the non-pure expression functions consume; <see langword="null"/> uses <see cref="SparqlExpressionContext.CreateDefault"/>.</param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public SparqlQueryEngine(HypertrieGraphStore store, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null)
+    public SparqlQueryEngine(SparqlDataset dataset, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null)
     {
-        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(dataset);
         ArgumentNullException.ThrowIfNull(dictionary);
 
-        this.store = store;
+        this.dataset = dataset;
         this.dictionary = dictionary;
         this.expressionContext = expressionContext ?? SparqlExpressionContext.CreateDefault();
+    }
+
+    /// <summary>Constructs an engine over a single default graph and no named graphs — the common case where the query has no <c>GRAPH</c> form.</summary>
+    /// <param name="store">The hypertrie store holding the default graph.</param>
+    /// <param name="dictionary">The term dictionary that encoded <paramref name="store"/>; query constants are resolved against it.</param>
+    /// <param name="expressionContext">The seams the non-pure expression functions consume; <see langword="null"/> uses <see cref="SparqlExpressionContext.CreateDefault"/>.</param>
+    /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
+    public SparqlQueryEngine(HypertrieGraphStore store, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null)
+        : this(SparqlDataset.FromDefaultGraph(store), dictionary, expressionContext)
+    {
     }
 
     /// <summary>
@@ -102,6 +113,51 @@ public sealed class SparqlQueryEngine
         ArgumentNullException.ThrowIfNull(triples);
 
         TermDictionary dictionary = new();
+        HypertrieGraphStore store = await EncodeGraphAsync(triples, dictionary, cancellationToken).ConfigureAwait(false);
+
+        return new SparqlQueryEngine(store, dictionary, expressionContext);
+    }
+
+    /// <summary>
+    /// Builds an engine over a dataset: a default graph plus the given named graphs, every graph encoded into one
+    /// shared term dictionary so a term id denotes the same term across graphs (a <c>GRAPH</c> form then selects
+    /// which graph's store the enclosed pattern queries).
+    /// </summary>
+    /// <param name="defaultGraph">The default-graph triples.</param>
+    /// <param name="namedGraphs">The named graphs, each its graph-name term paired with its triples.</param>
+    /// <param name="expressionContext">The seams the non-pure expression functions consume; <see langword="null"/> uses <see cref="SparqlExpressionContext.CreateDefault"/>.</param>
+    /// <param name="cancellationToken">A token that aborts the build.</param>
+    /// <returns>An engine ready to evaluate queries against the dataset.</returns>
+    /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
+    public static async ValueTask<SparqlQueryEngine> BuildDatasetAsync(
+        IEnumerable<DataTriple> defaultGraph,
+        IReadOnlyList<(RdfTerm Name, IEnumerable<DataTriple> Triples)> namedGraphs,
+        SparqlExpressionContext? expressionContext = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(defaultGraph);
+        ArgumentNullException.ThrowIfNull(namedGraphs);
+
+        TermDictionary dictionary = new();
+        HypertrieGraphStore defaultStore = await EncodeGraphAsync(defaultGraph, dictionary, cancellationToken).ConfigureAwait(false);
+
+        Dictionary<TermId, HypertrieGraphStore> named = new(namedGraphs.Count);
+        foreach((RdfTerm name, IEnumerable<DataTriple> triples) in namedGraphs)
+        {
+            TermId graphName = dictionary.GetOrAdd(name);
+            named[graphName] = await EncodeGraphAsync(triples, dictionary, cancellationToken).ConfigureAwait(false);
+        }
+
+        return new SparqlQueryEngine(new SparqlDataset(defaultStore, named), dictionary, expressionContext);
+    }
+
+    /// <summary>Encodes a graph's triples into <paramref name="dictionary"/> and indexes them into a fresh hypertrie store.</summary>
+    /// <param name="triples">The graph's triples.</param>
+    /// <param name="dictionary">The shared term dictionary every graph in the dataset encodes into.</param>
+    /// <param name="cancellationToken">A token that aborts the build.</param>
+    /// <returns>The indexed graph store.</returns>
+    private static async ValueTask<HypertrieGraphStore> EncodeGraphAsync(IEnumerable<DataTriple> triples, TermDictionary dictionary, CancellationToken cancellationToken)
+    {
         List<EncodedTriple> encoded = [];
         foreach(DataTriple triple in triples)
         {
@@ -111,9 +167,7 @@ public sealed class SparqlQueryEngine
             encoded.Add(EncodedTriple.FromEncoded(subject, predicate, @object));
         }
 
-        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(encoded, VeritasHashing.Default, cancellationToken).ConfigureAwait(false);
-
-        return new SparqlQueryEngine(store, dictionary, expressionContext);
+        return await HypertrieGraphStore.BuildAsync(encoded, VeritasHashing.Default, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -129,25 +183,53 @@ public sealed class SparqlQueryEngine
     {
         ArgumentNullException.ThrowIfNull(algebra);
 
+        return await EvaluateInGraphAsync(algebra, TermId.None, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Evaluates an algebra tree against a designated active graph: <see cref="TermId.None"/> for the dataset's
+    /// default graph, or a named graph's term id inside a <c>GRAPH</c> form. <c>EXISTS</c> re-enters here
+    /// with the enclosing active graph so a sub-pattern queries the same graph as its surrounding pattern.
+    /// </summary>
+    /// <param name="algebra">The algebra to evaluate.</param>
+    /// <param name="activeGraph">The active graph the basic patterns query, or <see cref="TermId.None"/> for the default graph.</param>
+    /// <param name="cancellationToken">A token that aborts evaluation.</param>
+    /// <returns>The materialized solution sequence.</returns>
+    /// <exception cref="NotSupportedException">The algebra uses an operator this slice does not yet execute.</exception>
+    private async ValueTask<IReadOnlyList<SparqlSolution>> EvaluateInGraphAsync(AlgebraOperator algebra, TermId activeGraph, CancellationToken cancellationToken)
+    {
         GuardSupported(algebra);
 
         //Two-phase expand/combine over an explicit stack (no recursion): each operator's children are evaluated
-        //and recorded before the operator combines them. Results are keyed by reference — a parsed algebra is a
-        //tree, so each operator instance appears exactly once as a key.
-        Dictionary<AlgebraOperator, IReadOnlyList<SparqlSolution>> results = new(ReferenceEqualityComparer.Instance);
-        Stack<(AlgebraOperator Node, bool Combine)> work = new();
-        work.Push((algebra, Combine: false));
+        //and recorded before the operator combines them. Results are keyed by (operator reference, active graph) —
+        //a parsed algebra is a tree (so each operator instance appears once per graph), and a GRAPH form
+        //re-evaluates the SAME sub-tree under a different active graph, so the graph is part of the key.
+        Dictionary<ResultKey, IReadOnlyList<SparqlSolution>> results = new(ResultKeyComparer.Instance);
+        Stack<(AlgebraOperator Node, TermId Graph, bool Combine)> work = new();
+        work.Push((algebra, activeGraph, Combine: false));
 
         while(work.Count > 0)
         {
-            (AlgebraOperator node, bool combine) = work.Pop();
+            (AlgebraOperator node, TermId graph, bool combine) = work.Pop();
             if(combine)
             {
-                //The expression-gated operators may carry EXISTS/NOT EXISTS, whose evaluation re-enters the engine
-                //(async), so they take the async path; every other operator combines synchronously.
-                results[node] = node is Filter or Extend or LeftJoin
-                    ? await CombineExpressionOperatorAsync(node, results, cancellationToken).ConfigureAwait(false)
-                    : Combine(node, results, expressionContext);
+                //A GRAPH form gathers its child's per-graph results; the expression-gated operators may carry
+                //EXISTS/NOT EXISTS, whose evaluation re-enters the engine (async), so they take the async path;
+                //every other operator combines synchronously.
+                results[new ResultKey(node, graph)] = node switch
+                {
+                    Graph graphNode => CombineGraph(graphNode, graph, results),
+                    Filter or Extend or LeftJoin => await CombineExpressionOperatorAsync(node, graph, results, cancellationToken).ConfigureAwait(false),
+                    _ => Combine(node, graph, results, expressionContext)
+                };
+
+                continue;
+            }
+
+            //A GRAPH form re-roots its child under the named graph(s) it designates, never the enclosing graph.
+            if(node is Graph graphOperator)
+            {
+                ExpandGraph(graphOperator, graph, work);
 
                 continue;
             }
@@ -155,32 +237,170 @@ public sealed class SparqlQueryEngine
             IReadOnlyList<AlgebraOperator> children = node.Children;
             if(children.Count == 0)
             {
-                results[node] = await EvaluateLeafAsync(node, cancellationToken).ConfigureAwait(false);
+                results[new ResultKey(node, graph)] = await EvaluateLeafAsync(node, graph, cancellationToken).ConfigureAwait(false);
             }
             else
             {
-                work.Push((node, Combine: true));
+                work.Push((node, graph, Combine: true));
                 for(int i = children.Count - 1; i >= 0; i--)
                 {
-                    work.Push((children[i], Combine: false));
+                    work.Push((children[i], graph, Combine: false));
                 }
             }
         }
 
-        return results[algebra];
+        return results[new ResultKey(algebra, activeGraph)];
     }
 
-    /// <summary>Evaluates a leaf operator (one with no algebra children): a <see cref="Bgp"/> against the store, or the <see cref="UnitTable"/> identity.</summary>
-    /// <param name="op">The leaf operator.</param>
-    /// <param name="cancellationToken">A token that aborts evaluation.</param>
-    /// <returns>The leaf's solution sequence.</returns>
-    private async ValueTask<IReadOnlyList<SparqlSolution>> EvaluateLeafAsync(AlgebraOperator op, CancellationToken cancellationToken)
+    /// <summary>
+    /// Expands a <c>GRAPH</c> form onto the work stack (no recursion): a constant designator re-roots the child
+    /// under that one named graph (and is skipped entirely when the dataset has no such graph), while a variable
+    /// designator re-roots a copy of the child under EACH named graph, so the combine can union them and bind the
+    /// graph variable per branch.
+    /// </summary>
+    /// <param name="graphOperator">The GRAPH operator.</param>
+    /// <param name="enclosingGraph">The active graph the GRAPH form itself sits in (its combine records under this key).</param>
+    /// <param name="work">The work stack to push expansion entries onto.</param>
+    private void ExpandGraph(Graph graphOperator, TermId enclosingGraph, Stack<(AlgebraOperator Node, TermId Graph, bool Combine)> work)
     {
-        if(op is Bgp bgp)
+        work.Push((graphOperator, enclosingGraph, Combine: true));
+        switch(graphOperator.Designator)
         {
-            return await EvaluateBgpAsync(bgp, cancellationToken).ConfigureAwait(false);
+            case GraphIriTerm iri:
+            {
+                //A constant GRAPH ranges over exactly one named graph; descend only when the dataset has it, so a
+                //GRAPH naming an absent graph (or a non-named-graph IRI) contributes nothing — never the default.
+                TermId graphName = GraphNameOf(iri);
+                if(dataset.TryGetNamedGraph(graphName, out _))
+                {
+                    work.Push((graphOperator.Input, graphName, Combine: false));
+                }
+
+                break;
+            }
+
+            case GraphVariableTerm:
+            {
+                foreach(TermId name in dataset.GraphNames)
+                {
+                    work.Push((graphOperator.Input, name, Combine: false));
+                }
+
+                break;
+            }
+
+            default:
+            {
+                throw new InvalidOperationException($"Unexpected GRAPH designator '{graphOperator.Designator.GetType().Name}'.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Combines a <c>GRAPH</c> form (§18.2.2.7): a constant designator returns its child's solutions in the named
+    /// graph unchanged (or empty when the graph is absent); a variable designator unions, over every named graph,
+    /// the child's solutions joined with the single binding of the graph variable to that graph's name.
+    /// </summary>
+    /// <param name="graphOperator">The GRAPH operator.</param>
+    /// <param name="enclosingGraph">The active graph the GRAPH form sits in (unused for the result, kept for symmetry with the key).</param>
+    /// <param name="results">The per-(operator, graph) result map the child's branches were recorded in.</param>
+    /// <returns>The GRAPH form's solution sequence.</returns>
+    private IReadOnlyList<SparqlSolution> CombineGraph(Graph graphOperator, TermId enclosingGraph, Dictionary<ResultKey, IReadOnlyList<SparqlSolution>> results)
+    {
+        _ = enclosingGraph;
+        switch(graphOperator.Designator)
+        {
+            case GraphIriTerm iri:
+            {
+                TermId graphName = GraphNameOf(iri);
+
+                return dataset.TryGetNamedGraph(graphName, out _) ? results[new ResultKey(graphOperator.Input, graphName)] : [];
+            }
+
+            case GraphVariableTerm variableTerm:
+            {
+                List<SparqlSolution> all = [];
+                foreach(TermId name in dataset.GraphNames)
+                {
+                    RdfTerm graphTerm = dictionary.Resolve(name);
+                    foreach(SparqlSolution inner in results[new ResultKey(graphOperator.Input, name)])
+                    {
+                        //§18.2.2.7 Graph(var, P): eval(P, g) joined with { (var, g) }. A solution already binding the
+                        //variable survives only when it equals this graph's name; otherwise the variable binds to it.
+                        if(inner.TryGetValue(variableTerm.Variable, out RdfTerm existing))
+                        {
+                            if(existing.Equals(graphTerm))
+                            {
+                                all.Add(inner);
+                            }
+
+                            continue;
+                        }
+
+                        List<SparqlBinding> bindings = new(inner.Bindings.Count + 1);
+                        bindings.AddRange(inner.Bindings);
+                        bindings.Add(new SparqlBinding(variableTerm.Variable, graphTerm));
+                        all.Add(new SparqlSolution(bindings));
+                    }
+                }
+
+                return all;
+            }
+
+            default:
+            {
+                throw new InvalidOperationException($"Unexpected GRAPH designator '{graphOperator.Designator.GetType().Name}'.");
+            }
+        }
+    }
+
+    /// <summary>Resolves a constant <c>GRAPH</c> designator's (already-absolute) IRI to its term id, or <see cref="TermId.None"/> when absent from the dictionary.</summary>
+    /// <param name="iri">The constant graph designator.</param>
+    /// <returns>The graph-name term id, or <see cref="TermId.None"/>.</returns>
+    private TermId GraphNameOf(GraphIriTerm iri)
+    {
+        return dictionary.GetIdOrDefault(new NamedNode(iri.Iri.Value));
+    }
+
+    /// <summary>The key identifying one operator's solution sequence under one active graph in the per-evaluation result map.</summary>
+    /// <param name="Node">The algebra operator (compared by reference).</param>
+    /// <param name="Graph">The active graph the operator was evaluated under.</param>
+    private readonly record struct ResultKey(AlgebraOperator Node, TermId Graph);
+
+    /// <summary>Equality over <see cref="ResultKey"/> by operator reference identity and active-graph value — algebra records have value equality, so reference identity is required to keep distinct instances apart.</summary>
+    private sealed class ResultKeyComparer : IEqualityComparer<ResultKey>
+    {
+        /// <summary>The shared comparer instance.</summary>
+        public static ResultKeyComparer Instance { get; } = new();
+
+        /// <summary>Returns whether two keys share an operator instance and an active graph.</summary>
+        /// <param name="x">The first key.</param>
+        /// <param name="y">The second key.</param>
+        /// <returns><see langword="true"/> when both refer to the same operator instance under the same graph.</returns>
+        public bool Equals(ResultKey x, ResultKey y)
+        {
+            return ReferenceEquals(x.Node, y.Node) && x.Graph.Equals(y.Graph);
         }
 
+        /// <summary>Computes a reference-identity hash of the operator combined with the active-graph hash.</summary>
+        /// <param name="key">The key to hash.</param>
+        /// <returns>The hash code.</returns>
+        public int GetHashCode(ResultKey key)
+        {
+            return HashCode.Combine(RuntimeHelpers.GetHashCode(key.Node), key.Graph);
+        }
+    }
+
+    /// <summary>Evaluates a leaf operator (one with no algebra children) against the active graph: a <see cref="Bgp"/> or property-path <see cref="Path"/> against that graph's store, the inline <see cref="Table"/>, or the <see cref="UnitTable"/> identity.</summary>
+    /// <param name="op">The leaf operator.</param>
+    /// <param name="graph">The active graph, or <see cref="TermId.None"/> for the default graph.</param>
+    /// <param name="cancellationToken">A token that aborts evaluation.</param>
+    /// <returns>The leaf's solution sequence.</returns>
+    private async ValueTask<IReadOnlyList<SparqlSolution>> EvaluateLeafAsync(AlgebraOperator op, TermId graph, CancellationToken cancellationToken)
+    {
+        //UnitTable / inline VALUES are graph-independent; the graph-querying leaves resolve the active graph's
+        //store. The store is non-null by construction: the default graph always resolves, and a GRAPH form only
+        //descends into a named graph that exists (ExpandGraph), so an absent named graph never reaches here.
         if(op is UnitTable)
         {
             return SingleEmptySolution;
@@ -191,52 +411,62 @@ public sealed class SparqlQueryEngine
             return BuildTableSolutions(table.Data);
         }
 
+        HypertrieGraphStore graphStore = dataset.Resolve(graph)
+            ?? throw new InvalidOperationException($"Active graph '{graph.Encoded}' is not in the dataset; the GRAPH expansion should not have descended into it.");
+
+        if(op is Bgp bgp)
+        {
+            return await EvaluateBgpAsync(bgp, graphStore, cancellationToken).ConfigureAwait(false);
+        }
+
         if(op is Path pathOperator)
         {
-            return await EvaluatePathAsync(pathOperator, cancellationToken).ConfigureAwait(false);
+            return await EvaluatePathAsync(pathOperator, graphStore, cancellationToken).ConfigureAwait(false);
         }
 
         //The supported-operator guard runs first, so any other leaf reaching here is an executor bug, not input.
         throw new InvalidOperationException($"Leaf operator '{op.GetType().Name}' has no evaluation rule in the executor.");
     }
 
-    /// <summary>Combines an operator's already-evaluated child sequences (read from <paramref name="results"/>) into its own sequence.</summary>
+    /// <summary>Combines an operator's already-evaluated child sequences (read from <paramref name="results"/> under the same active graph) into its own sequence.</summary>
     /// <param name="op">The operator to combine.</param>
-    /// <param name="results">The map of already-evaluated operators to their solution sequences.</param>
+    /// <param name="graph">The active graph the operator and its children were evaluated under.</param>
+    /// <param name="results">The map of already-evaluated (operator, graph) keys to their solution sequences.</param>
     /// <param name="context">The seams the expression-gated operators' non-pure functions consume.</param>
     /// <returns>The operator's solution sequence.</returns>
-    private static IReadOnlyList<SparqlSolution> Combine(AlgebraOperator op, Dictionary<AlgebraOperator, IReadOnlyList<SparqlSolution>> results, SparqlExpressionContext context)
+    private static IReadOnlyList<SparqlSolution> Combine(AlgebraOperator op, TermId graph, Dictionary<ResultKey, IReadOnlyList<SparqlSolution>> results, SparqlExpressionContext context)
     {
         return op switch
         {
-            Project project => ApplyProject(project, results[project.Input]),
-            Distinct distinct => ApplyDistinct(results[distinct.Input]),
+            Project project => ApplyProject(project, results[new ResultKey(project.Input, graph)]),
+            Distinct distinct => ApplyDistinct(results[new ResultKey(distinct.Input, graph)]),
 
             //REDUCED permits but does not require duplicate elimination; passing the sequence through is conformant.
-            Reduced reduced => results[reduced.Input],
-            Slice slice => ApplySlice(slice, results[slice.Input]),
-            Join join => JoinSolutions(results[join.Left], results[join.Right]),
-            Union union => UnionSolutions(results[union.Left], results[union.Right]),
-            Minus minus => MinusSolutions(results[minus.Left], results[minus.Right]),
-            OrderBy orderBy => ApplyOrderBy(orderBy, results[orderBy.Input], context),
+            Reduced reduced => results[new ResultKey(reduced.Input, graph)],
+            Slice slice => ApplySlice(slice, results[new ResultKey(slice.Input, graph)]),
+            Join join => JoinSolutions(results[new ResultKey(join.Left, graph)], results[new ResultKey(join.Right, graph)]),
+            Union union => UnionSolutions(results[new ResultKey(union.Left, graph)], results[new ResultKey(union.Right, graph)]),
+            Minus minus => MinusSolutions(results[new ResultKey(minus.Left, graph)], results[new ResultKey(minus.Right, graph)]),
+            OrderBy orderBy => ApplyOrderBy(orderBy, results[new ResultKey(orderBy.Input, graph)], context),
 
             //ToMultiSet / ToList are multiset / sequence conversions; with no ORDER BY in scope they pass through.
-            ToMultiSet toMultiSet => results[toMultiSet.Input],
-            ToList toList => results[toList.Input],
+            ToMultiSet toMultiSet => results[new ResultKey(toMultiSet.Input, graph)],
+            ToList toList => results[new ResultKey(toList.Input, graph)],
 
             //Group leaves the multiset unchanged here; the partitioning into groups happens in the AggregateJoin
             //that wraps it (which reads the Group's keys directly).
-            Group group => results[group.Input],
-            AggregateJoin aggregateJoin => EvaluateAggregateJoin(aggregateJoin, results[aggregateJoin.Input], context),
+            Group group => results[new ResultKey(group.Input, graph)],
+            AggregateJoin aggregateJoin => EvaluateAggregateJoin(aggregateJoin, results[new ResultKey(aggregateJoin.Input, graph)], context),
             _ => throw new InvalidOperationException($"Operator '{op.GetType().Name}' has children but no combine rule in the executor.")
         };
     }
 
-    /// <summary>Evaluates a basic graph pattern: encodes it to the backend, runs the worst-case-optimal join engine, and decodes each solution.</summary>
+    /// <summary>Evaluates a basic graph pattern against the active graph: encodes it to the backend, runs the worst-case-optimal join engine over <paramref name="graphStore"/>, and decodes each solution.</summary>
     /// <param name="bgp">The basic graph pattern.</param>
+    /// <param name="graphStore">The active graph's store.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
-    /// <returns>The BGP's solution sequence; empty when a constant in the pattern is absent from the data graph.</returns>
-    private async ValueTask<IReadOnlyList<SparqlSolution>> EvaluateBgpAsync(Bgp bgp, CancellationToken cancellationToken)
+    /// <returns>The BGP's solution sequence; empty when a constant in the pattern is absent from the active graph.</returns>
+    private async ValueTask<IReadOnlyList<SparqlSolution>> EvaluateBgpAsync(Bgp bgp, HypertrieGraphStore graphStore, CancellationToken cancellationToken)
     {
         VariableRegistry registry = new();
         Dictionary<SparqlVariable, Variable> toBackend = [];
@@ -270,7 +500,7 @@ public sealed class SparqlQueryEngine
         BasicGraphPattern query = new(patterns, registry);
         bool hasTripleTermMatches = tripleTermMatches.Count > 0;
         List<SparqlSolution> solutions = [];
-        await foreach(Solution solution in store.Query(query, TimeProvider.System, cancellationToken: cancellationToken).ConfigureAwait(false))
+        await foreach(Solution solution in graphStore.Query(query, TimeProvider.System, cancellationToken: cancellationToken).ConfigureAwait(false))
         {
             if(!hasTripleTermMatches)
             {
@@ -887,12 +1117,13 @@ public sealed class SparqlQueryEngine
     /// graph node (the per-seed enumeration — the native pair-aware closure is a later optimization).
     /// </summary>
     /// <param name="path">The path operator.</param>
+    /// <param name="graphStore">The active graph's store the path reachability runs over.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The path's solution sequence.</returns>
-    private async ValueTask<IReadOnlyList<SparqlSolution>> EvaluatePathAsync(Path path, CancellationToken cancellationToken)
+    private async ValueTask<IReadOnlyList<SparqlSolution>> EvaluatePathAsync(Path path, HypertrieGraphStore graphStore, CancellationToken cancellationToken)
     {
         PropertyPath rdfPath = ConvertPath(path.PathExpression);
-        GraphMatchOps ops = store.AsMatchOps();
+        GraphMatchOps ops = graphStore.AsMatchOps();
         (TermId? subjectId, SparqlVariable? subjectVariable) = ResolveEndpoint(path.Subject);
         (TermId? objectId, SparqlVariable? objectVariable) = ResolveEndpoint(path.Object);
 
@@ -942,7 +1173,7 @@ public sealed class SparqlQueryEngine
         else
         {
             //Both endpoints variable: seed forward reachability from every node in the graph.
-            foreach(TermId seed in AllNodes())
+            foreach(TermId seed in AllNodes(graphStore))
             {
                 await foreach(TermId reached in PropertyPathEvaluator.EvaluateAsync(seed, rdfPath, ops, cancellationToken).ConfigureAwait(false))
                 {
@@ -1050,12 +1281,13 @@ public sealed class SparqlQueryEngine
         solutions.Add(new SparqlSolution(bindings));
     }
 
-    /// <summary>Collects every distinct node appearing as a subject or object in the graph — the seed set for a both-variable path (so <c>*</c> is reflexive over all nodes).</summary>
+    /// <summary>Collects every distinct node appearing as a subject or object in the active graph — the seed set for a both-variable path (so <c>*</c> is reflexive over all nodes).</summary>
+    /// <param name="graphStore">The active graph's store.</param>
     /// <returns>The distinct nodes.</returns>
-    private HashSet<TermId> AllNodes()
+    private static HashSet<TermId> AllNodes(HypertrieGraphStore graphStore)
     {
         HashSet<TermId> nodes = [];
-        foreach(EncodedTriple triple in store.Match(TermId.None, TermId.None, TermId.None))
+        foreach(EncodedTriple triple in graphStore.Match(TermId.None, TermId.None, TermId.None))
         {
             nodes.Add(triple.Subject);
             nodes.Add(triple.Object);
@@ -1239,28 +1471,29 @@ public sealed class SparqlQueryEngine
         return kept;
     }
 
-    /// <summary>Combines an expression-gated operator (<see cref="Filter"/>/<see cref="Extend"/>/<see cref="LeftJoin"/>) asynchronously, since its expression may carry <c>EXISTS</c>/<c>NOT EXISTS</c> that re-enter the engine.</summary>
+    /// <summary>Combines an expression-gated operator (<see cref="Filter"/>/<see cref="Extend"/>/<see cref="LeftJoin"/>) asynchronously, since its expression may carry <c>EXISTS</c>/<c>NOT EXISTS</c> that re-enter the engine (in the same active graph).</summary>
     /// <param name="op">The operator to combine (a filter, extend, or left join).</param>
-    /// <param name="results">The map of already-evaluated operators to their solution sequences.</param>
+    /// <param name="graph">The active graph the operator was evaluated under; any EXISTS sub-pattern re-enters in this graph.</param>
+    /// <param name="results">The map of already-evaluated (operator, graph) keys to their solution sequences.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The operator's solution sequence.</returns>
-    private async ValueTask<IReadOnlyList<SparqlSolution>> CombineExpressionOperatorAsync(AlgebraOperator op, Dictionary<AlgebraOperator, IReadOnlyList<SparqlSolution>> results, CancellationToken cancellationToken)
+    private async ValueTask<IReadOnlyList<SparqlSolution>> CombineExpressionOperatorAsync(AlgebraOperator op, TermId graph, Dictionary<ResultKey, IReadOnlyList<SparqlSolution>> results, CancellationToken cancellationToken)
     {
         switch(op)
         {
             case Filter filter:
             {
-                return await ApplyFilterAsync(filter, results[filter.Input], cancellationToken).ConfigureAwait(false);
+                return await ApplyFilterAsync(filter, results[new ResultKey(filter.Input, graph)], graph, cancellationToken).ConfigureAwait(false);
             }
 
             case Extend extend:
             {
-                return await ApplyExtendAsync(extend, results[extend.Input], cancellationToken).ConfigureAwait(false);
+                return await ApplyExtendAsync(extend, results[new ResultKey(extend.Input, graph)], graph, cancellationToken).ConfigureAwait(false);
             }
 
             case LeftJoin leftJoin:
             {
-                return await LeftJoinSolutionsAsync(results[leftJoin.Left], results[leftJoin.Right], leftJoin.Condition, cancellationToken).ConfigureAwait(false);
+                return await LeftJoinSolutionsAsync(results[new ResultKey(leftJoin.Left, graph)], results[new ResultKey(leftJoin.Right, graph)], leftJoin.Condition, graph, cancellationToken).ConfigureAwait(false);
             }
 
             default:
@@ -1273,14 +1506,15 @@ public sealed class SparqlQueryEngine
     /// <summary>Keeps the solutions whose <c>FILTER</c> condition has effective boolean value true (§18.6 Filter); an error or non-boolean value drops the solution. Any <c>EXISTS</c>/<c>NOT EXISTS</c> in the condition is resolved per solution first.</summary>
     /// <param name="filter">The filter.</param>
     /// <param name="input">The input solution sequence.</param>
+    /// <param name="graph">The active graph any EXISTS sub-pattern in the condition re-enters in.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The surviving solutions.</returns>
-    private async ValueTask<IReadOnlyList<SparqlSolution>> ApplyFilterAsync(Filter filter, IReadOnlyList<SparqlSolution> input, CancellationToken cancellationToken)
+    private async ValueTask<IReadOnlyList<SparqlSolution>> ApplyFilterAsync(Filter filter, IReadOnlyList<SparqlSolution> input, TermId graph, CancellationToken cancellationToken)
     {
         List<SparqlSolution> kept = new(input.Count);
         foreach(SparqlSolution solution in input)
         {
-            ExpressionNode condition = await ResolveExistsAsync(filter.Condition, solution, cancellationToken).ConfigureAwait(false);
+            ExpressionNode condition = await ResolveExistsAsync(filter.Condition, solution, graph, cancellationToken).ConfigureAwait(false);
             if(SparqlExpressionEvaluator.Satisfies(condition, solution, expressionContext))
             {
                 kept.Add(solution);
@@ -1293,14 +1527,15 @@ public sealed class SparqlQueryEngine
     /// <summary>Binds an expression's value to a variable on each solution (§18.6 Extend / <c>BIND</c>); a solution whose expression errs is kept with the variable left unbound. Any <c>EXISTS</c>/<c>NOT EXISTS</c> in the expression is resolved per solution first.</summary>
     /// <param name="extend">The extend.</param>
     /// <param name="input">The input solution sequence.</param>
+    /// <param name="graph">The active graph any EXISTS sub-pattern in the expression re-enters in.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The extended solution sequence.</returns>
-    private async ValueTask<IReadOnlyList<SparqlSolution>> ApplyExtendAsync(Extend extend, IReadOnlyList<SparqlSolution> input, CancellationToken cancellationToken)
+    private async ValueTask<IReadOnlyList<SparqlSolution>> ApplyExtendAsync(Extend extend, IReadOnlyList<SparqlSolution> input, TermId graph, CancellationToken cancellationToken)
     {
         List<SparqlSolution> extended = new(input.Count);
         foreach(SparqlSolution solution in input)
         {
-            ExpressionNode expression = await ResolveExistsAsync(extend.Expression, solution, cancellationToken).ConfigureAwait(false);
+            ExpressionNode expression = await ResolveExistsAsync(extend.Expression, solution, graph, cancellationToken).ConfigureAwait(false);
             if(!SparqlExpressionEvaluator.TryEvaluate(expression, solution, expressionContext, out RdfTerm value))
             {
                 extended.Add(solution);
@@ -1325,9 +1560,10 @@ public sealed class SparqlQueryEngine
     /// <param name="left">The required (left) solution sequence.</param>
     /// <param name="right">The optional (right) solution sequence.</param>
     /// <param name="condition">The optional join condition (the lifted inner <c>FILTER</c>), or <see langword="null"/> when there is none.</param>
+    /// <param name="graph">The active graph any EXISTS sub-pattern in the condition re-enters in.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The left-joined solution sequence.</returns>
-    private async ValueTask<IReadOnlyList<SparqlSolution>> LeftJoinSolutionsAsync(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right, ExpressionNode? condition, CancellationToken cancellationToken)
+    private async ValueTask<IReadOnlyList<SparqlSolution>> LeftJoinSolutionsAsync(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right, ExpressionNode? condition, TermId graph, CancellationToken cancellationToken)
     {
         List<SparqlSolution> result = [];
         foreach(SparqlSolution outer in left)
@@ -1341,7 +1577,7 @@ public sealed class SparqlQueryEngine
                 }
 
                 SparqlSolution merged = Merge(outer, inner);
-                ExpressionNode? resolved = condition is null ? null : await ResolveExistsAsync(condition, merged, cancellationToken).ConfigureAwait(false);
+                ExpressionNode? resolved = condition is null ? null : await ResolveExistsAsync(condition, merged, graph, cancellationToken).ConfigureAwait(false);
                 if(resolved is null || SparqlExpressionEvaluator.Satisfies(resolved, merged, expressionContext))
                 {
                     result.Add(merged);
@@ -1561,9 +1797,10 @@ public sealed class SparqlQueryEngine
     /// </summary>
     /// <param name="expression">The expression (a <c>FILTER</c> condition, <c>BIND</c> expression, or join condition).</param>
     /// <param name="solution">The current solution the <c>EXISTS</c> sub-patterns are evaluated under.</param>
+    /// <param name="graph">The active graph the EXISTS sub-patterns are evaluated in.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The expression with each <c>EXISTS</c>/<c>NOT EXISTS</c> replaced by its constant boolean result.</returns>
-    private async ValueTask<ExpressionNode> ResolveExistsAsync(ExpressionNode expression, SparqlSolution solution, CancellationToken cancellationToken)
+    private async ValueTask<ExpressionNode> ResolveExistsAsync(ExpressionNode expression, SparqlSolution solution, TermId graph, CancellationToken cancellationToken)
     {
         Dictionary<ExpressionNode, bool> truths = new(ReferenceEqualityComparer.Instance);
         foreach(ExpressionNode node in ExpressionWalker.Traverse(expression))
@@ -1572,14 +1809,14 @@ public sealed class SparqlQueryEngine
             {
                 case ExistsExpression exists:
                 {
-                    truths[exists] = await ExistsAsync(exists.Inner, solution, cancellationToken).ConfigureAwait(false);
+                    truths[exists] = await ExistsAsync(exists.Inner, solution, graph, cancellationToken).ConfigureAwait(false);
 
                     break;
                 }
 
                 case NotExistsExpression notExists:
                 {
-                    truths[notExists] = !await ExistsAsync(notExists.Inner, solution, cancellationToken).ConfigureAwait(false);
+                    truths[notExists] = !await ExistsAsync(notExists.Inner, solution, graph, cancellationToken).ConfigureAwait(false);
 
                     break;
                 }
@@ -1608,15 +1845,16 @@ public sealed class SparqlQueryEngine
     /// </summary>
     /// <param name="pattern">The <c>EXISTS</c> sub-pattern.</param>
     /// <param name="solution">The current solution to pre-bind.</param>
+    /// <param name="graph">The active graph the sub-pattern is evaluated in (so EXISTS inside a GRAPH form queries that graph).</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns><see langword="true"/> when the pattern has at least one solution compatible with the current bindings.</returns>
-    private async ValueTask<bool> ExistsAsync(GraphPattern pattern, SparqlSolution solution, CancellationToken cancellationToken)
+    private async ValueTask<bool> ExistsAsync(GraphPattern pattern, SparqlSolution solution, TermId graph, CancellationToken cancellationToken)
     {
         SparqlQuery query = SynthesizeExistsQuery(pattern, solution);
         using Utf8StringPool pool = new();
         SparqlQuery normalized = (SparqlQuery)new SparqlNormalizer(pool).Normalize(query);
         AlgebraOperator algebra = SparqlTranslator.Translate(normalized);
-        IReadOnlyList<SparqlSolution> solutions = await EvaluateAsync(algebra, cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<SparqlSolution> solutions = await EvaluateInGraphAsync(algebra, graph, cancellationToken).ConfigureAwait(false);
 
         return solutions.Count > 0;
     }
@@ -1709,10 +1947,10 @@ public sealed class SparqlQueryEngine
     {
         foreach(AlgebraOperator op in AlgebraWalker.Traverse(algebra))
         {
-            bool supported = op is Bgp or UnitTable or Table or Project or Distinct or Reduced or Slice or OrderBy or Join or Union or Minus or ToMultiSet or ToList or Filter or Extend or LeftJoin or Group or AggregateJoin or Path;
+            bool supported = op is Bgp or UnitTable or Table or Project or Distinct or Reduced or Slice or OrderBy or Join or Union or Minus or ToMultiSet or ToList or Filter or Extend or LeftJoin or Group or AggregateJoin or Path or Graph;
             if(!supported)
             {
-                throw new NotSupportedException($"SPARQL algebra operator '{op.GetType().Name}' is not yet executable. This executor covers basic graph patterns, property paths, JOIN/UNION/MINUS, FILTER, BIND (Extend), OPTIONAL (LeftJoin), inline VALUES, ORDER BY, aggregation (GROUP BY / HAVING), sub-SELECT (ToMultiSet), and the projection/DISTINCT/REDUCED/OFFSET/LIMIT modifiers; named graphs (GRAPH), SERVICE, and EXISTS land in later slices.");
+                throw new NotSupportedException($"SPARQL algebra operator '{op.GetType().Name}' is not yet executable. This executor covers basic graph patterns, property paths, named graphs (GRAPH), JOIN/UNION/MINUS, FILTER, BIND (Extend), OPTIONAL (LeftJoin), inline VALUES, ORDER BY, aggregation (GROUP BY / HAVING), sub-SELECT (ToMultiSet), and the projection/DISTINCT/REDUCED/OFFSET/LIMIT modifiers; SERVICE lands in a later slice.");
             }
         }
     }

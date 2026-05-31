@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 
 namespace Lumoin.Veritas.Tests.Conformance;
@@ -43,6 +44,7 @@ namespace Lumoin.Veritas.Tests.Conformance;
 /// <param name="ShapesGraphPath">The SHACL shapes graph file; <c>null</c> for non-SHACL tests.</param>
 /// <param name="ExpectedReportTerm">The manifest term key of the inline expected <c>sh:ValidationReport</c> for SHACL tests; <c>null</c> otherwise.</param>
 /// <param name="QueryDataPath">The SPARQL query-evaluation data graph (<c>qt:data</c>) file; <c>null</c> for non-SPARQL-evaluation tests (where <see cref="InputPath"/> is the query file).</param>
+/// <param name="GraphDataPaths">The SPARQL query-evaluation named-graph data (<c>qt:graphData</c>) files; <c>null</c> or empty when the test declares no named graphs. Each file becomes a named graph keyed by its own file IRI.</param>
 [DebuggerDisplay("W3cTestCase {Type} {Name,nq}")]
 internal sealed record W3cTestCase(
     Uri Uri,
@@ -55,4 +57,5 @@ internal sealed record W3cTestCase(
     string OriginManifest = "",
     string? ShapesGraphPath = null,
     string? ExpectedReportTerm = null,
-    string? QueryDataPath = null);
+    string? QueryDataPath = null,
+    IReadOnlyList<string>? GraphDataPaths = null);

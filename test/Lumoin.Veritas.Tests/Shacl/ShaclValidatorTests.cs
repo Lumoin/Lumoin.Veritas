@@ -353,7 +353,7 @@ internal sealed class ShaclValidatorTests
             dictionary,
             evaluators,
             VeritasClock.System,
-            options,
+            options: options,
             cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.IsFalse(report.Conforms);
@@ -412,7 +412,7 @@ internal sealed class ShaclValidatorTests
             dictionary,
             evaluators,
             VeritasClock.System,
-            options,
+            options: options,
             cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
         //This test pins the MaxResults cap; Conforms is false because results were produced (§3.6).
@@ -454,7 +454,7 @@ internal sealed class ShaclValidatorTests
             dictionary,
             ConstraintEvaluatorRegistry.Empty,
             VeritasClock.System,
-            options,
+            options: options,
             cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
         //This test pins the trace-event sequence; Conforms is false because a result was produced (§3.6).
@@ -523,7 +523,7 @@ internal sealed class ShaclValidatorTests
             dictionary,
             evaluators,
             VeritasClock.System,
-            options,
+            options: options,
             cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.IsTrue(report.Conforms);

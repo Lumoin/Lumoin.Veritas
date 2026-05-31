@@ -32,15 +32,21 @@ public sealed class SparqlEngineCache
     private SparqlQueryEngine? engine;
 
     /// <summary>
-    /// Returns the engine for the data graph, building it on first request by materializing every data-graph
-    /// triple and indexing it. Subsequent calls return the cached engine.
+    /// Returns the engine for the validation dataset, building it on first request by materializing every
+    /// data-graph triple as the default graph and — when a shapes graph is supplied — every shapes-graph triple
+    /// as a named graph under <paramref name="shapesGraphIri"/> (so a SPARQL constraint's <c>GRAPH $shapesGraph</c>
+    /// can query it). Subsequent calls return the cached engine.
     /// </summary>
     /// <param name="dataMatchOps">Match-op bundle over the data graph being validated.</param>
-    /// <param name="dictionary">The SHACL run's term dictionary, used to decode the encoded data triples.</param>
+    /// <param name="shapesGraphMatchOps">Match-op bundle over the shapes graph, or <see langword="null"/> to omit it from the dataset.</param>
+    /// <param name="shapesGraphIri">The IRI naming the shapes named graph (pre-bound to <c>$shapesGraph</c>), or <see langword="null"/> when no shapes graph is supplied.</param>
+    /// <param name="dictionary">The SHACL run's term dictionary, used to decode the encoded triples.</param>
     /// <param name="cancellationToken">Cancellation.</param>
-    /// <returns>The query engine over the data graph.</returns>
+    /// <returns>The query engine over the dataset.</returns>
     public async ValueTask<SparqlQueryEngine> GetOrBuildAsync(
         GraphMatchOps dataMatchOps,
+        GraphMatchOps? shapesGraphMatchOps,
+        RdfTerm? shapesGraphIri,
         TermDictionary dictionary,
         CancellationToken cancellationToken)
     {
@@ -51,8 +57,33 @@ public sealed class SparqlEngineCache
             return engine;
         }
 
+        List<DataTriple> defaultGraph = await MaterializeAsync(dataMatchOps, dictionary, cancellationToken).ConfigureAwait(false);
+
+        if(shapesGraphMatchOps is GraphMatchOps shapesMatchOps && shapesGraphIri is RdfTerm shapesIri)
+        {
+            List<DataTriple> shapesGraph = await MaterializeAsync(shapesMatchOps, dictionary, cancellationToken).ConfigureAwait(false);
+            engine = await SparqlQueryEngine.BuildDatasetAsync(
+                defaultGraph,
+                [(shapesIri, shapesGraph)],
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            return engine;
+        }
+
+        engine = await SparqlQueryEngine.BuildAsync(defaultGraph, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        return engine;
+    }
+
+    /// <summary>Materializes a graph's encoded triples into decoded <see cref="DataTriple"/>s for the engine build.</summary>
+    /// <param name="matchOps">Match-op bundle over the graph.</param>
+    /// <param name="dictionary">The SHACL run's term dictionary, used to decode the encoded triples.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <returns>The decoded triples.</returns>
+    private static async ValueTask<List<DataTriple>> MaterializeAsync(GraphMatchOps matchOps, TermDictionary dictionary, CancellationToken cancellationToken)
+    {
         List<DataTriple> triples = [];
-        await foreach(EncodedTriple triple in dataMatchOps.MatchTriples(TermId.None, TermId.None, TermId.None, cancellationToken).ConfigureAwait(false))
+        await foreach(EncodedTriple triple in matchOps.MatchTriples(TermId.None, TermId.None, TermId.None, cancellationToken).ConfigureAwait(false))
         {
             triples.Add(new DataTriple(
                 dictionary.Resolve(triple.Subject),
@@ -60,8 +91,6 @@ public sealed class SparqlEngineCache
                 dictionary.Resolve(triple.Object)));
         }
 
-        engine = await SparqlQueryEngine.BuildAsync(triples, cancellationToken: cancellationToken).ConfigureAwait(false);
-
-        return engine;
+        return triples;
     }
 }

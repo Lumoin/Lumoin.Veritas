@@ -43,6 +43,12 @@ public static class SparqlComponentConstraintEvaluator
     /// <summary>The pre-bound <c>$PATH</c> variable (the property shape's predicate path).</summary>
     private static SparqlVariable PathVariable { get; } = new(new Utf8String("PATH"u8.ToArray()));
 
+    /// <summary>The pre-bound <c>$currentShape</c> variable (the shape being validated, §5.2.1).</summary>
+    private static SparqlVariable CurrentShapeVariable { get; } = new(new Utf8String("currentShape"u8.ToArray()));
+
+    /// <summary>The pre-bound <c>$shapesGraph</c> variable (the IRI of the shapes graph, §5.2.1).</summary>
+    private static SparqlVariable ShapesGraphVariable { get; } = new(new Utf8String("shapesGraph"u8.ToArray()));
+
     /// <summary>The evaluator function. Matches the <see cref="ConstraintEvaluator"/> delegate shape.</summary>
     /// <param name="shape">The enclosing shape (for severity, source id, fallback message).</param>
     /// <param name="constraint">The <see cref="SparqlComponentConstraint"/> being evaluated.</param>
@@ -74,8 +80,8 @@ public static class SparqlComponentConstraintEvaluator
         }
 
         SparqlQueryEngine engine = await context.SparqlEngines.GetOrBuildAsync(
-            context.DataMatchOps, context.Dictionary, cancellationToken).ConfigureAwait(false);
-        List<(SparqlVariable Variable, RdfTerm Value)> baseBindings = BuildBaseBindings(componentConstraint, focusNode, path, context);
+            context.DataMatchOps, context.ShapesGraphMatchOps, context.ShapesGraphIri, context.Dictionary, cancellationToken).ConfigureAwait(false);
+        List<(SparqlVariable Variable, RdfTerm Value)> baseBindings = BuildBaseBindings(shape, componentConstraint, focusNode, path, context);
 
         ImmutableArray<ValidationResult>.Builder builder = ImmutableArray.CreateBuilder<ValidationResult>();
         try
@@ -171,13 +177,22 @@ public static class SparqlComponentConstraintEvaluator
         }
     }
 
-    /// <summary>Builds the per-evaluation pre-bindings shared by every value node: <c>$this</c>, <c>$PATH</c> (predicate-path property shapes), and each provided parameter under its variable name.</summary>
-    private static List<(SparqlVariable Variable, RdfTerm Value)> BuildBaseBindings(SparqlComponentConstraint constraint, TermId focusNode, PropertyPath? path, ValidationContext context)
+    /// <summary>Builds the per-evaluation pre-bindings shared by every value node: <c>$this</c>, <c>$currentShape</c>, <c>$PATH</c> (predicate-path property shapes), <c>$shapesGraph</c> (when the run supplies a shapes graph), and each provided parameter under its variable name (§5.2.1).</summary>
+    private static List<(SparqlVariable Variable, RdfTerm Value)> BuildBaseBindings(Shape shape, SparqlComponentConstraint constraint, TermId focusNode, PropertyPath? path, ValidationContext context)
     {
-        List<(SparqlVariable Variable, RdfTerm Value)> bindings = [(ThisVariable, context.Dictionary.Resolve(focusNode))];
+        List<(SparqlVariable Variable, RdfTerm Value)> bindings =
+        [
+            (ThisVariable, context.Dictionary.Resolve(focusNode)),
+            (CurrentShapeVariable, context.Dictionary.Resolve(shape.Id)),
+        ];
         if(path is PredicatePath predicatePath)
         {
             bindings.Add((PathVariable, context.Dictionary.Resolve((TermId)predicatePath.Predicate)));
+        }
+
+        if(context.ShapesGraphIri is RdfTerm shapesGraphIri)
+        {
+            bindings.Add((ShapesGraphVariable, shapesGraphIri));
         }
 
         foreach(SparqlComponentParameter parameter in constraint.Definition.Parameters)

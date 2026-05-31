@@ -47,6 +47,12 @@ public static class SparqlConstraintEvaluator
     /// <summary>The SHACL-SPARQL <c>$PATH</c> variable, pre-bound (on a property shape with a predicate path) to the path predicate IRI (§5.2.1).</summary>
     private static SparqlVariable PathPreBindingVariable { get; } = new(new Utf8String("PATH"u8.ToArray()));
 
+    /// <summary>The SHACL-SPARQL <c>$currentShape</c> variable, pre-bound to the shape being validated (§5.2.1).</summary>
+    private static SparqlVariable CurrentShapeVariable { get; } = new(new Utf8String("currentShape"u8.ToArray()));
+
+    /// <summary>The SHACL-SPARQL <c>$shapesGraph</c> variable, pre-bound to the IRI of the shapes graph (§5.2.1).</summary>
+    private static SparqlVariable ShapesGraphVariable { get; } = new(new Utf8String("shapesGraph"u8.ToArray()));
+
     /// <summary>The SHACL-SPARQL <c>?value</c> result variable, mapped to <c>sh:value</c>.</summary>
     private static SparqlVariable ValueVariable { get; } = new(new Utf8String("value"u8.ToArray()));
 
@@ -84,13 +90,14 @@ public static class SparqlConstraintEvaluator
 
         SparqlConstraint sparqlConstraint = (SparqlConstraint)constraint;
         SparqlQueryEngine engine = await context.SparqlEngines.GetOrBuildAsync(
-            context.DataMatchOps, context.Dictionary, cancellationToken).ConfigureAwait(false);
+            context.DataMatchOps, context.ShapesGraphMatchOps, context.ShapesGraphIri, context.Dictionary, cancellationToken).ConfigureAwait(false);
 
-        //Pre-bind $this (and, on a predicate-path property shape, $PATH) by substituting them throughout the query
-        //(SHACL §5.2.1) — substitution reaches UNION branches, nested groups, and sub-SELECTs an injected join
-        //cannot, and folds BOUND of a pre-bound variable to true.
+        //Pre-bind $this, $currentShape (and, on a predicate-path property shape, $PATH; and $shapesGraph when the
+        //run supplies a shapes graph) by substituting them throughout the query (SHACL §5.2.1) — substitution
+        //reaches UNION branches, nested groups, and sub-SELECTs an injected join cannot, and folds BOUND of a
+        //pre-bound variable to true.
         RdfTerm focusTerm = context.Dictionary.Resolve(focusNode);
-        SparqlQuery bound = SparqlPreBinding.Substitute(sparqlConstraint.Query, BuildPreBindings(focusTerm, path, context));
+        SparqlQuery bound = SparqlPreBinding.Substitute(sparqlConstraint.Query, BuildPreBindings(shape, focusTerm, path, context));
 
         IReadOnlyList<SparqlSolution> solutions;
         try
@@ -148,24 +155,35 @@ public static class SparqlConstraintEvaluator
     }
 
     /// <summary>
-    /// Builds the single-row trailing <c>VALUES</c> block that pre-binds <c>$this</c> to the focus node, and — on a
-    /// property shape whose path is a single predicate — <c>$PATH</c> to that predicate IRI (SHACL-SPARQL §5.2.1).
-    /// A complex path (sequence/alternative/inverse/cardinality) is not pre-bound as a single IRI (a later refinement).
+    /// Builds the single-row trailing <c>VALUES</c> block pre-binding the SHACL-SPARQL §5.2.1 variables: <c>$this</c>
+    /// to the focus node, <c>$currentShape</c> to the shape, <c>$shapesGraph</c> to the shapes-graph IRI (when the
+    /// run supplies one), and — on a property shape whose path is a single predicate — <c>$PATH</c> to that
+    /// predicate IRI. A complex path (sequence/alternative/inverse/cardinality) is not pre-bound as a single IRI (a
+    /// later refinement).
     /// </summary>
+    /// <param name="shape">The shape being validated; its id pre-binds <c>$currentShape</c>.</param>
     /// <param name="focusTerm">The focus node as an RDF term.</param>
     /// <param name="path">The property shape's path, or <see langword="null"/> for a node shape.</param>
-    /// <param name="context">The validation context (for resolving the path predicate IRI to a term).</param>
-    /// <returns>The inline-data block pre-binding <c>$this</c> (and <c>$PATH</c> when applicable).</returns>
-    private static ValuesClause BuildPreBindings(RdfTerm focusTerm, PropertyPath? path, ValidationContext context)
+    /// <param name="context">The validation context (for resolving terms and the shapes-graph IRI).</param>
+    /// <returns>The inline-data block pre-binding the available §5.2.1 variables.</returns>
+    private static ValuesClause BuildPreBindings(Shape shape, RdfTerm focusTerm, PropertyPath? path, ValidationContext context)
     {
+        List<SparqlVariable> variables = [ThisVariable, CurrentShapeVariable];
+        List<RdfTerm?> values = [focusTerm, context.Dictionary.Resolve(shape.Id)];
+
         if(path is PredicatePath predicatePath)
         {
-            RdfTerm pathTerm = context.Dictionary.Resolve((TermId)predicatePath.Predicate);
-
-            return new ValuesClause(SourceSpan.None, [ThisVariable, PathPreBindingVariable], [new RdfTerm?[] { focusTerm, pathTerm }]);
+            variables.Add(PathPreBindingVariable);
+            values.Add(context.Dictionary.Resolve((TermId)predicatePath.Predicate));
         }
 
-        return new ValuesClause(SourceSpan.None, [ThisVariable], [new RdfTerm?[] { focusTerm }]);
+        if(context.ShapesGraphIri is RdfTerm shapesGraphIri)
+        {
+            variables.Add(ShapesGraphVariable);
+            values.Add(shapesGraphIri);
+        }
+
+        return new ValuesClause(SourceSpan.None, variables, [values.ToArray()]);
     }
 
     /// <summary>
