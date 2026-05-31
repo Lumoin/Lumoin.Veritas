@@ -101,11 +101,8 @@ internal static class W3cSparqlEvalRunner
             return new W3cOutcome(W3cOutcomeStatus.Failed, $"Update request file not found: {testCase.InputPath}");
         }
 
-        if(testCase.ExpectedPath is null || !File.Exists(testCase.ExpectedPath))
-        {
-            return new W3cOutcome(W3cOutcomeStatus.Skipped, "Update test declares no expected-result fixture.");
-        }
-
+        //A SPARQL Update evaluation test always declares mf:result; an empty result node (`[]`) means the expected
+        //dataset is empty (compared against, not skipped), so there is no "no fixture" skip here.
         using Utf8StringPool pool = new();
         string baseUri = new Uri(IoPath.GetFullPath(testCase.InputPath)).AbsoluteUri;
         ParseResult<SparqlRequest> parsed = SparqlParser.ParseRequest(
@@ -126,11 +123,23 @@ internal static class W3cSparqlEvalRunner
         List<Quad> expected;
         try
         {
+            //Initial dataset: the default graph (ut:data) plus the named graphs — both the ut:graphData entries
+            //(keyed by their rdfs:label graph name) and any named graphs a single TriG/N-Quads ut:data file carries.
             List<DataTriple> data = await LoadDataAsync(testCase.QueryDataPath, cancellationToken).ConfigureAwait(false);
-            List<(RdfTerm Name, IEnumerable<DataTriple> Triples)> named = await LoadNamedGraphsAsync(testCase.GraphDataPaths, cancellationToken).ConfigureAwait(false);
+            List<(RdfTerm Name, IEnumerable<DataTriple> Triples)> named = await LoadLabelledGraphsAsync(testCase.UpdateInputGraphs, cancellationToken).ConfigureAwait(false);
             named.AddRange(await LoadNamedFromFileAsync(testCase.QueryDataPath, cancellationToken).ConfigureAwait(false));
             dataset = await BuildMutableDatasetAsync(data, named, cancellationToken).ConfigureAwait(false);
-            expected = await ReadQuadsAsync(testCase.ExpectedPath, cancellationToken).ConfigureAwait(false);
+
+            //Expected dataset: the result's default graph (ut:data) plus its labelled named graphs (ut:graphData).
+            expected = testCase.ExpectedPath is not null ? await ReadQuadsAsync(testCase.ExpectedPath, cancellationToken).ConfigureAwait(false) : [];
+            foreach((string graphName, string path) in testCase.UpdateExpectedGraphs ?? [])
+            {
+                RdfTerm graph = new NamedNode(Utf8String.FromString(graphName));
+                foreach(Quad quad in await ReadQuadsAsync(path, cancellationToken).ConfigureAwait(false))
+                {
+                    expected.Add(quad.Graph is null ? quad with { Graph = graph } : quad);
+                }
+            }
         }
         catch(InvalidOperationException ex)
         {
@@ -177,6 +186,27 @@ internal static class W3cSparqlEvalRunner
         }
 
         return triples;
+    }
+
+    /// <summary>Loads a SPARQL Update test's labelled named graphs — (graph-name, file) pairs from <c>ut:graphData</c> — keying each graph by its <c>rdfs:label</c> name (not the file IRI).</summary>
+    /// <param name="graphs">The (graph-name, file) pairs, or <see langword="null"/>.</param>
+    /// <param name="cancellationToken">A token to cancel reading.</param>
+    /// <returns>The named graphs as (name, triples) pairs.</returns>
+    private static async Task<List<(RdfTerm Name, IEnumerable<DataTriple> Triples)>> LoadLabelledGraphsAsync(IReadOnlyList<(string GraphName, string Path)>? graphs, CancellationToken cancellationToken)
+    {
+        List<(RdfTerm Name, IEnumerable<DataTriple> Triples)> named = [];
+        if(graphs is null)
+        {
+            return named;
+        }
+
+        foreach((string graphName, string path) in graphs)
+        {
+            RdfTerm name = new NamedNode(Utf8String.FromString(graphName));
+            named.Add((name, await LoadDataAsync(path, cancellationToken).ConfigureAwait(false)));
+        }
+
+        return named;
     }
 
     /// <summary>Builds a mutable dataset by encoding the initial default and named graphs into one shared dictionary and journal-backed graph stores.</summary>

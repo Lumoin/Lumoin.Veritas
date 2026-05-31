@@ -463,6 +463,14 @@ public static class WellKnownDiagnostics
         /// <remarks>SPARQL Update <c>DeleteClause</c> / <c>DeleteData</c>. See <see href="https://www.w3.org/TR/sparql12-update/#rDeleteClause">SPARQL 1.2 Update §19.8 [DeleteClause]</see>.</remarks>
         public static Utf8String BlankNodeInDeleteTemplate { get; } = new("SP0048"u8.ToArray());
 
+        /// <summary>An <c>INSERT DATA</c> / <c>DELETE DATA</c> block contained a variable (in a triple position or a <c>GRAPH</c> designator), which the ground <c>QuadData</c> grammar disallows.</summary>
+        /// <remarks>SPARQL Update <c>QuadData</c>. See <see href="https://www.w3.org/TR/sparql12-update/#rQuadData">SPARQL 1.2 Update §19.8 [QuadData]</see>.</remarks>
+        public static Utf8String VariableInQuadData { get; } = new("SP0049"u8.ToArray());
+
+        /// <summary>A blank-node label was reused across two <c>INSERT DATA</c>/<c>DELETE DATA</c> operations of a single request; blank-node labels are scoped to one operation.</summary>
+        /// <remarks>SPARQL Update §4.1.2 blank-node scoping. See <see href="https://www.w3.org/TR/sparql12-update/#rUpdate">SPARQL 1.2 Update §19.8 [Update]</see>.</remarks>
+        public static Utf8String BlankNodeLabelReusedAcrossOperations { get; } = new("SP0050"u8.ToArray());
+
         /// <summary>The per-parse diagnostic cap was reached; further parser diagnostics are suppressed (the AST still assembles).</summary>
         /// <remarks>Parser-internal bound (see the parser's <c>MaxDiagnostics</c> option), not a grammar production.</remarks>
         public static Utf8String ExcessDiagnostics { get; } = new("SP9999"u8.ToArray());

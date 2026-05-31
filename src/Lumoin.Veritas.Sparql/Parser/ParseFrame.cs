@@ -236,6 +236,12 @@ internal sealed class ParseFrame
 
     /// <summary>Gets or sets a <see cref="ParseFrameKind.Modify"/> frame's accumulated <c>USING</c> / <c>USING NAMED</c> clauses.</summary>
     public List<UsingClause>? UsingClauses { get; set; }
+
+    /// <summary>Gets or sets whether the update loop has parsed an operation that a <c>;</c> must separate from the next one (so a following operation with no <c>;</c>, or a redundant <c>;</c>, is an error).</summary>
+    public bool UpdateSeparatorPending { get; set; }
+
+    /// <summary>Gets or sets the blank-node labels already used by an earlier <c>INSERT DATA</c>/<c>DELETE DATA</c> operation in the request; a label reappearing in a later data operation is an error (labels are scoped to one operation).</summary>
+    public HashSet<Utf8String>? DataBlankLabels { get; set; }
 }
 
 /// <summary>

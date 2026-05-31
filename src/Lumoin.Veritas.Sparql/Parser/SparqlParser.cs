@@ -1024,6 +1024,14 @@ public sealed class SparqlParser
 
         if(Current.Kind == SparqlTokenKind.Semicolon)
         {
+            //A ';' separates two operations; a ';' with no preceding unseparated operation (a leading ';' or the
+            //second of ';;') is an error, but is still consumed so recovery continues.
+            if(!frame.UpdateSeparatorPending)
+            {
+                _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedUpdateOperation, Current.Span, "Unexpected ';': a separator must follow an operation, and operations are separated by a single ';'.");
+            }
+
+            frame.UpdateSeparatorPending = false;
             Advance();
 
             return StepResult.Continue();
@@ -1036,14 +1044,26 @@ public sealed class SparqlParser
 
         if(IsUpdateOperationStart(Current.Kind))
         {
+            //Two operations must be separated by ';'; a new operation while a separator is still pending is an error.
+            if(frame.UpdateSeparatorPending)
+            {
+                _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedUpdateOperation, Current.Span, "Expected ';' between SPARQL Update operations.");
+            }
+
             frame.Stage = 19;
 
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.UpdateOperation, StartSpan = Current.Span });
         }
 
-        //A stray token where an operation, ';', or end of input was expected: report and skip to a safe point.
+        //A stray token where an operation, ';', or end of input was expected: report and skip to a safe point. Force
+        //progress so a token the resync treats as a stop point (e.g. junk after a recovered operation) cannot loop.
         _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedUpdateOperation, Current.Span, "Expected a SPARQL Update operation, ';', or the end of the request.");
+        int before = index;
         ResyncTo(ParseFrameKind.Request, Current.Span, out _);
+        if(index == before)
+        {
+            Advance();
+        }
 
         return StepResult.Continue();
     }
@@ -1052,12 +1072,71 @@ public sealed class SparqlParser
     /// <param name="frame">The request frame.</param>
     /// <param name="incoming">The popped <see cref="UpdateOperation"/>.</param>
     /// <returns>The instruction for the driver.</returns>
-    private static StepResult RequestUpdateOperationReceived(ParseFrame frame, object? incoming)
+    private StepResult RequestUpdateOperationReceived(ParseFrame frame, object? incoming)
     {
-        frame.UpdateOperations!.Add(Pop<UpdateOperation>(incoming));
+        UpdateOperation operation = Pop<UpdateOperation>(incoming);
+        frame.UpdateOperations!.Add(operation);
+
+        //A blank-node label is scoped to one operation: a label used by an earlier INSERT DATA / DELETE DATA cannot
+        //reappear in a later data operation.
+        if(operation is InsertDataOperation insert)
+        {
+            CheckDataBlankLabelReuse(frame, insert.Data);
+        }
+        else if(operation is DeleteDataOperation delete)
+        {
+            CheckDataBlankLabelReuse(frame, delete.Data);
+        }
+
+        //An operation was parsed; a ';' must separate it from any following operation.
+        frame.UpdateSeparatorPending = true;
         frame.Stage = 18;
 
         return StepResult.Continue();
+    }
+
+    /// <summary>Reports a diagnostic when a data operation reuses a blank-node label an earlier data operation already used (labels are scoped to one operation, §4.1.2), and records this operation's labels for later checks.</summary>
+    /// <param name="frame">The request frame accumulating the request-wide data blank-node labels.</param>
+    /// <param name="data">The data operation's quad block.</param>
+    private void CheckDataBlankLabelReuse(ParseFrame frame, Quads data)
+    {
+        frame.DataBlankLabels ??= [];
+
+        HashSet<Utf8String> thisOperation = [];
+        Stack<TriplePatternTerm> work = new();
+        foreach(TriplePattern triple in data.DefaultTriples)
+        {
+            PushTripleTerms(work, triple);
+        }
+
+        foreach(QuadsGraphGroup group in data.GraphGroups)
+        {
+            foreach(TriplePattern triple in group.Triples)
+            {
+                PushTripleTerms(work, triple);
+            }
+        }
+
+        while(work.Count > 0)
+        {
+            TriplePatternTerm term = work.Pop();
+            if(term is ConstantTerm { Term: BlankNode blank })
+            {
+                thisOperation.Add(blank.Label);
+            }
+
+            PushTermChildren(term, work);
+        }
+
+        foreach(Utf8String label in thisOperation)
+        {
+            if(frame.DataBlankLabels.Contains(label))
+            {
+                _ = ReportRecoverable(WellKnownDiagnostics.Sparql.BlankNodeLabelReusedAcrossOperations, data.Span, "A blank-node label may not be reused across INSERT DATA / DELETE DATA operations in a request (labels are scoped to one operation).");
+            }
+
+            frame.DataBlankLabels.Add(label);
+        }
     }
 
     /// <summary>Advances one update operation: the leading-keyword dispatch, then receiving a pushed quad block or modify body.</summary>
@@ -1175,6 +1254,9 @@ public sealed class SparqlParser
     {
         Quads data = Pop<Quads>(incoming);
         SourceSpan span = CombineSpans(frame.StartSpan, lastConsumedSpan);
+
+        //QuadData is ground: no variables in either INSERT DATA or DELETE DATA.
+        ReportVariablesInData(data);
         if(frame.OperatorKind == SparqlTokenKind.InsertKeyword)
         {
             return StepResult.Done(new InsertDataOperation(span, data));
@@ -1526,7 +1608,7 @@ public sealed class SparqlParser
         {
             GraphPattern recovered = RecoverGraphPattern(ParseFrameKind.Modify, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' to begin the modify WHERE pattern.", "GroupGraphPattern");
 
-            return StepResult.Done(BuildModify(frame, (GroupGraphPattern)recovered));
+            return StepResult.Done(BuildModify(frame, AsGroup(recovered)));
         }
 
         frame.Stage = 4;
@@ -1536,11 +1618,19 @@ public sealed class SparqlParser
 
     /// <summary>Adopts the modify <c>WHERE</c> pattern and assembles the operation.</summary>
     /// <param name="frame">The modify frame.</param>
-    /// <param name="incoming">The popped group graph pattern.</param>
+    /// <param name="incoming">The popped WHERE pattern (a group graph pattern, or a bare sub-<c>SELECT</c> the group frame returned unwrapped).</param>
     /// <returns>The instruction for the driver.</returns>
     private StepResult ModifyWhereReceived(ParseFrame frame, object? incoming)
     {
-        return StepResult.Done(BuildModify(frame, Pop<GroupGraphPattern>(incoming)));
+        return StepResult.Done(BuildModify(frame, AsGroup(Pop<GraphPattern>(incoming))));
+    }
+
+    /// <summary>Wraps a WHERE pattern as a group graph pattern; a bare sub-<c>SELECT</c> (which the group frame returns unwrapped) becomes a single-member group.</summary>
+    /// <param name="pattern">The parsed WHERE pattern.</param>
+    /// <returns>The pattern as a group graph pattern.</returns>
+    private static GroupGraphPattern AsGroup(GraphPattern pattern)
+    {
+        return pattern as GroupGraphPattern ?? new GroupGraphPattern(pattern.Span, [pattern]);
     }
 
     /// <summary>Assembles a <see cref="ModifyOperation"/> from the modify frame and its <c>WHERE</c> pattern.</summary>
@@ -1696,6 +1786,52 @@ public sealed class SparqlParser
             AnnotatedObject annotated => annotated.Span,
             _ => default
         };
+
+    /// <summary>
+    /// Reports a diagnostic when an <c>INSERT DATA</c> / <c>DELETE DATA</c> quad block contains a variable — in a
+    /// <c>GRAPH</c> designator or any triple position — which the ground <c>QuadData</c> grammar disallows. Walks the
+    /// term trees over an explicit stack (no recursion); reports the first offender.
+    /// </summary>
+    /// <param name="quads">The data quad block to validate.</param>
+    private void ReportVariablesInData(Quads quads)
+    {
+        foreach(QuadsGraphGroup group in quads.GraphGroups)
+        {
+            if(group.Graph is GraphVariableTerm variableGraph)
+            {
+                _ = ReportRecoverable(WellKnownDiagnostics.Sparql.VariableInQuadData, variableGraph.Span, "A GRAPH designator in INSERT DATA / DELETE DATA must be an IRI, not a variable.");
+
+                return;
+            }
+        }
+
+        Stack<TriplePatternTerm> work = new();
+        foreach(TriplePattern triple in quads.DefaultTriples)
+        {
+            PushTripleTerms(work, triple);
+        }
+
+        foreach(QuadsGraphGroup group in quads.GraphGroups)
+        {
+            foreach(TriplePattern triple in group.Triples)
+            {
+                PushTripleTerms(work, triple);
+            }
+        }
+
+        while(work.Count > 0)
+        {
+            TriplePatternTerm term = work.Pop();
+            if(term is VariableTerm)
+            {
+                _ = ReportRecoverable(WellKnownDiagnostics.Sparql.VariableInQuadData, TermSpan(term), "INSERT DATA / DELETE DATA must not contain a variable.");
+
+                return;
+            }
+
+            PushTermChildren(term, work);
+        }
+    }
 
     /// <summary>Pushes a triple pattern's three positions onto the work stack.</summary>
     /// <param name="work">The work stack.</param>

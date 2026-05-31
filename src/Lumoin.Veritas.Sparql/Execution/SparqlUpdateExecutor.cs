@@ -53,9 +53,9 @@ public static class SparqlUpdateExecutor
         ArgumentNullException.ThrowIfNull(dataset);
         ArgumentNullException.ThrowIfNull(context);
 
-        foreach(UpdateOperation operation in request.Operations)
+        for(int operationScope = 0; operationScope < request.Operations.Count; operationScope++)
         {
-            await ApplyAsync(operation, dataset, context, graphSource, cancellationToken).ConfigureAwait(false);
+            await ApplyAsync(request.Operations[operationScope], dataset, context, graphSource, operationScope, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -66,13 +66,13 @@ public static class SparqlUpdateExecutor
     /// <param name="graphSource">The <c>LOAD</c> source resolver, or <see langword="null"/>.</param>
     /// <param name="cancellationToken">A token that aborts execution.</param>
     /// <returns>The asynchronous application.</returns>
-    private static Task ApplyAsync(UpdateOperation operation, MutableSparqlDataset dataset, SparqlExpressionContext context, GraphSourceResolver? graphSource, CancellationToken cancellationToken)
+    private static Task ApplyAsync(UpdateOperation operation, MutableSparqlDataset dataset, SparqlExpressionContext context, GraphSourceResolver? graphSource, int operationScope, CancellationToken cancellationToken)
         => operation switch
         {
-            InsertDataOperation insert => ApplyDataAsync(insert.Data, dataset, add: true, cancellationToken),
-            DeleteDataOperation delete => ApplyDataAsync(delete.Data, dataset, add: false, cancellationToken),
-            DeleteWhereOperation deleteWhere => ApplyModifyAsync(deleteWhere.Pattern, insert: null, QuadsToWhere(deleteWhere.Pattern), withGraph: null, dataset.Snapshot(), dataset, context, cancellationToken),
-            ModifyOperation modify => ApplyModifyOperationAsync(modify, dataset, context, cancellationToken),
+            InsertDataOperation insert => ApplyDataAsync(insert.Data, dataset, add: true, operationScope, cancellationToken),
+            DeleteDataOperation delete => ApplyDataAsync(delete.Data, dataset, add: false, operationScope, cancellationToken),
+            DeleteWhereOperation deleteWhere => ApplyModifyAsync(deleteWhere.Pattern, insert: null, QuadsToWhere(deleteWhere.Pattern), withGraph: null, dataset.Snapshot(), dataset, context, operationScope, cancellationToken),
+            ModifyOperation modify => ApplyModifyOperationAsync(modify, dataset, context, operationScope, cancellationToken),
             ClearOperation clear => ClearTargetsAsync(clear.Target, dataset, dropNamed: false, cancellationToken),
             DropOperation drop => ClearTargetsAsync(drop.Target, dataset, dropNamed: true, cancellationToken),
             CreateOperation create => ApplyCreateAsync(create, dataset, cancellationToken),
@@ -102,9 +102,9 @@ public static class SparqlUpdateExecutor
     /// <param name="add"><see langword="true"/> to insert, <see langword="false"/> to delete.</param>
     /// <param name="cancellationToken">A token that aborts execution.</param>
     /// <returns>The asynchronous application.</returns>
-    private static Task ApplyDataAsync(Quads data, MutableSparqlDataset dataset, bool add, CancellationToken cancellationToken)
+    private static Task ApplyDataAsync(Quads data, MutableSparqlDataset dataset, bool add, int operationScope, CancellationToken cancellationToken)
     {
-        return ApplyQuadDeltaAsync(SparqlGraphConstruction.InstantiateQuads(data, GroundSolutions), dataset, add, cancellationToken);
+        return ApplyQuadDeltaAsync(SparqlGraphConstruction.InstantiateQuads(data, GroundSolutions, operationScope), dataset, add, cancellationToken);
     }
 
     /// <summary>Applies a general modify operation, honouring <c>WITH</c> (the default graph for the WHERE and unqualified templates) and <c>USING</c>/<c>USING NAMED</c> (the query dataset for the WHERE).</summary>
@@ -113,14 +113,14 @@ public static class SparqlUpdateExecutor
     /// <param name="context">The expression context.</param>
     /// <param name="cancellationToken">A token that aborts execution.</param>
     /// <returns>The asynchronous application.</returns>
-    private static async Task ApplyModifyOperationAsync(ModifyOperation modify, MutableSparqlDataset dataset, SparqlExpressionContext context, CancellationToken cancellationToken)
+    private static async Task ApplyModifyOperationAsync(ModifyOperation modify, MutableSparqlDataset dataset, SparqlExpressionContext context, int operationScope, CancellationToken cancellationToken)
     {
         //USING / USING NAMED override the query dataset the WHERE matches; otherwise WITH names the WHERE's default
         //graph; otherwise the WHERE sees the whole current dataset. WITH also retargets unqualified template triples.
         SparqlDataset whereDataset = await BuildWhereDatasetAsync(modify, dataset, cancellationToken).ConfigureAwait(false);
         RdfTerm? withGraph = modify.With is IriRef with ? new NamedNode(with.Value) : null;
 
-        await ApplyModifyAsync(modify.Delete, modify.Insert, modify.Where, withGraph, whereDataset, dataset, context, cancellationToken).ConfigureAwait(false);
+        await ApplyModifyAsync(modify.Delete, modify.Insert, modify.Where, withGraph, whereDataset, dataset, context, operationScope, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Evaluates the <c>WHERE</c> against <paramref name="whereDataset"/>, then applies the delete and insert templates per solution (delete-before-insert), retargeting unqualified triples to <paramref name="withGraph"/> when present.</summary>
@@ -133,7 +133,7 @@ public static class SparqlUpdateExecutor
     /// <param name="context">The expression context.</param>
     /// <param name="cancellationToken">A token that aborts execution.</param>
     /// <returns>The asynchronous application.</returns>
-    private static async Task ApplyModifyAsync(Quads? delete, Quads? insert, GroupGraphPattern where, RdfTerm? withGraph, SparqlDataset whereDataset, MutableSparqlDataset dataset, SparqlExpressionContext context, CancellationToken cancellationToken)
+    private static async Task ApplyModifyAsync(Quads? delete, Quads? insert, GroupGraphPattern where, RdfTerm? withGraph, SparqlDataset whereDataset, MutableSparqlDataset dataset, SparqlExpressionContext context, int operationScope, CancellationToken cancellationToken)
     {
         //Evaluate WHERE against the pre-operation snapshot, through the engine's public surface.
         SparqlQueryEngine engine = new(whereDataset, dataset.Dictionary, context);
@@ -142,12 +142,12 @@ public static class SparqlUpdateExecutor
 
         if(delete is not null)
         {
-            await ApplyQuadDeltaAsync(Retarget(SparqlGraphConstruction.InstantiateQuads(delete, solutions), withGraph), dataset, add: false, cancellationToken).ConfigureAwait(false);
+            await ApplyQuadDeltaAsync(Retarget(SparqlGraphConstruction.InstantiateQuads(delete, solutions, operationScope), withGraph), dataset, add: false, cancellationToken).ConfigureAwait(false);
         }
 
         if(insert is not null)
         {
-            await ApplyQuadDeltaAsync(Retarget(SparqlGraphConstruction.InstantiateQuads(insert, solutions), withGraph), dataset, add: true, cancellationToken).ConfigureAwait(false);
+            await ApplyQuadDeltaAsync(Retarget(SparqlGraphConstruction.InstantiateQuads(insert, solutions, operationScope), withGraph), dataset, add: true, cancellationToken).ConfigureAwait(false);
         }
     }
 

@@ -582,22 +582,26 @@ internal static class W3cManifestLoader
 
         string? dataTerm = FindObject(actionProperties, UtNamespace + "data");
         string? dataPath = dataTerm is null ? null : ResolveSiblingPath(dataTerm, manifestUri);
+        List<(string GraphName, string Path)> inputGraphs = ParseUpdateGraphData(actionProperties, bySubject, manifestUri);
 
-        List<string> graphDataPaths = [];
-        foreach(string graphDataTerm in FindObjects(actionProperties, UtNamespace + "graphData"))
+        //The result node carries the expected resulting dataset: ut:data (default graph) and labelled ut:graphData
+        //(named graphs). Some manifests point mf:result straight at a file (the whole-dataset TriG case).
+        List<Quad>? resultProperties = null;
+        string? resultTerm = FindObject(properties, MfNamespace + "result");
+        string? expectedDataTerm;
+        if(resultTerm is not null && bySubject.TryGetValue(resultTerm, out resultProperties))
         {
-            if(ResolveSiblingPath(graphDataTerm, manifestUri) is string graphDataPath)
-            {
-                graphDataPaths.Add(graphDataPath);
-            }
+            expectedDataTerm = FindObject(resultProperties, UtNamespace + "data");
+        }
+        else
+        {
+            //A property-less result node is either a direct file IRI (the whole-dataset case) or an empty blank node
+            //`[]` (the expected dataset is empty); a blank node must NOT be resolved as a file path.
+            expectedDataTerm = resultTerm is not null && resultTerm.StartsWith("i:", StringComparison.Ordinal) ? resultTerm : null;
         }
 
-        //The result node carries the expected resulting dataset as ut:data (a TriG file holding the whole result).
-        string? resultTerm = FindObject(properties, MfNamespace + "result");
-        string? expectedDataTerm = resultTerm is not null && bySubject.TryGetValue(resultTerm, out List<Quad>? resultProperties)
-            ? FindObject(resultProperties, UtNamespace + "data")
-            : resultTerm;
         string? expectedPath = expectedDataTerm is null ? null : ResolveSiblingPath(expectedDataTerm, manifestUri);
+        List<(string GraphName, string Path)> expectedGraphs = ParseUpdateGraphData(resultProperties, bySubject, manifestUri);
 
         Uri testUri = TryBuildAbsoluteUri(entry) ?? new Uri(manifestUri, "#" + entry);
 
@@ -611,7 +615,41 @@ internal static class W3cManifestLoader
             ExpectedPath: expectedPath,
             OriginManifest: originManifest,
             QueryDataPath: dataPath,
-            GraphDataPaths: graphDataPaths);
+            GraphDataPaths: null,
+            UpdateInputGraphs: inputGraphs,
+            UpdateExpectedGraphs: expectedGraphs);
+    }
+
+    /// <summary>Parses a node's <c>ut:graphData [ ut:graph &lt;file&gt; ; rdfs:label "name" ]</c> entries into (graph-name, file) pairs; the graph name is the <c>rdfs:label</c> literal, not the file IRI.</summary>
+    /// <param name="nodeProperties">The action or result node's properties, or <see langword="null"/>.</param>
+    /// <param name="bySubject">The subject-to-properties index.</param>
+    /// <param name="manifestUri">The manifest URI for sibling-path resolution.</param>
+    /// <returns>The named-graph (name, file) pairs.</returns>
+    private static List<(string GraphName, string Path)> ParseUpdateGraphData(List<Quad>? nodeProperties, Dictionary<string, List<Quad>> bySubject, Uri manifestUri)
+    {
+        List<(string GraphName, string Path)> graphs = [];
+        if(nodeProperties is null)
+        {
+            return graphs;
+        }
+
+        foreach(string graphDataTerm in FindObjects(nodeProperties, UtNamespace + "graphData"))
+        {
+            if(!bySubject.TryGetValue(graphDataTerm, out List<Quad>? graphDataProperties))
+            {
+                continue;
+            }
+
+            string? graphTerm = FindObject(graphDataProperties, UtNamespace + "graph");
+            string? label = ResolveStringLiteral(graphDataProperties, RdfsNamespace + "label");
+            string? path = graphTerm is null ? null : ResolveSiblingPath(graphTerm, manifestUri);
+            if(path is not null && label is not null)
+            {
+                graphs.Add((label, path));
+            }
+        }
+
+        return graphs;
     }
 
     private static ImmutableArray<string> ResolveIncludesToPaths(List<string> rawIncludes, Uri manifestUri)

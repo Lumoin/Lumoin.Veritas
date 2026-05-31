@@ -27,6 +27,9 @@ namespace Lumoin.Veritas.Sparql.Execution;
 /// </remarks>
 public static class SparqlGraphConstruction
 {
+    /// <summary>The blank-label range reserved per update operation, so two operations' same-labelled template blank nodes mint distinct nodes (§4.1.2). One operation is assumed to mint fewer than this many blank nodes.</summary>
+    private const int BlankScopeStride = 1_000_000;
+
     /// <summary>Instantiates the template against every solution and returns the distinct result triples (as default-graph quads).</summary>
     /// <param name="template">The normalized CONSTRUCT template (plain triple patterns; collections/blank-node lists already lowered).</param>
     /// <param name="solutions">The solution sequence the WHERE clause produced.</param>
@@ -69,15 +72,19 @@ public static class SparqlGraphConstruction
     /// </summary>
     /// <param name="quads">The normalized quad block (sugar already lowered to plain triple patterns).</param>
     /// <param name="solutions">The solution sequence; a single empty solution for ground data.</param>
+    /// <param name="operationScope">The update operation's ordinal in the request, which seeds a disjoint blank-node label range so the same template label in two different operations mints distinct blank nodes (SPARQL Update §4.1.2 — blank nodes are scoped per operation).</param>
     /// <returns>The distinct, well-formed instantiated quads (each carrying its target graph, or none for the default graph).</returns>
-    public static List<Quad> InstantiateQuads(Ast.Quads quads, IReadOnlyList<SparqlSolution> solutions)
+    public static List<Quad> InstantiateQuads(Ast.Quads quads, IReadOnlyList<SparqlSolution> solutions, int operationScope = 0)
     {
         ArgumentNullException.ThrowIfNull(quads);
         ArgumentNullException.ThrowIfNull(solutions);
 
         List<Quad> result = [];
         HashSet<Quad> seen = [];
-        int blankCounter = 0;
+
+        //Each operation gets a disjoint blank-label range (operationScope · stride): the same `_:b` label in two
+        //operations must be two distinct blank nodes, while within one operation it stays one (the per-row map below).
+        int blankCounter = operationScope * BlankScopeStride;
         foreach(SparqlSolution solution in solutions)
         {
             Dictionary<Utf8String, BlankNode> rowBlanks = [];

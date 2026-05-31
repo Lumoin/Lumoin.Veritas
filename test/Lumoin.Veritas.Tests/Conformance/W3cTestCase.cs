@@ -45,6 +45,8 @@ namespace Lumoin.Veritas.Tests.Conformance;
 /// <param name="ExpectedReportTerm">The manifest term key of the inline expected <c>sh:ValidationReport</c> for SHACL tests; <c>null</c> otherwise.</param>
 /// <param name="QueryDataPath">The SPARQL query-evaluation data graph (<c>qt:data</c>) file; <c>null</c> for non-SPARQL-evaluation tests (where <see cref="InputPath"/> is the query file).</param>
 /// <param name="GraphDataPaths">The SPARQL query-evaluation named-graph data (<c>qt:graphData</c>) files; <c>null</c> or empty when the test declares no named graphs. Each file becomes a named graph keyed by its own file IRI.</param>
+/// <param name="UpdateInputGraphs">A SPARQL Update test's initial named graphs as (graph-name, file) pairs — the <c>ut:graphData [ ut:graph … ; rdfs:label … ]</c> nodes, whose graph name is the <c>rdfs:label</c> (not the file IRI). <c>null</c> for non-update tests.</param>
+/// <param name="UpdateExpectedGraphs">A SPARQL Update test's expected named graphs as (graph-name, file) pairs — the result's <c>ut:graphData</c> nodes. <c>null</c> for non-update tests.</param>
 [DebuggerDisplay("W3cTestCase {Type} {Name,nq}")]
 internal sealed record W3cTestCase(
     Uri Uri,
@@ -58,4 +60,6 @@ internal sealed record W3cTestCase(
     string? ShapesGraphPath = null,
     string? ExpectedReportTerm = null,
     string? QueryDataPath = null,
-    IReadOnlyList<string>? GraphDataPaths = null);
+    IReadOnlyList<string>? GraphDataPaths = null,
+    IReadOnlyList<(string GraphName, string Path)>? UpdateInputGraphs = null,
+    IReadOnlyList<(string GraphName, string Path)>? UpdateExpectedGraphs = null);

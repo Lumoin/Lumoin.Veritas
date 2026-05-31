@@ -34,6 +34,7 @@ Query-evaluation suites — the complete set the upstream
 - `sparql/sparql11/project-expression/` → `Material/Sparql/project-expression/`
 - `sparql/sparql11/property-path/` → `Material/Sparql/property-path/`
 - `sparql/sparql11/subquery/` → `Material/Sparql/subquery/`
+- SPARQL 1.1 Update suite (snapshotted 2026-06-01, same pinned commit): `sparql/sparql11/{add,basic-update,clear,copy,delete,delete-data,delete-insert,delete-where,drop,move,update-silent,syntax-update-1,syntax-update-2}/` → `Material/Sparql/<dir>/` (the `http-rdf-update` Graph-Store-Protocol dir is out of scope).
 - `sparql/sparql12/expression/` → `Material/Sparql/expression/`
 - `sparql/sparql12/eval-triple-terms/` → `Material/Sparql/eval-triple-terms/`
 - `sparql/sparql12/grouping/` → `Material/Sparql/sparql12-grouping/` (renamed to avoid the sparql11 `grouping` collision)
@@ -85,8 +86,12 @@ pattern matching.
 
 Deferred:
 
-- SPARQL **Update** syntax/evaluation tests are out of scope — this build parses
-  and evaluates queries, not update requests.
+- SPARQL **Update** syntax/evaluation tests (the dirs listed above) are vendored and
+  run: the parser, executor (over real hypertrie edit-sessions), and an
+  `mf:UpdateEvaluationTest`/`*UpdateSyntaxTest11` harness drive them. Honest skips
+  remain for update tests whose fixtures need RDF/XML, and for the generically-typed
+  (`mf:NegativeSyntaxTest11`) update-syntax entries the query-syntax runner leaves
+  inconclusive.
 - Evaluation suites that need the quad/dataset backend (`GRAPH`/`FROM NAMED`),
   federation (`SERVICE`), entailment regimes, or RDF/XML data are not yet
   vendored or are skipped structurally. `construct`/`describe`, `service`,

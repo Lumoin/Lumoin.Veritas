@@ -170,6 +170,97 @@ internal sealed class W3cSparqlEvalTests
     [W3cManifestData("Sparql", "syntax-triple-terms-negative")]
     public Task RunSyntaxTripleTermsNegative(W3cTestCase testCase) => RunAndAssertAsync(testCase);
 
+    /// <summary>Runs one W3C SPARQL 1.1 Update <c>INSERT</c>/<c>DELETE DATA</c> (basic-update) test.</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "basic-update")]
+    public Task RunUpdateBasic(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
+    /// <summary>Runs one W3C SPARQL 1.1 Update <c>DELETE DATA</c> test.</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "delete-data")]
+    public Task RunUpdateDeleteData(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
+    /// <summary>Runs one W3C SPARQL 1.1 Update <c>DELETE</c> test.</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "delete")]
+    public Task RunUpdateDelete(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
+    /// <summary>Runs one W3C SPARQL 1.1 Update <c>DELETE WHERE</c> test.</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "delete-where")]
+    public Task RunUpdateDeleteWhere(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
+    /// <summary>Runs one W3C SPARQL 1.1 Update <c>DELETE</c>/<c>INSERT</c> (modify) test.</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "delete-insert")]
+    public Task RunUpdateDeleteInsert(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
+    /// <summary>Runs one W3C SPARQL 1.1 Update <c>ADD</c> test.</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "add")]
+    public Task RunUpdateAdd(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
+    /// <summary>Runs one W3C SPARQL 1.1 Update <c>CLEAR</c> test.</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "clear")]
+    public Task RunUpdateClear(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
+    /// <summary>Runs one W3C SPARQL 1.1 Update <c>COPY</c> test.</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "copy")]
+    public Task RunUpdateCopy(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
+    /// <summary>Runs one W3C SPARQL 1.1 Update <c>MOVE</c> test.</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "move")]
+    public Task RunUpdateMove(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
+    /// <summary>Runs one W3C SPARQL 1.1 Update <c>DROP</c> test.</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "drop")]
+    public Task RunUpdateDrop(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
+    /// <summary>Runs one W3C SPARQL 1.1 Update <c>SILENT</c> test.</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "update-silent")]
+    public Task RunUpdateSilent(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
+    /// <summary>Runs one W3C SPARQL 1.1 Update positive/negative syntax test (set 1).</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "syntax-update-1")]
+    public Task RunSyntaxUpdate1(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
+    /// <summary>Runs one W3C SPARQL 1.1 Update positive/negative syntax test (set 2).</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "syntax-update-2")]
+    public Task RunSyntaxUpdate2(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
     /// <summary>
     /// Runs a query-evaluation test case and applies the outcome. A wrong answer fails (the conformance baseline);
     /// a structural non-runnable (handled by the runner) is inconclusive. Non-query-evaluation entries in a mixed
