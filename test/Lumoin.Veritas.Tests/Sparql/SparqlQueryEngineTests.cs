@@ -229,6 +229,27 @@ internal sealed class SparqlQueryEngineTests
         CollectionAssert.AreEqual(new[] { Ex + "a", Ex + "c", Ex + "b" }, Subjects(descendingSolutions));
     }
 
+    /// <summary>ORDER BY compares triple-term keys component-wise — subject, then predicate, then object, each by the SPARQL ordering — so subjects break ties by predicate, numeric objects order by value, and a literal object sorts before a nested triple-term object.</summary>
+    [TestMethod]
+    public async Task OrderByComparesTripleTermsComponentWise()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(
+            new DataTriple(Iri("a"), Iri("p"), new Lumoin.Veritas.Core.TripleTerm(Iri("s"), Iri("p"), IntegerLiteral(-456))),
+            new DataTriple(Iri("b"), Iri("p"), new Lumoin.Veritas.Core.TripleTerm(Iri("s"), Iri("p"), IntegerLiteral(123))),
+            new DataTriple(Iri("f"), Iri("p"), new Lumoin.Veritas.Core.TripleTerm(Iri("s"), Iri("p"), new Lumoin.Veritas.Core.TripleTerm(Iri("x"), Iri("y"), Iri("z")))),
+            new DataTriple(Iri("c"), Iri("p"), new Lumoin.Veritas.Core.TripleTerm(Iri("s1"), Iri("a"), IntegerLiteral(999))),
+            new DataTriple(Iri("e"), Iri("p"), new Lumoin.Veritas.Core.TripleTerm(Iri("s1"), Iri("p"), IntegerLiteral(999))),
+            new DataTriple(Iri("d"), Iri("p"), new Lumoin.Veritas.Core.TripleTerm(Iri("s2"), Iri("p"), IntegerLiteral(900)))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator ordered = Translate("PREFIX : <http://example.org/> SELECT ?s WHERE { ?s :p ?v } ORDER BY ?v", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(ordered, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //?v keys ascending: subject :s < :s1 < :s2; within :s the objects -456 < 123 < <<x y z>> (a literal object
+        //sorts before a triple-term object); within :s1 the predicate :a < :p. So the carrier subjects order a,b,f,c,e,d.
+        CollectionAssert.AreEqual(new[] { Ex + "a", Ex + "b", Ex + "f", Ex + "c", Ex + "e", Ex + "d" }, Subjects(solutions));
+    }
+
     /// <summary>An inline VALUES block yields one solution per row, binding the listed variable.</summary>
     [TestMethod]
     public async Task InlineValuesYieldsOneSolutionPerRow()

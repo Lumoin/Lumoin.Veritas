@@ -158,22 +158,55 @@ public static class SparqlExpressionEvaluator
     /// <returns>A negative, zero, or positive value as <paramref name="left"/> orders before, equal to, or after <paramref name="right"/>.</returns>
     internal static int CompareForOrdering(RdfTerm? left, RdfTerm? right)
     {
-        int leftRank = OrderRank(left);
-        int rightRank = OrderRank(right);
-        if(leftRank != rightRank)
+        //Triple terms order component-wise (subject, then predicate, then object), each component by this same
+        //ordering and itself possibly a triple term. An explicit stack walks the pending component comparisons in
+        //order — no call-stack recursion: a triple-term pair expands to its three component pairs, pushed so the
+        //subject is taken first, and the first component that differs decides the whole comparison. Non-triple
+        //terms compare by category rank, then within a rank by label / IRI / literal value.
+        Stack<(RdfTerm? Left, RdfTerm? Right)> pending = new();
+        pending.Push((left, right));
+
+        while(pending.Count > 0)
         {
-            return leftRank.CompareTo(rightRank);
+            (RdfTerm? leftTerm, RdfTerm? rightTerm) = pending.Pop();
+            int leftRank = OrderRank(leftTerm);
+            int rightRank = OrderRank(rightTerm);
+            if(leftRank != rightRank)
+            {
+                return leftRank.CompareTo(rightRank);
+            }
+
+            int comparison = leftRank switch
+            {
+                1 => ((BlankNode)leftTerm!).Label.CompareTo(((BlankNode)rightTerm!).Label),
+                2 => ((NamedNode)leftTerm!).Iri.CompareTo(((NamedNode)rightTerm!).Iri),
+                3 => CompareLiterals((Literal)leftTerm!, (Literal)rightTerm!),
+                4 => ExpandTripleTermComparison(pending, (Lumoin.Veritas.Core.TripleTerm)leftTerm!, (Lumoin.Veritas.Core.TripleTerm)rightTerm!),
+
+                //Both unbound (0): equal at this position.
+                _ => 0
+            };
+            if(comparison != 0)
+            {
+                return comparison;
+            }
         }
 
-        return leftRank switch
-        {
-            1 => ((BlankNode)left!).Label.CompareTo(((BlankNode)right!).Label),
-            2 => ((NamedNode)left!).Iri.CompareTo(((NamedNode)right!).Iri),
-            3 => CompareLiterals((Literal)left!, (Literal)right!),
+        return 0;
+    }
 
-            //Both unbound (0) or both triple terms (4) — treat as equal for ordering.
-            _ => 0
-        };
+    /// <summary>Pushes a triple-term pair's object, predicate, and subject component comparisons (subject on top, so it is taken first) onto the pending stack and yields 0, deferring the decision to those components.</summary>
+    /// <param name="pending">The pending-comparison stack to push the three component pairs onto.</param>
+    /// <param name="left">The left triple term.</param>
+    /// <param name="right">The right triple term.</param>
+    /// <returns>Always 0 — the comparison is decided by the pushed component pairs.</returns>
+    private static int ExpandTripleTermComparison(Stack<(RdfTerm? Left, RdfTerm? Right)> pending, Lumoin.Veritas.Core.TripleTerm left, Lumoin.Veritas.Core.TripleTerm right)
+    {
+        pending.Push((left.Object, right.Object));
+        pending.Push((left.Predicate, right.Predicate));
+        pending.Push((left.Subject, right.Subject));
+
+        return 0;
     }
 
     /// <summary>Returns the <c>ORDER BY</c> category rank of a term: unbound 0, blank node 1, IRI 2, literal 3, triple term 4.</summary>
