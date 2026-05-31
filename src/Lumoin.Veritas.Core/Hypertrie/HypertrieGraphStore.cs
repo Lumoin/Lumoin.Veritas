@@ -250,6 +250,42 @@ public sealed class HypertrieGraphStore
     }
 
     /// <summary>
+    /// Wraps an existing <see cref="HypertrieSnapshot"/> — typically the new snapshot an
+    /// <see cref="EditSession.CommitAsync"/> returns — in a queryable store, so committed state can be read and
+    /// further edited without rebuilding. The read-side complement to <see cref="OpenEditSessionAsync"/>: an edit
+    /// session commits to a snapshot, and this re-wraps that snapshot as a store.
+    /// </summary>
+    /// <param name="snapshot">The snapshot to wrap; used as-is, no rebuild.</param>
+    /// <returns>A store reading <paramref name="snapshot"/>.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="snapshot"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// <para>
+    /// <b>Reference ownership.</b> The returned store <see cref="HypertrieSnapshot.Acquire">acquires</see> its own
+    /// reference to <paramref name="snapshot"/> and holds it for the store's lifetime (like a built store). The caller
+    /// remains the owner of the reference it passed in and must still release it (e.g. the <c>using</c> on a
+    /// <see cref="EditSession.CommitAsync"/> result).
+    /// </para>
+    /// <para>
+    /// <b>Count.</b> <see cref="Count"/> is computed by a full match enumeration over the snapshot (O(n)); the snapshot
+    /// carries no materialised count. This is the one rebuild-shaped cost of re-wrapping — kept thin so a future seam
+    /// can query a snapshot in place instead.
+    /// </para>
+    /// </remarks>
+    public static HypertrieGraphStore FromSnapshot(HypertrieSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        HypertrieNode root = snapshot.Store.GetByHandle(snapshot.Root);
+        int count = 0;
+        foreach(EncodedTriple _ in HypertrieOps.Match(root, snapshot.Store, TermId.None, TermId.None, TermId.None))
+        {
+            count++;
+        }
+
+        return new HypertrieGraphStore(snapshot.Acquire(), count);
+    }
+
+    /// <summary>
     /// Opens an <see cref="EditSession"/> against this store's
     /// current <see cref="Snapshot"/>. The session holds a fresh
     /// reference to the snapshot for its lifetime; the caller

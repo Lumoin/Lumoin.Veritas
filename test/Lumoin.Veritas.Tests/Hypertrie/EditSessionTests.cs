@@ -1,3 +1,4 @@
+using System.Linq;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie;
@@ -40,6 +41,43 @@ internal sealed class EditSessionTests
             Assert.AreEqual(EditSessionEntryKind.Started, entries[1].EntryKind);
             Assert.AreEqual(session.Id, entries[1].SessionId);
             Assert.AreEqual(entries[1].ParentId, entries[1].ChildId);
+        }
+        finally
+        {
+            await session.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
+    public async Task FromSnapshotReadsCommittedStateAndLeavesOriginalUnchanged()
+    {
+        InMemoryJournal journal = new();
+        using NodeStore store = new(VeritasHashing.Default, journal.AppendDelegate, journal.ReadDelegate);
+        EncodedTriple seed = EncodedTriple.FromEncoded(1, 2, 3);
+        EncodedTriple added = EncodedTriple.FromEncoded(4, 5, 6);
+
+        HypertrieGraphStore graph = await HypertrieGraphStore.BuildAsync([seed], store, TestContext.CancellationToken).ConfigureAwait(false);
+
+        EditSession session = await graph.OpenEditSessionAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        try
+        {
+            session.Add(added);
+            session.Remove(seed);
+            using HypertrieSnapshot committed = await session.CommitAsync(TestContext.CancellationToken).ConfigureAwait(false);
+
+            HypertrieGraphStore mutated = HypertrieGraphStore.FromSnapshot(committed);
+
+            //The re-wrapped store reflects the commit: the added triple is present, the removed one gone.
+            EncodedTriple[] mutatedTriples = [.. mutated.Match(TermId.None, TermId.None, TermId.None)];
+            Assert.AreEqual(1, mutated.Count);
+            Assert.Contains(added, mutatedTriples);
+            Assert.DoesNotContain(seed, mutatedTriples);
+
+            //Snapshot isolation: the original store still reads its pre-edit state.
+            EncodedTriple[] originalTriples = [.. graph.Match(TermId.None, TermId.None, TermId.None)];
+            Assert.AreEqual(1, graph.Count);
+            Assert.Contains(seed, originalTriples);
+            Assert.DoesNotContain(added, originalTriples);
         }
         finally
         {
