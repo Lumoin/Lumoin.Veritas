@@ -91,7 +91,7 @@ internal sealed class SparqlUpdateExecutorTests
     private async Task ExecuteAsync(MutableSparqlDataset dataset, string text, Utf8StringPool pool)
     {
         SparqlUpdateRequest request = ParseAndNormalize(text, pool);
-        await SparqlUpdateExecutor.ExecuteAsync(request, dataset, SparqlExpressionContext.CreateDefault(), TestContext.CancellationToken).ConfigureAwait(false);
+        await SparqlUpdateExecutor.ExecuteAsync(request, dataset, SparqlExpressionContext.CreateDefault(), graphSource: null, TestContext.CancellationToken).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -162,5 +162,117 @@ internal sealed class SparqlUpdateExecutorTests
         List<Quad> quads = DumpQuads(dataset);
         Assert.HasCount(1, quads);
         Assert.AreEqual("urn:q", quads[0].Predicate.Iri.ToString());
+    }
+
+    [TestMethod]
+    public async Task ClearDefaultEmptiesTheDefaultGraph()
+    {
+        using Utf8StringPool pool = new();
+        MutableSparqlDataset dataset = await EmptyDatasetAsync().ConfigureAwait(false);
+
+        await ExecuteAsync(dataset, "INSERT DATA { <urn:s> <urn:p> <urn:o> . GRAPH <urn:g> { <urn:a> <urn:b> <urn:c> } }", pool).ConfigureAwait(false);
+        await ExecuteAsync(dataset, "CLEAR DEFAULT", pool).ConfigureAwait(false);
+
+        List<Quad> quads = DumpQuads(dataset);
+        Assert.HasCount(1, quads, "the named graph survives CLEAR DEFAULT");
+        Assert.IsNotNull(quads[0].Graph);
+    }
+
+    [TestMethod]
+    public async Task DropGraphRemovesNamedGraph()
+    {
+        using Utf8StringPool pool = new();
+        MutableSparqlDataset dataset = await EmptyDatasetAsync().ConfigureAwait(false);
+
+        await ExecuteAsync(dataset, "INSERT DATA { GRAPH <urn:g> { <urn:a> <urn:b> <urn:c> } }", pool).ConfigureAwait(false);
+        await ExecuteAsync(dataset, "DROP GRAPH <urn:g>", pool).ConfigureAwait(false);
+
+        Assert.IsEmpty(DumpQuads(dataset));
+    }
+
+    [TestMethod]
+    public async Task CopyReplacesDestinationKeepingSource()
+    {
+        using Utf8StringPool pool = new();
+        MutableSparqlDataset dataset = await EmptyDatasetAsync().ConfigureAwait(false);
+
+        await ExecuteAsync(dataset, "INSERT DATA { GRAPH <urn:g1> { <urn:s> <urn:p> <urn:o> } GRAPH <urn:g2> { <urn:x> <urn:y> <urn:z> } }", pool).ConfigureAwait(false);
+        await ExecuteAsync(dataset, "COPY <urn:g1> TO <urn:g2>", pool).ConfigureAwait(false);
+
+        List<Quad> quads = DumpQuads(dataset);
+        Assert.HasCount(2, quads, "g1 kept; g2 replaced by g1's single triple");
+        foreach(Quad quad in quads)
+        {
+            Assert.AreEqual("urn:p", quad.Predicate.Iri.ToString());
+        }
+    }
+
+    [TestMethod]
+    public async Task MoveReplacesDestinationAndDropsSource()
+    {
+        using Utf8StringPool pool = new();
+        MutableSparqlDataset dataset = await EmptyDatasetAsync().ConfigureAwait(false);
+
+        await ExecuteAsync(dataset, "INSERT DATA { GRAPH <urn:g1> { <urn:s> <urn:p> <urn:o> } GRAPH <urn:g2> { <urn:x> <urn:y> <urn:z> } }", pool).ConfigureAwait(false);
+        await ExecuteAsync(dataset, "MOVE <urn:g1> TO <urn:g2>", pool).ConfigureAwait(false);
+
+        List<Quad> quads = DumpQuads(dataset);
+        Assert.HasCount(1, quads, "g1 dropped; g2 = g1's triple");
+        Assert.AreEqual("urn:g2", ((NamedNode)quads[0].Graph!).Iri.ToString());
+        Assert.AreEqual("urn:p", quads[0].Predicate.Iri.ToString());
+    }
+
+    [TestMethod]
+    public async Task AddMergesSourceIntoDestination()
+    {
+        using Utf8StringPool pool = new();
+        MutableSparqlDataset dataset = await EmptyDatasetAsync().ConfigureAwait(false);
+
+        await ExecuteAsync(dataset, "INSERT DATA { GRAPH <urn:g1> { <urn:s> <urn:p> <urn:o> } GRAPH <urn:g2> { <urn:x> <urn:y> <urn:z> } }", pool).ConfigureAwait(false);
+        await ExecuteAsync(dataset, "ADD <urn:g1> TO <urn:g2>", pool).ConfigureAwait(false);
+
+        int g2Count = 0;
+        foreach(Quad quad in DumpQuads(dataset))
+        {
+            if(quad.Graph is NamedNode named && named.Iri.ToString() == "urn:g2")
+            {
+                g2Count++;
+            }
+        }
+
+        Assert.AreEqual(2, g2Count, "g2 keeps its own triple and gains g1's");
+    }
+
+    [TestMethod]
+    public async Task WithRetargetsModifyToTheNamedGraph()
+    {
+        using Utf8StringPool pool = new();
+        MutableSparqlDataset dataset = await EmptyDatasetAsync().ConfigureAwait(false);
+
+        await ExecuteAsync(dataset, "INSERT DATA { GRAPH <urn:g> { <urn:a> <urn:knows> <urn:b> } }", pool).ConfigureAwait(false);
+        await ExecuteAsync(dataset, "WITH <urn:g> DELETE { ?s <urn:knows> ?o } INSERT { ?s <urn:friend> ?o } WHERE { ?s <urn:knows> ?o }", pool).ConfigureAwait(false);
+
+        List<Quad> quads = DumpQuads(dataset);
+        Assert.HasCount(1, quads);
+        Assert.AreEqual("urn:friend", quads[0].Predicate.Iri.ToString());
+        Assert.AreEqual("urn:g", ((NamedNode)quads[0].Graph!).Iri.ToString(), "WITH retargets the unqualified template to the WITH graph");
+    }
+
+    [TestMethod]
+    public async Task LoadAddsResolvedTriplesToTheDefaultGraph()
+    {
+        using Utf8StringPool pool = new();
+        MutableSparqlDataset dataset = await EmptyDatasetAsync().ConfigureAwait(false);
+
+        SparqlUpdateRequest request = ParseAndNormalize("LOAD <urn:doc>", pool);
+        await SparqlUpdateExecutor.ExecuteAsync(
+            request,
+            dataset,
+            SparqlExpressionContext.CreateDefault(),
+            graphSource: static (source, ct) => new ValueTask<IReadOnlyList<DataTriple>>(
+                (IReadOnlyList<DataTriple>)[new DataTriple(new NamedNode(Utf8String.FromString("urn:s")), new NamedNode(Utf8String.FromString("urn:p")), new NamedNode(Utf8String.FromString("urn:o")))]),
+            TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(1, DumpQuads(dataset));
     }
 }

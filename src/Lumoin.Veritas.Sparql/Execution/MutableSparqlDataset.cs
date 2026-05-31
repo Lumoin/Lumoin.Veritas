@@ -59,6 +59,17 @@ public sealed class MutableSparqlDataset
         return new SparqlDataset(DefaultGraph, namedGraphs);
     }
 
+    /// <summary>Produces a read-only <see cref="SparqlDataset"/> over the current named graphs but a different default graph (the <c>WITH</c> graph of a modify's <c>WHERE</c>).</summary>
+    /// <param name="defaultGraph">The default-graph store the snapshot uses.</param>
+    /// <returns>The dataset snapshot.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="defaultGraph"/> is <see langword="null"/>.</exception>
+    public SparqlDataset SnapshotWithDefault(HypertrieGraphStore defaultGraph)
+    {
+        ArgumentNullException.ThrowIfNull(defaultGraph);
+
+        return new SparqlDataset(defaultGraph, namedGraphs);
+    }
+
     /// <summary>Replaces the default-graph store.</summary>
     /// <param name="store">The new default-graph store.</param>
     /// <exception cref="ArgumentNullException"><paramref name="store"/> is <see langword="null"/>.</exception>

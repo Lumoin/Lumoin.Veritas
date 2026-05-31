@@ -141,7 +141,7 @@ internal static class W3cSparqlEvalRunner
         SparqlExpressionContext context = SparqlExpressionContext.CreateDefault().WithBaseIri(Utf8String.FromString(baseUri));
         try
         {
-            await SparqlUpdateExecutor.ExecuteAsync(normalized, dataset, context, cancellationToken).ConfigureAwait(false);
+            await SparqlUpdateExecutor.ExecuteAsync(normalized, dataset, context, LocalFileGraphSource, cancellationToken).ConfigureAwait(false);
         }
         catch(NotSupportedException ex)
         {
@@ -153,6 +153,30 @@ internal static class W3cSparqlEvalRunner
         return QuadSetIsomorphism.AreIsomorphic(actual, expected)
             ? new W3cOutcome(W3cOutcomeStatus.Passed, $"Resulting dataset matches ({actual.Count} quad(s)).")
             : new W3cOutcome(W3cOutcomeStatus.Failed, $"Resulting dataset does not match expected (actual {actual.Count} vs expected {expected.Count} quad(s)).");
+    }
+
+    /// <summary>
+    /// The <c>LOAD</c> source resolver the conformance harness uses: maps a (post-base-resolution, absolute) source
+    /// IRI to its local file and reads the document's default-graph triples. No network — the suite's sources are
+    /// sibling files of the request, addressed by <c>file:</c> IRIs after the parser resolves them against the request
+    /// base. A missing or unreadable source surfaces as an exception (the executor swallows it only for <c>LOAD SILENT</c>).
+    /// </summary>
+    /// <param name="source">The source IRI.</param>
+    /// <param name="cancellationToken">A token to cancel reading.</param>
+    /// <returns>The source document's triples.</returns>
+    private static async ValueTask<IReadOnlyList<DataTriple>> LocalFileGraphSource(IriRef source, CancellationToken cancellationToken)
+    {
+        string path = new Uri(source.Value.ToString()).LocalPath;
+        List<DataTriple> triples = [];
+        foreach(Quad quad in await ReadQuadsAsync(path, cancellationToken).ConfigureAwait(false))
+        {
+            if(quad.Graph is null)
+            {
+                triples.Add(new DataTriple(quad.Subject, quad.Predicate, quad.Object));
+            }
+        }
+
+        return triples;
     }
 
     /// <summary>Builds a mutable dataset by encoding the initial default and named graphs into one shared dictionary and journal-backed graph stores.</summary>
