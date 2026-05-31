@@ -6,9 +6,9 @@ AST → algebra → translator → hypertrie backend + executor subset → SHACL
 unlock). **Batch 2 = Milestones D–F** (full algebra/aggregation, CONSTRUCT/
 DESCRIBE/JSON results, conformance push).
 
-## ⭐ CURRENT STATE (2026-06-01, **harness GREEN (0 failures)**; SPARQL Update front end landed (Phases 0–1 of 5), on `sparql-query-engine`, tree clean)
+## ⭐ CURRENT STATE (2026-06-01, **harness GREEN (0 failures)**; SPARQL Update executes (Phases 0–3 of 5 done), on `sparql-query-engine`, tree clean)
 
-**Full suite = 3452 total, 0 failed, 256 skip; 0 regressions.** Building **SPARQL 1.2 Update** in full, final form,
+**Full suite = 3460 total, 0 failed, 250 skip; 0 regressions.** Building **SPARQL 1.2 Update** in full, final form,
 backed by the **real hypertrie edit-session machinery** (which already exists — `OpenEditSessionAsync`/`EditSession`/
 journal/`EditCommitment` in `Core/Hypertrie/Editing/`; we drive it, not rebuild it). Plan +
 storage/seam-roadmap notes: `C:\Users\Veikko\.claude\plans\delegated-napping-crab.md` (user-approved). 5 phases:
@@ -18,18 +18,24 @@ storage/seam-roadmap notes: `C:\Users\Veikko\.claude\plans\delegated-napping-cra
   `EditSessionTests.FromSnapshotReadsCommittedStateAndLeavesOriginalUnchanged`.
 - ✅ **Phase 1 (`6332eb7`):** Update **parser + AST**, all operations, final form. Lexer keywords; `Ast/UpdateOperations.cs`
   (InsertData/DeleteData/DeleteWhere/Modify/Load/Clear/Drop/Create/Add/Move/Copy + Quads/QuadsGraphGroup/GraphRefTarget/
-  UsingClause); frame-stack parser (`UpdateOperation`/`Quads`/`Modify` frames; quad blocks reuse triple/construct-template/
-  GRAPH machinery); §3.1.3 blank-node-in-DELETE rejection (anonymous `{| |}` reifier counts; explicit `~iri` is fine).
-  Harness classifies `PositiveUpdateSyntaxTest`/`NegativeUpdateSyntaxTest`/`UpdateEvaluationTest`; parse-only update-syntax
-  runner. The 20 vendored triple-term update-syntax tests are GREEN (2 anon-reifier negatives correctly reject).
-  Tests: `SparqlUpdateParserTests` (12).
-- ⏭ **Phase 2 — TriG reader** (prereq for update-eval data/results, `.trig`; also unblocks non-update GRAPH `.trig` skips).
-- ⏭ **Phase 3 — `MutableSparqlDataset` + `SparqlUpdateExecutor`** (INSERT/DELETE DATA + Modify via edit-sessions;
-  `SparqlGraphConstruction.Construct` for templates, delete-before-insert; `UpdateEvaluationTest` runner comparing the
-  result dataset via `QuadSetIsomorphism`). WHERE solutions only through the engine's public seam surface (so the
-  pluggable-WCOJ backend swap later covers Update for free).
-- ⏭ **Phase 4 — graph-management ops** (CREATE/DROP/CLEAR/COPY/MOVE/ADD) + `LOAD` via a `GraphSourceResolver` local-file seam.
+  UsingClause); frame-stack parser (`UpdateOperation`/`Quads`/`Modify` frames); §3.1.3 blank-node-in-DELETE rejection
+  (anonymous `{| |}` reifier counts; explicit `~iri` is fine). Harness classifies the update test types; parse-only
+  update-syntax runner. 20 vendored update-syntax tests GREEN. Tests: `SparqlUpdateParserTests` (12).
+- ✅ **Phase 2 (`d0f8dd4`):** **TriG** wired into the harness graph loaders — the Turtle reader already parses TriG
+  (`TurtleSyntax.TriG`); unified `ReadQuadsAsync` dispatches `.nq`/`.ttl`/`.nt`/`.trig`, and a single TriG/N-Quads data
+  file is split into default + named graphs. Closed the 3 `.trig`-blocked GRAPH eval skips. Tests: `TrigReaderTests` (3).
+- ✅ **Phase 3 (`cebb0a6`):** Update **executes**. `MutableSparqlDataset` (default + named journal-backed stores over one
+  shared `TermDictionary`; commits via a real `EditSession` → `FromSnapshot` swap). `SparqlUpdateExecutor`: INSERT/DELETE
+  DATA (edit-session add/remove per graph; INSERT DATA creates a missing named graph); Modify / DELETE WHERE (WHERE once
+  via the public `SparqlQueryEngine`, `SparqlGraphConstruction.InstantiateQuads` per solution, delete-before-insert).
+  `SparqlNormalizer` lowers update Quads + Modify WHERE. Harness `UpdateEvaluationTest` runner compares the result dataset
+  via `QuadSetIsomorphism`. **WITH/USING + graph-management ops raise `NotSupported` (Phase 4).** The 3 eval-triple-terms
+  update-eval tests GREEN. Tests: `SparqlUpdateExecutorTests` (5).
+- ⏭ **Phase 4 — graph-management ops** (CREATE/DROP/CLEAR/COPY/MOVE/ADD) + WITH/USING + `LOAD` via a `GraphSourceResolver`
+  local-file seam. (No vendored test exercises these yet — they're validated by the Phase 5 suite.)
 - ⏭ **Phase 5 — vendor the full official W3C Update suite** + red-baseline ratchet to 0.
+
+**All currently-vendored update tests (20 syntax + 3 eval) are GREEN.** Full suite 3460, 0 failed, 250 skip.
 
 Roadmap linkage (captured in the plan): Update is the first real producer of journal `Committed` entries → exercises the
 change-signing/CBOM/trace-bus seams; mutations are incremental copy-on-write (respect the build-cost constraint), the one
