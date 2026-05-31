@@ -52,12 +52,19 @@ public static class RdfCanonicalizer
         ArgumentNullException.ThrowIfNull(quads);
         ArgumentNullException.ThrowIfNull(hash);
 
+        //An RDF dataset is a SET of quads: RDFC-1.0 operates on distinct quads, so duplicate input quads are removed
+        //before hashing and serialization (otherwise a blank node's first-degree hash would double-count a repeated
+        //quad, and the output would carry a duplicate line). Quad value-equality covers all four positions.
         List<Quad> dataset = quads is ICollection<Quad> sourceCollection
             ? new List<Quad>(sourceCollection.Count)
             : [];
+        HashSet<Quad> seenQuads = [];
         foreach(Quad q in quads)
         {
-            dataset.Add(q);
+            if(seenQuads.Add(q))
+            {
+                dataset.Add(q);
+            }
         }
 
         //Step 1. Collect blank node to quads mapping.
@@ -177,11 +184,13 @@ public static class RdfCanonicalizer
                 //RDFC-1.0 §4.5.3 step 6.2: seed the temporary issuer with an
                 //identifier for this blank node, THEN compute its n-degree hash
                 //(which issues identifiers for the related blank nodes reached
-                //along the chosen path, in order, into the same issuer).
+                //along the chosen path, in order). The hashing replaces the working
+                //issuer as it resolves each group, so the RETURNED issuer — not the
+                //seed — carries the final issued order used for assignment.
                 IdentifierIssuer tempIssuer = new("b");
                 tempIssuer.Issue(blankId);
-                string ndHash = HashNDegreeQuads(blankId, blankNodeToQuads, simpleMap, canonicalMap, tempIssuer, hash);
-                groupResults.Add((ndHash, tempIssuer));
+                (string ndHash, IdentifierIssuer resultIssuer) = HashNDegreeQuads(blankId, blankNodeToQuads, simpleMap, canonicalMap, tempIssuer, hash);
+                groupResults.Add((ndHash, resultIssuer));
             }
 
             //Step 6.3: process the results in n-degree hash order and, for each,
@@ -371,17 +380,26 @@ public static class RdfCanonicalizer
     }
 
     /// <summary>
-    /// Implements the RDFC-1.0 "Hash N-Degree Quads" algorithm.
+    /// Implements the RDFC-1.0 "Hash N-Degree Quads" algorithm (§4.8.3) for a blank node whose first-degree hash
+    /// collides with another's, producing both the path-dependent hash that distinguishes structurally different
+    /// blank nodes and the issuer recording the identifiers issued, in order, along the chosen path.
     /// </summary>
     /// <remarks>
-    /// Used for blank nodes whose first-degree hash collides with another blank node.
-    /// Traverses the graph iteratively, hashing connected blank nodes to produce a
-    /// path-dependent hash that can distinguish structurally different blank nodes
-    /// even in complex graph topologies.
+    /// The algorithm is recursive in the specification: each related blank node reached along a candidate path is
+    /// itself hashed by this routine, and every <b>permutation</b> of the blank nodes that share a related hash is
+    /// tried so that automorphic (symmetric) siblings resolve to one canonical, input-order-independent order. This
+    /// port keeps those exact semantics but runs over an explicit frame stack rather than the call stack (recursion
+    /// is banned project-wide): each frame is one logical activation, and a frame that must hash a related node
+    /// pushes a child frame and resumes when the child completes.
     /// </remarks>
-    [SuppressMessage("Globalization", "CA1308:Normalize strings to uppercase",
-        Justification = "RDFC-1.0 requires lowercase hex output by specification.")]
-    private static string HashNDegreeQuads(
+    /// <param name="blankId">The blank node being hashed.</param>
+    /// <param name="blankNodeToQuads">The blank-node-to-quads index.</param>
+    /// <param name="hashMap">Every blank node's first-degree hash.</param>
+    /// <param name="canonicalMap">The blank nodes assigned a canonical identifier so far.</param>
+    /// <param name="issuer">The temporary issuer seeded with <paramref name="blankId"/>.</param>
+    /// <param name="hash">The hash function.</param>
+    /// <returns>The n-degree hash and the issuer carrying the final issued order.</returns>
+    private static (string Hash, IdentifierIssuer Issuer) HashNDegreeQuads(
         string blankId,
         Dictionary<string, List<Quad>> blankNodeToQuads,
         Dictionary<string, string> hashMap,
@@ -389,110 +407,288 @@ public static class RdfCanonicalizer
         IdentifierIssuer issuer,
         HashDelegate hash)
     {
-        //Collect related blank nodes grouped by their first-degree hash.
-        Dictionary<string, List<string>> hashToRelated = [];
+        Stack<NDegreeFrame> stack = new();
+        stack.Push(new NDegreeFrame(blankId, issuer));
+        (string Hash, IdentifierIssuer Issuer) result = default;
+        bool hasResult = false;
 
-        foreach(Quad quad in blankNodeToQuads.TryGetValue(blankId, out List<Quad>? quads) ? quads : [])
+        while(stack.Count > 0)
         {
-            AddRelatedBlankNodes(quad, blankId, hashMap, canonicalMap, issuer, hash, hashToRelated, blankNodeToQuads);
-        }
-
-        //Build a data-to-hash string by iterating related blank nodes in hash order.
-        StringBuilder dataToHash = new();
-
-        string[] sortedRelatedHashes = new string[hashToRelated.Count];
-        int relatedIndex = 0;
-        foreach(string h in hashToRelated.Keys)
-        {
-            sortedRelatedHashes[relatedIndex++] = h;
-        }
-
-        Array.Sort(sortedRelatedHashes, StringComparer.Ordinal);
-
-        foreach(string relatedHash in sortedRelatedHashes)
-        {
-            dataToHash.Append(relatedHash);
-
-            string? chosenPath = null;
-            IdentifierIssuer? chosenIssuer = null;
-
-            List<string> candidates = hashToRelated[relatedHash];
-
-            foreach(string related in candidates)
+            NDegreeFrame frame = stack.Peek();
+            if(hasResult)
             {
-                IdentifierIssuer tempIssuer = issuer.Clone();
+                //Deliver a just-completed child's result to the parent now resuming at RecursionResume.
+                frame.ChildResult = result;
+                hasResult = false;
+            }
 
-                //Issue a temporary identifier for this candidate.
-                if(!canonicalMap.ContainsKey(related))
+            if(StepNDegreeFrame(frame, blankNodeToQuads, hashMap, canonicalMap, hash, stack))
+            {
+                stack.Pop();
+                result = (frame.ResultHash!, frame.Issuer);
+                hasResult = true;
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Advances one n-degree frame's state machine until it either completes (returns <see langword="true"/>, with
+    /// <see cref="NDegreeFrame.ResultHash"/> set) or suspends by pushing a child frame to hash a related node
+    /// (returns <see langword="false"/>, the child now on top of <paramref name="stack"/>).
+    /// </summary>
+    /// <param name="frame">The frame to advance.</param>
+    /// <param name="blankNodeToQuads">The blank-node-to-quads index.</param>
+    /// <param name="hashMap">Every blank node's first-degree hash.</param>
+    /// <param name="canonicalMap">The blank nodes assigned a canonical identifier so far.</param>
+    /// <param name="hash">The hash function.</param>
+    /// <param name="stack">The frame stack a recursion step pushes onto.</param>
+    /// <returns><see langword="true"/> when the frame completed.</returns>
+    [SuppressMessage("Globalization", "CA1308:Normalize strings to uppercase",
+        Justification = "RDFC-1.0 requires lowercase hex output by specification.")]
+    private static bool StepNDegreeFrame(
+        NDegreeFrame frame,
+        Dictionary<string, List<Quad>> blankNodeToQuads,
+        Dictionary<string, string> hashMap,
+        Dictionary<string, string> canonicalMap,
+        HashDelegate hash,
+        Stack<NDegreeFrame> stack)
+    {
+        while(true)
+        {
+            switch(frame.Stage)
+            {
+                case NDegreeStage.Start:
                 {
-                    tempIssuer.Issue(related);
+                    frame.Groups = BuildRelatedGroups(frame.Identifier, blankNodeToQuads, hashMap, canonicalMap, frame.Issuer, hash);
+                    frame.Stage = NDegreeStage.GroupLoop;
+
+                    break;
                 }
 
-                StringBuilder path = new();
-
-                //Walk the graph from this candidate, building a path string.
-                Queue<string> recursionQueue = new();
-                recursionQueue.Enqueue(related);
-
-                while(recursionQueue.Count > 0)
+                case NDegreeStage.GroupLoop:
                 {
-                    string current = recursionQueue.Dequeue();
+                    if(frame.GroupIndex >= frame.Groups.Count)
+                    {
+                        byte[] bytes = hash(Encoding.UTF8.GetBytes(frame.DataToHash.ToString()));
+                        frame.ResultHash = Convert.ToHexString(bytes).ToLowerInvariant();
 
-                    if(canonicalMap.TryGetValue(current, out string? canonical))
-                    {
-                        path.Append('_');
-                        path.Append(':');
-                        path.Append(canonical);
+                        return true;
                     }
-                    else
+
+                    frame.DataToHash.Append(frame.Groups[frame.GroupIndex].Hash);
+                    frame.ChosenPath = null;
+                    frame.ChosenIssuer = null;
+                    frame.Permutation = [.. frame.Groups[frame.GroupIndex].Related];
+                    frame.Permutation.Sort(StringComparer.Ordinal);
+                    frame.PermutationStarted = false;
+                    frame.Stage = NDegreeStage.PermutationLoop;
+
+                    break;
+                }
+
+                case NDegreeStage.PermutationLoop:
+                {
+                    if(frame.PermutationStarted && !NextPermutation(frame.Permutation))
                     {
-                        if(!tempIssuer.HasIssued(current))
+                        //Every permutation tried: commit the least path and its issuer, then advance to the next group.
+                        frame.DataToHash.Append(frame.ChosenPath);
+                        frame.Issuer = frame.ChosenIssuer!;
+                        frame.GroupIndex++;
+                        frame.Stage = NDegreeStage.GroupLoop;
+
+                        break;
+                    }
+
+                    frame.PermutationStarted = true;
+                    frame.PermutationIssuer = frame.Issuer.Clone();
+                    frame.PermutationPath = new StringBuilder();
+                    frame.RecursionList = [];
+
+                    //§4.8.3 step 5.4.4 (first pass): issue a temporary id for each related node, recording the
+                    //newly-issued ones for the recursion pass; a node already assigned a canonical id uses it.
+                    bool skip = false;
+                    foreach(string related in frame.Permutation)
+                    {
+                        if(canonicalMap.TryGetValue(related, out string? canonical))
                         {
-                            //Queue related blank nodes of current for further processing.
-                            if(blankNodeToQuads.TryGetValue(current, out List<Quad>? currentQuads))
+                            frame.PermutationPath.Append("_:").Append(canonical);
+                        }
+                        else
+                        {
+                            if(!frame.PermutationIssuer.HasIssued(related))
                             {
-                                foreach(Quad q in currentQuads)
-                                {
-                                    EnqueueRelated(q, current, tempIssuer, recursionQueue);
-                                }
+                                frame.RecursionList.Add(related);
                             }
+
+                            frame.PermutationPath.Append("_:").Append(frame.PermutationIssuer.Issue(related));
                         }
 
-                        path.Append('_');
-                        path.Append(':');
-                        path.Append(tempIssuer.Issue(current));
+                        if(IsWorseThanChosen(frame))
+                        {
+                            skip = true;
+
+                            break;
+                        }
                     }
+
+                    //A path already not better than the chosen one cannot win; skip to the next permutation.
+                    frame.Stage = NDegreeStage.PermutationLoop;
+                    if(!skip)
+                    {
+                        frame.RecursionIndex = 0;
+                        frame.Stage = NDegreeStage.RecursionLoop;
+                    }
+
+                    break;
                 }
 
-                string pathStr = path.ToString();
-                if(chosenPath is null || string.Compare(pathStr, chosenPath, StringComparison.Ordinal) < 0)
+                case NDegreeStage.RecursionLoop:
                 {
-                    chosenPath = pathStr;
-                    chosenIssuer = tempIssuer;
+                    if(frame.RecursionIndex >= frame.RecursionList.Count)
+                    {
+                        //Permutation complete: keep it when it is the least path seen for this group (§4.8.3 step 5.4.6).
+                        string path = frame.PermutationPath.ToString();
+                        if(frame.ChosenPath is null || string.CompareOrdinal(path, frame.ChosenPath) < 0)
+                        {
+                            frame.ChosenPath = path;
+                            frame.ChosenIssuer = frame.PermutationIssuer;
+                        }
+
+                        frame.Stage = NDegreeStage.PermutationLoop;
+
+                        break;
+                    }
+
+                    //§4.8.3 step 5.4.5: hash the related node recursively — push a child frame, resume at RecursionResume.
+                    frame.Stage = NDegreeStage.RecursionResume;
+                    stack.Push(new NDegreeFrame(frame.RecursionList[frame.RecursionIndex], frame.PermutationIssuer));
+
+                    return false;
                 }
-            }
 
-            dataToHash.Append(chosenPath);
-
-            //Merge the chosen issuer's assignments into the main issuer.
-            if(chosenIssuer is not null)
-            {
-                foreach((string original, string issued) in chosenIssuer.IssuedPairs())
+                case NDegreeStage.RecursionResume:
                 {
-                    issuer.Adopt(original, issued);
+                    //§4.8.3 step 5.4.5.2–5.4.5.4: append the related node's id (in the pre-recursion issuer) and the
+                    //child's hash, then adopt the child's issuer for the next related node.
+                    string related = frame.RecursionList[frame.RecursionIndex];
+                    frame.PermutationPath.Append("_:").Append(frame.PermutationIssuer.Issue(related));
+                    frame.PermutationPath.Append('<').Append(frame.ChildResult.Hash).Append('>');
+                    frame.PermutationIssuer = frame.ChildResult.Issuer;
+
+                    if(IsWorseThanChosen(frame))
+                    {
+                        frame.Stage = NDegreeStage.PermutationLoop;
+
+                        break;
+                    }
+
+                    frame.RecursionIndex++;
+                    frame.Stage = NDegreeStage.RecursionLoop;
+
+                    break;
+                }
+
+                default:
+                {
+                    throw new InvalidOperationException($"Unexpected n-degree stage '{frame.Stage}'.");
                 }
             }
         }
+    }
 
-        byte[] hashBytes = hash(Encoding.UTF8.GetBytes(dataToHash.ToString()));
+    /// <summary>Groups the blank nodes related to <paramref name="blankId"/> by their position-dependent related hash, sorted by that hash (§4.8.3 steps 2–4).</summary>
+    /// <param name="blankId">The blank node whose related nodes are grouped.</param>
+    /// <param name="blankNodeToQuads">The blank-node-to-quads index.</param>
+    /// <param name="hashMap">Every blank node's first-degree hash.</param>
+    /// <param name="canonicalMap">The blank nodes assigned a canonical identifier so far.</param>
+    /// <param name="issuer">The working issuer, consulted for already-issued temporary ids.</param>
+    /// <param name="hash">The hash function.</param>
+    /// <returns>The related-node groups, ascending by related hash.</returns>
+    private static List<(string Hash, List<string> Related)> BuildRelatedGroups(
+        string blankId,
+        Dictionary<string, List<Quad>> blankNodeToQuads,
+        Dictionary<string, string> hashMap,
+        Dictionary<string, string> canonicalMap,
+        IdentifierIssuer issuer,
+        HashDelegate hash)
+    {
+        Dictionary<string, List<string>> hashToRelated = [];
+        foreach(Quad quad in blankNodeToQuads.TryGetValue(blankId, out List<Quad>? quads) ? quads : [])
+        {
+            AddRelatedBlankNodes(quad, blankId, hashMap, canonicalMap, issuer, hash, hashToRelated);
+        }
 
-        return Convert.ToHexString(hashBytes).ToLowerInvariant();
+        List<(string Hash, List<string> Related)> groups = new(hashToRelated.Count);
+        foreach((string relatedHash, List<string> related) in hashToRelated)
+        {
+            groups.Add((relatedHash, related));
+        }
+
+        groups.Sort(static (a, b) => string.CompareOrdinal(a.Hash, b.Hash));
+
+        return groups;
+    }
+
+    /// <summary>
+    /// Returns whether the in-flight permutation path can no longer beat the chosen path and may be abandoned early
+    /// (§4.8.3 steps 5.4.4.3 / 5.4.5.5): a path is hopeless once it is not shorter than the chosen path and orders
+    /// after it.
+    /// </summary>
+    /// <param name="frame">The frame whose permutation path is tested.</param>
+    /// <returns><see langword="true"/> when the permutation cannot improve on the chosen path.</returns>
+    private static bool IsWorseThanChosen(NDegreeFrame frame)
+    {
+        return frame.ChosenPath is string chosen
+            && frame.PermutationPath.Length >= chosen.Length
+            && string.CompareOrdinal(frame.PermutationPath.ToString(), chosen) > 0;
+    }
+
+    /// <summary>
+    /// Advances <paramref name="items"/> in place to the next lexicographically (ordinal) greater permutation,
+    /// returning <see langword="false"/> when it is already the greatest (the list having been the last permutation).
+    /// The standard next-permutation algorithm, iterating all permutations without recursion when seeded from the
+    /// sorted order.
+    /// </summary>
+    /// <param name="items">The permutation to advance.</param>
+    /// <returns><see langword="true"/> when a next permutation exists.</returns>
+    private static bool NextPermutation(List<string> items)
+    {
+        int pivot = items.Count - 2;
+        while(pivot >= 0 && string.CompareOrdinal(items[pivot], items[pivot + 1]) >= 0)
+        {
+            pivot--;
+        }
+
+        if(pivot < 0)
+        {
+            return false;
+        }
+
+        int successor = items.Count - 1;
+        while(string.CompareOrdinal(items[successor], items[pivot]) <= 0)
+        {
+            successor--;
+        }
+
+        (items[pivot], items[successor]) = (items[successor], items[pivot]);
+        items.Reverse(pivot + 1, items.Count - pivot - 1);
+
+        return true;
     }
 
     /// <summary>
     /// Collects blank nodes related to <paramref name="referenceBlankId"/> from a single quad,
     /// grouping them by their position-dependent hash.
     /// </summary>
+    /// <param name="quad">The quad to inspect.</param>
+    /// <param name="referenceBlankId">The blank node whose related nodes are being collected.</param>
+    /// <param name="hashMap">Every blank node's first-degree hash.</param>
+    /// <param name="canonicalMap">The blank nodes assigned a canonical identifier so far.</param>
+    /// <param name="issuer">The working issuer, consulted by <see cref="GetRelatedHash"/> for already-issued temporary ids.</param>
+    /// <param name="hash">The hash function.</param>
+    /// <param name="hashToRelated">The related-hash to related-node-id map being built.</param>
     private static void AddRelatedBlankNodes(
         Quad quad,
         string referenceBlankId,
@@ -500,8 +696,7 @@ public static class RdfCanonicalizer
         Dictionary<string, string> canonicalMap,
         IdentifierIssuer issuer,
         HashDelegate hash,
-        Dictionary<string, List<string>> hashToRelated,
-        Dictionary<string, List<Quad>> blankNodeToQuads)
+        Dictionary<string, List<string>> hashToRelated)
     {
         void AddRelated(BlankNode blank, string position)
         {
@@ -552,10 +747,19 @@ public static class RdfCanonicalizer
     }
 
     /// <summary>
-    /// Computes a position-dependent hash for a related blank node in the n-degree algorithm.
-    /// The hash incorporates the quad position (<c>s</c>, <c>o</c>, or <c>g</c>),
-    /// the predicate IRI, and the blank node's canonical or temporary identifier.
+    /// Computes the "Hash Related Blank Node" value (RDFC-1.0 §4.8.2): the hash of the related node's quad position
+    /// (<c>s</c>, <c>o</c>, or <c>g</c>), the predicate IRI (omitted for the graph position, which has none), and an
+    /// identifier — the canonical id when assigned, otherwise the related node's first-degree hash (every blank node
+    /// has one; the algorithm never mints a new id here, keeping the call read-only on the issuer state).
     /// </summary>
+    /// <param name="relatedId">The related blank node's label.</param>
+    /// <param name="quad">The quad the related node appears in.</param>
+    /// <param name="position">The position token (<c>s</c>, <c>o</c>, or <c>g</c>).</param>
+    /// <param name="hashMap">Every blank node's first-degree hash.</param>
+    /// <param name="canonicalMap">The blank nodes assigned a canonical identifier so far.</param>
+    /// <param name="issuer">The working issuer; a temporary id already issued for the related node takes priority over its first-degree hash (this path-dependence distinguishes nodes reached along different routes).</param>
+    /// <param name="hash">The hash function.</param>
+    /// <returns>The lowercase-hex related hash.</returns>
     [SuppressMessage("Globalization", "CA1308:Normalize strings to uppercase",
         Justification = "RDFC-1.0 requires lowercase hex output by specification.")]
     private static string GetRelatedHash(
@@ -567,42 +771,102 @@ public static class RdfCanonicalizer
         IdentifierIssuer issuer,
         HashDelegate hash)
     {
-        //Use canonical identifier if available, otherwise temporary.
         string identifier = canonicalMap.TryGetValue(relatedId, out string? canonical)
-            ? $"_:{canonical}"
-            : hashMap.TryGetValue(relatedId, out string? existing)
-                ? existing
-                : $"_:{issuer.Issue(relatedId)}";
+            ? "_:" + canonical
+            : issuer.TryGetIssued(relatedId, out string? temporary)
+                ? "_:" + temporary
+                : hashMap.TryGetValue(relatedId, out string? firstDegree)
+                    ? firstDegree
+                    : "_:" + relatedId;
 
-        string predicate = $"<{quad.Predicate.Iri}>";
-        string input = $"{position}{predicate}{identifier}";
+        //The predicate is part of the input for the subject/object positions; the graph position has no predicate.
+        string input = position == "g"
+            ? position + identifier
+            : position + "<" + quad.Predicate.Iri + ">" + identifier;
 
         byte[] hashBytes = hash(Encoding.UTF8.GetBytes(input));
 
         return Convert.ToHexString(hashBytes).ToLowerInvariant();
     }
 
-    /// <summary>
-    /// Enqueues blank nodes from a quad that are related to <paramref name="currentId"/>
-    /// and have not yet been issued a temporary identifier by <paramref name="issuer"/>.
-    /// </summary>
-    private static void EnqueueRelated(Quad quad, string currentId, IdentifierIssuer issuer, Queue<string> queue)
+    /// <summary>The stage of an in-flight <see cref="NDegreeFrame"/>'s state machine.</summary>
+    private enum NDegreeStage
     {
-        void TryEnqueue(RdfTerm? term)
+        /// <summary>Build the related-node groups (entry).</summary>
+        Start,
+
+        /// <summary>Process the next related-hash group, or finish the frame.</summary>
+        GroupLoop,
+
+        /// <summary>Begin (or advance to) the next permutation of the current group.</summary>
+        PermutationLoop,
+
+        /// <summary>Process the next related node to hash recursively in the current permutation.</summary>
+        RecursionLoop,
+
+        /// <summary>Fold a completed child's result back into the current permutation's path.</summary>
+        RecursionResume
+    }
+
+    /// <summary>One logical activation of the iterative "Hash N-Degree Quads" algorithm, holding the state a recursive call would keep on the stack.</summary>
+    private sealed class NDegreeFrame
+    {
+        /// <summary>Constructs a frame for a blank node over a working issuer.</summary>
+        /// <param name="identifier">The blank node this frame hashes.</param>
+        /// <param name="issuer">The working issuer the frame threads through its groups.</param>
+        public NDegreeFrame(string identifier, IdentifierIssuer issuer)
         {
-            if(term is BlankNode blank)
-            {
-                string label = blank.Label.ToString();
-                if(label != currentId && !issuer.HasIssued(label))
-                {
-                    queue.Enqueue(label);
-                }
-            }
+            Identifier = identifier;
+            Issuer = issuer;
         }
 
-        TryEnqueue(quad.Subject);
-        TryEnqueue(quad.Object);
-        TryEnqueue(quad.Graph);
+        /// <summary>The blank node this frame hashes.</summary>
+        public string Identifier { get; }
+
+        /// <summary>The working issuer, replaced by the chosen permutation's issuer as each group resolves.</summary>
+        public IdentifierIssuer Issuer { get; set; }
+
+        /// <summary>The current state-machine stage.</summary>
+        public NDegreeStage Stage { get; set; } = NDegreeStage.Start;
+
+        /// <summary>The accumulating data-to-hash buffer.</summary>
+        public StringBuilder DataToHash { get; } = new();
+
+        /// <summary>The related-node groups, ascending by related hash.</summary>
+        public List<(string Hash, List<string> Related)> Groups { get; set; } = [];
+
+        /// <summary>The index of the group currently being processed.</summary>
+        public int GroupIndex { get; set; }
+
+        /// <summary>The least permutation path found for the current group, or <see langword="null"/> before the first completes.</summary>
+        public string? ChosenPath { get; set; }
+
+        /// <summary>The issuer of the least permutation path for the current group.</summary>
+        public IdentifierIssuer? ChosenIssuer { get; set; }
+
+        /// <summary>The current permutation of the current group's related nodes.</summary>
+        public List<string> Permutation { get; set; } = [];
+
+        /// <summary>Whether the first permutation of the current group has been started (so the next visit advances it).</summary>
+        public bool PermutationStarted { get; set; }
+
+        /// <summary>The issuer clone for the in-flight permutation.</summary>
+        public IdentifierIssuer PermutationIssuer { get; set; } = null!;
+
+        /// <summary>The path being built for the in-flight permutation.</summary>
+        public StringBuilder PermutationPath { get; set; } = new();
+
+        /// <summary>The newly-issued related nodes of the in-flight permutation, hashed recursively in order.</summary>
+        public List<string> RecursionList { get; set; } = [];
+
+        /// <summary>The index into <see cref="RecursionList"/> of the related node being hashed.</summary>
+        public int RecursionIndex { get; set; }
+
+        /// <summary>The frame's computed n-degree hash, set when it completes.</summary>
+        public string? ResultHash { get; set; }
+
+        /// <summary>The most recently completed child frame's result, delivered to this frame as it resumes.</summary>
+        public (string Hash, IdentifierIssuer Issuer) ChildResult { get; set; }
     }
 
     /// <summary>

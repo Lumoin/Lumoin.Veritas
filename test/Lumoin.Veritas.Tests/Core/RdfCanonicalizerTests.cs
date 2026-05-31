@@ -386,6 +386,55 @@ internal sealed class RdfCanonicalizerTests
         Assert.IsTrue(lines.All(l => l.StartsWith("_:c14n0", StringComparison.Ordinal)));
     }
 
+    /// <summary>
+    /// Two isomorphic graphs whose blank nodes are fully automorphic — two interchangeable 2-cycles, every node
+    /// colliding at first degree — canonicalise to identical output regardless of the input blank-node labels. This
+    /// is the n-degree disambiguation (permutations + path-dependent recursion) the rewrite implements.
+    /// </summary>
+    [TestMethod]
+    public void AutomorphicTwoCyclesCanonicaliseIndependentlyOfLabels()
+    {
+        using Utf8StringPool pool = new();
+        string formA = "_:a <http://example.org/p> _:b .\n_:b <http://example.org/p> _:a .\n_:c <http://example.org/p> _:d .\n_:d <http://example.org/p> _:c .\n";
+        string formB = "_:w <http://example.org/p> _:x .\n_:x <http://example.org/p> _:w .\n_:y <http://example.org/p> _:z .\n_:z <http://example.org/p> _:y .\n";
+
+        string a = RdfCanonicalizer.Canonicalize(ParseNQuads(formA, pool), Sha256);
+        string b = RdfCanonicalizer.Canonicalize(ParseNQuads(formB, pool), Sha256);
+
+        Assert.AreEqual(a, b);
+    }
+
+    /// <summary>
+    /// A directed blank-node chain whose interior nodes collide at first degree canonicalises identically under any
+    /// blank-node relabelling, exercising the recursive n-degree path (the deeper structure enters the hash through
+    /// recursion into newly-issued related nodes).
+    /// </summary>
+    [TestMethod]
+    public void BlankNodeChainCanonicalisesIndependentlyOfLabels()
+    {
+        using Utf8StringPool pool = new();
+        string formA = "_:a <http://example.org/p> _:b .\n_:b <http://example.org/p> _:c .\n_:c <http://example.org/p> _:d .\n";
+        string formB = "_:p1 <http://example.org/p> _:p2 .\n_:p2 <http://example.org/p> _:p3 .\n_:p3 <http://example.org/p> _:p4 .\n";
+
+        string a = RdfCanonicalizer.Canonicalize(ParseNQuads(formA, pool), Sha256);
+        string b = RdfCanonicalizer.Canonicalize(ParseNQuads(formB, pool), Sha256);
+
+        Assert.AreEqual(a, b);
+        Assert.Contains("_:c14n0", a, StringComparison.Ordinal);
+    }
+
+    /// <summary>An RDF dataset is a set, so duplicate input quads are removed: the canonical output carries each statement exactly once.</summary>
+    [TestMethod]
+    public void DuplicateQuadsAreRemoved()
+    {
+        using Utf8StringPool pool = new();
+        string input = "<http://example.org/s> <http://example.org/p> <http://example.org/o> .\n<http://example.org/s> <http://example.org/p> <http://example.org/o> .\n";
+
+        string result = RdfCanonicalizer.Canonicalize(ParseNQuads(input, pool), Sha256);
+
+        Assert.HasCount(1, result.Split('\n', StringSplitOptions.RemoveEmptyEntries));
+    }
+
     [TestMethod]
     public void NullArgumentsThrow()
     {

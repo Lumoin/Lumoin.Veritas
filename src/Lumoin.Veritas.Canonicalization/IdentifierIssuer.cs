@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Linq;
 
 namespace Lumoin.Veritas.Canonicalization;
 
@@ -68,26 +67,15 @@ internal sealed class IdentifierIssuer
     }
 
     /// <summary>
-    /// Returns all issued pairs as (original, issued) tuples.
-    /// Used to merge a temporary issuer's assignments into the main issuer.
-    /// </summary>
-    internal IEnumerable<(string Original, string Issued)> IssuedPairs()
-    {
-        return issuedMap.Select(kvp => (kvp.Key, kvp.Value));
-    }
-
-    /// <summary>
-    /// Adopts an externally-produced (original → issued) mapping without incrementing
-    /// the counter. Used when merging a chosen temporary issuer path into the main issuer.
+    /// Reads the identifier already issued for a label without issuing a new one — the read-only lookup the
+    /// "Hash Related Blank Node" step (RDFC-1.0 §4.8.2) uses to prefer a temporary id over a first-degree hash.
     /// </summary>
     /// <param name="original">The original blank node label.</param>
-    /// <param name="issued">The issued identifier to record.</param>
-    internal void Adopt(string original, string issued)
+    /// <param name="issued">The issued identifier (without the <c>_:</c> prefix), when one exists.</param>
+    /// <returns><see langword="true"/> when an identifier has been issued for <paramref name="original"/>.</returns>
+    internal bool TryGetIssued(string original, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out string? issued)
     {
-        if(issuedMap.TryAdd(original, issued))
-        {
-            issuedOrder.Add(original);
-        }
+        return issuedMap.TryGetValue(original, out issued);
     }
 
     /// <summary>

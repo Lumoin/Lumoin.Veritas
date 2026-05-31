@@ -6,13 +6,34 @@ AST → algebra → translator → hypertrie backend + executor subset → SHACL
 unlock). **Batch 2 = Milestones D–F** (full algebra/aggregation, CONSTRUCT/
 DESCRIBE/JSON results, conformance push).
 
-## ⭐ CURRENT STATE (2026-05-31, **dataset/`GRAPH` backend DONE — SHACL baseline 2 → 1; eval corpus still GREEN** on `sparql-query-engine`, tree clean)
+## ⭐ CURRENT STATE (2026-05-31, **CONFORMANCE HARNESS COMPLETE — full suite GREEN (0 failures)** on `sparql-query-engine`, tree clean)
 
-Built a **SPARQL dataset / named-graph (`GRAPH`) execution backend** (composing the 3-position hypertrie, NOT a
-depth-4 rewrite — the WCOJ construction cost is untouched, [[project_wcoj_construction_cost]]) and wired it into both
-SHACL-SPARQL and the eval corpus. **Full suite = 1 failure (`nodeKind` RDFC-1.0 only), 3164 total, 104 skip; 0
-regressions.** The SHACL baseline is **2 → 1** (`shapesGraph-001` closed); the SPARQL eval corpus stays **GREEN (0
-reds)** with the named-graph (`qt:graphData`) tests now running+passing instead of skipped.
+The whole conformance harness is now **GREEN**: all SPARQL 1.2 eval + all SHACL 1.2 + the **official W3C rdf-canon
+(RDFC-1.0) suite** pass. **Full suite = 3253 total, 0 failed, 126 skip; 0 regressions.** This session closed the last
+SHACL red (`nodeKind` RDFC-1.0) by fixing the canonicalizer, then vendored + wired the rdf-canon suite as a new
+red-baseline ratchet and drove it to green. (Earlier in the session: the SPARQL dataset/`GRAPH` backend closed
+`shapesGraph-001`, SHACL 2 → 1 — block below.)
+
+✅ **RDFC-1.0 N-DEGREE (AUTOMORPHISM) FIX + rdf-canon CONFORMANCE RATCHET (2026-05-31): SHACL baseline 1 → 0; resolved
+[[project_rdfc_automorphism_gap]].** The SHACL report-comparison (`QuadSetIsomorphism` → `RdfCanonicalizer.Canonicalize`)
+mis-canonicalized automorphic blank nodes because `HashNDegreeQuads` was not a faithful RDFC-1.0 §4.8.3 port. Rewrote
+it (`src/Lumoin.Veritas.Canonicalization/RdfCanonicalizer.cs`) to the spec: **(1) permutations** of each related-hash
+group (least path wins; standard iterative next-permutation), **(2) recursion** into newly-issued related nodes with
+their sub-hash folded into the path, **(3) issuer replacement** (the chosen permutation's issuer, not the old
+`Adopt` merge) — all over an **explicit frame-stack state machine** (`NDegreeFrame`/`NDegreeStage`, no call-stack
+recursion, [[feedback_no_recursion]]). The decisive bug was in `GetRelatedHash` (§4.8.2): the related identifier is
+canonical-id → **temporary-issued-id → first-degree hash**; the middle (temp-id) branch was missing, losing the
+path-dependence that distinguishes deeply-symmetric nodes (this alone left the poison/automorphism graphs wrong —
+restored via new `IdentifierIssuer.TryGetIssued`). Also fixed: **dataset dedup** (an RDF dataset is a set — duplicate
+input quads removed before hashing/serialization; test076/077), **graph-position** related hash omits the predicate,
+and an **N-Quads reader gap** (`NQuadsReader` rejected the valid `\'` ECHAR — added; test060 escaping). **Oracle:**
+vendored `w3c/rdf-canon` `tests/` (pinned `15619df`) into `Material/RdfCanon/` (LF-normalized) + new self-contained
+`W3cRdfCanonRunner`/`W3cRdfCanonTests` (`rdfc:RDFC10EvalTest` byte-for-byte vs expected; map/negative tests skipped —
+no issuer-map / poison-rejection surface). **rdf-canon reds driven 10 → 0** (the 10 were 7 n-degree + 2 dedup + 1
+escaping). Unit tests: `RdfCanonicalizerTests.{AutomorphicTwoCyclesCanonicaliseIndependentlyOfLabels,
+BlankNodeChainCanonicalisesIndependentlyOfLabels, DuplicateQuadsAreRemoved}`. ⚠ The fix is a general canonicalization
+correctness fix — relevant to the verifiable sister project. RDFC-1.0's factorial worst case is inherent; the
+official "poison – Clique" case is a `RDFC10NegativeEvalTest` (skipped, no rejection surface).
 
 ✅ **SPARQL DATASET / `GRAPH` BACKEND (2026-05-31): SHACL baseline 2 → 1; closed `shapesGraph-001`.** A
 **`SparqlDataset`** (`src/Lumoin.Veritas.Sparql/Execution/SparqlDataset.cs`) = a default graph + named graphs, each a
@@ -65,8 +86,16 @@ Also fixed: `TryGroundPosition` no longer treats a query blank node as a ground 
 side a blank node is a join variable). 13 previously NotSupported-skipped triple-term tests now run and pass.
 **Tests:** `SparqlQueryEngineTests.VariableBearingTripleTermBindsComponentAndJoins`.
 
-▶ **NEXT (per [[project_correctness_harness_before_rework]] — finish the conformance harness, THEN perf-rework):**
-the **1 remaining ShaclValidate** failure — **`sh:nodeKind property 001`**, the RDFC-1.0 automorphism rewrite
+▶ **NEXT — the conformance harness is COMPLETE (all SPARQL eval + SHACL + rdf-canon GREEN), so the gate that deferred
+perf-rework is satisfied ([[project_correctness_harness_before_rework]]).** Candidate tracks, no forced order:
+**(1) The large-graph performance rework** — Layer-2 columnar `TermId` rows + hash/merge join + SIMD
+([[project_scale_performance_target]]); the quad/order-4 dataset optimization is deferred to revisit *with the OWL
+reasoner work* ([[project_graph_dataset_backend]]). **(2) SPARQL completeness** — reduce the ~57 eval skips
+(CONSTRUCT/DESCRIBE result construction, named functions, BNODE, negated property sets, sub-SELECT scoping) toward
+full SPARQL 1.2 (Batch 2 / Milestones D–F). **(3)** the rdf-canon `RDFC10MapTest` family (needs a canonicalizer
+surface returning the issued-identifier map; currently skipped), in-query `FROM`/`FROM NAMED` wiring, and a shapes
+graph through `ShaclPipelineDataState`. *(Superseded NEXT — the last ShaclValidate red, `sh:nodeKind property 001`,
+is now CLOSED by the RDFC-1.0 fix above; kept for the pointer.)* The original RDFC-1.0 automorphism rewrite
 ([[project_rdfc_automorphism_gap]]); `RdfCanonicalizer.HashNDegreeQuads` mis-canonicalizes automorphic blank nodes,
 so the produced report's 27 results disagree by blank-node labelling with the expected 218-quad report. Then the 3
 deferred raw-string cleanups (⏸ below). After that the correctness harness is complete and the large-graph

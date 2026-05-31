@@ -994,6 +994,16 @@ public static class NQuadsReader
                         break;
                     }
 
+                    //ECHAR ::= '\' [tbnrf"'\] — the apostrophe escape is valid in N-Triples/N-Quads (canonical form
+                    //emits the bare apostrophe; only " and \ require escaping in the output).
+                    case '\'':
+                    {
+                        output[outPos++] = (byte)'\'';
+                        pos++;
+
+                        break;
+                    }
+
                     case '\\':
                     {
                         output[outPos++] = (byte)'\\';
