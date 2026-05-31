@@ -187,6 +187,47 @@ public sealed class SparqlQueryEngine
     }
 
     /// <summary>
+    /// Describes the given resources as an RDF graph (SPARQL 1.2 §16.4, the <c>DESCRIBE</c> result). The exact
+    /// triples are implementation-defined; <paramref name="strategy"/> chooses the description algorithm per call,
+    /// defaulting to the Concise Bounded Description (<see cref="SparqlDescribe.ConciseBoundedDescription"/>).
+    /// </summary>
+    /// <param name="resources">The resources to describe (a <c>DESCRIBE &lt;iri&gt;</c> IRI, or the values a describe variable bound); resources absent from the data graph contribute nothing.</param>
+    /// <param name="strategy">The description strategy, or <see langword="null"/> for the default CBD.</param>
+    /// <param name="cancellationToken">A token that aborts the description.</param>
+    /// <returns>The distinct describing triples, as default-graph quads.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="resources"/> is <see langword="null"/>.</exception>
+    public async ValueTask<IReadOnlyList<Quad>> DescribeAsync(IReadOnlyList<RdfTerm> resources, DescribeStrategy? strategy = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(resources);
+
+        DescribeStrategy describe = strategy ?? SparqlDescribe.ConciseBoundedDescription;
+        GraphMatchOps ops = dataset.DefaultGraph.AsMatchOps();
+
+        List<TermId> ids = new(resources.Count);
+        foreach(RdfTerm resource in resources)
+        {
+            TermId id = dictionary.GetIdOrDefault(resource);
+            if(!id.IsNone)
+            {
+                ids.Add(id);
+            }
+        }
+
+        List<Quad> result = [];
+        HashSet<Quad> seen = [];
+        await foreach(EncodedTriple triple in describe(ids, ops, dictionary, cancellationToken).ConfigureAwait(false))
+        {
+            Quad quad = new(dictionary.Resolve(triple.Subject), (NamedNode)dictionary.Resolve(triple.Predicate), dictionary.Resolve(triple.Object));
+            if(seen.Add(quad))
+            {
+                result.Add(quad);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
     /// Evaluates an algebra tree against a designated active graph: <see cref="TermId.None"/> for the dataset's
     /// default graph, or a named graph's term id inside a <c>GRAPH</c> form. <c>EXISTS</c> re-enters here
     /// with the enclosing active graph so a sub-pattern queries the same graph as its surrounding pattern.

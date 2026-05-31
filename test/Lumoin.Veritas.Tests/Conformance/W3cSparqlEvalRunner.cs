@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Json;
+using Lumoin.Veritas.NQuads;
 using Lumoin.Veritas.Sparql.Algebra;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
@@ -85,17 +86,23 @@ internal static class W3cSparqlEvalRunner
             return new W3cOutcome(W3cOutcomeStatus.Skipped, "SPARQL Update requests are not evaluated by this build.");
         }
 
-        if(query.Form is ConstructQuery or DescribeQuery)
-        {
-            return new W3cOutcome(W3cOutcomeStatus.Skipped, "CONSTRUCT/DESCRIBE result construction is not yet implemented.");
-        }
-
         List<DataTriple> data;
         List<(RdfTerm Name, IEnumerable<DataTriple> Triples)> namedGraphs;
         try
         {
-            data = await LoadDataAsync(testCase.QueryDataPath, cancellationToken).ConfigureAwait(false);
-            namedGraphs = await LoadNamedGraphsAsync(testCase.GraphDataPaths, cancellationToken).ConfigureAwait(false);
+            //An in-query FROM / FROM NAMED clause defines the dataset (SPARQL §13.2), overriding the manifest's
+            //qt:data / qt:graphData mapping: the default graph is the merge of the FROM graphs, the named graphs are
+            //the FROM NAMED graphs. Each clause IRI resolves to a sibling file the harness loads.
+            if(query.Dataset.DefaultGraphs.Count > 0 || query.Dataset.NamedGraphs.Count > 0)
+            {
+                data = await LoadDatasetGraphsAsync(query.Dataset.DefaultGraphs, cancellationToken).ConfigureAwait(false);
+                namedGraphs = await LoadDatasetNamedGraphsAsync(query.Dataset.NamedGraphs, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                data = await LoadDataAsync(testCase.QueryDataPath, cancellationToken).ConfigureAwait(false);
+                namedGraphs = await LoadNamedGraphsAsync(testCase.GraphDataPaths, cancellationToken).ConfigureAwait(false);
+            }
         }
         catch(InvalidOperationException ex)
         {
@@ -104,22 +111,52 @@ internal static class W3cSparqlEvalRunner
             return new W3cOutcome(W3cOutcomeStatus.Skipped, $"Could not load a graph (unsupported format or malformed): {ex.Message}");
         }
 
+        //IRI()/URI() resolve a relative argument against the query's effective base — the last in-query BASE, else
+        //the external (file-URL) base the parser was given. Thread it through the expression context.
+        Utf8String? baseIri = query.Prologue.Bases is { Count: > 0 } bases
+            ? bases[^1].Iri.Value
+            : Utf8String.FromString(new Uri(IoPath.GetFullPath(testCase.InputPath)).AbsoluteUri);
+        SparqlExpressionContext context = SparqlExpressionContext.CreateDefault().WithBaseIri(baseIri);
+
+        //A test with qt:graphData evaluates against a dataset (default graph + named graphs); otherwise the single
+        //default graph. GRAPH forms resolve their designator against the same file-URL space.
+        SparqlQueryEngine engine = namedGraphs.Count == 0
+            ? await SparqlQueryEngine.BuildAsync(data, context, cancellationToken).ConfigureAwait(false)
+            : await SparqlQueryEngine.BuildDatasetAsync(data, namedGraphs, context, cancellationToken).ConfigureAwait(false);
+        SparqlQuery normalized = (SparqlQuery)new SparqlNormalizer(pool).Normalize(query);
+
+        //CONSTRUCT / DESCRIBE produce an RDF graph; compare it to the expected graph up to blank-node isomorphism
+        //(via RDFC-1.0) — the same equivalence the SHACL report comparison uses.
+        if(normalized.Form is ConstructQuery or DescribeQuery)
+        {
+            List<Quad> actualGraph;
+            try
+            {
+                actualGraph = await BuildGraphResultAsync(engine, normalized, cancellationToken).ConfigureAwait(false);
+            }
+            catch(NotSupportedException ex)
+            {
+                return new W3cOutcome(W3cOutcomeStatus.Skipped, $"Query uses a feature the executor does not yet support: {ex.Message}");
+            }
+
+            List<Quad> expectedGraph;
+            try
+            {
+                expectedGraph = await LoadGraphAsync(testCase.ExpectedPath!, cancellationToken).ConfigureAwait(false);
+            }
+            catch(InvalidOperationException ex)
+            {
+                return new W3cOutcome(W3cOutcomeStatus.Skipped, $"Expected graph fixture is in a format this harness cannot read: {ex.Message}");
+            }
+
+            return QuadSetIsomorphism.AreIsomorphic(actualGraph, expectedGraph)
+                ? new W3cOutcome(W3cOutcomeStatus.Passed, $"Graph matches ({actualGraph.Count} quad(s)).")
+                : new W3cOutcome(W3cOutcomeStatus.Failed, $"Graph result does not match expected (actual {actualGraph.Count} vs expected {expectedGraph.Count} quad(s)).");
+        }
+
         SparqlResultSet actual;
         try
         {
-            //IRI()/URI() resolve a relative argument against the query's effective base — the last in-query BASE,
-            //else the external (file-URL) base the parser was given. Thread it through the expression context.
-            Utf8String? baseIri = query.Prologue.Bases is { Count: > 0 } bases
-                ? bases[^1].Iri.Value
-                : Utf8String.FromString(new Uri(IoPath.GetFullPath(testCase.InputPath)).AbsoluteUri);
-            SparqlExpressionContext context = SparqlExpressionContext.CreateDefault().WithBaseIri(baseIri);
-
-            //A test with qt:graphData evaluates against a dataset (default graph + named graphs); otherwise the
-            //single default graph. GRAPH forms resolve their designator against the same file-URL space.
-            SparqlQueryEngine engine = namedGraphs.Count == 0
-                ? await SparqlQueryEngine.BuildAsync(data, context, cancellationToken).ConfigureAwait(false)
-                : await SparqlQueryEngine.BuildDatasetAsync(data, namedGraphs, context, cancellationToken).ConfigureAwait(false);
-            SparqlQuery normalized = (SparqlQuery)new SparqlNormalizer(pool).Normalize(query);
             AlgebraOperator algebra = SparqlTranslator.Translate(normalized);
             IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, cancellationToken).ConfigureAwait(false);
             actual = BuildResultSet(query, solutions);
@@ -206,6 +243,186 @@ internal static class W3cSparqlEvalRunner
         }
 
         return SparqlResultSet.ForSelect(variables, solutions);
+    }
+
+    /// <summary>Builds the RDF-graph result of a CONSTRUCT (template instantiation) or DESCRIBE (resource description) query.</summary>
+    /// <param name="engine">The engine over the data graph.</param>
+    /// <param name="normalized">The normalized query (its form is CONSTRUCT or DESCRIBE).</param>
+    /// <param name="cancellationToken">A token to cancel evaluation.</param>
+    /// <returns>The result graph's quads.</returns>
+    private static async Task<List<Quad>> BuildGraphResultAsync(SparqlQueryEngine engine, SparqlQuery normalized, CancellationToken cancellationToken)
+    {
+        switch(normalized.Form)
+        {
+            case ConstructQuery construct:
+            {
+                AlgebraOperator algebra = SparqlTranslator.Translate(normalized);
+                IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, cancellationToken).ConfigureAwait(false);
+
+                return SparqlGraphConstruction.Construct(construct.Template, solutions);
+            }
+
+            case DescribeQuery describe:
+            {
+                List<RdfTerm> resources = await ResolveDescribeResourcesAsync(engine, normalized, describe, cancellationToken).ConfigureAwait(false);
+
+                return [.. await engine.DescribeAsync(resources, strategy: null, cancellationToken).ConfigureAwait(false)];
+            }
+
+            default:
+            {
+                return [];
+            }
+        }
+    }
+
+    /// <summary>Resolves a DESCRIBE query's target resources: its explicit IRIs, plus the values its describe variables (or all variables, for <c>DESCRIBE *</c>) bind in the WHERE solutions.</summary>
+    /// <param name="engine">The engine over the data graph.</param>
+    /// <param name="normalized">The normalized DESCRIBE query.</param>
+    /// <param name="describe">The DESCRIBE form.</param>
+    /// <param name="cancellationToken">A token to cancel evaluation.</param>
+    /// <returns>The distinct resources to describe.</returns>
+    private static async Task<List<RdfTerm>> ResolveDescribeResourcesAsync(SparqlQueryEngine engine, SparqlQuery normalized, DescribeQuery describe, CancellationToken cancellationToken)
+    {
+        List<RdfTerm> resources = [];
+        HashSet<RdfTerm> seen = [];
+        bool needsSolutions = describe.IsStar;
+        foreach(DescribeTarget target in describe.Targets)
+        {
+            if(target is DescribeIri iri)
+            {
+                RdfTerm resource = new NamedNode(iri.Iri.Value);
+                if(seen.Add(resource))
+                {
+                    resources.Add(resource);
+                }
+            }
+            else
+            {
+                needsSolutions = true;
+            }
+        }
+
+        if(needsSolutions)
+        {
+            AlgebraOperator algebra = SparqlTranslator.Translate(normalized);
+            IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, cancellationToken).ConfigureAwait(false);
+            foreach(SparqlSolution solution in solutions)
+            {
+                foreach(SparqlBinding binding in solution.Bindings)
+                {
+                    if(IsDescribed(describe, binding.Variable) && seen.Add(binding.Value))
+                    {
+                        resources.Add(binding.Value);
+                    }
+                }
+            }
+        }
+
+        return resources;
+    }
+
+    /// <summary>Returns whether a bound variable is described: every variable for <c>DESCRIBE *</c>, else only the named describe variables.</summary>
+    /// <param name="describe">The DESCRIBE form.</param>
+    /// <param name="variable">The variable to test.</param>
+    /// <returns><see langword="true"/> when the variable's bindings are described.</returns>
+    private static bool IsDescribed(DescribeQuery describe, SparqlVariable variable)
+    {
+        if(describe.IsStar)
+        {
+            return true;
+        }
+
+        foreach(DescribeTarget target in describe.Targets)
+        {
+            if(target is DescribeVariable describeVariable && describeVariable.Variable == variable)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Loads an expected graph-result fixture (Turtle <c>.ttl</c> / N-Triples <c>.nt</c> / N-Quads <c>.nq</c>) into quads.</summary>
+    /// <param name="path">The expected-result file path.</param>
+    /// <param name="cancellationToken">A token to cancel reading.</param>
+    /// <returns>The expected graph's quads.</returns>
+    /// <exception cref="InvalidOperationException">The fixture is in a format this harness cannot read, or did not parse.</exception>
+    private static async Task<List<Quad>> LoadGraphAsync(string path, CancellationToken cancellationToken)
+    {
+        string extension = IoPath.GetExtension(path);
+        byte[] bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+        List<Quad> quads = [];
+
+        if(string.Equals(extension, ".nq", StringComparison.OrdinalIgnoreCase))
+        {
+            await foreach(Quad quad in NQuadsReader.ReadAsync(bytes, pool: null, cancellationToken: cancellationToken).ConfigureAwait(false))
+            {
+                quads.Add(quad);
+            }
+
+            return quads;
+        }
+
+        //Turtle and its N-Triples subset both parse with the Turtle reader.
+        if(string.Equals(extension, ".ttl", StringComparison.OrdinalIgnoreCase) || string.Equals(extension, ".nt", StringComparison.OrdinalIgnoreCase))
+        {
+            string baseIri = new Uri(IoPath.GetFullPath(path)).AbsoluteUri;
+            DiagnosticBag diagnostics = new();
+            await foreach(Quad quad in TurtleReader.ReadAsync(bytes, TurtleSyntax.Turtle, diagnostics, pool: null, baseIri: baseIri, cancellationToken: cancellationToken).ConfigureAwait(false))
+            {
+                quads.Add(quad);
+            }
+
+            if(diagnostics.HasErrors)
+            {
+                throw new InvalidOperationException($"Expected graph '{path}' did not parse: {DescribeFirstError(diagnostics.Diagnostics)}");
+            }
+
+            return quads;
+        }
+
+        throw new InvalidOperationException($"Expected graph fixture format '{extension}' (e.g. RDF/XML) is not readable by this harness.");
+    }
+
+    /// <summary>Loads the merge of an in-query <c>FROM</c> clause's graphs as the default-graph triples.</summary>
+    /// <param name="graphs">The <c>FROM</c> clause IRIs.</param>
+    /// <param name="cancellationToken">A token to cancel reading.</param>
+    /// <returns>The merged default-graph triples.</returns>
+    private static async Task<List<DataTriple>> LoadDatasetGraphsAsync(IReadOnlyList<IriRef> graphs, CancellationToken cancellationToken)
+    {
+        List<DataTriple> data = [];
+        foreach(IriRef graph in graphs)
+        {
+            data.AddRange(await LoadDataAsync(GraphPath(graph), cancellationToken).ConfigureAwait(false));
+        }
+
+        return data;
+    }
+
+    /// <summary>Loads each in-query <c>FROM NAMED</c> clause's graph, keyed by its (absolute) clause IRI — the IRI a <c>GRAPH &lt;iri&gt;</c> form resolves to.</summary>
+    /// <param name="graphs">The <c>FROM NAMED</c> clause IRIs.</param>
+    /// <param name="cancellationToken">A token to cancel reading.</param>
+    /// <returns>The named graphs as (graph-name, triples) pairs.</returns>
+    private static async Task<List<(RdfTerm Name, IEnumerable<DataTriple> Triples)>> LoadDatasetNamedGraphsAsync(IReadOnlyList<IriRef> graphs, CancellationToken cancellationToken)
+    {
+        List<(RdfTerm Name, IEnumerable<DataTriple> Triples)> named = [];
+        foreach(IriRef graph in graphs)
+        {
+            RdfTerm name = new NamedNode(graph.Value);
+            named.Add((name, await LoadDataAsync(GraphPath(graph), cancellationToken).ConfigureAwait(false)));
+        }
+
+        return named;
+    }
+
+    /// <summary>Resolves a dataset-clause IRI (already absolute) to its local file path.</summary>
+    /// <param name="graph">The dataset-clause IRI.</param>
+    /// <returns>The local file path.</returns>
+    private static string GraphPath(IriRef graph)
+    {
+        return new Uri(graph.Value.ToString()).LocalPath;
     }
 
     /// <summary>Loads the data graph from a Turtle file into the engine's triple model; an absent path is the empty graph.</summary>

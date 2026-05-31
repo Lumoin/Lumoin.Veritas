@@ -887,6 +887,47 @@ internal sealed class SparqlQueryEngineTests
         Assert.AreEqual("http://www.w3.org/2001/XMLSchema#dateTime", Cast<Literal>(value).Datatype.Iri.ToString());
     }
 
+    /// <summary>CONSTRUCT instantiates the template per solution, dropping ill-formed triples (an unbound variable, or a literal in the subject position).</summary>
+    [TestMethod]
+    public void ConstructInstantiatesTemplateSkippingIllFormedTriples()
+    {
+        //Template: ?s :p ?o.
+        TriplePattern[] template =
+        [
+            new TriplePattern(
+                Lumoin.Veritas.Core.Sourcing.SourceSpan.None,
+                new VariableTerm(Lumoin.Veritas.Core.Sourcing.SourceSpan.None, Variable("s")),
+                new ConstantTerm(Lumoin.Veritas.Core.Sourcing.SourceSpan.None, Iri("p")),
+                new VariableTerm(Lumoin.Veritas.Core.Sourcing.SourceSpan.None, Variable("o")))
+        ];
+
+        SparqlSolution wellFormed = new([new SparqlBinding(Variable("s"), Iri("a")), new SparqlBinding(Variable("o"), Iri("b"))]);
+        SparqlSolution literalSubject = new([new SparqlBinding(Variable("s"), StringLiteral("x")), new SparqlBinding(Variable("o"), Iri("c"))]);
+        SparqlSolution unboundObject = new([new SparqlBinding(Variable("s"), Iri("a"))]);
+
+        List<Quad> quads = SparqlGraphConstruction.Construct(template, [wellFormed, literalSubject, unboundObject]);
+
+        //Only the first solution yields a legal triple; the literal-subject and unbound-object solutions are dropped.
+        Assert.ContainsSingle(quads);
+        Assert.AreEqual(Ex + "a", Cast<NamedNode>(quads[0].Subject).Iri.ToString());
+        Assert.AreEqual(Ex + "b", Cast<NamedNode>(quads[0].Object).Iri.ToString());
+    }
+
+    /// <summary>DESCRIBE's default strategy is the Concise Bounded Description: a resource's triples plus those of the blank nodes it reaches.</summary>
+    [TestMethod]
+    public async Task DescribeReturnsConciseBoundedDescription()
+    {
+        //:a :p _:b ; :r :d .  _:b :q :c .  Describing :a follows the blank node _:b.
+        SparqlQueryEngine engine = await EngineFromTurtleAsync("PREFIX : <http://example.org/>\n:a :p [ :q :c ] ; :r :d .\n").ConfigureAwait(false);
+
+        IReadOnlyList<Quad> description = await engine.DescribeAsync([Iri("a")], strategy: null, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //Three triples: (:a :p _:b), (:a :r :d), and the followed (_:b :q :c).
+        Assert.HasCount(3, description);
+        Assert.Contains(q => q.Predicate.Iri.ToString() == Ex + "r" && Cast<NamedNode>(q.Object).Iri.ToString() == Ex + "d", description, "Expected the direct :a :r :d triple.");
+        Assert.Contains(q => q.Predicate.Iri.ToString() == Ex + "q" && Cast<NamedNode>(q.Object).Iri.ToString() == Ex + "c", description, "Expected the followed blank-node :q :c triple.");
+    }
+
     /// <summary>A deterministic stub UUID for the injected-randomness tests.</summary>
     private static Guid StubGuid { get; } = new("12345678-1234-1234-1234-1234567890ab");
 

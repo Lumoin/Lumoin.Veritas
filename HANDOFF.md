@@ -95,10 +95,22 @@ CLTJ/Sonic/CoCo/Diamond/SieveJoin/HoneyComb and measured vs the hypertrie via th
 vehicle. Phase 1 = behaviour-identical extraction of the seam from the hypertrie path, harness-guarded. Subsumes
 the earlier "Layer-2 columnar `TermId` rows + hash/merge join + SIMD" framing ([[project_scale_performance_target]]);
 the quad/order-4 dataset optimization is deferred to revisit *with the OWL reasoner work*
-([[project_graph_dataset_backend]]). **(2) SPARQL completeness** — reduce the ~57 eval skips
-(CONSTRUCT/DESCRIBE result construction, named functions, BNODE, negated property sets, sub-SELECT scoping) toward
-full SPARQL 1.2 (Batch 2 / Milestones D–F). **(3)** the rdf-canon `RDFC10MapTest` family (needs a canonicalizer
-surface returning the issued-identifier map; currently skipped), in-query `FROM`/`FROM NAMED` wiring, and a shapes
+([[project_graph_dataset_backend]]). **(2) SPARQL completeness** — drive the remaining eval skips down toward full
+SPARQL 1.2 (the completeness program — vendor/wire each suite, red-baseline + ratchet, per
+[[feedback_sparql_before_shacl]]). ✅ **CONSTRUCT/DESCRIBE DONE (2026-05-31):** graph-result construction —
+`SparqlGraphConstruction.Construct` (template instantiation per solution: §16.2.1 well-formed filter, fresh per-row
+blank nodes, nested triple terms over an explicit stack; the shared engine SPARQL Update's `INSERT/DELETE … WHERE`
+will reuse) + `SparqlQueryEngine.DescribeAsync` with a **per-call `DescribeStrategy` delegate seam** (default
+Concise Bounded Description; `Lumoin.Veritas.Sparql.Execution.SparqlDescribe`); `W3cSparqlEvalRunner` runs graph
+results and compares via `QuadSetIsomorphism` (RDFC-1.0), and now honors in-query **`FROM`/`FROM NAMED`** at the
+harness level (loads the clause graphs as the dataset). Eval skips **57 → 45**, full suite **126 → 114 skip, 0
+failed, 0 regressions**. NEXT eval-skip buckets: **named/extension functions** (8), **negated property sets** (5),
+**BNODE** (2), then **RDF/XML (.rdf)** + **TriG (.trig)** readers and SELECT-results-in-Turtle (2). Then the big
+operational piece: **SPARQL Update** (the runtime write API over the journaled `EditSession`;
+[[project_change_signing_seam]]), promoted because it makes the system a live mutable graph — built on the
+CONSTRUCT template-instantiation just landed. **(3)** the rdf-canon `RDFC10MapTest` family (needs a canonicalizer
+surface returning the issued-identifier map; currently skipped), engine-level in-query `FROM`/`FROM NAMED` (only the
+eval harness honors it today), and a shapes
 graph through `ShaclPipelineDataState`. *(Superseded NEXT — the last ShaclValidate red, `sh:nodeKind property 001`,
 is now CLOSED by the RDFC-1.0 fix above; kept for the pointer.)* The original RDFC-1.0 automorphism rewrite
 ([[project_rdfc_automorphism_gap]]); `RdfCanonicalizer.HashNDegreeQuads` mis-canonicalizes automorphic blank nodes,
