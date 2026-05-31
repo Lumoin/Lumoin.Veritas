@@ -136,6 +136,55 @@ internal sealed class HypertrieGraphStoreQueryTests
     }
 
     [TestMethod]
+    public async Task IndependentLeadingVariableStrandedOnNonJoiningKeyYieldsCrossProduct()
+    {
+        //(?s1 type C) ∧ (?s2 type C) ∧ (?s2 member ?x): ?s1 is independent and bound at the outermost join level, so
+        //re-binding it must re-enumerate the inner ?s2/?x levels under the new value. This shape stresses the inner
+        //re-enumeration where it is hardest to keep: the (?s2 type C) iterator ranges over every typed subject — a
+        //strict superset of the (?s2 member ?x) iterator's subjects — so when the inner ?s2-join exhausts, the type
+        //iterator is sitting on a typed-but-memberless subject that is not itself at end. The cross product must still
+        //hold in full: types {10,11,12}, members on {10,11} only, so ?s1∈{10,11,12} (3) crossed with the 3 (s2,x)
+        //member pairs {(10,1),(10,2),(11,3)} = 9 solutions.
+        EncodedTriple[] triples =
+        [
+            EncodedTriple.FromEncoded(10, 100, 1),
+            EncodedTriple.FromEncoded(11, 100, 1),
+            EncodedTriple.FromEncoded(12, 100, 1),
+            EncodedTriple.FromEncoded(10, 200, 1),
+            EncodedTriple.FromEncoded(10, 200, 2),
+            EncodedTriple.FromEncoded(11, 200, 3),
+        ];
+
+        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(triples, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+        VariableRegistry registry = new();
+        Variable s1 = registry.GetOrAdd("s1");
+        Variable s2 = registry.GetOrAdd("s2");
+        Variable x = registry.GetOrAdd("x");
+
+        TriplePattern p0 = new(PatternPosition.OfVariable(s1), PatternPosition.Bound(TermId.FromEncoded(100)), PatternPosition.Bound(TermId.FromEncoded(1)));
+        TriplePattern p1 = new(PatternPosition.OfVariable(s2), PatternPosition.Bound(TermId.FromEncoded(100)), PatternPosition.Bound(TermId.FromEncoded(1)));
+        TriplePattern p2 = new(PatternPosition.OfVariable(s2), PatternPosition.Bound(TermId.FromEncoded(200)), PatternPosition.OfVariable(x));
+
+        BasicGraphPattern bgp = new([p0, p1, p2], registry);
+
+        List<Solution> solutions = await CollectAsync(store.Query(bgp, VeritasClock.System, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+
+        HashSet<(TermId, TermId, TermId)> tuples = [.. solutions.Select(sol => (sol.Get(s1), sol.Get(s2), sol.Get(x)))];
+        HashSet<(TermId, TermId, TermId)> expected = [];
+        (uint, uint)[] memberPairs = [(10, 1), (10, 2), (11, 3)];
+        foreach(uint outerS1 in new uint[] { 10, 11, 12 })
+        {
+            foreach((uint innerS2, uint innerX) in memberPairs)
+            {
+                expected.Add((TermId.FromEncoded(outerS1), TermId.FromEncoded(innerS2), TermId.FromEncoded(innerX)));
+            }
+        }
+
+        Assert.HasCount(9, solutions);
+        Assert.IsTrue(tuples.SetEquals(expected));
+    }
+
+    [TestMethod]
     public async Task ThreePatternTriangleJoin()
     {
         //(?a knows ?b) ∧ (?b knows ?c) ∧ (?a livesIn ?city) ∧

@@ -397,11 +397,13 @@ public sealed class BasicGraphPatternEvaluator
                 bindings.Add(new VariableBinding(variable, commonKey));
 
                 //Re-binding this level supersedes the binding under which independent iterators (those NOT in this
-                //frame) enumerated their own deeper variables. Such an iterator may have fully unwound to an
-                //exhausted (AtEnd) state during this same TryAdvance pass and dropped off the open-frames stack —
-                //the planner would then see it AtEnd and skip the whole branch, so the inner variable never
-                //re-enumerates for the new binding (a cross product collapsing to its first-key slice). Reset the
-                //current level of every such iterator so it presents its first key again under the new binding.
+                //frame) enumerated their own deeper variables. Such an iterator may have unwound during this same
+                //TryAdvance pass into one of two stale states: fully exhausted (AtEnd), or — when its own domain for
+                //the just-finished join level outruns the joined keys (e.g. a `?s a :Set` iterator whose set lacks
+                //the `?s :member` triples the co-iterator requires) — stranded NOT-AtEnd on a key that no longer
+                //joins. Either way its deeper enumeration is invalid for the new binding, so the planner would skip
+                //the branch (AtEnd case) or the next leapfrog would dead-end on the stranded key. Reset the current
+                //level of every such iterator so it presents its first key again under the new binding.
                 ReseedIndependentIterators(iterators, frame);
 
                 return true;
@@ -415,11 +417,15 @@ public sealed class BasicGraphPatternEvaluator
         return false;
     }
 
-    //Resets the current variable level of every iterator that is exhausted (AtEnd) and is NOT a participant of the
-    //just-re-bound frame, so it re-enumerates from its first key under the new binding. An iterator with all
-    //variables already bound (no current level) is left untouched — its at-end state is a fully-bound constraint,
-    //not an unstarted enumeration. The participants of the re-bound frame were re-opened by the caller and must not
-    //be reset.
+    //Resets the current variable level of every non-participant iterator that still has a level left to enumerate, so
+    //it re-presents its first key under the just-re-bound binding. Any such iterator is necessarily positioned at a
+    //variable strictly later in the elimination order than the re-bound one: the driver binds in global order and the
+    //bindings list is exactly that bound prefix, so an iterator's unbound current variable cannot precede the most
+    //recently bound variable. Its deeper enumeration was therefore relative to the superseded binding and must
+    //restart — whether the iterator exhausted (AtEnd) or merely stranded on a key that no longer joins. An iterator
+    //with all variables already bound (no current level) is left untouched: its state is a fully-bound constraint, not
+    //an unstarted enumeration. The participants of the re-bound frame were re-opened by the caller and must not be
+    //reset. (Restarting an already-first-key iterator is idempotent, so the broad sweep is safe.)
     private static void ReseedIndependentIterators(TriejoinIterator[] iterators, TriejoinIterator[] reboundFrame)
     {
         for(int i = 0; i < iterators.Length; i++)
@@ -431,7 +437,7 @@ public sealed class BasicGraphPatternEvaluator
                 continue;
             }
 
-            if(iterator.AtEnd && iterator.DescendedLevels < iterator.VariableOrder.Count)
+            if(iterator.DescendedLevels < iterator.VariableOrder.Count)
             {
                 iterator.RestartCurrentLevel();
             }
