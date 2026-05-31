@@ -142,6 +142,10 @@ internal static class W3cSparqlEvalRunner
             {
                 data = await LoadDataAsync(testCase.QueryDataPath, cancellationToken).ConfigureAwait(false);
                 namedGraphs = await LoadNamedGraphsAsync(testCase.GraphDataPaths, cancellationToken).ConfigureAwait(false);
+
+                //A single TriG / N-Quads data file can itself carry named graphs (beyond the default graph already in
+                //`data`); fold those into the dataset too.
+                namedGraphs.AddRange(await LoadNamedFromFileAsync(testCase.QueryDataPath, cancellationToken).ConfigureAwait(false));
             }
         }
         catch(InvalidOperationException ex)
@@ -389,7 +393,22 @@ internal static class W3cSparqlEvalRunner
     /// <param name="cancellationToken">A token to cancel reading.</param>
     /// <returns>The expected graph's quads.</returns>
     /// <exception cref="InvalidOperationException">The fixture is in a format this harness cannot read, or did not parse.</exception>
-    private static async Task<List<Quad>> LoadGraphAsync(string path, CancellationToken cancellationToken)
+    private static Task<List<Quad>> LoadGraphAsync(string path, CancellationToken cancellationToken)
+    {
+        return ReadQuadsAsync(path, cancellationToken);
+    }
+
+    /// <summary>
+    /// Reads an RDF document into quads, dispatching on file extension: N-Quads (<c>.nq</c>), Turtle / N-Triples
+    /// (<c>.ttl</c> / <c>.nt</c>), or TriG (<c>.trig</c> — Turtle plus named-graph blocks). A <c>.trig</c> / <c>.nq</c>
+    /// file carries named graphs in each quad's <see cref="Quad.Graph"/>; <c>.ttl</c> / <c>.nt</c> yields default-graph
+    /// quads only. RDF/XML (<c>.rdf</c>) and other formats are unreadable here.
+    /// </summary>
+    /// <param name="path">The document file path.</param>
+    /// <param name="cancellationToken">A token to cancel reading.</param>
+    /// <returns>The document's quads.</returns>
+    /// <exception cref="InvalidOperationException">The format is unreadable, or the document did not parse.</exception>
+    private static async Task<List<Quad>> ReadQuadsAsync(string path, CancellationToken cancellationToken)
     {
         string extension = IoPath.GetExtension(path);
         byte[] bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
@@ -405,25 +424,29 @@ internal static class W3cSparqlEvalRunner
             return quads;
         }
 
-        //Turtle and its N-Triples subset both parse with the Turtle reader.
-        if(string.Equals(extension, ".ttl", StringComparison.OrdinalIgnoreCase) || string.Equals(extension, ".nt", StringComparison.OrdinalIgnoreCase))
+        //Turtle, its N-Triples subset, and TriG all parse with the Turtle reader; TriG mode additionally accepts the
+        //named-graph blocks (GRAPH g { … } / g { … } / { … }) whose triples carry the block's graph.
+        if(string.Equals(extension, ".ttl", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(extension, ".nt", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(extension, ".trig", StringComparison.OrdinalIgnoreCase))
         {
+            TurtleSyntax syntax = string.Equals(extension, ".trig", StringComparison.OrdinalIgnoreCase) ? TurtleSyntax.TriG : TurtleSyntax.Turtle;
             string baseIri = new Uri(IoPath.GetFullPath(path)).AbsoluteUri;
             DiagnosticBag diagnostics = new();
-            await foreach(Quad quad in TurtleReader.ReadAsync(bytes, TurtleSyntax.Turtle, diagnostics, pool: null, baseIri: baseIri, cancellationToken: cancellationToken).ConfigureAwait(false))
+            await foreach(Quad quad in TurtleReader.ReadAsync(bytes, syntax, diagnostics, pool: null, baseIri: baseIri, cancellationToken: cancellationToken).ConfigureAwait(false))
             {
                 quads.Add(quad);
             }
 
             if(diagnostics.HasErrors)
             {
-                throw new InvalidOperationException($"Expected graph '{path}' did not parse: {DescribeFirstError(diagnostics.Diagnostics)}");
+                throw new InvalidOperationException($"Graph '{path}' did not parse: {DescribeFirstError(diagnostics.Diagnostics)}");
             }
 
             return quads;
         }
 
-        throw new InvalidOperationException($"Expected graph fixture format '{extension}' (e.g. RDF/XML) is not readable by this harness.");
+        throw new InvalidOperationException($"Graph fixture format '{extension}' (e.g. RDF/XML) is not readable by this harness.");
     }
 
     /// <summary>Loads the merge of an in-query <c>FROM</c> clause's graphs as the default-graph triples.</summary>
@@ -478,20 +501,52 @@ internal static class W3cSparqlEvalRunner
             return data;
         }
 
-        byte[] bytes = await File.ReadAllBytesAsync(dataPath, cancellationToken).ConfigureAwait(false);
-        DiagnosticBag diagnostics = new();
-        string baseIri = new Uri(IoPath.GetFullPath(dataPath)).AbsoluteUri;
-        await foreach(Quad quad in TurtleReader.ReadAsync(bytes, TurtleSyntax.Turtle, diagnostics, pool: null, baseIri: baseIri, cancellationToken: cancellationToken).ConfigureAwait(false))
+        //The default graph is the quads with no graph component; a TriG/N-Quads file may also carry named graphs,
+        //loaded separately by LoadNamedFromFileAsync.
+        foreach(Quad quad in await ReadQuadsAsync(dataPath, cancellationToken).ConfigureAwait(false))
         {
-            data.Add(new DataTriple(quad.Subject, quad.Predicate, quad.Object));
-        }
-
-        if(diagnostics.HasErrors)
-        {
-            throw new InvalidOperationException($"Data graph '{dataPath}' did not parse: {DescribeFirstError(diagnostics.Diagnostics)}");
+            if(quad.Graph is null)
+            {
+                data.Add(new DataTriple(quad.Subject, quad.Predicate, quad.Object));
+            }
         }
 
         return data;
+    }
+
+    /// <summary>Loads the named graphs carried inside a single TriG / N-Quads data file (the quads with a graph component), grouped by graph name; a Turtle file or absent path yields none.</summary>
+    /// <param name="dataPath">The data-file path, or <see langword="null"/>.</param>
+    /// <param name="cancellationToken">A token to cancel reading.</param>
+    /// <returns>The named graphs as (graph-name, triples) pairs.</returns>
+    private static async Task<List<(RdfTerm Name, IEnumerable<DataTriple> Triples)>> LoadNamedFromFileAsync(string? dataPath, CancellationToken cancellationToken)
+    {
+        List<(RdfTerm Name, IEnumerable<DataTriple> Triples)> named = [];
+        if(dataPath is null)
+        {
+            return named;
+        }
+
+        Dictionary<RdfTerm, List<DataTriple>> byGraph = [];
+        foreach(Quad quad in await ReadQuadsAsync(dataPath, cancellationToken).ConfigureAwait(false))
+        {
+            if(quad.Graph is RdfTerm graph)
+            {
+                if(!byGraph.TryGetValue(graph, out List<DataTriple>? triples))
+                {
+                    triples = [];
+                    byGraph[graph] = triples;
+                }
+
+                triples.Add(new DataTriple(quad.Subject, quad.Predicate, quad.Object));
+            }
+        }
+
+        foreach((RdfTerm name, List<DataTriple> triples) in byGraph)
+        {
+            named.Add((name, triples));
+        }
+
+        return named;
     }
 
     /// <summary>Loads each <c>qt:graphData</c> named-graph file, keyed by its own file IRI — the IRI a query's <c>GRAPH &lt;file&gt;</c> (or projected graph variable) resolves to.</summary>
