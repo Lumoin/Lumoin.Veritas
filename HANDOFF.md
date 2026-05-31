@@ -6,9 +6,17 @@ AST → algebra → translator → hypertrie backend + executor subset → SHACL
 unlock). **Batch 2 = Milestones D–F** (full algebra/aggregation, CONSTRUCT/
 DESCRIBE/JSON results, conformance push).
 
-## ⭐ CURRENT STATE (2026-06-01, **harness GREEN (0 failures)**; SPARQL Update executes (Phases 0–3 of 5 done), on `sparql-query-engine`, tree clean)
+## ⭐ CURRENT STATE (2026-06-01, **harness GREEN (0 failures)**; SPARQL Update CONFORMANCE-COMPLETE (all 5 phases done), on `sparql-query-engine`, tree clean)
 
-**Full suite = 3460 total, 0 failed, 250 skip; 0 regressions.** Building **SPARQL 1.2 Update** in full, final form,
+**Full suite = 3624 total, 0 failed, 258 skip; 0 regressions.** SPARQL 1.2 Update is fully built — parse + execute,
+through the real hypertrie edit-session/journal machinery — and the **full official W3C SPARQL 1.1 Update suite is
+vendored and green** (ratcheted to 0; honest skips only for RDF/XML fixtures, generically-typed syntax entries, and
+EXISTS-in-update). Phases 4 (`b4d1307`) and 5 (`b27d42f`) added the graph-management ops (CREATE/DROP/CLEAR/COPY/MOVE/
+ADD) + WITH/USING + LOAD (`GraphSourceResolver` seam), then vendored the suite and fixed what it surfaced: a modify
+`WHERE { SELECT … }` wrap, variables-in-DATA rejection, single-`;` operation separation, cross-operation blank-node
+label scoping (parser reject for DATA, executor disjoint-range mint for templates), and a recovery-loop guard.
+**Update was the first real producer of journal `Committed` entries — the first workload over the FastPaxos/
+signing/CBOM seams ([[project_journal_consensus_seam]]).** Prior phases (0–3): below. Building **SPARQL 1.2 Update** in full, final form,
 backed by the **real hypertrie edit-session machinery** (which already exists — `OpenEditSessionAsync`/`EditSession`/
 journal/`EditCommitment` in `Core/Hypertrie/Editing/`; we drive it, not rebuild it). Plan +
 storage/seam-roadmap notes: `C:\Users\Veikko\.claude\plans\delegated-napping-crab.md` (user-approved). 5 phases:
