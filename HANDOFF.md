@@ -6,7 +6,38 @@ AST → algebra → translator → hypertrie backend + executor subset → SHACL
 unlock). **Batch 2 = Milestones D–F** (full algebra/aggregation, CONSTRUCT/
 DESCRIBE/JSON results, conformance push).
 
-## ⭐ CURRENT STATE (2026-05-31, **harness GREEN (0 failures)** + SPARQL-eval skip-ratchet 45 → 29 this batch, on `sparql-query-engine`, tree clean)
+## ⭐ CURRENT STATE (2026-06-01, **harness GREEN (0 failures)**; SPARQL Update front end landed (Phases 0–1 of 5), on `sparql-query-engine`, tree clean)
+
+**Full suite = 3452 total, 0 failed, 256 skip; 0 regressions.** Building **SPARQL 1.2 Update** in full, final form,
+backed by the **real hypertrie edit-session machinery** (which already exists — `OpenEditSessionAsync`/`EditSession`/
+journal/`EditCommitment` in `Core/Hypertrie/Editing/`; we drive it, not rebuild it). Plan +
+storage/seam-roadmap notes: `C:\Users\Veikko\.claude\plans\delegated-napping-crab.md` (user-approved). 5 phases:
+
+- ✅ **Phase 0 (`70cd4ec`):** `HypertrieGraphStore.FromSnapshot(snapshot)` — re-wrap a committed snapshot as a
+  queryable store (acquires its own ref; O(n) count). The linchpin for reading post-commit state. Test:
+  `EditSessionTests.FromSnapshotReadsCommittedStateAndLeavesOriginalUnchanged`.
+- ✅ **Phase 1 (`6332eb7`):** Update **parser + AST**, all operations, final form. Lexer keywords; `Ast/UpdateOperations.cs`
+  (InsertData/DeleteData/DeleteWhere/Modify/Load/Clear/Drop/Create/Add/Move/Copy + Quads/QuadsGraphGroup/GraphRefTarget/
+  UsingClause); frame-stack parser (`UpdateOperation`/`Quads`/`Modify` frames; quad blocks reuse triple/construct-template/
+  GRAPH machinery); §3.1.3 blank-node-in-DELETE rejection (anonymous `{| |}` reifier counts; explicit `~iri` is fine).
+  Harness classifies `PositiveUpdateSyntaxTest`/`NegativeUpdateSyntaxTest`/`UpdateEvaluationTest`; parse-only update-syntax
+  runner. The 20 vendored triple-term update-syntax tests are GREEN (2 anon-reifier negatives correctly reject).
+  Tests: `SparqlUpdateParserTests` (12).
+- ⏭ **Phase 2 — TriG reader** (prereq for update-eval data/results, `.trig`; also unblocks non-update GRAPH `.trig` skips).
+- ⏭ **Phase 3 — `MutableSparqlDataset` + `SparqlUpdateExecutor`** (INSERT/DELETE DATA + Modify via edit-sessions;
+  `SparqlGraphConstruction.Construct` for templates, delete-before-insert; `UpdateEvaluationTest` runner comparing the
+  result dataset via `QuadSetIsomorphism`). WHERE solutions only through the engine's public seam surface (so the
+  pluggable-WCOJ backend swap later covers Update for free).
+- ⏭ **Phase 4 — graph-management ops** (CREATE/DROP/CLEAR/COPY/MOVE/ADD) + `LOAD` via a `GraphSourceResolver` local-file seam.
+- ⏭ **Phase 5 — vendor the full official W3C Update suite** + red-baseline ratchet to 0.
+
+Roadmap linkage (captured in the plan): Update is the first real producer of journal `Committed` entries → exercises the
+change-signing/CBOM/trace-bus seams; mutations are incremental copy-on-write (respect the build-cost constraint), the one
+rebuild-shaped cost is `FromSnapshot` (kept thin, supersedable).
+
+---
+
+## Prior state (2026-05-31, expression/path/BNODE batch — harness GREEN, eval skip-ratchet 45 → 29)
 
 The whole conformance harness stays **GREEN**: all SPARQL 1.2 eval + all SHACL 1.2 + the **official W3C rdf-canon
 (RDFC-1.0) suite** pass. **Full suite = 3256 total, 0 failed, 98 skip; 0 regressions.** Conformance is the oracle
