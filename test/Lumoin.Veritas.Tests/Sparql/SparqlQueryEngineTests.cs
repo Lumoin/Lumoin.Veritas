@@ -250,6 +250,25 @@ internal sealed class SparqlQueryEngineTests
         CollectionAssert.AreEqual(new[] { Ex + "a", Ex + "b", Ex + "f", Ex + "c", Ex + "e", Ex + "d" }, Subjects(solutions));
     }
 
+    /// <summary>A quoted triple term with a variable component matches structurally — the variable binds to the stored term's component — and that binding joins the rest of the basic graph pattern.</summary>
+    [TestMethod]
+    public async Task VariableBearingTripleTermBindsComponentAndJoins()
+    {
+        SparqlQueryEngine engine = await EngineFromAsync(
+            new DataTriple(Iri("a"), Iri("type"), Iri("Thing")),
+            new DataTriple(Iri("x"), Iri("q"), new Lumoin.Veritas.Core.TripleTerm(Iri("a"), Iri("b"), Iri("c"))),
+            new DataTriple(Iri("y"), Iri("q"), new Lumoin.Veritas.Core.TripleTerm(Iri("e"), Iri("b"), Iri("c")))).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?s WHERE { ?s :type :Thing . ?x :q <<( ?s :b :c )>> }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //?s must both be a :Thing and occur as the subject of a stored <<( ?s :b :c )>> term. Only :a satisfies both
+        //(:e is a triple-term subject but not a :Thing); the join is on the destructured component variable.
+        SparqlSolution solution = solutions.Single();
+        Assert.AreEqual(Ex + "a", ValueIri(solution, "s"));
+    }
+
     /// <summary>An inline VALUES block yields one solution per row, binding the listed variable.</summary>
     [TestMethod]
     public async Task InlineValuesYieldsOneSolutionPerRow()

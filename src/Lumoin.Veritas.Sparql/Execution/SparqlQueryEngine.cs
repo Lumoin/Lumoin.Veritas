@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -247,12 +248,18 @@ public sealed class SparqlQueryEngine
         Dictionary<Utf8String, Variable> blankToBackend = [];
         List<EncodedTriplePattern> patterns = new(bgp.Patterns.Count);
 
+        //A pattern position that is a quoted triple term with a variable inside cannot encode to a single bound
+        //value; each such position becomes a fresh internal join variable plus a destructuring task applied to the
+        //solutions the leapfrog produces (see docs/decisions/sparql-join-and-triple-term-matching.md). Empty for the
+        //overwhelmingly common case of no variable-bearing triple terms, so the common path below stays untouched.
+        List<TripleTermMatch> tripleTermMatches = [];
+
         foreach(AstTriplePattern triple in bgp.Patterns)
         {
             //A constant absent from the data graph can never match, so the whole BGP yields nothing.
-            if(!TryEncodePosition(triple.Subject, registry, toBackend, toSparql, blankToBackend, out PatternPosition subject)
-                || !TryEncodePosition(triple.Predicate, registry, toBackend, toSparql, blankToBackend, out PatternPosition predicate)
-                || !TryEncodePosition(triple.Object, registry, toBackend, toSparql, blankToBackend, out PatternPosition @object))
+            if(!TryEncodePosition(triple.Subject, registry, toBackend, toSparql, blankToBackend, tripleTermMatches, out PatternPosition subject)
+                || !TryEncodePosition(triple.Predicate, registry, toBackend, toSparql, blankToBackend, tripleTermMatches, out PatternPosition predicate)
+                || !TryEncodePosition(triple.Object, registry, toBackend, toSparql, blankToBackend, tripleTermMatches, out PatternPosition @object))
             {
                 return [];
             }
@@ -261,10 +268,25 @@ public sealed class SparqlQueryEngine
         }
 
         BasicGraphPattern query = new(patterns, registry);
+        bool hasTripleTermMatches = tripleTermMatches.Count > 0;
         List<SparqlSolution> solutions = [];
         await foreach(Solution solution in store.Query(query, TimeProvider.System, cancellationToken: cancellationToken).ConfigureAwait(false))
         {
-            solutions.Add(Decode(solution, toSparql));
+            if(!hasTripleTermMatches)
+            {
+                solutions.Add(Decode(solution, toSparql));
+
+                continue;
+            }
+
+            //Destructure each variable-bearing triple-term position: resolve the matched triple-term value and unify
+            //its components against the solution (binding fresh component variables, checking already-bound ones).
+            //A non-triple-term value or a component mismatch drops the solution.
+            List<VariableBinding> bindings = [.. solution.Bindings];
+            if(TryApplyTripleTermMatches(tripleTermMatches, bindings))
+            {
+                solutions.Add(DecodeBindings(bindings, toSparql));
+            }
         }
 
         return solutions;
@@ -272,21 +294,26 @@ public sealed class SparqlQueryEngine
 
     /// <summary>
     /// Encodes one triple-pattern term to a backend <see cref="PatternPosition"/>: a variable to a registered
-    /// <see cref="Variable"/>, a constant to its bound <see cref="TermId"/>.
+    /// <see cref="Variable"/>, a constant to its bound <see cref="TermId"/>, a ground quoted triple term to its one
+    /// interned <see cref="TermId"/>, and a variable-bearing quoted triple term to a fresh join variable plus a
+    /// destructuring task appended to <paramref name="tripleTermMatches"/>.
     /// </summary>
-    /// <param name="term">The term to encode (a constant or a variable).</param>
+    /// <param name="term">The term to encode.</param>
     /// <param name="registry">The registry minting backend variables for this pattern.</param>
     /// <param name="toBackend">The accumulating SPARQL-variable to backend-variable map.</param>
     /// <param name="toSparql">The accumulating backend-variable to SPARQL-variable map (for decoding).</param>
+    /// <param name="blankToBackend">The accumulating blank-node-label to backend-variable map (blank nodes are non-projected join variables).</param>
+    /// <param name="tripleTermMatches">The accumulating list of post-join destructuring tasks; a variable-bearing quoted triple term appends one.</param>
     /// <param name="position">Receives the encoded position on success.</param>
-    /// <returns><see langword="true"/> when the term encodes to a matchable position; <see langword="false"/> when a constant is absent from the data graph.</returns>
-    /// <exception cref="NotSupportedException">The term is neither a constant nor a variable (a nested triple term / RDF-star quoted pattern is a later slice).</exception>
+    /// <returns><see langword="true"/> when the term encodes to a matchable position; <see langword="false"/> when a constant (or ground triple term) is absent from the data graph.</returns>
+    /// <exception cref="NotSupportedException">The term is none of a constant, a variable, or a quoted triple term (e.g. a property path reached this position).</exception>
     private bool TryEncodePosition(
         TriplePatternTerm term,
         VariableRegistry registry,
         Dictionary<SparqlVariable, Variable> toBackend,
         Dictionary<Variable, SparqlVariable> toSparql,
         Dictionary<Utf8String, Variable> blankToBackend,
+        List<TripleTermMatch> tripleTermMatches,
         out PatternPosition position)
     {
         switch(term)
@@ -326,8 +353,7 @@ public sealed class SparqlQueryEngine
             {
                 //A fully-ground quoted triple term (no variables inside) is a single RDF 1.2 triple term value:
                 //encode it as one bound TermId, exactly as the data-graph triple term was interned, so it matches by
-                //value. A quoted triple term that contains a variable needs structural matching against the stored
-                //triple term and is a later slice.
+                //value.
                 TermId id = dictionary.GetIdOrDefault(ground);
                 if(id.IsNone)
                 {
@@ -341,9 +367,25 @@ public sealed class SparqlQueryEngine
                 return true;
             }
 
+            case AstTripleTerm tripleTerm:
+            {
+                //A quoted triple term with a variable (or blank-node join variable) inside cannot encode to one
+                //bound value. Encode the position as a fresh internal join variable the leapfrog binds to whatever
+                //triple-term value occupies it, and record a destructuring task that unifies the term's components
+                //against the solution after the join (Option B — see
+                //docs/decisions/sparql-join-and-triple-term-matching.md). The target is never recorded in `toSparql`,
+                //so it is a join variable that is not projected.
+                Variable target = registry.GetOrAdd("<<tt " + tripleTermMatches.Count.ToString(CultureInfo.InvariantCulture) + ">>");
+                TripleComponent pattern = BuildTripleTermComponent(tripleTerm, registry, toBackend, toSparql, blankToBackend);
+                tripleTermMatches.Add(new TripleTermMatch(target, pattern));
+                position = PatternPosition.OfVariable(target);
+
+                return true;
+            }
+
             default:
             {
-                throw new NotSupportedException($"Triple-pattern term '{term.GetType().Name}' is not yet executable; this slice handles constants, variables, and fully-ground quoted triple terms. A quoted triple term containing a variable needs structural matching (a later slice).");
+                throw new NotSupportedException($"Triple-pattern term '{term.GetType().Name}' is not executable; this engine handles constants, variables, and quoted triple terms.");
             }
         }
     }
@@ -414,6 +456,9 @@ public sealed class SparqlQueryEngine
     {
         term = position switch
         {
+            //A blank node in a query triple term is a non-distinguished join variable, not a ground value, so a
+            //triple term containing one is NOT ground — it falls through to structural (destructuring) matching.
+            ConstantTerm { Term: BlankNode } => null!,
             ConstantTerm constant => constant.Term,
             AstTripleTerm nested => built[nested],
             _ => null!
@@ -475,16 +520,217 @@ public sealed class SparqlQueryEngine
     /// <returns>The decoded SPARQL solution.</returns>
     private SparqlSolution Decode(Solution solution, Dictionary<Variable, SparqlVariable> toSparql)
     {
-        List<SparqlBinding> bindings = new(solution.Bindings.Count);
-        foreach(VariableBinding binding in solution.Bindings)
+        return DecodeBindings(solution.Bindings, toSparql);
+    }
+
+    /// <summary>Decodes a backend binding list to a SPARQL solution, mapping each projected backend variable to its SPARQL variable and resolving each encoded value to its RDF term; unprojected (join-only) variables are dropped.</summary>
+    /// <param name="bindings">The backend bindings (a leapfrog solution's bindings, possibly extended by triple-term destructuring).</param>
+    /// <param name="toSparql">The backend-variable to SPARQL-variable map for this pattern.</param>
+    /// <returns>The decoded SPARQL solution.</returns>
+    private SparqlSolution DecodeBindings(IReadOnlyList<VariableBinding> bindings, Dictionary<Variable, SparqlVariable> toSparql)
+    {
+        List<SparqlBinding> result = new(bindings.Count);
+        foreach(VariableBinding binding in bindings)
         {
             if(toSparql.TryGetValue(binding.Variable, out SparqlVariable variable))
             {
-                bindings.Add(new SparqlBinding(variable, dictionary.Resolve(binding.Value)));
+                result.Add(new SparqlBinding(variable, dictionary.Resolve(binding.Value)));
             }
         }
 
-        return new SparqlSolution(bindings);
+        return new SparqlSolution(result);
+    }
+
+    /// <summary>
+    /// Builds the destructuring pattern for a variable-bearing quoted triple term: a tree of
+    /// <see cref="TripleTermComponent"/> mirroring the term, with each leaf a backend variable (for a query variable
+    /// or blank node) or a constant RDF term. Walks the nesting over an explicit stack (no recursion), reusing the
+    /// pattern's backend-variable maps so a component variable joins its other occurrences.
+    /// </summary>
+    /// <param name="root">The quoted triple term (known to contain at least one variable).</param>
+    /// <param name="registry">The registry minting backend variables.</param>
+    /// <param name="toBackend">The SPARQL-variable to backend-variable map.</param>
+    /// <param name="toSparql">The backend-variable to SPARQL-variable map.</param>
+    /// <param name="blankToBackend">The blank-node-label to backend-variable map.</param>
+    /// <returns>The root triple-term component.</returns>
+    private static TripleComponent BuildTripleTermComponent(
+        AstTripleTerm root,
+        VariableRegistry registry,
+        Dictionary<SparqlVariable, Variable> toBackend,
+        Dictionary<Variable, SparqlVariable> toSparql,
+        Dictionary<Utf8String, Variable> blankToBackend)
+    {
+        Dictionary<AstTripleTerm, TripleComponent> built = new(ReferenceEqualityComparer.Instance);
+        Stack<(AstTripleTerm Term, bool Build)> work = new();
+        work.Push((root, Build: false));
+
+        while(work.Count > 0)
+        {
+            (AstTripleTerm term, bool build) = work.Pop();
+            AstTriplePattern inner = term.Inner;
+
+            if(!build)
+            {
+                work.Push((term, Build: true));
+
+                //Only a nested quoted triple term must be built before this one; the other positions read in place.
+                if(inner.Subject is AstTripleTerm nestedSubject)
+                {
+                    work.Push((nestedSubject, Build: false));
+                }
+
+                if(inner.Object is AstTripleTerm nestedObject)
+                {
+                    work.Push((nestedObject, Build: false));
+                }
+
+                continue;
+            }
+
+            TripleTermComponent subject = ToTripleTermComponent(inner.Subject, built, registry, toBackend, toSparql, blankToBackend);
+            TripleTermComponent predicate = ToTripleTermComponent(inner.Predicate, built, registry, toBackend, toSparql, blankToBackend);
+            TripleTermComponent objectComponent = ToTripleTermComponent(inner.Object, built, registry, toBackend, toSparql, blankToBackend);
+            built[term] = new TripleComponent(subject, predicate, objectComponent);
+        }
+
+        return built[root];
+    }
+
+    /// <summary>Maps one quoted-triple-term inner position to a <see cref="TripleTermComponent"/>: a variable / blank node to a (join) variable component, a constant to a constant component, a nested triple term to its already-built component.</summary>
+    /// <param name="position">The inner position.</param>
+    /// <param name="built">The map of already-built nested triple-term components.</param>
+    /// <param name="registry">The registry minting backend variables.</param>
+    /// <param name="toBackend">The SPARQL-variable to backend-variable map.</param>
+    /// <param name="toSparql">The backend-variable to SPARQL-variable map.</param>
+    /// <param name="blankToBackend">The blank-node-label to backend-variable map.</param>
+    /// <returns>The component.</returns>
+    /// <exception cref="NotSupportedException">The position is a property path (not valid inside a quoted triple term).</exception>
+    private static TripleTermComponent ToTripleTermComponent(
+        TriplePatternTerm position,
+        Dictionary<AstTripleTerm, TripleComponent> built,
+        VariableRegistry registry,
+        Dictionary<SparqlVariable, Variable> toBackend,
+        Dictionary<Variable, SparqlVariable> toSparql,
+        Dictionary<Utf8String, Variable> blankToBackend)
+    {
+        return position switch
+        {
+            VariableTerm variableTerm => new VariableComponent(GetOrAddVariable(variableTerm.Variable, registry, toBackend, toSparql)),
+            ConstantTerm { Term: BlankNode blank } => new VariableComponent(GetOrAddBlankVariable(blank.Label, registry, blankToBackend)),
+            ConstantTerm constant => new ConstantComponent(constant.Term),
+            AstTripleTerm nested => built[nested],
+            _ => throw new NotSupportedException($"Quoted-triple-term component '{position.GetType().Name}' is not supported.")
+        };
+    }
+
+    /// <summary>Applies every triple-term destructuring task to a candidate solution: resolves each target's matched value and unifies its components, extending <paramref name="bindings"/> with fresh component bindings. Returns <see langword="false"/> (dropping the solution) when any target is unbound, is not a triple term, or has a component that does not unify.</summary>
+    /// <param name="matches">The destructuring tasks for this pattern.</param>
+    /// <param name="bindings">The candidate solution's backend bindings, extended in place on success.</param>
+    /// <returns><see langword="true"/> when every task unifies.</returns>
+    private bool TryApplyTripleTermMatches(List<TripleTermMatch> matches, List<VariableBinding> bindings)
+    {
+        foreach(TripleTermMatch match in matches)
+        {
+            if(!TryLookupBinding(bindings, match.Target, out TermId boundId))
+            {
+                return false;
+            }
+
+            if(!TryUnifyTripleTermComponent(match.Pattern, dictionary.Resolve(boundId), bindings))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>Unifies a <see cref="TripleTermComponent"/> pattern against an actual RDF term, binding fresh variable components and checking already-bound ones, descending nested triple terms over an explicit stack (no recursion). Returns <see langword="false"/> on the first mismatch.</summary>
+    /// <param name="root">The component pattern.</param>
+    /// <param name="rootActual">The actual term to unify against.</param>
+    /// <param name="bindings">The bindings, extended in place when a variable component binds.</param>
+    /// <returns><see langword="true"/> when the pattern unifies with the term.</returns>
+    private bool TryUnifyTripleTermComponent(TripleTermComponent root, RdfTerm rootActual, List<VariableBinding> bindings)
+    {
+        Stack<(TripleTermComponent Component, RdfTerm Actual)> work = new();
+        work.Push((root, rootActual));
+
+        while(work.Count > 0)
+        {
+            (TripleTermComponent component, RdfTerm actual) = work.Pop();
+            bool unified = component switch
+            {
+                ConstantComponent constant => constant.Term.Equals(actual),
+                VariableComponent variable => TryBindOrCheck(variable.Variable, actual, bindings),
+                TripleComponent triple => TryDescendTripleComponent(triple, actual, work),
+                _ => throw new InvalidOperationException($"Unexpected triple-term component '{component.GetType().Name}'.")
+            };
+            if(!unified)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>Binds a variable component to the actual term's id when unbound, or checks equality with its existing binding. Interns the actual term (a no-op when already interned); equal RDF terms share an id, so the comparison is by value.</summary>
+    /// <param name="variable">The backend variable.</param>
+    /// <param name="actual">The actual term.</param>
+    /// <param name="bindings">The bindings, extended in place when the variable is unbound.</param>
+    /// <returns><see langword="true"/> when the variable was unbound (now bound) or already equals the actual term.</returns>
+    private bool TryBindOrCheck(Variable variable, RdfTerm actual, List<VariableBinding> bindings)
+    {
+        TermId actualId = dictionary.GetOrAdd(actual);
+        if(TryLookupBinding(bindings, variable, out TermId existing))
+        {
+            return existing == actualId;
+        }
+
+        bindings.Add(new VariableBinding(variable, actualId));
+
+        return true;
+    }
+
+    /// <summary>Descends a nested triple-term component: when the actual term is itself a triple term, pushes its three component/term pairs onto <paramref name="work"/> for unification; otherwise the match fails.</summary>
+    /// <param name="triple">The nested triple-term component.</param>
+    /// <param name="actual">The actual term, which must be a <see cref="Core.TripleTerm"/> to match.</param>
+    /// <param name="work">The unification work stack to push the component pairs onto.</param>
+    /// <returns><see langword="true"/> when the actual term is a triple term (children pushed); <see langword="false"/> otherwise.</returns>
+    private static bool TryDescendTripleComponent(TripleComponent triple, RdfTerm actual, Stack<(TripleTermComponent Component, RdfTerm Actual)> work)
+    {
+        if(actual is not Core.TripleTerm tripleTerm)
+        {
+            return false;
+        }
+
+        work.Push((triple.Subject, tripleTerm.Subject));
+        work.Push((triple.Predicate, tripleTerm.Predicate));
+        work.Push((triple.Object, tripleTerm.Object));
+
+        return true;
+    }
+
+    /// <summary>Looks up a backend variable's bound value in a binding list.</summary>
+    /// <param name="bindings">The bindings to scan.</param>
+    /// <param name="variable">The backend variable.</param>
+    /// <param name="value">Receives the bound value when found.</param>
+    /// <returns><see langword="true"/> when the variable is bound.</returns>
+    private static bool TryLookupBinding(List<VariableBinding> bindings, Variable variable, out TermId value)
+    {
+        foreach(VariableBinding binding in bindings)
+        {
+            if(binding.Variable == variable)
+            {
+                value = binding.Value;
+
+                return true;
+            }
+        }
+
+        value = default;
+
+        return false;
     }
 
     /// <summary>Restricts each solution to the projected variables, in projection order, dropping bindings for variables a solution does not bind.</summary>
@@ -1411,6 +1657,28 @@ public sealed class SparqlQueryEngine
 
         return new ValuesClause(SourceSpan.None, variables, [row]);
     }
+
+    /// <summary>A post-join destructuring task for a variable-bearing quoted triple term: the fresh join variable the leapfrog binds to the matched triple-term value, and the component pattern to unify against that value.</summary>
+    /// <param name="Target">The fresh backend join variable bound to the matched triple-term value.</param>
+    /// <param name="Pattern">The triple-term component pattern to unify against the resolved value.</param>
+    private sealed record TripleTermMatch(Variable Target, TripleComponent Pattern);
+
+    /// <summary>A node in a quoted-triple-term destructuring pattern: a constant term, a (join) variable, or a nested triple term.</summary>
+    private abstract record TripleTermComponent;
+
+    /// <summary>A constant position in a triple-term pattern, matched by RDF-term equality.</summary>
+    /// <param name="Term">The constant RDF term.</param>
+    private sealed record ConstantComponent(RdfTerm Term): TripleTermComponent;
+
+    /// <summary>A variable (or blank-node join variable) position in a triple-term pattern, unified against the actual term.</summary>
+    /// <param name="Variable">The backend join variable.</param>
+    private sealed record VariableComponent(Variable Variable): TripleTermComponent;
+
+    /// <summary>A nested quoted triple term inside a triple-term pattern; the actual term must itself be a triple term, matched component-wise.</summary>
+    /// <param name="Subject">The subject component.</param>
+    /// <param name="Predicate">The predicate component.</param>
+    /// <param name="Object">The object component.</param>
+    private sealed record TripleComponent(TripleTermComponent Subject, TripleTermComponent Predicate, TripleTermComponent Object): TripleTermComponent;
 
     /// <summary>One group during aggregation: its grouping-key values (for partitioning), the named-key bindings it contributes to the output solution, and its member solutions.</summary>
     private sealed class AggregateGroup
