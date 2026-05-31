@@ -70,6 +70,29 @@ internal enum W3cTestType
     SparqlQueryEvaluation,
 
     /// <summary>
+    /// A SPARQL Update positive-syntax test (<c>mf:PositiveUpdateSyntaxTest</c>
+    /// / <c>...Test11</c>): the update request (<c>mf:action</c>, a <c>.ru</c>
+    /// file) must parse without error.
+    /// </summary>
+    PositiveUpdateSyntax,
+
+    /// <summary>
+    /// A SPARQL Update negative-syntax test (<c>mf:NegativeUpdateSyntaxTest</c>
+    /// / <c>...Test11</c>): the update request must be rejected (the parser
+    /// reports at least one error).
+    /// </summary>
+    NegativeUpdateSyntax,
+
+    /// <summary>
+    /// A SPARQL Update evaluation test (<c>mf:UpdateEvaluationTest</c>): the
+    /// request (<c>ut:request</c>) is applied to the input data
+    /// (<c>ut:data</c> / <c>ut:graphData</c>) and the resulting dataset
+    /// compared to the expected (<c>mf:result</c>'s <c>ut:data</c> /
+    /// <c>ut:graphData</c>).
+    /// </summary>
+    SparqlUpdateEvaluation,
+
+    /// <summary>
     /// The manifest used a test type the harness does not know
     /// how to dispatch. The runner reports
     /// <see cref="W3cOutcomeStatus.Skipped"/> with the original

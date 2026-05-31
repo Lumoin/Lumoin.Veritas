@@ -156,6 +156,20 @@ internal sealed class W3cSparqlEvalTests
     [W3cManifestData("Sparql", "lang-basedir")]
     public Task RunLangBaseDirection(W3cTestCase testCase) => RunAndAssertAsync(testCase);
 
+    /// <summary>Runs one W3C SPARQL 1.2 triple-term positive-syntax test (covers the <c>INSERT DATA</c> update-syntax entries).</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "syntax-triple-terms-positive")]
+    public Task RunSyntaxTripleTermsPositive(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
+    /// <summary>Runs one W3C SPARQL 1.2 triple-term negative-syntax test (covers the negative update-syntax entries).</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "syntax-triple-terms-negative")]
+    public Task RunSyntaxTripleTermsNegative(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
     /// <summary>
     /// Runs a query-evaluation test case and applies the outcome. A wrong answer fails (the conformance baseline);
     /// a structural non-runnable (handled by the runner) is inconclusive. Non-query-evaluation entries in a mixed
@@ -166,6 +180,16 @@ internal sealed class W3cSparqlEvalTests
     private async Task RunAndAssertAsync(W3cTestCase testCase)
     {
         ArgumentNullException.ThrowIfNull(testCase);
+
+        if(testCase.Type is W3cTestType.PositiveUpdateSyntax or W3cTestType.NegativeUpdateSyntax)
+        {
+            W3cOutcome syntaxOutcome = await W3cSparqlEvalRunner.RunUpdateSyntaxAsync(
+                testCase,
+                expectSuccess: testCase.Type == W3cTestType.PositiveUpdateSyntax,
+                TestContext.CancellationToken).ConfigureAwait(false);
+            ConformanceAssertions.Apply(syntaxOutcome);
+            return;
+        }
 
         if(testCase.Type != W3cTestType.SparqlQueryEvaluation)
         {

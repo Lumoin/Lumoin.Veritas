@@ -626,6 +626,24 @@ internal static class W3cManifestLoader
             return W3cTestType.SparqlQueryEvaluation;
         }
 
+        //Update-syntax/-evaluation markers are matched before the generic syntax/Eval arms: "PositiveUpdateSyntax"
+        //does not contain "PositiveSyntax", but "UpdateEvaluationTest" ends with "Eval"-adjacent text, so the
+        //update arms must win. The update suite parses (and, for eval, executes) update requests.
+        if(typeIri.Contains("PositiveUpdateSyntax", StringComparison.Ordinal))
+        {
+            return W3cTestType.PositiveUpdateSyntax;
+        }
+
+        if(typeIri.Contains("NegativeUpdateSyntax", StringComparison.Ordinal))
+        {
+            return W3cTestType.NegativeUpdateSyntax;
+        }
+
+        if(typeIri == MfNamespace + "UpdateEvaluationTest")
+        {
+            return W3cTestType.SparqlUpdateEvaluation;
+        }
+
         if(typeIri.Contains("PositiveSyntax", StringComparison.Ordinal))
         {
             return W3cTestType.PositiveSyntax;

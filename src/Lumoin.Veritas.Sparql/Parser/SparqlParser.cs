@@ -441,6 +441,9 @@ public sealed class SparqlParser
             ParseFrameKind.OrderBy => StepOrderBy(frame, incoming),
             ParseFrameKind.Filter => StepFilter(frame, incoming),
             ParseFrameKind.Bind => StepBind(frame, incoming),
+            ParseFrameKind.UpdateOperation => StepUpdateOperation(frame, incoming),
+            ParseFrameKind.Quads => StepQuads(frame, incoming),
+            ParseFrameKind.Modify => StepModify(frame, incoming),
             _ => throw new SparqlParseException($"Parser production '{frame.Kind}' is not yet implemented in this build.", frame.StartSpan)
         };
     }
@@ -473,6 +476,8 @@ public sealed class SparqlParser
             15 => RequestDescribeTargets(frame),
             16 => RequestTrailingValues(frame),
             17 => RequestTrailingValuesReceived(frame, incoming),
+            18 => RequestUpdateLoop(frame),
+            19 => RequestUpdateOperationReceived(frame, incoming),
             _ => throw new SparqlParseException("Request reached an unknown stage.", frame.StartSpan)
         };
 
@@ -521,6 +526,10 @@ public sealed class SparqlParser
             SparqlTokenKind.AskKeyword => RequestAsk(frame),
             SparqlTokenKind.ConstructKeyword => RequestConstruct(frame),
             SparqlTokenKind.DescribeKeyword => RequestDescribe(frame),
+
+            //An update unit: a (possibly empty) sequence of update operations. End-of-input after the prologue is a
+            //valid empty update — the only request that legitimately has no form head.
+            _ when IsUpdateOperationStart(Current.Kind) || Current.Kind == SparqlTokenKind.EndOfInput => RequestBeginUpdate(frame),
             _ => RequestRecoverForm(frame)
         };
 
@@ -961,6 +970,831 @@ public sealed class SparqlParser
             frame.Values);
 
         return StepResult.Done(query);
+    }
+
+    // ===== SPARQL Update =====
+
+    /// <summary>Whether <paramref name="kind"/> begins a SPARQL Update operation (the leading keyword of an <c>Update1</c>).</summary>
+    /// <param name="kind">The token kind.</param>
+    /// <returns><see langword="true"/> when the token begins an update operation.</returns>
+    private static bool IsUpdateOperationStart(SparqlTokenKind kind)
+        => kind is SparqlTokenKind.InsertKeyword or SparqlTokenKind.DeleteKeyword or SparqlTokenKind.WithKeyword
+            or SparqlTokenKind.LoadKeyword or SparqlTokenKind.ClearKeyword or SparqlTokenKind.DropKeyword
+            or SparqlTokenKind.CreateKeyword or SparqlTokenKind.AddKeyword or SparqlTokenKind.MoveKeyword
+            or SparqlTokenKind.CopyKeyword;
+
+    /// <summary>Enters update-unit mode: subsequent stages parse the <c>;</c>-separated operations and any interleaved prologue.</summary>
+    /// <param name="frame">The request frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult RequestBeginUpdate(ParseFrame frame)
+    {
+        frame.UpdateOperations = [];
+        frame.Stage = 18;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Parses the update unit one operation per step, consuming interleaved prologue declarations and <c>;</c> separators, and finalising the request at end of input.</summary>
+    /// <param name="frame">The request frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult RequestUpdateLoop(ParseFrame frame)
+    {
+        //A prologue may precede each operation (Update ::= Prologue (Update1 (';' Update)?)?). Reuse the prologue
+        //parsers so an operation after a ';' resolves prefixes the earlier operations declared.
+        if(Current.Kind == SparqlTokenKind.BaseKeyword)
+        {
+            ParseBaseDeclaration(frame);
+
+            return StepResult.Continue();
+        }
+
+        if(Current.Kind == SparqlTokenKind.PrefixKeyword)
+        {
+            ParsePrefixDeclaration(frame);
+
+            return StepResult.Continue();
+        }
+
+        if(Current.Kind == SparqlTokenKind.VersionKeyword)
+        {
+            ParseVersionDeclaration(frame);
+
+            return StepResult.Continue();
+        }
+
+        if(Current.Kind == SparqlTokenKind.Semicolon)
+        {
+            Advance();
+
+            return StepResult.Continue();
+        }
+
+        if(Current.Kind == SparqlTokenKind.EndOfInput)
+        {
+            return StepResult.Done(new SparqlUpdateRequest(CombineSpans(frame.StartSpan, lastConsumedSpan), BuildPrologue(frame), frame.UpdateOperations!));
+        }
+
+        if(IsUpdateOperationStart(Current.Kind))
+        {
+            frame.Stage = 19;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.UpdateOperation, StartSpan = Current.Span });
+        }
+
+        //A stray token where an operation, ';', or end of input was expected: report and skip to a safe point.
+        _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedUpdateOperation, Current.Span, "Expected a SPARQL Update operation, ';', or the end of the request.");
+        ResyncTo(ParseFrameKind.Request, Current.Span, out _);
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Adopts a parsed update operation and returns to the operation loop.</summary>
+    /// <param name="frame">The request frame.</param>
+    /// <param name="incoming">The popped <see cref="UpdateOperation"/>.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult RequestUpdateOperationReceived(ParseFrame frame, object? incoming)
+    {
+        frame.UpdateOperations!.Add(Pop<UpdateOperation>(incoming));
+        frame.Stage = 18;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Advances one update operation: the leading-keyword dispatch, then receiving a pushed quad block or modify body.</summary>
+    /// <param name="frame">The update-operation frame.</param>
+    /// <param name="incoming">A pushed sub-production's result on resume.</param>
+    /// <returns>The instruction for the driver; the popped result is the <see cref="UpdateOperation"/>.</returns>
+    private StepResult StepUpdateOperation(ParseFrame frame, object? incoming)
+        => frame.Stage switch
+        {
+            0 => UpdateOperationDispatch(frame),
+            1 => UpdateDataReceived(frame, incoming),
+            2 => UpdateDeleteWhereReceived(frame, incoming),
+            3 => UpdateModifyReceived(frame, incoming),
+            _ => throw new SparqlParseException("Update operation reached an unknown stage.", frame.StartSpan)
+        };
+
+    /// <summary>Dispatches one update operation on its leading keyword.</summary>
+    /// <param name="frame">The update-operation frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult UpdateOperationDispatch(ParseFrame frame)
+        => Current.Kind switch
+        {
+            SparqlTokenKind.InsertKeyword => UpdateBeginInsert(frame),
+            SparqlTokenKind.DeleteKeyword => UpdateBeginDelete(frame),
+            SparqlTokenKind.WithKeyword => PushModify(frame),
+            SparqlTokenKind.LoadKeyword => UpdateLoad(frame),
+            SparqlTokenKind.ClearKeyword => UpdateClearOrDrop(frame, isClear: true),
+            SparqlTokenKind.DropKeyword => UpdateClearOrDrop(frame, isClear: false),
+            SparqlTokenKind.CreateKeyword => UpdateCreate(frame),
+            SparqlTokenKind.AddKeyword or SparqlTokenKind.MoveKeyword or SparqlTokenKind.CopyKeyword => UpdateBinaryGraphOp(frame),
+            _ => UpdateRecoverOperation(frame)
+        };
+
+    /// <summary>Begins an <c>INSERT</c> operation: <c>INSERT DATA { … }</c>, or a modify whose insert template follows.</summary>
+    /// <param name="frame">The update-operation frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult UpdateBeginInsert(ParseFrame frame)
+    {
+        if(Peek(1).Kind != SparqlTokenKind.DataKeyword)
+        {
+            return PushModify(frame);
+        }
+
+        Advance();   //INSERT
+        Advance();   //DATA
+        frame.OperatorKind = SparqlTokenKind.InsertKeyword;
+        if(Current.Kind != SparqlTokenKind.OpenBrace)
+        {
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' to begin the INSERT DATA quad block.");
+
+            return StepResult.Done(new InsertDataOperation(CombineSpans(frame.StartSpan, lastConsumedSpan), EmptyQuads()));
+        }
+
+        frame.Stage = 1;
+
+        return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Quads, StartSpan = Current.Span });
+    }
+
+    /// <summary>Begins a <c>DELETE</c> operation: <c>DELETE DATA { … }</c>, <c>DELETE WHERE { … }</c>, or a modify whose delete template follows.</summary>
+    /// <param name="frame">The update-operation frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult UpdateBeginDelete(ParseFrame frame)
+    {
+        if(Peek(1).Kind == SparqlTokenKind.DataKeyword)
+        {
+            Advance();   //DELETE
+            Advance();   //DATA
+            frame.OperatorKind = SparqlTokenKind.DeleteKeyword;
+            if(Current.Kind != SparqlTokenKind.OpenBrace)
+            {
+                _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' to begin the DELETE DATA quad block.");
+
+                return StepResult.Done(new DeleteDataOperation(CombineSpans(frame.StartSpan, lastConsumedSpan), EmptyQuads()));
+            }
+
+            frame.Stage = 1;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Quads, StartSpan = Current.Span });
+        }
+
+        if(Peek(1).Kind == SparqlTokenKind.WhereKeyword)
+        {
+            Advance();   //DELETE
+            Advance();   //WHERE
+            if(Current.Kind != SparqlTokenKind.OpenBrace)
+            {
+                _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' to begin the DELETE WHERE quad pattern.");
+
+                return StepResult.Done(new DeleteWhereOperation(CombineSpans(frame.StartSpan, lastConsumedSpan), EmptyQuads()));
+            }
+
+            frame.Stage = 2;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Quads, StartSpan = Current.Span });
+        }
+
+        return PushModify(frame);
+    }
+
+    /// <summary>Pushes the modify-body frame (the leading <c>WITH</c>/<c>DELETE</c>/<c>INSERT</c> is consumed there).</summary>
+    /// <param name="frame">The update-operation frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult PushModify(ParseFrame frame)
+    {
+        frame.Stage = 3;
+
+        return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Modify, StartSpan = Current.Span });
+    }
+
+    /// <summary>Completes an <c>INSERT DATA</c> / <c>DELETE DATA</c> operation from its received quad block.</summary>
+    /// <param name="frame">The update-operation frame.</param>
+    /// <param name="incoming">The popped <see cref="Quads"/>.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult UpdateDataReceived(ParseFrame frame, object? incoming)
+    {
+        Quads data = Pop<Quads>(incoming);
+        SourceSpan span = CombineSpans(frame.StartSpan, lastConsumedSpan);
+        if(frame.OperatorKind == SparqlTokenKind.InsertKeyword)
+        {
+            return StepResult.Done(new InsertDataOperation(span, data));
+        }
+
+        ReportDeleteBlankNodes(data);
+
+        return StepResult.Done(new DeleteDataOperation(span, data));
+    }
+
+    /// <summary>Completes a <c>DELETE WHERE</c> operation from its received quad pattern.</summary>
+    /// <param name="frame">The update-operation frame.</param>
+    /// <param name="incoming">The popped <see cref="Quads"/>.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult UpdateDeleteWhereReceived(ParseFrame frame, object? incoming)
+    {
+        Quads pattern = Pop<Quads>(incoming);
+        ReportDeleteBlankNodes(pattern);
+
+        return StepResult.Done(new DeleteWhereOperation(CombineSpans(frame.StartSpan, lastConsumedSpan), pattern));
+    }
+
+    /// <summary>Completes a modify operation from its received body.</summary>
+    /// <param name="frame">The update-operation frame.</param>
+    /// <param name="incoming">The popped <see cref="ModifyOperation"/>.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult UpdateModifyReceived(ParseFrame frame, object? incoming)
+    {
+        return StepResult.Done(Pop<ModifyOperation>(incoming));
+    }
+
+    /// <summary>Parses <c>LOAD [SILENT] iri [INTO GRAPH iri]</c>.</summary>
+    /// <param name="frame">The update-operation frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult UpdateLoad(ParseFrame frame)
+    {
+        Advance();   //LOAD
+        bool silent = ConsumeOptionalSilent();
+        IriRef source = ConsumeIriOrPrefixedName("a LOAD source IRI");
+        IriRef? into = null;
+        if(Current.Kind == SparqlTokenKind.IntoKeyword)
+        {
+            Advance();   //INTO
+            if(Current.Kind == SparqlTokenKind.GraphKeyword)
+            {
+                Advance();
+            }
+
+            into = ConsumeIriOrPrefixedName("a LOAD destination graph IRI");
+        }
+
+        return StepResult.Done(new LoadOperation(CombineSpans(frame.StartSpan, lastConsumedSpan), silent, source, into));
+    }
+
+    /// <summary>Parses <c>CLEAR</c> / <c>DROP</c> <c>[SILENT] (DEFAULT | NAMED | ALL | GRAPH iri)</c>.</summary>
+    /// <param name="frame">The update-operation frame.</param>
+    /// <param name="isClear"><see langword="true"/> for <c>CLEAR</c>, <see langword="false"/> for <c>DROP</c>.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult UpdateClearOrDrop(ParseFrame frame, bool isClear)
+    {
+        Advance();   //CLEAR / DROP
+        bool silent = ConsumeOptionalSilent();
+        GraphRefTarget target = ParseGraphRefAll();
+        SourceSpan span = CombineSpans(frame.StartSpan, lastConsumedSpan);
+
+        return StepResult.Done(isClear ? new ClearOperation(span, silent, target) : new DropOperation(span, silent, target));
+    }
+
+    /// <summary>Parses <c>CREATE [SILENT] GRAPH iri</c>.</summary>
+    /// <param name="frame">The update-operation frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult UpdateCreate(ParseFrame frame)
+    {
+        Advance();   //CREATE
+        bool silent = ConsumeOptionalSilent();
+        if(Current.Kind == SparqlTokenKind.GraphKeyword)
+        {
+            Advance();
+        }
+
+        IriRef graph = ConsumeIriOrPrefixedName("a CREATE graph IRI");
+
+        return StepResult.Done(new CreateOperation(CombineSpans(frame.StartSpan, lastConsumedSpan), silent, graph));
+    }
+
+    /// <summary>Parses <c>ADD</c> / <c>MOVE</c> / <c>COPY</c> <c>[SILENT] GraphOrDefault TO GraphOrDefault</c>.</summary>
+    /// <param name="frame">The update-operation frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult UpdateBinaryGraphOp(ParseFrame frame)
+    {
+        SparqlTokenKind op = Current.Kind;
+        Advance();   //ADD / MOVE / COPY
+        bool silent = ConsumeOptionalSilent();
+        GraphRefTarget source = ParseGraphOrDefault();
+        if(Current.Kind == SparqlTokenKind.ToKeyword)
+        {
+            Advance();
+        }
+        else
+        {
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedGraphReference, Current.Span, "Expected 'TO' between the source and destination graphs.");
+        }
+
+        GraphRefTarget destination = ParseGraphOrDefault();
+        SourceSpan span = CombineSpans(frame.StartSpan, lastConsumedSpan);
+
+        return StepResult.Done(op switch
+        {
+            SparqlTokenKind.AddKeyword => new AddOperation(span, silent, source, destination),
+            SparqlTokenKind.MoveKeyword => new MoveOperation(span, silent, source, destination),
+            _ => new CopyOperation(span, silent, source, destination)
+        });
+    }
+
+    /// <summary>Recovers an unrecognised update operation by reporting and resyncing; the loop then resumes.</summary>
+    /// <param name="frame">The update-operation frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult UpdateRecoverOperation(ParseFrame frame)
+    {
+        _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedUpdateOperation, Current.Span, "Expected a SPARQL Update operation.");
+        ResyncTo(ParseFrameKind.UpdateOperation, Current.Span, out _);
+
+        //Yield a no-op so the request still materialises; the loop continues from the resync point.
+        return StepResult.Done(new InsertDataOperation(CombineSpans(frame.StartSpan, lastConsumedSpan), EmptyQuads()));
+    }
+
+    /// <summary>Advances a quad block <c>{ triples … GRAPH g { … } … }</c>, accumulating default-graph triples and <c>GRAPH</c> groups one push at a time.</summary>
+    /// <param name="frame">The quads frame.</param>
+    /// <param name="incoming">A popped triple list (default-graph triples, or a <c>GRAPH</c> group's triples), or <see langword="null"/>.</param>
+    /// <returns>The instruction for the driver; the popped result is the <see cref="Quads"/>.</returns>
+    private StepResult StepQuads(ParseFrame frame, object? incoming)
+    {
+        if(frame.Stage == 0)
+        {
+            //The caller ensured '{' is current.
+            Advance();
+            frame.TripleAccumulator = [];
+            frame.QuadsGroups = [];
+            frame.Stage = 1;
+        }
+        else if(incoming is List<TriplePattern> triples)
+        {
+            if(frame.AwaitingGraphGroup)
+            {
+                frame.QuadsGroups!.Add(new QuadsGraphGroup(CombineSpans(frame.VerbSpanStart, lastConsumedSpan), frame.GraphDesignator!, triples));
+                frame.AwaitingGraphGroup = false;
+            }
+            else
+            {
+                frame.TripleAccumulator!.AddRange(triples);
+            }
+
+            ConsumeOptionalDot();
+        }
+
+        if(Current.Kind == SparqlTokenKind.CloseBrace)
+        {
+            Advance();
+
+            return StepResult.Done(new Quads(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.TripleAccumulator!, frame.QuadsGroups!));
+        }
+
+        if(Current.Kind == SparqlTokenKind.EndOfInput)
+        {
+            _ = ReportRecoverable(WellKnownDiagnostics.Sparql.UnclosedGroupGraphPattern, Current.Span, "Expected '}' to close the quad block.");
+
+            return StepResult.Done(new Quads(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.TripleAccumulator!, frame.QuadsGroups!));
+        }
+
+        if(Current.Kind == SparqlTokenKind.GraphKeyword)
+        {
+            frame.VerbSpanStart = Current.Span;
+            Advance();
+            frame.GraphDesignator = ParseGraphTerm();
+            if(Current.Kind != SparqlTokenKind.OpenBrace)
+            {
+                _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' after the GRAPH designator in a quad block.");
+
+                return StepResult.Continue();
+            }
+
+            frame.AwaitingGraphGroup = true;
+
+            //The CONSTRUCT-template frame parses '{ TriplesTemplate? }' and returns the triple list — exactly a GRAPH group's body.
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.ConstructTemplate, StartSpan = Current.Span });
+        }
+
+        if(CanStartTriple(Current.Kind))
+        {
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Triple, StartSpan = Current.Span });
+        }
+
+        //A stray token that begins no triple, GRAPH group, or closer: report and skip to a safe point.
+        _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedTriplePattern, Current.Span, "Expected a triple pattern, 'GRAPH', or '}'.");
+
+        while(Current.Kind != SparqlTokenKind.EndOfInput
+            && Current.Kind != SparqlTokenKind.CloseBrace
+            && Current.Kind != SparqlTokenKind.GraphKeyword
+            && !CanStartTriple(Current.Kind))
+        {
+            int before = index;
+            Advance();
+
+            if(index == before)
+            {
+                break;
+            }
+        }
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Advances a modify body: optional <c>WITH</c>, an optional <c>DELETE</c> and/or <c>INSERT</c> template, <c>USING</c> clauses, and the <c>WHERE</c> pattern.</summary>
+    /// <param name="frame">The modify frame.</param>
+    /// <param name="incoming">A pushed sub-production's result on resume.</param>
+    /// <returns>The instruction for the driver; the popped result is the <see cref="ModifyOperation"/>.</returns>
+    private StepResult StepModify(ParseFrame frame, object? incoming)
+        => frame.Stage switch
+        {
+            0 => ModifyStart(frame),
+            1 => ModifyDeleteReceived(frame, incoming),
+            2 => ModifyInsertReceived(frame, incoming),
+            3 => ModifyUsingWhere(frame),
+            4 => ModifyWhereReceived(frame, incoming),
+            _ => throw new SparqlParseException("Modify reached an unknown stage.", frame.StartSpan)
+        };
+
+    /// <summary>Parses the optional <c>WITH</c> and dispatches the leading <c>DELETE</c> or <c>INSERT</c> template.</summary>
+    /// <param name="frame">The modify frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult ModifyStart(ParseFrame frame)
+    {
+        frame.UsingClauses ??= [];
+        if(Current.Kind == SparqlTokenKind.WithKeyword)
+        {
+            Advance();
+            frame.WithIri = ConsumeIriOrPrefixedName("a WITH graph IRI");
+        }
+
+        if(Current.Kind == SparqlTokenKind.DeleteKeyword)
+        {
+            Advance();
+            if(Current.Kind != SparqlTokenKind.OpenBrace)
+            {
+                _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' to begin the DELETE template.");
+                frame.DeleteQuads = EmptyQuads();
+                frame.Stage = 3;
+
+                return StepResult.Continue();
+            }
+
+            frame.Stage = 1;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Quads, StartSpan = Current.Span });
+        }
+
+        if(Current.Kind == SparqlTokenKind.InsertKeyword)
+        {
+            Advance();
+            if(Current.Kind != SparqlTokenKind.OpenBrace)
+            {
+                _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' to begin the INSERT template.");
+                frame.InsertQuads = EmptyQuads();
+                frame.Stage = 3;
+
+                return StepResult.Continue();
+            }
+
+            frame.Stage = 2;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Quads, StartSpan = Current.Span });
+        }
+
+        //Neither DELETE nor INSERT: report and proceed to USING/WHERE with no templates.
+        _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedUpdateOperation, Current.Span, "Expected DELETE or INSERT in the modify operation.");
+        frame.Stage = 3;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Adopts the <c>DELETE</c> template, then parses an optional following <c>INSERT</c> template.</summary>
+    /// <param name="frame">The modify frame.</param>
+    /// <param name="incoming">The popped <see cref="Quads"/>.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult ModifyDeleteReceived(ParseFrame frame, object? incoming)
+    {
+        frame.DeleteQuads = Pop<Quads>(incoming);
+        if(Current.Kind == SparqlTokenKind.InsertKeyword)
+        {
+            Advance();
+            if(Current.Kind != SparqlTokenKind.OpenBrace)
+            {
+                _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' to begin the INSERT template.");
+                frame.InsertQuads = EmptyQuads();
+                frame.Stage = 3;
+
+                return StepResult.Continue();
+            }
+
+            frame.Stage = 2;
+
+            return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Quads, StartSpan = Current.Span });
+        }
+
+        frame.Stage = 3;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Adopts the <c>INSERT</c> template and advances to the <c>USING</c>/<c>WHERE</c> stage.</summary>
+    /// <param name="frame">The modify frame.</param>
+    /// <param name="incoming">The popped <see cref="Quads"/>.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private static StepResult ModifyInsertReceived(ParseFrame frame, object? incoming)
+    {
+        frame.InsertQuads = Pop<Quads>(incoming);
+        frame.Stage = 3;
+
+        return StepResult.Continue();
+    }
+
+    /// <summary>Parses the <c>USING</c> clauses one per step, then consumes <c>WHERE</c> and pushes its group graph pattern.</summary>
+    /// <param name="frame">The modify frame.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult ModifyUsingWhere(ParseFrame frame)
+    {
+        if(Current.Kind == SparqlTokenKind.UsingKeyword)
+        {
+            SourceSpan start = Current.Span;
+            Advance();
+            bool named = Current.Kind == SparqlTokenKind.NamedKeyword;
+            if(named)
+            {
+                Advance();
+            }
+
+            IriRef iri = ConsumeIriOrPrefixedName("a USING graph IRI");
+            frame.UsingClauses!.Add(new UsingClause(CombineSpans(start, iri.Span), iri, named));
+
+            return StepResult.Continue();
+        }
+
+        if(Current.Kind == SparqlTokenKind.WhereKeyword)
+        {
+            Advance();
+        }
+
+        if(Current.Kind != SparqlTokenKind.OpenBrace)
+        {
+            GraphPattern recovered = RecoverGraphPattern(ParseFrameKind.Modify, frame.StartSpan, WellKnownDiagnostics.Sparql.ExpectedGroupGraphPatternOpen, Current.Span, "Expected '{' to begin the modify WHERE pattern.", "GroupGraphPattern");
+
+            return StepResult.Done(BuildModify(frame, (GroupGraphPattern)recovered));
+        }
+
+        frame.Stage = 4;
+
+        return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.GroupGraphPattern, StartSpan = Current.Span });
+    }
+
+    /// <summary>Adopts the modify <c>WHERE</c> pattern and assembles the operation.</summary>
+    /// <param name="frame">The modify frame.</param>
+    /// <param name="incoming">The popped group graph pattern.</param>
+    /// <returns>The instruction for the driver.</returns>
+    private StepResult ModifyWhereReceived(ParseFrame frame, object? incoming)
+    {
+        return StepResult.Done(BuildModify(frame, Pop<GroupGraphPattern>(incoming)));
+    }
+
+    /// <summary>Assembles a <see cref="ModifyOperation"/> from the modify frame and its <c>WHERE</c> pattern.</summary>
+    /// <param name="frame">The modify frame.</param>
+    /// <param name="where">The parsed WHERE group graph pattern.</param>
+    /// <returns>The modify operation.</returns>
+    private ModifyOperation BuildModify(ParseFrame frame, GroupGraphPattern where)
+    {
+        if(frame.DeleteQuads is not null)
+        {
+            ReportDeleteBlankNodes(frame.DeleteQuads);
+        }
+
+        return new ModifyOperation(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.WithIri, frame.DeleteQuads, frame.InsertQuads, frame.UsingClauses ?? [], where);
+    }
+
+    /// <summary>Consumes an optional <c>SILENT</c> keyword.</summary>
+    /// <returns><see langword="true"/> when <c>SILENT</c> was present and consumed.</returns>
+    private bool ConsumeOptionalSilent()
+    {
+        if(Current.Kind == SparqlTokenKind.SilentKeyword)
+        {
+            Advance();
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>Parses a <c>GraphRefAll</c>: <c>DEFAULT</c>, <c>NAMED</c>, <c>ALL</c>, or <c>GRAPH iri</c> (a bare IRI is tolerated).</summary>
+    /// <returns>The graph reference.</returns>
+    private GraphRefTarget ParseGraphRefAll()
+        => Current.Kind switch
+        {
+            SparqlTokenKind.DefaultKeyword => ConsumeKeywordGraphRef(static span => new GraphRefDefault(span)),
+            SparqlTokenKind.NamedKeyword => ConsumeKeywordGraphRef(static span => new GraphRefNamed(span)),
+            SparqlTokenKind.AllKeyword => ConsumeKeywordGraphRef(static span => new GraphRefAll(span)),
+            SparqlTokenKind.GraphKeyword => ConsumeGraphIriRef(),
+            SparqlTokenKind.Iri or SparqlTokenKind.PrefixedName => ConsumeBareIriGraphRef(),
+            _ => RecoverGraphRef()
+        };
+
+    /// <summary>Parses a <c>GraphOrDefault</c>: <c>DEFAULT</c> or <c>GRAPH? iri</c>.</summary>
+    /// <returns>The graph reference.</returns>
+    private GraphRefTarget ParseGraphOrDefault()
+        => Current.Kind switch
+        {
+            SparqlTokenKind.DefaultKeyword => ConsumeKeywordGraphRef(static span => new GraphRefDefault(span)),
+            SparqlTokenKind.GraphKeyword => ConsumeGraphIriRef(),
+            SparqlTokenKind.Iri or SparqlTokenKind.PrefixedName => ConsumeBareIriGraphRef(),
+            _ => RecoverGraphRef()
+        };
+
+    /// <summary>Consumes a keyword graph reference (<c>DEFAULT</c>/<c>NAMED</c>/<c>ALL</c>) at the cursor.</summary>
+    /// <param name="build">Builds the reference from the consumed keyword's span.</param>
+    /// <returns>The graph reference.</returns>
+    private GraphRefTarget ConsumeKeywordGraphRef(System.Func<SourceSpan, GraphRefTarget> build)
+    {
+        SourceSpan span = Current.Span;
+        Advance();
+
+        return build(span);
+    }
+
+    /// <summary>Consumes <c>GRAPH iri</c> as a graph reference.</summary>
+    /// <returns>The IRI graph reference.</returns>
+    private GraphRefIri ConsumeGraphIriRef()
+    {
+        SourceSpan start = Current.Span;
+        Advance();   //GRAPH
+        IriRef iri = ConsumeIriOrPrefixedName("a graph IRI");
+
+        return new GraphRefIri(CombineSpans(start, iri.Span), iri);
+    }
+
+    /// <summary>Consumes a bare IRI as a graph reference (the <c>GRAPH</c> keyword elided).</summary>
+    /// <returns>The IRI graph reference.</returns>
+    private GraphRefIri ConsumeBareIriGraphRef()
+    {
+        IriRef iri = ConsumeIriOrPrefixedName("a graph IRI");
+
+        return new GraphRefIri(iri.Span, iri);
+    }
+
+    /// <summary>Reports a missing graph reference and recovers as the default graph without advancing.</summary>
+    /// <returns>A default-graph reference at the cursor.</returns>
+    private GraphRefDefault RecoverGraphRef()
+    {
+        _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ExpectedGraphReference, Current.Span, "Expected a graph reference (DEFAULT, NAMED, ALL, or an IRI).");
+
+        return new GraphRefDefault(Current.Span);
+    }
+
+    /// <summary>An empty quad block at the cursor, for recovery when a block's braces are missing.</summary>
+    /// <returns>An empty <see cref="Quads"/>.</returns>
+    private Quads EmptyQuads()
+    {
+        return new Quads(EmptySpanAt(Current.Span), [], []);
+    }
+
+    /// <summary>
+    /// Reports a diagnostic when a <c>DELETE</c> template / <c>DELETE DATA</c> quad block introduces a blank node,
+    /// which SPARQL Update §3.1.3 disallows: a delete cannot reference a fresh blank node. Blank nodes enter via
+    /// explicit <c>_:b</c> labels, blank-node property lists <c>[ … ]</c>, RDF collections <c>( … )</c>, and the
+    /// anonymous reifier of a <c>{| … |}</c> annotation block or a bare <c>~</c> reifier. Walks the quad block's
+    /// term trees over an explicit stack (no recursion); reports the first offender.
+    /// </summary>
+    /// <param name="quads">The delete quad block to validate.</param>
+    private void ReportDeleteBlankNodes(Quads quads)
+    {
+        Stack<TriplePatternTerm> work = new();
+        foreach(TriplePattern triple in quads.DefaultTriples)
+        {
+            PushTripleTerms(work, triple);
+        }
+
+        foreach(QuadsGraphGroup group in quads.GraphGroups)
+        {
+            foreach(TriplePattern triple in group.Triples)
+            {
+                PushTripleTerms(work, triple);
+            }
+        }
+
+        while(work.Count > 0)
+        {
+            TriplePatternTerm term = work.Pop();
+            if(IsBlankNodeIntroducing(term))
+            {
+                _ = ReportRecoverable(WellKnownDiagnostics.Sparql.BlankNodeInDeleteTemplate, TermSpan(term), "A DELETE template or DELETE DATA block must not contain a blank node (including the anonymous reifier of a '{| |}' annotation).");
+
+                return;
+            }
+
+            PushTermChildren(term, work);
+        }
+    }
+
+    /// <summary>The source span of a pattern term (the base type carries none; each concrete term does).</summary>
+    /// <param name="term">The term.</param>
+    /// <returns>The term's source span.</returns>
+    private static SourceSpan TermSpan(TriplePatternTerm term)
+        => term switch
+        {
+            ConstantTerm constant => constant.Span,
+            VariableTerm variable => variable.Span,
+            PropertyPathTerm path => path.Span,
+            Ast.TripleTerm tripleTerm => tripleTerm.Span,
+            ReifiedTriple reified => reified.Span,
+            CollectionTerm collection => collection.Span,
+            BlankNodePropertyListTerm blankList => blankList.Span,
+            AnnotatedObject annotated => annotated.Span,
+            _ => default
+        };
+
+    /// <summary>Pushes a triple pattern's three positions onto the work stack.</summary>
+    /// <param name="work">The work stack.</param>
+    /// <param name="triple">The triple whose positions are pushed.</param>
+    private static void PushTripleTerms(Stack<TriplePatternTerm> work, TriplePattern triple)
+    {
+        work.Push(triple.Subject);
+        work.Push(triple.Predicate);
+        work.Push(triple.Object);
+    }
+
+    /// <summary>Whether a term itself introduces a blank node (a labelled blank node, a blank-node property list, a collection, or an anonymous reifier).</summary>
+    /// <param name="term">The term to classify.</param>
+    /// <returns><see langword="true"/> when the term introduces a blank node.</returns>
+    private static bool IsBlankNodeIntroducing(TriplePatternTerm term)
+        => term switch
+        {
+            ConstantTerm { Term: BlankNode } => true,
+            BlankNodePropertyListTerm => true,
+            CollectionTerm => true,
+            ReifiedTriple { Reifier: null } => true,
+            AnnotatedObject annotated => HasAnonymousReifier(annotated),
+            _ => false
+        };
+
+    /// <summary>
+    /// Whether an annotated object introduces a blank-node reifier. A bare <c>~</c> (no identity) or <c>~ _:b</c>
+    /// reifier is a blank node. An annotation block <c>{| … |}</c> reuses the explicit reifier set by a preceding
+    /// <c>~ iri</c> / <c>~ ?var</c> when one is present; without that, it mints a fresh anonymous (blank) reifier.
+    /// </summary>
+    /// <param name="annotated">The annotated object.</param>
+    /// <returns><see langword="true"/> when a blank-node reifier is introduced.</returns>
+    private static bool HasAnonymousReifier(AnnotatedObject annotated)
+    {
+        bool sawExplicitReifier = false;
+        foreach(Annotation annotation in annotated.Annotations)
+        {
+            if(annotation is ReifierAnnotation reifier)
+            {
+                if(reifier.Reifier is null or ConstantTerm { Term: BlankNode })
+                {
+                    return true;
+                }
+
+                sawExplicitReifier = true;
+            }
+            else if(annotation is AnnotationBlock && !sawExplicitReifier)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Pushes a term's nested sub-terms onto the work stack so the blank-node walk descends into quoted/reified triples and annotated objects.</summary>
+    /// <param name="term">The term whose children are pushed.</param>
+    /// <param name="work">The work stack.</param>
+    private static void PushTermChildren(TriplePatternTerm term, Stack<TriplePatternTerm> work)
+    {
+        switch(term)
+        {
+            case Ast.TripleTerm tripleTerm:
+            {
+                PushTripleTerms(work, tripleTerm.Inner);
+
+                break;
+            }
+
+            case ReifiedTriple reified:
+            {
+                PushTripleTerms(work, reified.Inner);
+                if(reified.Reifier is not null)
+                {
+                    work.Push(reified.Reifier);
+                }
+
+                break;
+            }
+
+            case AnnotatedObject annotated:
+            {
+                work.Push(annotated.Object);
+                foreach(Annotation annotation in annotated.Annotations)
+                {
+                    if(annotation is ReifierAnnotation { Reifier: not null } reifier)
+                    {
+                        work.Push(reifier.Reifier);
+                    }
+                }
+
+                break;
+            }
+
+            default:
+            {
+                break;
+            }
+        }
     }
 
     /// <summary>

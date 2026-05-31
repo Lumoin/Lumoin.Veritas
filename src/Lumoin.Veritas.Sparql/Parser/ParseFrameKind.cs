@@ -109,5 +109,14 @@ internal enum ParseFrameKind
     PathElement,
 
     /// <summary>A negated property set: <c>!iri</c> or <c>!( ... )</c>.</summary>
-    PathNegatedSet
+    PathNegatedSet,
+
+    /// <summary>One SPARQL Update operation (<c>INSERT DATA</c>, <c>DELETE WHERE</c>, a modify, a graph-management op, …).</summary>
+    UpdateOperation,
+
+    /// <summary>A quad block <c>{ triples … GRAPH g { … } … }</c>: the body of <c>INSERT</c>/<c>DELETE DATA</c> and the templates of a modify.</summary>
+    Quads,
+
+    /// <summary>A modify operation body: optional <c>WITH</c>, optional <c>DELETE</c>/<c>INSERT</c> templates, <c>USING</c> clauses, and the <c>WHERE</c> pattern.</summary>
+    Modify
 }

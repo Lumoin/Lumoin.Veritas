@@ -41,6 +41,46 @@ namespace Lumoin.Veritas.Tests.Conformance;
 /// </remarks>
 internal static class W3cSparqlEvalRunner
 {
+    /// <summary>
+    /// Runs one SPARQL Update syntax test: parses the update request and checks the parse outcome against the test's
+    /// polarity. A positive test must parse clean; a negative test must produce at least one diagnostic.
+    /// </summary>
+    /// <param name="testCase">The update-syntax test case (<c>mf:action</c> is a <c>.ru</c> file).</param>
+    /// <param name="expectSuccess"><see langword="true"/> for a positive-syntax test, <see langword="false"/> for a negative one.</param>
+    /// <param name="cancellationToken">A token to cancel reading and parsing.</param>
+    /// <returns>The outcome.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="testCase"/> is <see langword="null"/>.</exception>
+    public static async Task<W3cOutcome> RunUpdateSyntaxAsync(W3cTestCase testCase, bool expectSuccess, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(testCase);
+
+        if(!File.Exists(testCase.InputPath))
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Failed, $"Update request file not found: {testCase.InputPath}");
+        }
+
+        using Utf8StringPool pool = new();
+        ParseResult<SparqlRequest> parsed = SparqlParser.ParseRequest(
+            await File.ReadAllBytesAsync(testCase.InputPath, cancellationToken).ConfigureAwait(false),
+            pool,
+            Utf8String.FromString(new Uri(IoPath.GetFullPath(testCase.InputPath)).AbsoluteUri));
+
+        //A positive test must also produce an update request (not a query) — a parse that silently yields a query
+        //AST from an update file would be a misclassification, not a pass.
+        if(expectSuccess)
+        {
+            return parsed.HasErrors
+                ? new W3cOutcome(W3cOutcomeStatus.Failed, $"Update request should parse but did not: {DescribeFirstError(parsed.Diagnostics)}")
+                : parsed.Tree is SparqlUpdateRequest
+                    ? new W3cOutcome(W3cOutcomeStatus.Passed, "Update request parsed.")
+                    : new W3cOutcome(W3cOutcomeStatus.Failed, "Update request parsed as a query, not an update.");
+        }
+
+        return parsed.HasErrors
+            ? new W3cOutcome(W3cOutcomeStatus.Passed, "Malformed update request was rejected.")
+            : new W3cOutcome(W3cOutcomeStatus.Failed, "Malformed update request parsed without error.");
+    }
+
     /// <summary>Runs one SPARQL query-evaluation test case.</summary>
     /// <param name="testCase">The test case to run.</param>
     /// <param name="cancellationToken">A token to cancel parsing, building, and evaluation.</param>

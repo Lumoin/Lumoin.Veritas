@@ -451,6 +451,18 @@ public static class WellKnownDiagnostics
         /// <remarks>SPARQL <c>ExprTripleTerm</c> / <c>TripleTermData</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rTripleTermData">SPARQL 1.2 §19.8 [TripleTermData]</see>.</remarks>
         public static Utf8String InvalidTripleTermObject { get; } = new("SP0045"u8.ToArray());
 
+        /// <summary>A SPARQL Update operation, a <c>;</c> separator, or the end of the request was expected.</summary>
+        /// <remarks>SPARQL Update <c>Update1</c>. See <see href="https://www.w3.org/TR/sparql12-update/#rUpdate1">SPARQL 1.2 Update §19.8 [Update1]</see>.</remarks>
+        public static Utf8String ExpectedUpdateOperation { get; } = new("SP0046"u8.ToArray());
+
+        /// <summary>A graph reference (<c>DEFAULT</c>, <c>NAMED</c>, <c>ALL</c>, or <c>GRAPH iri</c> / an IRI) was expected.</summary>
+        /// <remarks>SPARQL Update <c>GraphRefAll</c> / <c>GraphOrDefault</c>. See <see href="https://www.w3.org/TR/sparql12-update/#rGraphRefAll">SPARQL 1.2 Update §19.8 [GraphRefAll]</see>.</remarks>
+        public static Utf8String ExpectedGraphReference { get; } = new("SP0047"u8.ToArray());
+
+        /// <summary>A <c>DELETE</c> template or <c>DELETE DATA</c> block introduced a blank node (a <c>_:b</c>, a <c>[ … ]</c> / collection, or an anonymous reifier from a <c>{| … |}</c> annotation), which SPARQL Update §3.1.3 disallows.</summary>
+        /// <remarks>SPARQL Update <c>DeleteClause</c> / <c>DeleteData</c>. See <see href="https://www.w3.org/TR/sparql12-update/#rDeleteClause">SPARQL 1.2 Update §19.8 [DeleteClause]</see>.</remarks>
+        public static Utf8String BlankNodeInDeleteTemplate { get; } = new("SP0048"u8.ToArray());
+
         /// <summary>The per-parse diagnostic cap was reached; further parser diagnostics are suppressed (the AST still assembles).</summary>
         /// <remarks>Parser-internal bound (see the parser's <c>MaxDiagnostics</c> option), not a grammar production.</remarks>
         public static Utf8String ExcessDiagnostics { get; } = new("SP9999"u8.ToArray());

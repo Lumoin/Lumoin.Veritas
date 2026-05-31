@@ -355,6 +355,54 @@ public enum SparqlTokenKind
     /// <remarks>SPARQL <c>'SEPARATOR'</c> of <c>Aggregate</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rAggregate">SPARQL 1.2 §19.8 [Aggregate]</see>.</remarks>
     SeparatorKeyword,
 
+    /// <summary>The <c>INSERT</c> keyword (SPARQL Update). See <see href="https://www.w3.org/TR/sparql12-update/#rInsertData">SPARQL 1.2 Update §19.8 [InsertData/Modify]</see>.</summary>
+    InsertKeyword,
+
+    /// <summary>The <c>DELETE</c> keyword (SPARQL Update). See <see href="https://www.w3.org/TR/sparql12-update/#rDeleteData">SPARQL 1.2 Update §19.8 [DeleteData/DeleteWhere/Modify]</see>.</summary>
+    DeleteKeyword,
+
+    /// <summary>The <c>DATA</c> keyword (<c>INSERT DATA</c> / <c>DELETE DATA</c>). See <see href="https://www.w3.org/TR/sparql12-update/#rInsertData">SPARQL 1.2 Update §19.8 [InsertData]</see>.</summary>
+    DataKeyword,
+
+    /// <summary>The <c>LOAD</c> keyword (SPARQL Update). See <see href="https://www.w3.org/TR/sparql12-update/#rLoad">SPARQL 1.2 Update §19.8 [Load]</see>.</summary>
+    LoadKeyword,
+
+    /// <summary>The <c>CLEAR</c> keyword (SPARQL Update). See <see href="https://www.w3.org/TR/sparql12-update/#rClear">SPARQL 1.2 Update §19.8 [Clear]</see>.</summary>
+    ClearKeyword,
+
+    /// <summary>The <c>DROP</c> keyword (SPARQL Update). See <see href="https://www.w3.org/TR/sparql12-update/#rDrop">SPARQL 1.2 Update §19.8 [Drop]</see>.</summary>
+    DropKeyword,
+
+    /// <summary>The <c>CREATE</c> keyword (SPARQL Update). See <see href="https://www.w3.org/TR/sparql12-update/#rCreate">SPARQL 1.2 Update §19.8 [Create]</see>.</summary>
+    CreateKeyword,
+
+    /// <summary>The <c>ADD</c> keyword (SPARQL Update). See <see href="https://www.w3.org/TR/sparql12-update/#rAdd">SPARQL 1.2 Update §19.8 [Add]</see>.</summary>
+    AddKeyword,
+
+    /// <summary>The <c>MOVE</c> keyword (SPARQL Update). See <see href="https://www.w3.org/TR/sparql12-update/#rMove">SPARQL 1.2 Update §19.8 [Move]</see>.</summary>
+    MoveKeyword,
+
+    /// <summary>The <c>COPY</c> keyword (SPARQL Update). See <see href="https://www.w3.org/TR/sparql12-update/#rCopy">SPARQL 1.2 Update §19.8 [Copy]</see>.</summary>
+    CopyKeyword,
+
+    /// <summary>The <c>INTO</c> keyword (<c>LOAD … INTO GRAPH</c>). See <see href="https://www.w3.org/TR/sparql12-update/#rLoad">SPARQL 1.2 Update §19.8 [Load]</see>.</summary>
+    IntoKeyword,
+
+    /// <summary>The <c>TO</c> keyword (<c>ADD/MOVE/COPY … TO …</c>). See <see href="https://www.w3.org/TR/sparql12-update/#rAdd">SPARQL 1.2 Update §19.8 [Add]</see>.</summary>
+    ToKeyword,
+
+    /// <summary>The <c>WITH</c> keyword (<c>WITH … DELETE … INSERT … WHERE</c>). See <see href="https://www.w3.org/TR/sparql12-update/#rModify">SPARQL 1.2 Update §19.8 [Modify]</see>.</summary>
+    WithKeyword,
+
+    /// <summary>The <c>USING</c> keyword (<c>USING</c> / <c>USING NAMED</c> in a Modify). See <see href="https://www.w3.org/TR/sparql12-update/#rUsingClause">SPARQL 1.2 Update §19.8 [UsingClause]</see>.</summary>
+    UsingKeyword,
+
+    /// <summary>The <c>DEFAULT</c> keyword (a graph reference to the default graph). See <see href="https://www.w3.org/TR/sparql12-update/#rGraphRefAll">SPARQL 1.2 Update §19.8 [GraphRefAll]</see>.</summary>
+    DefaultKeyword,
+
+    /// <summary>The <c>ALL</c> keyword (a graph reference to every graph). See <see href="https://www.w3.org/TR/sparql12-update/#rGraphRefAll">SPARQL 1.2 Update §19.8 [GraphRefAll]</see>.</summary>
+    AllKeyword,
+
     /// <summary>
     /// A reserved built-in-function name (a <c>BuiltInCall</c> terminal such as
     /// <c>STR</c>, <c>STRLEN</c>, <c>BOUND</c>, <c>IF</c>, <c>COALESCE</c>,

@@ -215,6 +215,27 @@ internal sealed class ParseFrame
 
     /// <summary>Gets or sets the grammatical context a <see cref="ParseFrameKind.TripleTerm"/> frame parses under, which constrains the terms its subject, verb, and object may take.</summary>
     public TripleTermContext TripleTermContext { get; set; }
+
+    /// <summary>Gets or sets the SPARQL Update operations a <see cref="ParseFrameKind.Request"/> frame accumulates when it parses an update unit rather than a query.</summary>
+    public List<UpdateOperation>? UpdateOperations { get; set; }
+
+    /// <summary>Gets or sets the <c>GRAPH g { … }</c> groups a <see cref="ParseFrameKind.Quads"/> frame accumulates (its default-graph triples reuse <see cref="TripleAccumulator"/>).</summary>
+    public List<QuadsGraphGroup>? QuadsGroups { get; set; }
+
+    /// <summary>Gets or sets whether a <see cref="ParseFrameKind.Quads"/> frame's next pushed triple-list belongs to a <c>GRAPH</c> group (using <see cref="GraphDesignator"/>) rather than the default graph.</summary>
+    public bool AwaitingGraphGroup { get; set; }
+
+    /// <summary>Gets or sets a <see cref="ParseFrameKind.Modify"/> frame's parsed <c>DELETE</c> template, or <see langword="null"/>.</summary>
+    public Quads? DeleteQuads { get; set; }
+
+    /// <summary>Gets or sets a <see cref="ParseFrameKind.Modify"/> frame's parsed <c>INSERT</c> template, or <see langword="null"/>.</summary>
+    public Quads? InsertQuads { get; set; }
+
+    /// <summary>Gets or sets a <see cref="ParseFrameKind.Modify"/> frame's <c>WITH</c> graph IRI, or <see langword="null"/>.</summary>
+    public IriRef? WithIri { get; set; }
+
+    /// <summary>Gets or sets a <see cref="ParseFrameKind.Modify"/> frame's accumulated <c>USING</c> / <c>USING NAMED</c> clauses.</summary>
+    public List<UsingClause>? UsingClauses { get; set; }
 }
 
 /// <summary>

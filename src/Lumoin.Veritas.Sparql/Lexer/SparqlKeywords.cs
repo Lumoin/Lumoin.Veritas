@@ -105,6 +105,22 @@ internal static class SparqlKeywords
         if(Ci(id, "ASC"u8)) { return Yield(SparqlTokenKind.AscKeyword, "ASC"u8, out kind, out canonical); }
         if(Ci(id, "DESC"u8)) { return Yield(SparqlTokenKind.DescKeyword, "DESC"u8, out kind, out canonical); }
         if(Ci(id, "SEPARATOR"u8)) { return Yield(SparqlTokenKind.SeparatorKeyword, "SEPARATOR"u8, out kind, out canonical); }
+        if(Ci(id, "INSERT"u8)) { return Yield(SparqlTokenKind.InsertKeyword, "INSERT"u8, out kind, out canonical); }
+        if(Ci(id, "DELETE"u8)) { return Yield(SparqlTokenKind.DeleteKeyword, "DELETE"u8, out kind, out canonical); }
+        if(Ci(id, "DATA"u8)) { return Yield(SparqlTokenKind.DataKeyword, "DATA"u8, out kind, out canonical); }
+        if(Ci(id, "LOAD"u8)) { return Yield(SparqlTokenKind.LoadKeyword, "LOAD"u8, out kind, out canonical); }
+        if(Ci(id, "CLEAR"u8)) { return Yield(SparqlTokenKind.ClearKeyword, "CLEAR"u8, out kind, out canonical); }
+        if(Ci(id, "DROP"u8)) { return Yield(SparqlTokenKind.DropKeyword, "DROP"u8, out kind, out canonical); }
+        if(Ci(id, "CREATE"u8)) { return Yield(SparqlTokenKind.CreateKeyword, "CREATE"u8, out kind, out canonical); }
+        if(Ci(id, "ADD"u8)) { return Yield(SparqlTokenKind.AddKeyword, "ADD"u8, out kind, out canonical); }
+        if(Ci(id, "MOVE"u8)) { return Yield(SparqlTokenKind.MoveKeyword, "MOVE"u8, out kind, out canonical); }
+        if(Ci(id, "COPY"u8)) { return Yield(SparqlTokenKind.CopyKeyword, "COPY"u8, out kind, out canonical); }
+        if(Ci(id, "INTO"u8)) { return Yield(SparqlTokenKind.IntoKeyword, "INTO"u8, out kind, out canonical); }
+        if(Ci(id, "TO"u8)) { return Yield(SparqlTokenKind.ToKeyword, "TO"u8, out kind, out canonical); }
+        if(Ci(id, "WITH"u8)) { return Yield(SparqlTokenKind.WithKeyword, "WITH"u8, out kind, out canonical); }
+        if(Ci(id, "USING"u8)) { return Yield(SparqlTokenKind.UsingKeyword, "USING"u8, out kind, out canonical); }
+        if(Ci(id, "DEFAULT"u8)) { return Yield(SparqlTokenKind.DefaultKeyword, "DEFAULT"u8, out kind, out canonical); }
+        if(Ci(id, "ALL"u8)) { return Yield(SparqlTokenKind.AllKeyword, "ALL"u8, out kind, out canonical); }
 
         return Fail(out kind, out canonical);
     }

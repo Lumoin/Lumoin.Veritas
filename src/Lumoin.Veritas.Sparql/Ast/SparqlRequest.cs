@@ -38,20 +38,14 @@ public sealed record SparqlQuery(
     ValuesClause? Values) : SparqlRequest(Span);
 
 /// <summary>
-/// A parsed SPARQL Update request: a prologue and a sequence of update operations.
+/// A parsed SPARQL Update request: a prologue and a sequence of update operations applied in order. The prologue
+/// holds every <c>BASE</c>/<c>PREFIX</c>/<c>VERSION</c> declaration of the request (which may interleave between the
+/// <c>;</c>-separated operations); the operations carry the IRIs already resolved against it.
 /// </summary>
-/// <remarks>
-/// SPARQL Update is not implemented in this build; the parser throws
-/// <see cref="SparqlParseException"/> on the first update keyword and never
-/// constructs this type. It and <see cref="UpdateOperation"/> are declared in
-/// skeleton form so the request discriminated union resolves at compile time and
-/// the future Update batch fills in the operation hierarchy without changing the
-/// public surface.
-/// </remarks>
 /// <param name="Span">The source extent of the update request.</param>
-/// <param name="InitialPrologue">The leading prologue shared by the operations.</param>
+/// <param name="InitialPrologue">The request's accumulated prologue declarations.</param>
 /// <param name="Operations">The update operations, in order.</param>
-/// <remarks>SPARQL <c>Update</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rUpdate">SPARQL 1.2 §19.8 [Update]</see>.</remarks>
+/// <remarks>SPARQL <c>Update</c>. See <see href="https://www.w3.org/TR/sparql12-update/#rUpdate">SPARQL 1.2 Update §19.8 [Update]</see>.</remarks>
 [DebuggerDisplay("SparqlUpdateRequest ops={Operations.Count}")]
 public sealed record SparqlUpdateRequest(
     SourceSpan Span,
@@ -59,10 +53,12 @@ public sealed record SparqlUpdateRequest(
     IReadOnlyList<UpdateOperation> Operations) : SparqlRequest(Span);
 
 /// <summary>
-/// One operation of a SPARQL Update request. A skeleton with no concrete subtypes
-/// in this build; the future Update batch defines the operation forms (INSERT,
-/// DELETE, LOAD, CLEAR, CREATE, DROP, COPY, MOVE, ADD).
+/// One operation of a SPARQL Update request. The concrete forms live in <c>UpdateOperations.cs</c>:
+/// <see cref="InsertDataOperation"/>, <see cref="DeleteDataOperation"/>, <see cref="DeleteWhereOperation"/>,
+/// <see cref="ModifyOperation"/>, <see cref="LoadOperation"/>, <see cref="ClearOperation"/>,
+/// <see cref="DropOperation"/>, <see cref="CreateOperation"/>, <see cref="AddOperation"/>,
+/// <see cref="MoveOperation"/>, and <see cref="CopyOperation"/>.
 /// </summary>
 /// <param name="Span">The source extent of the update operation.</param>
-/// <remarks>SPARQL <c>Update1</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rUpdate1">SPARQL 1.2 §19.8 [Update1]</see>.</remarks>
+/// <remarks>SPARQL <c>Update1</c>. See <see href="https://www.w3.org/TR/sparql12-update/#rUpdate1">SPARQL 1.2 Update §19.8 [Update1]</see>.</remarks>
 public abstract record UpdateOperation(SourceSpan Span);
