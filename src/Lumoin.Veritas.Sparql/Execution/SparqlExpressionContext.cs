@@ -61,16 +61,31 @@ public sealed class SparqlExpressionContext
     /// <param name="hash">The cryptographic-digest seam for <c>MD5</c>/<c>SHA*</c>.</param>
     /// <param name="now">The query-execution instant <c>NOW()</c> returns.</param>
     /// <param name="baseIri">The query's effective base IRI that <c>IRI</c>/<c>URI</c> resolve a relative argument against, or <see langword="null"/> when the query has no base (a relative argument then yields an error).</param>
+    /// <param name="blankNodes">The seam that mints <c>BNODE</c>'s blank-node labels; <see langword="null"/> uses <see cref="VeritasBlankNodes.System"/>.</param>
     /// <exception cref="ArgumentNullException">A required seam is <see langword="null"/>.</exception>
-    public SparqlExpressionContext(RandomnessDelegate randomness, SparqlHashDelegate hash, DateTimeOffset now, Utf8String? baseIri = null)
+    public SparqlExpressionContext(RandomnessDelegate randomness, SparqlHashDelegate hash, DateTimeOffset now, Utf8String? baseIri = null, BlankNodeDelegate? blankNodes = null)
+        : this(randomness, hash, now, baseIri, new SolutionBlankNodeScope(blankNodes ?? VeritasBlankNodes.System, new Utf8StringPool()))
+    {
+    }
+
+    /// <summary>Constructs a context over explicit seams and an existing blank-node scope (so a per-query derivation keeps one correlation scope).</summary>
+    /// <param name="randomness">The randomness seam.</param>
+    /// <param name="hash">The cryptographic-digest seam.</param>
+    /// <param name="now">The query-execution instant.</param>
+    /// <param name="baseIri">The query's effective base IRI, or <see langword="null"/>.</param>
+    /// <param name="blankNodeScope">The blank-node correlation scope to carry.</param>
+    /// <exception cref="ArgumentNullException">A required seam or the scope is <see langword="null"/>.</exception>
+    private SparqlExpressionContext(RandomnessDelegate randomness, SparqlHashDelegate hash, DateTimeOffset now, Utf8String? baseIri, SolutionBlankNodeScope blankNodeScope)
     {
         ArgumentNullException.ThrowIfNull(randomness);
         ArgumentNullException.ThrowIfNull(hash);
+        ArgumentNullException.ThrowIfNull(blankNodeScope);
 
         Randomness = randomness;
         Hash = hash;
         Now = now;
         BaseIri = baseIri;
+        BlankNodeScope = blankNodeScope;
     }
 
     /// <summary>The randomness seam backing <c>RAND</c> (uniform double) and <c>UUID</c>/<c>STRUUID</c> (a fresh UUID).</summary>
@@ -89,12 +104,15 @@ public sealed class SparqlExpressionContext
     /// </summary>
     public Utf8String? BaseIri { get; }
 
-    /// <summary>Returns a copy of this context with the base IRI replaced — the per-query derivation, since a query carries its own <c>BASE</c> while the seams (randomness, hash, clock) are shared.</summary>
+    /// <summary>The per-solution blank-node identity scope <c>BNODE</c> (§17.4.2.3) builds against — and the substrate SPARQL Update's <c>INSERT … WHERE</c> reuses for per-solution template blank nodes.</summary>
+    public SolutionBlankNodeScope BlankNodeScope { get; }
+
+    /// <summary>Returns a copy of this context with the base IRI replaced — the per-query derivation, since a query carries its own <c>BASE</c> while the seams (randomness, hash, clock) and the blank-node scope are shared.</summary>
     /// <param name="baseIri">The query's effective base IRI, or <see langword="null"/> for none.</param>
     /// <returns>A context identical to this one but for <see cref="BaseIri"/>.</returns>
     public SparqlExpressionContext WithBaseIri(Utf8String? baseIri)
     {
-        return new SparqlExpressionContext(Randomness, Hash, Now, baseIri);
+        return new SparqlExpressionContext(Randomness, Hash, Now, baseIri, BlankNodeScope);
     }
 
     /// <summary>

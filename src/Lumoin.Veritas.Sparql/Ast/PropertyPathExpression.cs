@@ -61,17 +61,18 @@ public sealed record PathZeroOrOne(PropertyPathExpression Inner) : PropertyPathE
 public sealed record PathNegatedSet(IReadOnlyList<PathNegatedElement> Elements) : PropertyPathExpression;
 
 /// <summary>One element of a <see cref="PathNegatedSet"/>: a forward or inverse predicate.</summary>
+/// <param name="Predicate">The excluded predicate IRI (forward or inverse per the concrete element).</param>
 /// <remarks>SPARQL <c>PathOneInPropertySet</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rPathOneInPropertySet">SPARQL 1.2 §19.8 [PathOneInPropertySet]</see>.</remarks>
-public abstract record PathNegatedElement;
+public abstract record PathNegatedElement(IriRef Predicate);
 
 /// <summary>A forward predicate excluded by a negated property set.</summary>
 /// <param name="Predicate">The excluded predicate IRI.</param>
 /// <remarks>SPARQL <c>PathOneInPropertySet</c> (forward <c>iri</c>). See <see href="https://www.w3.org/TR/sparql12-query/#rPathOneInPropertySet">SPARQL 1.2 §19.8 [PathOneInPropertySet]</see>.</remarks>
 [DebuggerDisplay("<{Predicate.Value}>")]
-public sealed record PathNegatedForward(IriRef Predicate) : PathNegatedElement;
+public sealed record PathNegatedForward(IriRef Predicate) : PathNegatedElement(Predicate);
 
 /// <summary>An inverse predicate excluded by a negated property set.</summary>
 /// <param name="Predicate">The excluded inverse predicate IRI.</param>
 /// <remarks>SPARQL <c>PathOneInPropertySet</c> (inverse <c>^ iri</c>). See <see href="https://www.w3.org/TR/sparql12-query/#rPathOneInPropertySet">SPARQL 1.2 §19.8 [PathOneInPropertySet]</see>.</remarks>
 [DebuggerDisplay("^<{Predicate.Value}>")]
-public sealed record PathNegatedInverse(IriRef Predicate) : PathNegatedElement;
+public sealed record PathNegatedInverse(IriRef Predicate) : PathNegatedElement(Predicate);

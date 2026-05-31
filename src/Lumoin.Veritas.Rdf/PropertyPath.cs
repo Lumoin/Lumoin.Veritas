@@ -100,3 +100,21 @@ public sealed record OneOrMorePath(PropertyPath Inner): PropertyPath;
 /// <param name="Inner">The optional sub-path.</param>
 [DebuggerDisplay("{Inner}?")]
 public sealed record ZeroOrOnePath(PropertyPath Inner): PropertyPath;
+
+/// <summary>
+/// Negated property set: <c>!(p1 | ... | ^q1 | ...)</c>. Matches a single step over
+/// <b>any</b> predicate that is not one of the excluded ones — <see cref="Forward"/>
+/// excludes forward edges <c>(start, p, o)</c> and <see cref="Inverse"/> excludes
+/// inverse edges <c>(o, q, start)</c>. The result is the union of the surviving forward
+/// objects and inverse subjects.
+/// </summary>
+/// <remarks>
+/// A negated set carries no predicate to descend on, so — unlike the other leaf
+/// constructors — it cannot use the bound-predicate batch primitives; it scans each
+/// start's incident triples with a wildcard predicate and filters out the excluded set.
+/// See <see href="https://www.w3.org/TR/sparql12-query/#eval_negatedPropertySet">SPARQL 1.2 §18.4 negated property set evaluation</see>.
+/// </remarks>
+/// <param name="Forward">The forward predicates excluded from <c>(start, p, o)</c> matches; may be empty.</param>
+/// <param name="Inverse">The inverse predicates excluded from <c>(o, q, start)</c> matches; may be empty.</param>
+[DebuggerDisplay("!set(fwd={Forward.Length},inv={Inverse.Length})")]
+public sealed record NegatedPropertySet(ImmutableArray<IriId> Forward, ImmutableArray<IriId> Inverse): PropertyPath;

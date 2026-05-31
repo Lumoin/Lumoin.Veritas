@@ -177,60 +177,39 @@ public static class PropertyPathEvaluator
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        switch(path)
+        return path switch
         {
-            case PredicatePath predicatePath:
-            {
-                return await ExpandOneStepAsync(starts, predicatePath.Predicate, forward: true, ops, cancellationToken).ConfigureAwait(false);
-            }
+            PredicatePath predicatePath => await ExpandOneStepAsync(starts, predicatePath.Predicate, forward: true, ops, cancellationToken).ConfigureAwait(false),
+            InversePath { Inner: PredicatePath innerPredicate } => await ExpandOneStepAsync(starts, innerPredicate.Predicate, forward: false, ops, cancellationToken).ConfigureAwait(false),
+            InversePath inversePath => await EvaluateToSetAsync(starts, InvertPath(inversePath.Inner), ops, cancellationToken).ConfigureAwait(false),
+            SequencePath sequencePath => await EvaluateSequenceAsync(starts, sequencePath.Steps, ops, cancellationToken).ConfigureAwait(false),
+            AlternativePath alternativePath => await EvaluateAlternativeAsync(starts, alternativePath.Alternatives, ops, cancellationToken).ConfigureAwait(false),
+            ZeroOrMorePath zeroOrMorePath => await EvaluateZeroOrMoreAsync(starts, zeroOrMorePath.Inner, ops, cancellationToken).ConfigureAwait(false),
+            OneOrMorePath oneOrMorePath => await EvaluateOneOrMoreAsync(starts, oneOrMorePath.Inner, ops, cancellationToken).ConfigureAwait(false),
+            ZeroOrOnePath zeroOrOnePath => await EvaluateZeroOrOneAsync(starts, zeroOrOnePath.Inner, ops, cancellationToken).ConfigureAwait(false),
+            NegatedPropertySet negatedPropertySet => await EvaluateNegatedPropertySetAsync(starts, negatedPropertySet, ops, cancellationToken).ConfigureAwait(false),
+            _ => throw new NotSupportedException($"Unsupported property path constructor: {path.GetType().Name}.")
+        };
+    }
 
-            case InversePath inversePath when inversePath.Inner is PredicatePath innerPredicate:
-            {
-                return await ExpandOneStepAsync(starts, innerPredicate.Predicate, forward: false, ops, cancellationToken).ConfigureAwait(false);
-            }
-
-            case InversePath inversePath:
-            {
-                PropertyPath inverted = InvertPath(inversePath.Inner);
-                return await EvaluateToSetAsync(starts, inverted, ops, cancellationToken).ConfigureAwait(false);
-            }
-
-            case SequencePath sequencePath:
-            {
-                return await EvaluateSequenceAsync(starts, sequencePath.Steps, ops, cancellationToken).ConfigureAwait(false);
-            }
-
-            case AlternativePath alternativePath:
-            {
-                return await EvaluateAlternativeAsync(starts, alternativePath.Alternatives, ops, cancellationToken).ConfigureAwait(false);
-            }
-
-            case ZeroOrMorePath zeroOrMorePath:
-            {
-                return await EvaluateZeroOrMoreAsync(starts, zeroOrMorePath.Inner, ops, cancellationToken).ConfigureAwait(false);
-            }
-
-            case OneOrMorePath oneOrMorePath:
-            {
-                return await EvaluateOneOrMoreAsync(starts, oneOrMorePath.Inner, ops, cancellationToken).ConfigureAwait(false);
-            }
-
-            case ZeroOrOnePath zeroOrOnePath:
-            {
-                HashSet<TermId> oneStep = await EvaluateToSetAsync(starts, zeroOrOnePath.Inner, ops, cancellationToken).ConfigureAwait(false);
-                foreach(TermId start in starts)
-                {
-                    oneStep.Add(start);
-                }
-
-                return oneStep;
-            }
-
-            default:
-            {
-                throw new NotSupportedException($"Unsupported property path constructor: {path.GetType().Name}.");
-            }
+    /// <summary>
+    /// Implements <c>A?</c>: the start nodes plus every node one application of
+    /// <paramref name="inner"/> away. The starts are always included by reflexivity,
+    /// even when the inner step from them is empty.
+    /// </summary>
+    private static async ValueTask<HashSet<TermId>> EvaluateZeroOrOneAsync(
+        IReadOnlyCollection<TermId> starts,
+        PropertyPath inner,
+        GraphMatchOps ops,
+        CancellationToken cancellationToken)
+    {
+        HashSet<TermId> oneStep = await EvaluateToSetAsync(starts, inner, ops, cancellationToken).ConfigureAwait(false);
+        foreach(TermId start in starts)
+        {
+            oneStep.Add(start);
         }
+
+        return oneStep;
     }
 
     private static async ValueTask<HashSet<TermId>> ExpandOneStepAsync(
@@ -314,6 +293,71 @@ public static class PropertyPathEvaluator
     }
 
     /// <summary>
+    /// Implements a negated property set: from each start, the union of forward objects
+    /// over predicates not in <see cref="NegatedPropertySet.Forward"/> and inverse subjects
+    /// over predicates not in <see cref="NegatedPropertySet.Inverse"/>. There is no predicate
+    /// to descend on, so each start's incident triples are scanned with a wildcard predicate
+    /// and the excluded predicates are filtered out.
+    /// </summary>
+    private static async ValueTask<HashSet<TermId>> EvaluateNegatedPropertySetAsync(
+        IReadOnlyCollection<TermId> starts,
+        NegatedPropertySet negatedPropertySet,
+        GraphMatchOps ops,
+        CancellationToken cancellationToken)
+    {
+        HashSet<TermId> excludedForward = [];
+        foreach(IriId forward in negatedPropertySet.Forward)
+        {
+            excludedForward.Add(forward.Value);
+        }
+
+        HashSet<TermId> excludedInverse = [];
+        foreach(IriId inverse in negatedPropertySet.Inverse)
+        {
+            excludedInverse.Add(inverse.Value);
+        }
+
+        //A negated set splits into a forward term NPS(fwd) and an inverse term inv(NPS(inv)); a side
+        //with no listed predicates contributes no term at all (it does NOT mean "exclude nothing, match
+        //all"), so each scan runs only when that direction appears in the set.
+        bool scanForward = negatedPropertySet.Forward.Length > 0;
+        bool scanInverse = negatedPropertySet.Inverse.Length > 0;
+
+        HashSet<TermId> results = [];
+        foreach(TermId start in starts)
+        {
+            if(start.IsNone)
+            {
+                continue;
+            }
+
+            if(scanForward)
+            {
+                await foreach(EncodedTriple triple in ops.MatchTriples(start, TermId.None, TermId.None, cancellationToken).ConfigureAwait(false))
+                {
+                    if(!excludedForward.Contains(triple.Predicate))
+                    {
+                        results.Add(triple.Object);
+                    }
+                }
+            }
+
+            if(scanInverse)
+            {
+                await foreach(EncodedTriple triple in ops.MatchTriples(TermId.None, TermId.None, start, cancellationToken).ConfigureAwait(false))
+                {
+                    if(!excludedInverse.Contains(triple.Predicate))
+                    {
+                        results.Add(triple.Subject);
+                    }
+                }
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>
     /// Rewrites a property path so that its traversal direction is reversed.
     /// </summary>
     /// <remarks>
@@ -333,62 +377,41 @@ public static class PropertyPathEvaluator
     /// </remarks>
     private static PropertyPath InvertPath(PropertyPath path)
     {
-        switch(path)
+        return path switch
         {
-            case PredicatePath p:
-            {
-                return new InversePath(p);
-            }
+            PredicatePath p => new InversePath(p),
 
-            case InversePath ip:
-            {
-                //Double inversion cancels.
-                return ip.Inner;
-            }
+            //Double inversion cancels.
+            InversePath ip => ip.Inner,
 
-            case SequencePath seq:
-            {
-                //Reverse the step order and invert each step.
-                ImmutableArray<PropertyPath>.Builder builder = ImmutableArray.CreateBuilder<PropertyPath>(seq.Steps.Length);
-                for(int i = seq.Steps.Length - 1; i >= 0; i--)
-                {
-                    builder.Add(InvertPath(seq.Steps[i]));
-                }
+            //Reverse the step order and invert each step.
+            SequencePath seq => new SequencePath(InvertSteps(seq.Steps, reverse: true)),
 
-                return new SequencePath(builder.ToImmutable());
-            }
+            //An alternative's inverse is the alternative of the inverted branches (order is irrelevant).
+            AlternativePath alt => new AlternativePath(InvertSteps(alt.Alternatives, reverse: false)),
+            ZeroOrMorePath zm => new ZeroOrMorePath(InvertPath(zm.Inner)),
+            OneOrMorePath om => new OneOrMorePath(InvertPath(om.Inner)),
+            ZeroOrOnePath zo => new ZeroOrOnePath(InvertPath(zo.Inner)),
 
-            case AlternativePath alt:
-            {
-                ImmutableArray<PropertyPath>.Builder builder = ImmutableArray.CreateBuilder<PropertyPath>(alt.Alternatives.Length);
-                foreach(PropertyPath branch in alt.Alternatives)
-                {
-                    builder.Add(InvertPath(branch));
-                }
+            //Inverting a negated set swaps its forward and inverse exclusions.
+            NegatedPropertySet nps => new NegatedPropertySet(nps.Inverse, nps.Forward),
+            _ => throw new NotSupportedException($"Unsupported property path constructor in inversion: {path.GetType().Name}.")
+        };
+    }
 
-                return new AlternativePath(builder.ToImmutable());
-            }
-
-            case ZeroOrMorePath zm:
-            {
-                return new ZeroOrMorePath(InvertPath(zm.Inner));
-            }
-
-            case OneOrMorePath om:
-            {
-                return new OneOrMorePath(InvertPath(om.Inner));
-            }
-
-            case ZeroOrOnePath zo:
-            {
-                return new ZeroOrOnePath(InvertPath(zo.Inner));
-            }
-
-            default:
-            {
-                throw new NotSupportedException($"Unsupported property path constructor in inversion: {path.GetType().Name}.");
-            }
+    /// <summary>Inverts each path in <paramref name="steps"/>, optionally reversing their order (for sequence inversion).</summary>
+    /// <param name="steps">The paths to invert.</param>
+    /// <param name="reverse">Whether to emit the inverted paths in reverse order.</param>
+    /// <returns>The inverted paths.</returns>
+    private static ImmutableArray<PropertyPath> InvertSteps(ImmutableArray<PropertyPath> steps, bool reverse)
+    {
+        ImmutableArray<PropertyPath>.Builder builder = ImmutableArray.CreateBuilder<PropertyPath>(steps.Length);
+        for(int i = 0; i < steps.Length; i++)
+        {
+            builder.Add(InvertPath(steps[reverse ? steps.Length - 1 - i : i]));
         }
+
+        return builder.ToImmutable();
     }
 
     /// <summary>

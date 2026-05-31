@@ -1345,7 +1345,6 @@ public sealed class SparqlQueryEngine
     /// </summary>
     /// <param name="root">The AST path expression.</param>
     /// <returns>The encoded property path.</returns>
-    /// <exception cref="NotSupportedException">The path uses a negated property set (no encoded-path representation yet).</exception>
     private PropertyPath ConvertPath(PropertyPathExpression root)
     {
         Dictionary<PropertyPathExpression, PropertyPath> results = new(ReferenceEqualityComparer.Instance);
@@ -1397,19 +1396,45 @@ public sealed class SparqlQueryEngine
         };
     }
 
-    /// <summary>Converts a leaf path expression: a single predicate to a <see cref="PredicatePath"/> over its encoded id.</summary>
+    /// <summary>Converts a leaf path expression: a single predicate to a <see cref="PredicatePath"/>, or a negated property set to a <see cref="NegatedPropertySet"/>, over encoded ids.</summary>
     /// <param name="node">The leaf path expression.</param>
     /// <returns>The encoded path.</returns>
-    /// <exception cref="NotSupportedException">The leaf is a negated property set.</exception>
-    private PredicatePath ConvertLeafPath(PropertyPathExpression node)
+    private PropertyPath ConvertLeafPath(PropertyPathExpression node)
     {
         return node switch
         {
-            PathPredicate predicate => new PredicatePath(IriId.FromUnchecked(dictionary.GetIdOrDefault(new NamedNode(predicate.Predicate.Value)))),
-            PathNegatedSet => throw new NotSupportedException("SPARQL negated property sets are not yet executable; the encoded property-path representation has no negated-set form."),
+            PathPredicate predicate => new PredicatePath(EncodePredicate(predicate.Predicate)),
+            PathNegatedSet negatedSet => ConvertNegatedSet(negatedSet),
             _ => throw new InvalidOperationException($"Path expression '{node.GetType().Name}' has sub-paths but reached the leaf converter.")
         };
     }
+
+    /// <summary>Lowers a negated property set to its encoded form, partitioning its elements into the excluded forward and inverse predicate sets.</summary>
+    /// <param name="negatedSet">The AST negated property set.</param>
+    /// <returns>The encoded negated property set.</returns>
+    private NegatedPropertySet ConvertNegatedSet(PathNegatedSet negatedSet)
+    {
+        ImmutableArray<IriId>.Builder forward = ImmutableArray.CreateBuilder<IriId>();
+        ImmutableArray<IriId>.Builder inverse = ImmutableArray.CreateBuilder<IriId>();
+        foreach(PathNegatedElement element in negatedSet.Elements)
+        {
+            ImmutableArray<IriId>.Builder target = element switch
+            {
+                PathNegatedForward => forward,
+                PathNegatedInverse => inverse,
+                _ => throw new InvalidOperationException($"Unknown negated property-set element '{element.GetType().Name}'.")
+            };
+
+            target.Add(EncodePredicate(element.Predicate));
+        }
+
+        return new NegatedPropertySet(forward.ToImmutable(), inverse.ToImmutable());
+    }
+
+    /// <summary>Resolves a predicate IRI to its encoded id; an IRI absent from the data resolves to <see cref="TermId.None"/> (matching nothing).</summary>
+    /// <param name="predicate">The predicate IRI.</param>
+    /// <returns>The encoded predicate id.</returns>
+    private IriId EncodePredicate(IriRef predicate) => IriId.FromUnchecked(dictionary.GetIdOrDefault(new NamedNode(predicate.Value)));
 
     /// <summary>Combines a composite path expression from its already-converted sub-paths.</summary>
     /// <param name="node">The composite path expression.</param>
@@ -1587,7 +1612,12 @@ public sealed class SparqlQueryEngine
             List<SparqlBinding> bindings = new(solution.Bindings.Count + 1);
             bindings.AddRange(solution.Bindings);
             bindings.Add(new SparqlBinding(extend.Variable, value));
-            extended.Add(new SparqlSolution(bindings));
+            SparqlSolution extendedSolution = new(bindings);
+
+            //The extended row is a new object but the same solution for BNODE correlation: keep its per-row blank-node
+            //scope so BNODE(key) before and after the extend (across a chain of projection/BIND extends) agrees.
+            expressionContext.BlankNodeScope.Link(solution, extendedSolution);
+            extended.Add(extendedSolution);
         }
 
         return extended;

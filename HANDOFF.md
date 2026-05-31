@@ -6,13 +6,39 @@ AST → algebra → translator → hypertrie backend + executor subset → SHACL
 unlock). **Batch 2 = Milestones D–F** (full algebra/aggregation, CONSTRUCT/
 DESCRIBE/JSON results, conformance push).
 
-## ⭐ CURRENT STATE (2026-05-31, **CONFORMANCE HARNESS COMPLETE — full suite GREEN (0 failures)** on `sparql-query-engine`, tree clean)
+## ⭐ CURRENT STATE (2026-05-31, **harness GREEN (0 failures)** + SPARQL-eval skip-ratchet 45 → 29 this batch, on `sparql-query-engine`, tree clean)
 
-The whole conformance harness is now **GREEN**: all SPARQL 1.2 eval + all SHACL 1.2 + the **official W3C rdf-canon
-(RDFC-1.0) suite** pass. **Full suite = 3253 total, 0 failed, 126 skip; 0 regressions.** This session closed the last
-SHACL red (`nodeKind` RDFC-1.0) by fixing the canonicalizer, then vendored + wired the rdf-canon suite as a new
-red-baseline ratchet and drove it to green. (Earlier in the session: the SPARQL dataset/`GRAPH` backend closed
-`shapesGraph-001`, SHACL 2 → 1 — block below.)
+The whole conformance harness stays **GREEN**: all SPARQL 1.2 eval + all SHACL 1.2 + the **official W3C rdf-canon
+(RDFC-1.0) suite** pass. **Full suite = 3256 total, 0 failed, 98 skip; 0 regressions.** Conformance is the oracle
+([[project_correctness_harness_before_rework]]); we now close SPARQL-eval skips in throughput order — features that
+also de-risk the biggest pieces ahead (Update, RDF/XML). This batch closed **16 eval skips (45 → 29)**.
+
+✅ **EXPRESSION / PATH / BNODE BATCH (2026-05-31): eval skips 45 → 29.** Three slices, all driven by the eval corpus +
+focused unit tests:
+- **XSD cast functions + COALESCE() + triple-term-in-expression** (`SparqlExpressionEvaluator.cs`):
+  `FunctionCallExpression` now evaluates the named **XSD constructor casts** (`xsd:integer/decimal/float/double/
+  boolean/string`) via kind-dispatched numeric conversion (`ToDouble/ToDecimal/ToFloat` — the earlier `AsDouble()`-
+  for-all-kinds bug returned 0 for non-double kinds). ⚠ The `xsd:string` cast uses the **XPath string form** (`1.0`/
+  `1E0` → `"1"`, `2.5` → `"2.5"`), via `NumberToString`/`TrimDecimal` — NOT `ToCanonicalLexical()` (which emits XSD
+  scientific `1.0E0`). `TripleTermExpression` and zero-arg `COALESCE()` now evaluate as leaves.
+- **Negated property sets** (`!(:p|^:q|a)`): new encoded `Rdf.PropertyPath.NegatedPropertySet(Forward, Inverse)` +
+  `PropertyPathEvaluator.EvaluateNegatedPropertySetAsync` (wildcard-predicate scan per start, excluded-set filter; a
+  side with no listed predicates contributes no term — the spec's `NPS(fwd) | inv(NPS(inv))`). `InvertPath` swaps the
+  two sides. Translator `ConvertNegatedSet` partitions the AST `PathNegatedSet.Elements`; AST `PathNegatedElement`
+  lifted its shared `Predicate` onto the base record so the partition is a clean switch expression. The evaluator's
+  `EvaluateToSetAsync`/`InvertPath` C-style switches were converted to switch expressions ([[feedback_prefer_pattern_matching]]).
+- **BNODE() / BNODE(str)** as a **reusable per-solution blank-node identity scope** (`SolutionBlankNodeScope.cs`):
+  keyless → fresh per call; key → correlated within one solution, distinct across solutions; labels minted through the
+  `BlankNodeDelegate` seam ([[project_veritas_injection_seams]]), correlation keyed weakly on the `SparqlSolution`
+  object. Projection/BIND chains **`Extend`** operators (each builds a NEW solution), so `ApplyExtendAsync` calls
+  `scope.Link(parent, child)` to share the parent's correlation map down the chain — without it `BNODE(?a)`/`BNODE(?a)`
+  in one row gave different blanks. The context (`SparqlExpressionContext`) carries the scope; `solution` is now
+  threaded through `CombineValue`/`EvaluateBuiltInCall`/`EvaluateBuiltIn`. **This scope is deliberately the substrate
+  for SPARQL Update `INSERT … WHERE`** (per-solution template blank nodes) — the next big piece. Unit tests:
+  `SolutionBlankNodeScopeTests` (5).
+
+The whole harness reached GREEN earlier this session — the two blocks below record that. (RDFC-1.0 automorphism fix +
+rdf-canon ratchet; dataset/`GRAPH` backend.)
 
 ✅ **RDFC-1.0 N-DEGREE (AUTOMORPHISM) FIX + rdf-canon CONFORMANCE RATCHET (2026-05-31): SHACL baseline 1 → 0; resolved
 [[project_rdfc_automorphism_gap]].** The SHACL report-comparison (`QuadSetIsomorphism` → `RdfCanonicalizer.Canonicalize`)

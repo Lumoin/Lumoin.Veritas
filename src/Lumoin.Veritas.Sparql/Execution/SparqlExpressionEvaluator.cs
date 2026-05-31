@@ -427,7 +427,7 @@ public static class SparqlExpressionEvaluator
             (ExpressionNode node, bool combine) = work.Pop();
             if(combine)
             {
-                values[node] = CombineValue(node, values, context);
+                values[node] = CombineValue(node, values, solution, context);
 
                 continue;
             }
@@ -467,6 +467,7 @@ public static class SparqlExpressionEvaluator
             InExpression test => Prepend(test.Value, test.Set),
             NotInExpression test => Prepend(test.Value, test.Set),
             BuiltInCallExpression call => call.Arguments,
+            FunctionCallExpression call => call.Arguments,
 
             //Leaves (ConstantExpression, VariableExpression, BoundExpression) and the unsupported forms.
             _ => []
@@ -489,18 +490,25 @@ public static class SparqlExpressionEvaluator
             VariableExpression variable => solution.TryGetValue(variable.Variable, out RdfTerm value) ? ExpressionValue.Of(value) : ExpressionValue.Error,
             BoundExpression bound => Boolean(solution.TryGetValue(bound.Variable, out _)),
 
-            //A zero-argument built-in (NOW/RAND/UUID/STRUUID) has no operands, so it reaches the leaf path.
-            BuiltInCallExpression call => EvaluateBuiltIn(call.Function, [], context),
-            _ => throw new NotSupportedException($"SPARQL expression '{node.GetType().Name}' is not yet evaluable; this slice covers constants, variables, BOUND, the logical/comparison/arithmetic operators, IF, COALESCE, IN/NOT IN, and a core of the built-in functions. Named functions, EXISTS/NOT EXISTS, and triple-term expressions land in a later slice.")
+            //A zero-argument built-in (NOW/RAND/UUID/STRUUID/BNODE) has no operands, so it reaches the leaf path.
+            BuiltInCallExpression call => EvaluateBuiltIn(call.Function, [], solution, context),
+
+            //COALESCE() with no alternatives reaches here (no operands) — it has no bound value, so it errs.
+            CoalesceExpression => ExpressionValue.Error,
+
+            //A quoted triple term in an expression: build the triple-term value from its resolved components.
+            TripleTermExpression tripleTerm => EvaluateTripleTermExpression(tripleTerm, solution),
+            _ => throw new NotSupportedException($"SPARQL expression '{node.GetType().Name}' is not yet evaluable; this slice covers constants, variables, BOUND, the logical/comparison/arithmetic operators, IF, COALESCE, IN/NOT IN, named XSD constructor casts, triple-term construction, and a core of the built-in functions. EXISTS/NOT EXISTS and arbitrary extension functions land in a later slice.")
         };
     }
 
     /// <summary>Combines an expression's already-evaluated operand values (read from <paramref name="values"/>) into its own value.</summary>
     /// <param name="node">The expression to combine.</param>
     /// <param name="values">The map of already-evaluated operands to their values.</param>
+    /// <param name="solution">The solution the expression is evaluated over (the correlation scope for <c>BNODE</c>).</param>
     /// <param name="context">The seams (randomness, digests, the query timestamp) the non-pure functions consume.</param>
     /// <returns>The expression's value.</returns>
-    private static ExpressionValue CombineValue(ExpressionNode node, Dictionary<ExpressionNode, ExpressionValue> values, SparqlExpressionContext context)
+    private static ExpressionValue CombineValue(ExpressionNode node, Dictionary<ExpressionNode, ExpressionValue> values, SparqlSolution solution, SparqlExpressionContext context)
     {
         return node switch
         {
@@ -513,7 +521,8 @@ public static class SparqlExpressionEvaluator
             CoalesceExpression coalesce => FirstBound(coalesce.Alternatives, values),
             InExpression test => Membership(test.Value, test.Set, values, negated: false),
             NotInExpression test => Membership(test.Value, test.Set, values, negated: true),
-            BuiltInCallExpression call => EvaluateBuiltInCall(call, values, context),
+            BuiltInCallExpression call => EvaluateBuiltInCall(call, values, solution, context),
+            FunctionCallExpression call => EvaluateFunctionCall(call, values),
             _ => throw new InvalidOperationException($"Expression '{node.GetType().Name}' has operands but no combine rule in the evaluator.")
         };
     }
@@ -539,9 +548,10 @@ public static class SparqlExpressionEvaluator
     /// <summary>Gathers a built-in call's already-evaluated argument values and dispatches to the function.</summary>
     /// <param name="call">The built-in call.</param>
     /// <param name="values">The map of already-evaluated operands to their values.</param>
+    /// <param name="solution">The solution the call is evaluated over (the correlation scope for <c>BNODE</c>).</param>
     /// <param name="context">The seams (randomness, digests, the query timestamp) the non-pure functions consume.</param>
     /// <returns>The call's value.</returns>
-    private static ExpressionValue EvaluateBuiltInCall(BuiltInCallExpression call, Dictionary<ExpressionNode, ExpressionValue> values, SparqlExpressionContext context)
+    private static ExpressionValue EvaluateBuiltInCall(BuiltInCallExpression call, Dictionary<ExpressionNode, ExpressionValue> values, SparqlSolution solution, SparqlExpressionContext context)
     {
         ExpressionValue[] arguments = new ExpressionValue[call.Arguments.Count];
         for(int i = 0; i < arguments.Length; i++)
@@ -549,7 +559,7 @@ public static class SparqlExpressionEvaluator
             arguments[i] = values[call.Arguments[i]];
         }
 
-        return EvaluateBuiltIn(call.Function, arguments, context);
+        return EvaluateBuiltIn(call.Function, arguments, solution, context);
     }
 
     /// <summary>Evaluates <c>IN</c> / <c>NOT IN</c>: membership of the tested value among the candidate set under <c>=</c> semantics.</summary>
@@ -587,6 +597,362 @@ public static class SparqlExpressionEvaluator
         return anyError ? ExpressionValue.Error : Boolean(negated);
     }
 
+    /// <summary>Evaluates a named function call. The XSD constructor functions (§17.5) cast their single argument to that datatype; any other extension-function IRI is not yet supported.</summary>
+    /// <param name="call">The function call.</param>
+    /// <param name="values">The map of already-evaluated operands to their values.</param>
+    /// <returns>The cast value, or an error.</returns>
+    /// <exception cref="NotSupportedException">The function IRI is not an XSD constructor and is not otherwise supported.</exception>
+    private static ExpressionValue EvaluateFunctionCall(FunctionCallExpression call, Dictionary<ExpressionNode, ExpressionValue> values)
+    {
+        Utf8String target = call.Function.Value;
+        if(call.Arguments.Count == 1 && IsXsdCastTarget(target))
+        {
+            return Cast(target, values[call.Arguments[0]]);
+        }
+
+        throw new NotSupportedException($"SPARQL extension function <{target}> is not yet evaluable; only the XSD constructor casts (xsd:integer/decimal/float/double/boolean/string) are supported.");
+    }
+
+    /// <summary>Returns whether an IRI names an XSD constructor (cast) function this evaluator implements.</summary>
+    /// <param name="iri">The function IRI.</param>
+    /// <returns><see langword="true"/> for the supported XSD datatype constructors.</returns>
+    private static bool IsXsdCastTarget(Utf8String iri)
+    {
+        return iri.Equals(Vocabulary.Xsd.Integer) || iri.Equals(Vocabulary.Xsd.Decimal) || iri.Equals(Vocabulary.Xsd.Float)
+            || iri.Equals(Vocabulary.Xsd.Double) || iri.Equals(Vocabulary.Xsd.Boolean) || iri.Equals(Vocabulary.Xsd.String);
+    }
+
+    /// <summary>Casts a value to an XSD datatype (§17.1 / XPath casting): the string, boolean, or numeric constructor.</summary>
+    /// <param name="target">The XSD datatype IRI to cast to.</param>
+    /// <param name="arg">The argument value.</param>
+    /// <returns>The cast literal, or an error when the value cannot be cast.</returns>
+    private static ExpressionValue Cast(Utf8String target, ExpressionValue arg)
+    {
+        if(arg.IsError)
+        {
+            return ExpressionValue.Error;
+        }
+
+        if(target.Equals(Vocabulary.Xsd.String))
+        {
+            return CastToString(arg.Term);
+        }
+
+        if(target.Equals(Vocabulary.Xsd.Boolean))
+        {
+            return CastToBoolean(arg.Term);
+        }
+
+        return CastToNumeric(arg.Term, target);
+    }
+
+    /// <summary>Casts to <c>xsd:string</c>: a literal's lexical form, or an IRI's text.</summary>
+    /// <param name="term">The term to cast.</param>
+    /// <returns>The string literal, or an error.</returns>
+    private static ExpressionValue CastToString(RdfTerm term)
+    {
+        switch(term)
+        {
+            case NamedNode iri:
+            {
+                return StringLiteral(iri.Iri);
+            }
+
+            case Literal literal when TryGetNumericValue(literal, out NumericValue number):
+            {
+                //Casting a number to string yields its XPath string form — the value with no trailing zeros and no
+                //exponent for ordinary magnitudes (e.g. double "1E0" → "1", decimal "1.0" → "1") — NOT the XSD
+                //canonical scientific lexical and NOT the source lexical.
+                return StringLiteral(Utf8String.FromString(NumberToString(number)));
+            }
+
+            case Literal literal when literal.Datatype.Iri.Equals(Vocabulary.Xsd.Boolean):
+            {
+                return StringLiteral(Utf8String.FromString(literal.Value.ToString() is "1" or "true" ? "true" : "false"));
+            }
+
+            case Literal literal:
+            {
+                return StringLiteral(literal.Value);
+            }
+
+            default:
+            {
+                return ExpressionValue.Error;
+            }
+        }
+    }
+
+    /// <summary>Casts to <c>xsd:boolean</c>: a boolean lexical, a numeric (zero/NaN → false), or a string <c>true</c>/<c>false</c>/<c>1</c>/<c>0</c>.</summary>
+    /// <param name="term">The term to cast.</param>
+    /// <returns>The boolean value, or an error.</returns>
+    private static ExpressionValue CastToBoolean(RdfTerm term)
+    {
+        if(term is not Literal literal)
+        {
+            return ExpressionValue.Error;
+        }
+
+        if(literal.Datatype.Iri.Equals(Vocabulary.Xsd.Boolean) || (literal.Language is null && literal.Datatype.Iri.Equals(Vocabulary.Xsd.String)))
+        {
+            return BooleanFromLexical(literal.Value);
+        }
+
+        return TryGetNumericValue(literal, out NumericValue number) ? Boolean(!IsZeroOrNaN(number)) : ExpressionValue.Error;
+    }
+
+    /// <summary>Casts to a numeric XSD datatype: a numeric (converted to the target kind), a boolean (1/0), or a string parsed as that datatype.</summary>
+    /// <param name="term">The term to cast.</param>
+    /// <param name="target">The target numeric XSD datatype IRI.</param>
+    /// <returns>The numeric literal, or an error.</returns>
+    private static ExpressionValue CastToNumeric(RdfTerm term, Utf8String target)
+    {
+        if(term is not Literal literal)
+        {
+            return ExpressionValue.Error;
+        }
+
+        if(TryGetNumericValue(literal, out NumericValue source))
+        {
+            return Numeric(ConvertNumeric(source, target));
+        }
+
+        if(literal.Datatype.Iri.Equals(Vocabulary.Xsd.Boolean))
+        {
+            ExpressionValue boolean = BooleanFromLexical(literal.Value);
+
+            return boolean.IsError
+                ? ExpressionValue.Error
+                : Numeric(ConvertNumeric(new NumericValue(ReferenceEquals(boolean.Term, True) ? BigInteger.One : BigInteger.Zero), target));
+        }
+
+        if(literal.Language is null && literal.Datatype.Iri.Equals(Vocabulary.Xsd.String))
+        {
+            return NumericValue.TryParse(literal.Value.ToString(), target, out NumericValue parsed) ? Numeric(parsed) : ExpressionValue.Error;
+        }
+
+        return ExpressionValue.Error;
+    }
+
+    /// <summary>Converts a numeric value to the kind named by an XSD numeric datatype IRI (truncating toward zero for the integer cast).</summary>
+    /// <param name="number">The source numeric.</param>
+    /// <param name="target">The target XSD numeric datatype IRI.</param>
+    /// <returns>The converted numeric.</returns>
+    private static NumericValue ConvertNumeric(NumericValue number, Utf8String target)
+    {
+        if(target.Equals(Vocabulary.Xsd.Integer))
+        {
+            return new NumericValue(ToBigInteger(number));
+        }
+
+        if(target.Equals(Vocabulary.Xsd.Decimal))
+        {
+            return new NumericValue(ToDecimal(number));
+        }
+
+        return target.Equals(Vocabulary.Xsd.Float) ? new NumericValue(ToFloat(number)) : new NumericValue(ToDouble(number));
+    }
+
+    /// <summary>Converts any numeric (regardless of its kind) to a CLR <see cref="double"/> — the kind-specific <c>As*</c> accessors are only valid for their own kind.</summary>
+    /// <param name="number">The numeric to convert.</param>
+    /// <returns>The double value.</returns>
+    private static double ToDouble(NumericValue number)
+    {
+        return number.Kind switch
+        {
+            NumericKind.Integer => (double)number.AsInteger(),
+            NumericKind.Decimal => (double)number.AsDecimal(),
+            NumericKind.Float => number.AsFloat(),
+            _ => number.AsDouble()
+        };
+    }
+
+    /// <summary>Converts any numeric (regardless of its kind) to a CLR <see cref="decimal"/>.</summary>
+    /// <param name="number">The numeric to convert.</param>
+    /// <returns>The decimal value.</returns>
+    private static decimal ToDecimal(NumericValue number)
+    {
+        return number.Kind switch
+        {
+            NumericKind.Integer => (decimal)number.AsInteger(),
+            NumericKind.Decimal => number.AsDecimal(),
+            NumericKind.Float => (decimal)number.AsFloat(),
+            _ => (decimal)number.AsDouble()
+        };
+    }
+
+    /// <summary>Converts any numeric (regardless of its kind) to a CLR <see cref="float"/>.</summary>
+    /// <param name="number">The numeric to convert.</param>
+    /// <returns>The float value.</returns>
+    private static float ToFloat(NumericValue number)
+    {
+        return number.Kind switch
+        {
+            NumericKind.Integer => (float)number.AsInteger(),
+            NumericKind.Decimal => (float)number.AsDecimal(),
+            NumericKind.Float => number.AsFloat(),
+            _ => (float)number.AsDouble()
+        };
+    }
+
+    /// <summary>Formats a numeric as a string for the <c>xsd:string</c> cast (XPath number→string): the value with trailing zeros and a redundant fraction/exponent removed (so <c>1.0</c> / <c>1E0</c> → <c>1</c>, <c>1.25</c> → <c>1.25</c>).</summary>
+    /// <param name="number">The numeric to format.</param>
+    /// <returns>The XPath string form.</returns>
+    private static string NumberToString(NumericValue number)
+    {
+        return number.Kind switch
+        {
+            NumericKind.Integer => number.AsInteger().ToString(CultureInfo.InvariantCulture),
+            NumericKind.Decimal => TrimDecimal(number.AsDecimal().ToString(CultureInfo.InvariantCulture)),
+            NumericKind.Float => number.AsFloat().ToString(CultureInfo.InvariantCulture),
+            _ => number.AsDouble().ToString(CultureInfo.InvariantCulture)
+        };
+    }
+
+    /// <summary>Strips a decimal's trailing fractional zeros (and a now-redundant point), so <c>"1.0"</c> → <c>"1"</c> and <c>"2.50"</c> → <c>"2.5"</c>.</summary>
+    /// <param name="lexical">The decimal lexical form.</param>
+    /// <returns>The trimmed form.</returns>
+    private static string TrimDecimal(string lexical)
+    {
+        if(!lexical.Contains('.', StringComparison.Ordinal))
+        {
+            return lexical;
+        }
+
+        string trimmed = lexical.TrimEnd('0').TrimEnd('.');
+
+        return trimmed.Length == 0 || trimmed == "-" ? "0" : trimmed;
+    }
+
+    /// <summary>Truncates a numeric toward zero to a <see cref="BigInteger"/> (the <c>xsd:integer</c> cast).</summary>
+    /// <param name="number">The numeric to truncate.</param>
+    /// <returns>The integer value.</returns>
+    private static BigInteger ToBigInteger(NumericValue number)
+    {
+        return number.Kind switch
+        {
+            NumericKind.Integer => number.AsInteger(),
+            NumericKind.Decimal => (BigInteger)decimal.Truncate(number.AsDecimal()),
+            NumericKind.Float => new BigInteger(MathF.Truncate(number.AsFloat())),
+            _ => new BigInteger(Math.Truncate(number.AsDouble()))
+        };
+    }
+
+    /// <summary>Interprets an XSD boolean lexical form (<c>true</c>/<c>1</c> → true, <c>false</c>/<c>0</c> → false), erroring on any other.</summary>
+    /// <param name="lexical">The lexical form.</param>
+    /// <returns>The boolean value, or an error.</returns>
+    private static ExpressionValue BooleanFromLexical(Utf8String lexical)
+    {
+        return lexical.ToString() switch
+        {
+            "true" or "1" => Boolean(true),
+            "false" or "0" => Boolean(false),
+            _ => ExpressionValue.Error
+        };
+    }
+
+    /// <summary>Returns whether a numeric is zero or NaN (for the <c>xsd:boolean</c> cast of a number).</summary>
+    /// <param name="number">The numeric to test.</param>
+    /// <returns><see langword="true"/> when the numeric is zero or NaN.</returns>
+    private static bool IsZeroOrNaN(NumericValue number)
+    {
+        return number.Kind switch
+        {
+            NumericKind.Integer => number.AsInteger().IsZero,
+            NumericKind.Decimal => number.AsDecimal() == decimal.Zero,
+            NumericKind.Float => number.AsFloat() == 0f || float.IsNaN(number.AsFloat()),
+            _ => number.AsDouble() == 0d || double.IsNaN(number.AsDouble())
+        };
+    }
+
+    /// <summary>Evaluates a quoted triple term in an expression: builds the <see cref="Lumoin.Veritas.Core.TripleTerm"/> from its resolved components (a variable from the solution, a constant in place, a nested triple term recursively), erroring when a component is unbound or the result is not a legal triple.</summary>
+    /// <param name="node">The triple-term expression.</param>
+    /// <param name="solution">The solution supplying variable bindings.</param>
+    /// <returns>The triple-term value, or an error.</returns>
+    private static ExpressionValue EvaluateTripleTermExpression(TripleTermExpression node, SparqlSolution solution)
+    {
+        Lumoin.Veritas.Core.TripleTerm? triple = BuildExpressionTripleTerm(
+            ResolveTripleTermComponent(node.Inner.Subject, solution),
+            ResolveTripleTermComponent(node.Inner.Predicate, solution),
+            ResolveTripleTermComponent(node.Inner.Object, solution));
+
+        return triple is null ? ExpressionValue.Error : ExpressionValue.Of(triple);
+    }
+
+    /// <summary>Resolves a triple-term component to an RDF term over an explicit post-order stack (no recursion): a variable from the solution (unbound → <see langword="null"/>), a constant in place, a nested quoted triple term to a built triple term.</summary>
+    /// <param name="root">The component term.</param>
+    /// <param name="solution">The solution supplying variable bindings.</param>
+    /// <returns>The resolved term, or <see langword="null"/>.</returns>
+    private static RdfTerm? ResolveTripleTermComponent(TriplePatternTerm root, SparqlSolution solution)
+    {
+        Dictionary<TriplePatternTerm, RdfTerm?> resolved = new(ReferenceEqualityComparer.Instance);
+        Stack<(TriplePatternTerm Term, bool Combine)> work = new();
+        work.Push((root, Combine: false));
+
+        while(work.Count > 0)
+        {
+            (TriplePatternTerm term, bool combine) = work.Pop();
+            if(combine)
+            {
+                Lumoin.Veritas.Sparql.Ast.TripleTerm nested = (Lumoin.Veritas.Sparql.Ast.TripleTerm)term;
+                resolved[term] = BuildExpressionTripleTerm(resolved[nested.Inner.Subject], resolved[nested.Inner.Predicate], resolved[nested.Inner.Object]);
+
+                continue;
+            }
+
+            switch(term)
+            {
+                case VariableTerm variable:
+                {
+                    resolved[term] = solution.TryGetValue(variable.Variable, out RdfTerm value) ? value : null;
+
+                    break;
+                }
+
+                case ConstantTerm constant:
+                {
+                    resolved[term] = constant.Term;
+
+                    break;
+                }
+
+                case Lumoin.Veritas.Sparql.Ast.TripleTerm nested:
+                {
+                    work.Push((term, Combine: true));
+                    work.Push((nested.Inner.Object, Combine: false));
+                    work.Push((nested.Inner.Predicate, Combine: false));
+                    work.Push((nested.Inner.Subject, Combine: false));
+
+                    break;
+                }
+
+                default:
+                {
+                    resolved[term] = null;
+
+                    break;
+                }
+            }
+        }
+
+        return resolved[root];
+    }
+
+    /// <summary>Builds a triple term from resolved components, or <see langword="null"/> when they cannot form one (unbound, literal subject, or non-IRI predicate).</summary>
+    /// <param name="subject">The resolved subject.</param>
+    /// <param name="predicate">The resolved predicate.</param>
+    /// <param name="object">The resolved object.</param>
+    /// <returns>The triple term, or <see langword="null"/>.</returns>
+    private static Lumoin.Veritas.Core.TripleTerm? BuildExpressionTripleTerm(RdfTerm? subject, RdfTerm? predicate, RdfTerm? @object)
+    {
+        if(subject is null or Literal || predicate is not NamedNode predicateIri || @object is null)
+        {
+            return null;
+        }
+
+        return new Lumoin.Veritas.Core.TripleTerm(subject, predicateIri, @object);
+    }
+
     /// <summary>
     /// Evaluates a built-in function over its already-evaluated arguments (§17.4). This slice covers the term-type
     /// tests, <c>sameTerm</c>, <c>STR</c>/<c>LANG</c>/<c>DATATYPE</c>, the common string functions
@@ -596,10 +962,11 @@ public static class SparqlExpressionEvaluator
     /// </summary>
     /// <param name="function">The built-in function.</param>
     /// <param name="arguments">The evaluated argument values, in order.</param>
-    /// <param name="context">The seams (randomness, digests, the query timestamp) the non-pure functions consume.</param>
+    /// <param name="solution">The solution the call is evaluated over (the correlation scope for <c>BNODE</c>).</param>
+    /// <param name="context">The seams (randomness, digests, the query timestamp, blank-node identity) the non-pure functions consume.</param>
     /// <returns>The function's value, or an error.</returns>
     /// <exception cref="NotSupportedException">The function is not yet evaluable.</exception>
-    private static ExpressionValue EvaluateBuiltIn(BuiltInFunction function, ExpressionValue[] arguments, SparqlExpressionContext context)
+    private static ExpressionValue EvaluateBuiltIn(BuiltInFunction function, ExpressionValue[] arguments, SparqlSolution solution, SparqlExpressionContext context)
     {
         return function switch
         {
@@ -658,8 +1025,35 @@ public static class SparqlExpressionEvaluator
             BuiltInFunction.Ceil => UnaryNumeric(arguments[0], UnaryNumericOp.Ceil),
             BuiltInFunction.Floor => UnaryNumeric(arguments[0], UnaryNumericOp.Floor),
             BuiltInFunction.Round => UnaryNumeric(arguments[0], UnaryNumericOp.Round),
-            _ => throw new NotSupportedException($"SPARQL built-in function '{function}' is not yet evaluable; this slice covers the term-type tests, sameTerm, STR/LANG/LANGMATCHES/DATATYPE, the string functions (STRLEN/UCASE/LCASE/CONTAINS/STRSTARTS/STRENDS/CONCAT/SUBSTR/STRBEFORE/STRAFTER/ENCODE_FOR_URI/REGEX/REPLACE), the term constructors (IRI/URI/STRDT/STRLANG), the date-time accessors (YEAR/MONTH/DAY/HOURS/MINUTES/SECONDS/TIMEZONE/TZ), the triple builders (TRIPLE/SUBJECT/PREDICATE/OBJECT), the seam-backed RAND/UUID/STRUUID/NOW and MD5/SHA* hashes, and ABS/CEIL/FLOOR/ROUND. BNODE (per-solution blank-node correlation), the named functions, and EXISTS/NOT EXISTS land in a later slice.")
+            BuiltInFunction.BNode => BNode(arguments, solution, context),
+            _ => throw new NotSupportedException($"SPARQL built-in function '{function}' is not yet evaluable; this slice covers the term-type tests, sameTerm, STR/LANG/LANGMATCHES/DATATYPE, the string functions (STRLEN/UCASE/LCASE/CONTAINS/STRSTARTS/STRENDS/CONCAT/SUBSTR/STRBEFORE/STRAFTER/ENCODE_FOR_URI/REGEX/REPLACE), the term constructors (IRI/URI/STRDT/STRLANG), the date-time accessors (YEAR/MONTH/DAY/HOURS/MINUTES/SECONDS/TIMEZONE/TZ), the triple builders (TRIPLE/SUBJECT/PREDICATE/OBJECT), the seam-backed RAND/UUID/STRUUID/NOW and MD5/SHA* hashes, ABS/CEIL/FLOOR/ROUND, and BNODE. The named functions and EXISTS/NOT EXISTS land in a later slice.")
         };
+    }
+
+    /// <summary>
+    /// Evaluates <c>BNODE</c> (§17.4.2.3): the zero-argument form yields a fresh blank node on every call, while the
+    /// one-argument form returns the blank node correlated to its simple-literal argument within this solution (the
+    /// same key in the same solution gives the same node; in another solution, a different one). A non-string or
+    /// errored argument yields an error.
+    /// </summary>
+    /// <param name="arguments">The evaluated argument values (zero or one).</param>
+    /// <param name="solution">The solution the call is evaluated over — the correlation scope.</param>
+    /// <param name="context">The context carrying the per-solution blank-node scope.</param>
+    /// <returns>The blank node, or an error.</returns>
+    private static ExpressionValue BNode(ExpressionValue[] arguments, SparqlSolution solution, SparqlExpressionContext context)
+    {
+        if(arguments.Length == 0)
+        {
+            return ExpressionValue.Of(context.BlankNodeScope.Fresh());
+        }
+
+        ExpressionValue argument = arguments[0];
+        if(argument.IsError || argument.Term is not Literal { Language: null } literal || literal.Datatype.Iri != Vocabulary.Xsd.String)
+        {
+            return ExpressionValue.Error;
+        }
+
+        return ExpressionValue.Of(context.BlankNodeScope.Correlated(solution, literal.Value));
     }
 
     /// <summary>Evaluates <c>STR</c>: the lexical form of a literal or the IRI text of a named node as an <c>xsd:string</c>; a blank node or triple term errs.</summary>
