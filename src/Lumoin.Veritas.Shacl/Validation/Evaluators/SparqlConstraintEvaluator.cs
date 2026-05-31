@@ -22,10 +22,10 @@ namespace Lumoin.Veritas.Shacl.Validation.Evaluators;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Pre-binding.</b> SHACL-SPARQL §5.2 pre-binds <c>$this</c> to the focus node. This is realized by setting
-/// the query's trailing <c>VALUES (?this) { (focus) }</c> block, which the translator joins into the WHERE
-/// pattern below the projection, so every result row has <c>?this</c> = the focus node. (A constraint query that
-/// already carries a trailing <c>VALUES</c> is not expected in this slice; the pre-binding overwrites it.)
+/// <b>Pre-binding.</b> SHACL-SPARQL §5.2 pre-binds <c>$this</c> to the focus node. This is realized by
+/// substituting <c>$this</c> by the focus node throughout the query (<see cref="SparqlPreBinding"/>), the SHACL
+/// §5.2.1 pre-binding semantics; the evaluator sets the result's focus node directly, so the query's projected
+/// <c>$this</c> is not relied upon.
 /// </para>
 /// <para>
 /// <b>Result mapping (§5.3).</b> Each result row is one violation. The row's <c>?value</c> binding becomes
@@ -86,10 +86,11 @@ public static class SparqlConstraintEvaluator
         SparqlQueryEngine engine = await context.SparqlEngines.GetOrBuildAsync(
             context.DataMatchOps, context.Dictionary, cancellationToken).ConfigureAwait(false);
 
-        //Pre-bind $this (and, on a predicate-path property shape, $PATH) via an inline VALUES at the front of the
-        //WHERE group (so a lifted FILTER sees the bindings — a trailing VALUES would join too late).
+        //Pre-bind $this (and, on a predicate-path property shape, $PATH) by substituting them throughout the query
+        //(SHACL §5.2.1) — substitution reaches UNION branches, nested groups, and sub-SELECTs an injected join
+        //cannot, and folds BOUND of a pre-bound variable to true.
         RdfTerm focusTerm = context.Dictionary.Resolve(focusNode);
-        SparqlQuery bound = SparqlPreBinding.WithInlineValues(sparqlConstraint.Query, BuildPreBindings(focusTerm, path, context));
+        SparqlQuery bound = SparqlPreBinding.Substitute(sparqlConstraint.Query, BuildPreBindings(focusTerm, path, context));
 
         IReadOnlyList<SparqlSolution> solutions;
         try

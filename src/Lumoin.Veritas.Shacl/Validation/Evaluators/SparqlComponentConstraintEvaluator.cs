@@ -115,7 +115,7 @@ public static class SparqlComponentConstraintEvaluator
         foreach(TermId valueNode in valueNodes)
         {
             List<(SparqlVariable Variable, RdfTerm Value)> bindings = new(baseBindings) { (ValueVariable, context.Dictionary.Resolve(valueNode)) };
-            AlgebraOperator algebra = SparqlTranslator.Translate(SparqlPreBinding.WithInlineValues(validator.Query, ToValues(bindings)));
+            AlgebraOperator algebra = SparqlTranslator.Translate(SparqlPreBinding.Substitute(validator.Query, ToValues(bindings)));
             IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, cancellationToken).ConfigureAwait(false);
 
             //ASK holds when the query has a solution; a non-holding ASK is a violation for this value node.
@@ -148,7 +148,7 @@ public static class SparqlComponentConstraintEvaluator
         ImmutableArray<ValidationResult>.Builder builder,
         CancellationToken cancellationToken)
     {
-        AlgebraOperator algebra = SparqlTranslator.Translate(SparqlPreBinding.WithInlineValues(validator.Query, ToValues(baseBindings)));
+        AlgebraOperator algebra = SparqlTranslator.Translate(SparqlPreBinding.Substitute(validator.Query, ToValues(baseBindings)));
         IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, cancellationToken).ConfigureAwait(false);
 
         foreach(SparqlSolution solution in solutions)
