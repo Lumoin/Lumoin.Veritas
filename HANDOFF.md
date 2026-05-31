@@ -6,13 +6,35 @@ AST → algebra → translator → hypertrie backend + executor subset → SHACL
 unlock). **Batch 2 = Milestones D–F** (full algebra/aggregation, CONSTRUCT/
 DESCRIBE/JSON results, conformance push).
 
-## ⭐ CURRENT STATE (2026-05-31, directional-language + TRIPLE-subject slices DONE on `sparql-query-engine`, tree clean)
+## ⭐ CURRENT STATE (2026-05-31, WCOJ cross-product + ORDER-BY-triple-term slices DONE on `sparql-query-engine`, tree clean)
 
 Driving the **complete official W3C SPARQL query-evaluation corpus** to green (red-baseline + ratchet — the whole
-suite is the fixed stick, NOT a curated subset; see [[project_sparql_conformance_baseline]]). **Full suite = 9
-failures (6 ShaclValidate long-standing baseline + 3 SparqlQueryEvaluation), 3157 total, 124 skip; 0 regressions.**
-SPARQL eval reds driven **53 → 3** across 2026-05-30/31. The results-serialization family (XML/JSON readers+writers,
+suite is the fixed stick, NOT a curated subset; see [[project_sparql_conformance_baseline]]). **Full suite = 7
+failures (6 ShaclValidate long-standing baseline + 1 SparqlQueryEvaluation), 3160 total, 124 skip; 0 regressions.**
+SPARQL eval reds driven **53 → 1** across 2026-05-30/31. The results-serialization family (XML/JSON readers+writers,
 streaming CSV/TSV writer) is built; the eval harness + complete corpus are vendored and wired.
+
+✅ **WCOJ INDEPENDENT-LEADING-VARIABLE FIX (2026-05-31, `123c017`): eval reds 3 → 2.** A second manifestation of the
+cross-product collapse (sibling of `d891fc4`): `ReseedIndependentIterators` (Core `BasicGraphPatternEvaluator`)
+re-seeded an independent variable's iterator only when it was `AtEnd` after an outer variable re-bound. An iterator
+whose domain for the just-finished join level is a strict SUPERSET of the joined keys is left stranded on a
+non-joining key that is NOT at end (e.g. a `?s a :Set` iterator over a typed-but-memberless subject), so the
+AtEnd-gated reseed skipped it and the result collapsed to the first outer slice. Fix: reseed EVERY non-participant
+iterator that still has a level to enumerate — it is necessarily positioned strictly after the re-bound variable
+(bindings is exactly the bound prefix), so its deeper enumeration is always superseded. Closed the W3C
+`Calculate proper subset` test (nested MINUS-of-MINUS over `set-data.ttl`, whose `:empty` set is typed but
+memberless). **Tests:** focused regression `IndependentLeadingVariableStrandedOnNonJoiningKeyYieldsCrossProduct` +
+a systemic differential CsCheck property `BasicGraphPatternJoinDifferentialPropertyTests` (driver result == naive
+nested-loop join for any random BGP over any random graph — covers the whole class; shrinks counterexamples). ⚠ This
+is a general Core join-correctness fix affecting EVERY BGP with an independent outer variable — relevant to the
+verifiable sister project.
+
+✅ **ORDER BY TRIPLE-TERM ORDERING (2026-05-31, `c3b9b85`): eval reds 2 → 1.** `SparqlExpressionEvaluator.CompareForOrdering`
+returned 0 for two triple-term keys (rank 4 = "equal"), so ORDER BY left triple-term values unordered. Now compares
+component-wise (subject → predicate → object, each by the same SPARQL ordering, components themselves possibly triple
+terms) over an explicit pending-pair stack (no call-stack recursion; switch-expression style). Closed
+`Reified triples - Embedded triple - ordering` (its sub-SELECT ORDER BY/OFFSET/LIMIT slices selected the wrong row
+when triple terms were unordered). **Test:** `SparqlQueryEngineTests.OrderByComparesTripleTermsComponentWise`.
 
 ✅ **`TRIPLE()` SUBJECT VALIDATION (2026-05-31, `756aa77`): eval reds 4 → 3.** RDF 1.2 §3.5 — a triple term's
 subject is an IRI or blank node (never a literal OR a triple term). `BuildTriple` only rejected a literal subject,
@@ -53,18 +75,26 @@ holder (both `string` for the STJ reader and UTF-8 `u8` for the writer). **(3)**
 base-direction support (same round-trip gap the `.srj` writer just had) — first verify the SPARQL 1.2 Results XML
 representation of base direction (no `.srx` directional fixtures in the corpus), then implement read+write.
 
-▶ **NEXT: the last 3 eval reds** — all three are design-heavy slices (each deserves a fresh-context focus, not a
-tail-of-session rush): **(1) `Reified triples - Pattern - Nesting 1`** (`pattern-06.rq`) — the genuine
-**variable-bearing quoted-triple-term matching** executor slice: `<< <<:s :p2 :o>> :p3 :z>> :q ?q` lowers to a BGP
-where the inner query reifier is a join VARIABLE appearing inside the outer quoted triple term `<<(?r :p3 :z)>>`;
-the hypertrie must match a triple-term pattern whose components are variables that join the rest of the BGP
-(currently a ground-only `TryBuildGroundTripleTerm`; a variable inside raises NotSupported). **(2) `Reified triples
-- Embedded triple - ordering`** (`order-by.rq`) — a 20-way UNION of sub-SELECT/ORDER BY/OFFSET/LIMIT slices; really
-a sub-SELECT-ordering test. **(3) `Calculate proper subset`** (`subset-03.rq`, `.srx` result) — nested
-MINUS-of-MINUS with `FILTER NOT EXISTS` correlating `?x`; MINUS/NOT-EXISTS are implemented so this is a *correctness*
-bug in the nested-MINUS semantics, needs query-level debugging (the other `Calculate…` set tests pass). Then the
-3 deferred raw-string cleanups (see ⏸ below), the 5 SHACL-SPARQL pre-binding tests + the SHACL `nodeKind` RDFC-1.0
-case ([[project_rdfc_automorphism_gap]]).
+▶ **NEXT: the LAST eval red — `Reified triples - Pattern - Nesting 1`** (`pattern-06.rq`) — the genuine
+**variable-bearing quoted-triple-term matching** executor slice; deserves a fresh-context focus. `SELECT * { << <<:s :p2 :o>> :p3 :z>> :q ?q }`
+normalizes (confirmed via dump) to the BGP **(1)** `_:q1 rdf:reifies <<(:s :p2 :o)>>` **(2)** `_:q2 rdf:reifies <<(_:q1 :p3 :z)>>`
+**(3)** `_:q2 :q ?q`. Pattern (2)'s object is a quoted triple term whose SUBJECT is the join variable `_:q1`. The
+data (`data-2.ttl`) has exactly one matching triple-term value with a non-ground component —
+`_:g7 rdf:reifies <<(_:g6 :p3 :z)>>` with `_:g6 rdf:reifies <<(:s :p2 :o)>>` and `_:g7 :q :o` — so the answer is
+`?q = :o` (1 row). Today `TryEncodePosition` treats the blank-node component as a GROUND term: `TryBuildGroundTripleTerm`
+builds `<<(_:q1 :p3 :z)>>` with a literal blank node, `GetIdOrDefault` finds no such interned value → 0 rows (NOT a
+NotSupported skip). **Design fork (the user flagged the performance / cache-line profile as the deciding issue —
+the hypertrie is a cache-conscious WCOJ engine, so a per-query full-`TermDictionary` scan + `Resolve` is unacceptable):**
+**(A) Structural component index in the hypertrie** — at store-build time, also index each triple-term value's
+(subject, predicate, object) so a variable-bearing triple-term pattern lowers to native indexed BGP triples that the
+leapfrog joins directly (best cache behavior + prunes via the join; cost: a Core data-model change, more stored
+entries, touches the build/canonicalization path). **(B) Post-join destructuring** — encode the triple-term position
+as a fresh join variable `Vtt`, let the leapfrog bind it via its containing triple (NOT a full scan — already narrowed
+by the surrounding patterns), then a per-solution step `Resolve(Vtt)` → require `TripleTerm` → unify components against
+the solution (variable→bind, constant→check, nested→iterate). Contained, no data-model change, correctness-first; cost:
+per-solution `Resolve` (pointer-chase, less cache-friendly than (A)) and post-join filter rather than join-time pruning.
+**Then** the 3 deferred raw-string cleanups (see ⏸ below), the 5 SHACL-SPARQL pre-binding tests + the SHACL `nodeKind`
+RDFC-1.0 case ([[project_rdfc_automorphism_gap]]).
 
 ⚙ **Build/test without permission prompts** ([[feedback_build_test_command_shape]]): bare `dotnet build <proj>
 -clp:ErrorsOnly --nologo` (no pipe); run the exe via the **Bash tool** `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe"
