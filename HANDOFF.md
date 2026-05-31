@@ -6,13 +6,35 @@ AST → algebra → translator → hypertrie backend + executor subset → SHACL
 unlock). **Batch 2 = Milestones D–F** (full algebra/aggregation, CONSTRUCT/
 DESCRIBE/JSON results, conformance push).
 
-## ⭐ CURRENT STATE (2026-05-31, WCOJ cross-product + ORDER-BY-triple-term slices DONE on `sparql-query-engine`, tree clean)
+## ⭐ CURRENT STATE (2026-05-31, **SPARQL eval corpus GREEN (53 → 0)** on `sparql-query-engine`, tree clean)
 
-Driving the **complete official W3C SPARQL query-evaluation corpus** to green (red-baseline + ratchet — the whole
-suite is the fixed stick, NOT a curated subset; see [[project_sparql_conformance_baseline]]). **Full suite = 7
-failures (6 ShaclValidate long-standing baseline + 1 SparqlQueryEvaluation), 3160 total, 124 skip; 0 regressions.**
-SPARQL eval reds driven **53 → 1** across 2026-05-30/31. The results-serialization family (XML/JSON readers+writers,
+Drove the **complete official W3C SPARQL query-evaluation corpus** to green (red-baseline + ratchet — the whole
+suite is the fixed stick, NOT a curated subset; see [[project_sparql_conformance_baseline]]). **Full suite = 6
+failures, ALL long-standing ShaclValidate baseline (0 SparqlQueryEvaluation), 3160 total, 111 skip; 0 regressions.**
+SPARQL eval reds driven **53 → 0** across 2026-05-30/31. The results-serialization family (XML/JSON readers+writers,
 streaming CSV/TSV writer) is built; the eval harness + complete corpus are vendored and wired.
+
+✅ **VARIABLE-BEARING QUOTED TRIPLE-TERM MATCHING (2026-05-31, `02ee9f9`): eval reds 1 → 0 — the eval corpus is GREEN.**
+The last red, `Reified triples - Pattern - Nesting 1` (`pattern-06.rq`), needed a pattern `?r2 rdf:reifies <<(?r1 :p3 :z)>>`
+whose quoted triple term has a variable subject `?r1` that joins the rest of the BGP. Built the **post-join
+destructuring bridge** (Option B in `docs/decisions/sparql-join-and-triple-term-matching.md`, chosen over the native
+component-index because the WCOJ construction cost must not regress — [[project_wcoj_construction_cost]]): a
+variable-bearing triple-term position encodes to a fresh internal join variable the leapfrog binds, then a
+per-solution step resolves that value, requires a triple term, and unifies its components against the solution
+(binding fresh component variables, checking bound ones, descending nested terms over an explicit stack). The common
+path (no variable-bearing triple terms) is untouched — `hasTripleTermMatches` gates it, zero build-time/store cost.
+Also fixed: `TryGroundPosition` no longer treats a query blank node as a ground triple-term component (on the query
+side a blank node is a join variable). 13 previously NotSupported-skipped triple-term tests now run and pass.
+**Tests:** `SparqlQueryEngineTests.VariableBearingTripleTermBindsComponentAndJoins`.
+
+▶ **NEXT (per [[project_correctness_harness_before_rework]] — finish the conformance harness, THEN perf-rework):**
+the remaining **6 ShaclValidate baseline** failures — the 5 SHACL-SPARQL **pre-binding** tests
+(`pre-binding in BGP and FILTER` / `UNION` / `inner {…} blocks` / `nested SELECT`, + `$shapesGraph and $currentShape`)
+which fall out of SPARQL pre-binding substitution/scoping ([[feedback_sparql_before_shacl]]), and `sh:nodeKind property 001`
+(the RDFC-1.0 automorphism rewrite — [[project_rdfc_automorphism_gap]]). Then the 3 deferred raw-string cleanups
+(⏸ below). The large-graph **performance rework** (Layer-2 columnar `TermId` rows + hash/merge join + SIMD;
+[[project_scale_performance_target]]) is deferred behind the complete correctness harness — see
+`docs/decisions/sparql-join-and-triple-term-matching.md`.
 
 ✅ **WCOJ INDEPENDENT-LEADING-VARIABLE FIX (2026-05-31, `123c017`): eval reds 3 → 2.** A second manifestation of the
 cross-product collapse (sibling of `d891fc4`): `ReseedIndependentIterators` (Core `BasicGraphPatternEvaluator`)
@@ -75,26 +97,11 @@ holder (both `string` for the STJ reader and UTF-8 `u8` for the writer). **(3)**
 base-direction support (same round-trip gap the `.srj` writer just had) — first verify the SPARQL 1.2 Results XML
 representation of base direction (no `.srx` directional fixtures in the corpus), then implement read+write.
 
-▶ **NEXT: the LAST eval red — `Reified triples - Pattern - Nesting 1`** (`pattern-06.rq`) — the genuine
-**variable-bearing quoted-triple-term matching** executor slice; deserves a fresh-context focus. `SELECT * { << <<:s :p2 :o>> :p3 :z>> :q ?q }`
-normalizes (confirmed via dump) to the BGP **(1)** `_:q1 rdf:reifies <<(:s :p2 :o)>>` **(2)** `_:q2 rdf:reifies <<(_:q1 :p3 :z)>>`
-**(3)** `_:q2 :q ?q`. Pattern (2)'s object is a quoted triple term whose SUBJECT is the join variable `_:q1`. The
-data (`data-2.ttl`) has exactly one matching triple-term value with a non-ground component —
-`_:g7 rdf:reifies <<(_:g6 :p3 :z)>>` with `_:g6 rdf:reifies <<(:s :p2 :o)>>` and `_:g7 :q :o` — so the answer is
-`?q = :o` (1 row). Today `TryEncodePosition` treats the blank-node component as a GROUND term: `TryBuildGroundTripleTerm`
-builds `<<(_:q1 :p3 :z)>>` with a literal blank node, `GetIdOrDefault` finds no such interned value → 0 rows (NOT a
-NotSupported skip). **Design fork (the user flagged the performance / cache-line profile as the deciding issue —
-the hypertrie is a cache-conscious WCOJ engine, so a per-query full-`TermDictionary` scan + `Resolve` is unacceptable):**
-**(A) Structural component index in the hypertrie** — at store-build time, also index each triple-term value's
-(subject, predicate, object) so a variable-bearing triple-term pattern lowers to native indexed BGP triples that the
-leapfrog joins directly (best cache behavior + prunes via the join; cost: a Core data-model change, more stored
-entries, touches the build/canonicalization path). **(B) Post-join destructuring** — encode the triple-term position
-as a fresh join variable `Vtt`, let the leapfrog bind it via its containing triple (NOT a full scan — already narrowed
-by the surrounding patterns), then a per-solution step `Resolve(Vtt)` → require `TripleTerm` → unify components against
-the solution (variable→bind, constant→check, nested→iterate). Contained, no data-model change, correctness-first; cost:
-per-solution `Resolve` (pointer-chase, less cache-friendly than (A)) and post-join filter rather than join-time pruning.
-**Then** the 3 deferred raw-string cleanups (see ⏸ below), the 5 SHACL-SPARQL pre-binding tests + the SHACL `nodeKind`
-RDFC-1.0 case ([[project_rdfc_automorphism_gap]]).
+✅ **`pattern-06` (variable-bearing quoted-triple-term matching) is DONE (`02ee9f9`) — see the ⭐ CURRENT STATE block
+above and `docs/decisions/sparql-join-and-triple-term-matching.md`.** Built via the post-join destructuring bridge
+(Option B); the native component-index (Option A) was rejected to protect the WCOJ construction cost
+([[project_wcoj_construction_cost]]). The live NEXT is the 6 ShaclValidate baseline failures (top block), then the
+3 deferred raw-string cleanups (⏸ below).
 
 ⚙ **Build/test without permission prompts** ([[feedback_build_test_command_shape]]): bare `dotnet build <proj>
 -clp:ErrorsOnly --nologo` (no pipe); run the exe via the **Bash tool** `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe"
