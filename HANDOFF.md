@@ -6,7 +6,31 @@ AST → algebra → translator → hypertrie backend + executor subset → SHACL
 unlock). **Batch 2 = Milestones D–F** (full algebra/aggregation, CONSTRUCT/
 DESCRIBE/JSON results, conformance push).
 
-## ⭐ CURRENT STATE (2026-06-01, **harness GREEN (0 failures)**; SPARQL Update CONFORMANCE-COMPLETE (all 5 phases done), on `sparql-query-engine`, tree clean)
+## ⭐ CURRENT STATE (2026-06-01, **harness GREEN (0 failures)**; SPARQL Update conformance-complete + RDF/XML reader, on `sparql-query-engine`, tree clean)
+
+**Post-Update roadmap (user: work through all in preferred order, PERFORMANCE LAST).** Conformance is GREEN
+(3624 tests, 0 failed, 248 skip). Delivered since Update: an **RDF/XML reader** (`Lumoin.Veritas.Xml/RdfXmlReader.cs`,
+commit `2de9509`) — value-based, `XDocument` + explicit stack, wired into the harness `.rdf` loader, closing the
+SPARQL subquery/graph-fixture skips. (System.Xml stays in the Xml project per the user's boundary rule.)
+
+**Remaining roadmap (tasks, my order; each is a focused effort):**
+1. **RDF/XML conformance ratchet** — vendor `rdf/rdf11+12/rdf-xml`, wire `W3cRdfXmlTests`+`RdfXmlConformanceReader`
+   (base = `assumedTestBase`+filename via per-suite closure). Characterized: **101/197 pass, 96 reds** = strict
+   negative-syntax validation (~50), RDF-1.2-in-XML annotations/triple-terms/direction (~25), ~20 core eval bugs
+   (empty-property-elements, ns-prefix-confusion, not-id-and-resource, parseType=Literal canon). Reverted the wiring
+   to keep the suite at 0 failed; this is a dedicated ratchet.
+2. **CSV/TSV + JSON (`.srj`) SPARQL results readers** — finish results-format support; vendor `csv-tsv-res`/`json-res`.
+3. **Query-syntax negatives** — the `W3cSparqlSyntaxTests` KnownGaps: static scope analysis (GROUP BY/projection/BIND
+   scope, nested aggregates) + lexer codepoint-escape/PN_LOCAL refinements. Also: light up the generic-typed
+   (`NegativeSyntaxTest11`) update-syntax entries the eval-class type-guard currently skips (~real coverage).
+4. **Aggregate edge case** — "Protect from error in AVG" (the lone `AggregateExpression` skip).
+5. **SHACL Advanced Features (SHACL-AF)** — SPARQL-based constraints/rules/functions/targets; reuses the now-complete
+   SPARQL engine. Large ratchet.
+6. **Performance rework — pluggable WCOJ backends** (LAST, per user): the 4-seam taxonomy + BenchmarkDotNet vehicle.
+
+---
+
+## Prior milestone (2026-06-01): SPARQL Update CONFORMANCE-COMPLETE (all 5 phases)
 
 **Full suite = 3624 total, 0 failed, 258 skip; 0 regressions.** SPARQL 1.2 Update is fully built — parse + execute,
 through the real hypertrie edit-session/journal machinery — and the **full official W3C SPARQL 1.1 Update suite is
