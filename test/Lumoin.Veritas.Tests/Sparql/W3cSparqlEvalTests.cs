@@ -191,6 +191,13 @@ internal sealed class W3cSparqlEvalTests
             return;
         }
 
+        if(testCase.Type == W3cTestType.SparqlUpdateEvaluation)
+        {
+            W3cOutcome updateOutcome = await W3cSparqlEvalRunner.RunUpdateEvalAsync(testCase, TestContext.CancellationToken).ConfigureAwait(false);
+            ConformanceAssertions.Apply(updateOutcome);
+            return;
+        }
+
         if(testCase.Type != W3cTestType.SparqlQueryEvaluation)
         {
             Assert.Inconclusive($"Not a SPARQL query-evaluation test ('{testCase.RawTypeIri}').");

@@ -49,7 +49,7 @@ public static class SparqlGraphConstruction
             Dictionary<Utf8String, BlankNode> rowBlanks = [];
             foreach(AstTriplePattern pattern in template)
             {
-                if(TryInstantiate(pattern, solution, rowBlanks, ref blankCounter, out Quad quad) && seen.Add(quad))
+                if(TryInstantiate(pattern, graph: null, solution, rowBlanks, ref blankCounter, out Quad quad) && seen.Add(quad))
                 {
                     quads.Add(quad);
                 }
@@ -59,14 +59,78 @@ public static class SparqlGraphConstruction
         return quads;
     }
 
-    /// <summary>Instantiates one template triple under a solution, applying the §16.2.1 well-formedness filter.</summary>
+    /// <summary>
+    /// Instantiates a SPARQL Update quad block (default-graph triples and <c>GRAPH</c> groups) against a solution
+    /// sequence, yielding the distinct well-formed quads with their target graph. The same instantiation engine as
+    /// <see cref="Construct"/>: per-solution blank nodes (a template label is one blank node within a row, distinct
+    /// across rows), the §16.2.1 well-formedness filter. A <c>GRAPH</c> group whose graph designator is an unbound
+    /// variable contributes nothing for that solution. For ground data (<c>INSERT</c>/<c>DELETE DATA</c>), pass a
+    /// single empty solution.
+    /// </summary>
+    /// <param name="quads">The normalized quad block (sugar already lowered to plain triple patterns).</param>
+    /// <param name="solutions">The solution sequence; a single empty solution for ground data.</param>
+    /// <returns>The distinct, well-formed instantiated quads (each carrying its target graph, or none for the default graph).</returns>
+    public static List<Quad> InstantiateQuads(Ast.Quads quads, IReadOnlyList<SparqlSolution> solutions)
+    {
+        ArgumentNullException.ThrowIfNull(quads);
+        ArgumentNullException.ThrowIfNull(solutions);
+
+        List<Quad> result = [];
+        HashSet<Quad> seen = [];
+        int blankCounter = 0;
+        foreach(SparqlSolution solution in solutions)
+        {
+            Dictionary<Utf8String, BlankNode> rowBlanks = [];
+            foreach(AstTriplePattern pattern in quads.DefaultTriples)
+            {
+                if(TryInstantiate(pattern, null, solution, rowBlanks, ref blankCounter, out Quad quad) && seen.Add(quad))
+                {
+                    result.Add(quad);
+                }
+            }
+
+            foreach(Ast.QuadsGraphGroup group in quads.GraphGroups)
+            {
+                if(ResolveGraph(group.Graph, solution) is not RdfTerm graph)
+                {
+                    //An unbound graph variable: the group instantiates to nothing for this solution.
+                    continue;
+                }
+
+                foreach(AstTriplePattern pattern in group.Triples)
+                {
+                    if(TryInstantiate(pattern, graph, solution, rowBlanks, ref blankCounter, out Quad quad) && seen.Add(quad))
+                    {
+                        result.Add(quad);
+                    }
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>Resolves a <c>GRAPH</c> designator to a concrete graph term: an IRI to itself, a variable to its binding (or <see langword="null"/> when unbound).</summary>
+    /// <param name="graph">The graph designator.</param>
+    /// <param name="solution">The solution supplying variable bindings.</param>
+    /// <returns>The graph term, or <see langword="null"/> when an unbound variable.</returns>
+    private static RdfTerm? ResolveGraph(Ast.GraphTerm graph, SparqlSolution solution)
+        => graph switch
+        {
+            Ast.GraphIriTerm iri => new NamedNode(iri.Iri.Value),
+            Ast.GraphVariableTerm variable => solution.TryGetValue(variable.Variable, out RdfTerm value) ? value : null,
+            _ => null
+        };
+
+    /// <summary>Instantiates one template triple under a solution into the given target graph, applying the §16.2.1 well-formedness filter.</summary>
     /// <param name="pattern">The template triple pattern.</param>
+    /// <param name="graph">The target graph term, or <see langword="null"/> for the default graph.</param>
     /// <param name="solution">The solution supplying variable bindings.</param>
     /// <param name="rowBlanks">The per-solution template-label to blank-node map.</param>
     /// <param name="blankCounter">The fresh-blank-node counter, advanced as labels are minted.</param>
-    /// <param name="quad">Receives the instantiated triple on success.</param>
+    /// <param name="quad">Receives the instantiated quad on success.</param>
     /// <returns><see langword="true"/> when a well-formed triple was produced.</returns>
-    private static bool TryInstantiate(AstTriplePattern pattern, SparqlSolution solution, Dictionary<Utf8String, BlankNode> rowBlanks, ref int blankCounter, out Quad quad)
+    private static bool TryInstantiate(AstTriplePattern pattern, RdfTerm? graph, SparqlSolution solution, Dictionary<Utf8String, BlankNode> rowBlanks, ref int blankCounter, out Quad quad)
     {
         quad = null!;
         if(Resolve(pattern.Subject, solution, rowBlanks, ref blankCounter) is not RdfTerm subject
@@ -82,7 +146,7 @@ public static class SparqlGraphConstruction
             return false;
         }
 
-        quad = new Quad(subject, predicateIri, @object);
+        quad = new Quad(subject, predicateIri, @object, graph);
 
         return true;
     }

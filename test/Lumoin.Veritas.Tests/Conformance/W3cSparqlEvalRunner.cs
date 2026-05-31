@@ -5,6 +5,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
+using Lumoin.Veritas.Core.Encoding;
+using Lumoin.Veritas.Core.Hypertrie;
 using Lumoin.Veritas.Json;
 using Lumoin.Veritas.NQuads;
 using Lumoin.Veritas.Sparql.Algebra;
@@ -79,6 +81,156 @@ internal static class W3cSparqlEvalRunner
         return parsed.HasErrors
             ? new W3cOutcome(W3cOutcomeStatus.Passed, "Malformed update request was rejected.")
             : new W3cOutcome(W3cOutcomeStatus.Failed, "Malformed update request parsed without error.");
+    }
+
+    /// <summary>
+    /// Runs one SPARQL Update evaluation test: parses the <c>ut:request</c>, builds a mutable dataset from the initial
+    /// data (<c>ut:data</c> / <c>ut:graphData</c>), executes the update through edit-session commits, and compares the
+    /// resulting dataset to the expected one (<c>mf:result</c>'s <c>ut:data</c>) up to blank-node isomorphism.
+    /// </summary>
+    /// <param name="testCase">The update-evaluation test case.</param>
+    /// <param name="cancellationToken">A token to cancel reading, parsing, and execution.</param>
+    /// <returns>The outcome.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="testCase"/> is <see langword="null"/>.</exception>
+    public static async Task<W3cOutcome> RunUpdateEvalAsync(W3cTestCase testCase, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(testCase);
+
+        if(!File.Exists(testCase.InputPath))
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Failed, $"Update request file not found: {testCase.InputPath}");
+        }
+
+        if(testCase.ExpectedPath is null || !File.Exists(testCase.ExpectedPath))
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Skipped, "Update test declares no expected-result fixture.");
+        }
+
+        using Utf8StringPool pool = new();
+        string baseUri = new Uri(IoPath.GetFullPath(testCase.InputPath)).AbsoluteUri;
+        ParseResult<SparqlRequest> parsed = SparqlParser.ParseRequest(
+            await File.ReadAllBytesAsync(testCase.InputPath, cancellationToken).ConfigureAwait(false),
+            pool,
+            Utf8String.FromString(baseUri));
+        if(parsed.HasErrors)
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Failed, $"Update request did not parse: {DescribeFirstError(parsed.Diagnostics)}");
+        }
+
+        if(parsed.Tree is not SparqlUpdateRequest update)
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Failed, "The request parsed as a query, not an update.");
+        }
+
+        MutableSparqlDataset dataset;
+        List<Quad> expected;
+        try
+        {
+            List<DataTriple> data = await LoadDataAsync(testCase.QueryDataPath, cancellationToken).ConfigureAwait(false);
+            List<(RdfTerm Name, IEnumerable<DataTriple> Triples)> named = await LoadNamedGraphsAsync(testCase.GraphDataPaths, cancellationToken).ConfigureAwait(false);
+            named.AddRange(await LoadNamedFromFileAsync(testCase.QueryDataPath, cancellationToken).ConfigureAwait(false));
+            dataset = await BuildMutableDatasetAsync(data, named, cancellationToken).ConfigureAwait(false);
+            expected = await ReadQuadsAsync(testCase.ExpectedPath, cancellationToken).ConfigureAwait(false);
+        }
+        catch(InvalidOperationException ex)
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Skipped, $"Could not load a graph (unsupported format or malformed): {ex.Message}");
+        }
+
+        SparqlUpdateRequest normalized = (SparqlUpdateRequest)new SparqlNormalizer(pool).Normalize(update);
+        SparqlExpressionContext context = SparqlExpressionContext.CreateDefault().WithBaseIri(Utf8String.FromString(baseUri));
+        try
+        {
+            await SparqlUpdateExecutor.ExecuteAsync(normalized, dataset, context, cancellationToken).ConfigureAwait(false);
+        }
+        catch(NotSupportedException ex)
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Skipped, $"Update uses a feature the executor does not yet support: {ex.Message}");
+        }
+
+        List<Quad> actual = DumpDataset(dataset);
+
+        return QuadSetIsomorphism.AreIsomorphic(actual, expected)
+            ? new W3cOutcome(W3cOutcomeStatus.Passed, $"Resulting dataset matches ({actual.Count} quad(s)).")
+            : new W3cOutcome(W3cOutcomeStatus.Failed, $"Resulting dataset does not match expected (actual {actual.Count} vs expected {expected.Count} quad(s)).");
+    }
+
+    /// <summary>Builds a mutable dataset by encoding the initial default and named graphs into one shared dictionary and journal-backed graph stores.</summary>
+    /// <param name="defaultTriples">The default-graph triples.</param>
+    /// <param name="namedGraphs">The named graphs as (name, triples) pairs.</param>
+    /// <param name="cancellationToken">A token to cancel the build.</param>
+    /// <returns>The mutable dataset.</returns>
+    private static async Task<MutableSparqlDataset> BuildMutableDatasetAsync(
+        List<DataTriple> defaultTriples,
+        List<(RdfTerm Name, IEnumerable<DataTriple> Triples)> namedGraphs,
+        CancellationToken cancellationToken)
+    {
+        TermDictionary dictionary = new();
+        HypertrieGraphStore defaultGraph = await MutableSparqlDataset.BuildGraphAsync(Encode(defaultTriples, dictionary), cancellationToken).ConfigureAwait(false);
+
+        Dictionary<TermId, HypertrieGraphStore> named = [];
+        foreach((RdfTerm name, IEnumerable<DataTriple> triples) in namedGraphs)
+        {
+            named[dictionary.GetOrAdd(name)] = await MutableSparqlDataset.BuildGraphAsync(Encode(triples, dictionary), cancellationToken).ConfigureAwait(false);
+        }
+
+        return new MutableSparqlDataset(dictionary, defaultGraph, named);
+    }
+
+    /// <summary>Encodes triples into the shared dictionary as encoded triples.</summary>
+    /// <param name="triples">The triples to encode.</param>
+    /// <param name="dictionary">The shared dictionary.</param>
+    /// <returns>The encoded triples.</returns>
+    private static List<EncodedTriple> Encode(IEnumerable<DataTriple> triples, TermDictionary dictionary)
+    {
+        List<EncodedTriple> encoded = [];
+        foreach(DataTriple triple in triples)
+        {
+            encoded.Add(EncodedTriple.FromEncoded(
+                dictionary.GetOrAdd(triple.Subject).Encoded,
+                dictionary.GetOrAdd(triple.Predicate).Encoded,
+                dictionary.GetOrAdd(triple.Object).Encoded));
+        }
+
+        return encoded;
+    }
+
+    /// <summary>Reads a mutable dataset's current quads (default graph + named graphs), decoding through its dictionary.</summary>
+    /// <param name="dataset">The dataset.</param>
+    /// <returns>The dataset's quads.</returns>
+    private static List<Quad> DumpDataset(MutableSparqlDataset dataset)
+    {
+        List<Quad> quads = [];
+        foreach(EncodedTriple triple in dataset.DefaultGraph.Match(TermId.None, TermId.None, TermId.None))
+        {
+            quads.Add(DecodeQuad(dataset, triple, graph: null));
+        }
+
+        foreach(TermId graphId in dataset.NamedGraphNames)
+        {
+            dataset.TryGetNamedGraph(graphId, out HypertrieGraphStore? store);
+            RdfTerm graph = dataset.Dictionary.Resolve(graphId);
+            foreach(EncodedTriple triple in store!.Match(TermId.None, TermId.None, TermId.None))
+            {
+                quads.Add(DecodeQuad(dataset, triple, graph));
+            }
+        }
+
+        return quads;
+    }
+
+    /// <summary>Decodes an encoded triple to a quad in the given graph through the dataset's dictionary.</summary>
+    /// <param name="dataset">The dataset whose dictionary decodes the terms.</param>
+    /// <param name="triple">The encoded triple.</param>
+    /// <param name="graph">The graph term, or <see langword="null"/> for the default graph.</param>
+    /// <returns>The decoded quad.</returns>
+    private static Quad DecodeQuad(MutableSparqlDataset dataset, EncodedTriple triple, RdfTerm? graph)
+    {
+        return new Quad(
+            dataset.Dictionary.Resolve(triple.Subject),
+            (NamedNode)dataset.Dictionary.Resolve(triple.Predicate),
+            dataset.Dictionary.Resolve(triple.Object),
+            graph);
     }
 
     /// <summary>Runs one SPARQL query-evaluation test case.</summary>

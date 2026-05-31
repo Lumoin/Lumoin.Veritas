@@ -62,7 +62,7 @@ public sealed class SparqlNormalizer
     /// Normalizes a parsed request, lowering all RDF 1.2 sugar in its query forms and graph patterns.
     /// </summary>
     /// <param name="request">The parsed request.</param>
-    /// <returns>The request with sugar lowered to plain triple patterns; an update request is returned unchanged.</returns>
+    /// <returns>The request with sugar lowered to plain triple patterns (both query forms and update operations).</returns>
     public SparqlRequest Normalize(SparqlRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -70,8 +70,55 @@ public sealed class SparqlNormalizer
         return request switch
         {
             SparqlQuery query => NormalizeQuery(query),
+            SparqlUpdateRequest update => NormalizeUpdate(update),
             _ => request
         };
+    }
+
+    /// <summary>Normalizes every operation of an update request, lowering the RDF 1.2 sugar in its quad blocks and modify <c>WHERE</c> patterns.</summary>
+    /// <param name="update">The update request.</param>
+    /// <returns>The normalized update request.</returns>
+    private SparqlUpdateRequest NormalizeUpdate(SparqlUpdateRequest update)
+    {
+        List<UpdateOperation> operations = new(update.Operations.Count);
+        foreach(UpdateOperation operation in update.Operations)
+        {
+            operations.Add(NormalizeOperation(operation));
+        }
+
+        return update with { Operations = operations };
+    }
+
+    /// <summary>Normalizes one update operation: its quad blocks (templates / data) and any modify <c>WHERE</c> pattern; graph-management operations pass through unchanged.</summary>
+    /// <param name="operation">The operation.</param>
+    /// <returns>The normalized operation.</returns>
+    private UpdateOperation NormalizeOperation(UpdateOperation operation)
+        => operation switch
+        {
+            InsertDataOperation insert => insert with { Data = NormalizeQuads(insert.Data) },
+            DeleteDataOperation delete => delete with { Data = NormalizeQuads(delete.Data) },
+            DeleteWhereOperation deleteWhere => deleteWhere with { Pattern = NormalizeQuads(deleteWhere.Pattern) },
+            ModifyOperation modify => modify with
+            {
+                Delete = modify.Delete is null ? null : NormalizeQuads(modify.Delete),
+                Insert = modify.Insert is null ? null : NormalizeQuads(modify.Insert),
+                Where = (GroupGraphPattern)NormalizePattern(modify.Where)
+            },
+            _ => operation
+        };
+
+    /// <summary>Lowers a quad block's default-graph triples and each <c>GRAPH</c> group's triples to plain triple patterns.</summary>
+    /// <param name="quads">The quad block.</param>
+    /// <returns>The lowered quad block.</returns>
+    private Quads NormalizeQuads(Quads quads)
+    {
+        List<QuadsGraphGroup> groups = new(quads.GraphGroups.Count);
+        foreach(QuadsGraphGroup group in quads.GraphGroups)
+        {
+            groups.Add(group with { Triples = NormalizeTemplate(group.Triples) });
+        }
+
+        return quads with { DefaultTriples = NormalizeTemplate(quads.DefaultTriples), GraphGroups = groups };
     }
 
     /// <summary>Normalizes a query: its CONSTRUCT template (if any) and its WHERE pattern.</summary>

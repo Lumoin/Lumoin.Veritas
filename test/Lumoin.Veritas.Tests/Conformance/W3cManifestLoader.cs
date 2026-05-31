@@ -48,6 +48,7 @@ internal static class W3cManifestLoader
     private const string RdfsNamespace = "http://www.w3.org/2000/01/rdf-schema#";
     private const string ShtNamespace = "http://www.w3.org/ns/shacl-test#";
     private const string QtNamespace = "http://www.w3.org/2001/sw/DataAccess/tests/test-query#";
+    private const string UtNamespace = "http://www.w3.org/2009/sparql/tests/test-update#";
 
     /// <summary>
     /// Loads a manifest synchronously, suitable for use from
@@ -355,6 +356,17 @@ internal static class W3cManifestLoader
                 continue;
             }
 
+            if(type == W3cTestType.SparqlUpdateEvaluation)
+            {
+                W3cTestCase? updateTest = BuildSparqlUpdateTest(entry, properties, bySubject, manifestUri, typeIri, name, comment, originManifest);
+                if(updateTest is not null)
+                {
+                    builder.Add(updateTest);
+                }
+
+                continue;
+            }
+
             string? actionTerm = FindObject(properties, MfNamespace + "action");
             string? resultTerm = FindObject(properties, MfNamespace + "result");
 
@@ -525,6 +537,77 @@ internal static class W3cManifestLoader
             name,
             comment,
             InputPath: queryPath,
+            ExpectedPath: expectedPath,
+            OriginManifest: originManifest,
+            QueryDataPath: dataPath,
+            GraphDataPaths: graphDataPaths);
+    }
+
+    /// <summary>
+    /// Builds a SPARQL Update evaluation test from an <c>mf:UpdateEvaluationTest</c> entry: the action's
+    /// <c>ut:request</c> is the update file, its <c>ut:data</c> / <c>ut:graphData</c> the initial dataset, and the
+    /// result's <c>ut:data</c> the expected resulting dataset (a TriG file carrying the whole default + named result).
+    /// </summary>
+    /// <param name="entry">The test entry subject.</param>
+    /// <param name="properties">The entry's properties.</param>
+    /// <param name="bySubject">The subject-to-properties index.</param>
+    /// <param name="manifestUri">The manifest URI for sibling-path resolution.</param>
+    /// <param name="typeIri">The raw test-type IRI.</param>
+    /// <param name="name">The test name.</param>
+    /// <param name="comment">The test comment.</param>
+    /// <param name="originManifest">The origin manifest path.</param>
+    /// <returns>The test case, or <see langword="null"/> when it lacks an executable request.</returns>
+    private static W3cTestCase? BuildSparqlUpdateTest(
+        string entry,
+        List<Quad> properties,
+        Dictionary<string, List<Quad>> bySubject,
+        Uri manifestUri,
+        string typeIri,
+        string name,
+        string comment,
+        string originManifest)
+    {
+        string? actionTerm = FindObject(properties, MfNamespace + "action");
+        if(actionTerm is null || !bySubject.TryGetValue(actionTerm, out List<Quad>? actionProperties))
+        {
+            return null;
+        }
+
+        string? requestTerm = FindObject(actionProperties, UtNamespace + "request");
+        string? requestPath = requestTerm is null ? null : ResolveSiblingPath(requestTerm, manifestUri);
+        if(requestPath is null)
+        {
+            return null;
+        }
+
+        string? dataTerm = FindObject(actionProperties, UtNamespace + "data");
+        string? dataPath = dataTerm is null ? null : ResolveSiblingPath(dataTerm, manifestUri);
+
+        List<string> graphDataPaths = [];
+        foreach(string graphDataTerm in FindObjects(actionProperties, UtNamespace + "graphData"))
+        {
+            if(ResolveSiblingPath(graphDataTerm, manifestUri) is string graphDataPath)
+            {
+                graphDataPaths.Add(graphDataPath);
+            }
+        }
+
+        //The result node carries the expected resulting dataset as ut:data (a TriG file holding the whole result).
+        string? resultTerm = FindObject(properties, MfNamespace + "result");
+        string? expectedDataTerm = resultTerm is not null && bySubject.TryGetValue(resultTerm, out List<Quad>? resultProperties)
+            ? FindObject(resultProperties, UtNamespace + "data")
+            : resultTerm;
+        string? expectedPath = expectedDataTerm is null ? null : ResolveSiblingPath(expectedDataTerm, manifestUri);
+
+        Uri testUri = TryBuildAbsoluteUri(entry) ?? new Uri(manifestUri, "#" + entry);
+
+        return new W3cTestCase(
+            testUri,
+            W3cTestType.SparqlUpdateEvaluation,
+            typeIri,
+            name,
+            comment,
+            InputPath: requestPath,
             ExpectedPath: expectedPath,
             OriginManifest: originManifest,
             QueryDataPath: dataPath,
