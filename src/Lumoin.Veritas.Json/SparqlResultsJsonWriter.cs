@@ -22,16 +22,6 @@ namespace Lumoin.Veritas.Json;
 /// </remarks>
 public static class SparqlResultsJsonWriter
 {
-    private static ReadOnlySpan<byte> TypeProperty => "type"u8;
-
-    private static ReadOnlySpan<byte> ValueProperty => "value"u8;
-
-    private static ReadOnlySpan<byte> DatatypeProperty => "datatype"u8;
-
-    private static ReadOnlySpan<byte> LangProperty => "xml:lang"u8;
-
-    private static ReadOnlySpan<byte> DirectionProperty => "its:dir"u8;
-
     /// <summary>Serializes a result set to its <c>.srj</c> document as an owned UTF-8 string.</summary>
     /// <param name="results">The result set to serialize.</param>
     /// <param name="indented">Whether to pretty-print the JSON.</param>
@@ -60,11 +50,11 @@ public static class SparqlResultsJsonWriter
         using Utf8JsonWriter writer = new(stream, new JsonWriterOptions { Indented = indented });
         writer.WriteStartObject();
 
-        writer.WritePropertyName("head");
+        writer.WritePropertyName(SparqlResultsJsonNames.Head);
         writer.WriteStartObject();
         if(!results.IsBoolean)
         {
-            writer.WritePropertyName("vars");
+            writer.WritePropertyName(SparqlResultsJsonNames.Vars);
             writer.WriteStartArray();
             foreach(Utf8String variable in results.Variables)
             {
@@ -78,7 +68,7 @@ public static class SparqlResultsJsonWriter
 
         if(results.IsBoolean)
         {
-            writer.WriteBoolean("boolean", results.Boolean!.Value);
+            writer.WriteBoolean(SparqlResultsJsonNames.Boolean, results.Boolean!.Value);
         }
         else
         {
@@ -94,9 +84,9 @@ public static class SparqlResultsJsonWriter
     /// <param name="solutions">The solution sequence.</param>
     private static void WriteResults(Utf8JsonWriter writer, IReadOnlyList<SparqlSolution> solutions)
     {
-        writer.WritePropertyName("results");
+        writer.WritePropertyName(SparqlResultsJsonNames.Results);
         writer.WriteStartObject();
-        writer.WritePropertyName("bindings");
+        writer.WritePropertyName(SparqlResultsJsonNames.Bindings);
         writer.WriteStartArray();
         foreach(SparqlSolution solution in solutions)
         {
@@ -146,14 +136,14 @@ public static class SparqlResultsJsonWriter
                     if(op.Term is TripleTerm triple)
                     {
                         writer.WriteStartObject();
-                        writer.WriteString(TypeProperty, "triple"u8);
-                        writer.WritePropertyName(ValueProperty);
+                        writer.WriteString(SparqlResultsJsonNames.TypeUtf8, SparqlResultsJsonNames.TripleUtf8);
+                        writer.WritePropertyName(SparqlResultsJsonNames.ValueUtf8);
                         writer.WriteStartObject();
                         work.Push(new JsonOp(JsonOpKind.EndObject, null, null));
                         work.Push(new JsonOp(JsonOpKind.EndObject, null, null));
-                        PushComponent(work, "object", triple.Object);
-                        PushComponent(work, "predicate", triple.Predicate);
-                        PushComponent(work, "subject", triple.Subject);
+                        PushComponent(work, SparqlResultsJsonNames.Object, triple.Object);
+                        PushComponent(work, SparqlResultsJsonNames.Predicate, triple.Predicate);
+                        PushComponent(work, SparqlResultsJsonNames.Subject, triple.Subject);
                     }
                     else
                     {
@@ -187,32 +177,32 @@ public static class SparqlResultsJsonWriter
         {
             case NamedNode named:
             {
-                writer.WriteString(TypeProperty, "uri"u8);
-                writer.WriteString(ValueProperty, named.Iri.Span);
+                writer.WriteString(SparqlResultsJsonNames.TypeUtf8, SparqlResultsJsonNames.UriUtf8);
+                writer.WriteString(SparqlResultsJsonNames.ValueUtf8, named.Iri.Span);
                 break;
             }
             case BlankNode blank:
             {
-                writer.WriteString(TypeProperty, "bnode"u8);
-                writer.WriteString(ValueProperty, blank.Label.Span);
+                writer.WriteString(SparqlResultsJsonNames.TypeUtf8, SparqlResultsJsonNames.BnodeUtf8);
+                writer.WriteString(SparqlResultsJsonNames.ValueUtf8, blank.Label.Span);
                 break;
             }
             case Literal literal:
             {
-                writer.WriteString(TypeProperty, "literal"u8);
-                writer.WriteString(ValueProperty, literal.Value.Span);
+                writer.WriteString(SparqlResultsJsonNames.TypeUtf8, SparqlResultsJsonNames.LiteralUtf8);
+                writer.WriteString(SparqlResultsJsonNames.ValueUtf8, literal.Value.Span);
                 if(literal.Language is { } language)
                 {
-                    writer.WriteString(LangProperty, language.Span);
+                    writer.WriteString(SparqlResultsJsonNames.LanguageUtf8, language.Span);
 
                     if(literal.BaseDirection is { } direction)
                     {
-                        writer.WriteString(DirectionProperty, TextDirections.ToToken(direction).Span);
+                        writer.WriteString(SparqlResultsJsonNames.DirectionUtf8, TextDirections.ToToken(direction).Span);
                     }
                 }
                 else if(!literal.Datatype.Iri.Equals(Vocabulary.Xsd.String))
                 {
-                    writer.WriteString(DatatypeProperty, literal.Datatype.Iri.Span);
+                    writer.WriteString(SparqlResultsJsonNames.DatatypeUtf8, literal.Datatype.Iri.Span);
                 }
 
                 break;

@@ -36,9 +36,14 @@ public static class SparqlResultsXmlReader
 {
     private static XNamespace ResultsNamespace { get; } = "http://www.w3.org/2005/sparql-results#";
 
+    /// <summary>The Internationalization Tag Set namespace, carrying the <c>its:dir</c> base-direction attribute (SPARQL 1.2 Results XML).</summary>
+    private static XNamespace ItsNamespace { get; } = "http://www.w3.org/2005/11/its";
+
     private static NamedNode XsdString { get; } = new(Vocabulary.Xsd.String);
 
     private static NamedNode RdfLangString { get; } = new(Vocabulary.Rdf.LangString);
+
+    private static NamedNode RdfDirLangString { get; } = new(Vocabulary.Rdf.DirLangString);
 
     /// <summary>Reads a result set from the in-memory XML bytes.</summary>
     /// <param name="bytes">The <c>.srx</c> document bytes.</param>
@@ -241,7 +246,7 @@ public static class SparqlResultsXmlReader
         };
     }
 
-    /// <summary>Parses a <c>&lt;literal&gt;</c> value: <c>rdf:langString</c> when it carries <c>xml:lang</c>, its declared <c>datatype</c>, or <c>xsd:string</c> otherwise.</summary>
+    /// <summary>Parses a <c>&lt;literal&gt;</c> value: <c>rdf:dirLangString</c> when it carries both <c>xml:lang</c> and <c>its:dir</c> (RDF 1.2), <c>rdf:langString</c> for <c>xml:lang</c> alone, its declared <c>datatype</c>, or <c>xsd:string</c> otherwise.</summary>
     /// <param name="literal">The <c>&lt;literal&gt;</c> element.</param>
     /// <returns>The literal term.</returns>
     private static Literal ParseLiteral(XElement literal)
@@ -250,7 +255,14 @@ public static class SparqlResultsXmlReader
         string? language = literal.Attribute(XNamespace.Xml + "lang")?.Value;
         if(language is not null)
         {
-            return new Literal(lexical, RdfLangString, Utf8String.FromString(language));
+            Utf8String tag = Utf8String.FromString(language);
+            string? direction = literal.Attribute(ItsNamespace + "dir")?.Value;
+            if(direction is not null && TextDirections.TryParse(direction, out TextDirection baseDirection))
+            {
+                return new Literal(lexical, RdfDirLangString, tag, baseDirection);
+            }
+
+            return new Literal(lexical, RdfLangString, tag);
         }
 
         string? datatype = literal.Attribute("datatype")?.Value;

@@ -23,6 +23,8 @@ public static class SparqlResultsXmlWriter
 
     private const string XmlNamespace = "http://www.w3.org/XML/1998/namespace";
 
+    private const string ItsNamespace = "http://www.w3.org/2005/11/its";
+
     /// <summary>Serializes a result set to its <c>.srx</c> document as an owned UTF-8 string.</summary>
     /// <param name="results">The result set to serialize.</param>
     /// <returns>The <c>.srx</c> document as a <see cref="Utf8String"/>.</returns>
@@ -191,6 +193,12 @@ public static class SparqlResultsXmlWriter
                 if(literal.Language is { } language)
                 {
                     writer.WriteAttributeString("xml", "lang", XmlNamespace, language.ToString());
+
+                    //A directional language-tagged string (RDF 1.2) carries its base direction as its:dir (SPARQL 1.2 Results XML).
+                    if(literal.BaseDirection is { } direction)
+                    {
+                        writer.WriteAttributeString("its", "dir", ItsNamespace, TextDirections.ToText(direction));
+                    }
                 }
                 else if(!literal.Datatype.Iri.Equals(Vocabulary.Xsd.String))
                 {

@@ -154,6 +154,16 @@ case-sensitive, `GetCanonicalizedValue`, `ToToken`/`ToText`/`TryParse`, UTF-8 `L
 `Utf8String`, not a naked `byte[]` — [[feedback_no_naked_byte_arrays]]); `756aa77` (`TRIPLE()` subject validation,
 see ✅ below). Tree clean.
 
+✅ **DEFERRED CLEANUPS DONE (2026-05-31, after the conformance harness went green).** All three raw-string/
+well-known mop-ups landed (full suite 0 failures, 0 regressions): **(1)** `SparqlExpressionEvaluator`'s 9 local
+XSD/RDF datatype IRI properties deleted; call sites route through `Vocabulary.Xsd.*`/`Vocabulary.Rdf.*` (Core).
+**(2)** new `SparqlResultsJsonNames` (in `Lumoin.Veritas.Json`) is the one home for the ~18 SRJ tokens — `string`
+consts for the STJ reader, `u8` spans for the writer; both `SparqlResultsJsonReader`/`Writer` route through it (the
+writer's 5 local `u8` props removed). **(3)** `.srx` base direction: SPARQL 1.2 Results XML uses
+`its:dir="ltr|rtl"` (ITS ns `http://www.w3.org/2005/11/its`) beside `xml:lang` (verified against the spec);
+`SparqlResultsXmlReader`/`Writer` now read+write it (test `SparqlResultsXmlWriterTests.DirectionalLanguageLiteralRoundTrips`).
+The original deferral note follows.
+
 ⏸ **DEFERRED CLEANUPS (user 2026-05-31: "do these fixes as the LAST thing — feature work first").** Three
 raw-string / well-known issues to mop up after the eval reds: **(1)** `SparqlExpressionEvaluator` re-defines ~9
 XSD/RDF datatype IRIs (`XsdString`/`XsdInteger`/`XsdDouble`/`XsdBoolean`/`RdfLangString`/`RdfDirLangString`/

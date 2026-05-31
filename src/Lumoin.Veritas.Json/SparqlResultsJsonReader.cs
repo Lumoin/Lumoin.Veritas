@@ -87,13 +87,13 @@ public static class SparqlResultsJsonReader
             throw new FormatException("SPARQL Results JSON must be a top-level object.");
         }
 
-        if(root.TryGetProperty("boolean", out JsonElement boolean))
+        if(root.TryGetProperty(SparqlResultsJsonNames.Boolean, out JsonElement boolean))
         {
             return SparqlResultSet.ForAsk(ReadBoolean(boolean));
         }
 
         List<Utf8String> variables = ReadHeadVariables(root);
-        if(!root.TryGetProperty("results", out JsonElement results) || !results.TryGetProperty("bindings", out JsonElement bindings) || bindings.ValueKind != JsonValueKind.Array)
+        if(!root.TryGetProperty(SparqlResultsJsonNames.Results, out JsonElement results) || !results.TryGetProperty(SparqlResultsJsonNames.Bindings, out JsonElement bindings) || bindings.ValueKind != JsonValueKind.Array)
         {
             throw new FormatException("SPARQL SELECT results JSON is missing its results.bindings array.");
         }
@@ -113,7 +113,7 @@ public static class SparqlResultsJsonReader
     private static List<Utf8String> ReadHeadVariables(JsonElement root)
     {
         List<Utf8String> variables = [];
-        if(!root.TryGetProperty("head", out JsonElement head) || !head.TryGetProperty("vars", out JsonElement vars) || vars.ValueKind != JsonValueKind.Array)
+        if(!root.TryGetProperty(SparqlResultsJsonNames.Head, out JsonElement head) || !head.TryGetProperty(SparqlResultsJsonNames.Vars, out JsonElement vars) || vars.ValueKind != JsonValueKind.Array)
         {
             return variables;
         }
@@ -182,10 +182,10 @@ public static class SparqlResultsJsonReader
                 continue;
             }
 
-            JsonElement inner = frame.Element.GetProperty("value");
-            TermFrame subject = new() { Element = Component(inner, "subject"), Id = nextId++ };
-            TermFrame predicateFrame = new() { Element = Component(inner, "predicate"), Id = nextId++ };
-            TermFrame @object = new() { Element = Component(inner, "object"), Id = nextId++ };
+            JsonElement inner = frame.Element.GetProperty(SparqlResultsJsonNames.Value);
+            TermFrame subject = new() { Element = Component(inner, SparqlResultsJsonNames.Subject), Id = nextId++ };
+            TermFrame predicateFrame = new() { Element = Component(inner, SparqlResultsJsonNames.Predicate), Id = nextId++ };
+            TermFrame @object = new() { Element = Component(inner, SparqlResultsJsonNames.Object), Id = nextId++ };
             frame.Combine = true;
             frame.SubjectId = subject.Id;
             frame.PredicateId = predicateFrame.Id;
@@ -205,9 +205,9 @@ public static class SparqlResultsJsonReader
     private static bool IsTriple(JsonElement value)
     {
         return value.ValueKind == JsonValueKind.Object
-            && value.TryGetProperty("type", out JsonElement type)
+            && value.TryGetProperty(SparqlResultsJsonNames.Type, out JsonElement type)
             && type.ValueKind == JsonValueKind.String
-            && string.Equals(type.GetString(), "triple", StringComparison.Ordinal);
+            && string.Equals(type.GetString(), SparqlResultsJsonNames.Triple, StringComparison.Ordinal);
     }
 
     /// <summary>Returns the nested term object for a triple component (<c>subject</c>/<c>predicate</c>/<c>object</c>).</summary>
@@ -234,14 +234,14 @@ public static class SparqlResultsJsonReader
             throw new FormatException("A SPARQL Results JSON binding value must be an object.");
         }
 
-        string type = RequireString(value, "type");
-        string lexical = RequireString(value, "value");
+        string type = RequireString(value, SparqlResultsJsonNames.Type);
+        string lexical = RequireString(value, SparqlResultsJsonNames.Value);
 
         return type switch
         {
-            "uri" => new NamedNode(Utf8String.FromString(lexical)),
-            "bnode" => new BlankNode(Utf8String.FromString(lexical)),
-            "literal" or "typed-literal" => ParseLiteral(value, lexical),
+            SparqlResultsJsonNames.Uri => new NamedNode(Utf8String.FromString(lexical)),
+            SparqlResultsJsonNames.Bnode => new BlankNode(Utf8String.FromString(lexical)),
+            SparqlResultsJsonNames.Literal or SparqlResultsJsonNames.TypedLiteral => ParseLiteral(value, lexical),
             _ => throw new FormatException($"Unsupported SPARQL Results JSON binding value type '{type}'.")
         };
     }
@@ -252,10 +252,10 @@ public static class SparqlResultsJsonReader
     /// <returns>The literal term.</returns>
     private static Literal ParseLiteral(JsonElement value, string lexical)
     {
-        if(value.TryGetProperty("xml:lang", out JsonElement language) && language.ValueKind == JsonValueKind.String)
+        if(value.TryGetProperty(SparqlResultsJsonNames.Language, out JsonElement language) && language.ValueKind == JsonValueKind.String)
         {
             Utf8String tag = Utf8String.FromString(language.GetString()!);
-            if(value.TryGetProperty("its:dir", out JsonElement direction) && direction.ValueKind == JsonValueKind.String && TextDirections.TryParse(direction.GetString(), out TextDirection baseDirection))
+            if(value.TryGetProperty(SparqlResultsJsonNames.Direction, out JsonElement direction) && direction.ValueKind == JsonValueKind.String && TextDirections.TryParse(direction.GetString(), out TextDirection baseDirection))
             {
                 return new Literal(Utf8String.FromString(lexical), RdfDirLangString, tag, baseDirection);
             }
@@ -263,7 +263,7 @@ public static class SparqlResultsJsonReader
             return new Literal(Utf8String.FromString(lexical), RdfLangString, tag);
         }
 
-        if(value.TryGetProperty("datatype", out JsonElement datatype) && datatype.ValueKind == JsonValueKind.String)
+        if(value.TryGetProperty(SparqlResultsJsonNames.Datatype, out JsonElement datatype) && datatype.ValueKind == JsonValueKind.String)
         {
             return new Literal(Utf8String.FromString(lexical), new NamedNode(Utf8String.FromString(datatype.GetString()!)));
         }

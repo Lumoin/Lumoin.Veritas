@@ -24,6 +24,8 @@ internal sealed class SparqlResultsXmlWriterTests
 
     private static Literal Lang(string value, string language) => new(Utf8String.FromString(value), new NamedNode(Vocabulary.Rdf.LangString), Utf8String.FromString(language));
 
+    private static Literal DirLang(string value, string language, TextDirection direction) => new(Utf8String.FromString(value), new NamedNode(Vocabulary.Rdf.DirLangString), Utf8String.FromString(language), direction);
+
     private static SparqlBinding Bind(string variable, RdfTerm value) => new(new SparqlVariable(Utf8String.FromString(variable)), value);
 
     /// <summary>A SELECT result with every binding value form round-trips through write then read.</summary>
@@ -45,6 +47,24 @@ internal sealed class SparqlResultsXmlWriterTests
         SparqlResultSet roundTrip = SparqlResultsXmlReader.Read(SparqlResultsXmlWriter.WriteToUtf8String(original).Memory);
 
         Assert.IsTrue(SparqlResultComparer.AreEquivalent(original, roundTrip, ordered: true));
+    }
+
+    /// <summary>A directional language-tagged literal (RDF 1.2) writes <c>its:dir</c> alongside <c>xml:lang</c> and round-trips both the language tag and the base direction.</summary>
+    [TestMethod]
+    public void DirectionalLanguageLiteralRoundTrips()
+    {
+        SparqlResultSet original = SparqlResultSet.ForSelect(
+            [Utf8String.FromString("d")],
+            [new SparqlSolution([Bind("d", DirLang("قطة", "ar", TextDirection.Rtl))])]);
+
+        string xml = SparqlResultsXmlWriter.WriteToUtf8String(original).ToString();
+        Assert.Contains("xml:lang=\"ar\"", xml);
+        Assert.Contains("its:dir=\"rtl\"", xml);
+
+        SparqlResultSet roundTrip = SparqlResultsXmlReader.Read(SparqlResultsXmlWriter.WriteToUtf8String(original).Memory);
+        Literal read = (Literal)roundTrip.Solutions[0].Bindings[0].Value;
+        Assert.AreEqual("ar", read.Language?.ToString());
+        Assert.AreEqual(TextDirection.Rtl, read.BaseDirection);
     }
 
     /// <summary>An ASK result writes the boolean element and round-trips.</summary>

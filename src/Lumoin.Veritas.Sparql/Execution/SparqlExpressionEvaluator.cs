@@ -41,33 +41,6 @@ public static class SparqlExpressionEvaluator
 {
     private const string XsdNamespace = "http://www.w3.org/2001/XMLSchema#";
 
-    /// <summary>The <c>xsd:boolean</c> datatype IRI.</summary>
-    private static Utf8String XsdBoolean { get; } = Utf8String.FromString(XsdNamespace + "boolean");
-
-    /// <summary>The <c>xsd:string</c> datatype IRI.</summary>
-    private static Utf8String XsdString { get; } = Utf8String.FromString(XsdNamespace + "string");
-
-    /// <summary>The <c>xsd:integer</c> datatype IRI.</summary>
-    private static Utf8String XsdInteger { get; } = Utf8String.FromString(XsdNamespace + "integer");
-
-    /// <summary>The <c>xsd:double</c> datatype IRI.</summary>
-    private static Utf8String XsdDouble { get; } = Utf8String.FromString(XsdNamespace + "double");
-
-    /// <summary>The <c>rdf:langString</c> datatype IRI (the datatype of a language-tagged literal).</summary>
-    private static Utf8String RdfLangString { get; } = Utf8String.FromString("http://www.w3.org/1999/02/22-rdf-syntax-ns#langString");
-
-    /// <summary>The <c>rdf:dirLangString</c> datatype IRI (the datatype of a directional language-tagged literal, RDF 1.2).</summary>
-    private static Utf8String RdfDirLangString { get; } = Utf8String.FromString("http://www.w3.org/1999/02/22-rdf-syntax-ns#dirLangString");
-
-    /// <summary>The <c>xsd:dateTime</c> datatype IRI (the argument type of the date-time accessor functions).</summary>
-    private static Utf8String XsdDateTime { get; } = Utf8String.FromString(XsdNamespace + "dateTime");
-
-    /// <summary>The <c>xsd:decimal</c> datatype IRI (the result type of <c>SECONDS</c>).</summary>
-    private static Utf8String XsdDecimal { get; } = Utf8String.FromString(XsdNamespace + "decimal");
-
-    /// <summary>The <c>xsd:dayTimeDuration</c> datatype IRI (the result type of <c>TIMEZONE</c>).</summary>
-    private static Utf8String XsdDayTimeDuration { get; } = Utf8String.FromString(XsdNamespace + "dayTimeDuration");
-
     /// <summary>The integral numeric datatype IRIs (a literal of one of these is treated as an integer for arithmetic result typing).</summary>
     private static HashSet<string> IntegralDatatypes { get; } = new()
     {
@@ -95,10 +68,10 @@ public static class SparqlExpressionEvaluator
     };
 
     /// <summary>The boolean literal <c>"true"^^xsd:boolean</c>.</summary>
-    private static Literal True { get; } = new(Utf8String.FromString("true"), new NamedNode(XsdBoolean));
+    private static Literal True { get; } = new(Utf8String.FromString("true"), new NamedNode(Vocabulary.Xsd.Boolean));
 
     /// <summary>The boolean literal <c>"false"^^xsd:boolean</c>.</summary>
-    private static Literal False { get; } = new(Utf8String.FromString("false"), new NamedNode(XsdBoolean));
+    private static Literal False { get; } = new(Utf8String.FromString("false"), new NamedNode(Vocabulary.Xsd.Boolean));
 
     /// <summary>The empty UTF-8 lexical form (the <c>LANG</c> of a non-language literal, the failure value of a string lookup).</summary>
     private static Utf8String EmptyText { get; } = Utf8String.FromString(string.Empty);
@@ -411,7 +384,7 @@ public static class SparqlExpressionEvaluator
             AppendBytes(output, LexicalForm(values[i]).Span);
         }
 
-        return new Literal(new Utf8String(output.ToArray()), new NamedNode(XsdString));
+        return new Literal(new Utf8String(output.ToArray()), new NamedNode(Vocabulary.Xsd.String));
     }
 
     /// <summary>Appends a byte span to a byte list.</summary>
@@ -672,7 +645,7 @@ public static class SparqlExpressionEvaluator
             BuiltInFunction.Subject => TripleComponent(arguments[0], static triple => triple.Subject),
             BuiltInFunction.Predicate => TripleComponent(arguments[0], static triple => triple.Predicate),
             BuiltInFunction.Object => TripleComponent(arguments[0], static triple => triple.Object),
-            BuiltInFunction.Now => ExpressionValue.Of(new Literal(Utf8String.FromString(context.Now.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffffK", CultureInfo.InvariantCulture)), new NamedNode(XsdDateTime))),
+            BuiltInFunction.Now => ExpressionValue.Of(new Literal(Utf8String.FromString(context.Now.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffffK", CultureInfo.InvariantCulture)), new NamedNode(Vocabulary.Xsd.DateTime))),
             BuiltInFunction.Rand => Double(context.Randomness(new RandomnessRequest(RandomnessKind.UniformDouble, default, 0, default)).Double),
             BuiltInFunction.Uuid => ExpressionValue.Of(new NamedNode(Utf8String.FromString("urn:uuid:" + context.Randomness(new RandomnessRequest(RandomnessKind.Uuid, default, 0, default)).Uuid.ToString("D", CultureInfo.InvariantCulture)))),
             BuiltInFunction.StrUuid => StringLiteral(Utf8String.FromString(context.Randomness(new RandomnessRequest(RandomnessKind.Uuid, default, 0, default)).Uuid.ToString("D", CultureInfo.InvariantCulture))),
@@ -1094,7 +1067,7 @@ public static class SparqlExpressionEvaluator
         return argument.Term switch
         {
             NamedNode named => ExpressionValue.Of(named),
-            Literal literal when literal.Language is null && literal.Datatype.Iri == XsdString => ResolveIri(literal.Value, context.BaseIri),
+            Literal literal when literal.Language is null && literal.Datatype.Iri == Vocabulary.Xsd.String => ResolveIri(literal.Value, context.BaseIri),
             _ => ExpressionValue.Error
         };
     }
@@ -1129,7 +1102,7 @@ public static class SparqlExpressionEvaluator
     private static ExpressionValue StrDt(ExpressionValue[] arguments)
     {
         if(arguments[0].IsError || arguments[1].IsError
-            || arguments[0].Term is not Literal lexical || lexical.Language is not null || lexical.Datatype.Iri != XsdString
+            || arguments[0].Term is not Literal lexical || lexical.Language is not null || lexical.Datatype.Iri != Vocabulary.Xsd.String
             || arguments[1].Term is not NamedNode datatype)
         {
             return ExpressionValue.Error;
@@ -1148,13 +1121,13 @@ public static class SparqlExpressionEvaluator
     private static ExpressionValue StrLang(ExpressionValue[] arguments)
     {
         if(arguments[0].IsError || arguments[1].IsError
-            || arguments[0].Term is not Literal lexical || lexical.Language is not null || lexical.Datatype.Iri != XsdString
-            || arguments[1].Term is not Literal tag || tag.Language is not null || tag.Datatype.Iri != XsdString || tag.Value.Span.Length == 0)
+            || arguments[0].Term is not Literal lexical || lexical.Language is not null || lexical.Datatype.Iri != Vocabulary.Xsd.String
+            || arguments[1].Term is not Literal tag || tag.Language is not null || tag.Datatype.Iri != Vocabulary.Xsd.String || tag.Value.Span.Length == 0)
         {
             return ExpressionValue.Error;
         }
 
-        return ExpressionValue.Of(new Literal(lexical.Value, new NamedNode(RdfLangString), tag.Value));
+        return ExpressionValue.Of(new Literal(lexical.Value, new NamedNode(Vocabulary.Rdf.LangString), tag.Value));
     }
 
     /// <summary>
@@ -1168,15 +1141,15 @@ public static class SparqlExpressionEvaluator
     private static ExpressionValue StrLangDir(ExpressionValue[] arguments)
     {
         if(arguments[0].IsError || arguments[1].IsError || arguments[2].IsError
-            || arguments[0].Term is not Literal lexical || lexical.Language is not null || lexical.Datatype.Iri != XsdString
-            || arguments[1].Term is not Literal tag || tag.Language is not null || tag.Datatype.Iri != XsdString || tag.Value.Span.Length == 0
-            || arguments[2].Term is not Literal direction || direction.Language is not null || direction.Datatype.Iri != XsdString
+            || arguments[0].Term is not Literal lexical || lexical.Language is not null || lexical.Datatype.Iri != Vocabulary.Xsd.String
+            || arguments[1].Term is not Literal tag || tag.Language is not null || tag.Datatype.Iri != Vocabulary.Xsd.String || tag.Value.Span.Length == 0
+            || arguments[2].Term is not Literal direction || direction.Language is not null || direction.Datatype.Iri != Vocabulary.Xsd.String
             || !TextDirections.TryParse(direction.Value.Span, out TextDirection baseDirection))
         {
             return ExpressionValue.Error;
         }
 
-        return ExpressionValue.Of(new Literal(lexical.Value, new NamedNode(RdfDirLangString), tag.Value, baseDirection));
+        return ExpressionValue.Of(new Literal(lexical.Value, new NamedNode(Vocabulary.Rdf.DirLangString), tag.Value, baseDirection));
     }
 
     /// <summary>Returns the <c>LANGDIR</c> string form of an optional base direction: the canonical <c>"ltr"</c>/<c>"rtl"</c> token, or the empty string when absent.</summary>
@@ -1198,7 +1171,7 @@ public static class SparqlExpressionEvaluator
     /// <returns>The lowercase hex digest as an <c>xsd:string</c>, or an error.</returns>
     private static ExpressionValue Hash(ExpressionValue argument, SparqlHashAlgorithm algorithm, SparqlExpressionContext context)
     {
-        if(argument.IsError || argument.Term is not Literal literal || literal.Language is not null || literal.Datatype.Iri != XsdString)
+        if(argument.IsError || argument.Term is not Literal literal || literal.Language is not null || literal.Datatype.Iri != Vocabulary.Xsd.String)
         {
             return ExpressionValue.Error;
         }
@@ -1228,7 +1201,7 @@ public static class SparqlExpressionEvaluator
         decimal seconds = value.Second + (value.Millisecond / 1000m);
         string lexical = seconds.ToString(value.Millisecond == 0 ? "0" : "0.###", CultureInfo.InvariantCulture);
 
-        return ExpressionValue.Of(new Literal(Utf8String.FromString(lexical), new NamedNode(XsdDecimal)));
+        return ExpressionValue.Of(new Literal(Utf8String.FromString(lexical), new NamedNode(Vocabulary.Xsd.Decimal)));
     }
 
     /// <summary>Evaluates <c>TIMEZONE</c> (§17.4.5.7): the timezone of an <c>xsd:dateTime</c> as an <c>xsd:dayTimeDuration</c>; a value with no timezone (or a non-dateTime argument) errs.</summary>
@@ -1241,7 +1214,7 @@ public static class SparqlExpressionEvaluator
             return ExpressionValue.Error;
         }
 
-        return ExpressionValue.Of(new Literal(Utf8String.FromString(FormatDayTimeDuration(value.Offset)), new NamedNode(XsdDayTimeDuration)));
+        return ExpressionValue.Of(new Literal(Utf8String.FromString(FormatDayTimeDuration(value.Offset)), new NamedNode(Vocabulary.Xsd.DayTimeDuration)));
     }
 
     /// <summary>Evaluates <c>TZ</c> (§17.4.5.8): the timezone of an <c>xsd:dateTime</c> as a simple literal (<c>"Z"</c>, <c>"±hh:mm"</c>, or <c>""</c> when there is none); a non-dateTime argument errs.</summary>
@@ -1271,7 +1244,7 @@ public static class SparqlExpressionEvaluator
     {
         value = default;
         hasTimezone = false;
-        if(argument.IsError || argument.Term is not Literal literal || literal.Datatype.Iri != XsdDateTime)
+        if(argument.IsError || argument.Term is not Literal literal || literal.Datatype.Iri != Vocabulary.Xsd.DateTime)
         {
             return false;
         }
@@ -1370,7 +1343,7 @@ public static class SparqlExpressionEvaluator
     /// <returns><see langword="true"/> when the argument is a string-valued literal.</returns>
     private static bool TryGetStringArgument(ExpressionValue argument, out Utf8String text, out Utf8String? language, out TextDirection? direction)
     {
-        if(!argument.IsError && argument.Term is Literal literal && (literal.Datatype.Iri == XsdString || literal.Language is not null))
+        if(!argument.IsError && argument.Term is Literal literal && (literal.Datatype.Iri == Vocabulary.Xsd.String || literal.Language is not null))
         {
             text = literal.Value;
             language = literal.Language;
@@ -1393,7 +1366,7 @@ public static class SparqlExpressionEvaluator
     private static ExpressionValue StringLiteral(Utf8String value, Utf8String? language)
     {
         return language is Utf8String tag
-            ? ExpressionValue.Of(new Literal(value, new NamedNode(RdfLangString), tag))
+            ? ExpressionValue.Of(new Literal(value, new NamedNode(Vocabulary.Rdf.LangString), tag))
             : StringLiteral(value);
     }
 
@@ -1405,7 +1378,7 @@ public static class SparqlExpressionEvaluator
     private static ExpressionValue StringLiteral(Utf8String value, Utf8String? language, TextDirection? direction)
     {
         return language is Utf8String tag && direction is TextDirection baseDirection
-            ? ExpressionValue.Of(new Literal(value, new NamedNode(RdfDirLangString), tag, baseDirection))
+            ? ExpressionValue.Of(new Literal(value, new NamedNode(Vocabulary.Rdf.DirLangString), tag, baseDirection))
             : StringLiteral(value, language);
     }
 
@@ -1522,7 +1495,7 @@ public static class SparqlExpressionEvaluator
     /// <returns>The string-literal value.</returns>
     private static ExpressionValue StringLiteral(Utf8String value)
     {
-        return ExpressionValue.Of(new Literal(value, new NamedNode(XsdString)));
+        return ExpressionValue.Of(new Literal(value, new NamedNode(Vocabulary.Xsd.String)));
     }
 
     /// <summary>Extracts the UTF-8 lexical form of an argument that is an <c>xsd:string</c> or a language-tagged literal; fails for an error or a non-string term.</summary>
@@ -1531,7 +1504,7 @@ public static class SparqlExpressionEvaluator
     /// <returns><see langword="true"/> when the argument is a string-valued literal.</returns>
     private static bool TryGetLexicalText(ExpressionValue argument, out Utf8String value)
     {
-        if(!argument.IsError && argument.Term is Literal literal && (literal.Datatype.Iri == XsdString || literal.Language is not null))
+        if(!argument.IsError && argument.Term is Literal literal && (literal.Datatype.Iri == Vocabulary.Xsd.String || literal.Language is not null))
         {
             value = literal.Value;
 
@@ -1912,7 +1885,7 @@ public static class SparqlExpressionEvaluator
     /// <returns><see langword="true"/> when the term is an <c>xsd:boolean</c> literal.</returns>
     private static bool TryGetBoolean(RdfTerm term, out bool value)
     {
-        if(term is Literal literal && literal.Datatype.Iri == XsdBoolean)
+        if(term is Literal literal && literal.Datatype.Iri == Vocabulary.Xsd.Boolean)
         {
             string lexical = literal.Value.ToString();
             if(lexical is "true" or "1")
@@ -1985,7 +1958,7 @@ public static class SparqlExpressionEvaluator
     /// <returns><see langword="true"/> when the term is an <c>xsd:string</c> literal.</returns>
     private static bool TryGetText(RdfTerm term, out Utf8String value)
     {
-        if(term is Literal literal && literal.Language is null && literal.Datatype.Iri == XsdString)
+        if(term is Literal literal && literal.Language is null && literal.Datatype.Iri == Vocabulary.Xsd.String)
         {
             value = literal.Value;
 
