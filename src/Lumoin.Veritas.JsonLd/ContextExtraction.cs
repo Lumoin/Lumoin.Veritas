@@ -122,7 +122,15 @@ public static class ContextExtraction
             {
                 case "@version":
                 {
-                    //Validated downstream; no field needed on the entry.
+                    //Only JSON-LD 1.1 is modelled; @version must be the number 1.1.
+                    if(entry.Value.Kind != JsonLdNodeKind.Number
+                        || !string.Equals(entry.Value.GetRawNumber(), "1.1", StringComparison.Ordinal))
+                    {
+                        throw new JsonLdProcessingException(
+                            JsonLdErrorCode.InvalidVersionValue,
+                            "@version must be the number 1.1.");
+                    }
+
                     break;
                 }
                 case "@base":

@@ -469,6 +469,14 @@ public static partial class ContextProcessing
         int depth,
         CancellationToken cancellationToken)
     {
+        //A term definition for the empty string is not allowed.
+        if(termName.Length == 0)
+        {
+            throw new LinkedDataProcessingException(
+                "invalid term definition",
+                "A term definition for the empty string is not allowed.");
+        }
+
         //If already defined (or being defined), skip / handle re-expansion.
         if(defined.TryGetValue(termName, out bool isComplete))
         {
@@ -615,6 +623,14 @@ public static partial class ContextProcessing
             //Handle @id resolution.
             if(value.Iri is not null)
             {
+                //@context may not be aliased by a term.
+                if(string.Equals(value.Iri, "@context", StringComparison.Ordinal))
+                {
+                    throw new LinkedDataProcessingException(
+                        "invalid keyword alias",
+                        string.Create(CultureInfo.InvariantCulture, $"Term '{termName}' may not alias the keyword @context."));
+                }
+
                 //Resolve a compact-IRI @id's prefix dependency first.
                 activeContext = await EnsurePrefixDefinedAsync(
                     activeContext, localContext, value.Iri, baseUrl,
@@ -646,6 +662,17 @@ public static partial class ContextProcessing
             else
             {
                 termIriMapping = activeContext.ExpandIri(termName, vocab: true);
+
+                //A term with no @id and no colon must expand through a
+                //vocabulary mapping to an absolute IRI (or keyword); with no
+                //vocabulary mapping it has no valid IRI mapping at all.
+                if(termIriMapping is null
+                    || (!IriUtils.IsAbsoluteIri(termIriMapping) && !IriUtils.IsKeyword(termIriMapping)))
+                {
+                    throw new LinkedDataProcessingException(
+                        "invalid IRI mapping",
+                        string.Create(CultureInfo.InvariantCulture, $"Term '{termName}' has no @id and cannot be expanded to an IRI."));
+                }
             }
         }
 
@@ -662,6 +689,25 @@ public static partial class ContextProcessing
                 }
                 containerMapping.Add(container);
             }
+
+            //@list is exclusive: it may not be combined with any other
+            //container keyword.
+            if(containerMapping.Contains("@list") && containerMapping.Count > 1)
+            {
+                throw new LinkedDataProcessingException(
+                    "invalid container mapping",
+                    string.Create(CultureInfo.InvariantCulture, $"@container for term '{termName}' may not combine @list with another container keyword."));
+            }
+        }
+
+        //A property-valued @index requires an @index container and a
+        //non-keyword index property.
+        if(indexMapping is not null
+            && (!containerMapping.Contains("@index") || IriUtils.IsKeyword(indexMapping)))
+        {
+            throw new LinkedDataProcessingException(
+                "invalid term definition",
+                string.Create(CultureInfo.InvariantCulture, $"@index in term definition for '{termName}' requires an @index container and a non-keyword value."));
         }
 
         //@prefix - if explicitly set, validate. If keyword IRI, reject.

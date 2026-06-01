@@ -103,6 +103,12 @@ public enum JsonLdErrorCode
     /// <summary>A context-level <c>@import</c> value was not a string.</summary>
     InvalidImportValue,
 
+    /// <summary>A context <c>@version</c> value was not the number <c>1.1</c>.</summary>
+    InvalidVersionValue,
+
+    /// <summary>A term was defined as an alias of a keyword that may not be aliased (e.g. <c>@context</c>).</summary>
+    InvalidKeywordAlias,
+
     /// <summary>A context entry value was not a valid IRI, compact IRI, term, keyword, null, or an array of these.</summary>
     InvalidContextEntry,
 
