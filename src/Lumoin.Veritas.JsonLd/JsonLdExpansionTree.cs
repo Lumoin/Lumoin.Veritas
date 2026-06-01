@@ -287,7 +287,7 @@ public static class JsonLdExpansionTree
         //context may nullify or override the vocabulary), so that context is
         //preserved for the @type key below.
         LinkedDataContext typeExpansionContext = activeContext;
-        if(obj.TryGetProperty("@type", out JsonLdNode typeNode))
+        if(TryFindKeywordValue(obj, activeContext, "@type", out JsonLdNode typeNode))
         {
             LinkedDataContext beforeTypeScoped = activeContext;
             LinkedDataContext afterTypeScoped = await ApplyTypeScopedAsync(
@@ -1358,6 +1358,33 @@ public static class JsonLdExpansionTree
         await ExpandPropertiesIntoAsync(
             item, result, activeContext, typeExpansionContext, baseUrl, resolver, parser, cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Finds the value of the first property whose key expands to the given
+    /// keyword (directly or through a keyword alias). Used to locate an
+    /// aliased <c>@type</c> so its type-scoped contexts are applied.
+    /// </summary>
+    /// <param name="obj">The node object.</param>
+    /// <param name="activeContext">The context that expands the keys.</param>
+    /// <param name="keyword">The keyword to match (e.g. <c>@type</c>).</param>
+    /// <param name="value">On success, the matching property's value.</param>
+    /// <returns><see langword="true"/> when a matching key is found.</returns>
+    private static bool TryFindKeywordValue(JsonLdNode obj, LinkedDataContext activeContext, string keyword, out JsonLdNode value)
+    {
+        foreach(KeyValuePair<string, JsonLdNode> entry in obj.EnumerateObject())
+        {
+            if(string.Equals(activeContext.ExpandIri(entry.Key, vocab: true), keyword, StringComparison.Ordinal))
+            {
+                value = entry.Value;
+
+                return true;
+            }
+        }
+
+        value = default;
+
+        return false;
     }
 
     /// <summary>
