@@ -12,23 +12,27 @@ namespace Lumoin.Veritas.Sparql.Ast;
 /// <param name="Span">The source extent of the quad block (the braces and their contents).</param>
 /// <param name="DefaultTriples">The triples targeting the default graph.</param>
 /// <param name="GraphGroups">The <c>GRAPH g { … }</c> groups targeting named graphs.</param>
+/// <param name="DefaultStandaloneNodes">The default-graph standalone <c>TriplesNode</c> subjects (a blank-node property list, collection, or reified triple with no enclosing predicate); lowered to their own triples by the normaliser, then empty.</param>
 /// <remarks>SPARQL <c>Quads</c> / <c>QuadData</c> / <c>QuadPattern</c>. See <see href="https://www.w3.org/TR/sparql12-update/#rQuads">SPARQL 1.2 Update §19.8 [Quads]</see>.</remarks>
 [DebuggerDisplay("Quads default={DefaultTriples.Count} groups={GraphGroups.Count}")]
 public sealed record Quads(
     SourceSpan Span,
     IReadOnlyList<TriplePattern> DefaultTriples,
-    IReadOnlyList<QuadsGraphGroup> GraphGroups);
+    IReadOnlyList<QuadsGraphGroup> GraphGroups,
+    IReadOnlyList<TriplePatternTerm> DefaultStandaloneNodes);
 
 /// <summary>One <c>GRAPH g { … }</c> group inside a <see cref="Quads"/> block.</summary>
 /// <param name="Span">The source extent of the group.</param>
 /// <param name="Graph">The graph designator (an IRI for data; an IRI or variable for a template).</param>
 /// <param name="Triples">The group's triples.</param>
+/// <param name="StandaloneNodes">The group's standalone <c>TriplesNode</c> subjects (no enclosing predicate); lowered to their own triples by the normaliser, then empty.</param>
 /// <remarks>SPARQL <c>QuadsNotTriples</c>. See <see href="https://www.w3.org/TR/sparql12-update/#rQuadsNotTriples">SPARQL 1.2 Update §19.8 [QuadsNotTriples]</see>.</remarks>
 [DebuggerDisplay("GRAPH group triples={Triples.Count}")]
 public sealed record QuadsGraphGroup(
     SourceSpan Span,
     GraphTerm Graph,
-    IReadOnlyList<TriplePattern> Triples);
+    IReadOnlyList<TriplePattern> Triples,
+    IReadOnlyList<TriplePatternTerm> StandaloneNodes);
 
 /// <summary>
 /// A graph reference target for the graph-management operations: a specific <c>GRAPH iri</c>, the <c>DEFAULT</c>

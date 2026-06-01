@@ -603,7 +603,8 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private StepResult RequestConstructTemplate(ParseFrame frame, object? incoming)
     {
-        frame.Form = new ConstructQuery(CombineSpans(frame.VerbSpanStart, lastConsumedSpan), Pop<List<TriplePattern>>(incoming));
+        BasicGraphPatternBlock template = Pop<BasicGraphPatternBlock>(incoming);
+        frame.Form = new ConstructQuery(CombineSpans(frame.VerbSpanStart, lastConsumedSpan), template.Triples, template.StandaloneNodes);
         frame.Stage = 3;
 
         return StepResult.Continue();
@@ -765,7 +766,8 @@ public sealed class SparqlParser
         //In the CONSTRUCT WHERE short form the WHERE triples double as the template.
         if(frame.IsConstructShort)
         {
-            frame.Form = new ConstructQuery(CombineSpans(frame.VerbSpanStart, pattern.Span), ExtractTemplateTriples(pattern));
+            (List<TriplePattern> templateTriples, List<TriplePatternTerm> templateStandaloneNodes) = ExtractTemplateTriples(pattern);
+            frame.Form = new ConstructQuery(CombineSpans(frame.VerbSpanStart, pattern.Span), templateTriples, templateStandaloneNodes);
         }
 
         frame.Stage = 6;
@@ -774,14 +776,15 @@ public sealed class SparqlParser
     }
 
     /// <summary>
-    /// Collects the triples of a pattern's basic graph pattern blocks, for the CONSTRUCT WHERE short
-    /// form whose WHERE triples are also the construct template.
+    /// Collects the triples and standalone nodes of a pattern's basic graph pattern blocks, for the
+    /// CONSTRUCT WHERE short form whose WHERE triples are also the construct template.
     /// </summary>
     /// <param name="pattern">The WHERE pattern.</param>
-    /// <returns>The flattened template triples.</returns>
-    private static List<TriplePattern> ExtractTemplateTriples(GraphPattern pattern)
+    /// <returns>The flattened template triples and standalone nodes.</returns>
+    private static (List<TriplePattern> Triples, List<TriplePatternTerm> StandaloneNodes) ExtractTemplateTriples(GraphPattern pattern)
     {
         List<TriplePattern> triples = [];
+        List<TriplePatternTerm> standaloneNodes = [];
 
         if(pattern is GroupGraphPattern group)
         {
@@ -790,11 +793,12 @@ public sealed class SparqlParser
                 if(member is BasicGraphPatternBlock block)
                 {
                     triples.AddRange(block.Triples);
+                    standaloneNodes.AddRange(block.StandaloneNodes);
                 }
             }
         }
 
-        return triples;
+        return (triples, standaloneNodes);
     }
 
     /// <summary>Pushes the <c>GROUP BY</c> clause when present, otherwise advances to the having stage.</summary>
@@ -1395,20 +1399,25 @@ public sealed class SparqlParser
             Advance();
             frame.TripleAccumulator = [];
             frame.QuadsGroups = [];
+            frame.PendingStandaloneNodes = [];
             frame.Stage = 1;
+        }
+        else if(incoming is BasicGraphPatternBlock graphGroup)
+        {
+            //A GRAPH group body (parsed as a template block) carries its own triples and standalone nodes.
+            frame.QuadsGroups!.Add(new QuadsGraphGroup(CombineSpans(frame.VerbSpanStart, lastConsumedSpan), frame.GraphDesignator!, graphGroup.Triples, graphGroup.StandaloneNodes));
+            frame.AwaitingGraphGroup = false;
+            ConsumeOptionalDot();
         }
         else if(incoming is List<TriplePattern> triples)
         {
-            if(frame.AwaitingGraphGroup)
-            {
-                frame.QuadsGroups!.Add(new QuadsGraphGroup(CombineSpans(frame.VerbSpanStart, lastConsumedSpan), frame.GraphDesignator!, triples));
-                frame.AwaitingGraphGroup = false;
-            }
-            else
-            {
-                frame.TripleAccumulator!.AddRange(triples);
-            }
-
+            frame.TripleAccumulator!.AddRange(triples);
+            ConsumeOptionalDot();
+        }
+        else if(incoming is TriplePatternTerm standaloneNode)
+        {
+            //A standalone TriplesNode targeting the default graph (e.g. `INSERT DATA { [ :p :o ] }`).
+            frame.PendingStandaloneNodes!.Add(standaloneNode);
             ConsumeOptionalDot();
         }
 
@@ -1416,14 +1425,14 @@ public sealed class SparqlParser
         {
             Advance();
 
-            return StepResult.Done(new Quads(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.TripleAccumulator!, frame.QuadsGroups!));
+            return StepResult.Done(new Quads(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.TripleAccumulator!, frame.QuadsGroups!, frame.PendingStandaloneNodes!));
         }
 
         if(Current.Kind == SparqlTokenKind.EndOfInput)
         {
             _ = ReportRecoverable(WellKnownDiagnostics.Sparql.UnclosedGroupGraphPattern, Current.Span, "Expected '}' to close the quad block.");
 
-            return StepResult.Done(new Quads(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.TripleAccumulator!, frame.QuadsGroups!));
+            return StepResult.Done(new Quads(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.TripleAccumulator!, frame.QuadsGroups!, frame.PendingStandaloneNodes!));
         }
 
         if(Current.Kind == SparqlTokenKind.GraphKeyword)
@@ -1729,7 +1738,7 @@ public sealed class SparqlParser
     /// <returns>An empty <see cref="Quads"/>.</returns>
     private Quads EmptyQuads()
     {
-        return new Quads(EmptySpanAt(Current.Span), [], []);
+        return new Quads(EmptySpanAt(Current.Span), [], [], []);
     }
 
     /// <summary>
@@ -5050,11 +5059,13 @@ public sealed class SparqlParser
 
     /// <summary>
     /// Advances a CONSTRUCT template <c>{ triples }</c>: a triples-only block (collection and
-    /// blank-node-list sugar allowed) whose result is the flat list of template triple patterns.
+    /// blank-node-list sugar allowed, including a standalone <c>TriplesNode</c> with no enclosing
+    /// predicate) whose result is a <see cref="BasicGraphPatternBlock"/> of the template triples and any
+    /// standalone nodes.
     /// </summary>
     /// <param name="frame">The construct-template frame.</param>
-    /// <param name="incoming">A popped triple run on resume.</param>
-    /// <returns>The instruction for the driver; the popped result is the template triple list.</returns>
+    /// <param name="incoming">A popped triple run, or a standalone node term, on resume.</param>
+    /// <returns>The instruction for the driver; the popped result is a <see cref="BasicGraphPatternBlock"/>.</returns>
     private StepResult StepConstructTemplate(ParseFrame frame, object? incoming)
     {
         if(frame.Stage == 0)
@@ -5062,6 +5073,7 @@ public sealed class SparqlParser
             //The caller ensured '{' is current.
             Advance();
             frame.TripleAccumulator = [];
+            frame.PendingStandaloneNodes = [];
             frame.Stage = 1;
         }
         else if(incoming is List<TriplePattern> triples)
@@ -5069,12 +5081,18 @@ public sealed class SparqlParser
             frame.TripleAccumulator!.AddRange(triples);
             ConsumeOptionalDot();
         }
+        else if(incoming is TriplePatternTerm standaloneNode)
+        {
+            //A standalone TriplesNode (e.g. `[ :p :o ]`) carries its own triples; the normaliser lowers it.
+            frame.PendingStandaloneNodes!.Add(standaloneNode);
+            ConsumeOptionalDot();
+        }
 
         if(Current.Kind == SparqlTokenKind.CloseBrace)
         {
             Advance();
 
-            return StepResult.Done(frame.TripleAccumulator!);
+            return StepResult.Done(ConstructTemplateBlock(frame));
         }
 
         //An unclosed template at end of input is finalised with the triples gathered so far plus a
@@ -5083,7 +5101,7 @@ public sealed class SparqlParser
         {
             _ = ReportRecoverable(WellKnownDiagnostics.Sparql.UnclosedGroupGraphPattern, Current.Span, "Expected '}' to close the CONSTRUCT template.");
 
-            return StepResult.Done(frame.TripleAccumulator!);
+            return StepResult.Done(ConstructTemplateBlock(frame));
         }
 
         if(CanStartTriple(Current.Kind))
@@ -5110,6 +5128,12 @@ public sealed class SparqlParser
 
         return StepResult.Continue();
     }
+
+    /// <summary>Builds the <see cref="BasicGraphPatternBlock"/> result of a CONSTRUCT-template / GRAPH-group frame from its accumulated triples and standalone nodes.</summary>
+    /// <param name="frame">The construct-template frame.</param>
+    /// <returns>The block carrying the parsed triples and standalone nodes.</returns>
+    private BasicGraphPatternBlock ConstructTemplateBlock(ParseFrame frame)
+        => new(CombineSpans(frame.StartSpan, lastConsumedSpan), frame.TripleAccumulator!, frame.PendingStandaloneNodes!);
 
     /// <summary>
     /// Advances a <c>VALUES</c> data block in either the one-variable form

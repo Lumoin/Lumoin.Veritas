@@ -118,6 +118,22 @@ internal sealed class SparqlNormalizerTests
         Assert.AreEqual(RdfNil, IriValue(SingleByPredicate(triples, RdfRest).Object));
     }
 
+    /// <summary>A standalone <c>TriplesNode</c> in a CONSTRUCT template lowers to its own template triples.</summary>
+    [TestMethod]
+    public void LowersStandaloneNodeInConstructTemplate()
+    {
+        using Utf8StringPool pool = new();
+        SparqlLexer lexer = new(Encoding.UTF8.GetBytes("PREFIX : <http://example.org/> CONSTRUCT { [ :a :b ] } WHERE { ?s ?p ?o }"), pool);
+        SparqlParser parser = new(lexer.Tokenize(), pool);
+        SparqlQuery query = (SparqlQuery)new SparqlNormalizer(pool).Normalize(parser.ParseRequest());
+        ConstructQuery construct = (ConstructQuery)query.Form;
+
+        Assert.HasCount(1, construct.Template);
+        Assert.AreEqual($"{Ex}a", IriValue(construct.Template[0].Predicate));
+        Assert.AreEqual($"{Ex}b", IriValue(construct.Template[0].Object));
+        Assert.IsEmpty(construct.TemplateStandaloneNodes);
+    }
+
     /// <summary>By default a reified triple lowers to only the <c>rdf:reifies</c> reification triple; the inner triple is NOT asserted.</summary>
     [TestMethod]
     public void LowersReifiedTripleWithoutAssertingInnerTriple()

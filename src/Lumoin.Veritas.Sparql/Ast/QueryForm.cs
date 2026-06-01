@@ -34,9 +34,10 @@ public sealed record SelectQuery(
 /// <summary>A <c>CONSTRUCT</c> query head carrying the graph template.</summary>
 /// <param name="Span">The source extent of the CONSTRUCT head.</param>
 /// <param name="Template">The template triples instantiated per solution.</param>
+/// <param name="TemplateStandaloneNodes">The template's standalone <c>TriplesNode</c> subjects (a blank-node property list, collection, or reified triple with no enclosing predicate); lowered to their own triples by the normaliser, then empty.</param>
 /// <remarks>SPARQL <c>ConstructQuery</c> / <c>ConstructTemplate</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rConstructQuery">SPARQL 1.2 §19.8 [ConstructQuery]</see>.</remarks>
 [DebuggerDisplay("CONSTRUCT [{Template.Count}]")]
-public sealed record ConstructQuery(SourceSpan Span, IReadOnlyList<TriplePattern> Template) : QueryForm(Span);
+public sealed record ConstructQuery(SourceSpan Span, IReadOnlyList<TriplePattern> Template, IReadOnlyList<TriplePatternTerm> TemplateStandaloneNodes) : QueryForm(Span);
 
 /// <summary>An <c>ASK</c> query head. The boolean result comes from whether the pattern matches.</summary>
 /// <param name="Span">The source extent of the ASK head.</param>

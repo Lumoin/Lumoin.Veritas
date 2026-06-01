@@ -134,6 +134,35 @@ internal sealed class SparqlUpdateExecutorTests
     }
 
     [TestMethod]
+    public async Task InsertDataLowersStandaloneBlankNodePropertyList()
+    {
+        using Utf8StringPool pool = new();
+        MutableSparqlDataset dataset = await EmptyDatasetAsync().ConfigureAwait(false);
+
+        await ExecuteAsync(dataset, "INSERT DATA { [ <urn:p> <urn:o> ] }", pool).ConfigureAwait(false);
+
+        List<Quad> quads = DumpQuads(dataset);
+        Assert.HasCount(1, quads);
+        Assert.IsInstanceOfType<BlankNode>(quads[0].Subject);
+        Assert.AreEqual("urn:p", quads[0].Predicate.Iri.ToString());
+        Assert.AreEqual("urn:o", ((NamedNode)quads[0].Object).Iri.ToString());
+    }
+
+    [TestMethod]
+    public async Task InsertDataLowersStandaloneNodeInsideGraphGroup()
+    {
+        using Utf8StringPool pool = new();
+        MutableSparqlDataset dataset = await EmptyDatasetAsync().ConfigureAwait(false);
+
+        await ExecuteAsync(dataset, "INSERT DATA { GRAPH <urn:g> { [ <urn:p> <urn:o> ] } }", pool).ConfigureAwait(false);
+
+        List<Quad> quads = DumpQuads(dataset);
+        Assert.HasCount(1, quads);
+        Assert.IsInstanceOfType<BlankNode>(quads[0].Subject);
+        Assert.AreEqual("urn:g", ((NamedNode)quads[0].Graph!).Iri.ToString());
+    }
+
+    [TestMethod]
     public async Task ModifyDeletesAndInsertsPerSolution()
     {
         using Utf8StringPool pool = new();

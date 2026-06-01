@@ -115,10 +115,15 @@ public sealed class SparqlNormalizer
         List<QuadsGraphGroup> groups = new(quads.GraphGroups.Count);
         foreach(QuadsGraphGroup group in quads.GraphGroups)
         {
-            groups.Add(group with { Triples = NormalizeTemplate(group.Triples) });
+            groups.Add(group with { Triples = NormalizeTemplate(group.Triples, group.StandaloneNodes), StandaloneNodes = [] });
         }
 
-        return quads with { DefaultTriples = NormalizeTemplate(quads.DefaultTriples), GraphGroups = groups };
+        return quads with
+        {
+            DefaultTriples = NormalizeTemplate(quads.DefaultTriples, quads.DefaultStandaloneNodes),
+            GraphGroups = groups,
+            DefaultStandaloneNodes = []
+        };
     }
 
     /// <summary>Normalizes a query: its CONSTRUCT template (if any) and its WHERE pattern.</summary>
@@ -127,7 +132,7 @@ public sealed class SparqlNormalizer
     private SparqlQuery NormalizeQuery(SparqlQuery query)
     {
         QueryForm form = query.Form is ConstructQuery construct
-            ? new ConstructQuery(construct.Span, NormalizeTemplate(construct.Template))
+            ? new ConstructQuery(construct.Span, NormalizeTemplate(construct.Template, construct.TemplateStandaloneNodes), [])
             : query.Form;
 
         WhereClause where = query.Where with { Pattern = NormalizePattern(query.Where.Pattern) };
@@ -135,13 +140,14 @@ public sealed class SparqlNormalizer
         return query with { Form = form, Where = where };
     }
 
-    /// <summary>Lowers the triples of a CONSTRUCT template.</summary>
+    /// <summary>Lowers the triples and standalone nodes of a CONSTRUCT template or quad block to plain triple patterns.</summary>
     /// <param name="template">The template triples.</param>
+    /// <param name="standaloneNodes">The standalone <c>TriplesNode</c> subjects (no enclosing predicate) whose own triples are lowered into the result.</param>
     /// <returns>The flattened, lowered template triples.</returns>
-    private List<TriplePattern> NormalizeTemplate(IReadOnlyList<TriplePattern> template)
+    private List<TriplePattern> NormalizeTemplate(IReadOnlyList<TriplePattern> template, IReadOnlyList<TriplePatternTerm> standaloneNodes)
     {
         List<TriplePattern> result = [];
-        LowerTriples(template, [], result);
+        LowerTriples(template, standaloneNodes, result);
 
         return result;
     }
