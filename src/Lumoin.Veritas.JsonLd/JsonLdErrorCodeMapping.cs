@@ -19,6 +19,9 @@ internal static class JsonLdErrorCodeMapping
     public static string ToErrorString(JsonLdErrorCode code) => code switch
     {
         JsonLdErrorCode.InvalidBaseIri => "invalid base IRI",
+        JsonLdErrorCode.InvalidVocabMapping => "invalid vocab mapping",
+        JsonLdErrorCode.InvalidDefaultLanguage => "invalid default language",
+        JsonLdErrorCode.InvalidImportValue => "invalid @import value",
         JsonLdErrorCode.InvalidContextEntry => "invalid context entry",
         JsonLdErrorCode.InvalidContextNullification => "invalid context nullification",
         JsonLdErrorCode.InvalidBaseDirection => "invalid base direction",
@@ -47,6 +50,9 @@ internal static class JsonLdErrorCodeMapping
     public static JsonLdErrorCode FromErrorString(string errorCode) => errorCode switch
     {
         "invalid base IRI" => JsonLdErrorCode.InvalidBaseIri,
+        "invalid vocab mapping" => JsonLdErrorCode.InvalidVocabMapping,
+        "invalid default language" => JsonLdErrorCode.InvalidDefaultLanguage,
+        "invalid @import value" => JsonLdErrorCode.InvalidImportValue,
         "invalid context entry" => JsonLdErrorCode.InvalidContextEntry,
         "invalid context nullification" => JsonLdErrorCode.InvalidContextNullification,
         "invalid base direction" => JsonLdErrorCode.InvalidBaseDirection,

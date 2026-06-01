@@ -128,40 +128,40 @@ public static class ContextExtraction
                 case "@base":
                 {
                     hasBase = true;
-                    @base = entry.Value.Kind == JsonLdNodeKind.Null ? null : entry.Value.GetString();
+                    @base = RequireStringOrNull(entry.Value, JsonLdErrorCode.InvalidBaseIri, "@base");
                     break;
                 }
                 case "@vocab":
                 {
                     hasVocab = true;
-                    vocab = entry.Value.Kind == JsonLdNodeKind.Null ? null : entry.Value.GetString();
+                    vocab = RequireStringOrNull(entry.Value, JsonLdErrorCode.InvalidVocabMapping, "@vocab");
                     break;
                 }
                 case "@language":
                 {
                     hasLanguage = true;
-                    language = entry.Value.Kind == JsonLdNodeKind.Null ? null : entry.Value.GetString();
+                    language = RequireStringOrNull(entry.Value, JsonLdErrorCode.InvalidDefaultLanguage, "@language");
                     break;
                 }
                 case "@direction":
                 {
                     hasDirection = true;
-                    direction = entry.Value.Kind == JsonLdNodeKind.Null ? null : entry.Value.GetString();
+                    direction = RequireStringOrNull(entry.Value, JsonLdErrorCode.InvalidBaseDirection, "@direction");
                     break;
                 }
                 case "@propagate":
                 {
-                    propagate = entry.Value.GetBoolean();
+                    propagate = RequireBoolean(entry.Value, JsonLdErrorCode.InvalidPropagateValue, "@propagate");
                     break;
                 }
                 case "@protected":
                 {
-                    @protected = entry.Value.GetBoolean();
+                    @protected = RequireBoolean(entry.Value, JsonLdErrorCode.InvalidProtectedValue, "@protected");
                     break;
                 }
                 case "@import":
                 {
-                    import = entry.Value.GetString();
+                    import = RequireString(entry.Value, JsonLdErrorCode.InvalidImportValue, "@import");
                     break;
                 }
                 default:
@@ -251,19 +251,19 @@ public static class ContextExtraction
                     }
                     else
                     {
-                        iri = field.Value.GetString();
+                        iri = RequireString(field.Value, JsonLdErrorCode.InvalidIriMapping, "A term definition's @id");
                     }
                     break;
                 }
                 case "@type":
                 {
-                    type = field.Value.GetString();
+                    type = RequireString(field.Value, JsonLdErrorCode.InvalidTypeMappingTermDefinition, "A term definition's @type");
                     break;
                 }
                 case "@reverse":
                 {
                     reverse = true;
-                    reverseIri = field.Value.GetString();
+                    reverseIri = RequireString(field.Value, JsonLdErrorCode.InvalidIriMapping, "A term definition's @reverse");
                     break;
                 }
                 case "@container":
@@ -274,32 +274,32 @@ public static class ContextExtraction
                 case "@language":
                 {
                     hasLanguage = true;
-                    language = field.Value.Kind == JsonLdNodeKind.Null ? null : field.Value.GetString();
+                    language = RequireStringOrNull(field.Value, JsonLdErrorCode.InvalidLanguageMapping, "A term definition's @language");
                     break;
                 }
                 case "@direction":
                 {
-                    direction = field.Value.Kind == JsonLdNodeKind.Null ? null : field.Value.GetString();
+                    direction = RequireStringOrNull(field.Value, JsonLdErrorCode.InvalidBaseDirection, "A term definition's @direction");
                     break;
                 }
                 case "@protected":
                 {
-                    @protected = field.Value.GetBoolean();
+                    @protected = RequireBoolean(field.Value, JsonLdErrorCode.InvalidProtectedValue, "A term definition's @protected");
                     break;
                 }
                 case "@prefix":
                 {
-                    prefix = field.Value.GetBoolean();
+                    prefix = RequireBoolean(field.Value, JsonLdErrorCode.InvalidPrefixValue, "A term definition's @prefix");
                     break;
                 }
                 case "@nest":
                 {
-                    nest = field.Value.GetString();
+                    nest = RequireString(field.Value, JsonLdErrorCode.InvalidNestValue, "A term definition's @nest");
                     break;
                 }
                 case "@index":
                 {
-                    index = field.Value.GetString();
+                    index = RequireString(field.Value, JsonLdErrorCode.InvalidTermDefinition, "A term definition's @index");
                     break;
                 }
                 case "@context":
@@ -376,6 +376,39 @@ public static class ContextExtraction
         }
         return result;
     }
+
+    /// <summary>Reads a string-valued context member, throwing the given error when the value is not a JSON string.</summary>
+    /// <param name="node">The member value.</param>
+    /// <param name="errorCode">The error code to raise on a type mismatch.</param>
+    /// <param name="description">A human-readable name of the member, used in the error message.</param>
+    /// <returns>The string value.</returns>
+    private static string RequireString(JsonLdNode node, JsonLdErrorCode errorCode, string description)
+        => node.Kind == JsonLdNodeKind.String
+            ? node.GetString()
+            : throw new JsonLdProcessingException(errorCode, string.Create(CultureInfo.InvariantCulture, $"{description} must be a string."));
+
+    /// <summary>Reads a string-or-null context member (a JSON string, or <see langword="null"/> for an explicit JSON null), throwing otherwise.</summary>
+    /// <param name="node">The member value.</param>
+    /// <param name="errorCode">The error code to raise on a type mismatch.</param>
+    /// <param name="description">A human-readable name of the member, used in the error message.</param>
+    /// <returns>The string value, or <see langword="null"/> for a JSON null.</returns>
+    private static string? RequireStringOrNull(JsonLdNode node, JsonLdErrorCode errorCode, string description)
+        => node.Kind switch
+        {
+            JsonLdNodeKind.Null => null,
+            JsonLdNodeKind.String => node.GetString(),
+            _ => throw new JsonLdProcessingException(errorCode, string.Create(CultureInfo.InvariantCulture, $"{description} must be a string or null."))
+        };
+
+    /// <summary>Reads a boolean-valued context member, throwing the given error when the value is not a JSON boolean.</summary>
+    /// <param name="node">The member value.</param>
+    /// <param name="errorCode">The error code to raise on a type mismatch.</param>
+    /// <param name="description">A human-readable name of the member, used in the error message.</param>
+    /// <returns>The boolean value.</returns>
+    private static bool RequireBoolean(JsonLdNode node, JsonLdErrorCode errorCode, string description)
+        => node.Kind is JsonLdNodeKind.True or JsonLdNodeKind.False
+            ? node.GetBoolean()
+            : throw new JsonLdProcessingException(errorCode, string.Create(CultureInfo.InvariantCulture, $"{description} must be a boolean."));
 
     private static string MakeKey(ref int keyCounter, int depth, string label)
     {

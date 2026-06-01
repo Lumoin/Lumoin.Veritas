@@ -94,6 +94,15 @@ public enum JsonLdErrorCode
     /// <summary>A value of <c>@base</c> in a context was not a valid IRI or null.</summary>
     InvalidBaseIri,
 
+    /// <summary>A value of <c>@vocab</c> in a context was not a string, valid IRI, or null.</summary>
+    InvalidVocabMapping,
+
+    /// <summary>A context-level <c>@language</c> value was not a string or null.</summary>
+    InvalidDefaultLanguage,
+
+    /// <summary>A context-level <c>@import</c> value was not a string.</summary>
+    InvalidImportValue,
+
     /// <summary>A context entry value was not a valid IRI, compact IRI, term, keyword, null, or an array of these.</summary>
     InvalidContextEntry,
 
