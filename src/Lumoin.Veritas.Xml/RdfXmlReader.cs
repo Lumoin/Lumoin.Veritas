@@ -47,11 +47,18 @@ public static class RdfXmlReader
     /// <param name="source">The document bytes (UTF-8 / per the XML declaration).</param>
     /// <param name="diagnostics">The bag malformedness is recorded in.</param>
     /// <param name="baseIri">The base IRI relative references resolve against, or <see langword="null"/>.</param>
+    /// <param name="xmlLiteralCanonicalizer">
+    /// The strategy that canonicalizes <c>rdf:parseType="Literal"</c> content into the lexical form of an
+    /// <c>rdf:XMLLiteral</c>; defaults to <see cref="XmlLiteralCanonicalizers.DocumentOrder"/> (the RDF-toolkit
+    /// interop form). Supply <see cref="XmlLiteralCanonicalizers.Canonical"/> for strict Canonical XML 1.0.
+    /// </param>
     /// <returns>The parsed quads (the default graph; RDF/XML has no named graphs).</returns>
     /// <exception cref="ArgumentNullException"><paramref name="diagnostics"/> is <see langword="null"/>.</exception>
-    public static IReadOnlyList<Quad> Read(ReadOnlyMemory<byte> source, DiagnosticBag diagnostics, string? baseIri = null)
+    public static IReadOnlyList<Quad> Read(ReadOnlyMemory<byte> source, DiagnosticBag diagnostics, string? baseIri = null, XmlLiteralCanonicalizer? xmlLiteralCanonicalizer = null)
     {
         ArgumentNullException.ThrowIfNull(diagnostics);
+
+        XmlLiteralCanonicalizer canonicalizer = xmlLiteralCanonicalizer ?? XmlLiteralCanonicalizers.DocumentOrder;
 
         List<Quad> quads = [];
         XDocument document;
@@ -76,7 +83,7 @@ public static class RdfXmlReader
 
         try
         {
-            new Walker(quads, diagnostics).Walk(root, baseIri);
+            new Walker(quads, diagnostics, canonicalizer).Walk(root, baseIri);
         }
         catch(Exception exception) when(exception is UriFormatException or FormatException or ArgumentException or InvalidOperationException)
         {
@@ -98,11 +105,14 @@ public static class RdfXmlReader
     private readonly record struct WorkItem(bool ExpandNode, XElement Element, RdfTerm Subject, NamedNode? Predicate, string? Base, string? Lang);
 
     /// <summary>The explicit-stack walker that emits quads from the element tree.</summary>
-    private sealed class Walker(List<Quad> quads, DiagnosticBag diagnostics)
+    private sealed class Walker(List<Quad> quads, DiagnosticBag diagnostics, XmlLiteralCanonicalizer xmlLiteralCanonicalizer)
     {
         private List<Quad> Quads { get; } = quads;
 
         private DiagnosticBag Diagnostics { get; } = diagnostics;
+
+        /// <summary>The strategy that canonicalizes <c>rdf:parseType="Literal"</c> content into an XML literal's lexical form.</summary>
+        private XmlLiteralCanonicalizer CanonicalizeXmlLiteral { get; } = xmlLiteralCanonicalizer;
 
         /// <summary>The set of rdf:ID-derived IRIs already seen, used to reject a duplicate rdf:ID relative to one base.</summary>
         private HashSet<string> IssuedIds { get; } = new(StringComparer.Ordinal);
@@ -217,7 +227,7 @@ public static class RdfXmlReader
             string? parseType = element.Attribute(Rdf + "parseType")?.Value;
             if(parseType == "Literal")
             {
-                return new Literal(Utf8String.FromString(InnerXml(element)), new NamedNode(Utf8String.FromString(RdfNamespace + "XMLLiteral")));
+                return new Literal(Utf8String.FromString(CanonicalizeXmlLiteral(element)), new NamedNode(Utf8String.FromString(RdfNamespace + "XMLLiteral")));
             }
 
             if(parseType == "Triple")
@@ -871,20 +881,6 @@ public static class RdfXmlReader
     private static Utf8String Resolve(string? @base, string reference)
     {
         return @base is null ? Utf8String.FromString(reference) : Utf8String.FromString(IriResolver.ResolveIri(@base, reference));
-    }
-
-    /// <summary>The inner XML of an element, for <c>rdf:parseType="Literal"</c>.</summary>
-    /// <param name="element">The element.</param>
-    /// <returns>The concatenated inner XML markup.</returns>
-    private static string InnerXml(XElement element)
-    {
-        System.Text.StringBuilder builder = new();
-        foreach(XNode node in element.Nodes())
-        {
-            builder.Append(node.ToString(SaveOptions.DisableFormatting));
-        }
-
-        return builder.ToString();
     }
 
     /// <summary>A minimal read-only stream over a byte buffer, so <see cref="XmlReader"/> can consume the source without an intermediate copy.</summary>

@@ -46,10 +46,6 @@ internal sealed class W3cRdfXmlTests
     /// </summary>
     private static Dictionary<string, string> KnownGaps { get; } = new(StringComparer.Ordinal)
     {
-        ["xml-canon-test001"] = "rdf:parseType=\"Literal\" exclusive XML canonicalisation (XML-C14N) not implemented",
-        ["xml-canon-test002"] = "rdf:parseType=\"Literal\" exclusive XML canonicalisation (XML-C14N) not implemented",
-        ["rdf12-xml-an-13"] = "annotation over rdf:parseType=\"Literal\" — exclusive XML canonicalisation (XML-C14N) not implemented",
-        ["rdf12-xml-an-14"] = "annotation over rdf:parseType=\"Literal\" — exclusive XML canonicalisation (XML-C14N) not implemented",
     };
 
     /// <summary>Runs one RDF 1.1 RDF/XML conformance test.</summary>

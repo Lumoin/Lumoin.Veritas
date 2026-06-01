@@ -10,4 +10,9 @@
     <ProjectReference Include="..\Lumoin.Veritas.Sparql\Lumoin.Veritas.Sparql.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Canonical XML 1.0 (XmlDsigC14NTransform) for the strict rdf:XMLLiteral canonicalizer. -->
+    <PackageReference Include="System.Security.Cryptography.Xml" />
+  </ItemGroup>
+
 </Project>
