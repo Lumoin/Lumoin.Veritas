@@ -234,10 +234,10 @@ public static class JsonLdExpansionTree
                 .ConfigureAwait(false);
         }
 
-        //If the object is a value object ({"@value": ...}), it's a leaf;
-        //preserve it as-is in object-graph form with @type/@language
-        //expanded.
-        if(obj.TryGetProperty("@value", out _))
+        //If the object is a value object (some key expands to @value, even
+        //via an alias), it's a leaf preserved in object-graph form with
+        //@type/@language expanded.
+        if(IsValueObject(obj, activeContext))
         {
             return ExpandValueObject(obj, activeContext);
         }
@@ -305,7 +305,12 @@ public static class JsonLdExpansionTree
                 }
                 case "@type":
                 {
-                    result["@type"] = ExpandTypeValue(value, activeContext);
+                    //Multiple keys expanding to @type (e.g. @type plus an
+                    //alias) accumulate into one type array.
+                    if(ExpandTypeValue(value, activeContext) is { } types)
+                    {
+                        AddValues(result, "@type", types);
+                    }
                     continue;
                 }
                 case "@graph":
@@ -935,39 +940,59 @@ public static class JsonLdExpansionTree
     /// Expands an already-shaped value object, applying IRI expansion to
     /// the <c>@type</c> field while leaving the rest of the object as-is.
     /// </summary>
-    private static Dictionary<string, object?>? ExpandValueObject(JsonLdNode value, LinkedDataContext activeContext)
+    /// <summary>
+    /// Whether the object is a value object: some key expands to
+    /// <c>@value</c>, directly or through a keyword alias.
+    /// </summary>
+    private static bool IsValueObject(JsonLdNode obj, LinkedDataContext activeContext)
     {
-        //A value object whose @value is JSON null carries no value and is
-        //dropped entirely (the caller removes the resulting null).
-        if(value.TryGetProperty("@value", out JsonLdNode valueEntry) && valueEntry.Kind == JsonLdNodeKind.Null)
+        foreach(KeyValuePair<string, JsonLdNode> entry in obj.EnumerateObject())
         {
-            return null;
+            if(string.Equals(activeContext.ExpandIri(entry.Key, vocab: true), "@value", StringComparison.Ordinal))
+            {
+                return true;
+            }
         }
 
+        return false;
+    }
+
+    private static Dictionary<string, object?>? ExpandValueObject(JsonLdNode value, LinkedDataContext activeContext)
+    {
         Dictionary<string, object?> result = new(StringComparer.Ordinal);
         foreach(KeyValuePair<string, JsonLdNode> entry in value.EnumerateObject())
         {
-            switch(entry.Key)
+            //Keys are matched on their expanded keyword so aliases of
+            //@value/@type/@language/@index/@direction are honoured.
+            string? expandedKey = activeContext.ExpandIri(entry.Key, vocab: true);
+            switch(expandedKey)
             {
                 case "@value":
                 {
+                    //A value object whose @value is JSON null carries no
+                    //value and is dropped entirely.
+                    if(entry.Value.Kind == JsonLdNodeKind.Null)
+                    {
+                        return null;
+                    }
+
                     result["@value"] = entry.Value.Kind switch
                     {
                         JsonLdNodeKind.String => entry.Value.GetString(),
                         JsonLdNodeKind.True => (object?)true,
                         JsonLdNodeKind.False => (object?)false,
                         JsonLdNodeKind.Number => ParseNumber(entry.Value.GetRawNumber()),
-                        JsonLdNodeKind.Null => null,
                         _ => null
                     };
                     break;
                 }
                 case "@type":
                 {
+                    //A value object's @type is a single IRI, not an array.
                     if(entry.Value.Kind == JsonLdNodeKind.String)
                     {
                         string raw = entry.Value.GetString();
-                        result["@type"] = activeContext.ExpandIri(raw, vocab: true) ?? raw;
+                        result["@type"] = activeContext.ExpandIri(raw, vocab: true, documentRelative: true) ?? raw;
                     }
                     break;
                 }
@@ -979,13 +1004,30 @@ public static class JsonLdExpansionTree
                     }
                     break;
                 }
+                case "@index":
+                {
+                    if(entry.Value.Kind == JsonLdNodeKind.String)
+                    {
+                        result["@index"] = entry.Value.GetString();
+                    }
+                    break;
+                }
+                case "@direction":
+                {
+                    if(entry.Value.Kind == JsonLdNodeKind.String)
+                    {
+                        result["@direction"] = entry.Value.GetString();
+                    }
+                    break;
+                }
                 default:
                 {
-                    //Other keys (e.g. @index) pass through.
+                    //A value object admits no other keys; drop them.
                     break;
                 }
             }
         }
+
         return result;
     }
 
