@@ -651,6 +651,23 @@ public static partial class ContextProcessing
 
                 termIriMapping = ExpandTermIdMapping(activeContext, termName, value.Iri);
                 isPrefix = isPrefix || TermShapeIndicatesPrefix(termName, termIriMapping is not null);
+
+                //When the term itself is a compact IRI (its prefix is a
+                //defined term), an @id that resolves to a different IRI than
+                //the term's own expansion is an invalid IRI mapping.
+                int termColon = termName.IndexOf(':', StringComparison.Ordinal);
+                if(termColon > 0 && termIriMapping is not null)
+                {
+                    string termPrefix = termName[..termColon];
+                    if(activeContext.TryGetTerm(termPrefix, out TermDefinition? prefixDef)
+                        && prefixDef?.IriMapping is not null
+                        && !string.Equals(termIriMapping, ExpandCompactIriTerm(activeContext, termName), StringComparison.Ordinal))
+                    {
+                        throw new LinkedDataProcessingException(
+                            "invalid IRI mapping",
+                            string.Create(CultureInfo.InvariantCulture, $"Term '{termName}' is a compact IRI whose @id does not match its expansion."));
+                    }
+                }
             }
             else if(termName.Contains(':', StringComparison.Ordinal))
             {
