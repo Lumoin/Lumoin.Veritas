@@ -73,7 +73,7 @@ public static class RdfXmlReader
 
         try
         {
-            new Walker(quads).Walk(root, baseIri);
+            new Walker(quads, diagnostics).Walk(root, baseIri);
         }
         catch(Exception exception) when(exception is UriFormatException or FormatException or ArgumentException or InvalidOperationException)
         {
@@ -95,9 +95,14 @@ public static class RdfXmlReader
     private readonly record struct WorkItem(bool ExpandNode, XElement Element, RdfTerm Subject, NamedNode? Predicate, string? Base, string? Lang);
 
     /// <summary>The explicit-stack walker that emits quads from the element tree.</summary>
-    private sealed class Walker(List<Quad> quads)
+    private sealed class Walker(List<Quad> quads, DiagnosticBag diagnostics)
     {
         private List<Quad> Quads { get; } = quads;
+
+        private DiagnosticBag Diagnostics { get; } = diagnostics;
+
+        /// <summary>The set of rdf:ID-derived IRIs already seen, used to reject a duplicate rdf:ID relative to one base.</summary>
+        private HashSet<string> IssuedIds { get; } = new(StringComparer.Ordinal);
 
         private int blankCounter;
 
@@ -179,6 +184,7 @@ public static class RdfXmlReader
         {
             string? @base = AttributeBase(element, parentBase);
             string? lang = AttributeLang(element, parentLang);
+            ValidatePropertyElement(element, @base);
             RdfTerm @object = ResolveObject(stack, element, @base, lang);
             Quads.Add(new Quad(subject, predicate, @object));
 
@@ -218,12 +224,18 @@ public static class RdfXmlReader
 
             if(element.Attribute(Rdf + "resource") is { } resource)
             {
-                return new NamedNode(Resolve(@base, resource.Value));
+                NamedNode @object = new(Resolve(@base, resource.Value));
+                EmitPropertyAttributes(@object, element, @base, lang);
+
+                return @object;
             }
 
             if(element.Attribute(Rdf + "nodeID") is { } nodeId)
             {
-                return new BlankNode(Utf8String.FromString("b" + nodeId.Value));
+                BlankNode @object = new(Utf8String.FromString("b" + nodeId.Value));
+                EmitPropertyAttributes(@object, element, @base, lang);
+
+                return @object;
             }
 
             XElement? child = FirstChildElement(element);
@@ -241,7 +253,7 @@ public static class RdfXmlReader
             if(HasPropertyAttributes(element))
             {
                 RdfTerm bnode = FreshBlank();
-                EmitPropertyAttributes(bnode, element, @base);
+                EmitPropertyAttributes(bnode, element, @base, lang);
 
                 return bnode;
             }
@@ -309,19 +321,22 @@ public static class RdfXmlReader
         /// <param name="lang">The language in scope.</param>
         private void EmitNodeHeader(RdfTerm subject, XElement element, string? @base, string? lang)
         {
+            ValidateNodeElement(element, @base);
+
             if(!IsRdf(element.Name, "Description") && !IsRdf(element.Name, "RDF"))
             {
                 Quads.Add(new Quad(subject, new NamedNode(Utf8String.FromString(RdfNamespace + "type")), new NamedNode(Utf8String.FromString(element.Name.NamespaceName + element.Name.LocalName))));
             }
 
-            EmitPropertyAttributes(subject, element, @base);
+            EmitPropertyAttributes(subject, element, @base, lang);
         }
 
-        /// <summary>Emits the property-attribute shorthand: each non-RDF-structural attribute is a statement (a literal object, or a resource for <c>rdf:type</c>).</summary>
+        /// <summary>Emits the property-attribute shorthand: each non-RDF-structural attribute is a statement (a literal object — language-tagged when an <c>xml:lang</c> is in scope — or a resource for <c>rdf:type</c>).</summary>
         /// <param name="subject">The subject the attributes describe.</param>
         /// <param name="element">The element carrying the attributes.</param>
         /// <param name="base">The base IRI in scope.</param>
-        private void EmitPropertyAttributes(RdfTerm subject, XElement element, string? @base)
+        /// <param name="lang">The language in scope, applied to literal-valued property attributes.</param>
+        private void EmitPropertyAttributes(RdfTerm subject, XElement element, string? @base, string? lang)
         {
             foreach(XAttribute attribute in element.Attributes())
             {
@@ -337,7 +352,11 @@ public static class RdfXmlReader
                     continue;
                 }
 
-                Quads.Add(new Quad(subject, new NamedNode(Utf8String.FromString(attribute.Name.NamespaceName + attribute.Name.LocalName)), new Literal(Utf8String.FromString(attribute.Value), new NamedNode(Vocabulary.Xsd.String))));
+                NamedNode predicate = new(Utf8String.FromString(attribute.Name.NamespaceName + attribute.Name.LocalName));
+                Literal value = lang is null
+                    ? new Literal(Utf8String.FromString(attribute.Value), new NamedNode(Vocabulary.Xsd.String))
+                    : new Literal(Utf8String.FromString(attribute.Value), new NamedNode(Utf8String.FromString(RdfNamespace + "langString")), Utf8String.FromString(lang));
+                Quads.Add(new Quad(subject, predicate, value));
             }
         }
 
@@ -384,14 +403,124 @@ public static class RdfXmlReader
         {
             return new BlankNode(Utf8String.FromString("rx" + blankCounter++.ToString(CultureInfo.InvariantCulture)));
         }
+
+        /// <summary>Validates a node element's name and attributes against the RDF/XML grammar, recording any violation.</summary>
+        /// <param name="element">The node element.</param>
+        /// <param name="base">The base IRI in scope (for rdf:ID uniqueness).</param>
+        private void ValidateNodeElement(XElement element, string? @base)
+        {
+            if(IsForbiddenNodeElementName(element.Name))
+            {
+                Report(Diagnostics, $"'{element.Name}' is not a permitted node element name.");
+            }
+
+            ValidateReservedAttributes(element);
+
+            int identity = element.Attribute(Rdf + "about") is null ? 0 : 1;
+            if(element.Attribute(Rdf + "ID") is { } id)
+            {
+                identity++;
+                ValidateId(id.Value, @base);
+            }
+
+            if(element.Attribute(Rdf + "nodeID") is { } nodeId)
+            {
+                identity++;
+                ValidateNcName(nodeId.Value, "rdf:nodeID");
+            }
+
+            if(identity > 1)
+            {
+                Report(Diagnostics, "A node element may carry at most one of rdf:about, rdf:ID, rdf:nodeID.");
+            }
+        }
+
+        /// <summary>Validates a property element's name and attributes against the RDF/XML grammar, recording any violation.</summary>
+        /// <param name="element">The property element.</param>
+        /// <param name="base">The base IRI in scope (for the rdf:ID reifier's uniqueness).</param>
+        private void ValidatePropertyElement(XElement element, string? @base)
+        {
+            if(IsForbiddenPropertyElementName(element.Name))
+            {
+                Report(Diagnostics, $"'{element.Name}' is not a permitted property element name.");
+            }
+
+            ValidateReservedAttributes(element);
+
+            bool hasResource = element.Attribute(Rdf + "resource") is not null;
+            if(element.Attribute(Rdf + "nodeID") is { } nodeId)
+            {
+                ValidateNcName(nodeId.Value, "rdf:nodeID");
+                if(hasResource)
+                {
+                    Report(Diagnostics, "A property element may not carry both rdf:nodeID and rdf:resource.");
+                }
+            }
+
+            if(element.Attribute(Rdf + "parseType") is not null && hasResource)
+            {
+                Report(Diagnostics, "A property element may not carry both rdf:parseType and rdf:resource.");
+            }
+
+            if(element.Attribute(Rdf + "ID") is { } reifyId)
+            {
+                ValidateId(reifyId.Value, @base);
+            }
+        }
+
+        /// <summary>Rejects the withdrawn RDF terms (<c>rdf:aboutEach</c>, <c>rdf:aboutEachPrefix</c>, <c>rdf:bagID</c>) and <c>rdf:li</c> when used as attributes.</summary>
+        /// <param name="element">The element whose attributes are checked.</param>
+        private void ValidateReservedAttributes(XElement element)
+        {
+            foreach(XAttribute attribute in element.Attributes())
+            {
+                if(IsForbiddenAttributeName(attribute.Name))
+                {
+                    Report(Diagnostics, $"'{attribute.Name}' is not permitted as an attribute.");
+                }
+            }
+        }
+
+        /// <summary>Validates an <c>rdf:ID</c> value: it must be an XML NCName and unique relative to its base.</summary>
+        /// <param name="value">The rdf:ID value.</param>
+        /// <param name="base">The base IRI in scope.</param>
+        private void ValidateId(string value, string? @base)
+        {
+            ValidateNcName(value, "rdf:ID");
+
+            string resolved = Resolve(@base, "#" + value).ToString();
+            if(!IssuedIds.Add(resolved))
+            {
+                Report(Diagnostics, $"rdf:ID '{value}' is defined more than once relative to the same base.");
+            }
+        }
+
+        /// <summary>Records an error when a value is not a valid XML NCName (the production <c>rdf:ID</c> / <c>rdf:nodeID</c> values must match).</summary>
+        /// <param name="value">The value to check.</param>
+        /// <param name="attribute">The attribute name, for the diagnostic message.</param>
+        private void ValidateNcName(string value, string attribute)
+        {
+            if(!IsNcName(value))
+            {
+                Report(Diagnostics, $"The value of {attribute} ('{value}') is not a valid XML NCName.");
+            }
+        }
     }
 
     /// <summary>Whether an attribute is an RDF/XML structural attribute (not a property-attribute or namespace declaration).</summary>
     /// <param name="name">The attribute name.</param>
-    /// <returns><see langword="true"/> for an RDF structural attribute or an <c>xml:</c> attribute.</returns>
+    /// <returns><see langword="true"/> for an RDF structural attribute, an <c>xml:</c> attribute, or an attribute that does not form a property attribute.</returns>
     private static bool IsStructuralAttribute(XName name)
     {
         if(name.Namespace == XNamespace.Xml || name.Namespace == XNamespace.Xmlns)
+        {
+            return true;
+        }
+
+        //A property attribute must have a namespace; an attribute in no namespace — including the
+        //XML-reserved unprefixed names beginning with "xml", which the spec excludes from RDF
+        //processing — is not a property attribute.
+        if(name.Namespace == XNamespace.None)
         {
             return true;
         }
@@ -406,6 +535,55 @@ public static class RdfXmlReader
     private static bool IsRdf(XName name, string local)
     {
         return name.Namespace == Rdf && name.LocalName == local;
+    }
+
+    /// <summary>Whether a name is forbidden as a node element name (the core syntax terms, <c>rdf:li</c>, and the withdrawn old terms).</summary>
+    /// <param name="name">The element name.</param>
+    /// <returns><see langword="true"/> when the name may not be a node element.</returns>
+    private static bool IsForbiddenNodeElementName(XName name)
+    {
+        return name.Namespace == Rdf
+            && name.LocalName is "RDF" or "ID" or "about" or "parseType" or "resource" or "nodeID" or "datatype"
+                or "li" or "aboutEach" or "aboutEachPrefix" or "bagID";
+    }
+
+    /// <summary>Whether a name is forbidden as a property element name (the core syntax terms, <c>rdf:Description</c>, and the withdrawn old terms; <c>rdf:li</c> is permitted).</summary>
+    /// <param name="name">The element name.</param>
+    /// <returns><see langword="true"/> when the name may not be a property element.</returns>
+    private static bool IsForbiddenPropertyElementName(XName name)
+    {
+        return name.Namespace == Rdf
+            && name.LocalName is "RDF" or "ID" or "about" or "parseType" or "resource" or "nodeID" or "datatype"
+                or "Description" or "aboutEach" or "aboutEachPrefix" or "bagID";
+    }
+
+    /// <summary>Whether a name is forbidden as an attribute (<c>rdf:li</c> and the withdrawn old terms).</summary>
+    /// <param name="name">The attribute name.</param>
+    /// <returns><see langword="true"/> when the name may not appear as an attribute.</returns>
+    private static bool IsForbiddenAttributeName(XName name)
+    {
+        return name.Namespace == Rdf && name.LocalName is "li" or "aboutEach" or "aboutEachPrefix" or "bagID";
+    }
+
+    /// <summary>Whether a string is a valid XML NCName (the production <c>rdf:ID</c> / <c>rdf:nodeID</c> values must satisfy).</summary>
+    /// <param name="value">The candidate value.</param>
+    /// <returns><see langword="true"/> when the value is a non-empty NCName.</returns>
+    private static bool IsNcName(string value)
+    {
+        if(value.Length == 0 || !XmlConvert.IsStartNCNameChar(value[0]))
+        {
+            return false;
+        }
+
+        for(int i = 1; i < value.Length; i++)
+        {
+            if(!XmlConvert.IsNCNameChar(value[i]))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>The first child element of an element, or <see langword="null"/>.</summary>

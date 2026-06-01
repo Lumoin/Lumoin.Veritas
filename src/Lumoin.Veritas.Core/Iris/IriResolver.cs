@@ -69,7 +69,10 @@ public static class IriResolver
 
         if(string.IsNullOrEmpty(relativeIri))
         {
-            return baseIri;
+            //An empty reference is a same-document reference (RFC 3986 §4.4 / §5.3): the target is the
+            //base with its fragment removed (the query, if any, is retained as it precedes the fragment).
+            int fragment = baseIri.IndexOf('#', StringComparison.Ordinal);
+            return fragment >= 0 ? baseIri[..fragment] : baseIri;
         }
 
         if(IsAbsoluteIri(relativeIri))
