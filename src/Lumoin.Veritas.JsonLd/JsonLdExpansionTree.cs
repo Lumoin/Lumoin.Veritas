@@ -498,7 +498,7 @@ public static class JsonLdExpansionTree
                     if(termDef is { ScopedContextEntries: { } scopedEntries })
                     {
                         propertyContext = await ApplyScopedEntriesAsync(
-                            activeContext, scopedEntries, baseUrl, resolver, parser, cancellationToken)
+                            activeContext, scopedEntries, baseUrl, resolver, parser, cancellationToken, overrideProtected: true)
                             .ConfigureAwait(false);
 
                         //A property-scoped context propagates into the
@@ -514,7 +514,7 @@ public static class JsonLdExpansionTree
                         {
                             propertyContext = propertyContext.WithPreviousContext(
                                 await ApplyScopedEntriesAsync(
-                                    revertBase, scopedEntries, baseUrl, resolver, parser, cancellationToken)
+                                    revertBase, scopedEntries, baseUrl, resolver, parser, cancellationToken, overrideProtected: true)
                                     .ConfigureAwait(false));
                         }
                         else
@@ -1851,10 +1851,11 @@ public static class JsonLdExpansionTree
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
         CancellationToken cancellationToken,
-        bool propagate = true)
+        bool propagate = true,
+        bool overrideProtected = false)
     {
         return await JsonLdScopedContextHelper.ApplyAsync(
-            activeContext, entries, baseUrl, resolver, parser, cancellationToken, propagate)
+            activeContext, entries, baseUrl, resolver, parser, cancellationToken, propagate, overrideProtected)
             .ConfigureAwait(false);
     }
 }

@@ -48,15 +48,19 @@ internal static class JsonLdScopedContextHelper
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
         CancellationToken cancellationToken,
-        bool propagate = true)
+        bool propagate = true,
+        bool overrideProtected = false)
     {
         FetchRemoteResourceDelegate fetcher = JsonLdRemoteContextParsing.AdaptResolverToFetcher(resolver);
         ParseRemoteContextDelegate remoteParser = JsonLdRemoteContextParsing.Create(parser);
 
         try
         {
+            //A property-scoped context is processed with override protected
+            //enabled, so a scoped null context may legitimately clear protected
+            //terms (W3C JSON-LD 1.1 §4.1.2); a type-scoped context is not.
             return await ContextProcessing.ApplyEmbeddedContextsAsync(
-                activeContext, scopedEntries, baseUrl, fetcher, remoteParser, cache: null, cancellationToken, propagate)
+                activeContext, scopedEntries, baseUrl, fetcher, remoteParser, cache: null, cancellationToken, propagate, overrideProtected)
                 .ConfigureAwait(false);
         }
         catch(LinkedDataProcessingException ex) when(ex is not JsonLdProcessingException)

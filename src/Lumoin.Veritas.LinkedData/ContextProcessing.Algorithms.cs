@@ -46,7 +46,8 @@ public static partial class ContextProcessing
         ParseRemoteContextDelegate parser,
         ProbeContextCacheDelegate? cache,
         CancellationToken cancellationToken,
-        bool propagate = true)
+        bool propagate = true,
+        bool overrideProtected = false)
     {
         ArgumentNullException.ThrowIfNull(activeContext);
         ArgumentNullException.ThrowIfNull(entries);
@@ -55,7 +56,7 @@ public static partial class ContextProcessing
 
         return ApplyEmbeddedContextsCoreAsync(
             activeContext, entries, baseUrl, fetcher, parser, cache,
-            overrideProtected: false, propagate: propagate,
+            overrideProtected: overrideProtected, propagate: propagate,
             remoteContexts: [], depth: 0, cancellationToken);
     }
 
@@ -757,9 +758,12 @@ public static partial class ContextProcessing
             //Pre-validate scoped context by attempting to apply it
             //into a throw-away context (catches errors early at
             //term-definition time per spec).
+            //A scoped context is applied at use-site with override protected
+            //enabled, so pre-validation mirrors that (a scoped null context
+            //may clear protected terms).
             _ = await ApplyEmbeddedContextsCoreAsync(
                 activeContext, value.ScopedContext, baseUrl,
-                fetcher, parser, cache, overrideProtected, propagate: true,
+                fetcher, parser, cache, overrideProtected: true, propagate: true,
                 remoteContexts, depth + 1, cancellationToken).ConfigureAwait(false);
         }
 
