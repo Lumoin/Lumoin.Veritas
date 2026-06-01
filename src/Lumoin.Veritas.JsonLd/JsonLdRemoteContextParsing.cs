@@ -50,9 +50,18 @@ public static class JsonLdRemoteContextParsing
             Utf8String utf8 = Utf8String.WithoutPrecomputedHash(resource.Bytes);
             JsonLdNode root = jsonParser(utf8);
 
+            //A remote context document must be a single map carrying @context.
+            if(root.Kind != JsonLdNodeKind.Object)
+            {
+                throw new JsonLdProcessingException(
+                    JsonLdErrorCode.InvalidRemoteContext,
+                    string.Create(CultureInfo.InvariantCulture, $"Remote context document at '{resource.FinalUrl}' must be a JSON object."));
+            }
+
             if(!root.TryGetProperty("@context", out JsonLdNode contextNode))
             {
-                throw new InvalidOperationException(
+                throw new JsonLdProcessingException(
+                    JsonLdErrorCode.InvalidRemoteContext,
                     string.Create(CultureInfo.InvariantCulture, $"Remote context document at '{resource.FinalUrl}' has no '@context' property."));
             }
 

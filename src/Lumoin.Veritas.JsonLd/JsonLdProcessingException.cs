@@ -181,6 +181,9 @@ public enum JsonLdErrorCode
     /// <summary>A remote context could not be loaded.</summary>
     LoadingRemoteContextFailed,
 
+    /// <summary>A remote context document was not a map with a single <c>@context</c>, or <c>@import</c> referenced more than one context.</summary>
+    InvalidRemoteContext,
+
     /// <summary>A context contained a recursive reference that could not be resolved.</summary>
     ContextOverflow,
 
