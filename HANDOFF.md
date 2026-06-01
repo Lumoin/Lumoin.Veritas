@@ -52,6 +52,32 @@ project. The W3C fixtures predate strict C14N namespace sorting — that's why t
    NB: aggregations (AVG/SUM/…) are a perf candidate for special indexes / specialized storage behind seams
    (memory `project_aggregation_specialized_storage`); the group-partition+fold step is the seam.
 
+### ▶ RESUME RECIPE — lexer escape mechanism (START HERE next session)
+Clean tree at `3ee4091`, branch `sparql-query-engine`, full suite **3834 / 0 failed / 236 skip**. Implement the
+**whole escape mechanism as one feature** (design above in roadmap item 1). Concrete anchors:
+- **Lexer:** `src/Lumoin.Veritas.Sparql/Lexer/SparqlLexer.cs`. Entry points: ctor over `ReadOnlyMemory<byte>` (~L62),
+  whole-buffer `Tokenize()` + streaming `TokenizeAsync()` over a pipe. Reusable decoder: `ReadUcharEscape` (~L1083,
+  decodes `\uXXXX`/`\UXXXXXXXX` with surrogate/range checks). String ECHAR + `\u`: `DecodeEscape` (~L1393), invalid
+  escape `Fail` (~L1499, uses `SparqlLexErrorCode.InvalidEscape` = `LX0003`, generic message — reuse it). IRI `\u`:
+  ~L1022. **PN_LOCAL `\`-branch: ~L1965** — currently `AdvanceCount(2)` blindly (the accidental tolerance);
+  once `\u` is pre-decoded this becomes a real `PN_LOCAL_ESC` validation (`_~.-!$&'()*+,;=/?#@%`; reject `\:`).
+- **Design choice to make:** the decode layer must feed BOTH entry points. Simplest correct first cut: decode the
+  whole-buffer `ReadOnlyMemory<byte>` in the ctor → new byte buffer, then tokenize (the conformance path uses
+  `ReadToEndAsync`, so this closes every test); then extend the pipe/`TokenizeAsync` path with a streaming decode
+  transform (≤10-byte lookahead for `\U`) for true final form. After the decode layer exists, REMOVE the lexer's
+  scattered inline `\u` handling (it becomes dead — no `\u` survives the pre-pass) so there is one decode site.
+- **Tests:** `Material/Sparql/codepoint-escapes/` (esc-01..08, esc-bad-03; **esc-04/05/06 already pass — keep green**).
+  Remove from `test/Lumoin.Veritas.Tests/Sparql/W3cSparqlSyntaxTests.cs` `KnownGaps` as each passes:
+  `codepoint-esc-01/02/bad-03/07/08` + `syn-bad-pname-06`. **KEEP `syntax-propertyPaths-01`** (separate parser sugar).
+- **Verify:** build the test csproj; then `…Tests.exe --filter "FullyQualifiedName~W3cSparqlSyntax"` (the syntax
+  class) for the cluster, then the FULL suite — watch for regressions on any string/IRI/PNAME test that uses `\u`
+  (the decode now happens before token-level handling; benign decoded chars are identical, but a `"`→`"` or
+  `
+`→LF inside a string now changes structure — that is per-spec, but confirm no currently-green test relied on
+  the old behavior — an escaped LF inside a single-line string). ⚠ Do NOT fix `syn-bad-pname-06` alone — it
+  regresses `codepoint-esc-06` (proven this session);
+  land the decode layer + PN_LOCAL_ESC validation together. Build/test command shape: [[feedback_build_test_command_shape]].
+
 ### Scope-analysis notes (commit `879dc2c`)
 - `Lumoin.Veritas.Sparql/Analysis/SparqlScopeAnalyzer.Analyze(SparqlRequest, DiagnosticBag)` — span-insensitive,
   reusable; currently wired only into `W3cSparqlSyntaxTests` (the engine pipeline does not call it yet — a candidate
