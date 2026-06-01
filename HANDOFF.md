@@ -9,9 +9,10 @@ DESCRIBE/JSON results, conformance push).
 ## ⭐ CURRENT STATE (2026-06-01, **harness GREEN (0 failures)**; SPARQL Update + RDF/XML conformance COMPLETE, on `sparql-query-engine`, tree clean)
 
 **Post-Update roadmap (user: work through all in preferred order, PERFORMANCE LAST).** Conformance is GREEN
-(3833 tests, 0 failed, 247 skip). **Done since the last handoff:** the **RDF/XML conformance ratchet** (197/197,
-commits `6d40949`+`03856b4`+`1636474`), the **"Protect from error in AVG" aggregate** (commit `dfdcad1`), and the
-**SPARQL Results CSV/TSV/JSON results-format suites** (commit `17b47ba`). **The RDF/XML ratchet is COMPLETE — 197/197, 0 reds.** The W3C RDF/XML suites (`rdf11/rdf-xml` + `rdf12/rdf-xml`,
+(3834 tests, 0 failed, 236 skip). **Done since the last handoff:** the **RDF/XML conformance ratchet** (197/197,
+`6d40949`+`03856b4`+`1636474`), the **"Protect from error in AVG" aggregate** (`dfdcad1`), the **SPARQL Results
+CSV/TSV/JSON results-format suites** (`17b47ba`), and **SPARQL §18.2.1 static variable-scope analysis**
+(`879dc2c`, `SparqlScopeAnalyzer`) closing 11 query-syntax KnownGaps. The W3C RDF/XML suites (`rdf11/rdf-xml` + `rdf12/rdf-xml`,
 pinned `674da26`) are vendored to `Material/Rdf/` and wired via `Conformance/RdfXmlConformanceReader.cs` +
 `Xml/W3cRdfXmlTests.cs` (per-suite base = `mf:assumedTestBase` + the fixture's path relative to the suite root —
 handles sub-folders and the rdf12 `eval/` dir). The RDF 1.1 reader is conformance-complete, RDF 1.2-in-XML is
@@ -26,14 +27,26 @@ project. The W3C fixtures predate strict C14N namespace sorting — that's why t
 `Xml/XmlLiteralCanonicalizerTests`).
 
 **Remaining roadmap (tasks, my order; each is a focused effort):**
-1. **Query-syntax negatives** — the `W3cSparqlSyntaxTests` KnownGaps: static scope analysis (GROUP BY/projection/BIND
-   scope, nested aggregates) + lexer codepoint-escape/PN_LOCAL refinements. Also: light up the generic-typed
-   (`NegativeSyntaxTest11`) update-syntax entries the eval-class type-guard currently skips (~real coverage).
+1. **Query-syntax negatives — TAIL** (scope analysis DONE). Remaining `W3cSparqlSyntaxTests.KnownGaps`: **codepoint
+   escapes** (`codepoint-esc-01/02/07/08` positive + `codepoint-esc-bad-03` negative — `\uXXXX`/`\UXXXXXXXX` processed
+   at the lexer, subtle: esc-01 encodes the whole query, esc-07 escapes whitespace/`*`, esc-08 `"` opens a
+   string, esc-02 `\` makes a `\` in a PN_LOCAL, **esc-bad-03 `"\\u0041"`** = a codepoint escape producing `A`
+   inside a string → invalid `\A` string-escape → reject; the codepoint pass interacts with string-escape
+   processing — get the order right); the **PN_LOCAL escaping nuance** (`syn-bad-pname-06`); and the **standalone
+   blank-node property-list** sugar (`syntax-propertyPaths-01`). Also: light up the generic-typed
+   (`NegativeSyntaxTest11`) update-syntax entries the eval-class type-guard skips.
 2. **SHACL Advanced Features (SHACL-AF)** — SPARQL-based constraints/rules/functions/targets; reuses the now-complete
    SPARQL engine. Large ratchet.
 3. **Performance rework — pluggable WCOJ backends** (LAST, per user): the 4-seam taxonomy + BenchmarkDotNet vehicle.
    NB: aggregations (AVG/SUM/…) are a perf candidate for special indexes / specialized storage behind seams
    (memory `project_aggregation_specialized_storage`); the group-partition+fold step is the seam.
+
+### Scope-analysis notes (commit `879dc2c`)
+- `Lumoin.Veritas.Sparql/Analysis/SparqlScopeAnalyzer.Analyze(SparqlRequest, DiagnosticBag)` — span-insensitive,
+  reusable; currently wired only into `W3cSparqlSyntaxTests` (the engine pipeline does not call it yet — a candidate
+  for `SparqlQueryEngine` so production rejects these too, but that would run it over the eval suite, so verify no
+  false positives first). Key subtlety: grouped queries hide non-key WHERE vars, so an AS target may reuse them
+  (`group-by-scope-1` positive vs `group-by-scope-bad-1` negative).
 
 ### Results-format notes (commit `17b47ba`)
 - `Lumoin.Veritas.Sparql/Results/SparqlResultsTsvReader` parses TSV (Turtle term syntax) → `SparqlResultSet`; the
@@ -62,7 +75,7 @@ project. The W3C fixtures predate strict C14N namespace sorting — that's why t
 ### Build/test (always, per [[feedback_build_test_command_shape]])
 - `dotnet build <csproj> -clp:ErrorsOnly --nologo` (PowerShell), separate from the test run.
 - Test exe (Bash, `cd /c/projektit/Lumoin.Veritas` first): `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe" --filter "FullyQualifiedName~<X>" > tempdocs/out.txt 2>&1` then Grep `total:|failed:`. ⚠ Some update/syntax negatives can hang the parser if a recovery path doesn't advance — wrap runs in `timeout`. Kill stray `Lumoin.Veritas.Tests` processes before rebuilding (they lock the DLLs).
-- Tree is clean at `17b47ba`; branch `sparql-query-engine`.
+- Tree is clean at `879dc2c`; branch `sparql-query-engine`.
 
 ---
 
