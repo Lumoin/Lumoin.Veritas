@@ -125,14 +125,14 @@ public static class SparqlTranslator
     /// <returns>The grouped/aggregated pattern with the rewritten projection and ORDER BY.</returns>
     private static AggregateRewrite ApplyAggregation(AlgebraOperator input, IReadOnlyList<SelectProjection> projections, SolutionModifier modifier, List<AggregateBinding> aggregates)
     {
-        //The aggregate-to-result-variable lookup the expression rewrites consult; keyed by value equality so the
-        //two occurrences of one repeated aggregate map to the same variable.
-        //Keyed by the source-position-insensitive aggregate so a lookup matches any textually identical
-        //occurrence regardless of where it appears.
-        Dictionary<AggregateExpression, SparqlVariable> bindings = new(aggregates.Count);
+        //The aggregate-to-result-variable lookup the expression rewrites consult, keyed by the structural,
+        //span-insensitive comparer so two textually-identical aggregates at different source positions map to one
+        //variable. Record value equality is unusable as the key here: an argument tree's list-bearing nodes
+        //(function calls, COALESCE, IN) compare their lists by reference, so AVG(IF(...)) would never match itself.
+        Dictionary<ExpressionNode, SparqlVariable> bindings = new(aggregates.Count, ExpressionWalker.StructuralComparer);
         foreach(AggregateBinding aggregate in aggregates)
         {
-            bindings[NormalizeAggregate(aggregate.Aggregate)] = aggregate.Variable;
+            bindings[aggregate.Aggregate] = aggregate.Variable;
         }
 
         //Group then AggregateJoin: an empty GROUP BY is the single implicit group, and an empty aggregation list
@@ -167,7 +167,7 @@ public static class SparqlTranslator
     private static List<AggregateBinding> CollectAggregates(IReadOnlyList<SelectProjection> projections, SolutionModifier modifier)
     {
         List<AggregateBinding> aggregates = [];
-        Dictionary<AggregateExpression, SparqlVariable> seen = [];
+        Dictionary<ExpressionNode, SparqlVariable> seen = new(ExpressionWalker.StructuralComparer);
 
         foreach(SelectProjection projection in projections)
         {
@@ -200,16 +200,17 @@ public static class SparqlTranslator
     /// <param name="root">The expression to scan.</param>
     /// <param name="aggregates">The accumulating ordered list of distinct aggregate bindings.</param>
     /// <param name="seen">The map tracking which aggregates (by source-position-insensitive key) are already recorded, and to which variable.</param>
-    private static void CollectAggregatesFrom(ExpressionNode root, List<AggregateBinding> aggregates, Dictionary<AggregateExpression, SparqlVariable> seen)
+    private static void CollectAggregatesFrom(ExpressionNode root, List<AggregateBinding> aggregates, Dictionary<ExpressionNode, SparqlVariable> seen)
     {
         foreach(ExpressionNode node in ExpressionWalker.Traverse(root))
         {
-            //Dedup ignores source position: two textually identical aggregates (e.g. COUNT(?o) in both the
-            //projection and HAVING) compute one value, so they share one binding and one result variable.
-            if(node is AggregateExpression aggregate && !seen.ContainsKey(NormalizeAggregate(aggregate)))
+            //Dedup ignores source position (the comparer is span-insensitive): two textually identical aggregates
+            //(e.g. COUNT(?o) in both the projection and HAVING) compute one value, so they share one binding and one
+            //result variable.
+            if(node is AggregateExpression aggregate && !seen.ContainsKey(aggregate))
             {
                 SparqlVariable variable = new(Utf8String.FromString($".agg{seen.Count}"));
-                seen.Add(NormalizeAggregate(aggregate), variable);
+                seen.Add(aggregate, variable);
                 aggregates.Add(new AggregateBinding(variable, aggregate));
             }
         }
@@ -219,7 +220,7 @@ public static class SparqlTranslator
     /// <param name="projections">The projection columns.</param>
     /// <param name="bindings">The aggregate-to-result-variable lookup.</param>
     /// <returns>The rewritten projection columns, in order.</returns>
-    private static List<SelectProjection> RewriteProjections(IReadOnlyList<SelectProjection> projections, Dictionary<AggregateExpression, SparqlVariable> bindings)
+    private static List<SelectProjection> RewriteProjections(IReadOnlyList<SelectProjection> projections, Dictionary<ExpressionNode, SparqlVariable> bindings)
     {
         List<SelectProjection> rewritten = new(projections.Count);
         foreach(SelectProjection projection in projections)
@@ -236,7 +237,7 @@ public static class SparqlTranslator
     /// <param name="order">The <c>ORDER BY</c> clause, or <see langword="null"/>.</param>
     /// <param name="bindings">The aggregate-to-result-variable lookup.</param>
     /// <returns>The rewritten clause, or <see langword="null"/> when <paramref name="order"/> is <see langword="null"/>.</returns>
-    private static OrderClause? RewriteOrder(OrderClause? order, Dictionary<AggregateExpression, SparqlVariable> bindings)
+    private static OrderClause? RewriteOrder(OrderClause? order, Dictionary<ExpressionNode, SparqlVariable> bindings)
     {
         if(order is null)
         {
@@ -261,29 +262,11 @@ public static class SparqlTranslator
     /// <param name="expression">The expression to rewrite.</param>
     /// <param name="bindings">The aggregate-to-result-variable lookup.</param>
     /// <returns>The rewritten expression, or the same instance when it holds no aggregate.</returns>
-    private static ExpressionNode RewriteAggregates(ExpressionNode expression, Dictionary<AggregateExpression, SparqlVariable> bindings)
+    private static ExpressionNode RewriteAggregates(ExpressionNode expression, Dictionary<ExpressionNode, SparqlVariable> bindings)
     {
-        return ExpressionWalker.Transform(expression, node => node is AggregateExpression aggregate && bindings.TryGetValue(NormalizeAggregate(aggregate), out SparqlVariable variable)
+        return ExpressionWalker.Transform(expression, node => node is AggregateExpression aggregate && bindings.TryGetValue(aggregate, out SparqlVariable variable)
             ? new VariableExpression(aggregate.Span, variable)
             : node);
-    }
-
-    /// <summary>
-    /// Produces the source-position-insensitive form of an aggregate — its own span and every span inside its
-    /// argument zeroed — used as the dedup / lookup key so two textually identical aggregates at different
-    /// source positions compare equal under the records' value equality.
-    /// </summary>
-    /// <param name="aggregate">The aggregate to normalize.</param>
-    /// <returns>The aggregate with all spans zeroed.</returns>
-    private static AggregateExpression NormalizeAggregate(AggregateExpression aggregate)
-    {
-        //The argument is a general expression descended normally; the aggregate itself is a leaf of the walk,
-        //so its own span is zeroed here rather than by the transform.
-        ExpressionNode? argument = aggregate.Argument is null
-            ? null
-            : ExpressionWalker.Transform(aggregate.Argument, static node => node with { Span = default });
-
-        return aggregate with { Span = default, Argument = argument };
     }
 
     /// <summary>Returns the key expression of an order condition, independent of its direction.</summary>

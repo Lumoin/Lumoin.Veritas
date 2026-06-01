@@ -114,6 +114,143 @@ public static class ExpressionWalker
         return results.Pop();
     }
 
+    /// <summary>
+    /// Gets a structural, source-position-insensitive equality comparer over expression trees: two expressions are
+    /// equal when their node types, scalar fields, and child shapes match (spans ignored). It is the right key for
+    /// deduplicating textually-identical expressions — for example lifting the same aggregate that appears in both
+    /// the projection and <c>HAVING</c> onto one binding — where record value equality fails because list-bearing
+    /// nodes (function calls, <c>COALESCE</c>, <c>IN</c>) compare their argument lists by reference.
+    /// </summary>
+    public static IEqualityComparer<ExpressionNode> StructuralComparer { get; } = new StructuralEqualityComparer();
+
+    /// <summary>
+    /// Determines whether two expression trees are structurally equal ignoring source spans: same node type, same
+    /// scalar fields, and structurally-equal children (and aggregate arguments) at every position.
+    /// </summary>
+    /// <param name="left">The first expression, or <see langword="null"/>.</param>
+    /// <param name="right">The second expression, or <see langword="null"/>.</param>
+    /// <returns><see langword="true"/> when the trees are structurally equal (both <see langword="null"/> counts as equal).</returns>
+    public static bool StructurallyEqual(ExpressionNode? left, ExpressionNode? right)
+    {
+        if(ReferenceEquals(left, right))
+        {
+            return true;
+        }
+
+        if(left is null || right is null)
+        {
+            return false;
+        }
+
+        Stack<(ExpressionNode Left, ExpressionNode Right)> pairs = new();
+        pairs.Push((left, right));
+
+        while(pairs.Count > 0)
+        {
+            (ExpressionNode a, ExpressionNode b) = pairs.Pop();
+            if(!ShallowEqual(a, b))
+            {
+                return false;
+            }
+
+            IReadOnlyList<ExpressionNode> childrenA = Children(a);
+            IReadOnlyList<ExpressionNode> childrenB = Children(b);
+            if(childrenA.Count != childrenB.Count)
+            {
+                return false;
+            }
+
+            for(int i = 0; i < childrenA.Count; i++)
+            {
+                pairs.Push((childrenA[i], childrenB[i]));
+            }
+
+            //An aggregate's argument is a leaf for the walk (Children returns none), so compare it explicitly; the
+            //null-arity agreement is already checked by ShallowEqual.
+            if(a is AggregateExpression { Argument: { } argumentA } && b is AggregateExpression { Argument: { } argumentB })
+            {
+                pairs.Push((argumentA, argumentB));
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>Computes a structural, span-insensitive hash code consistent with <see cref="StructurallyEqual"/>.</summary>
+    /// <param name="node">The expression to hash.</param>
+    /// <returns>The structural hash code.</returns>
+    public static int StructuralHashCode(ExpressionNode node)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+
+        HashCode hash = new();
+        foreach(ExpressionNode current in Iterate(node))
+        {
+            AddShallowHash(ref hash, current);
+
+            //Aggregate arguments are not visited by the pre-order walk (an aggregate is a leaf), so fold them in.
+            if(current is AggregateExpression { Argument: { } argument })
+            {
+                foreach(ExpressionNode inner in Iterate(argument))
+                {
+                    AddShallowHash(ref hash, inner);
+                }
+            }
+        }
+
+        return hash.ToHashCode();
+    }
+
+    /// <summary>Compares the scalar (non-child, non-span) fields of two same-position nodes.</summary>
+    /// <param name="a">The first node.</param>
+    /// <param name="b">The second node.</param>
+    /// <returns><see langword="true"/> when the nodes have the same type and equal scalar fields.</returns>
+    private static bool ShallowEqual(ExpressionNode a, ExpressionNode b)
+    {
+        if(a.GetType() != b.GetType())
+        {
+            return false;
+        }
+
+        return (a, b) switch
+        {
+            (ConstantExpression x, ConstantExpression y) => x.Value.Equals(y.Value),
+            (VariableExpression x, VariableExpression y) => x.Variable.Equals(y.Variable),
+            (BoundExpression x, BoundExpression y) => x.Variable.Equals(y.Variable),
+            (ComparisonExpression x, ComparisonExpression y) => x.Op == y.Op,
+            (ArithmeticExpression x, ArithmeticExpression y) => x.Op == y.Op,
+            (FunctionCallExpression x, FunctionCallExpression y) => x.Function.Equals(y.Function),
+            (BuiltInCallExpression x, BuiltInCallExpression y) => x.Function == y.Function && x.IsDistinct == y.IsDistinct,
+            (TripleTermExpression x, TripleTermExpression y) => x.Inner.Equals(y.Inner),
+            (ExistsExpression x, ExistsExpression y) => x.Inner.Equals(y.Inner),
+            (NotExistsExpression x, NotExistsExpression y) => x.Inner.Equals(y.Inner),
+            (AggregateExpression x, AggregateExpression y) => x.Function == y.Function && x.IsDistinct == y.IsDistinct && x.IsCountStar == y.IsCountStar && Equals(x.GroupConcatSeparator, y.GroupConcatSeparator) && x.Argument is null == (y.Argument is null),
+
+            //And/Or/Not/If/Coalesce/In/NotIn carry only children (already type-matched), so no scalar fields remain.
+            _ => true
+        };
+    }
+
+    /// <summary>Folds a node's type and scalar fields into a hash, mirroring <see cref="ShallowEqual"/>.</summary>
+    /// <param name="hash">The accumulating hash.</param>
+    /// <param name="node">The node to fold in.</param>
+    private static void AddShallowHash(ref HashCode hash, ExpressionNode node)
+    {
+        hash.Add(node.GetType());
+        switch(node)
+        {
+            case ConstantExpression constant: hash.Add(constant.Value); break;
+            case VariableExpression variable: hash.Add(variable.Variable); break;
+            case BoundExpression bound: hash.Add(bound.Variable); break;
+            case ComparisonExpression comparison: hash.Add(comparison.Op); break;
+            case ArithmeticExpression arithmetic: hash.Add(arithmetic.Op); break;
+            case FunctionCallExpression call: hash.Add(call.Function); break;
+            case BuiltInCallExpression call: hash.Add(call.Function); hash.Add(call.IsDistinct); break;
+            case AggregateExpression aggregate: hash.Add(aggregate.Function); hash.Add(aggregate.IsDistinct); hash.Add(aggregate.IsCountStar); hash.Add(aggregate.GroupConcatSeparator); break;
+            default: break;
+        }
+    }
+
     /// <summary>Yields an expression and its sub-expressions in pre-order using an explicit stack.</summary>
     /// <param name="root">The expression to enumerate from.</param>
     /// <returns>The expression and its sub-expressions, in pre-order.</returns>
@@ -212,5 +349,21 @@ public static class ExpressionWalker
         }
 
         return tail;
+    }
+
+    /// <summary>The structural, span-insensitive equality comparer exposed by <see cref="StructuralComparer"/>.</summary>
+    private sealed class StructuralEqualityComparer : IEqualityComparer<ExpressionNode>
+    {
+        /// <inheritdoc/>
+        public bool Equals(ExpressionNode? x, ExpressionNode? y)
+        {
+            return StructurallyEqual(x, y);
+        }
+
+        /// <inheritdoc/>
+        public int GetHashCode(ExpressionNode obj)
+        {
+            return StructuralHashCode(obj);
+        }
     }
 }
