@@ -479,7 +479,8 @@
         "type": "Project",
         "dependencies": {
           "Lumoin.Veritas.Core": "[0.0.0, )",
-          "Lumoin.Veritas.Sparql": "[0.0.0, )"
+          "Lumoin.Veritas.Sparql": "[0.0.0, )",
+          "System.Security.Cryptography.Xml": "[10.0.6, )"
         }
       },
       "System.IO.Hashing": {
