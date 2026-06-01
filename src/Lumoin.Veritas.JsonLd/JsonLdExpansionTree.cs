@@ -481,6 +481,18 @@ public static class JsonLdExpansionTree
         TermDefinition? termDef,
         CancellationToken cancellationToken)
     {
+        //A term coercing to @json keeps the entire value verbatim as a JSON
+        //literal (objects, arrays, scalars and null preserved as-is), never
+        //expanded as JSON-LD.
+        if(string.Equals(termDef?.TypeMapping, "@json", StringComparison.Ordinal))
+        {
+            return new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["@value"] = ConvertJsonLiteral(value),
+                ["@type"] = "@json"
+            };
+        }
+
         bool isList = termDef is not null && HasContainer(termDef, "@list");
         bool isLanguage = termDef is not null && HasContainer(termDef, "@language");
         bool isIndex = termDef is not null && HasContainer(termDef, "@index");
@@ -1178,6 +1190,58 @@ public static class JsonLdExpansionTree
             }
         }
         return false;
+    }
+
+    /// <summary>
+    /// Converts a node to a verbatim object-graph value for a <c>@json</c>
+    /// literal: objects and arrays are preserved structurally, scalars and
+    /// null are kept as-is. No JSON-LD expansion or coercion is applied.
+    /// </summary>
+    private static object? ConvertJsonLiteral(JsonLdNode node)
+    {
+        switch(node.Kind)
+        {
+            case JsonLdNodeKind.Object:
+            {
+                Dictionary<string, object?> map = new(StringComparer.Ordinal);
+                foreach(KeyValuePair<string, JsonLdNode> entry in node.EnumerateObject())
+                {
+                    map[entry.Key] = ConvertJsonLiteral(entry.Value);
+                }
+
+                return map;
+            }
+            case JsonLdNodeKind.Array:
+            {
+                List<object?> items = new();
+                foreach(JsonLdNode item in node.EnumerateArray())
+                {
+                    items.Add(ConvertJsonLiteral(item));
+                }
+
+                return items;
+            }
+            case JsonLdNodeKind.String:
+            {
+                return node.GetString();
+            }
+            case JsonLdNodeKind.True:
+            {
+                return true;
+            }
+            case JsonLdNodeKind.False:
+            {
+                return false;
+            }
+            case JsonLdNodeKind.Number:
+            {
+                return ParseNumber(node.GetRawNumber());
+            }
+            default:
+            {
+                return null;
+            }
+        }
     }
 
     private static object ParseNumber(string raw)
