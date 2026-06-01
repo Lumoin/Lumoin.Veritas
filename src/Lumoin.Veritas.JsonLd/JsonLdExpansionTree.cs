@@ -297,9 +297,10 @@ public static class JsonLdExpansionTree
                 {
                     if(value.Kind == JsonLdNodeKind.String)
                     {
+                        //A keyword-like @id (e.g. "@ignoreMe") expands to null
+                        //and is preserved as such rather than echoed verbatim.
                         string raw = value.GetString();
-                        string? expanded = activeContext.ExpandIri(raw, documentRelative: true);
-                        result["@id"] = expanded ?? raw;
+                        result["@id"] = activeContext.ExpandIri(raw, documentRelative: true);
                     }
                     continue;
                 }
@@ -880,10 +881,12 @@ public static class JsonLdExpansionTree
         {
             if(string.Equals(coercion, "@id", StringComparison.Ordinal))
             {
+                //A keyword-like value (e.g. "@ignoreMe") expands to null and
+                //is preserved as such, not echoed back verbatim.
                 string raw = element.GetString();
                 return new Dictionary<string, object?>(StringComparer.Ordinal)
                 {
-                    ["@id"] = activeContext.ExpandIri(raw, documentRelative: true) ?? raw
+                    ["@id"] = activeContext.ExpandIri(raw, documentRelative: true)
                 };
             }
             if(string.Equals(coercion, "@vocab", StringComparison.Ordinal))
@@ -891,7 +894,7 @@ public static class JsonLdExpansionTree
                 string raw = element.GetString();
                 return new Dictionary<string, object?>(StringComparer.Ordinal)
                 {
-                    ["@id"] = activeContext.ExpandIri(raw, vocab: true, documentRelative: true) ?? raw
+                    ["@id"] = activeContext.ExpandIri(raw, vocab: true, documentRelative: true)
                 };
             }
         }
