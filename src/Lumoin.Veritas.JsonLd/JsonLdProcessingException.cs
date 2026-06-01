@@ -115,6 +115,9 @@ public enum JsonLdErrorCode
     /// <summary>A <c>@nest</c> value was not a valid term or keyword.</summary>
     InvalidNestValue,
 
+    /// <summary>An <c>@included</c> value was not a node object (or array of node objects).</summary>
+    InvalidIncludedValue,
+
     /// <summary>A <c>@prefix</c> value was not a boolean.</summary>
     InvalidPrefixValue,
 

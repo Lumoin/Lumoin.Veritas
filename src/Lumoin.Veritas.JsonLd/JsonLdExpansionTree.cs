@@ -416,6 +416,35 @@ public static class JsonLdExpansionTree
                         .ConfigureAwait(false);
                     continue;
                 }
+                case "@included":
+                {
+                    //@included carries additional node objects, collected
+                    //into a flat array; multiple @included keys fold together.
+                    object? expandedIncluded = await ExpandElementAsync(
+                        value, activeContext, baseUrl, resolver, parser, cancellationToken)
+                        .ConfigureAwait(false);
+                    if(expandedIncluded is null)
+                    {
+                        continue;
+                    }
+
+                    List<object?> includedNodes = expandedIncluded is IReadOnlyList<object?> includedList
+                        ? new List<object?>(includedList)
+                        : new List<object?> { expandedIncluded };
+                    foreach(object? node in includedNodes)
+                    {
+                        if(node is IReadOnlyDictionary<string, object?> map
+                            && (map.ContainsKey("@value") || map.ContainsKey("@list") || map.ContainsKey("@set")))
+                        {
+                            throw new JsonLdProcessingException(
+                                JsonLdErrorCode.InvalidIncludedValue,
+                                "An @included value must be a node object, not a value, list, or set object.");
+                        }
+                    }
+
+                    AddValues(result, "@included", includedNodes);
+                    continue;
+                }
                 default:
                 {
                     //JSON-LD keywords other than the ones handled above
