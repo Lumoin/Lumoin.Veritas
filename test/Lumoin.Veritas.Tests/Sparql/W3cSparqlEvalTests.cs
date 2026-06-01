@@ -189,127 +189,131 @@ internal sealed class W3cSparqlEvalTests
     /// <returns>The asynchronous test operation.</returns>
     [TestMethod]
     [W3cManifestData("Sparql", "basic-update")]
-    public Task RunUpdateBasic(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+    public Task RunUpdateBasic(W3cTestCase testCase) => RunAndAssertAsync(testCase, updateSyntaxSuite: true);
 
     /// <summary>Runs one W3C SPARQL 1.1 Update <c>DELETE DATA</c> test.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     /// <returns>The asynchronous test operation.</returns>
     [TestMethod]
     [W3cManifestData("Sparql", "delete-data")]
-    public Task RunUpdateDeleteData(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+    public Task RunUpdateDeleteData(W3cTestCase testCase) => RunAndAssertAsync(testCase, updateSyntaxSuite: true);
 
     /// <summary>Runs one W3C SPARQL 1.1 Update <c>DELETE</c> test.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     /// <returns>The asynchronous test operation.</returns>
     [TestMethod]
     [W3cManifestData("Sparql", "delete")]
-    public Task RunUpdateDelete(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+    public Task RunUpdateDelete(W3cTestCase testCase) => RunAndAssertAsync(testCase, updateSyntaxSuite: true);
 
     /// <summary>Runs one W3C SPARQL 1.1 Update <c>DELETE WHERE</c> test.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     /// <returns>The asynchronous test operation.</returns>
     [TestMethod]
     [W3cManifestData("Sparql", "delete-where")]
-    public Task RunUpdateDeleteWhere(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+    public Task RunUpdateDeleteWhere(W3cTestCase testCase) => RunAndAssertAsync(testCase, updateSyntaxSuite: true);
 
     /// <summary>Runs one W3C SPARQL 1.1 Update <c>DELETE</c>/<c>INSERT</c> (modify) test.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     /// <returns>The asynchronous test operation.</returns>
     [TestMethod]
     [W3cManifestData("Sparql", "delete-insert")]
-    public Task RunUpdateDeleteInsert(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+    public Task RunUpdateDeleteInsert(W3cTestCase testCase) => RunAndAssertAsync(testCase, updateSyntaxSuite: true);
 
     /// <summary>Runs one W3C SPARQL 1.1 Update <c>ADD</c> test.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     /// <returns>The asynchronous test operation.</returns>
     [TestMethod]
     [W3cManifestData("Sparql", "add")]
-    public Task RunUpdateAdd(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+    public Task RunUpdateAdd(W3cTestCase testCase) => RunAndAssertAsync(testCase, updateSyntaxSuite: true);
 
     /// <summary>Runs one W3C SPARQL 1.1 Update <c>CLEAR</c> test.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     /// <returns>The asynchronous test operation.</returns>
     [TestMethod]
     [W3cManifestData("Sparql", "clear")]
-    public Task RunUpdateClear(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+    public Task RunUpdateClear(W3cTestCase testCase) => RunAndAssertAsync(testCase, updateSyntaxSuite: true);
 
     /// <summary>Runs one W3C SPARQL 1.1 Update <c>COPY</c> test.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     /// <returns>The asynchronous test operation.</returns>
     [TestMethod]
     [W3cManifestData("Sparql", "copy")]
-    public Task RunUpdateCopy(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+    public Task RunUpdateCopy(W3cTestCase testCase) => RunAndAssertAsync(testCase, updateSyntaxSuite: true);
 
     /// <summary>Runs one W3C SPARQL 1.1 Update <c>MOVE</c> test.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     /// <returns>The asynchronous test operation.</returns>
     [TestMethod]
     [W3cManifestData("Sparql", "move")]
-    public Task RunUpdateMove(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+    public Task RunUpdateMove(W3cTestCase testCase) => RunAndAssertAsync(testCase, updateSyntaxSuite: true);
 
     /// <summary>Runs one W3C SPARQL 1.1 Update <c>DROP</c> test.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     /// <returns>The asynchronous test operation.</returns>
     [TestMethod]
     [W3cManifestData("Sparql", "drop")]
-    public Task RunUpdateDrop(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+    public Task RunUpdateDrop(W3cTestCase testCase) => RunAndAssertAsync(testCase, updateSyntaxSuite: true);
 
     /// <summary>Runs one W3C SPARQL 1.1 Update <c>SILENT</c> test.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     /// <returns>The asynchronous test operation.</returns>
     [TestMethod]
     [W3cManifestData("Sparql", "update-silent")]
-    public Task RunUpdateSilent(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+    public Task RunUpdateSilent(W3cTestCase testCase) => RunAndAssertAsync(testCase, updateSyntaxSuite: true);
 
     /// <summary>Runs one W3C SPARQL 1.1 Update positive/negative syntax test (set 1).</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     /// <returns>The asynchronous test operation.</returns>
     [TestMethod]
     [W3cManifestData("Sparql", "syntax-update-1")]
-    public Task RunSyntaxUpdate1(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+    public Task RunSyntaxUpdate1(W3cTestCase testCase) => RunAndAssertAsync(testCase, updateSyntaxSuite: true);
 
     /// <summary>Runs one W3C SPARQL 1.1 Update positive/negative syntax test (set 2).</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     /// <returns>The asynchronous test operation.</returns>
     [TestMethod]
     [W3cManifestData("Sparql", "syntax-update-2")]
-    public Task RunSyntaxUpdate2(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+    public Task RunSyntaxUpdate2(W3cTestCase testCase) => RunAndAssertAsync(testCase, updateSyntaxSuite: true);
 
     /// <summary>
-    /// Runs a query-evaluation test case and applies the outcome. A wrong answer fails (the conformance baseline);
-    /// a structural non-runnable (handled by the runner) is inconclusive. Non-query-evaluation entries in a mixed
-    /// manifest are skipped.
+    /// Runs one manifest entry and applies the outcome, dispatching on its type so every entry in a mixed
+    /// manifest runs with the right semantics — query / update evaluation, or query / update syntax. A wrong
+    /// answer fails (the conformance baseline); a structural non-runnable (handled by the runner) is
+    /// inconclusive.
     /// </summary>
     /// <param name="testCase">The manifest-declared test case.</param>
+    /// <param name="updateSyntaxSuite">
+    /// Whether this suite is an update suite: a generic <c>PositiveSyntaxTest11</c>/<c>NegativeSyntaxTest11</c>
+    /// entry (the W3C manifests do not distinguish query from update syntax by type) is then a SPARQL Update
+    /// syntax test, parsed as an update rather than a query.
+    /// </param>
     /// <returns>The asynchronous test operation.</returns>
-    private async Task RunAndAssertAsync(W3cTestCase testCase)
+    private async Task RunAndAssertAsync(W3cTestCase testCase, bool updateSyntaxSuite = false)
     {
         ArgumentNullException.ThrowIfNull(testCase);
 
-        if(testCase.Type is W3cTestType.PositiveUpdateSyntax or W3cTestType.NegativeUpdateSyntax)
+        W3cOutcome outcome = testCase.Type switch
         {
-            W3cOutcome syntaxOutcome = await W3cSparqlEvalRunner.RunUpdateSyntaxAsync(
-                testCase,
-                expectSuccess: testCase.Type == W3cTestType.PositiveUpdateSyntax,
-                TestContext.CancellationToken).ConfigureAwait(false);
-            ConformanceAssertions.Apply(syntaxOutcome);
-            return;
-        }
+            W3cTestType.SparqlQueryEvaluation => await W3cSparqlEvalRunner.RunAsync(testCase, TestContext.CancellationToken).ConfigureAwait(false),
+            W3cTestType.SparqlUpdateEvaluation => await W3cSparqlEvalRunner.RunUpdateEvalAsync(testCase, TestContext.CancellationToken).ConfigureAwait(false),
+            W3cTestType.PositiveUpdateSyntax => await W3cSparqlEvalRunner.RunUpdateSyntaxAsync(testCase, expectSuccess: true, TestContext.CancellationToken).ConfigureAwait(false),
+            W3cTestType.NegativeUpdateSyntax => await W3cSparqlEvalRunner.RunUpdateSyntaxAsync(testCase, expectSuccess: false, TestContext.CancellationToken).ConfigureAwait(false),
+            W3cTestType.PositiveSyntax or W3cTestType.NegativeSyntax => await RunSyntaxAsync(testCase, updateSyntaxSuite).ConfigureAwait(false),
+            _ => new W3cOutcome(W3cOutcomeStatus.Skipped, $"Unhandled W3C test type '{testCase.RawTypeIri}'.")
+        };
 
-        if(testCase.Type == W3cTestType.SparqlUpdateEvaluation)
-        {
-            W3cOutcome updateOutcome = await W3cSparqlEvalRunner.RunUpdateEvalAsync(testCase, TestContext.CancellationToken).ConfigureAwait(false);
-            ConformanceAssertions.Apply(updateOutcome);
-            return;
-        }
-
-        if(testCase.Type != W3cTestType.SparqlQueryEvaluation)
-        {
-            Assert.Inconclusive($"Not a SPARQL query-evaluation test ('{testCase.RawTypeIri}').");
-            return;
-        }
-
-        W3cOutcome outcome = await W3cSparqlEvalRunner.RunAsync(testCase, TestContext.CancellationToken).ConfigureAwait(false);
         ConformanceAssertions.Apply(outcome);
     }
+
+    /// <summary>
+    /// Runs a generic positive/negative syntax entry as a query syntax test, or — in an update suite — as a
+    /// SPARQL Update syntax test (the manifests type both as <c>PositiveSyntaxTest11</c>/<c>NegativeSyntaxTest11</c>).
+    /// </summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <param name="updateSyntaxSuite">Whether to parse as an update rather than a query.</param>
+    /// <returns>The outcome.</returns>
+    private Task<W3cOutcome> RunSyntaxAsync(W3cTestCase testCase, bool updateSyntaxSuite)
+        => updateSyntaxSuite
+            ? W3cSparqlEvalRunner.RunUpdateSyntaxAsync(testCase, expectSuccess: testCase.Type == W3cTestType.PositiveSyntax, TestContext.CancellationToken)
+            : W3cTestRunner.RunAsync(testCase, SparqlConformanceReader.ParseQuery, TestContext.CancellationToken);
 }

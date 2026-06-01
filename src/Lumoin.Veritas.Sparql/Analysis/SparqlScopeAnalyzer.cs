@@ -121,6 +121,11 @@ public static class SparqlScopeAnalyzer
                         Report(diagnostics, assignment.Span, $"The SELECT assignment target ?{assignment.AsVariable.Name} is already in scope (a GROUP BY key, a variable in the WHERE pattern, or an earlier projection); an AS target must be a fresh variable.");
                     }
 
+                    if(grouping)
+                    {
+                        CheckGroupedExpressionScope(assignment, groupKeys, diagnostics);
+                    }
+
                     break;
                 }
 
@@ -128,6 +133,34 @@ public static class SparqlScopeAnalyzer
                 {
                     break;
                 }
+            }
+        }
+    }
+
+    /// <summary>
+    /// In a grouped/aggregate query, checks that every variable a projection expression references outside an
+    /// aggregate is a <c>GROUP BY</c> key (§18.2.4.1). <see cref="ExpressionWalker.Traverse"/> treats an
+    /// aggregate as a leaf, so variables inside aggregate arguments are correctly excluded.
+    /// </summary>
+    /// <param name="assignment">The <c>(expr AS ?v)</c> projection.</param>
+    /// <param name="groupKeys">The grouping-key variables.</param>
+    /// <param name="diagnostics">The diagnostic bag.</param>
+    private static void CheckGroupedExpressionScope(SelectExpressionAs assignment, HashSet<SparqlVariable> groupKeys, DiagnosticBag diagnostics)
+    {
+        foreach(ExpressionNode node in ExpressionWalker.Traverse(assignment.Expression))
+        {
+            bool unguarded = node switch
+            {
+                VariableExpression variable => !groupKeys.Contains(variable.Variable),
+                BoundExpression bound => !groupKeys.Contains(bound.Variable),
+                _ => false
+            };
+
+            if(unguarded)
+            {
+                Report(diagnostics, assignment.Span, $"The SELECT assignment ?{assignment.AsVariable.Name} uses a variable that is neither a GROUP BY key nor inside an aggregate; only grouping keys and aggregates may appear in a projection from a grouped query.");
+
+                return;
             }
         }
     }
@@ -281,6 +314,9 @@ public static class SparqlScopeAnalyzer
             {
                 case GroupVariable variable: keys.Add(variable.Variable); break;
                 case GroupExpressionAs assignment: keys.Add(assignment.AsVariable); break;
+
+                //`GROUP BY (?v)` (a parenthesised bare variable, no AS) keys on ?v exactly as `GROUP BY ?v`.
+                case GroupExpression { Expression: VariableExpression bare }: keys.Add(bare.Variable); break;
                 default: break;
             }
         }

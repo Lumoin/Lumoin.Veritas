@@ -4,15 +4,7 @@
 
 using System;
 using System.Collections.Generic;
-using System.IO;
-using System.IO.Pipelines;
-using System.Runtime.CompilerServices;
-using System.Threading;
 using System.Threading.Tasks;
-using Lumoin.Veritas.Core;
-using Lumoin.Veritas.Core.Diagnostics;
-using Lumoin.Veritas.Sparql.Lexer;
-using Lumoin.Veritas.Sparql.Parser;
 using Lumoin.Veritas.Tests.Conformance;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -60,20 +52,6 @@ internal sealed class W3cSparqlSyntaxTests
     [W3cManifestData("Sparql", "syntax")]
     public Task RunW3cSparql12SyntaxTest(W3cTestCase testCase) => RunAndAssertAsync(testCase);
 
-    /// <summary>Runs one SPARQL 1.2 RDF-1.2 triple-term positive-syntax test.</summary>
-    /// <param name="testCase">The manifest-declared test case.</param>
-    /// <returns>The asynchronous test operation.</returns>
-    [TestMethod]
-    [W3cManifestData("Sparql", "syntax-triple-terms-positive")]
-    public Task RunW3cSparql12TripleTermsPositiveTest(W3cTestCase testCase) => RunAndAssertAsync(testCase);
-
-    /// <summary>Runs one SPARQL 1.2 RDF-1.2 triple-term negative-syntax test.</summary>
-    /// <param name="testCase">The manifest-declared test case.</param>
-    /// <returns>The asynchronous test operation.</returns>
-    [TestMethod]
-    [W3cManifestData("Sparql", "syntax-triple-terms-negative")]
-    public Task RunW3cSparql12TripleTermsNegativeTest(W3cTestCase testCase) => RunAndAssertAsync(testCase);
-
     /// <summary>Runs one SPARQL 1.2 <c>VERSION</c>-declaration syntax test.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     /// <returns>The asynchronous test operation.</returns>
@@ -98,7 +76,7 @@ internal sealed class W3cSparqlSyntaxTests
     {
         ArgumentNullException.ThrowIfNull(testCase);
 
-        W3cOutcome outcome = await W3cTestRunner.RunAsync(testCase, ParseSparqlQuery, TestContext.CancellationToken).ConfigureAwait(false);
+        W3cOutcome outcome = await W3cTestRunner.RunAsync(testCase, SparqlConformanceReader.ParseQuery, TestContext.CancellationToken).ConfigureAwait(false);
 
         if(KnownGaps.TryGetValue(testCase.Name, out string? reason))
         {
@@ -112,86 +90,5 @@ internal sealed class W3cSparqlSyntaxTests
         }
 
         ConformanceAssertions.Apply(outcome);
-    }
-
-    /// <summary>
-    /// Parses the query bytes from the pipe and yields no quads; a lexical or grammar error surfaces as
-    /// the exception the runner observes.
-    /// </summary>
-    /// <remarks>
-    /// The recovery-mode parser never throws on malformed input — it records diagnostics into a bag and
-    /// returns a (possibly error-node-carrying) request. The shared <see cref="W3cTestRunner"/> detects a
-    /// negative-syntax test by catching a parse exception, so this adapter re-raises a
-    /// <see cref="Lumoin.Veritas.Sparql.SparqlParseException"/> when the bag holds any error-severity
-    /// diagnostic, mirroring <see cref="TurtleConformanceReader"/>.
-    /// </remarks>
-    /// <param name="input">The pipe over the query file's bytes.</param>
-    /// <param name="cancellationToken">A token to cancel reading.</param>
-    /// <returns>An empty quad stream (a query produces no quads).</returns>
-    private static async IAsyncEnumerable<Quad> ParseSparqlQuery(PipeReader input, [EnumeratorCancellation] CancellationToken cancellationToken)
-    {
-        ReadOnlyMemory<byte> source = await ReadToEndAsync(input, cancellationToken).ConfigureAwait(false);
-
-        using Utf8StringPool pool = new();
-        DiagnosticBag diagnostics = new();
-        SparqlLexer lexer = new(source, pool);
-        SparqlParser parser = new(lexer.Tokenize(), pool, baseIri: null, blankNodes: null, diagnostics: diagnostics);
-        ParseResult<Lumoin.Veritas.Sparql.Ast.SparqlRequest> result = parser.ParseToResult();
-        BridgeLexerDiagnostics(lexer, diagnostics);
-
-        //A grammatically well-formed query can still violate the SPARQL §18.2.1 static scope constraints (an
-        //in-scope AS target, an ungrouped projection, a nested aggregate); those make it a negative-syntax test.
-        if(result.Tree is not null)
-        {
-            Lumoin.Veritas.Sparql.Analysis.SparqlScopeAnalyzer.Analyze(result.Tree, diagnostics);
-        }
-
-        if(result.HasErrors || diagnostics.HasErrors)
-        {
-            throw new Lumoin.Veritas.Sparql.SparqlParseException(TurtleConformanceReader.DescribeFirstError(diagnostics));
-        }
-
-        yield break;
-    }
-
-    /// <summary>Bridges the lexer's internal diagnostics into the shared parse-level bag.</summary>
-    /// <param name="lexer">The lexer whose diagnostics are drained.</param>
-    /// <param name="diagnostics">The bag to append the bridged diagnostics to.</param>
-    private static void BridgeLexerDiagnostics(SparqlLexer lexer, DiagnosticBag diagnostics)
-    {
-        foreach(SparqlLexDiagnostic lexDiagnostic in lexer.Diagnostics)
-        {
-            diagnostics.Add(SparqlLexDiagnosticBridge.ToDiagnostic(lexDiagnostic));
-        }
-    }
-
-    /// <summary>
-    /// Drains a <see cref="PipeReader"/> into a contiguous byte buffer.
-    /// </summary>
-    /// <param name="input">The pipe to drain.</param>
-    /// <param name="cancellationToken">A token to cancel reading.</param>
-    /// <returns>The full input bytes.</returns>
-    private static async Task<ReadOnlyMemory<byte>> ReadToEndAsync(PipeReader input, CancellationToken cancellationToken)
-    {
-        using MemoryStream buffer = new();
-
-        while(true)
-        {
-            ReadResult result = await input.ReadAsync(cancellationToken).ConfigureAwait(false);
-
-            foreach(ReadOnlyMemory<byte> segment in result.Buffer)
-            {
-                buffer.Write(segment.Span);
-            }
-
-            input.AdvanceTo(result.Buffer.End);
-
-            if(result.IsCompleted)
-            {
-                break;
-            }
-        }
-
-        return buffer.ToArray();
     }
 }

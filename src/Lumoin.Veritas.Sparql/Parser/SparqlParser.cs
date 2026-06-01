@@ -758,14 +758,20 @@ public sealed class SparqlParser
     /// <param name="frame">The request frame.</param>
     /// <param name="incoming">The popped group graph pattern.</param>
     /// <returns>The instruction for the driver.</returns>
-    private static StepResult RequestWherePattern(ParseFrame frame, object? incoming)
+    private StepResult RequestWherePattern(ParseFrame frame, object? incoming)
     {
         GraphPattern pattern = Pop<GraphPattern>(incoming);
         frame.Where = new WhereClause(CombineSpans(frame.WhereSpanStart, pattern.Span), pattern);
 
-        //In the CONSTRUCT WHERE short form the WHERE triples double as the template.
+        //In the CONSTRUCT WHERE short form the WHERE triples double as the template, and only a triples
+        //template is permitted — a FILTER, GRAPH, OPTIONAL, UNION, sub-SELECT, … makes it ill-formed.
         if(frame.IsConstructShort)
         {
+            if(!IsTriplesOnlyPattern(pattern))
+            {
+                _ = ReportRecoverable(WellKnownDiagnostics.Sparql.ConstructShortFormOnlyTriples, pattern.Span, "CONSTRUCT WHERE permits only a triples template; FILTER, GRAPH, OPTIONAL, UNION, and other group elements are not allowed in the short form.");
+            }
+
             (List<TriplePattern> templateTriples, List<TriplePatternTerm> templateStandaloneNodes) = ExtractTemplateTriples(pattern);
             frame.Form = new ConstructQuery(CombineSpans(frame.VerbSpanStart, pattern.Span), templateTriples, templateStandaloneNodes);
         }
@@ -773,6 +779,27 @@ public sealed class SparqlParser
         frame.Stage = 6;
 
         return StepResult.Continue();
+    }
+
+    /// <summary>Whether a WHERE pattern is a group of only basic triple blocks — the shape the CONSTRUCT WHERE short form requires.</summary>
+    /// <param name="pattern">The WHERE pattern.</param>
+    /// <returns><see langword="true"/> when the pattern is a group graph pattern whose members are all triple blocks.</returns>
+    private static bool IsTriplesOnlyPattern(GraphPattern pattern)
+    {
+        if(pattern is not GroupGraphPattern group)
+        {
+            return false;
+        }
+
+        foreach(GraphPattern member in group.Members)
+        {
+            if(member is not BasicGraphPatternBlock)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>

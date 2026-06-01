@@ -475,6 +475,10 @@ public static class WellKnownDiagnostics
         /// <remarks>SPARQL Update §4.1.2 blank-node scoping. See <see href="https://www.w3.org/TR/sparql12-update/#rUpdate">SPARQL 1.2 Update §19.8 [Update]</see>.</remarks>
         public static Utf8String BlankNodeLabelReusedAcrossOperations { get; } = new("SP0050"u8.ToArray());
 
+        /// <summary>The <c>CONSTRUCT WHERE</c> short form contained a non-triple group element (a <c>FILTER</c>, <c>GRAPH</c>, <c>OPTIONAL</c>, sub-pattern, …); only a triples template is permitted.</summary>
+        /// <remarks>SPARQL <c>ConstructQuery</c> short form (<c>CONSTRUCT WHERE { TriplesTemplate }</c>). See <see href="https://www.w3.org/TR/sparql12-query/#rConstructQuery">SPARQL 1.2 §19.8 [ConstructQuery]</see>.</remarks>
+        public static Utf8String ConstructShortFormOnlyTriples { get; } = new("SP0051"u8.ToArray());
+
         /// <summary>The per-parse diagnostic cap was reached; further parser diagnostics are suppressed (the AST still assembles).</summary>
         /// <remarks>Parser-internal bound (see the parser's <c>MaxDiagnostics</c> option), not a grammar production.</remarks>
         public static Utf8String ExcessDiagnostics { get; } = new("SP9999"u8.ToArray());
