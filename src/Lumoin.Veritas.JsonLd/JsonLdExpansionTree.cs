@@ -1555,13 +1555,30 @@ public static class JsonLdExpansionTree
 
             string? expandedType = activeContext.ExpandIri(typeNode.GetString(), vocab: true, documentRelative: true);
             if(expandedType is null
-                || (!string.Equals(expandedType, "@json", StringComparison.Ordinal) && !IriUtils.IsAbsoluteIri(expandedType)))
+                || (!string.Equals(expandedType, "@json", StringComparison.Ordinal)
+                    && (!IriUtils.IsAbsoluteIri(expandedType) || ContainsWhitespace(expandedType))))
             {
                 throw new JsonLdProcessingException(
                     JsonLdErrorCode.InvalidValueObject,
                     $"A value object's @type must expand to an absolute IRI; got '{typeNode.GetString()}'.");
             }
         }
+    }
+
+    /// <summary>Whether the text contains any Unicode whitespace (an IRI may not).</summary>
+    /// <param name="text">The candidate IRI.</param>
+    /// <returns><see langword="true"/> when whitespace is present.</returns>
+    private static bool ContainsWhitespace(string text)
+    {
+        foreach(char character in text)
+        {
+            if(char.IsWhiteSpace(character))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static Dictionary<string, object?>? ExpandValueObject(JsonLdNode value, LinkedDataContext activeContext)

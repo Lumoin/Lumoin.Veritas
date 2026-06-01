@@ -712,6 +712,14 @@ public static partial class ContextProcessing
             }
         }
 
+        //A @type-container term may only coerce values to @id or @vocab.
+        if(containerMapping.Contains("@type") && typeMapping is not null && typeMapping is not ("@id" or "@vocab"))
+        {
+            throw new LinkedDataProcessingException(
+                "invalid type mapping",
+                string.Create(CultureInfo.InvariantCulture, $"A @type-container term '{termName}' may only set @type to @id or @vocab."));
+        }
+
         //A property-valued @index requires an @index container and a
         //non-keyword index property.
         if(indexMapping is not null
