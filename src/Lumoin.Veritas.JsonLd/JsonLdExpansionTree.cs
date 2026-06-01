@@ -221,13 +221,32 @@ public static class JsonLdExpansionTree
         JsonLdParserDelegate parser,
         CancellationToken cancellationToken)
     {
+        //A non-propagating context (a type-scoped context, or one carrying
+        //@propagate: false) from an ancestor is reverted on entry to a new
+        //node object, so it does not leak into nested nodes. Value objects
+        //and bare node references (@id only) do not establish a new node
+        //scope and keep the context unchanged.
+        if(activeContext.PreviousContext is { } revertedContext
+            && !IsValueObject(obj, activeContext)
+            && !IsSingleIdReference(obj, activeContext))
+        {
+            activeContext = revertedContext;
+        }
+
         //Apply local @context (already applied at document root; this
-        //handles embedded @context on nested nodes).
+        //handles embedded @context on nested nodes). A non-propagating
+        //embedded context records the pre-application context so the next
+        //nested node reverts to it.
         if(obj.TryGetProperty("@context", out JsonLdNode localContext))
         {
+            LinkedDataContext beforeEmbedded = activeContext;
             activeContext = await ContextProcessor.ProcessAsync(
                 activeContext, localContext, baseUrl, resolver, parser, cancellationToken)
                 .ConfigureAwait(false);
+            if(!activeContext.Propagate && activeContext.PreviousContext is null)
+            {
+                activeContext = activeContext.WithPreviousContext(beforeEmbedded);
+            }
         }
 
         //If the object is a value object (some key expands to @value, even
@@ -257,12 +276,18 @@ public static class JsonLdExpansionTree
         //Type-scoped contexts: when the node has @type, apply each
         //matching term's ScopedContextEntries in alphabetical order of
         //type IRIs per W3C JSON-LD 1.1 §4.1.4 step 8. The application
-        //updates the active context for the rest of this node.
+        //updates the active context for the rest of this node. Type-scoped
+        //contexts are non-propagating, so the pre-application context is
+        //recorded for nested nodes to revert to.
         if(obj.TryGetProperty("@type", out JsonLdNode typeNode))
         {
-            activeContext = await ApplyTypeScopedAsync(
+            LinkedDataContext beforeTypeScoped = activeContext;
+            LinkedDataContext afterTypeScoped = await ApplyTypeScopedAsync(
                 activeContext, typeNode, baseUrl, resolver, parser, cancellationToken)
                 .ConfigureAwait(false);
+            activeContext = ReferenceEquals(afterTypeScoped, beforeTypeScoped)
+                ? afterTypeScoped
+                : afterTypeScoped.WithPreviousContext(beforeTypeScoped);
         }
 
         Dictionary<string, object?> result = new(StringComparer.Ordinal);
@@ -379,6 +404,27 @@ public static class JsonLdExpansionTree
                         propertyContext = await ApplyScopedEntriesAsync(
                             activeContext, scopedEntries, baseUrl, resolver, parser, cancellationToken)
                             .ConfigureAwait(false);
+
+                        //A property-scoped context propagates into the
+                        //property's nested nodes (unlike a type-scoped one).
+                        //When a type-scoped context is active it is reverted
+                        //on entry to a nested node, so the property-scoped
+                        //context is re-expressed on the reverted base as the
+                        //revert target; that way it survives the revert
+                        //rather than being discarded with the type-scoped
+                        //context. With no type-scoped context active, the
+                        //nested node simply must not revert.
+                        if(activeContext.PreviousContext is { } revertBase)
+                        {
+                            propertyContext = propertyContext.WithPreviousContext(
+                                await ApplyScopedEntriesAsync(
+                                    revertBase, scopedEntries, baseUrl, resolver, parser, cancellationToken)
+                                    .ConfigureAwait(false));
+                        }
+                        else
+                        {
+                            propertyContext = propertyContext.WithPreviousContext(null);
+                        }
                     }
 
                     object? expandedValue = await ExpandPropertyValueAsync(
@@ -963,6 +1009,32 @@ public static class JsonLdExpansionTree
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Whether the object is a bare node reference whose only key expands to
+    /// <c>@id</c> (directly or via an alias). Such references do not open a
+    /// new node scope, so a non-propagating context is not reverted for them.
+    /// </summary>
+    private static bool IsSingleIdReference(JsonLdNode obj, LinkedDataContext activeContext)
+    {
+        bool sawId = false;
+        foreach(KeyValuePair<string, JsonLdNode> entry in obj.EnumerateObject())
+        {
+            if(string.Equals(entry.Key, "@context", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if(!string.Equals(activeContext.ExpandIri(entry.Key, vocab: true), "@id", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            sawId = true;
+        }
+
+        return sawId;
     }
 
     private static Dictionary<string, object?>? ExpandValueObject(JsonLdNode value, LinkedDataContext activeContext)
