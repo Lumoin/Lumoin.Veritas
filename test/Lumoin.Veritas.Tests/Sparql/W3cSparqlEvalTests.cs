@@ -156,6 +156,20 @@ internal sealed class W3cSparqlEvalTests
     [W3cManifestData("Sparql", "lang-basedir")]
     public Task RunLangBaseDirection(W3cTestCase testCase) => RunAndAssertAsync(testCase);
 
+    /// <summary>Runs one W3C SPARQL 1.1 JSON results-format test (the expected result is a <c>.srj</c> serialization).</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "json-res")]
+    public Task RunJsonResults(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
+    /// <summary>Runs one W3C SPARQL 1.1 CSV/TSV results-format test (the expected result is a <c>.csv</c> or <c>.tsv</c> serialization).</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "csv-tsv-res")]
+    public Task RunCsvTsvResults(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
     /// <summary>Runs one W3C SPARQL 1.2 triple-term positive-syntax test (covers the <c>INSERT DATA</c> update-syntax entries).</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     /// <returns>The asynchronous test operation.</returns>

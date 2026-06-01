@@ -741,8 +741,9 @@ internal static class W3cManifestLoader
         }
 
         //SPARQL evaluation tests are an exact marker; matched before the generic "...Eval" / syntax arms so the
-        //"...EvaluationTest" suffix is not mistaken for a syntax or RDF-eval test.
-        if(typeIri == MfNamespace + "QueryEvaluationTest")
+        //"...EvaluationTest" suffix is not mistaken for a syntax or RDF-eval test. A CSVResultFormatTest is the same
+        //shape (qt:query + mf:result), run as a query-evaluation whose expected result is a .csv serialization.
+        if(typeIri == MfNamespace + "QueryEvaluationTest" || typeIri == MfNamespace + "CSVResultFormatTest")
         {
             return W3cTestType.SparqlQueryEvaluation;
         }

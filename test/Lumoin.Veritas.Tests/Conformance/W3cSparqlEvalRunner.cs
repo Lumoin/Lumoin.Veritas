@@ -416,36 +416,38 @@ internal static class W3cSparqlEvalRunner
             return new W3cOutcome(W3cOutcomeStatus.Skipped, $"Query uses a feature the executor does not yet support: {ex.Message}");
         }
 
-        //Only the SPARQL Query Results serializations (.srx / .srj) are compared today; a switch expression
-        //classifies the rest (case-insensitively) into the honest-skip outcome, leaving null to mean "this is a
-        //solution-result format — proceed and read it below".
+        //The solution-result serializations (.srx / .srj / .tsv) parse back to a result set and compare by value;
+        //the lossy CSV (.csv) is compared by re-serializing the actual result and matching the text. Any other
+        //extension is a graph result, not compared here.
         string extension = IoPath.GetExtension(testCase.ExpectedPath);
-        bool isJson = string.Equals(extension, ".srj", StringComparison.OrdinalIgnoreCase);
-        W3cOutcome? unsupported = extension switch
+        byte[] expectedBytes = await File.ReadAllBytesAsync(testCase.ExpectedPath, cancellationToken).ConfigureAwait(false);
+
+        if(string.Equals(extension, ".csv", StringComparison.OrdinalIgnoreCase))
         {
-            _ when string.Equals(extension, ".srx", StringComparison.OrdinalIgnoreCase) => null,
-            _ when isJson => null,
-            _ => new W3cOutcome(W3cOutcomeStatus.Skipped, $"Expected result format '{extension}' (a graph result) is not yet compared.")
-        };
-        if(unsupported is not null)
-        {
-            return unsupported;
+            return CompareCsv(actual, expectedBytes);
         }
 
-        byte[] expectedBytes = await File.ReadAllBytesAsync(testCase.ExpectedPath, cancellationToken).ConfigureAwait(false);
+        bool ordered = query.Modifier.Order is not null;
         SparqlResultSet expected;
         try
         {
-            expected = isJson
-                ? SparqlResultsJsonReader.Read(expectedBytes)
-                : SparqlResultsXmlReader.Read(expectedBytes);
+            expected = extension switch
+            {
+                _ when string.Equals(extension, ".srj", StringComparison.OrdinalIgnoreCase) => SparqlResultsJsonReader.Read(expectedBytes),
+                _ when string.Equals(extension, ".srx", StringComparison.OrdinalIgnoreCase) => SparqlResultsXmlReader.Read(expectedBytes),
+                _ when string.Equals(extension, ".tsv", StringComparison.OrdinalIgnoreCase) => SparqlResultsTsvReader.Read(expectedBytes),
+                _ => throw new NotSupportedException($"Expected result format '{extension}' (a graph result) is not yet compared.")
+            };
+        }
+        catch(NotSupportedException ex)
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Skipped, ex.Message);
         }
         catch(FormatException ex)
         {
             return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expected SPARQL results fixture did not parse: {ex.Message}");
         }
 
-        bool ordered = query.Modifier.Order is not null;
         bool equal = SparqlResultComparer.AreEquivalent(actual, expected, ordered);
         string note = actual.IsBoolean
             ? $"ASK actual={actual.Boolean}, expected={expected.Boolean}"
@@ -454,6 +456,61 @@ internal static class W3cSparqlEvalRunner
         return equal
             ? new W3cOutcome(W3cOutcomeStatus.Passed, note)
             : new W3cOutcome(W3cOutcomeStatus.Failed, $"Result does not match expected: {note}");
+    }
+
+    /// <summary>
+    /// Compares a SELECT result against an expected CSV fixture. CSV is lossy (no datatypes, implementation-specific
+    /// blank-node labels) and has no faithful reader, so the actual result is re-serialized to CSV and matched as
+    /// text: the columns are taken from the expected header (which also supplies the head variables for a
+    /// <c>SELECT *</c>), line endings are normalised, and blank-node labels are collapsed to a placeholder. The CSV
+    /// fixtures order their rows with <c>ORDER BY</c>, so the row order is determinate.
+    /// </summary>
+    /// <param name="actual">The engine's result set.</param>
+    /// <param name="expectedBytes">The expected CSV fixture bytes.</param>
+    /// <returns>The comparison outcome.</returns>
+    private static W3cOutcome CompareCsv(SparqlResultSet actual, byte[] expectedBytes)
+    {
+        if(actual.IsBoolean)
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Failed, "A CSV result-format test expects a SELECT result, but the query produced an ASK boolean.");
+        }
+
+        string expectedText = System.Text.Encoding.UTF8.GetString(expectedBytes);
+        SparqlResultSet projected = SparqlResultSet.ForSelect(CsvHeaderColumns(expectedText), actual.Solutions);
+
+        string actualCsv = NormalizeCsv(SparqlResultsDelimitedWriter.WriteToString(projected, SparqlDelimitedResultsFormat.Csv));
+        string expectedCsv = NormalizeCsv(expectedText);
+
+        return string.Equals(actualCsv, expectedCsv, StringComparison.Ordinal)
+            ? new W3cOutcome(W3cOutcomeStatus.Passed, $"CSV matches ({actual.Solutions.Count} row(s)).")
+            : new W3cOutcome(W3cOutcomeStatus.Failed, $"CSV result does not match expected.\n--- actual ---\n{actualCsv}\n--- expected ---\n{expectedCsv}");
+    }
+
+    /// <summary>Reads the column (variable) names from a CSV results fixture's header line.</summary>
+    /// <param name="csv">The CSV fixture text.</param>
+    /// <returns>The header column names, in order.</returns>
+    private static List<Utf8String> CsvHeaderColumns(string csv)
+    {
+        int newline = csv.IndexOf('\n', StringComparison.Ordinal);
+        string header = (newline >= 0 ? csv[..newline] : csv).TrimEnd('\r');
+
+        List<Utf8String> columns = [];
+        foreach(string field in header.Split(','))
+        {
+            columns.Add(Utf8String.FromString(field.Trim('"')));
+        }
+
+        return columns;
+    }
+
+    /// <summary>Normalises delimited result text for comparison: line endings to LF (no trailing newline) and every blank-node label collapsed to a placeholder.</summary>
+    /// <param name="text">The delimited text.</param>
+    /// <returns>The normalised text.</returns>
+    private static string NormalizeCsv(string text)
+    {
+        string lf = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\r", "\n", StringComparison.Ordinal).TrimEnd('\n');
+
+        return System.Text.RegularExpressions.Regex.Replace(lf, "_:[^,\n]+", "_:");
     }
 
     /// <summary>Builds the result set for a SELECT (head variables + solutions) or ASK (the pattern matched) query.</summary>
