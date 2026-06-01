@@ -1081,6 +1081,102 @@ public static class JsonLdExpansionTree
         return false;
     }
 
+    /// <summary>
+    /// Validates a (non-<c>@json</c>) value object against the W3C JSON-LD
+    /// 1.1 expansion rules, throwing <see cref="JsonLdProcessingException"/>
+    /// on a violation: a disallowed key, incompatible <c>@type</c> with
+    /// <c>@language</c>/<c>@direction</c>, a non-scalar <c>@value</c>, a
+    /// language- or direction-tagged non-string, a non-string
+    /// <c>@language</c>/<c>@index</c>, or a <c>@type</c> that is not a single
+    /// absolute IRI.
+    /// </summary>
+    private static void ValidateValueObject(JsonLdNode value, LinkedDataContext activeContext)
+    {
+        JsonLdNode valueNode = default;
+        JsonLdNode typeNode = default;
+        JsonLdNode languageNode = default;
+        JsonLdNode indexNode = default;
+        bool hasValue = false, hasType = false, hasLanguage = false, hasIndex = false, hasDirection = false;
+
+        foreach(KeyValuePair<string, JsonLdNode> entry in value.EnumerateObject())
+        {
+            if(string.Equals(entry.Key, "@context", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            switch(activeContext.ExpandIri(entry.Key, vocab: true))
+            {
+                case "@value": valueNode = entry.Value; hasValue = true; break;
+                case "@type": typeNode = entry.Value; hasType = true; break;
+                case "@language": languageNode = entry.Value; hasLanguage = true; break;
+                case "@index": indexNode = entry.Value; hasIndex = true; break;
+                case "@direction": hasDirection = true; break;
+                default:
+                {
+                    throw new JsonLdProcessingException(
+                        JsonLdErrorCode.InvalidValueObject,
+                        $"A value object may not contain the key '{entry.Key}'.");
+                }
+            }
+        }
+
+        if(hasType && (hasLanguage || hasDirection))
+        {
+            throw new JsonLdProcessingException(
+                JsonLdErrorCode.InvalidValueObject,
+                "A value object's @type cannot be combined with @language or @direction.");
+        }
+
+        if(hasValue && valueNode.Kind is JsonLdNodeKind.Array or JsonLdNodeKind.Object)
+        {
+            throw new JsonLdProcessingException(
+                JsonLdErrorCode.InvalidValueObject,
+                "A value object's @value must be a scalar or null unless typed @json.");
+        }
+
+        if((hasLanguage || hasDirection) && hasValue
+            && valueNode.Kind is not (JsonLdNodeKind.String or JsonLdNodeKind.Null))
+        {
+            throw new JsonLdProcessingException(
+                JsonLdErrorCode.InvalidValueObject,
+                "A language- or direction-tagged value object's @value must be a string.");
+        }
+
+        if(hasLanguage && languageNode.Kind != JsonLdNodeKind.String)
+        {
+            throw new JsonLdProcessingException(
+                JsonLdErrorCode.InvalidValueObject,
+                "@language must be a string.");
+        }
+
+        if(hasIndex && indexNode.Kind != JsonLdNodeKind.String)
+        {
+            throw new JsonLdProcessingException(
+                JsonLdErrorCode.InvalidValueObject,
+                "@index must be a string.");
+        }
+
+        if(hasType)
+        {
+            if(typeNode.Kind != JsonLdNodeKind.String)
+            {
+                throw new JsonLdProcessingException(
+                    JsonLdErrorCode.InvalidValueObject,
+                    "A value object's @type must be a single string.");
+            }
+
+            string? expandedType = activeContext.ExpandIri(typeNode.GetString(), vocab: true, documentRelative: true);
+            if(expandedType is null
+                || (!string.Equals(expandedType, "@json", StringComparison.Ordinal) && !IriUtils.IsAbsoluteIri(expandedType)))
+            {
+                throw new JsonLdProcessingException(
+                    JsonLdErrorCode.InvalidValueObject,
+                    $"A value object's @type must expand to an absolute IRI; got '{typeNode.GetString()}'.");
+            }
+        }
+    }
+
     private static Dictionary<string, object?>? ExpandValueObject(JsonLdNode value, LinkedDataContext activeContext)
     {
         //A value object typed @json keeps its @value verbatim as a JSON
@@ -1104,6 +1200,8 @@ public static class JsonLdExpansionTree
 
             return jsonResult;
         }
+
+        ValidateValueObject(value, activeContext);
 
         Dictionary<string, object?> result = new(StringComparer.Ordinal);
         foreach(KeyValuePair<string, JsonLdNode> entry in value.EnumerateObject())
