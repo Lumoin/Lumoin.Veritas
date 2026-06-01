@@ -91,7 +91,7 @@ internal sealed class SparqlUpdateExecutorTests
     private async Task ExecuteAsync(MutableSparqlDataset dataset, string text, Utf8StringPool pool)
     {
         SparqlUpdateRequest request = ParseAndNormalize(text, pool);
-        await SparqlUpdateExecutor.ExecuteAsync(request, dataset, SparqlExpressionContext.CreateDefault(), graphSource: null, TestContext.CancellationToken).ConfigureAwait(false);
+        await SparqlUpdateExecutor.ExecuteAsync(request, dataset, SparqlExpressionContext.CreateDefault(), graphSource: null, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -298,9 +298,9 @@ internal sealed class SparqlUpdateExecutorTests
             request,
             dataset,
             SparqlExpressionContext.CreateDefault(),
-            graphSource: static (source, ct) => new ValueTask<IReadOnlyList<DataTriple>>(
+            graphSource: static (source, accessContext, ct) => new ValueTask<IReadOnlyList<DataTriple>>(
                 (IReadOnlyList<DataTriple>)[new DataTriple(new NamedNode(Utf8String.FromString("urn:s")), new NamedNode(Utf8String.FromString("urn:p")), new NamedNode(Utf8String.FromString("urn:o")))]),
-            TestContext.CancellationToken).ConfigureAwait(false);
+            cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.HasCount(1, DumpQuads(dataset));
     }

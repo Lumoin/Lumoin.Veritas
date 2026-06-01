@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie;
+using Lumoin.Veritas.Core.Hypertrie.AccessControl;
 using Lumoin.Veritas.Core.Hypertrie.Execution;
 using Lumoin.Veritas.Core.Hypertrie.Planning;
 using Lumoin.Veritas.Core.Hypertrie.Query;
@@ -78,13 +79,19 @@ public sealed class SparqlQueryEngine
 
     private readonly SparqlClient? serviceClient;
 
+    private readonly AccessControlDelegate? accessControl;
+
+    private readonly AccessContext? accessContext;
+
     /// <summary>Constructs an engine over an already-built dataset (default graph + named graphs) and the term dictionary that encoded it.</summary>
     /// <param name="dataset">The dataset the query evaluates against; its graphs are all encoded by <paramref name="dictionary"/>.</param>
     /// <param name="dictionary">The term dictionary that encoded <paramref name="dataset"/>; query constants are resolved against it.</param>
     /// <param name="expressionContext">The seams (randomness, digests, the query timestamp) the non-pure expression functions consume; <see langword="null"/> uses <see cref="SparqlExpressionContext.CreateDefault"/>.</param>
     /// <param name="serviceClient">The transport a <c>SERVICE</c> federation step uses; <see langword="null"/> means a non-silent <c>SERVICE</c> raises <see cref="NotSupportedException"/>.</param>
+    /// <param name="accessControl">The access-control policy consulted per candidate triple of every local graph read; <see langword="null"/> allows every triple at zero cost.</param>
+    /// <param name="accessContext">The opaque "who is asking" context handed to <paramref name="accessControl"/> and forwarded to the <c>SERVICE</c>/<c>FROM</c>/<c>LOAD</c> IO seams; <see langword="null"/> when the evaluation carries no access context. Required when <paramref name="accessControl"/> is non-<see langword="null"/>.</param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public SparqlQueryEngine(SparqlDataset dataset, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null)
+    public SparqlQueryEngine(SparqlDataset dataset, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null)
     {
         ArgumentNullException.ThrowIfNull(dataset);
         ArgumentNullException.ThrowIfNull(dictionary);
@@ -93,15 +100,20 @@ public sealed class SparqlQueryEngine
         this.dictionary = dictionary;
         this.expressionContext = expressionContext ?? SparqlExpressionContext.CreateDefault();
         this.serviceClient = serviceClient;
+        this.accessControl = accessControl;
+        this.accessContext = accessContext;
     }
 
     /// <summary>Constructs an engine over a single default graph and no named graphs — the common case where the query has no <c>GRAPH</c> form.</summary>
     /// <param name="store">The hypertrie store holding the default graph.</param>
     /// <param name="dictionary">The term dictionary that encoded <paramref name="store"/>; query constants are resolved against it.</param>
     /// <param name="expressionContext">The seams the non-pure expression functions consume; <see langword="null"/> uses <see cref="SparqlExpressionContext.CreateDefault"/>.</param>
+    /// <param name="serviceClient">The transport a <c>SERVICE</c> federation step uses; <see langword="null"/> means a non-silent <c>SERVICE</c> raises <see cref="NotSupportedException"/>.</param>
+    /// <param name="accessControl">The access-control policy consulted per candidate triple; <see langword="null"/> allows every triple.</param>
+    /// <param name="accessContext">The opaque "who is asking" context; <see langword="null"/> when none.</param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public SparqlQueryEngine(HypertrieGraphStore store, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null)
-        : this(SparqlDataset.FromDefaultGraph(store), dictionary, expressionContext, serviceClient)
+    public SparqlQueryEngine(HypertrieGraphStore store, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null)
+        : this(SparqlDataset.FromDefaultGraph(store), dictionary, expressionContext, serviceClient, accessControl, accessContext)
     {
     }
 
@@ -111,17 +123,20 @@ public sealed class SparqlQueryEngine
     /// </summary>
     /// <param name="triples">The data-graph triples.</param>
     /// <param name="expressionContext">The seams (randomness, digests, the query timestamp) the non-pure expression functions consume; <see langword="null"/> uses <see cref="SparqlExpressionContext.CreateDefault"/>.</param>
+    /// <param name="serviceClient">The transport a <c>SERVICE</c> federation step uses; <see langword="null"/> means a non-silent <c>SERVICE</c> raises <see cref="NotSupportedException"/>.</param>
+    /// <param name="accessControl">The access-control policy consulted per candidate triple; <see langword="null"/> allows every triple.</param>
+    /// <param name="accessContext">The opaque "who is asking" context; <see langword="null"/> when none.</param>
     /// <param name="cancellationToken">A token that aborts the build.</param>
     /// <returns>An engine ready to evaluate queries against the graph.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="triples"/> is <see langword="null"/>.</exception>
-    public static async ValueTask<SparqlQueryEngine> BuildAsync(IEnumerable<DataTriple> triples, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, CancellationToken cancellationToken = default)
+    public static async ValueTask<SparqlQueryEngine> BuildAsync(IEnumerable<DataTriple> triples, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(triples);
 
         TermDictionary dictionary = new();
         HypertrieGraphStore store = await EncodeGraphAsync(triples, dictionary, cancellationToken).ConfigureAwait(false);
 
-        return new SparqlQueryEngine(store, dictionary, expressionContext, serviceClient);
+        return new SparqlQueryEngine(store, dictionary, expressionContext, serviceClient, accessControl, accessContext);
     }
 
     /// <summary>
@@ -132,6 +147,9 @@ public sealed class SparqlQueryEngine
     /// <param name="defaultGraph">The default-graph triples.</param>
     /// <param name="namedGraphs">The named graphs, each its graph-name term paired with its triples.</param>
     /// <param name="expressionContext">The seams the non-pure expression functions consume; <see langword="null"/> uses <see cref="SparqlExpressionContext.CreateDefault"/>.</param>
+    /// <param name="serviceClient">The transport a <c>SERVICE</c> federation step uses; <see langword="null"/> means a non-silent <c>SERVICE</c> raises <see cref="NotSupportedException"/>.</param>
+    /// <param name="accessControl">The access-control policy consulted per candidate triple; <see langword="null"/> allows every triple.</param>
+    /// <param name="accessContext">The opaque "who is asking" context; <see langword="null"/> when none.</param>
     /// <param name="cancellationToken">A token that aborts the build.</param>
     /// <returns>An engine ready to evaluate queries against the dataset.</returns>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
@@ -140,6 +158,8 @@ public sealed class SparqlQueryEngine
         IReadOnlyList<(RdfTerm Name, IEnumerable<DataTriple> Triples)> namedGraphs,
         SparqlExpressionContext? expressionContext = null,
         SparqlClient? serviceClient = null,
+        AccessControlDelegate? accessControl = null,
+        AccessContext? accessContext = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(defaultGraph);
@@ -155,7 +175,7 @@ public sealed class SparqlQueryEngine
             named[graphName] = await EncodeGraphAsync(triples, dictionary, cancellationToken).ConfigureAwait(false);
         }
 
-        return new SparqlQueryEngine(new SparqlDataset(defaultStore, named), dictionary, expressionContext, serviceClient);
+        return new SparqlQueryEngine(new SparqlDataset(defaultStore, named), dictionary, expressionContext, serviceClient, accessControl, accessContext);
     }
 
     /// <summary>Encodes a graph's triples into <paramref name="dictionary"/> and indexes them into a fresh hypertrie store.</summary>
@@ -229,17 +249,17 @@ public sealed class SparqlQueryEngine
         List<DataTriple> defaultGraph = [];
         foreach(IriRef from in datasetClause.DefaultGraphs)
         {
-            defaultGraph.AddRange(await resolver(from, cancellationToken).ConfigureAwait(false));
+            defaultGraph.AddRange(await resolver(from, accessContext, cancellationToken).ConfigureAwait(false));
         }
 
         List<(RdfTerm Name, IEnumerable<DataTriple> Triples)> named = new(datasetClause.NamedGraphs.Count);
         foreach(IriRef fromNamed in datasetClause.NamedGraphs)
         {
-            IReadOnlyList<DataTriple> triples = await resolver(fromNamed, cancellationToken).ConfigureAwait(false);
+            IReadOnlyList<DataTriple> triples = await resolver(fromNamed, accessContext, cancellationToken).ConfigureAwait(false);
             named.Add((new NamedNode(fromNamed.Value), triples));
         }
 
-        return await BuildDatasetAsync(defaultGraph, named, expressionContext, serviceClient, cancellationToken).ConfigureAwait(false);
+        return await BuildDatasetAsync(defaultGraph, named, expressionContext, serviceClient, accessControl, accessContext, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -561,7 +581,7 @@ public sealed class SparqlQueryEngine
         string query = SparqlQueryTextWriter.ToSelectQuery(service.InnerPattern);
         try
         {
-            SparqlResultSet results = await serviceClient.QueryAsync(endpoint.Iri, query, cancellationToken).ConfigureAwait(false);
+            SparqlResultSet results = await serviceClient.QueryAsync(endpoint.Iri, query, accessContext, cancellationToken).ConfigureAwait(false);
 
             return results.Solutions;
         }
@@ -644,7 +664,7 @@ public sealed class SparqlQueryEngine
                 List<SparqlSolution> group = byEndpoint[endpoint];
                 try
                 {
-                    SparqlResultSet remote = await serviceClient.QueryAsync(new IriRef(endpoint, default), query, cancellationToken).ConfigureAwait(false);
+                    SparqlResultSet remote = await serviceClient.QueryAsync(new IriRef(endpoint, default), query, accessContext, cancellationToken).ConfigureAwait(false);
                     joined.AddRange(JoinSolutions(group, remote.Solutions));
                 }
                 catch(Exception ex) when(service.Silent && ex is not OperationCanceledException)
@@ -759,7 +779,7 @@ public sealed class SparqlQueryEngine
         BasicGraphPattern query = new(patterns, registry);
         bool hasTripleTermMatches = tripleTermMatches.Count > 0;
         List<SparqlSolution> solutions = [];
-        await foreach(Solution solution in graphStore.Query(query, TimeProvider.System, cancellationToken: cancellationToken).ConfigureAwait(false))
+        await foreach(Solution solution in graphStore.Query(query, TimeProvider.System, accessControl: accessControl, accessContext: accessContext, cancellationToken: cancellationToken).ConfigureAwait(false))
         {
             if(!hasTripleTermMatches)
             {

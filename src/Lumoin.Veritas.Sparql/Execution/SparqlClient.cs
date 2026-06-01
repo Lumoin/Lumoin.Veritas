@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Lumoin.Veritas.Core.Hypertrie.AccessControl;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Results;
 
@@ -29,10 +30,11 @@ public sealed class SparqlClient
     /// <summary>Evaluates a self-contained query at an endpoint and returns its result set.</summary>
     /// <param name="endpoint">The endpoint IRI.</param>
     /// <param name="query">The self-contained SPARQL query.</param>
+    /// <param name="accessContext">The opaque access context to authorize the call with, or <see langword="null"/>.</param>
     /// <param name="cancellationToken">A token that aborts the remote call.</param>
     /// <returns>The endpoint's result set.</returns>
-    public ValueTask<SparqlResultSet> QueryAsync(IriRef endpoint, string query, CancellationToken cancellationToken)
+    public ValueTask<SparqlResultSet> QueryAsync(IriRef endpoint, string query, AccessContext? accessContext, CancellationToken cancellationToken)
     {
-        return transport(endpoint, query, cancellationToken);
+        return transport(endpoint, query, accessContext, cancellationToken);
     }
 }

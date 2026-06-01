@@ -7,6 +7,7 @@ using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie;
+using Lumoin.Veritas.Core.Hypertrie.AccessControl;
 using Lumoin.Veritas.Json;
 using Lumoin.Veritas.NQuads;
 using Lumoin.Veritas.Sparql.Algebra;
@@ -150,7 +151,7 @@ internal static class W3cSparqlEvalRunner
         SparqlExpressionContext context = SparqlExpressionContext.CreateDefault().WithBaseIri(Utf8String.FromString(baseUri));
         try
         {
-            await SparqlUpdateExecutor.ExecuteAsync(normalized, dataset, context, LocalFileGraphSource, cancellationToken).ConfigureAwait(false);
+            await SparqlUpdateExecutor.ExecuteAsync(normalized, dataset, context, LocalFileGraphSource, cancellationToken: cancellationToken).ConfigureAwait(false);
         }
         catch(NotSupportedException ex)
         {
@@ -171,9 +172,10 @@ internal static class W3cSparqlEvalRunner
     /// base. A missing or unreadable source surfaces as an exception (the executor swallows it only for <c>LOAD SILENT</c>).
     /// </summary>
     /// <param name="source">The source IRI.</param>
+    /// <param name="accessContext">The access context (unused by this file-backed resolver).</param>
     /// <param name="cancellationToken">A token to cancel reading.</param>
     /// <returns>The source document's triples.</returns>
-    private static async ValueTask<IReadOnlyList<DataTriple>> LocalFileGraphSource(IriRef source, CancellationToken cancellationToken)
+    private static async ValueTask<IReadOnlyList<DataTriple>> LocalFileGraphSource(IriRef source, AccessContext? accessContext, CancellationToken cancellationToken)
     {
         string path = new Uri(source.Value.ToString()).LocalPath;
         List<DataTriple> triples = [];
@@ -756,9 +758,10 @@ internal static class W3cSparqlEvalRunner
 
     /// <summary>The <see cref="GraphSourceResolver"/> the engine resolves an in-query <c>FROM</c> / <c>FROM NAMED</c> clause IRI through: it names a sibling file the harness loads (the engine itself does the merge and dataset assembly).</summary>
     /// <param name="source">The dataset-clause IRI (already absolute).</param>
+    /// <param name="accessContext">The access context (unused by this file-backed resolver).</param>
     /// <param name="cancellationToken">A token to cancel reading.</param>
     /// <returns>The graph's triples.</returns>
-    private static async ValueTask<IReadOnlyList<DataTriple>> ResolveGraphFromFileAsync(IriRef source, CancellationToken cancellationToken)
+    private static async ValueTask<IReadOnlyList<DataTriple>> ResolveGraphFromFileAsync(IriRef source, AccessContext? accessContext, CancellationToken cancellationToken)
     {
         return await LoadDataAsync(GraphPath(source), cancellationToken).ConfigureAwait(false);
     }

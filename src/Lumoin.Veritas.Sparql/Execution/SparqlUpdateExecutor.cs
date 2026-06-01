@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie;
+using Lumoin.Veritas.Core.Hypertrie.AccessControl;
 using Lumoin.Veritas.Core.Hypertrie.Editing;
 using Lumoin.Veritas.Sparql.Algebra;
 using Lumoin.Veritas.Sparql.Ast;
@@ -43,11 +44,12 @@ public static class SparqlUpdateExecutor
     /// <param name="dataset">The mutable dataset to apply the operations to.</param>
     /// <param name="context">The expression context the modify <c>WHERE</c> evaluation consumes.</param>
     /// <param name="graphSource">The resolver that <c>LOAD</c> fetches a source document's triples through; <see langword="null"/> makes a non-<c>SILENT</c> <c>LOAD</c> raise <see cref="NotSupportedException"/>.</param>
+    /// <param name="accessContext">The opaque access context forwarded to <paramref name="graphSource"/> so a <c>LOAD</c> across a trust boundary can authorize the fetch; <see langword="null"/> when none.</param>
     /// <param name="cancellationToken">A token that aborts execution.</param>
     /// <returns>The asynchronous execution.</returns>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
     /// <exception cref="NotSupportedException">A non-<c>SILENT</c> <c>LOAD</c> was reached with no <paramref name="graphSource"/>.</exception>
-    public static async Task ExecuteAsync(SparqlUpdateRequest request, MutableSparqlDataset dataset, SparqlExpressionContext context, GraphSourceResolver? graphSource = null, CancellationToken cancellationToken = default)
+    public static async Task ExecuteAsync(SparqlUpdateRequest request, MutableSparqlDataset dataset, SparqlExpressionContext context, GraphSourceResolver? graphSource = null, AccessContext? accessContext = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(dataset);
@@ -55,7 +57,7 @@ public static class SparqlUpdateExecutor
 
         for(int operationScope = 0; operationScope < request.Operations.Count; operationScope++)
         {
-            await ApplyAsync(request.Operations[operationScope], dataset, context, graphSource, operationScope, cancellationToken).ConfigureAwait(false);
+            await ApplyAsync(request.Operations[operationScope], dataset, context, graphSource, accessContext, operationScope, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -64,9 +66,10 @@ public static class SparqlUpdateExecutor
     /// <param name="dataset">The mutable dataset.</param>
     /// <param name="context">The expression context.</param>
     /// <param name="graphSource">The <c>LOAD</c> source resolver, or <see langword="null"/>.</param>
+    /// <param name="accessContext">The opaque access context forwarded to <c>LOAD</c>'s resolver, or <see langword="null"/>.</param>
     /// <param name="cancellationToken">A token that aborts execution.</param>
     /// <returns>The asynchronous application.</returns>
-    private static Task ApplyAsync(UpdateOperation operation, MutableSparqlDataset dataset, SparqlExpressionContext context, GraphSourceResolver? graphSource, int operationScope, CancellationToken cancellationToken)
+    private static Task ApplyAsync(UpdateOperation operation, MutableSparqlDataset dataset, SparqlExpressionContext context, GraphSourceResolver? graphSource, AccessContext? accessContext, int operationScope, CancellationToken cancellationToken)
         => operation switch
         {
             InsertDataOperation insert => ApplyDataAsync(insert.Data, dataset, add: true, operationScope, cancellationToken),
@@ -79,7 +82,7 @@ public static class SparqlUpdateExecutor
             AddOperation add => ApplyBinaryAsync(add.Source, add.Destination, BinaryGraphMode.Add, dataset, cancellationToken),
             CopyOperation copy => ApplyBinaryAsync(copy.Source, copy.Destination, BinaryGraphMode.Copy, dataset, cancellationToken),
             MoveOperation move => ApplyBinaryAsync(move.Source, move.Destination, BinaryGraphMode.Move, dataset, cancellationToken),
-            LoadOperation load => ApplyLoadAsync(load, dataset, graphSource, cancellationToken),
+            LoadOperation load => ApplyLoadAsync(load, dataset, graphSource, accessContext, cancellationToken),
             _ => throw new NotSupportedException($"SPARQL Update operation '{operation.GetType().Name}' is not yet executable.")
         };
 
@@ -520,9 +523,10 @@ public static class SparqlUpdateExecutor
     /// <param name="load">The load operation.</param>
     /// <param name="dataset">The mutable dataset.</param>
     /// <param name="graphSource">The source resolver; <see langword="null"/> makes a non-<c>SILENT</c> load throw.</param>
+    /// <param name="accessContext">The opaque access context forwarded to the resolver, or <see langword="null"/>.</param>
     /// <param name="cancellationToken">A token that aborts execution.</param>
     /// <returns>The asynchronous application.</returns>
-    private static async Task ApplyLoadAsync(LoadOperation load, MutableSparqlDataset dataset, GraphSourceResolver? graphSource, CancellationToken cancellationToken)
+    private static async Task ApplyLoadAsync(LoadOperation load, MutableSparqlDataset dataset, GraphSourceResolver? graphSource, AccessContext? accessContext, CancellationToken cancellationToken)
     {
         if(graphSource is null)
         {
@@ -537,7 +541,7 @@ public static class SparqlUpdateExecutor
         IReadOnlyList<DataTriple> triples;
         try
         {
-            triples = await graphSource(load.Source, cancellationToken).ConfigureAwait(false);
+            triples = await graphSource(load.Source, accessContext, cancellationToken).ConfigureAwait(false);
         }
         catch(Exception exception) when(load.Silent && exception is not OperationCanceledException)
         {

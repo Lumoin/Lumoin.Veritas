@@ -94,7 +94,7 @@ internal sealed class SparqlTestHostShell : IAsyncDisposable
     {
         get
         {
-            return async (endpoint, query, cancellationToken) =>
+            return async (endpoint, query, accessContext, cancellationToken) =>
             {
                 SparqlTestEndpoint target = TryResolve(endpoint)
                     ?? throw new InvalidOperationException($"No test endpoint is registered at '{endpoint.Value}'.");
@@ -109,7 +109,7 @@ internal sealed class SparqlTestHostShell : IAsyncDisposable
     {
         get
         {
-            return async (endpoint, query, cancellationToken) =>
+            return async (endpoint, query, accessContext, cancellationToken) =>
             {
                 //A registered endpoint uses its own client + base address; any other IRI is POSTed verbatim via the
                 //fallback client, so an unreachable endpoint surfaces as a real connection failure (which SILENT can absorb).

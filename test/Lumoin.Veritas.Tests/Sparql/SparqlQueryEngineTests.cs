@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Hypertrie.AccessControl;
 using Lumoin.Veritas.Sparql.Algebra;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
@@ -55,7 +56,7 @@ internal sealed class SparqlQueryEngineTests
                 new SparqlSolution([new SparqlBinding(Variable("o"), Iri("b")), new SparqlBinding(Variable("z"), Iri("c"))]),
                 new SparqlSolution([new SparqlBinding(Variable("o"), Iri("x")), new SparqlBinding(Variable("z"), Iri("y"))]),
             ]);
-        SparqlClient client = new((endpoint, query, cancellationToken) => ValueTask.FromResult(remote));
+        SparqlClient client = new((endpoint, query, accessContext, cancellationToken) => ValueTask.FromResult(remote));
         SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(
             [new DataTriple(Iri("a"), Iri("p"), Iri("b"))], serviceClient: client, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
@@ -73,7 +74,7 @@ internal sealed class SparqlQueryEngineTests
     public async Task ServiceSilentSurvivesTransportFailure()
     {
         using Utf8StringPool pool = new();
-        SparqlClient failing = new((endpoint, query, cancellationToken) => throw new System.InvalidOperationException("endpoint unreachable"));
+        SparqlClient failing = new((endpoint, query, accessContext, cancellationToken) => throw new System.InvalidOperationException("endpoint unreachable"));
         SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(
             [new DataTriple(Iri("a"), Iri("p"), Iri("b"))], serviceClient: failing, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
@@ -105,7 +106,7 @@ internal sealed class SparqlQueryEngineTests
     {
         using Utf8StringPool pool = new();
         List<IriRef> calledEndpoints = [];
-        SparqlClient client = new((endpoint, query, cancellationToken) =>
+        SparqlClient client = new((endpoint, query, accessContext, cancellationToken) =>
         {
             calledEndpoints.Add(endpoint);
 
@@ -140,7 +141,7 @@ internal sealed class SparqlQueryEngineTests
     public async Task ServiceVariableEndpointSilentPassesThroughWhenUnbound()
     {
         using Utf8StringPool pool = new();
-        SparqlClient client = new((endpoint, query, cancellationToken) => throw new System.InvalidOperationException("the transport must not be called for an unbound endpoint"));
+        SparqlClient client = new((endpoint, query, accessContext, cancellationToken) => throw new System.InvalidOperationException("the transport must not be called for an unbound endpoint"));
         SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(
             [new DataTriple(Iri("a"), Iri("ep"), Iri("remote1")), new DataTriple(Iri("b"), Iri("ep"), Iri("remote2"))],
             serviceClient: client, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
@@ -157,7 +158,7 @@ internal sealed class SparqlQueryEngineTests
     public async Task ServiceVariableEndpointUnboundIsRefused()
     {
         using Utf8StringPool pool = new();
-        SparqlClient client = new((endpoint, query, cancellationToken) => ValueTask.FromResult(SparqlResultSet.ForSelect([], [])));
+        SparqlClient client = new((endpoint, query, accessContext, cancellationToken) => ValueTask.FromResult(SparqlResultSet.ForSelect([], [])));
         SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(
             [new DataTriple(Iri("a"), Iri("ep"), Iri("remote1"))], serviceClient: client, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
@@ -174,7 +175,7 @@ internal sealed class SparqlQueryEngineTests
         using Utf8StringPool pool = new();
         SparqlQueryEngine baseEngine = await BuildEngineAsync(("base", "p", "base")).ConfigureAwait(false);
         DatasetClause clause = new(default, [FromIri("g1")], []);
-        GraphSourceResolver resolver = (source, cancellationToken) => GraphFor(source, ("g1", [new DataTriple(Iri("a"), Iri("p"), Iri("b"))]));
+        GraphSourceResolver resolver = (source, accessContext, cancellationToken) => GraphFor(source, ("g1", [new DataTriple(Iri("a"), Iri("p"), Iri("b"))]));
 
         SparqlQueryEngine scoped = await baseEngine.WithDatasetAsync(clause, resolver, TestContext.CancellationToken).ConfigureAwait(false);
         AlgebraOperator algebra = Translate("SELECT * WHERE { ?s ?p ?o }", pool);
@@ -190,7 +191,7 @@ internal sealed class SparqlQueryEngineTests
         using Utf8StringPool pool = new();
         SparqlQueryEngine baseEngine = await BuildEngineAsync(("base", "p", "base")).ConfigureAwait(false);
         DatasetClause clause = new(default, [FromIri("g1"), FromIri("g2")], []);
-        GraphSourceResolver resolver = (source, cancellationToken) => GraphFor(source,
+        GraphSourceResolver resolver = (source, accessContext, cancellationToken) => GraphFor(source,
             ("g1", [new DataTriple(Iri("a"), Iri("p"), Iri("b"))]),
             ("g2", [new DataTriple(Iri("c"), Iri("p"), Iri("d"))]));
 
@@ -211,7 +212,7 @@ internal sealed class SparqlQueryEngineTests
         using Utf8StringPool pool = new();
         SparqlQueryEngine baseEngine = await BuildEngineAsync(("base", "p", "base")).ConfigureAwait(false);
         DatasetClause clause = new(default, [], [FromIri("g1")]);
-        GraphSourceResolver resolver = (source, cancellationToken) => GraphFor(source, ("g1", [new DataTriple(Iri("a"), Iri("p"), Iri("b"))]));
+        GraphSourceResolver resolver = (source, accessContext, cancellationToken) => GraphFor(source, ("g1", [new DataTriple(Iri("a"), Iri("p"), Iri("b"))]));
 
         SparqlQueryEngine scoped = await baseEngine.WithDatasetAsync(clause, resolver, TestContext.CancellationToken).ConfigureAwait(false);
 
@@ -237,6 +238,46 @@ internal sealed class SparqlQueryEngineTests
         DatasetClause empty = new(default, [], []);
         SparqlQueryEngine same = await baseEngine.WithDatasetAsync(empty, resolver: null, TestContext.CancellationToken).ConfigureAwait(false);
         Assert.AreSame(baseEngine, same);
+    }
+
+    /// <summary>An access-control policy that denies every candidate triple yields no solutions (the local read is gated per candidate at descent leaf).</summary>
+    [TestMethod]
+    public async Task AccessControlDenyAllYieldsNoSolutions()
+    {
+        using Utf8StringPool pool = new();
+        AccessControlDelegate denyAll = (request, cancellationToken) => new ValueTask<AccessDecision>(AccessDecision.Deny);
+        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(
+            [new DataTriple(Iri("a"), Iri("p"), Iri("b"))],
+            accessControl: denyAll, accessContext: new TestAccessContext("auditor"), cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+
+        AlgebraOperator algebra = Translate("SELECT * WHERE { ?s ?p ?o }", pool);
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.IsEmpty(solutions);
+    }
+
+    /// <summary>The caller-supplied opaque AccessContext is handed through to the access-control policy unchanged (the PIC "who is asking").</summary>
+    [TestMethod]
+    public async Task AccessContextFlowsToThePolicy()
+    {
+        using Utf8StringPool pool = new();
+        TestAccessContext supplied = new("auditor");
+        AccessContext? seen = null;
+        AccessControlDelegate capture = (request, cancellationToken) =>
+        {
+            seen = request.Context;
+
+            return new ValueTask<AccessDecision>(AccessDecision.Allow);
+        };
+        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(
+            [new DataTriple(Iri("a"), Iri("p"), Iri("b"))],
+            accessControl: capture, accessContext: supplied, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+
+        AlgebraOperator algebra = Translate("SELECT * WHERE { ?s ?p ?o }", pool);
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(1, solutions);
+        Assert.AreSame(supplied, seen);
     }
 
     /// <summary>Two triples sharing a variable join (the translator merges them into one BGP); the join variable is bound consistently and projected away when not selected.</summary>
@@ -1258,6 +1299,10 @@ internal sealed class SparqlQueryEngineTests
     {
         return new IriRef(Utf8String.FromString(Ex + localName), default);
     }
+
+    /// <summary>A minimal concrete <see cref="AccessContext"/> for the access-control threading tests (its content is opaque to the engine).</summary>
+    /// <param name="Who">The caller identity carried by the context.</param>
+    private sealed record TestAccessContext(string Who) : AccessContext;
 
     /// <summary>A canned <see cref="GraphSourceResolver"/> body: serves the triples of whichever example-namespace graph the source IRI names, or the empty graph.</summary>
     /// <param name="source">The clause IRI to resolve.</param>
