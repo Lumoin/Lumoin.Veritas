@@ -6,7 +6,11 @@ AST → algebra → translator → hypertrie backend + executor subset → SHACL
 unlock). **Batch 2 = Milestones D–F** (full algebra/aggregation, CONSTRUCT/
 DESCRIBE/JSON results, conformance push).
 
-## ⭐ CURRENT STATE (2026-06-01, **harness GREEN (0 failures)**; full suite **3698 / 0 failed / 2 skip**; SPARQL **`SERVICE` federation + in-query `FROM`/`FROM NAMED` + access-context threading all execute**; RDF + SPARQL conformance-complete, on `sparql-query-engine`, tree clean)
+## ⭐ CURRENT STATE (2026-06-01; RDF + SPARQL + SHACL conformance-complete; **JSON-LD conformance oracle now wired — full suite intentionally RED at the JSON-LD-expand baseline**; on `sparql-query-engine`, tree clean)
+
+⚠ **The full suite is intentionally RED now (not a regression): full suite 4085 total / 269 failed / 21 skipped.** All 269 failures are the **JSON-LD Expand RED baseline** (the honest distance, to ratchet to 0); every other suite stays green. Before JSON-LD was wired the suite was 3698 / 0 / 2.
+
+✅ **JSON-LD 1.1 CONFORMANCE ORACLE — EXPAND WIRED (2026-06-01, `2717aa4`).** JSON-LD was implemented (Expand/Compact/ToRdf) but never measured against the official W3C suite. Vendored `w3c/json-ld-api` tests (expand/compact/toRdf, pinned `265e6b4`, `Material/JsonLd/`). New manifest-driven harness (the JSON-LD manifests are `.jsonld`, not Turtle): `Conformance/JsonLdManifestLoader` (reads via the library's own `JsonLdNode` model — STJ is banned), `[JsonLdManifestData]`, `Conformance/W3cJsonLdRunner` (expand via `JsonLdExpansionTree`, suite-`baseIri` `@context` URLs → vendored files via a file-backed `ContextResolverDelegate`, structural JSON compare object-graph-vs-`JsonLdNode`), `JsonLd/W3cJsonLdTests`. **Baseline: expand 385 — 97 passed / 269 failed / 19 skipped** (skips = JSON-LD 1.0 / `expandContext`). The oracle immediately caught a real pervasive gap: **node-level `@type` expands to a scalar IRI, but expanded form requires an array** (`JsonLdExpansionTree.ExpandTypeValue`, line ~229; the existing JsonLd unit tests enshrined the non-conformant scalar). NEXT: ratchet the expander to 0 (start with `@type`-array — touches expansion + the compactor + several unit tests), then wire **Compact** + **ToRdf** (corpus already vendored). See the resume recipe below.
 
 ✅ **IN-QUERY `FROM`/`FROM NAMED` + opaque `AccessContext` THREADING DONE (2026-06-01): commits `f8301d3` (FROM), `8e089e6` (access context).**
 - **`FROM`/`FROM NAMED` honored at the engine (§13.2, `f8301d3`).** Was parsed but ignored (only the harness honored it by pre-building). `SparqlQueryEngine.WithDatasetAsync(datasetClause, resolver, ct)` returns the engine **scoped** to a query's clause: empty clause → unchanged; non-empty → **overrides** the default dataset (default graph = the merge of the `FROM` graphs, named graphs = the `FROM NAMED` graphs keyed by IRI). Each clause IRI is resolved through the existing **`GraphSourceResolver`** seam (the `LOAD` seam; resolver decides local-vs-remote), and the effective dataset is built via the existing `BuildDatasetAsync` — so the multi-`FROM` merge rides the **same indexed build the build-soak benchmark already measures** (no new hot-path; store-reuse / lazy cross-store union are later optimizations *measured against* this). Returning a scoped engine means `EvaluateAsync`/`DescribeAsync`/CONSTRUCT all work unchanged. Non-empty clause + no resolver → `NotSupportedException` (mirrors `LOAD`). The **W3C eval runner now drives `FROM` through this engine path** (a file-backed resolver), replacing its bespoke pre-build — the real W3C `FROM` corpus proves it. Tests: `SparqlQueryEngineTests.{FromSingleGraphScopesAndOverridesDefaultGraph, MultipleFromGraphsMergeIntoTheDefaultGraph, FromNamedExposesGraphAndLeavesDefaultEmpty, DatasetClauseRequiresResolverUnlessEmpty}`.
@@ -126,21 +130,13 @@ New AST slots `ConstructQuery.TemplateStandaloneNodes`/`Quads.DefaultStandaloneN
    (memory `project_aggregation_specialized_storage`); the group-partition+fold step is the seam.
 - **OWL / entailment** remains its own deferred track (SHACL-AF rules would partly pre-empt it).
 
-### ▶ RESUME RECIPE — JSON-LD 1.1 conformance (START HERE next session)
-Branch `sparql-query-engine`, full suite **3700 / 0 failed / 2 skip** (the 2 are justified non-W3C `.car` fixtures).
-SHACL/RDF/SPARQL conformance are complete; the next ratchet is **JSON-LD**. Scope first:
-- **What `Lumoin.Veritas.JsonLd` implements** — confirm which API operations exist (expand / compact / flatten /
-  toRdf / fromRdf) before deciding which W3C suites to wire; only wire suites for operations we implement, baseline
-  the rest.
-- **The manifest wrinkle:** JSON-LD test manifests are `.jsonld` (a JSON-LD document with a `sequence` of entries),
-  not Turtle — the existing `W3cManifestLoader` (Turtle) + `[W3cManifestData]` attribute won't load them. Either add
-  a JSON manifest loader or a parallel `[JsonLdManifestData]`-style data source. Each entry has `@type`
-  (jld:PositiveEvaluationTest / NegativeEvaluationTest), `input`, `expect`/`expectErrorCode`, and per-suite `option`s
-  (base, processingMode 1.1, expandContext, …).
-- **Comparison:** expand/compact/flatten compare JSON (structural, order-insensitive for sets); toRdf compares
-  N-Quads (reuse the existing N-Quads reader + `QuadSetIsomorphism`); fromRdf compares JSON.
-- **Verify:** per [[feedback_build_test_command_shape]] — build the test csproj, run the new JSON-LD filter, then the
-  FULL suite. RED-baseline + ratchet, NOT KnownGaps ([[project_sparql_conformance_baseline]]).
+### ▶ RESUME RECIPE — ratchet the JSON-LD Expand baseline (START HERE next session)
+The **oracle is built** (`2717aa4`): `Conformance/{JsonLdManifestLoader,JsonLdManifestDataAttribute,W3cJsonLdRunner,JsonLdTestCase}.cs` + `JsonLd/W3cJsonLdTests.cs`; corpus `Material/JsonLd/` (expand/compact/toRdf vendored, only **expand** wired). Run `--filter "FullyQualifiedName~W3cJsonLd"`. **Expand baseline: 97 / 385 pass, 269 fail, 19 skip.** Drive the 269 to 0:
+- **First gap (highest impact — almost every test has `@type`):** node-level `@type` must expand to an **array**. `JsonLdExpansionTree.ExpandTypeValue` (~line 229, the `result["@type"] = …` node case — NOT the value-object `{@value,@type}` case, which stays scalar). Fixing it also means updating the JsonLd unit tests that assert a scalar node `@type` (`JsonLdExpansionTreeTests` L70, L371) and checking the **compactor** still round-trips array `@type` input (`JsonLdCompactor`/`JsonLdCompactorTests`).
+- **After that**, re-run, take the next-biggest failure bucket (the runner's outcome messages bucket cleanly: "Expanded output does not match" vs "Expected error '…', but expansion succeeded" — the latter ~65 are expander *error-detection* gaps, i.e. the expander is too lenient on invalid contexts/values). The negative-error gaps are a distinct, mechanical workstream (add the §-defined validation throws to context/value processing).
+- **Then wire Compact + ToRdf** (corpus already vendored): in `W3cJsonLdRunner`, add a `compact` arm (expand → `ContextProcessor.ProcessAsync` the entry's `context` → `JsonLdCompactor.Compact` → structural compare) and a `toRdf` arm (`JsonLdExpander.ExtractQuadsAsync` → N-Quads compare via the existing `NQuadsReader` + `QuadSetIsomorphism`); add `[JsonLdManifestData("compact")]` / `("toRdf")` test methods.
+- **Skips / unsupported:** `expandContext` option and JSON-LD-1.0 cases are Skipped by design; `flatten`/`fromRdf` are unimplemented operations (not wired). The number comparison in `W3cJsonLdRunner.NumberEquals` is lexical-then-numeric — refine if a number-format test miscounts.
+- **Verify:** per [[feedback_build_test_command_shape]]. RED-baseline + ratchet, NOT KnownGaps ([[project_sparql_conformance_baseline]]). The suite stays RED until the wired operations reach 0.
 
 ### Scope-analysis notes (commit `879dc2c`)
 - `Lumoin.Veritas.Sparql/Analysis/SparqlScopeAnalyzer.Analyze(SparqlRequest, DiagnosticBag)` — span-insensitive,
