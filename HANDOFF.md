@@ -28,6 +28,35 @@ SPARQL subquery/graph-fixture skips. (System.Xml stays in the Xml project per th
    SPARQL engine. Large ratchet.
 6. **Performance rework — pluggable WCOJ backends** (LAST, per user): the 4-seam taxonomy + BenchmarkDotNet vehicle.
 
+### RESUME RECIPE — RDF/XML conformance ratchet (item 1, the worked-out-then-reverted wiring)
+The reader `Lumoin.Veritas.Xml/RdfXmlReader.cs` is committed; only the *conformance-suite wiring* was reverted (to
+keep the suite at 0 failed). To resume:
+1. **Vendor** (shallow fetch, same pinned commit): `git fetch --depth 1 origin 674da267646573441808560564451fe5cc77aef7`
+   of `w3c/rdf-tests`, copy `rdf/rdf11/rdf-xml` → `Material/Rdf/rdf-xml` and `rdf/rdf12/rdf-xml` → `Material/Rdf/rdf-xml-12`
+   (rdf11 = 34 files / 173 entries: 132 `rdft:TestXMLEval` + 41 `rdft:TestXMLNegativeSyntax`; rdf12 = 3). Add an
+   `ATTRIBUTION.md` note.
+2. **`Material/Rdf/.../manifest.ttl`** carries `mf:assumedTestBase`; `TestXMLEval`→`W3cTestType.Evaluation`,
+   `TestXMLNegativeSyntax`→`NegativeSyntax` (already classified by `ClassifyTestType`; **no loader change needed**).
+3. **`Conformance/RdfXmlConformanceReader.cs`**: drains the `PipeReader` to bytes → `RdfXmlReader.Read(bytes,
+   diagnostics, baseIri)` → yields quads → throws `FormatException` when `diagnostics.HasErrors` (the `W3cTestRunner`
+   catch-based negative-syntax contract).
+4. **`Conformance/W3cRdfXmlTests.cs`**: `[W3cManifestData("Rdf","rdf-xml")]` + `[W3cManifestData("Rdf","rdf-xml-12")]`;
+   pass a **per-suite base closure** `(input,ct) => RdfXmlConformanceReader.ReadAsync(input, assumedBase +
+   Path.GetFileName(testCase.InputPath), ct)` to `W3cTestRunner.RunAsync` (assumedBase =
+   `https://w3c.github.io/rdf-tests/rdf/rdf11/rdf-xml/` and `…/rdf12/rdf-xml/`). This avoids threading a base through
+   the shared `InputReader` delegate (`(PipeReader,ct)→IAsyncEnumerable<Quad>`).
+5. **Ratchet the 96 reds** (run `--filter "FullyQualifiedName~RdfXml"`): (a) ~50 negative-syntax — `RdfXmlReader` is
+   lenient and emits no diagnostic; add strict validation (reject `rdf:li`/`rdf:ID` misuse, bad QNames
+   `rdfms-rdf-names-use-error-*`, `rdf:aboutEach`, incomplete syntax). (b) ~25 RDF-1.2-in-XML (`rdf-xml-an-*` annotations,
+   `rdf-xml-tt-*` triple terms, `rdf-xml-dir-*` direction) — new RDF 1.2 XML productions. (c) ~20 core eval bugs:
+   `rdfms-empty-property-elements*`, `rdf-ns-prefix-confusion*`, `rdfms-not-id-and-resource-attr*`,
+   `rdfms-difference-between-ID-and-about*`, `xmlbase*`, `xml-canon*` (parseType=Literal exclusive-canonicalization).
+
+### Build/test (always, per [[feedback_build_test_command_shape]])
+- `dotnet build <csproj> -clp:ErrorsOnly --nologo` (PowerShell), separate from the test run.
+- Test exe (Bash, `cd /c/projektit/Lumoin.Veritas` first): `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe" --filter "FullyQualifiedName~<X>" > tempdocs/out.txt 2>&1` then Grep `total:|failed:`. ⚠ Some update/syntax negatives can hang the parser if a recovery path doesn't advance — wrap runs in `timeout`. Kill stray `Lumoin.Veritas.Tests` processes before rebuilding (they lock the DLLs).
+- Tree is clean at `da6ee06`; branch `sparql-query-engine`.
+
 ---
 
 ## Prior milestone (2026-06-01): SPARQL Update CONFORMANCE-COMPLETE (all 5 phases)
