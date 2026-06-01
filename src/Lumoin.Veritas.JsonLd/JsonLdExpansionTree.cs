@@ -302,7 +302,31 @@ public static class JsonLdExpansionTree
         }
 
         Dictionary<string, object?> result = new(StringComparer.Ordinal);
+        await ExpandPropertiesIntoAsync(
+            obj, result, activeContext, typeExpansionContext, baseUrl, resolver, parser, cancellationToken)
+            .ConfigureAwait(false);
 
+        return result;
+    }
+
+    /// <summary>
+    /// Expands the properties of <paramref name="obj"/> into
+    /// <paramref name="result"/> using the node's active context. Factored
+    /// out so an <c>@nest</c> entry can lift a nested object's properties
+    /// into the same node (same scope, no new node object).
+    /// </summary>
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
+        Justification = "baseUrl follows the JSON-LD specification convention of string URIs.")]
+    private static async ValueTask ExpandPropertiesIntoAsync(
+        JsonLdNode obj,
+        Dictionary<string, object?> result,
+        LinkedDataContext activeContext,
+        LinkedDataContext typeExpansionContext,
+        string? baseUrl,
+        ContextResolverDelegate resolver,
+        JsonLdParserDelegate parser,
+        CancellationToken cancellationToken)
+    {
         foreach(KeyValuePair<string, JsonLdNode> property in obj.EnumerateObject())
         {
             string key = property.Key;
@@ -380,6 +404,16 @@ public static class JsonLdExpansionTree
                         }
                     }
 
+                    continue;
+                }
+                case "@nest":
+                {
+                    //@nest lifts a nested object's properties into the
+                    //current node (same scope), so its properties are
+                    //expanded into the same result map.
+                    await ExpandNestIntoAsync(
+                        value, result, activeContext, typeExpansionContext, baseUrl, resolver, parser, cancellationToken)
+                        .ConfigureAwait(false);
                     continue;
                 }
                 default:
@@ -466,8 +500,6 @@ public static class JsonLdExpansionTree
                 }
             }
         }
-
-        return result;
     }
 
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
@@ -1012,6 +1044,64 @@ public static class JsonLdExpansionTree
         }
 
         return valueObject;
+    }
+
+    /// <summary>
+    /// Expands the value of an <c>@nest</c> entry (an object or array of
+    /// objects) into <paramref name="result"/>. Each nested item must be a
+    /// node object (never a value object), per W3C JSON-LD 1.1.
+    /// </summary>
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
+        Justification = "baseUrl follows the JSON-LD specification convention of string URIs.")]
+    private static async ValueTask ExpandNestIntoAsync(
+        JsonLdNode nestValue,
+        Dictionary<string, object?> result,
+        LinkedDataContext activeContext,
+        LinkedDataContext typeExpansionContext,
+        string? baseUrl,
+        ContextResolverDelegate resolver,
+        JsonLdParserDelegate parser,
+        CancellationToken cancellationToken)
+    {
+        if(nestValue.Kind == JsonLdNodeKind.Array)
+        {
+            foreach(JsonLdNode item in nestValue.EnumerateArray())
+            {
+                await ExpandOneNestAsync(
+                    item, result, activeContext, typeExpansionContext, baseUrl, resolver, parser, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            return;
+        }
+
+        await ExpandOneNestAsync(
+            nestValue, result, activeContext, typeExpansionContext, baseUrl, resolver, parser, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
+        Justification = "baseUrl follows the JSON-LD specification convention of string URIs.")]
+    private static async ValueTask ExpandOneNestAsync(
+        JsonLdNode item,
+        Dictionary<string, object?> result,
+        LinkedDataContext activeContext,
+        LinkedDataContext typeExpansionContext,
+        string? baseUrl,
+        ContextResolverDelegate resolver,
+        JsonLdParserDelegate parser,
+        CancellationToken cancellationToken)
+    {
+        if(item.Kind != JsonLdNodeKind.Object || IsValueObject(item, activeContext))
+        {
+            throw new JsonLdProcessingException(
+                JsonLdErrorCode.InvalidNestValue,
+                "An @nest value must be a node object, not a value object or scalar.");
+        }
+
+        await ExpandPropertiesIntoAsync(
+            item, result, activeContext, typeExpansionContext, baseUrl, resolver, parser, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
