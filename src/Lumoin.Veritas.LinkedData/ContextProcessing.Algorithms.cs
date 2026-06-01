@@ -600,6 +600,15 @@ public static partial class ContextProcessing
             string? expandedReverse = TryExpandReverseProperty(activeContext, value.ReverseIri);
             if(expandedReverse is null)
             {
+                //A reverse value in the form of a keyword (e.g. "@ignoreMe")
+                //is not an error: the term is simply not created.
+                if(IriUtils.IsKeywordLike(value.ReverseIri))
+                {
+                    defined[termName] = true;
+
+                    return activeContext;
+                }
+
                 throw new LinkedDataProcessingException(
                     "invalid IRI mapping",
                     string.Create(CultureInfo.InvariantCulture, $"@reverse value '{value.ReverseIri}' in term definition for '{termName}' does not expand to an absolute IRI."));

@@ -478,7 +478,15 @@ public static partial class ContextProcessing
         ArgumentNullException.ThrowIfNull(iriMapping);
 
         int colonPos = iriMapping.IndexOf(':', StringComparison.Ordinal);
-        if(colonPos <= 0 || iriMapping.StartsWith("//", StringComparison.Ordinal))
+        if(colonPos <= 0)
+        {
+            return null;
+        }
+
+        //A "scheme://" value is an absolute IRI, not a compact IRI whose
+        //suffix happens to begin with "//".
+        string suffix = iriMapping[(colonPos + 1)..];
+        if(suffix.StartsWith("//", StringComparison.Ordinal))
         {
             return null;
         }
