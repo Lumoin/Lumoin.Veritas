@@ -80,14 +80,10 @@ public static class JsonLdExpansionTree
             activeContext = activeContext.WithBaseIri(baseUrl);
         }
 
-        if(document.Kind == JsonLdNodeKind.Object
-            && document.TryGetProperty("@context", out JsonLdNode contextElement))
-        {
-            activeContext = await ContextProcessor.ProcessAsync(
-                activeContext, contextElement, baseUrl, resolver, parser, cancellationToken)
-                .ConfigureAwait(false);
-        }
-
+        //The document's own @context is processed by ExpandObjectAsync when
+        //it descends into the root object; processing it here as well would
+        //apply it twice (harmless for an absolute @vocab, but a relative
+        //@vocab would concatenate against itself).
         object? expanded = await ExpandElementAsync(
             document, activeContext, baseUrl, resolver, parser, cancellationToken).ConfigureAwait(false);
 

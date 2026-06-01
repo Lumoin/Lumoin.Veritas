@@ -213,11 +213,13 @@ public static partial class ContextProcessing
         {
             return activeContext.WithVocabularyMapping(null);
         }
-        if(IriUtils.IsAbsoluteIri(vocabValue) || vocabValue.StartsWith('_'))
-        {
-            return activeContext.WithVocabularyMapping(vocabValue);
-        }
-        string? expanded = activeContext.ExpandIri(vocabValue, vocab: true);
+
+        //@vocab is expanded both vocab-relative (so a relative value chains
+        //off a prior @vocab by concatenation) and document-relative (so an
+        //empty or relative value resolves against the base IRI). IRI
+        //expansion already handles absolute IRIs, compact IRIs (ex:ns/ via
+        //the prefix mapping), and blank-node identifiers.
+        string? expanded = activeContext.ExpandIri(vocabValue, vocab: true, documentRelative: true);
         return activeContext.WithVocabularyMapping(expanded ?? vocabValue);
     }
 
