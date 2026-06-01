@@ -47,7 +47,8 @@ internal static class JsonLdScopedContextHelper
         string? baseUrl,
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool propagate = true)
     {
         FetchRemoteResourceDelegate fetcher = JsonLdRemoteContextParsing.AdaptResolverToFetcher(resolver);
         ParseRemoteContextDelegate remoteParser = JsonLdRemoteContextParsing.Create(parser);
@@ -55,7 +56,7 @@ internal static class JsonLdScopedContextHelper
         try
         {
             return await ContextProcessing.ApplyEmbeddedContextsAsync(
-                activeContext, scopedEntries, baseUrl, fetcher, remoteParser, cache: null, cancellationToken)
+                activeContext, scopedEntries, baseUrl, fetcher, remoteParser, cache: null, cancellationToken, propagate)
                 .ConfigureAwait(false);
         }
         catch(LinkedDataProcessingException ex) when(ex is not JsonLdProcessingException)

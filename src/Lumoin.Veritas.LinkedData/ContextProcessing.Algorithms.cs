@@ -45,7 +45,8 @@ public static partial class ContextProcessing
         FetchRemoteResourceDelegate fetcher,
         ParseRemoteContextDelegate parser,
         ProbeContextCacheDelegate? cache,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool propagate = true)
     {
         ArgumentNullException.ThrowIfNull(activeContext);
         ArgumentNullException.ThrowIfNull(entries);
@@ -54,7 +55,7 @@ public static partial class ContextProcessing
 
         return ApplyEmbeddedContextsCoreAsync(
             activeContext, entries, baseUrl, fetcher, parser, cache,
-            overrideProtected: false, propagate: true,
+            overrideProtected: false, propagate: propagate,
             remoteContexts: [], depth: 0, cancellationToken);
     }
 
@@ -78,7 +79,10 @@ public static partial class ContextProcessing
                 "Maximum context processing depth exceeded. A context may contain a recursive reference.");
         }
 
-        LinkedDataContext result = activeContext.Clone();
+        //Seed the propagation default for this application (type-scoped
+        //contexts pass false). A per-entry @propagate overrides it in
+        //ApplyContextDirectives.
+        LinkedDataContext result = activeContext.Clone().WithPropagate(propagate);
 
         foreach(LinkedDataContextEntry entry in entries)
         {

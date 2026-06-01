@@ -285,9 +285,14 @@ public static class JsonLdExpansionTree
             LinkedDataContext afterTypeScoped = await ApplyTypeScopedAsync(
                 activeContext, typeNode, baseUrl, resolver, parser, cancellationToken)
                 .ConfigureAwait(false);
-            activeContext = ReferenceEquals(afterTypeScoped, beforeTypeScoped)
-                ? afterTypeScoped
-                : afterTypeScoped.WithPreviousContext(beforeTypeScoped);
+
+            //A type-scoped context is non-propagating unless it set
+            //@propagate: true (reflected in its Propagate flag); a
+            //non-propagating one records the pre-application context so
+            //nested nodes revert to it.
+            activeContext = !ReferenceEquals(afterTypeScoped, beforeTypeScoped) && !afterTypeScoped.Propagate
+                ? afterTypeScoped.WithPreviousContext(beforeTypeScoped)
+                : afterTypeScoped;
         }
 
         Dictionary<string, object?> result = new(StringComparer.Ordinal);
@@ -1243,8 +1248,11 @@ public static class JsonLdExpansionTree
                 continue;
             }
 
+            //Type-scoped contexts are non-propagating by default; an
+            //explicit @propagate: true inside the scoped context re-enables
+            //propagation (honoured downstream via the result's Propagate).
             running = await ApplyScopedEntriesAsync(
-                running, entriesForType, baseUrl, resolver, parser, cancellationToken)
+                running, entriesForType, baseUrl, resolver, parser, cancellationToken, propagate: false)
                 .ConfigureAwait(false);
         }
 
@@ -1285,10 +1293,11 @@ public static class JsonLdExpansionTree
         string? baseUrl,
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool propagate = true)
     {
         return await JsonLdScopedContextHelper.ApplyAsync(
-            activeContext, entries, baseUrl, resolver, parser, cancellationToken)
+            activeContext, entries, baseUrl, resolver, parser, cancellationToken, propagate)
             .ConfigureAwait(false);
     }
 }
