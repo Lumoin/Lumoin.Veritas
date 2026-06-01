@@ -38,6 +38,9 @@ public static class RdfXmlReader
 
     private static XNamespace Rdf { get; } = RdfNamespace;
 
+    /// <summary>The Internationalization Tag Set namespace, whose <c>its:dir</c> attribute carries the RDF 1.2 base direction.</summary>
+    private static XNamespace Its { get; } = "http://www.w3.org/2005/11/its";
+
     /// <summary>
     /// Reads the RDF/XML document into quads, recording any malformedness in <paramref name="diagnostics"/>.
     /// </summary>
@@ -185,8 +188,16 @@ public static class RdfXmlReader
             string? @base = AttributeBase(element, parentBase);
             string? lang = AttributeLang(element, parentLang);
             ValidatePropertyElement(element, @base);
-            RdfTerm @object = ResolveObject(stack, element, @base, lang);
+            RdfTerm? @object = ResolveObject(stack, element, @base, lang);
+
+            //A null object is an RDF 1.2-only construct (a triple term outside RDF 1.2 mode): it asserts nothing.
+            if(@object is null)
+            {
+                return;
+            }
+
             Quads.Add(new Quad(subject, predicate, @object));
+            EmitAnnotation(element, @base, subject, predicate, @object);
 
             //rdf:ID on a property element reifies the statement it makes.
             if(element.Attribute(Rdf + "ID") is { } reifyId)
@@ -201,12 +212,17 @@ public static class RdfXmlReader
         /// <param name="base">The base IRI in scope.</param>
         /// <param name="lang">The language in scope.</param>
         /// <returns>The object term.</returns>
-        private RdfTerm ResolveObject(Stack<WorkItem> stack, XElement element, string? @base, string? lang)
+        private RdfTerm? ResolveObject(Stack<WorkItem> stack, XElement element, string? @base, string? lang)
         {
             string? parseType = element.Attribute(Rdf + "parseType")?.Value;
             if(parseType == "Literal")
             {
                 return new Literal(Utf8String.FromString(InnerXml(element)), new NamedNode(Utf8String.FromString(RdfNamespace + "XMLLiteral")));
+            }
+
+            if(parseType == "Triple")
+            {
+                return BuildTripleTerm(stack, element, @base, lang);
             }
 
             if(parseType == "Resource")
@@ -258,19 +274,14 @@ public static class RdfXmlReader
                 return bnode;
             }
 
-            //A leaf: a typed or language-tagged or plain literal from the element's text.
+            //A leaf: a typed, language-tagged (optionally base-directional), or plain literal from the element's text.
             string text = element.Value;
             if(element.Attribute(Rdf + "datatype") is { } datatype)
             {
                 return new Literal(Utf8String.FromString(text), new NamedNode(Resolve(@base, datatype.Value)));
             }
 
-            if(lang is not null)
-            {
-                return new Literal(Utf8String.FromString(text), new NamedNode(Utf8String.FromString(RdfNamespace + "langString")), Utf8String.FromString(lang));
-            }
-
-            return new Literal(Utf8String.FromString(text), new NamedNode(Vocabulary.Xsd.String));
+            return TextLiteral(text, element, lang);
         }
 
         /// <summary>Builds an RDF collection (<c>parseType="Collection"</c>) from the property element's child node elements, returning the list head (or <c>rdf:nil</c> when empty).</summary>
@@ -353,11 +364,35 @@ public static class RdfXmlReader
                 }
 
                 NamedNode predicate = new(Utf8String.FromString(attribute.Name.NamespaceName + attribute.Name.LocalName));
-                Literal value = lang is null
-                    ? new Literal(Utf8String.FromString(attribute.Value), new NamedNode(Vocabulary.Xsd.String))
-                    : new Literal(Utf8String.FromString(attribute.Value), new NamedNode(Utf8String.FromString(RdfNamespace + "langString")), Utf8String.FromString(lang));
-                Quads.Add(new Quad(subject, predicate, value));
+                Quads.Add(new Quad(subject, predicate, TextLiteral(attribute.Value, element, lang)));
             }
+        }
+
+        /// <summary>
+        /// Emits the RDF 1.2 annotation statement for a property element carrying <c>rdf:annotation</c> (an IRI
+        /// reifier) or <c>rdf:annotationNodeID</c> (a blank-node reifier): <c>reifier rdf:reifies &lt;&lt;(s p o)&gt;&gt;</c>,
+        /// where <c>(s p o)</c> is the base triple the property element asserts.
+        /// </summary>
+        /// <param name="element">The property element.</param>
+        /// <param name="base">The base IRI in scope.</param>
+        /// <param name="subject">The base triple's subject.</param>
+        /// <param name="predicate">The base triple's predicate.</param>
+        /// <param name="object">The base triple's object.</param>
+        private void EmitAnnotation(XElement element, string? @base, RdfTerm subject, NamedNode predicate, RdfTerm @object)
+        {
+            RdfTerm? reifier = element switch
+            {
+                _ when element.Attribute(Rdf + "annotation") is { } annotation => new NamedNode(Resolve(@base, annotation.Value)),
+                _ when element.Attribute(Rdf + "annotationNodeID") is { } annotationNodeId => new BlankNode(Utf8String.FromString("b" + annotationNodeId.Value)),
+                _ => null
+            };
+
+            if(reifier is null)
+            {
+                return;
+            }
+
+            Quads.Add(new Quad(reifier, new NamedNode(Utf8String.FromString(RdfNamespace + "reifies")), new TripleTerm(subject, predicate, @object)));
         }
 
         /// <summary>Emits the four reification triples for a statement reified by an <c>rdf:ID</c>.</summary>
@@ -402,6 +437,133 @@ public static class RdfXmlReader
         private BlankNode FreshBlank()
         {
             return new BlankNode(Utf8String.FromString("rx" + blankCounter++.ToString(CultureInfo.InvariantCulture)));
+        }
+
+        /// <summary>
+        /// Builds the triple term denoted by an <c>rdf:parseType="Triple"</c> property element (RDF 1.2): its single
+        /// inner node element must describe exactly one triple, whose object may itself be a triple term (nested
+        /// <c>parseType="Triple"</c>). Returns <see langword="null"/> outside RDF 1.2 mode (the construct asserts
+        /// nothing) or when the inner node does not describe exactly one triple (a recorded error).
+        /// </summary>
+        /// <param name="stack">The work stack (a leaf nested-node object expands through it).</param>
+        /// <param name="tripleProperty">The <c>parseType="Triple"</c> property element.</param>
+        /// <param name="propertyBase">The base IRI in scope.</param>
+        /// <param name="propertyLang">The language in scope.</param>
+        /// <returns>The triple term, or <see langword="null"/>.</returns>
+        private RdfTerm? BuildTripleTerm(Stack<WorkItem> stack, XElement tripleProperty, string? propertyBase, string? propertyLang)
+        {
+            //rdf:parseType="Triple" is an RDF 1.2 feature; outside RDF 1.2 mode it denotes nothing.
+            if(!IsVersion12(tripleProperty))
+            {
+                return null;
+            }
+
+            //The object position is the only place a triple term nests, so the nesting is linear: descend the
+            //object chain pushing each (subject, predicate), then assemble innermost-first.
+            Stack<(RdfTerm Subject, NamedNode Predicate)> pending = new();
+            XElement currentProperty = tripleProperty;
+            string? currentBase = propertyBase;
+            string? currentLang = propertyLang;
+
+            while(true)
+            {
+                XElement? inner = FirstChildElement(currentProperty);
+                if(inner is null)
+                {
+                    Report(Diagnostics, "rdf:parseType=\"Triple\" requires a single inner node element describing one triple.");
+
+                    return null;
+                }
+
+                string? innerBase = AttributeBase(inner, currentBase);
+                string? innerLang = AttributeLang(inner, currentLang);
+                RdfTerm subject = SubjectOf(inner, innerBase);
+
+                bool typed = !IsRdf(inner.Name, "Description") && !IsRdf(inner.Name, "RDF");
+                int attributeProperties = 0;
+                XAttribute? singleAttribute = null;
+                foreach(XAttribute attribute in inner.Attributes())
+                {
+                    if(attribute.IsNamespaceDeclaration || IsStructuralAttribute(attribute.Name))
+                    {
+                        continue;
+                    }
+
+                    attributeProperties++;
+                    singleAttribute = attribute;
+                }
+
+                int childProperties = 0;
+                XElement? childProperty = null;
+                foreach(XElement child in inner.Elements())
+                {
+                    childProperties++;
+                    childProperty = child;
+                }
+
+                if((typed ? 1 : 0) + attributeProperties + childProperties != 1)
+                {
+                    Report(Diagnostics, "rdf:parseType=\"Triple\" requires its inner node element to describe exactly one triple.");
+
+                    return null;
+                }
+
+                NamedNode rdfType = new(Utf8String.FromString(RdfNamespace + "type"));
+                if(typed)
+                {
+                    return Assemble(pending, subject, rdfType, new NamedNode(Utf8String.FromString(inner.Name.NamespaceName + inner.Name.LocalName)));
+                }
+
+                if(singleAttribute is not null)
+                {
+                    return IsRdf(singleAttribute.Name, "type")
+                        ? Assemble(pending, subject, rdfType, new NamedNode(Resolve(innerBase, singleAttribute.Value)))
+                        : Assemble(pending, subject, new NamedNode(Utf8String.FromString(singleAttribute.Name.NamespaceName + singleAttribute.Name.LocalName)), TextLiteral(singleAttribute.Value, inner, innerLang));
+                }
+
+                XElement property = childProperty!;
+                string? childBase = AttributeBase(property, innerBase);
+                string? childLang = AttributeLang(property, innerLang);
+                NamedNode predicate = IsRdf(property.Name, "li")
+                    ? new NamedNode(Utf8String.FromString(RdfNamespace + "_1"))
+                    : new NamedNode(Utf8String.FromString(property.Name.NamespaceName + property.Name.LocalName));
+
+                if(property.Attribute(Rdf + "parseType")?.Value == "Triple")
+                {
+                    pending.Push((subject, predicate));
+                    currentProperty = property;
+                    currentBase = innerBase;
+                    currentLang = innerLang;
+
+                    continue;
+                }
+
+                RdfTerm? leafObject = ResolveObject(stack, property, childBase, childLang);
+                if(leafObject is null)
+                {
+                    return null;
+                }
+
+                return Assemble(pending, subject, predicate, leafObject);
+            }
+        }
+
+        /// <summary>Folds a descended chain of (subject, predicate) frames around an innermost triple into the nested triple term.</summary>
+        /// <param name="pending">The outer (subject, predicate) frames, innermost last.</param>
+        /// <param name="subject">The innermost triple's subject.</param>
+        /// <param name="predicate">The innermost triple's predicate.</param>
+        /// <param name="object">The innermost triple's object.</param>
+        /// <returns>The assembled triple term.</returns>
+        private static RdfTerm Assemble(Stack<(RdfTerm Subject, NamedNode Predicate)> pending, RdfTerm subject, NamedNode predicate, RdfTerm @object)
+        {
+            RdfTerm term = new TripleTerm(subject, predicate, @object);
+            while(pending.Count > 0)
+            {
+                (RdfTerm outerSubject, NamedNode outerPredicate) = pending.Pop();
+                term = new TripleTerm(outerSubject, outerPredicate, term);
+            }
+
+            return term;
         }
 
         /// <summary>Validates a node element's name and attributes against the RDF/XML grammar, recording any violation.</summary>
@@ -525,7 +687,16 @@ public static class RdfXmlReader
             return true;
         }
 
-        return name.Namespace == Rdf && name.LocalName is "about" or "ID" or "nodeID" or "resource" or "datatype" or "parseType" or "li";
+        //its:dir / its:version carry the RDF 1.2 base direction and ITS version; they configure the
+        //literal, they are not property statements.
+        if(name.Namespace == Its && name.LocalName is "dir" or "version")
+        {
+            return true;
+        }
+
+        //rdf:version declares the RDF 1.2 mode and rdf:annotation / rdf:annotationNodeID name a reifier; all are
+        //syntactic, not property statements.
+        return name.Namespace == Rdf && name.LocalName is "about" or "ID" or "nodeID" or "resource" or "datatype" or "parseType" or "li" or "version" or "annotation" or "annotationNodeID";
     }
 
     /// <summary>Whether an element/attribute name is the RDF term with the given local name.</summary>
@@ -563,6 +734,61 @@ public static class RdfXmlReader
     private static bool IsForbiddenAttributeName(XName name)
     {
         return name.Namespace == Rdf && name.LocalName is "li" or "aboutEach" or "aboutEachPrefix" or "bagID";
+    }
+
+    /// <summary>
+    /// Builds a literal from an element's text or attribute value: a plain <c>xsd:string</c> when no language is in
+    /// scope, an <c>rdf:langString</c> when a language is, or an <c>rdf:dirLangString</c> when a base direction is also
+    /// in scope and the document is in RDF 1.2 mode (<c>rdf:version="1.2"</c> on the element or an ancestor).
+    /// </summary>
+    /// <param name="text">The lexical value.</param>
+    /// <param name="element">The element the value comes from, for the in-scope <c>rdf:version</c> and <c>its:dir</c>.</param>
+    /// <param name="lang">The in-scope language, or <see langword="null"/>.</param>
+    /// <returns>The literal term.</returns>
+    private static Literal TextLiteral(string text, XElement element, string? lang)
+    {
+        if(lang is null)
+        {
+            return new Literal(Utf8String.FromString(text), new NamedNode(Vocabulary.Xsd.String));
+        }
+
+        TextDirection? direction = IsVersion12(element) ? EffectiveDirection(element) : null;
+
+        return direction is { } resolved
+            ? new Literal(Utf8String.FromString(text), new NamedNode(Utf8String.FromString(RdfNamespace + "dirLangString")), Utf8String.FromString(lang), resolved)
+            : new Literal(Utf8String.FromString(text), new NamedNode(Utf8String.FromString(RdfNamespace + "langString")), Utf8String.FromString(lang));
+    }
+
+    /// <summary>Whether the document is in RDF 1.2 mode for an element: <c>rdf:version="1.2"</c> on the element or any ancestor.</summary>
+    /// <param name="element">The element.</param>
+    /// <returns><see langword="true"/> when RDF 1.2 features are enabled in the element's scope.</returns>
+    private static bool IsVersion12(XElement element)
+    {
+        foreach(XElement scope in element.AncestorsAndSelf())
+        {
+            if(scope.Attribute(Rdf + "version")?.Value == "1.2")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>The in-scope base direction for an element: the nearest <c>its:dir</c> on the element or an ancestor.</summary>
+    /// <param name="element">The element.</param>
+    /// <returns>The parsed base direction, or <see langword="null"/> when none is in scope or it is unrecognised.</returns>
+    private static TextDirection? EffectiveDirection(XElement element)
+    {
+        foreach(XElement scope in element.AncestorsAndSelf())
+        {
+            if(scope.Attribute(Its + "dir") is { } dir)
+            {
+                return TextDirections.TryParse(dir.Value, out TextDirection direction) ? direction : null;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>Whether a string is a valid XML NCName (the production <c>rdf:ID</c> / <c>rdf:nodeID</c> values must satisfy).</summary>
