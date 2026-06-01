@@ -1,13 +1,12 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Json;
 using Lumoin.Veritas.JsonLd;
-using Lumoin.Veritas.JsonLd.Document;
 using Lumoin.Veritas.LinkedData;
 
 namespace Lumoin.Veritas.Tests.Conformance;
@@ -17,11 +16,14 @@ namespace Lumoin.Veritas.Tests.Conformance;
 /// <see cref="JsonLdExpansionTree"/>: a positive test expands the input and compares the result to the expected
 /// document up to JSON structural equality; a negative test expects a <see cref="JsonLdProcessingException"/>.
 /// Remote <c>@context</c> URLs under the suite's <c>baseIri</c> resolve to the vendored corpus files. The
-/// expander's object-graph output (dictionaries / lists / scalars) is compared directly against the expected
-/// document parsed as a <see cref="JsonLdNode"/> — System.Text.Json is banned in this project.
+/// expander's object-graph output is converted to a <see cref="JsonNode"/> and compared to the expected document,
+/// and a mismatch reports the actual-vs-expected JSON so a failure is self-diagnosing during the ratchet.
 /// </summary>
 internal static class W3cJsonLdRunner
 {
+    /// <summary>The most of each side's JSON to include in a mismatch message (kept short so the test log stays readable).</summary>
+    private const int DiffPreviewLength = 600;
+
     /// <summary>Runs one JSON-LD test case to an outcome.</summary>
     /// <param name="testCase">The manifest-declared case.</param>
     /// <param name="cancellationToken">A token that aborts the run.</param>
@@ -71,11 +73,13 @@ internal static class W3cJsonLdRunner
                 return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expansion threw: {exception.Message}");
             }
 
-            JsonLdNode expected = StjJsonLdAdapter.Parse(await ReadUtf8Async(testCase.ExpectPath!, cancellationToken).ConfigureAwait(false));
+            JsonNode? actual = ToJsonNode(expanded);
+            byte[] expectedBytes = await File.ReadAllBytesAsync(testCase.ExpectPath!, cancellationToken).ConfigureAwait(false);
+            JsonNode? expected = JsonNode.Parse(expectedBytes);
 
-            return JsonEquals(expanded, expected)
+            return JsonEquals(actual, expected)
                 ? new W3cOutcome(W3cOutcomeStatus.Passed, "Expanded output matches.")
-                : new W3cOutcome(W3cOutcomeStatus.Failed, "Expanded output does not match the expected document.");
+                : new W3cOutcome(W3cOutcomeStatus.Failed, $"Expanded output does not match.\n  actual:   {Preview(actual)}\n  expected: {Preview(expected)}");
         }
 
         //Negative test: expansion must raise a JSON-LD processing error.
@@ -130,99 +134,125 @@ internal static class W3cJsonLdRunner
         return new Utf8String(await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false));
     }
 
-    /// <summary>
-    /// JSON structural equality between the expander's object-graph output and the expected document: objects
-    /// compare key-insensitively, arrays order-sensitively, scalars by value (numbers by lexical form, falling
-    /// back to numeric equality).
-    /// </summary>
-    /// <param name="actual">The produced object-graph value (dictionary / list / scalar / null).</param>
+    /// <summary>A short single-line JSON rendering of a node for a mismatch message.</summary>
+    /// <param name="node">The node, or <see langword="null"/>.</param>
+    /// <returns>The truncated JSON text.</returns>
+    private static string Preview(JsonNode? node)
+    {
+        string json = node?.ToJsonString() ?? "null";
+
+        return json.Length <= DiffPreviewLength ? json : json[..DiffPreviewLength] + "…";
+    }
+
+    /// <summary>Converts the expander's object-graph output (dictionaries / lists / scalars) to a <see cref="JsonNode"/> for comparison.</summary>
+    /// <param name="value">The object-graph value.</param>
+    /// <returns>The equivalent JSON node, or <see langword="null"/> for a JSON null.</returns>
+    private static JsonNode? ToJsonNode(object? value)
+    {
+        switch(value)
+        {
+            case null:
+            {
+                return null;
+            }
+            case IReadOnlyDictionary<string, object?> dictionary:
+            {
+                JsonObject jsonObject = [];
+                foreach(KeyValuePair<string, object?> entry in dictionary)
+                {
+                    jsonObject[entry.Key] = ToJsonNode(entry.Value);
+                }
+
+                return jsonObject;
+            }
+            case IReadOnlyList<object?> list:
+            {
+                JsonArray jsonArray = [];
+                foreach(object? element in list)
+                {
+                    jsonArray.Add(ToJsonNode(element));
+                }
+
+                return jsonArray;
+            }
+            case string text:
+            {
+                return JsonValue.Create(text);
+            }
+            case bool boolean:
+            {
+                return JsonValue.Create(boolean);
+            }
+            case long integer:
+            {
+                return JsonValue.Create(integer);
+            }
+            case double real:
+            {
+                return JsonValue.Create(real);
+            }
+            default:
+            {
+                return JsonValue.Create(value.ToString());
+            }
+        }
+    }
+
+    /// <summary>JSON structural equality: objects compare key-insensitively, arrays order-sensitively, scalars by their lexical JSON form (so <c>5</c> and <c>5.0</c> stay distinct, as JSON-LD requires).</summary>
+    /// <param name="actual">The produced node.</param>
     /// <param name="expected">The expected node.</param>
     /// <returns><see langword="true"/> when structurally equal.</returns>
-    private static bool JsonEquals(object? actual, JsonLdNode expected)
+    private static bool JsonEquals(JsonNode? actual, JsonNode? expected)
     {
-        return expected.Kind switch
+        if(actual is null || expected is null)
         {
-            JsonLdNodeKind.Null => actual is null,
-            JsonLdNodeKind.String => actual is string text && string.Equals(text, expected.GetString(), StringComparison.Ordinal),
-            JsonLdNodeKind.True => actual is true,
-            JsonLdNodeKind.False => actual is false,
-            JsonLdNodeKind.Number => NumberEquals(actual, expected.GetRawNumber()),
-            JsonLdNodeKind.Object => ObjectEquals(actual, expected),
-            JsonLdNodeKind.Array => ArrayEquals(actual, expected),
-            _ => false
-        };
-    }
-
-    /// <summary>Compares an object-graph value against an expected object node (same key set; values recurse).</summary>
-    /// <param name="actual">The produced value.</param>
-    /// <param name="expected">The expected object node.</param>
-    /// <returns><see langword="true"/> when equal.</returns>
-    private static bool ObjectEquals(object? actual, JsonLdNode expected)
-    {
-        if(actual is not IReadOnlyDictionary<string, object?> dictionary)
-        {
-            return false;
+            return actual is null && expected is null;
         }
 
-        int expectedCount = 0;
-        foreach(KeyValuePair<string, JsonLdNode> entry in expected.EnumerateObject())
+        switch(actual)
         {
-            expectedCount++;
-            if(!dictionary.TryGetValue(entry.Key, out object? value) || !JsonEquals(value, entry.Value))
+            case JsonObject actualObject when expected is JsonObject expectedObject:
+            {
+                if(actualObject.Count != expectedObject.Count)
+                {
+                    return false;
+                }
+
+                foreach(KeyValuePair<string, JsonNode?> entry in actualObject)
+                {
+                    if(!expectedObject.TryGetPropertyValue(entry.Key, out JsonNode? expectedValue) || !JsonEquals(entry.Value, expectedValue))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+            case JsonArray actualArray when expected is JsonArray expectedArray:
+            {
+                if(actualArray.Count != expectedArray.Count)
+                {
+                    return false;
+                }
+
+                for(int i = 0; i < actualArray.Count; i++)
+                {
+                    if(!JsonEquals(actualArray[i], expectedArray[i]))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+            case JsonValue when expected is JsonValue:
+            {
+                return string.Equals(actual.ToJsonString(), expected.ToJsonString(), StringComparison.Ordinal);
+            }
+            default:
             {
                 return false;
             }
         }
-
-        return dictionary.Count == expectedCount;
-    }
-
-    /// <summary>Compares an object-graph value against an expected array node (same length; elements recurse in order).</summary>
-    /// <param name="actual">The produced value.</param>
-    /// <param name="expected">The expected array node.</param>
-    /// <returns><see langword="true"/> when equal.</returns>
-    private static bool ArrayEquals(object? actual, JsonLdNode expected)
-    {
-        if(actual is not IReadOnlyList<object?> list)
-        {
-            return false;
-        }
-
-        int index = 0;
-        foreach(JsonLdNode element in expected.EnumerateArray())
-        {
-            if(index >= list.Count || !JsonEquals(list[index], element))
-            {
-                return false;
-            }
-
-            index++;
-        }
-
-        return index == list.Count;
-    }
-
-    /// <summary>Compares a produced numeric value against an expected raw JSON number — lexically first (so <c>5</c> and <c>5.0</c> stay distinct), then by numeric value as a fallback.</summary>
-    /// <param name="actual">The produced value (a <see cref="long"/> or <see cref="double"/>).</param>
-    /// <param name="rawNumber">The expected number's raw lexical form.</param>
-    /// <returns><see langword="true"/> when equal.</returns>
-    private static bool NumberEquals(object? actual, string rawNumber)
-    {
-        string? actualText = actual switch
-        {
-            long integer => integer.ToString(CultureInfo.InvariantCulture),
-            double real => real.ToString("R", CultureInfo.InvariantCulture),
-            int small => small.ToString(CultureInfo.InvariantCulture),
-            _ => null
-        };
-        if(actualText is null)
-        {
-            return false;
-        }
-
-        return string.Equals(actualText, rawNumber, StringComparison.Ordinal)
-            || (double.TryParse(actualText, NumberStyles.Float, CultureInfo.InvariantCulture, out double actualValue)
-                && double.TryParse(rawNumber, NumberStyles.Float, CultureInfo.InvariantCulture, out double expectedValue)
-                && actualValue == expectedValue);
     }
 }

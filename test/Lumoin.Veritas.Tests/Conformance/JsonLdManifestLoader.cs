@@ -12,8 +12,8 @@ namespace Lumoin.Veritas.Tests.Conformance;
 /// Loads a vendored W3C JSON-LD API test manifest (a <c>.jsonld</c> document — JSON with a top-level
 /// <c>baseIri</c> and a <c>sequence</c> of entries) into <see cref="JsonLdTestCase"/> rows. The JSON-LD manifests
 /// are not Turtle, so this is a separate loader from <see cref="W3cManifestLoader"/>; it reads the manifest
-/// through the JSON-LD library's own <see cref="JsonLdNode"/> model (System.Text.Json is banned in this project)
-/// and resolves each entry's file references against the manifest's directory.
+/// through the JSON-LD library's own <see cref="JsonLdNode"/> model and resolves each entry's file references
+/// against the manifest's directory.
 /// </summary>
 internal static class JsonLdManifestLoader
 {
