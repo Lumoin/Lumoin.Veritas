@@ -52,6 +52,19 @@ internal static class W3cCorpusPath
         return Path.Combine(TestProjectDirectory(), "Conformance", "Fixtures", fileName);
     }
 
+    /// <summary>
+    /// Resolves the <c>Material/&lt;libraryFolder&gt;</c> directory — for corpora (such as the JSON-LD suite)
+    /// whose manifests and fixtures sit directly under the library folder rather than in a per-suite subfolder.
+    /// </summary>
+    /// <param name="libraryFolder">The library subfolder under Material (for example <c>JsonLd</c>).</param>
+    /// <returns>An absolute directory path within the checked-out source tree.</returns>
+    public static string LibraryDirectory(string libraryFolder)
+    {
+        ArgumentNullException.ThrowIfNull(libraryFolder);
+
+        return Path.Combine(TestProjectDirectory(), "Material", libraryFolder);
+    }
+
     private static string TestProjectDirectory()
     {
         //ThisSourceFile resolves to .../Lumoin.Veritas.Tests/Conformance/W3cCorpusPath.cs.
