@@ -67,7 +67,10 @@ internal sealed class JsonLdExpansionTreeTests
 
         IReadOnlyDictionary<string, object?> node = (IReadOnlyDictionary<string, object?>)result[0]!;
         Assert.AreEqual("http://example.org/p/1", node["@id"]);
-        Assert.AreEqual("http://schema.org/Person", node["@type"]);
+        //A node object's @type expands to an array of IRIs.
+        IReadOnlyList<object?> types = (IReadOnlyList<object?>)node["@type"]!;
+        Assert.HasCount(1, types);
+        Assert.AreEqual("http://schema.org/Person", types[0]);
         Assert.IsTrue(node.ContainsKey("http://schema.org/name"));
     }
 
@@ -367,9 +370,9 @@ internal sealed class JsonLdExpansionTreeTests
         foreach(object? m in members)
         {
             IReadOnlyDictionary<string, object?> member = (IReadOnlyDictionary<string, object?>)m!;
-            //Type is vocab-expanded.
-            string typeIri = (string)member["@type"]!;
-            if(typeIri == "http://schema.org/Person")
+            //Type is vocab-expanded, in the expanded-form @type array.
+            IReadOnlyList<object?> typeIris = (IReadOnlyList<object?>)member["@type"]!;
+            if(typeIris.Contains("http://schema.org/Person"))
             {
                 foundPerson = true;
             }

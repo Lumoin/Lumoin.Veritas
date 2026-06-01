@@ -157,7 +157,7 @@ public static class JsonLdExpansionTree
             default:
             {
                 //Bare scalar at top-level: wrap as a value object (no term coercion).
-                return ScalarToValueObject(element, termDef: null);
+                return ScalarToValueObject(element, termDef: null, activeContext);
             }
         }
     }
@@ -207,13 +207,23 @@ public static class JsonLdExpansionTree
             string key = property.Key;
             JsonLdNode value = property.Value;
 
-            switch(key)
+            if(string.Equals(key, "@context", StringComparison.Ordinal))
             {
-                case "@context":
-                {
-                    //Already processed into activeContext above; drop from output.
-                    continue;
-                }
+                //Already processed into activeContext above; drop from output.
+                continue;
+            }
+
+            //Expand the key first so keyword aliases (a term mapping to
+            //@id/@type/@graph/...) dispatch to the keyword handling rather
+            //than being treated as ordinary IRI properties.
+            string? expandedKey = activeContext.ExpandIri(key, vocab: true);
+            if(expandedKey is null)
+            {
+                continue;
+            }
+
+            switch(expandedKey)
+            {
                 case "@id":
                 {
                     if(value.Kind == JsonLdNodeKind.String)
@@ -266,12 +276,6 @@ public static class JsonLdExpansionTree
                 }
                 default:
                 {
-                    //IRI-keyed property. Expand the key.
-                    string? expandedKey = activeContext.ExpandIri(key, vocab: true);
-                    if(expandedKey is null)
-                    {
-                        continue;
-                    }
                     //JSON-LD keywords other than the ones handled above
                     //are passed through unchanged.
                     if(IriUtils.IsKeyword(expandedKey) && expandedKey != "@list" && expandedKey != "@set")
@@ -358,14 +362,9 @@ public static class JsonLdExpansionTree
             List<object?> items = new();
             foreach(JsonLdNode item in value.EnumerateArray())
             {
-                object? expandedItem = await ExpandPropertyItemAsync(
-                    item, activeContext, baseUrl, resolver, parser, termDef, cancellationToken)
+                await AddExpandedMemberAsync(
+                    items, item, activeContext, baseUrl, resolver, parser, termDef, cancellationToken)
                     .ConfigureAwait(false);
-                if(expandedItem is null)
-                {
-                    continue;
-                }
-                items.Add(expandedItem);
             }
 
             //@list container: wrap the items in {"@list": [...]} per spec.
@@ -412,6 +411,23 @@ public static class JsonLdExpansionTree
     {
         if(item.Kind == JsonLdNodeKind.Object)
         {
+            //An explicit @list object expands its members (coerced by the
+            //surrounding term) and re-wraps them; an explicit @set object
+            //expands to its bare member list, which the caller splices into
+            //the property array (the @set wrapper never survives expansion).
+            if(item.TryGetProperty("@list", out JsonLdNode listValue))
+            {
+                List<object?> listMembers = await ExpandMembersAsync(
+                    listValue, activeContext, baseUrl, resolver, parser, termDef, cancellationToken).ConfigureAwait(false);
+
+                return new Dictionary<string, object?>(StringComparer.Ordinal) { ["@list"] = listMembers };
+            }
+            if(item.TryGetProperty("@set", out JsonLdNode setValue))
+            {
+                return await ExpandMembersAsync(
+                    setValue, activeContext, baseUrl, resolver, parser, termDef, cancellationToken).ConfigureAwait(false);
+            }
+
             return await ExpandObjectAsync(item, activeContext, baseUrl, resolver, parser, cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -421,7 +437,70 @@ public static class JsonLdExpansionTree
             return null;
         }
 
-        return ScalarToValueObject(item, termDef);
+        return ScalarToValueObject(item, termDef, activeContext);
+    }
+
+    /// <summary>
+    /// Expands the members of an explicit <c>@list</c> or <c>@set</c> value
+    /// into a flat list, coercing each member by the surrounding term and
+    /// dropping nulls. A nested <c>@set</c> member (itself expanding to a
+    /// list) is spliced in, so sets of sets collapse per the spec.
+    /// </summary>
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
+        Justification = "baseUrl follows the JSON-LD specification convention of string URIs.")]
+    private static async ValueTask<List<object?>> ExpandMembersAsync(
+        JsonLdNode value,
+        LinkedDataContext activeContext,
+        string? baseUrl,
+        ContextResolverDelegate resolver,
+        JsonLdParserDelegate parser,
+        TermDefinition? termDef,
+        CancellationToken cancellationToken)
+    {
+        List<object?> members = new();
+        if(value.Kind == JsonLdNodeKind.Array)
+        {
+            foreach(JsonLdNode item in value.EnumerateArray())
+            {
+                await AddExpandedMemberAsync(
+                    members, item, activeContext, baseUrl, resolver, parser, termDef, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        else
+        {
+            await AddExpandedMemberAsync(
+                members, value, activeContext, baseUrl, resolver, parser, termDef, cancellationToken).ConfigureAwait(false);
+        }
+
+        return members;
+    }
+
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
+        Justification = "baseUrl follows the JSON-LD specification convention of string URIs.")]
+    private static async ValueTask AddExpandedMemberAsync(
+        List<object?> members,
+        JsonLdNode item,
+        LinkedDataContext activeContext,
+        string? baseUrl,
+        ContextResolverDelegate resolver,
+        JsonLdParserDelegate parser,
+        TermDefinition? termDef,
+        CancellationToken cancellationToken)
+    {
+        object? expanded = await ExpandPropertyItemAsync(
+            item, activeContext, baseUrl, resolver, parser, termDef, cancellationToken).ConfigureAwait(false);
+        if(expanded is null)
+        {
+            return;
+        }
+
+        if(expanded is IReadOnlyList<object?> nested)
+        {
+            members.AddRange(nested);
+            return;
+        }
+
+        members.Add(expanded);
     }
 
     /// <summary>
@@ -602,28 +681,21 @@ public static class JsonLdExpansionTree
         if(isTypeMap)
         {
             string? expandedType = activeContext.ExpandIri(mapKey, vocab: true);
-            //If the node already has a @type, append the discriminator
-            //type to keep the multi-type case round-trippable.
+            //The discriminator type is prepended to the node's @type set,
+            //which is always an array in expanded form.
+            List<object?> types = new() { expandedType ?? mapKey };
             if(nodeObject.TryGetValue("@type", out object? existingType))
             {
                 if(existingType is IReadOnlyList<object?> existingList)
                 {
-                    List<object?> combined = new(existingList) { expandedType ?? mapKey };
-                    nodeObject["@type"] = combined;
+                    types.AddRange(existingList);
                 }
                 else if(existingType is not null)
                 {
-                    nodeObject["@type"] = new List<object?> { existingType, expandedType ?? mapKey };
-                }
-                else
-                {
-                    nodeObject["@type"] = expandedType ?? mapKey;
+                    types.Add(existingType);
                 }
             }
-            else
-            {
-                nodeObject["@type"] = expandedType ?? mapKey;
-            }
+            nodeObject["@type"] = types;
         }
 
         //@graph layering: wrap as a graph object. When combined with
@@ -653,12 +725,14 @@ public static class JsonLdExpansionTree
         return nodeObject;
     }
 
-    private static object? ExpandTypeValue(JsonLdNode value, LinkedDataContext activeContext)
+    private static List<object?>? ExpandTypeValue(JsonLdNode value, LinkedDataContext activeContext)
     {
+        //A node object's @type expands to an array of IRIs per the W3C
+        //JSON-LD 1.1 expanded-form convention, even for a single type.
         if(value.Kind == JsonLdNodeKind.String)
         {
             string raw = value.GetString();
-            return activeContext.ExpandIri(raw, vocab: true) ?? raw;
+            return new List<object?> { activeContext.ExpandIri(raw, vocab: true, documentRelative: true) ?? raw };
         }
         if(value.Kind == JsonLdNodeKind.Array)
         {
@@ -668,7 +742,7 @@ public static class JsonLdExpansionTree
                 if(item.Kind == JsonLdNodeKind.String)
                 {
                     string raw = item.GetString();
-                    items.Add(activeContext.ExpandIri(raw, vocab: true) ?? raw);
+                    items.Add(activeContext.ExpandIri(raw, vocab: true, documentRelative: true) ?? raw);
                 }
             }
             return items;
@@ -680,8 +754,32 @@ public static class JsonLdExpansionTree
     /// Wraps a scalar JSON value as a JSON-LD value object, applying type
     /// or language coercion from the surrounding term when present.
     /// </summary>
-    private static Dictionary<string, object?>? ScalarToValueObject(JsonLdNode element, TermDefinition? termDef)
+    private static Dictionary<string, object?>? ScalarToValueObject(
+        JsonLdNode element, TermDefinition? termDef, LinkedDataContext activeContext)
     {
+        //A string under a term coercing to @id or @vocab expands to a node
+        //reference {"@id": <expanded IRI>}, not a value object. @id is
+        //document-relative; @vocab is vocabulary-relative.
+        if(element.Kind == JsonLdNodeKind.String && termDef?.TypeMapping is { } coercion)
+        {
+            if(string.Equals(coercion, "@id", StringComparison.Ordinal))
+            {
+                string raw = element.GetString();
+                return new Dictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["@id"] = activeContext.ExpandIri(raw, documentRelative: true) ?? raw
+                };
+            }
+            if(string.Equals(coercion, "@vocab", StringComparison.Ordinal))
+            {
+                string raw = element.GetString();
+                return new Dictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["@id"] = activeContext.ExpandIri(raw, vocab: true) ?? raw
+                };
+            }
+        }
+
         object? rawValue = element.Kind switch
         {
             JsonLdNodeKind.String => element.GetString(),
@@ -701,13 +799,19 @@ public static class JsonLdExpansionTree
             ["@value"] = rawValue
         };
 
-        if(termDef is not null)
+        if(termDef?.TypeMapping is { } typeMapping && !IriUtils.IsKeyword(typeMapping))
         {
-            if(termDef.TypeMapping is { } typeMapping && !IriUtils.IsKeyword(typeMapping))
-            {
-                valueObject["@type"] = typeMapping;
-            }
-            else if(termDef.HasLanguageMapping && termDef.LanguageMapping is { } language)
+            valueObject["@type"] = typeMapping;
+        }
+        else if(element.Kind == JsonLdNodeKind.String)
+        {
+            //Language coercion applies to plain string values that are not
+            //typed. A term carrying an explicit @language overrides (and may
+            //null out) the context's default; otherwise the default applies.
+            string? language = termDef is { HasLanguageMapping: true }
+                ? termDef.LanguageMapping
+                : activeContext.DefaultLanguage;
+            if(language is not null)
             {
                 valueObject["@language"] = language;
             }
@@ -720,8 +824,15 @@ public static class JsonLdExpansionTree
     /// Expands an already-shaped value object, applying IRI expansion to
     /// the <c>@type</c> field while leaving the rest of the object as-is.
     /// </summary>
-    private static Dictionary<string, object?> ExpandValueObject(JsonLdNode value, LinkedDataContext activeContext)
+    private static Dictionary<string, object?>? ExpandValueObject(JsonLdNode value, LinkedDataContext activeContext)
     {
+        //A value object whose @value is JSON null carries no value and is
+        //dropped entirely (the caller removes the resulting null).
+        if(value.TryGetProperty("@value", out JsonLdNode valueEntry) && valueEntry.Kind == JsonLdNodeKind.Null)
+        {
+            return null;
+        }
+
         Dictionary<string, object?> result = new(StringComparer.Ordinal);
         foreach(KeyValuePair<string, JsonLdNode> entry in value.EnumerateObject())
         {
