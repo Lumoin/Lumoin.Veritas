@@ -421,7 +421,7 @@ public static class SparqlTranslator
             BasicGraphPatternBlock block => TranslateBlock(block, fresh),
             UnionPattern union => new Union(results[union.Left], results[union.Right]),
             GraphGraphPattern graph => new Graph(graph.GraphTerm, results[graph.Inner]),
-            ServicePattern service => new Service(service.Endpoint, results[service.Inner], service.IsSilent),
+            ServicePattern service => new Service(service.Endpoint, results[service.Inner], service.Inner, service.IsSilent),
             ValuesPattern values => new Table(values.Data),
 
             //An error graph pattern carries its own diagnostics and contributes nothing to the algebra.
@@ -940,9 +940,18 @@ public static class SparqlTranslator
                     break;
                 }
 
+                case Service service:
+                {
+                    //SERVICE exposes its inner pattern's variables (§18.2.1), but is a leaf in the algebra (the
+                    //inner is federated, not an evaluated child), so push its translated inner explicitly.
+                    work.Push(new VisibleStep(service.Input, default));
+
+                    break;
+                }
+
                 default:
                 {
-                    //Transparent operators (Join, Union, LeftJoin, Filter, Service, Distinct, Reduced, OrderBy,
+                    //Transparent operators (Join, Union, LeftJoin, Filter, Distinct, Reduced, OrderBy,
                     //Slice, ToList, ToMultiSet) expose exactly their children's variables; UnitTable binds none.
                     //Push children reversed so they are processed in evaluation order.
                     IReadOnlyList<AlgebraOperator> children = step.Operator.Children;

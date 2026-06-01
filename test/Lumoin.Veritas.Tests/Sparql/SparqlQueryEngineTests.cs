@@ -9,6 +9,7 @@ using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
 using Lumoin.Veritas.Sparql.Lexer;
 using Lumoin.Veritas.Sparql.Parser;
+using Lumoin.Veritas.Sparql.Results;
 using Lumoin.Veritas.Sparql.Translation;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -41,6 +42,61 @@ internal sealed class SparqlQueryEngineTests
         SparqlSolution solution = solutions.Single();
         Assert.AreEqual(Ex + "alice", ValueIri(solution, "s"));
         Assert.AreEqual(Ex + "bob", ValueIri(solution, "o"));
+    }
+
+    /// <summary>A constant-endpoint SERVICE joins the remote endpoint's solutions (returned through the injected transport) with the surrounding pattern.</summary>
+    [TestMethod]
+    public async Task ServiceJoinsRemoteSolutions()
+    {
+        using Utf8StringPool pool = new();
+        SparqlResultSet remote = SparqlResultSet.ForSelect(
+            [Utf8String.FromString("o"), Utf8String.FromString("z")],
+            [
+                new SparqlSolution([new SparqlBinding(Variable("o"), Iri("b")), new SparqlBinding(Variable("z"), Iri("c"))]),
+                new SparqlSolution([new SparqlBinding(Variable("o"), Iri("x")), new SparqlBinding(Variable("z"), Iri("y"))]),
+            ]);
+        SparqlClient client = new((endpoint, query, cancellationToken) => ValueTask.FromResult(remote));
+        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(
+            [new DataTriple(Iri("a"), Iri("p"), Iri("b"))], serviceClient: client, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { :a :p ?o . SERVICE <http://remote/sparql> { ?o :q ?z } }", pool);
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //Local binds ?o=:b; only the remote solution whose ?o is :b joins (the ?o=:x remote row is dropped).
+        SparqlSolution solution = solutions.Single();
+        Assert.AreEqual(Ex + "b", ValueIri(solution, "o"));
+        Assert.AreEqual(Ex + "c", ValueIri(solution, "z"));
+    }
+
+    /// <summary>A SERVICE SILENT whose transport fails contributes the join identity, so the surrounding solutions survive.</summary>
+    [TestMethod]
+    public async Task ServiceSilentSurvivesTransportFailure()
+    {
+        using Utf8StringPool pool = new();
+        SparqlClient failing = new((endpoint, query, cancellationToken) => throw new System.InvalidOperationException("endpoint unreachable"));
+        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(
+            [new DataTriple(Iri("a"), Iri("p"), Iri("b"))], serviceClient: failing, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { :a :p ?o . SERVICE SILENT <http://remote/sparql> { ?o :q ?z } }", pool);
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        SparqlSolution solution = solutions.Single();
+        Assert.AreEqual(Ex + "b", ValueIri(solution, "o"));
+        Assert.IsFalse(solution.TryGetValue(Variable("z"), out _));
+    }
+
+    /// <summary>A non-silent SERVICE with no transport supplied is refused.</summary>
+    [TestMethod]
+    public async Task ServiceWithoutTransportIsRefused()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(
+            [new DataTriple(Iri("a"), Iri("p"), Iri("b"))], cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { :a :p ?o . SERVICE <http://remote/sparql> { ?o :q ?z } }", pool);
+
+        await Assert.ThrowsExactlyAsync<System.NotSupportedException>(
+            async () => await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
     }
 
     /// <summary>Two triples sharing a variable join (the translator merges them into one BGP); the join variable is bound consistently and projected away when not selected.</summary>
@@ -824,7 +880,7 @@ internal sealed class SparqlQueryEngineTests
     public async Task RandUsesInjectedRandomnessSeam()
     {
         SparqlExpressionContext context = new(StubRandomness, StubHash, StubNow);
-        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync([new DataTriple(Iri("a"), Iri("p"), Iri("b"))], context, TestContext.CancellationToken).ConfigureAwait(false);
+        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync([new DataTriple(Iri("a"), Iri("p"), Iri("b"))], context, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
         using Utf8StringPool pool = new();
         AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?r WHERE { ?s :p ?v BIND(RAND() AS ?r) }", pool);
 
@@ -861,7 +917,7 @@ internal sealed class SparqlQueryEngineTests
     public async Task UuidAndStrUuidUseInjectedRandomnessSeam()
     {
         SparqlExpressionContext context = new(StubRandomness, StubHash, StubNow);
-        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync([new DataTriple(Iri("a"), Iri("p"), Iri("b"))], context, TestContext.CancellationToken).ConfigureAwait(false);
+        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync([new DataTriple(Iri("a"), Iri("p"), Iri("b"))], context, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
         using Utf8StringPool pool = new();
         AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?u ?su WHERE { ?s :p ?v BIND(UUID() AS ?u) BIND(STRUUID() AS ?su) }", pool);
 
@@ -876,7 +932,7 @@ internal sealed class SparqlQueryEngineTests
     public async Task NowIsConstantAcrossTheQuery()
     {
         SparqlExpressionContext context = new(StubRandomness, StubHash, StubNow);
-        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync([new DataTriple(Iri("a"), Iri("p"), Iri("b"))], context, TestContext.CancellationToken).ConfigureAwait(false);
+        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync([new DataTriple(Iri("a"), Iri("p"), Iri("b"))], context, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
         using Utf8StringPool pool = new();
         AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?a ?b WHERE { ?s :p ?v BIND(NOW() AS ?a) BIND(NOW() AS ?b) }", pool);
 

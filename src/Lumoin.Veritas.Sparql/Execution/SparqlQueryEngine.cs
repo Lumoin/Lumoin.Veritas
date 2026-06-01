@@ -17,6 +17,8 @@ using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Rdf;
 using Lumoin.Veritas.Sparql.Algebra;
 using Lumoin.Veritas.Sparql.Ast;
+using Lumoin.Veritas.Sparql.Results;
+using Lumoin.Veritas.Sparql.Serialization;
 using Lumoin.Veritas.Sparql.Translation;
 using AstTriplePattern = Lumoin.Veritas.Sparql.Ast.TriplePattern;
 using AstTripleTerm = Lumoin.Veritas.Sparql.Ast.TripleTerm;
@@ -74,12 +76,15 @@ public sealed class SparqlQueryEngine
 
     private readonly SparqlExpressionContext expressionContext;
 
+    private readonly SparqlClient? serviceClient;
+
     /// <summary>Constructs an engine over an already-built dataset (default graph + named graphs) and the term dictionary that encoded it.</summary>
     /// <param name="dataset">The dataset the query evaluates against; its graphs are all encoded by <paramref name="dictionary"/>.</param>
     /// <param name="dictionary">The term dictionary that encoded <paramref name="dataset"/>; query constants are resolved against it.</param>
     /// <param name="expressionContext">The seams (randomness, digests, the query timestamp) the non-pure expression functions consume; <see langword="null"/> uses <see cref="SparqlExpressionContext.CreateDefault"/>.</param>
+    /// <param name="serviceClient">The transport a <c>SERVICE</c> federation step uses; <see langword="null"/> means a non-silent <c>SERVICE</c> raises <see cref="NotSupportedException"/>.</param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public SparqlQueryEngine(SparqlDataset dataset, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null)
+    public SparqlQueryEngine(SparqlDataset dataset, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null)
     {
         ArgumentNullException.ThrowIfNull(dataset);
         ArgumentNullException.ThrowIfNull(dictionary);
@@ -87,6 +92,7 @@ public sealed class SparqlQueryEngine
         this.dataset = dataset;
         this.dictionary = dictionary;
         this.expressionContext = expressionContext ?? SparqlExpressionContext.CreateDefault();
+        this.serviceClient = serviceClient;
     }
 
     /// <summary>Constructs an engine over a single default graph and no named graphs — the common case where the query has no <c>GRAPH</c> form.</summary>
@@ -94,8 +100,8 @@ public sealed class SparqlQueryEngine
     /// <param name="dictionary">The term dictionary that encoded <paramref name="store"/>; query constants are resolved against it.</param>
     /// <param name="expressionContext">The seams the non-pure expression functions consume; <see langword="null"/> uses <see cref="SparqlExpressionContext.CreateDefault"/>.</param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public SparqlQueryEngine(HypertrieGraphStore store, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null)
-        : this(SparqlDataset.FromDefaultGraph(store), dictionary, expressionContext)
+    public SparqlQueryEngine(HypertrieGraphStore store, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null)
+        : this(SparqlDataset.FromDefaultGraph(store), dictionary, expressionContext, serviceClient)
     {
     }
 
@@ -108,14 +114,14 @@ public sealed class SparqlQueryEngine
     /// <param name="cancellationToken">A token that aborts the build.</param>
     /// <returns>An engine ready to evaluate queries against the graph.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="triples"/> is <see langword="null"/>.</exception>
-    public static async ValueTask<SparqlQueryEngine> BuildAsync(IEnumerable<DataTriple> triples, SparqlExpressionContext? expressionContext = null, CancellationToken cancellationToken = default)
+    public static async ValueTask<SparqlQueryEngine> BuildAsync(IEnumerable<DataTriple> triples, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(triples);
 
         TermDictionary dictionary = new();
         HypertrieGraphStore store = await EncodeGraphAsync(triples, dictionary, cancellationToken).ConfigureAwait(false);
 
-        return new SparqlQueryEngine(store, dictionary, expressionContext);
+        return new SparqlQueryEngine(store, dictionary, expressionContext, serviceClient);
     }
 
     /// <summary>
@@ -133,6 +139,7 @@ public sealed class SparqlQueryEngine
         IEnumerable<DataTriple> defaultGraph,
         IReadOnlyList<(RdfTerm Name, IEnumerable<DataTriple> Triples)> namedGraphs,
         SparqlExpressionContext? expressionContext = null,
+        SparqlClient? serviceClient = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(defaultGraph);
@@ -148,7 +155,7 @@ public sealed class SparqlQueryEngine
             named[graphName] = await EncodeGraphAsync(triples, dictionary, cancellationToken).ConfigureAwait(false);
         }
 
-        return new SparqlQueryEngine(new SparqlDataset(defaultStore, named), dictionary, expressionContext);
+        return new SparqlQueryEngine(new SparqlDataset(defaultStore, named), dictionary, expressionContext, serviceClient);
     }
 
     /// <summary>Encodes a graph's triples into <paramref name="dictionary"/> and indexes them into a fresh hypertrie store.</summary>
@@ -452,6 +459,11 @@ public sealed class SparqlQueryEngine
             return BuildTableSolutions(table.Data);
         }
 
+        if(op is Service service)
+        {
+            return await EvaluateServiceAsync(service, cancellationToken).ConfigureAwait(false);
+        }
+
         HypertrieGraphStore graphStore = dataset.Resolve(graph)
             ?? throw new InvalidOperationException($"Active graph '{graph.Encoded}' is not in the dataset; the GRAPH expansion should not have descended into it.");
 
@@ -467,6 +479,46 @@ public sealed class SparqlQueryEngine
 
         //The supported-operator guard runs first, so any other leaf reaching here is an executor bug, not input.
         throw new InvalidOperationException($"Leaf operator '{op.GetType().Name}' has no evaluation rule in the executor.");
+    }
+
+    /// <summary>
+    /// Evaluates a <c>SERVICE</c> by rendering its inner pattern to a self-contained query, sending it through the
+    /// injected <see cref="SparqlClient"/>, and returning the endpoint's solutions (which the enclosing join then
+    /// joins with the surrounding pattern). Only a constant-IRI endpoint is supported here; a variable endpoint
+    /// needs bound-join evaluation (the endpoint comes from upstream bindings) and is a later slice. <c>SILENT</c>
+    /// turns an unsupported endpoint, a missing transport, or a transport failure into the join identity.
+    /// </summary>
+    /// <param name="service">The SERVICE operator.</param>
+    /// <param name="cancellationToken">A token that aborts the remote call.</param>
+    /// <returns>The service's solution sequence.</returns>
+    private async ValueTask<IReadOnlyList<SparqlSolution>> EvaluateServiceAsync(Service service, CancellationToken cancellationToken)
+    {
+        if(service.Endpoint is not GraphIriTerm endpoint)
+        {
+            return service.Silent
+                ? SingleEmptySolution
+                : throw new NotSupportedException("SERVICE with a variable endpoint needs bound-join evaluation (the endpoint is supplied by upstream bindings) and is not yet executable; SERVICE <iri> is supported.");
+        }
+
+        if(serviceClient is null)
+        {
+            return service.Silent
+                ? SingleEmptySolution
+                : throw new NotSupportedException("SERVICE requires a SparqlClient transport, but the engine was constructed without one.");
+        }
+
+        string query = SparqlQueryTextWriter.ToSelectQuery(service.InnerPattern);
+        try
+        {
+            SparqlResultSet results = await serviceClient.QueryAsync(endpoint.Iri, query, cancellationToken).ConfigureAwait(false);
+
+            return results.Solutions;
+        }
+        catch(Exception ex) when(service.Silent && ex is not OperationCanceledException)
+        {
+            //SILENT: a federation failure contributes the join identity, so the surrounding pattern is unaffected.
+            return SingleEmptySolution;
+        }
     }
 
     /// <summary>Combines an operator's already-evaluated child sequences (read from <paramref name="results"/> under the same active graph) into its own sequence.</summary>
@@ -2018,10 +2070,10 @@ public sealed class SparqlQueryEngine
     {
         foreach(AlgebraOperator op in AlgebraWalker.Traverse(algebra))
         {
-            bool supported = op is Bgp or UnitTable or Table or Project or Distinct or Reduced or Slice or OrderBy or Join or Union or Minus or ToMultiSet or ToList or Filter or Extend or LeftJoin or Group or AggregateJoin or Path or Graph;
+            bool supported = op is Bgp or UnitTable or Table or Project or Distinct or Reduced or Slice or OrderBy or Join or Union or Minus or ToMultiSet or ToList or Filter or Extend or LeftJoin or Group or AggregateJoin or Path or Graph or Service;
             if(!supported)
             {
-                throw new NotSupportedException($"SPARQL algebra operator '{op.GetType().Name}' is not yet executable. This executor covers basic graph patterns, property paths, named graphs (GRAPH), JOIN/UNION/MINUS, FILTER, BIND (Extend), OPTIONAL (LeftJoin), inline VALUES, ORDER BY, aggregation (GROUP BY / HAVING), sub-SELECT (ToMultiSet), and the projection/DISTINCT/REDUCED/OFFSET/LIMIT modifiers; SERVICE lands in a later slice.");
+                throw new NotSupportedException($"SPARQL algebra operator '{op.GetType().Name}' is not yet executable. This executor covers basic graph patterns, property paths, named graphs (GRAPH), federated query (SERVICE), JOIN/UNION/MINUS, FILTER, BIND (Extend), OPTIONAL (LeftJoin), inline VALUES, ORDER BY, aggregation (GROUP BY / HAVING), sub-SELECT (ToMultiSet), and the projection/DISTINCT/REDUCED/OFFSET/LIMIT modifiers.");
             }
         }
     }

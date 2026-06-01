@@ -255,21 +255,26 @@ public sealed record Extend(AlgebraOperator Input, SparqlVariable Variable, Expr
     internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => new Extend(children[0], Variable, Expression);
 }
 
-/// <summary>A <c>SERVICE</c>: the input delegated to a federated endpoint. This build models it structurally; execution is a later milestone.</summary>
+/// <summary>
+/// A <c>SERVICE</c>: a pattern delegated to a federated endpoint. The endpoint never evaluates locally, so this
+/// is a <em>leaf</em> — its <see cref="Input"/> (the translated inner, kept for <see cref="OutputVariables"/>) is
+/// not an algebra child, and <see cref="InnerPattern"/> is the un-lowered AST the engine serialises to send.
+/// </summary>
 /// <param name="Endpoint">The endpoint designator (an IRI or a variable).</param>
-/// <param name="Input">The pattern delegated to the service.</param>
+/// <param name="Input">The translated inner pattern — its variables are the service's output variables; not evaluated locally.</param>
+/// <param name="InnerPattern">The (normalised) AST inner pattern, rendered to the query string sent to the endpoint.</param>
 /// <param name="Silent">Whether <c>SILENT</c> was given.</param>
 /// <remarks>SPARQL 1.2 §18.6 [Service].</remarks>
-public sealed record Service(GraphTerm Endpoint, AlgebraOperator Input, bool Silent) : AlgebraOperator
+public sealed record Service(GraphTerm Endpoint, AlgebraOperator Input, GraphPattern InnerPattern, bool Silent) : AlgebraOperator
 {
     /// <inheritdoc/>
-    protected override IReadOnlyList<AlgebraOperator> ComputeChildren() => AlgebraScope.Children(Input);
+    protected override IReadOnlyList<AlgebraOperator> ComputeChildren() => [];
 
     /// <inheritdoc/>
     protected override IReadOnlySet<SparqlVariable> ComputeOutputVariables() => Input.OutputVariables;
 
     /// <inheritdoc/>
-    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => new Service(Endpoint, children[0], Silent);
+    internal override AlgebraOperator RebuildWithChildren(IReadOnlyList<AlgebraOperator> children) => this;
 }
 
 /// <summary>Inline data: a multiset of solutions over fixed variables, from a <c>VALUES</c> block.</summary>

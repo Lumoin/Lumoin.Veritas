@@ -371,8 +371,8 @@ internal static class W3cSparqlEvalRunner
         //A test with qt:graphData evaluates against a dataset (default graph + named graphs); otherwise the single
         //default graph. GRAPH forms resolve their designator against the same file-URL space.
         SparqlQueryEngine engine = namedGraphs.Count == 0
-            ? await SparqlQueryEngine.BuildAsync(data, context, cancellationToken).ConfigureAwait(false)
-            : await SparqlQueryEngine.BuildDatasetAsync(data, namedGraphs, context, cancellationToken).ConfigureAwait(false);
+            ? await SparqlQueryEngine.BuildAsync(data, context, cancellationToken: cancellationToken).ConfigureAwait(false)
+            : await SparqlQueryEngine.BuildDatasetAsync(data, namedGraphs, context, cancellationToken: cancellationToken).ConfigureAwait(false);
         SparqlQuery normalized = (SparqlQuery)new SparqlNormalizer(pool).Normalize(query);
 
         //CONSTRUCT / DESCRIBE produce an RDF graph; compare it to the expected graph up to blank-node isomorphism
