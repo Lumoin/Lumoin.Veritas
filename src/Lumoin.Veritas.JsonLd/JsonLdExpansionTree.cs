@@ -429,6 +429,19 @@ public static class JsonLdExpansionTree
 
                     continue;
                 }
+                case "@index":
+                {
+                    //A node-level @index keeps its string value verbatim.
+                    if(value.Kind != JsonLdNodeKind.String)
+                    {
+                        throw new JsonLdProcessingException(
+                            JsonLdErrorCode.InvalidTermDefinition,
+                            "An @index value must be a string.");
+                    }
+
+                    result["@index"] = value.GetString();
+                    continue;
+                }
                 case "@nest":
                 {
                     //@nest lifts a nested object's properties into the
@@ -1063,8 +1076,9 @@ public static class JsonLdExpansionTree
             {
                 propertyValuedIndexKey = AddPropertyValuedIndex(nodeObject, indexProperty, mapKey, activeContext);
             }
-            else
+            else if(!nodeObject.ContainsKey("@index"))
             {
+                //A node's own @index overrides the index-map key.
                 nodeObject["@index"] = mapKey;
             }
         }
