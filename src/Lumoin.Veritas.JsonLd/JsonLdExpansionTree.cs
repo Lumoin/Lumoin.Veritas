@@ -460,6 +460,18 @@ public static class JsonLdExpansionTree
                 return listObject;
             }
 
+            //@graph container: each value becomes its own graph object.
+            if(isGraph)
+            {
+                List<object?> graphs = new(items.Count);
+                foreach(object? item in items)
+                {
+                    graphs.Add(WrapInGraph(item));
+                }
+
+                return graphs;
+            }
+
             return items;
         }
 
@@ -477,7 +489,24 @@ public static class JsonLdExpansionTree
             return listObject;
         }
 
+        if(isGraph && singleExpanded is not null)
+        {
+            return WrapInGraph(singleExpanded);
+        }
+
         return singleExpanded;
+    }
+
+    /// <summary>
+    /// Wraps an expanded value in a graph object (<c>{"@graph": [value]}</c>)
+    /// for a term whose container includes <c>@graph</c>.
+    /// </summary>
+    private static Dictionary<string, object?> WrapInGraph(object? value)
+    {
+        return new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["@graph"] = new List<object?> { value }
+        };
     }
 
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
