@@ -1402,14 +1402,15 @@ public static class JsonLdExpansionTree
     }
 
     /// <summary>
-    /// Whether the object is a value object: some key expands to
-    /// <c>@value</c>, directly or through a keyword alias.
+    /// Whether the object is a value object: some key expands to a
+    /// value-object-defining keyword (<c>@value</c>, or the value-only
+    /// <c>@language</c>/<c>@direction</c>), directly or through an alias.
     /// </summary>
     private static bool IsValueObject(JsonLdNode obj, LinkedDataContext activeContext)
     {
         foreach(KeyValuePair<string, JsonLdNode> entry in obj.EnumerateObject())
         {
-            if(string.Equals(activeContext.ExpandIri(entry.Key, vocab: true), "@value", StringComparison.Ordinal))
+            if(activeContext.ExpandIri(entry.Key, vocab: true) is "@value" or "@language" or "@direction")
             {
                 return true;
             }
@@ -1674,6 +1675,13 @@ public static class JsonLdExpansionTree
                     break;
                 }
             }
+        }
+
+        //A value object with no @value (only @language/@direction/@index)
+        //carries no value and is dropped entirely.
+        if(!result.ContainsKey("@value"))
+        {
+            return null;
         }
 
         return result;
