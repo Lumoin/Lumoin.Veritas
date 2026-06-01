@@ -72,6 +72,25 @@ public sealed class TermDefinition
     public bool HasLanguageMapping { get; init; }
 
     /// <summary>
+    /// Gets the base-direction mapping for string values at this term.
+    /// </summary>
+    /// <remarks>
+    /// When set, plain string values at this term acquire this base direction
+    /// (<c>"ltr"</c> or <c>"rtl"</c>). An explicit null clears any inherited
+    /// default direction.
+    /// </remarks>
+    public string? DirectionMapping { get; init; }
+
+    /// <summary>
+    /// Gets a value indicating whether <see cref="DirectionMapping"/> was explicitly set.
+    /// </summary>
+    /// <remarks>
+    /// Distinguishes between a term with no direction mapping (which inherits
+    /// the context default) and one explicitly set to null (which clears it).
+    /// </remarks>
+    public bool HasDirectionMapping { get; init; }
+
+    /// <summary>
     /// Gets the container mapping for values at this term.
     /// </summary>
     /// <remarks>

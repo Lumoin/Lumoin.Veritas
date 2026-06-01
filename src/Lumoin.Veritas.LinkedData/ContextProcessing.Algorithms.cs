@@ -551,6 +551,8 @@ public static partial class ContextProcessing
         string? typeMapping = null;
         string? languageMapping = null;
         bool hasLanguageMapping = value.HasLanguageMapping;
+        string? directionMapping = null;
+        bool hasDirectionMapping = value.HasDirectionMapping;
         List<string> containerMapping = [];
         bool isPrefix = value.Prefix;
         bool isProtected = value.Protected || contextProtected;
@@ -724,6 +726,18 @@ public static partial class ContextProcessing
             languageMapping = NormalizeTermLanguage(value.Language);
         }
 
+        //@direction must be 'ltr', 'rtl', or null.
+        if(hasDirectionMapping)
+        {
+            directionMapping = value.Direction switch
+            {
+                null or "ltr" or "rtl" => value.Direction,
+                _ => throw new LinkedDataProcessingException(
+                    "invalid base direction",
+                    string.Create(CultureInfo.InvariantCulture, $"@direction in term definition for '{termName}' must be 'ltr', 'rtl', or null."))
+            };
+        }
+
         //@nest validity check.
         if(nestValue is not null && !IsValidNestValue(nestValue))
         {
@@ -756,6 +770,8 @@ public static partial class ContextProcessing
             TypeMapping = typeMapping,
             LanguageMapping = languageMapping,
             HasLanguageMapping = hasLanguageMapping,
+            DirectionMapping = directionMapping,
+            HasDirectionMapping = hasDirectionMapping,
             ContainerMapping = containerMapping,
             Protected = isProtected,
             ReverseProperty = isReverse ? reverseProperty : null,

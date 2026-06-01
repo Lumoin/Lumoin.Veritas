@@ -992,6 +992,16 @@ public static class JsonLdExpansionTree
                 ["@language"] = mapKey
             };
 
+            //A base direction (from the term, or the context default) attaches
+            //to each language-map value alongside its language tag.
+            string? direction = termDef is { HasDirectionMapping: true }
+                ? termDef.DirectionMapping
+                : activeContext.DefaultBaseDirection;
+            if(direction is not null)
+            {
+                valueObject["@direction"] = direction;
+            }
+
             return valueObject;
         }
 
@@ -1168,15 +1178,25 @@ public static class JsonLdExpansionTree
         }
         else if(element.Kind == JsonLdNodeKind.String)
         {
-            //Language coercion applies to plain string values that are not
-            //typed. A term carrying an explicit @language overrides (and may
-            //null out) the context's default; otherwise the default applies.
+            //Language and direction coercion apply to plain (untyped) string
+            //values. A term carrying an explicit @language/@direction overrides
+            //(and may null out) the context's default; otherwise the default
+            //applies. The two are independent — a direction can attach with no
+            //language and vice versa.
             string? language = termDef is { HasLanguageMapping: true }
                 ? termDef.LanguageMapping
                 : activeContext.DefaultLanguage;
             if(language is not null)
             {
                 valueObject["@language"] = language;
+            }
+
+            string? direction = termDef is { HasDirectionMapping: true }
+                ? termDef.DirectionMapping
+                : activeContext.DefaultBaseDirection;
+            if(direction is not null)
+            {
+                valueObject["@direction"] = direction;
             }
         }
 

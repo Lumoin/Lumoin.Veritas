@@ -236,6 +236,7 @@ public static class ContextExtraction
         string? language = null;
         bool hasLanguage = false;
         string? direction = null;
+        bool hasDirection = false;
         bool reverse = false;
         string? reverseIri = null;
         bool @protected = false;
@@ -287,6 +288,7 @@ public static class ContextExtraction
                 }
                 case "@direction":
                 {
+                    hasDirection = true;
                     direction = RequireStringOrNull(field.Value, JsonLdErrorCode.InvalidBaseDirection, "A term definition's @direction");
                     break;
                 }
@@ -340,6 +342,7 @@ public static class ContextExtraction
             Language = language,
             HasLanguageMapping = hasLanguage,
             Direction = direction,
+            HasDirectionMapping = hasDirection,
             Reverse = reverse,
             ReverseIri = reverseIri,
             Protected = @protected,

@@ -52,8 +52,11 @@ public sealed class LinkedDataTermSource
     /// </summary>
     public bool HasLanguageMapping { get; init; }
 
-    /// <summary>Gets or initialises the direction (<c>"ltr"</c>, <c>"rtl"</c>, or <see langword="null"/>).</summary>
+    /// <summary>Gets or initialises the direction (<c>"ltr"</c>, <c>"rtl"</c>, or <see langword="null"/>). <see langword="null"/> is meaningful only when <see cref="HasDirectionMapping"/> is <see langword="true"/>.</summary>
     public string? Direction { get; init; }
+
+    /// <summary>Gets a value indicating whether <see cref="Direction"/> was explicitly set (distinguishes an inherited default from an explicit null).</summary>
+    public bool HasDirectionMapping { get; init; }
 
     /// <summary>Indicates whether the term is a reverse property mapping (an <c>@reverse</c> term).</summary>
     public bool Reverse { get; init; }
