@@ -264,7 +264,7 @@ public static class JsonLdExpansionTree
         {
             EnsureValidListOrSetObject(obj, activeContext, "@list");
             List<object?> listMembers = await ExpandMembersAsync(
-                topLevelList, activeContext, baseUrl, resolver, parser, termDef: null, cancellationToken).ConfigureAwait(false);
+                topLevelList, activeContext, baseUrl, resolver, parser, termDef: null, nestArraysAsLists: true, cancellationToken).ConfigureAwait(false);
 
             return new Dictionary<string, object?>(StringComparer.Ordinal) { ["@list"] = listMembers };
         }
@@ -272,7 +272,7 @@ public static class JsonLdExpansionTree
         {
             EnsureValidListOrSetObject(obj, activeContext, "@set");
             return await ExpandMembersAsync(
-                topLevelSet, activeContext, baseUrl, resolver, parser, termDef: null, cancellationToken).ConfigureAwait(false);
+                topLevelSet, activeContext, baseUrl, resolver, parser, termDef: null, nestArraysAsLists: false, cancellationToken).ConfigureAwait(false);
         }
 
         //Type-scoped contexts: when the node has @type, apply each
@@ -598,7 +598,7 @@ public static class JsonLdExpansionTree
             foreach(JsonLdNode item in value.EnumerateArray())
             {
                 await AddExpandedMemberAsync(
-                    items, item, activeContext, baseUrl, resolver, parser, termDef, cancellationToken)
+                    items, item, activeContext, baseUrl, resolver, parser, termDef, nestArraysAsLists: isList, cancellationToken)
                     .ConfigureAwait(false);
             }
 
@@ -683,7 +683,7 @@ public static class JsonLdExpansionTree
             {
                 EnsureValidListOrSetObject(item, activeContext, "@list");
                 List<object?> listMembers = await ExpandMembersAsync(
-                    listValue, activeContext, baseUrl, resolver, parser, termDef, cancellationToken).ConfigureAwait(false);
+                    listValue, activeContext, baseUrl, resolver, parser, termDef, nestArraysAsLists: true, cancellationToken).ConfigureAwait(false);
 
                 return new Dictionary<string, object?>(StringComparer.Ordinal) { ["@list"] = listMembers };
             }
@@ -691,7 +691,7 @@ public static class JsonLdExpansionTree
             {
                 EnsureValidListOrSetObject(item, activeContext, "@set");
                 return await ExpandMembersAsync(
-                    setValue, activeContext, baseUrl, resolver, parser, termDef, cancellationToken).ConfigureAwait(false);
+                    setValue, activeContext, baseUrl, resolver, parser, termDef, nestArraysAsLists: false, cancellationToken).ConfigureAwait(false);
             }
 
             return await ExpandObjectAsync(item, activeContext, baseUrl, resolver, parser, cancellationToken)
@@ -721,6 +721,7 @@ public static class JsonLdExpansionTree
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
         TermDefinition? termDef,
+        bool nestArraysAsLists,
         CancellationToken cancellationToken)
     {
         List<object?> members = new();
@@ -729,13 +730,13 @@ public static class JsonLdExpansionTree
             foreach(JsonLdNode item in value.EnumerateArray())
             {
                 await AddExpandedMemberAsync(
-                    members, item, activeContext, baseUrl, resolver, parser, termDef, cancellationToken).ConfigureAwait(false);
+                    members, item, activeContext, baseUrl, resolver, parser, termDef, nestArraysAsLists, cancellationToken).ConfigureAwait(false);
             }
         }
         else
         {
             await AddExpandedMemberAsync(
-                members, value, activeContext, baseUrl, resolver, parser, termDef, cancellationToken).ConfigureAwait(false);
+                members, value, activeContext, baseUrl, resolver, parser, termDef, nestArraysAsLists, cancellationToken).ConfigureAwait(false);
         }
 
         return members;
@@ -751,8 +752,20 @@ public static class JsonLdExpansionTree
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
         TermDefinition? termDef,
+        bool nestArraysAsLists,
         CancellationToken cancellationToken)
     {
+        //A member of a @list container that is itself an array becomes a
+        //nested list object; the nesting recurses (an array of arrays of
+        //arrays produces correspondingly nested @list objects).
+        if(nestArraysAsLists && item.Kind == JsonLdNodeKind.Array)
+        {
+            List<object?> innerMembers = await ExpandMembersAsync(
+                item, activeContext, baseUrl, resolver, parser, termDef, nestArraysAsLists: true, cancellationToken).ConfigureAwait(false);
+            members.Add(new Dictionary<string, object?>(StringComparer.Ordinal) { ["@list"] = innerMembers });
+            return;
+        }
+
         object? expanded = await ExpandPropertyItemAsync(
             item, activeContext, baseUrl, resolver, parser, termDef, cancellationToken).ConfigureAwait(false);
         if(expanded is null)
