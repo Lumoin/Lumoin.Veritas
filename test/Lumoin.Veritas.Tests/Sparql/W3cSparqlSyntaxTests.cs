@@ -46,18 +46,7 @@ internal sealed class W3cSparqlSyntaxTests
     /// </summary>
     private static Dictionary<string, string> KnownGaps { get; } = new(StringComparer.Ordinal)
     {
-        ["syn-bad-01.rq"] = "SELECT * with GROUP BY — requires variable-scope analysis",
-        ["syn-bad-02.rq"] = "ungrouped projected variable — requires variable-scope analysis",
-        ["syn-bad-03.rq"] = "duplicate projection variable — requires projection-scope analysis",
         ["syn-bad-pname-06"] = "PN_LOCAL escaping nuance — lexer refinement",
-        ["syntax-BINDscope6.rq"] = "BIND reuses an in-scope variable — requires scope analysis",
-        ["syntax-BINDscope7.rq"] = "BIND reuses an in-scope variable — requires scope analysis",
-        ["syntax-BINDscope8.rq"] = "BIND reuses an in-scope variable — requires scope analysis",
-        ["syntax-SELECTscope2"] = "projection scope — requires scope analysis",
-        ["GROUP BY expression in-scope"] = "GROUP BY scope — requires scope analysis",
-        ["GROUP BY variable in-scope (1)"] = "GROUP BY scope — requires scope analysis",
-        ["GROUP BY variable in-scope (2)"] = "GROUP BY scope — requires scope analysis",
-        ["Nested aggregate functions"] = "nested aggregates — requires static aggregate analysis",
         ["syntax-propertyPaths-01.rq"] = "standalone blank-node property list — needs the sugar-expansion pass",
         ["codepoint-esc-01.rq"] = "numeric codepoint escapes (\\uXXXX / \\UXXXXXXXX) in tokens — lexer refinement",
         ["codepoint-esc-02.rq"] = "numeric codepoint escapes (\\uXXXX / \\UXXXXXXXX) in tokens — lexer refinement",
@@ -158,6 +147,13 @@ internal sealed class W3cSparqlSyntaxTests
         SparqlParser parser = new(lexer.Tokenize(), pool, baseIri: null, blankNodes: null, diagnostics: diagnostics);
         ParseResult<Lumoin.Veritas.Sparql.Ast.SparqlRequest> result = parser.ParseToResult();
         BridgeLexerDiagnostics(lexer, diagnostics);
+
+        //A grammatically well-formed query can still violate the SPARQL §18.2.1 static scope constraints (an
+        //in-scope AS target, an ungrouped projection, a nested aggregate); those make it a negative-syntax test.
+        if(result.Tree is not null)
+        {
+            Lumoin.Veritas.Sparql.Analysis.SparqlScopeAnalyzer.Analyze(result.Tree, diagnostics);
+        }
 
         if(result.HasErrors || diagnostics.HasErrors)
         {
