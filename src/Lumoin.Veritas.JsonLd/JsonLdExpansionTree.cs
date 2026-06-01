@@ -1015,10 +1015,6 @@ public static class JsonLdExpansionTree
     }
 
     /// <summary>
-    /// Expands an already-shaped value object, applying IRI expansion to
-    /// the <c>@type</c> field while leaving the rest of the object as-is.
-    /// </summary>
-    /// <summary>
     /// Whether the object is a value object: some key expands to
     /// <c>@value</c>, directly or through a keyword alias.
     /// </summary>
@@ -1061,8 +1057,54 @@ public static class JsonLdExpansionTree
         return sawId;
     }
 
+    /// <summary>
+    /// Whether the value object declares <c>@type: @json</c> (directly or
+    /// via aliases of <c>@type</c> and the <c>@json</c> keyword), marking its
+    /// <c>@value</c> as a verbatim JSON literal.
+    /// </summary>
+    private static bool IsJsonTypedValueObject(JsonLdNode value, LinkedDataContext activeContext)
+    {
+        foreach(KeyValuePair<string, JsonLdNode> entry in value.EnumerateObject())
+        {
+            if(!string.Equals(activeContext.ExpandIri(entry.Key, vocab: true), "@type", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if(entry.Value.Kind == JsonLdNodeKind.String
+                && string.Equals(activeContext.ExpandIri(entry.Value.GetString(), vocab: true), "@json", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static Dictionary<string, object?>? ExpandValueObject(JsonLdNode value, LinkedDataContext activeContext)
     {
+        //A value object typed @json keeps its @value verbatim as a JSON
+        //literal (objects, arrays, and null preserved), regardless of key
+        //or @type aliases.
+        if(IsJsonTypedValueObject(value, activeContext))
+        {
+            Dictionary<string, object?> jsonResult = new(StringComparer.Ordinal) { ["@type"] = "@json" };
+            foreach(KeyValuePair<string, JsonLdNode> entry in value.EnumerateObject())
+            {
+                string? entryKey = activeContext.ExpandIri(entry.Key, vocab: true);
+                if(string.Equals(entryKey, "@value", StringComparison.Ordinal))
+                {
+                    jsonResult["@value"] = ConvertJsonLiteral(entry.Value);
+                }
+                else if(string.Equals(entryKey, "@index", StringComparison.Ordinal) && entry.Value.Kind == JsonLdNodeKind.String)
+                {
+                    jsonResult["@index"] = entry.Value.GetString();
+                }
+            }
+
+            return jsonResult;
+        }
+
         Dictionary<string, object?> result = new(StringComparer.Ordinal);
         foreach(KeyValuePair<string, JsonLdNode> entry in value.EnumerateObject())
         {
