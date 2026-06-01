@@ -542,6 +542,22 @@ public static partial class ContextProcessing
         if(value.IsSimpleString)
         {
             string iriMapping = value.Iri ?? string.Empty;
+
+            //A term redefined to its own name (e.g. "term": "term") maps
+            //through the vocabulary, not the term's prior definition.
+            if(string.Equals(iriMapping, termName, StringComparison.Ordinal) && activeContext.VocabularyMapping is not null)
+            {
+                TermDefinition selfDefinition = new()
+                {
+                    IriMapping = activeContext.VocabularyMapping + termName,
+                    Protected = contextProtected
+                };
+                activeContext = SetTermDefinitionInternal(activeContext, termName, selfDefinition, overrideProtected);
+                defined[termName] = true;
+
+                return activeContext;
+            }
+
             string? compactPrefix = TryGetCompactIriPrefix(iriMapping);
             if(compactPrefix is not null
                 && localContext.ContainsKey(compactPrefix)
