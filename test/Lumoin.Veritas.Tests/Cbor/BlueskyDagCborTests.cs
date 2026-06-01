@@ -30,7 +30,7 @@ internal sealed class BlueskyDagCborTests
         byte[]? carBytes = TryLoadFixture(fixtureName);
         if(carBytes is null)
         {
-            Assert.Inconclusive($"Fixture {fixtureName} is not present; see Fixtures/Bluesky/README.md.");
+            Assert.Inconclusive($"Optional real-data fixture {fixtureName} is not vendored (justified: it requires a manual CAR download — see Fixtures/Bluesky/README.md). Not a W3C conformance test.");
             return;
         }
 
@@ -58,7 +58,7 @@ internal sealed class BlueskyDagCborTests
         byte[]? carBytes = TryLoadFixture(fixtureName);
         if(carBytes is null)
         {
-            Assert.Inconclusive($"Fixture {fixtureName} is not present; see Fixtures/Bluesky/README.md.");
+            Assert.Inconclusive($"Optional real-data fixture {fixtureName} is not vendored (justified: it requires a manual CAR download — see Fixtures/Bluesky/README.md). Not a W3C conformance test.");
             return;
         }
 

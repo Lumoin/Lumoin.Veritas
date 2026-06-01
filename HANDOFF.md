@@ -6,15 +6,15 @@ AST → algebra → translator → hypertrie backend + executor subset → SHACL
 unlock). **Batch 2 = Milestones D–F** (full algebra/aggregation, CONSTRUCT/
 DESCRIBE/JSON results, conformance push).
 
-## ⭐ CURRENT STATE (2026-06-01, **harness GREEN (0 failures)**; SPARQL Update + RDF/XML conformance + lexer codepoint escapes COMPLETE, on `sparql-query-engine`, tree clean)
+## ⭐ CURRENT STATE (2026-06-01, **harness GREEN (0 failures)**; conformance skips driven 229 → 2; RDF + SPARQL conformance-complete, on `sparql-query-engine`, tree clean)
 
 **Post-Update roadmap (user: work through all in preferred order, PERFORMANCE LAST).** Conformance is GREEN
-(3856 tests, 0 failed, 229 skip). **Done since the last handoff:** the **full lexer codepoint-escape mechanism**
-(`4d2fb0e`) — see the ✅ block immediately below — closing the `codepoint-esc-01/02/07/08` + `codepoint-esc-bad-03`
-+ `syn-bad-pname-06` cluster, then **standalone `TriplesNodePath` parsing** (`45c78c0`) closing the last query-syntax
-KnownGap `syntax-propertyPaths-01` (extended to CONSTRUCT templates + Update DATA blocks in `b742049`).
-**The query-syntax negatives TAIL is now COMPLETE** (only the generically-typed
-`NegativeSyntaxTest11` update-syntax entries remain as honest type-guard skips). **Earlier:** the
+(**3678 tests, 0 failed, 2 skip** — the 2 are justified non-W3C Bluesky `.car` fixtures requiring a manual
+download). **Done since the last handoff:** the **conformance-skip cleanup (229 → 2)** — see the ✅ block immediately
+below; the user's standard is no unjustified skips, RDF *and* SPARQL fully conformance-checked. Before that: the
+**full lexer codepoint-escape mechanism** (`4d2fb0e`) closing the `codepoint-esc-01/02/07/08` + `codepoint-esc-bad-03`
++ `syn-bad-pname-06` cluster, then **standalone `TriplesNodePath` parsing** (`45c78c0`, extended to CONSTRUCT
+templates + Update DATA blocks in `b742049`). **Earlier:** the
 **RDF/XML conformance ratchet** (197/197, `6d40949`+`03856b4`+`1636474`), the **"Protect from error in AVG" aggregate**
 (`dfdcad1`), the **SPARQL Results CSV/TSV/JSON results-format suites** (`17b47ba`), and **SPARQL §18.2.1 static
 variable-scope analysis** (`879dc2c`, `SparqlScopeAnalyzer`) closing 11 query-syntax KnownGaps. The W3C RDF/XML suites (`rdf11/rdf-xml` + `rdf12/rdf-xml`,
@@ -30,6 +30,33 @@ XML-DSig form for signing — `[UnsupportedOSPlatform("browser")]`, so the defau
 use source order, so the default matches them; `System.Security.Cryptography.Xml` is now referenced by the Xml
 project. The W3C fixtures predate strict C14N namespace sorting — that's why the knob exists (see
 `Xml/XmlLiteralCanonicalizerTests`).
+
+✅ **CONFORMANCE-SKIP CLEANUP DONE (2026-06-01): 229 → 2 skips, 0 failures.** An audit found most "skips" were not
+real gaps. Five workstreams (`c878f2f`, `f970759`, `6f3d27a` + the `.car` clarification):
+- **(A) Harness consolidation + 4 revealed conformance fixes (`c878f2f`).** Mixed W3C manifests were enumerated by
+  two test classes, each `Assert.Inconclusive`-skipping the entry types it didn't handle (~196 skips: 178 pure
+  duplication + 17 genuinely-uncovered query/update-syntax entries embedded in eval manifests). Now a SINGLE
+  dispatcher (`W3cSparqlEvalTests.RunAndAssertAsync`) runs every entry by type — query/update eval + query/update
+  syntax — never skipping on type; the ambiguous generic `*SyntaxTest11` parses as a query, or as an update in an
+  update suite (per-method `updateSyntaxSuite` flag). The query reader is shared (`Conformance/SparqlConformanceReader.ParseQuery`);
+  the duplicate triple-terms enumeration was removed from `W3cSparqlSyntaxTests`. Un-skipping the 17 surfaced 4 REAL
+  gaps, all fixed: `SparqlScopeAnalyzer` now rejects ungrouped variables used inside a projection *expression*
+  (`(?O1+?O2) AS ?x` — COUNT 8/11) and treats `GROUP BY (?v)` as keying `?v`; `SparqlParser` rejects a non-triple
+  `CONSTRUCT WHERE` body (FILTER/GRAPH — `constructwhere05/06`, new `SP0051`).
+- **(B) RDFC-1.0 issued-identifier map + poison rejection (`6f3d27a`, 22 skips).** `RdfCanonicalizer.CanonicalizeWithMap`
+  returns the canonical N-Quads + the input-label→`c14nN` map (new `RdfCanonicalizationResult`); a work budget
+  (`MaxNDegreePermutations`, 1M) bounds the hash-n-degree permutations and rejects a poison clique with the new
+  `RdfCanonicalizationException`. `W3cRdfCanonRunner` runs `RDFC10MapTest` (compare the map) + `RDFC10NegativeEvalTest`.
+  **RDF 1.2 + RDFC-1.0 are now fully conformance-green** (RDF 1.2 syntaxes — Turtle/TriG/N-Triples/N-Quads/XML — were
+  already green).
+- **(C) SPARQL `.ttl` graph results (`f970759`, 2 skips).** A SELECT/ASK result given as an RDF `rs:ResultSet` graph
+  (new `SparqlResultSetGraphReader`) is read + value-compared; `W3cSparqlEvalRunner` reads `.ttl`/`.nt` results.
+- **(D) SHACL-SPARQL §5.2.1 pre-binding rejection (`f970759`, 7 skips).** `SparqlPreBinding.Substitute` now throws
+  `ShaclSparqlPreBindingException` when a pre-bound query uses MINUS/VALUES/SERVICE, a sub-SELECT not projecting the
+  pre-bound focus var, or an `AS`/`BIND` to a pre-bound var; the harness maps `mf:result sht:Failure` to expecting
+  the throw. (Was the misleading "no expected report".)
+- **(E) The 2 remaining skips are JUSTIFIED:** optional Bluesky `.car` real-data fixtures not vendored (manual
+  download; `Cbor/Fixtures/Bluesky/README.md`), not W3C conformance.
 
 ✅ **FULL LEXER CODEPOINT-ESCAPE MECHANISM DONE (2026-06-01, `4d2fb0e`): query-syntax cluster closed (6 KnownGaps).**
 Implemented as ONE feature per §19.2 (the whole-character-stream rewrite), in final form over BOTH lexer entry points.
@@ -77,9 +104,10 @@ New AST slots `ConstructQuery.TemplateStandaloneNodes`/`Quads.DefaultStandaloneN
    (memory `project_aggregation_specialized_storage`); the group-partition+fold step is the seam.
 
 ### ▶ RESUME RECIPE — SHACL-AF (START HERE next session)
-Clean tree at `b742049`, branch `sparql-query-engine`, full suite **3856 / 0 failed / 229 skip**. The query-syntax
-tail is closed; the next big ratchet is **SHACL Advanced Features**. Starting points to investigate first (not yet
-scoped in detail):
+Clean tree at `6f3d27a` (+ this HANDOFF commit), branch `sparql-query-engine`, full suite **3678 / 0 failed / 2 skip**
+(the 2 are justified non-W3C `.car` fixtures). The query-syntax tail is closed and the conformance-skip cleanup is
+done (RDF + SPARQL + core SHACL-SPARQL all run with no unjustified skips); the next big ratchet is **SHACL Advanced
+Features**. Starting points to investigate first (not yet scoped in detail):
 - **Existing SHACL surface:** the core-SHACL validator + conformance harness (`W3cShaclRunner`, `ShaclValidator`) and
   the SPARQL-constraint wiring already landed (pre-binding by substitution `SparqlPreBinding.Substitute`;
   `$this`/`$currentShape`/`$shapesGraph` injected; `SparqlEngineCache`/`SparqlDataset` over data + shapes graph). SHACL-AF
@@ -127,7 +155,7 @@ scoped in detail):
 ### Build/test (always, per [[feedback_build_test_command_shape]])
 - `dotnet build <csproj> -clp:ErrorsOnly --nologo` (PowerShell), separate from the test run.
 - Test exe (Bash, `cd /c/projektit/Lumoin.Veritas` first): `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe" --filter "FullyQualifiedName~<X>" > tempdocs/out.txt 2>&1` then Grep `total:|failed:`. ⚠ Some update/syntax negatives can hang the parser if a recovery path doesn't advance — wrap runs in `timeout`. Kill stray `Lumoin.Veritas.Tests` processes before rebuilding (they lock the DLLs).
-- Tree is clean at `b742049`; branch `sparql-query-engine`.
+- Tree is clean at `6f3d27a` (+ this HANDOFF commit); branch `sparql-query-engine`.
 
 ---
 
