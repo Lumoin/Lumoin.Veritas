@@ -109,30 +109,38 @@ New AST slots `ConstructQuery.TemplateStandaloneNodes`/`Quads.DefaultStandaloneN
 1. ✅ **Query-syntax negatives — TAIL: COMPLETE** (scope analysis `879dc2c`; lexer escapes `4d2fb0e`; standalone
    `TriplesNodePath` `45c78c0`). Only honest type-guard skips remain (the generically-typed `NegativeSyntaxTest11`
    update-syntax entries — lighting those up is a minor harness type-guard tweak, not a parser/lexer gap).
-2. **← NEXT: SHACL Advanced Features (SHACL-AF)** — SPARQL-based constraints/rules/functions/targets; reuses the
-   now-complete SPARQL engine + the `$this`/`$currentShape`/`$shapesGraph` pre-binding-by-substitution machinery
-   (`SparqlPreBinding.Substitute`). Large ratchet (vendor the suite, red-baseline + ratchet to 0). Resume recipe below.
-3. **Performance rework — pluggable WCOJ backends** (LAST, per user): the 4-seam taxonomy + BenchmarkDotNet vehicle.
+2. ✅ **SHACL conformance — COMPLETE (verified 2026-06-01).** The official W3C data-shapes test suite (gh-pages HEAD)
+   has ONLY `tests/core/` + `tests/sparql/`, and we pass 100% of both with **0 skips**. There is nothing left to
+   ratchet. **SHACL Advanced Features (SHACL-AF) has NO official W3C conformance suite** (2017 WG Note, never given a
+   maintained manifest suite) — so it is *not* a ratchet; it could only be implemented + unit-tested, and its rules
+   infer triples (entailment-flavored → overlaps the deferred OWL track). (Earlier handoffs wrongly said "vendor the
+   official SHACL-AF suite" — there is none.)
+3. **← NEXT: JSON-LD 1.1 conformance** — the one remaining area with an official W3C suite. `Lumoin.Veritas.JsonLd`
+   is implemented + unit-tested but NOT measured against the W3C suite. Vendor `w3c/json-ld-api` `tests/`
+   (expand/compact/flatten/toRdf/fromRdf), wire a manifest-driven `W3cJsonLdTests` runner (⚠ the JSON-LD manifests
+   are themselves `.jsonld`, NOT Turtle — needs a JSON manifest loader, unlike the existing Turtle-manifest harness),
+   red-baseline + ratchet to 0. Then **CBOR-LD**: no formal W3C suite (CCG draft) → round-trip against the
+   `digitalbazaar/cbor-ld` reference vectors, not a manifest ratchet.
+4. **Performance rework — pluggable WCOJ backends** (LAST, per user): the 4-seam taxonomy + BenchmarkDotNet vehicle.
    NB: aggregations (AVG/SUM/…) are a perf candidate for special indexes / specialized storage behind seams
    (memory `project_aggregation_specialized_storage`); the group-partition+fold step is the seam.
+- **OWL / entailment** remains its own deferred track (SHACL-AF rules would partly pre-empt it).
 
-### ▶ RESUME RECIPE — SHACL-AF (START HERE next session)
-Clean tree at `6f3d27a` (+ this HANDOFF commit), branch `sparql-query-engine`, full suite **3678 / 0 failed / 2 skip**
-(the 2 are justified non-W3C `.car` fixtures). The query-syntax tail is closed and the conformance-skip cleanup is
-done (RDF + SPARQL + core SHACL-SPARQL all run with no unjustified skips); the next big ratchet is **SHACL Advanced
-Features**. Starting points to investigate first (not yet scoped in detail):
-- **Existing SHACL surface:** the core-SHACL validator + conformance harness (`W3cShaclRunner`, `ShaclValidator`) and
-  the SPARQL-constraint wiring already landed (pre-binding by substitution `SparqlPreBinding.Substitute`;
-  `$this`/`$currentShape`/`$shapesGraph` injected; `SparqlEngineCache`/`SparqlDataset` over data + shapes graph). SHACL-AF
-  builds on exactly these.
-- **What SHACL-AF adds:** `sh:SPARQLRule`/`sh:TripleRule` (rules), `sh:SPARQLFunction` (custom functions),
-  `sh:SPARQLTarget` (SPARQL-based targets), and SPARQL-based constraint *components*. Vendor the official SHACL-AF
-  test suite, red-baseline, ratchet to 0 (same discipline as the core-SHACL + rdf-canon suites).
-- **Likely seams:** custom SPARQL functions need a function-resolution hook in `SparqlExpressionEvaluator`
-  (`FunctionCallExpression` currently handles XSD casts + builtins); rules produce inferred triples (a CONSTRUCT-shaped
-  template instantiation — reuse `SparqlGraphConstruction.InstantiateQuads`, the shared Update/CONSTRUCT machinery).
-- **Verify:** per [[feedback_build_test_command_shape]] — build the test csproj, run the new SHACL-AF filter, then the
-  FULL suite. Watch the baseline ratchet (RED-baseline + ratchet, NOT KnownGaps — [[project_sparql_conformance_baseline]]).
+### ▶ RESUME RECIPE — JSON-LD 1.1 conformance (START HERE next session)
+Branch `sparql-query-engine`, full suite **3700 / 0 failed / 2 skip** (the 2 are justified non-W3C `.car` fixtures).
+SHACL/RDF/SPARQL conformance are complete; the next ratchet is **JSON-LD**. Scope first:
+- **What `Lumoin.Veritas.JsonLd` implements** — confirm which API operations exist (expand / compact / flatten /
+  toRdf / fromRdf) before deciding which W3C suites to wire; only wire suites for operations we implement, baseline
+  the rest.
+- **The manifest wrinkle:** JSON-LD test manifests are `.jsonld` (a JSON-LD document with a `sequence` of entries),
+  not Turtle — the existing `W3cManifestLoader` (Turtle) + `[W3cManifestData]` attribute won't load them. Either add
+  a JSON manifest loader or a parallel `[JsonLdManifestData]`-style data source. Each entry has `@type`
+  (jld:PositiveEvaluationTest / NegativeEvaluationTest), `input`, `expect`/`expectErrorCode`, and per-suite `option`s
+  (base, processingMode 1.1, expandContext, …).
+- **Comparison:** expand/compact/flatten compare JSON (structural, order-insensitive for sets); toRdf compares
+  N-Quads (reuse the existing N-Quads reader + `QuadSetIsomorphism`); fromRdf compares JSON.
+- **Verify:** per [[feedback_build_test_command_shape]] — build the test csproj, run the new JSON-LD filter, then the
+  FULL suite. RED-baseline + ratchet, NOT KnownGaps ([[project_sparql_conformance_baseline]]).
 
 ### Scope-analysis notes (commit `879dc2c`)
 - `Lumoin.Veritas.Sparql/Analysis/SparqlScopeAnalyzer.Analyze(SparqlRequest, DiagnosticBag)` — span-insensitive,
