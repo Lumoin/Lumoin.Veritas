@@ -1058,8 +1058,10 @@ public static class JsonLdExpansionTree
             nodeObject["@index"] = mapKey;
         }
 
-        if(isIdMap && !mapKeyIsNone)
+        if(isIdMap && !mapKeyIsNone && !nodeObject.ContainsKey("@id"))
         {
+            //The id-map key supplies the @id only when the node object does
+            //not already carry one of its own.
             string? expandedId = activeContext.ExpandIri(mapKey, documentRelative: true);
             nodeObject["@id"] = expandedId ?? mapKey;
         }
