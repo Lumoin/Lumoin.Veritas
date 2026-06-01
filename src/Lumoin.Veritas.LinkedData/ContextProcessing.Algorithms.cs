@@ -121,7 +121,7 @@ public static partial class ContextProcessing
                 result = await ProcessRemoteContextCoreAsync(
                     result, entry.Import, baseUrl, fetcher, parser, cache,
                     remoteContexts, overrideProtected, propagate, depth,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken, isImport: true).ConfigureAwait(false);
             }
 
             bool contextProtected = entry.Protected ?? false;
@@ -236,7 +236,8 @@ public static partial class ContextProcessing
         bool overrideProtected,
         bool propagate,
         int depth,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool isImport = false)
     {
         string resolvedUri = baseUrl is not null
             ? IriUtils.ResolveIri(baseUrl, contextUrl)
@@ -260,6 +261,19 @@ public static partial class ContextProcessing
 
         IReadOnlyDictionary<string, object?> parsedContext =
             await parser(resource, cancellationToken).ConfigureAwait(false);
+
+        //@import may only reference a context whose @context is a single map;
+        //an array-shaped remote @context (surfaced as a lone "@context" list
+        //entry) is an invalid remote context.
+        if(isImport
+            && parsedContext.Count == 1
+            && parsedContext.TryGetValue("@context", out object? importedContext)
+            && importedContext is not IReadOnlyDictionary<string, object?>)
+        {
+            throw new LinkedDataProcessingException(
+                "invalid remote context",
+                string.Create(CultureInfo.InvariantCulture, $"@import '{contextUrl}' must reference a single context map."));
+        }
 
         //The parser hands back the structure of the resolved
         //document's @context value. Convert each entry to a
