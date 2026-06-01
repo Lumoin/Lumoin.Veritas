@@ -53,19 +53,9 @@ internal static class W3cRdfCanonRunner
     {
         ArgumentNullException.ThrowIfNull(testCase);
 
-        if(testCase.TypeLocalName != "RDFC10EvalTest")
-        {
-            return new W3cOutcome(W3cOutcomeStatus.Skipped, $"'{testCase.TypeLocalName}' is not executed: the canonicalizer surface returns the canonical N-Quads, not the issued-identifier map, and applies no poison-graph rejection.");
-        }
-
         if(!File.Exists(testCase.InputPath))
         {
             return new W3cOutcome(W3cOutcomeStatus.Failed, $"Input file not found: {testCase.InputPath}");
-        }
-
-        if(testCase.ExpectedPath is null || !File.Exists(testCase.ExpectedPath))
-        {
-            return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expected canonical N-Quads not found: {testCase.ExpectedPath}");
         }
 
         List<Quad> quads = [];
@@ -83,15 +73,117 @@ internal static class W3cRdfCanonRunner
         }
 
         HashDelegate hash = testCase.HashAlgorithm == "SHA384" ? SHA384.HashData : SHA256.HashData;
+
+        return testCase.TypeLocalName switch
+        {
+            "RDFC10NegativeEvalTest" => RunNegative(quads, hash),
+            "RDFC10MapTest" => await RunMapAsync(testCase, quads, hash, cancellationToken).ConfigureAwait(false),
+            "RDFC10EvalTest" => await RunEvalAsync(testCase, quads, hash, cancellationToken).ConfigureAwait(false),
+            _ => new W3cOutcome(W3cOutcomeStatus.Skipped, $"Unhandled rdf-canon test type '{testCase.TypeLocalName}'.")
+        };
+    }
+
+    /// <summary>Runs a <c>RDFC10EvalTest</c>: canonicalize and compare byte-for-byte to the expected N-Quads.</summary>
+    /// <param name="testCase">The case.</param>
+    /// <param name="quads">The parsed input quads.</param>
+    /// <param name="hash">The hash function.</param>
+    /// <param name="cancellationToken">A cancellation token.</param>
+    /// <returns>The outcome.</returns>
+    private static async Task<W3cOutcome> RunEvalAsync(W3cRdfCanonCase testCase, List<Quad> quads, HashDelegate hash, CancellationToken cancellationToken)
+    {
+        if(testCase.ExpectedPath is null || !File.Exists(testCase.ExpectedPath))
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expected canonical N-Quads not found: {testCase.ExpectedPath}");
+        }
+
         string actual = RdfCanonicalizer.Canonicalize(quads, hash);
         string expected = NormalizeLineEndings(await File.ReadAllTextAsync(testCase.ExpectedPath, cancellationToken).ConfigureAwait(false));
 
-        if(string.Equals(actual, expected, StringComparison.Ordinal))
+        return string.Equals(actual, expected, StringComparison.Ordinal)
+            ? new W3cOutcome(W3cOutcomeStatus.Passed, $"Canonical output matches ({quads.Count} input quad(s)).")
+            : new W3cOutcome(W3cOutcomeStatus.Failed, $"Canonical output differs from expected ({CountLines(actual)} vs {CountLines(expected)} line(s)).");
+    }
+
+    /// <summary>Runs a <c>RDFC10MapTest</c>: compare the issued-identifier map to the expected JSON (input label → <c>c14nN</c>).</summary>
+    /// <param name="testCase">The case.</param>
+    /// <param name="quads">The parsed input quads.</param>
+    /// <param name="hash">The hash function.</param>
+    /// <param name="cancellationToken">A cancellation token.</param>
+    /// <returns>The outcome.</returns>
+    private static async Task<W3cOutcome> RunMapAsync(W3cRdfCanonCase testCase, List<Quad> quads, HashDelegate hash, CancellationToken cancellationToken)
+    {
+        if(testCase.ExpectedPath is null || !File.Exists(testCase.ExpectedPath))
         {
-            return new W3cOutcome(W3cOutcomeStatus.Passed, $"Canonical output matches ({quads.Count} input quad(s)).");
+            return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expected issued-identifier map not found: {testCase.ExpectedPath}");
         }
 
-        return new W3cOutcome(W3cOutcomeStatus.Failed, $"Canonical output differs from expected ({CountLines(actual)} vs {CountLines(expected)} line(s)).");
+        RdfCanonicalizationResult result = RdfCanonicalizer.CanonicalizeWithMap(quads, hash);
+        Dictionary<string, string> expected = ParseFlatJsonMap(await File.ReadAllTextAsync(testCase.ExpectedPath, cancellationToken).ConfigureAwait(false));
+
+        if(result.IssuedIdentifiers.Count != expected.Count)
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Failed, $"Issued-identifier map size differs (actual {result.IssuedIdentifiers.Count} vs expected {expected.Count}).");
+        }
+
+        foreach((string label, string canonical) in expected)
+        {
+            if(!result.IssuedIdentifiers.TryGetValue(label, out string? actualCanonical) || !string.Equals(actualCanonical, canonical, StringComparison.Ordinal))
+            {
+                return new W3cOutcome(W3cOutcomeStatus.Failed, $"Issued identifier for ?{label} differs (expected {canonical}, got {(actualCanonical ?? "<unmapped>")}).");
+            }
+        }
+
+        return new W3cOutcome(W3cOutcomeStatus.Passed, $"Issued-identifier map matches ({expected.Count} blank node(s)).");
+    }
+
+    /// <summary>Runs a <c>RDFC10NegativeEvalTest</c>: a poison graph must be rejected with <see cref="RdfCanonicalizationException"/>.</summary>
+    /// <param name="quads">The parsed input quads.</param>
+    /// <param name="hash">The hash function.</param>
+    /// <returns>The outcome.</returns>
+    private static W3cOutcome RunNegative(List<Quad> quads, HashDelegate hash)
+    {
+        try
+        {
+            _ = RdfCanonicalizer.Canonicalize(quads, hash);
+        }
+        catch(RdfCanonicalizationException)
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Passed, "Poison graph rejected as expected.");
+        }
+
+        return new W3cOutcome(W3cOutcomeStatus.Failed, "Expected the poison graph to be rejected, but canonicalization completed.");
+    }
+
+    /// <summary>Parses a flat JSON object of string→string entries (the issued-identifier map fixture; values are simple labels with no escapes).</summary>
+    /// <param name="json">The JSON text.</param>
+    /// <returns>The label → canonical-identifier map.</returns>
+    private static Dictionary<string, string> ParseFlatJsonMap(string json)
+    {
+        List<string> tokens = [];
+        int index = 0;
+        while(index < json.Length)
+        {
+            if(json[index] == '"')
+            {
+                int start = ++index;
+                while(index < json.Length && json[index] != '"')
+                {
+                    index++;
+                }
+
+                tokens.Add(json[start..index]);
+            }
+
+            index++;
+        }
+
+        Dictionary<string, string> map = [];
+        for(int pair = 0; pair + 1 < tokens.Count; pair += 2)
+        {
+            map[tokens[pair]] = tokens[pair + 1];
+        }
+
+        return map;
     }
 
     /// <summary>Normalizes CRLF / lone-CR to LF (a checkout artifact on the vendored expected files), matching the canonical RDFC-1.0 line form.</summary>

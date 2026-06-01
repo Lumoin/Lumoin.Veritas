@@ -35,6 +35,11 @@ namespace Lumoin.Veritas.Canonicalization;
 /// </remarks>
 public static class RdfCanonicalizer
 {
+    //The hash-n-degree algorithm explores permutations of mutually-related blank nodes; a complete clique of N
+    //blank nodes drives this factorially. This bound is orders of magnitude above any well-formed dataset's needs
+    //(the W3C eval suite's most symmetric graphs sit far below it) yet is reached quickly by a poison graph.
+    private const long MaxNDegreePermutations = 1_000_000;
+
     /// <summary>
     /// Canonicalizes an RDF dataset and returns the canonical N-Quads serialization.
     /// </summary>
@@ -47,10 +52,34 @@ public static class RdfCanonicalizer
     /// The canonical N-Quads serialization as a UTF-8 string. Lines are sorted
     /// lexicographically. The string uses <c>\n</c> line terminators throughout.
     /// </returns>
+    /// <exception cref="RdfCanonicalizationException">The dataset's blank-node structure exceeds the work budget (a poison graph).</exception>
     public static string Canonicalize(IEnumerable<Quad> quads, HashDelegate hash)
+    {
+        return CanonicalizeCore(quads, hash).Canonical;
+    }
+
+    /// <summary>
+    /// Canonicalizes an RDF dataset and returns the canonical N-Quads serialization together with the
+    /// issued-identifier map (each input blank-node label to its <c>c14nN</c> canonical identifier).
+    /// </summary>
+    /// <param name="quads">The quads forming the dataset to canonicalize.</param>
+    /// <param name="hash">The hash function (RDFC-1.0 requires SHA-256).</param>
+    /// <returns>The canonical serialization and the issued-identifier map.</returns>
+    /// <exception cref="RdfCanonicalizationException">The dataset's blank-node structure exceeds the work budget (a poison graph).</exception>
+    public static RdfCanonicalizationResult CanonicalizeWithMap(IEnumerable<Quad> quads, HashDelegate hash)
+    {
+        return CanonicalizeCore(quads, hash);
+    }
+
+    private static RdfCanonicalizationResult CanonicalizeCore(IEnumerable<Quad> quads, HashDelegate hash)
     {
         ArgumentNullException.ThrowIfNull(quads);
         ArgumentNullException.ThrowIfNull(hash);
+
+        //Bounds the permutations the hash-n-degree algorithm may explore across the whole canonicalization; a
+        //highly-symmetric "poison" graph (a clique of mutually-related blank nodes) would otherwise demand a
+        //factorial amount of work. The limit is far above any well-formed dataset's needs.
+        WorkBudget budget = new(MaxNDegreePermutations);
 
         //An RDF dataset is a SET of quads: RDFC-1.0 operates on distinct quads, so duplicate input quads are removed
         //before hashing and serialization (otherwise a blank node's first-degree hash would double-count a repeated
@@ -74,7 +103,7 @@ public static class RdfCanonicalizer
         if(blankNodeToQuads.Count == 0)
         {
             //No blank nodes: serialize quads directly in sorted order.
-            return SerializeWithoutBlankNodes(dataset);
+            return new RdfCanonicalizationResult(SerializeWithoutBlankNodes(dataset), new Dictionary<string, string>());
         }
 
         //Step 2. Compute an initial hash for each blank node based on its surrounding quads.
@@ -189,7 +218,7 @@ public static class RdfCanonicalizer
                 //seed — carries the final issued order used for assignment.
                 IdentifierIssuer tempIssuer = new("b");
                 tempIssuer.Issue(blankId);
-                (string ndHash, IdentifierIssuer resultIssuer) = HashNDegreeQuads(blankId, blankNodeToQuads, simpleMap, canonicalMap, tempIssuer, hash);
+                (string ndHash, IdentifierIssuer resultIssuer) = HashNDegreeQuads(blankId, blankNodeToQuads, simpleMap, canonicalMap, tempIssuer, hash, budget);
                 groupResults.Add((ndHash, resultIssuer));
             }
 
@@ -222,7 +251,7 @@ public static class RdfCanonicalizer
 
         Array.Sort(lines, StringComparer.Ordinal);
 
-        return string.Concat(lines);
+        return new RdfCanonicalizationResult(string.Concat(lines), canonicalMap);
     }
 
     /// <summary>
@@ -405,7 +434,8 @@ public static class RdfCanonicalizer
         Dictionary<string, string> hashMap,
         Dictionary<string, string> canonicalMap,
         IdentifierIssuer issuer,
-        HashDelegate hash)
+        HashDelegate hash,
+        WorkBudget budget)
     {
         Stack<NDegreeFrame> stack = new();
         stack.Push(new NDegreeFrame(blankId, issuer));
@@ -422,7 +452,7 @@ public static class RdfCanonicalizer
                 hasResult = false;
             }
 
-            if(StepNDegreeFrame(frame, blankNodeToQuads, hashMap, canonicalMap, hash, stack))
+            if(StepNDegreeFrame(frame, blankNodeToQuads, hashMap, canonicalMap, hash, stack, budget))
             {
                 stack.Pop();
                 result = (frame.ResultHash!, frame.Issuer);
@@ -453,7 +483,8 @@ public static class RdfCanonicalizer
         Dictionary<string, string> hashMap,
         Dictionary<string, string> canonicalMap,
         HashDelegate hash,
-        Stack<NDegreeFrame> stack)
+        Stack<NDegreeFrame> stack,
+        WorkBudget budget)
     {
         while(true)
         {
@@ -500,6 +531,9 @@ public static class RdfCanonicalizer
 
                         break;
                     }
+
+                    //Each permutation explored counts against the work budget; a poison graph exhausts it.
+                    budget.Spend();
 
                     frame.PermutationStarted = true;
                     frame.PermutationIssuer = frame.Issuer.Clone();
@@ -787,6 +821,28 @@ public static class RdfCanonicalizer
         byte[] hashBytes = hash(Encoding.UTF8.GetBytes(input));
 
         return Convert.ToHexString(hashBytes).ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// A bound on the number of hash-n-degree permutations a single canonicalization may explore. Each explored
+    /// permutation calls <see cref="Spend"/>; exceeding the limit throws <see cref="RdfCanonicalizationException"/>
+    /// (the poison-graph guard).
+    /// </summary>
+    /// <param name="limit">The maximum number of permutations.</param>
+    private sealed class WorkBudget(long limit)
+    {
+        private long spent;
+
+        /// <summary>Records one explored permutation, throwing when the budget is exhausted.</summary>
+        /// <exception cref="RdfCanonicalizationException">The budget has been exceeded.</exception>
+        public void Spend()
+        {
+            spent++;
+            if(spent > limit)
+            {
+                throw new RdfCanonicalizationException($"RDFC-1.0 canonicalization exceeded its work budget of {limit} hash-n-degree permutations; the blank-node structure is too complex to canonicalize (a poison graph).");
+            }
+        }
     }
 
     /// <summary>The stage of an in-flight <see cref="NDegreeFrame"/>'s state machine.</summary>
