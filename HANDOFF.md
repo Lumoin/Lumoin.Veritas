@@ -9,10 +9,11 @@ DESCRIBE/JSON results, conformance push).
 ## ⭐ CURRENT STATE (2026-06-01, **harness GREEN (0 failures)**; SPARQL Update + RDF/XML conformance + lexer codepoint escapes COMPLETE, on `sparql-query-engine`, tree clean)
 
 **Post-Update roadmap (user: work through all in preferred order, PERFORMANCE LAST).** Conformance is GREEN
-(3853 tests, 0 failed, 229 skip). **Done since the last handoff:** the **full lexer codepoint-escape mechanism**
+(3856 tests, 0 failed, 229 skip). **Done since the last handoff:** the **full lexer codepoint-escape mechanism**
 (`4d2fb0e`) — see the ✅ block immediately below — closing the `codepoint-esc-01/02/07/08` + `codepoint-esc-bad-03`
 + `syn-bad-pname-06` cluster, then **standalone `TriplesNodePath` parsing** (`45c78c0`) closing the last query-syntax
-KnownGap `syntax-propertyPaths-01`. **The query-syntax negatives TAIL is now COMPLETE** (only the generically-typed
+KnownGap `syntax-propertyPaths-01` (extended to CONSTRUCT templates + Update DATA blocks in `b742049`).
+**The query-syntax negatives TAIL is now COMPLETE** (only the generically-typed
 `NegativeSyntaxTest11` update-syntax entries remain as honest type-guard skips). **Earlier:** the
 **RDF/XML conformance ratchet** (197/197, `6d40949`+`03856b4`+`1636474`), the **"Protect from error in AVG" aggregate**
 (`dfdcad1`), the **SPARQL Results CSV/TSV/JSON results-format suites** (`17b47ba`), and **SPARQL §18.2.1 static
@@ -57,11 +58,12 @@ alternative's trailing property list may be empty, so `{ [ :p|:q|:r ?X ] }` and 
 blocks. `SparqlParser.TripleVerb` only let a reified triple stand alone; broadened via `CanStandAloneAsTriplesNode`
 (blank-node property list + collection + reified triple). The group-graph-pattern consumer already routes a standalone
 term into `BasicGraphPatternBlock.StandaloneNodes`, lowered by `SparqlNormalizer.ResolveCore`. Tests: `SparqlNormalizerTests`
-`LowersStandaloneBlankNodePropertyList` / `LowersStandaloneCollection`. ⚠ **Known follow-up:** standalone `TriplesNode`s
-in **CONSTRUCT templates / Update DATA blocks** are still dropped (uniform across ALL standalone node types — this
-pre-existed for the reified-triple case): `StepConstructTemplate`/`StepQuads` and `NormalizeTemplate`/`NormalizeQuads`
-(`LowerTriples(…, [], …)`) carry no standalone-node slot. Threading one through (mirroring `BasicGraphPatternBlock`)
-is the fix when it surfaces.
+`LowersStandaloneBlankNodePropertyList` / `LowersStandaloneCollection`. **Follow-up DONE (`b742049`):** standalone
+`TriplesNode`s are now also carried + lowered in **CONSTRUCT templates and Update DATA/template quad blocks** (default
+graph + inside `GRAPH` groups) — uniform across all three node types (closing the pre-existing reified-triple drop).
+New AST slots `ConstructQuery.TemplateStandaloneNodes`/`Quads.DefaultStandaloneNodes`/`QuadsGraphGroup.StandaloneNodes`;
+`StepConstructTemplate` returns a `BasicGraphPatternBlock`; `NormalizeTemplate` threads them to `LowerTriples`. Tests:
+`SparqlNormalizerTests.LowersStandaloneNodeInConstructTemplate` + `SparqlUpdateExecutorTests` (default + GRAPH-group).
 
 **Remaining roadmap (tasks, my order; each is a focused effort):**
 1. ✅ **Query-syntax negatives — TAIL: COMPLETE** (scope analysis `879dc2c`; lexer escapes `4d2fb0e`; standalone
@@ -75,7 +77,7 @@ is the fix when it surfaces.
    (memory `project_aggregation_specialized_storage`); the group-partition+fold step is the seam.
 
 ### ▶ RESUME RECIPE — SHACL-AF (START HERE next session)
-Clean tree at `45c78c0`, branch `sparql-query-engine`, full suite **3853 / 0 failed / 229 skip**. The query-syntax
+Clean tree at `b742049`, branch `sparql-query-engine`, full suite **3856 / 0 failed / 229 skip**. The query-syntax
 tail is closed; the next big ratchet is **SHACL Advanced Features**. Starting points to investigate first (not yet
 scoped in detail):
 - **Existing SHACL surface:** the core-SHACL validator + conformance harness (`W3cShaclRunner`, `ShaclValidator`) and
@@ -125,7 +127,7 @@ scoped in detail):
 ### Build/test (always, per [[feedback_build_test_command_shape]])
 - `dotnet build <csproj> -clp:ErrorsOnly --nologo` (PowerShell), separate from the test run.
 - Test exe (Bash, `cd /c/projektit/Lumoin.Veritas` first): `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe" --filter "FullyQualifiedName~<X>" > tempdocs/out.txt 2>&1` then Grep `total:|failed:`. ⚠ Some update/syntax negatives can hang the parser if a recovery path doesn't advance — wrap runs in `timeout`. Kill stray `Lumoin.Veritas.Tests` processes before rebuilding (they lock the DLLs).
-- Tree is clean at `45c78c0`; branch `sparql-query-engine`.
+- Tree is clean at `b742049`; branch `sparql-query-engine`.
 
 ---
 
