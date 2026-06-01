@@ -6,13 +6,17 @@ AST → algebra → translator → hypertrie backend + executor subset → SHACL
 unlock). **Batch 2 = Milestones D–F** (full algebra/aggregation, CONSTRUCT/
 DESCRIBE/JSON results, conformance push).
 
-## ⭐ CURRENT STATE (2026-06-01, **harness GREEN (0 failures)**; SPARQL Update + RDF/XML conformance COMPLETE, on `sparql-query-engine`, tree clean)
+## ⭐ CURRENT STATE (2026-06-01, **harness GREEN (0 failures)**; SPARQL Update + RDF/XML conformance + lexer codepoint escapes COMPLETE, on `sparql-query-engine`, tree clean)
 
 **Post-Update roadmap (user: work through all in preferred order, PERFORMANCE LAST).** Conformance is GREEN
-(3834 tests, 0 failed, 236 skip). **Done since the last handoff:** the **RDF/XML conformance ratchet** (197/197,
-`6d40949`+`03856b4`+`1636474`), the **"Protect from error in AVG" aggregate** (`dfdcad1`), the **SPARQL Results
-CSV/TSV/JSON results-format suites** (`17b47ba`), and **SPARQL §18.2.1 static variable-scope analysis**
-(`879dc2c`, `SparqlScopeAnalyzer`) closing 11 query-syntax KnownGaps. The W3C RDF/XML suites (`rdf11/rdf-xml` + `rdf12/rdf-xml`,
+(3853 tests, 0 failed, 229 skip). **Done since the last handoff:** the **full lexer codepoint-escape mechanism**
+(`4d2fb0e`) — see the ✅ block immediately below — closing the `codepoint-esc-01/02/07/08` + `codepoint-esc-bad-03`
++ `syn-bad-pname-06` cluster, then **standalone `TriplesNodePath` parsing** (`45c78c0`) closing the last query-syntax
+KnownGap `syntax-propertyPaths-01`. **The query-syntax negatives TAIL is now COMPLETE** (only the generically-typed
+`NegativeSyntaxTest11` update-syntax entries remain as honest type-guard skips). **Earlier:** the
+**RDF/XML conformance ratchet** (197/197, `6d40949`+`03856b4`+`1636474`), the **"Protect from error in AVG" aggregate**
+(`dfdcad1`), the **SPARQL Results CSV/TSV/JSON results-format suites** (`17b47ba`), and **SPARQL §18.2.1 static
+variable-scope analysis** (`879dc2c`, `SparqlScopeAnalyzer`) closing 11 query-syntax KnownGaps. The W3C RDF/XML suites (`rdf11/rdf-xml` + `rdf12/rdf-xml`,
 pinned `674da26`) are vendored to `Material/Rdf/` and wired via `Conformance/RdfXmlConformanceReader.cs` +
 `Xml/W3cRdfXmlTests.cs` (per-suite base = `mf:assumedTestBase` + the fixture's path relative to the suite root —
 handles sub-folders and the rdf12 `eval/` dir). The RDF 1.1 reader is conformance-complete, RDF 1.2-in-XML is
@@ -26,57 +30,66 @@ use source order, so the default matches them; `System.Security.Cryptography.Xml
 project. The W3C fixtures predate strict C14N namespace sorting — that's why the knob exists (see
 `Xml/XmlLiteralCanonicalizerTests`).
 
+✅ **FULL LEXER CODEPOINT-ESCAPE MECHANISM DONE (2026-06-01, `4d2fb0e`): query-syntax cluster closed (6 KnownGaps).**
+Implemented as ONE feature per §19.2 (the whole-character-stream rewrite), in final form over BOTH lexer entry points.
+New **`src/Lumoin.Veritas.Sparql/Lexer/SparqlCodepointDecoder.cs`** — an iterative (no-recursion) decoder that rewrites
+`\uXXXX`/`\UXXXXXXXX` to UTF-8 before tokenisation and carries a **decoded→source offset map** (parallel
+`sourceOffset`/`sourceLine`/`sourceColumn` arrays per decoded boundary; tracks source pos with CRLF handling). It is
+incremental (`Feed(span, isFinal)` returns source bytes consumed, holding a partial-escape tail when not final).
+**Wiring (`SparqlLexer.cs`):** the whole-buffer ctors decode `Source` once up front; the tokeniser walks the decoded
+bytes and `Offset()`/`Advance()` redirect through the map so token/diagnostic **spans stay in source coordinates**
+(the user chose full-final-form span fidelity over the simpler new-buffer cut). The streaming `TokenizeAsync`/
+`DrainBuffer` path was **reworked** to feed the decoder per pipe read and re-present a partial escape spanning a buffer
+boundary (`LexNextDecodedToken` + `FeedDecoder`); `byteOffsetBase`/`pendingCarriageReturn`/`DrainResult`/`DrainBuffer`
+were removed. The scattered inline `\u` handling collapsed: removed `ReadUcharEscape`/`AppendCodepoint`, the IRI
+`\`-branch (and `\` is now an illegal `IRIREF` byte), and the `u`/`U` arm of string `DecodeEscape` (so the `default`
+arm rejects `\A` — esc-bad-03). **Decode precedes string-escape** (`"\\u0074"`→`\t`→tab; `"\\u0041"`→`\A`→reject).
+PN_LOCAL gained real **`PN_LOCAL_ESC` validation** (`IsPnLocalEscChar`: accept `_~.-!$&'()*+,;=/?#@%`, reject `\:`;
+value kept raw — downstream expansion unescapes). New `SparqlLexErrorCode.InvalidPrefixedNameEscape` → `LX0031` (wired
+through `SparqlLexDiagnostic` message + `SparqlLexDiagnosticBridge` + `WellKnownDiagnostics.Lexer`). **Tests:**
+`SparqlCodepointDecoderTests` (11, incl. escape-split-across-feeds + offset-map) and new `SparqlLexerTests` cases incl.
+the **first pipe-path tests** (a deterministic `ChunkedPipeReader`, with a `\U` escape split across two reads) +
+span-fidelity. ⚠ The decode-everywhere model includes comment regions (no fixture exercises it; flagged as benign).
+
+✅ **STANDALONE `TriplesNodePath` DONE (2026-06-01, `45c78c0`): last query-syntax KnownGap (`syntax-propertyPaths-01`) closed.**
+`TriplesSameSubjectPath ::= VarOrTerm PropertyListPathNotEmpty | TriplesNodePath PropertyListPath` — the second
+alternative's trailing property list may be empty, so `{ [ :p|:q|:r ?X ] }` and `{ ( :a :b ) }` are complete triple
+blocks. `SparqlParser.TripleVerb` only let a reified triple stand alone; broadened via `CanStandAloneAsTriplesNode`
+(blank-node property list + collection + reified triple). The group-graph-pattern consumer already routes a standalone
+term into `BasicGraphPatternBlock.StandaloneNodes`, lowered by `SparqlNormalizer.ResolveCore`. Tests: `SparqlNormalizerTests`
+`LowersStandaloneBlankNodePropertyList` / `LowersStandaloneCollection`. ⚠ **Known follow-up:** standalone `TriplesNode`s
+in **CONSTRUCT templates / Update DATA blocks** are still dropped (uniform across ALL standalone node types — this
+pre-existed for the reified-triple case): `StepConstructTemplate`/`StepQuads` and `NormalizeTemplate`/`NormalizeQuads`
+(`LowerTriples(…, [], …)`) carry no standalone-node slot. Threading one through (mirroring `BasicGraphPatternBlock`)
+is the fix when it surfaces.
+
 **Remaining roadmap (tasks, my order; each is a focused effort):**
-1. **Query-syntax negatives — TAIL** (scope analysis DONE). The remaining `W3cSparqlSyntaxTests.KnownGaps` split into
-   ONE feature + one parser sugar:
-   - **The full lexer escape mechanism (do it whole, not the tested subset — user-directed).** `codepoint-esc-01/02/
-     07/08` + `codepoint-esc-bad-03` + `syn-bad-pname-06` are NOT independent — they are one feature seen from
-     different angles. ⚠ Lesson learned: fixing `syn-bad-pname-06` (reject `\:`) in isolation REGRESSES
-     `codepoint-esc-06` (which only "passed" because the PN_LOCAL `\`-branch blindly `AdvanceCount(2)`, tolerating
-     `\u` as escaping `u` — wrong value, but positive-syntax tests don't check values). **Design (final form):** a
-     single **codepoint-decode layer over the lexer input** — `\uXXXX`/`\UXXXXXXXX` decoded uniformly EVERYWHERE
-     before tokenization (the §19.2 model; streaming-capable, ≤10-byte lookahead for `\U`). Then the lexer's scattered
-     inline `\u` handling collapses into that one place; PN_LOCAL gets real `PN_LOCAL_ESC` validation (accept the
-     reserved set `_~.-!$&'()*+,;=/?#@%`, reject `\:`); string-escape validation rejects bad escapes (`\A`). Spec
-     ordering: codepoint-decode BEFORE string-escape (esc-04 `\\u0074`→`\t` valid; esc-bad-03 `\\u0041`→`\A`
-     reject). Two spec-inference behaviors the tests confirm: a codepoint-escaped `"` yields a structural quote
-     (esc-08 depends on it) and a codepoint-escaped LF yields a raw newline illegal in a single-line string —
-     codepoint escapes cannot smuggle quotes/newlines into strings. The whole cluster (esc-01/02/06/07/08 + esc-bad-03 + pname-06)
-     falls out coherently from this one layer.
-   - **Standalone blank-node property-list** sugar (`syntax-propertyPaths-01`: `{ [ :p|:q|:r ?X ] }`) — a parser
-     change (a bare `[…]` as a triples block), independent of the escape work.
-   - Also: light up the generic-typed (`NegativeSyntaxTest11`) update-syntax entries the eval-class type-guard skips.
-2. **SHACL Advanced Features (SHACL-AF)** — SPARQL-based constraints/rules/functions/targets; reuses the now-complete
-   SPARQL engine. Large ratchet.
+1. ✅ **Query-syntax negatives — TAIL: COMPLETE** (scope analysis `879dc2c`; lexer escapes `4d2fb0e`; standalone
+   `TriplesNodePath` `45c78c0`). Only honest type-guard skips remain (the generically-typed `NegativeSyntaxTest11`
+   update-syntax entries — lighting those up is a minor harness type-guard tweak, not a parser/lexer gap).
+2. **← NEXT: SHACL Advanced Features (SHACL-AF)** — SPARQL-based constraints/rules/functions/targets; reuses the
+   now-complete SPARQL engine + the `$this`/`$currentShape`/`$shapesGraph` pre-binding-by-substitution machinery
+   (`SparqlPreBinding.Substitute`). Large ratchet (vendor the suite, red-baseline + ratchet to 0). Resume recipe below.
 3. **Performance rework — pluggable WCOJ backends** (LAST, per user): the 4-seam taxonomy + BenchmarkDotNet vehicle.
    NB: aggregations (AVG/SUM/…) are a perf candidate for special indexes / specialized storage behind seams
    (memory `project_aggregation_specialized_storage`); the group-partition+fold step is the seam.
 
-### ▶ RESUME RECIPE — lexer escape mechanism (START HERE next session)
-Clean tree at `3ee4091`, branch `sparql-query-engine`, full suite **3834 / 0 failed / 236 skip**. Implement the
-**whole escape mechanism as one feature** (design above in roadmap item 1). Concrete anchors:
-- **Lexer:** `src/Lumoin.Veritas.Sparql/Lexer/SparqlLexer.cs`. Entry points: ctor over `ReadOnlyMemory<byte>` (~L62),
-  whole-buffer `Tokenize()` + streaming `TokenizeAsync()` over a pipe. Reusable decoder: `ReadUcharEscape` (~L1083,
-  decodes `\uXXXX`/`\UXXXXXXXX` with surrogate/range checks). String ECHAR + `\u`: `DecodeEscape` (~L1393), invalid
-  escape `Fail` (~L1499, uses `SparqlLexErrorCode.InvalidEscape` = `LX0003`, generic message — reuse it). IRI `\u`:
-  ~L1022. **PN_LOCAL `\`-branch: ~L1965** — currently `AdvanceCount(2)` blindly (the accidental tolerance);
-  once `\u` is pre-decoded this becomes a real `PN_LOCAL_ESC` validation (`_~.-!$&'()*+,;=/?#@%`; reject `\:`).
-- **Design choice to make:** the decode layer must feed BOTH entry points. Simplest correct first cut: decode the
-  whole-buffer `ReadOnlyMemory<byte>` in the ctor → new byte buffer, then tokenize (the conformance path uses
-  `ReadToEndAsync`, so this closes every test); then extend the pipe/`TokenizeAsync` path with a streaming decode
-  transform (≤10-byte lookahead for `\U`) for true final form. After the decode layer exists, REMOVE the lexer's
-  scattered inline `\u` handling (it becomes dead — no `\u` survives the pre-pass) so there is one decode site.
-- **Tests:** `Material/Sparql/codepoint-escapes/` (esc-01..08, esc-bad-03; **esc-04/05/06 already pass — keep green**).
-  Remove from `test/Lumoin.Veritas.Tests/Sparql/W3cSparqlSyntaxTests.cs` `KnownGaps` as each passes:
-  `codepoint-esc-01/02/bad-03/07/08` + `syn-bad-pname-06`. **KEEP `syntax-propertyPaths-01`** (separate parser sugar).
-- **Verify:** build the test csproj; then `…Tests.exe --filter "FullyQualifiedName~W3cSparqlSyntax"` (the syntax
-  class) for the cluster, then the FULL suite — watch for regressions on any string/IRI/PNAME test that uses `\u`
-  (the decode now happens before token-level handling; benign decoded chars are identical, but a `"`→`"` or
-  `
-`→LF inside a string now changes structure — that is per-spec, but confirm no currently-green test relied on
-  the old behavior — an escaped LF inside a single-line string). ⚠ Do NOT fix `syn-bad-pname-06` alone — it
-  regresses `codepoint-esc-06` (proven this session);
-  land the decode layer + PN_LOCAL_ESC validation together. Build/test command shape: [[feedback_build_test_command_shape]].
+### ▶ RESUME RECIPE — SHACL-AF (START HERE next session)
+Clean tree at `45c78c0`, branch `sparql-query-engine`, full suite **3853 / 0 failed / 229 skip**. The query-syntax
+tail is closed; the next big ratchet is **SHACL Advanced Features**. Starting points to investigate first (not yet
+scoped in detail):
+- **Existing SHACL surface:** the core-SHACL validator + conformance harness (`W3cShaclRunner`, `ShaclValidator`) and
+  the SPARQL-constraint wiring already landed (pre-binding by substitution `SparqlPreBinding.Substitute`;
+  `$this`/`$currentShape`/`$shapesGraph` injected; `SparqlEngineCache`/`SparqlDataset` over data + shapes graph). SHACL-AF
+  builds on exactly these.
+- **What SHACL-AF adds:** `sh:SPARQLRule`/`sh:TripleRule` (rules), `sh:SPARQLFunction` (custom functions),
+  `sh:SPARQLTarget` (SPARQL-based targets), and SPARQL-based constraint *components*. Vendor the official SHACL-AF
+  test suite, red-baseline, ratchet to 0 (same discipline as the core-SHACL + rdf-canon suites).
+- **Likely seams:** custom SPARQL functions need a function-resolution hook in `SparqlExpressionEvaluator`
+  (`FunctionCallExpression` currently handles XSD casts + builtins); rules produce inferred triples (a CONSTRUCT-shaped
+  template instantiation — reuse `SparqlGraphConstruction.InstantiateQuads`, the shared Update/CONSTRUCT machinery).
+- **Verify:** per [[feedback_build_test_command_shape]] — build the test csproj, run the new SHACL-AF filter, then the
+  FULL suite. Watch the baseline ratchet (RED-baseline + ratchet, NOT KnownGaps — [[project_sparql_conformance_baseline]]).
 
 ### Scope-analysis notes (commit `879dc2c`)
 - `Lumoin.Veritas.Sparql/Analysis/SparqlScopeAnalyzer.Analyze(SparqlRequest, DiagnosticBag)` — span-insensitive,
@@ -112,7 +125,7 @@ Clean tree at `3ee4091`, branch `sparql-query-engine`, full suite **3834 / 0 fai
 ### Build/test (always, per [[feedback_build_test_command_shape]])
 - `dotnet build <csproj> -clp:ErrorsOnly --nologo` (PowerShell), separate from the test run.
 - Test exe (Bash, `cd /c/projektit/Lumoin.Veritas` first): `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe" --filter "FullyQualifiedName~<X>" > tempdocs/out.txt 2>&1` then Grep `total:|failed:`. ⚠ Some update/syntax negatives can hang the parser if a recovery path doesn't advance — wrap runs in `timeout`. Kill stray `Lumoin.Veritas.Tests` processes before rebuilding (they lock the DLLs).
-- Tree is clean at `879dc2c`; branch `sparql-query-engine`.
+- Tree is clean at `45c78c0`; branch `sparql-query-engine`.
 
 ---
 
