@@ -338,7 +338,11 @@ public sealed class LinkedDataContext
             return null;
         }
 
-        //If the value is in the term definitions, resolve it.
+        //If the value is in the term definitions, resolve it. A term whose
+        //mapping is itself a keyword (a keyword alias) resolves regardless
+        //of vocab; the general IRI mapping resolves only in vocab-relative
+        //expansion (per the IRI Expansion algorithm), so a term name is not
+        //consulted when expanding an @id or other document-relative value.
         if(TryGetTerm(value, out TermDefinition? definition))
         {
             if(definition?.IriMapping is { } iriMapping && IriUtils.IsKeyword(iriMapping))
@@ -346,7 +350,7 @@ public sealed class LinkedDataContext
                 return iriMapping;
             }
 
-            if(definition?.IriMapping is not null)
+            if(vocab && definition?.IriMapping is not null)
             {
                 //Only return the mapping directly if it is already an absolute IRI or a keyword.
                 //If it is still a compact IRI (e.g. "foaf:name" stored before foaf was defined),

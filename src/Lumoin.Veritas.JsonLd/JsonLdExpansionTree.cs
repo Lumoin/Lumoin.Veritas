@@ -886,7 +886,7 @@ public static class JsonLdExpansionTree
                 string raw = element.GetString();
                 return new Dictionary<string, object?>(StringComparer.Ordinal)
                 {
-                    ["@id"] = activeContext.ExpandIri(raw, vocab: true) ?? raw
+                    ["@id"] = activeContext.ExpandIri(raw, vocab: true, documentRelative: true) ?? raw
                 };
             }
         }
