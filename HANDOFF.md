@@ -9,8 +9,9 @@ DESCRIBE/JSON results, conformance push).
 ## ⭐ CURRENT STATE (2026-06-01, **harness GREEN (0 failures)**; SPARQL Update + RDF/XML conformance COMPLETE, on `sparql-query-engine`, tree clean)
 
 **Post-Update roadmap (user: work through all in preferred order, PERFORMANCE LAST).** Conformance is GREEN
-(3823 tests, 0 failed, 248 skip). **The RDF/XML conformance ratchet is DONE — 197/197, 0 reds** (roadmap item 1
-complete; commits `6d40949` + `03856b4` + `1636474`). The W3C RDF/XML suites (`rdf11/rdf-xml` + `rdf12/rdf-xml`,
+(3833 tests, 0 failed, 247 skip). **Done since the last handoff:** the **RDF/XML conformance ratchet** (197/197,
+commits `6d40949`+`03856b4`+`1636474`), the **"Protect from error in AVG" aggregate** (commit `dfdcad1`), and the
+**SPARQL Results CSV/TSV/JSON results-format suites** (commit `17b47ba`). **The RDF/XML ratchet is COMPLETE — 197/197, 0 reds.** The W3C RDF/XML suites (`rdf11/rdf-xml` + `rdf12/rdf-xml`,
 pinned `674da26`) are vendored to `Material/Rdf/` and wired via `Conformance/RdfXmlConformanceReader.cs` +
 `Xml/W3cRdfXmlTests.cs` (per-suite base = `mf:assumedTestBase` + the fixture's path relative to the suite root —
 handles sub-folders and the rdf12 `eval/` dir). The RDF 1.1 reader is conformance-complete, RDF 1.2-in-XML is
@@ -25,14 +26,20 @@ project. The W3C fixtures predate strict C14N namespace sorting — that's why t
 `Xml/XmlLiteralCanonicalizerTests`).
 
 **Remaining roadmap (tasks, my order; each is a focused effort):**
-1. **CSV/TSV + JSON (`.srj`) SPARQL results readers** — finish results-format support; vendor `csv-tsv-res`/`json-res`.
-2. **Query-syntax negatives** — the `W3cSparqlSyntaxTests` KnownGaps: static scope analysis (GROUP BY/projection/BIND
+1. **Query-syntax negatives** — the `W3cSparqlSyntaxTests` KnownGaps: static scope analysis (GROUP BY/projection/BIND
    scope, nested aggregates) + lexer codepoint-escape/PN_LOCAL refinements. Also: light up the generic-typed
    (`NegativeSyntaxTest11`) update-syntax entries the eval-class type-guard currently skips (~real coverage).
-3. **Aggregate edge case** — "Protect from error in AVG" (the lone `AggregateExpression` skip).
-4. **SHACL Advanced Features (SHACL-AF)** — SPARQL-based constraints/rules/functions/targets; reuses the now-complete
+2. **SHACL Advanced Features (SHACL-AF)** — SPARQL-based constraints/rules/functions/targets; reuses the now-complete
    SPARQL engine. Large ratchet.
-5. **Performance rework — pluggable WCOJ backends** (LAST, per user): the 4-seam taxonomy + BenchmarkDotNet vehicle.
+3. **Performance rework — pluggable WCOJ backends** (LAST, per user): the 4-seam taxonomy + BenchmarkDotNet vehicle.
+   NB: aggregations (AVG/SUM/…) are a perf candidate for special indexes / specialized storage behind seams
+   (memory `project_aggregation_specialized_storage`); the group-partition+fold step is the seam.
+
+### Results-format notes (commit `17b47ba`)
+- `Lumoin.Veritas.Sparql/Results/SparqlResultsTsvReader` parses TSV (Turtle term syntax) → `SparqlResultSet`; the
+  eval runner reads `.srx`/`.srj`/`.tsv` to a result set (value-compare) and text-compares `.csv` (lossy, no reader:
+  re-serialize actual via the delimited writer, columns from the expected header — also supplies `SELECT *` head vars
+  — line endings + blank-node labels normalised). `mf:CSVResultFormatTest` is classified as query-evaluation.
 
 ### RDF/XML reader notes (future maintenance)
 - The reader (`RdfXmlReader.cs`) is value-based (`XDocument` + explicit stack, no recursion). RDF 1.2 mode is detected
@@ -55,7 +62,7 @@ project. The W3C fixtures predate strict C14N namespace sorting — that's why t
 ### Build/test (always, per [[feedback_build_test_command_shape]])
 - `dotnet build <csproj> -clp:ErrorsOnly --nologo` (PowerShell), separate from the test run.
 - Test exe (Bash, `cd /c/projektit/Lumoin.Veritas` first): `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe" --filter "FullyQualifiedName~<X>" > tempdocs/out.txt 2>&1` then Grep `total:|failed:`. ⚠ Some update/syntax negatives can hang the parser if a recovery path doesn't advance — wrap runs in `timeout`. Kill stray `Lumoin.Veritas.Tests` processes before rebuilding (they lock the DLLs).
-- Tree is clean at `1636474`; branch `sparql-query-engine`.
+- Tree is clean at `17b47ba`; branch `sparql-query-engine`.
 
 ---
 
