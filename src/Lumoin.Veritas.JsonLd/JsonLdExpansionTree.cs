@@ -1779,7 +1779,8 @@ public static class JsonLdExpansionTree
             }
             case JsonLdNodeKind.Number:
             {
-                return ParseNumber(node.GetRawNumber());
+                //A @json literal preserves the number's exact lexical form.
+                return new JsonLdJsonNumber(node.GetRawNumber());
             }
             default:
             {

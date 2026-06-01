@@ -175,6 +175,12 @@ internal static class W3cJsonLdRunner
 
                 return jsonArray;
             }
+            case JsonLdJsonNumber rawNumber:
+            {
+                //A @json literal preserves the raw number token; parse it back
+                //to a JSON number node so the lexical form is compared verbatim.
+                return JsonNode.Parse(rawNumber.Raw);
+            }
             case string text:
             {
                 return JsonValue.Create(text);
