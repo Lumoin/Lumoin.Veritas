@@ -279,6 +279,12 @@ public static class JsonLdExpansionTree
         //updates the active context for the rest of this node. Type-scoped
         //contexts are non-propagating, so the pre-application context is
         //recorded for nested nodes to revert to.
+        //
+        //The @type values themselves are expanded against the context as it
+        //stands *before* the type-scoped contexts are applied (a type-scoped
+        //context may nullify or override the vocabulary), so that context is
+        //preserved for the @type key below.
+        LinkedDataContext typeExpansionContext = activeContext;
         if(obj.TryGetProperty("@type", out JsonLdNode typeNode))
         {
             LinkedDataContext beforeTypeScoped = activeContext;
@@ -332,9 +338,10 @@ public static class JsonLdExpansionTree
                 }
                 case "@type":
                 {
+                    //@type IRIs expand against the pre-type-scoped context.
                     //Multiple keys expanding to @type (e.g. @type plus an
                     //alias) accumulate into one type array.
-                    if(ExpandTypeValue(value, activeContext) is { } types)
+                    if(ExpandTypeValue(value, typeExpansionContext) is { } types)
                     {
                         AddValues(result, "@type", types);
                     }
