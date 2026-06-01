@@ -91,16 +91,69 @@ public static class JsonLdExpansionTree
         object? expanded = await ExpandElementAsync(
             document, activeContext, baseUrl, resolver, parser, cancellationToken).ConfigureAwait(false);
 
-        //Top-level result is always an array of node objects.
+        //A document expanding to a map whose only entry is @graph is
+        //replaced by the graph contents (the wrapper carries no node).
+        if(expanded is IReadOnlyDictionary<string, object?> { Count: 1 } onlyGraph
+            && onlyGraph.TryGetValue("@graph", out object? graphValue))
+        {
+            return graphValue as IReadOnlyList<object?> ?? Array.Empty<object?>();
+        }
+
+        //Top-level result is always an array of node objects, with
+        //free-floating nodes (and bare value/list objects) dropped.
         if(expanded is IReadOnlyList<object?> listResult)
         {
-            return listResult;
+            return DropFreeFloating(listResult);
         }
         if(expanded is null)
         {
             return Array.Empty<object?>();
         }
-        return new List<object?> { expanded };
+        return DropFreeFloating(new List<object?> { expanded });
+    }
+
+    /// <summary>
+    /// Drops free-floating entries from a top-level or <c>@graph</c> array
+    /// per the expansion algorithm: an empty node, a node whose only entry
+    /// is <c>@id</c>, and bare <c>@value</c>/<c>@list</c> objects carry no
+    /// assertion at graph level and are removed.
+    /// </summary>
+    private static List<object?> DropFreeFloating(IReadOnlyList<object?> nodes)
+    {
+        List<object?> kept = new(nodes.Count);
+        foreach(object? node in nodes)
+        {
+            if(node is IReadOnlyDictionary<string, object?> map && IsFreeFloating(map))
+            {
+                continue;
+            }
+
+            kept.Add(node);
+        }
+
+        return kept;
+    }
+
+    /// <summary>
+    /// Whether a node map is free-floating at graph level: empty, a sole
+    /// <c>@id</c>, or a map whose keys are confined to <c>@value</c>/<c>@list</c>.
+    /// </summary>
+    private static bool IsFreeFloating(IReadOnlyDictionary<string, object?> map)
+    {
+        if(map.Count == 0)
+        {
+            return true;
+        }
+
+        //A value object or list object carries no node assertion at graph
+        //level, and a node whose only entry is @id is a bare reference; all
+        //are dropped.
+        if(map.ContainsKey("@value") || map.ContainsKey("@list"))
+        {
+            return true;
+        }
+
+        return map.Count == 1 && map.ContainsKey("@id");
     }
 
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
@@ -189,6 +242,22 @@ public static class JsonLdExpansionTree
             return ExpandValueObject(obj, activeContext);
         }
 
+        //A bare @list / @set object reached outside a coercing property
+        //(e.g. at the top level): expand its members and re-wrap (@list) or
+        //unwrap (@set). No term coercion applies here.
+        if(obj.TryGetProperty("@list", out JsonLdNode topLevelList))
+        {
+            List<object?> listMembers = await ExpandMembersAsync(
+                topLevelList, activeContext, baseUrl, resolver, parser, termDef: null, cancellationToken).ConfigureAwait(false);
+
+            return new Dictionary<string, object?>(StringComparer.Ordinal) { ["@list"] = listMembers };
+        }
+        if(obj.TryGetProperty("@set", out JsonLdNode topLevelSet))
+        {
+            return await ExpandMembersAsync(
+                topLevelSet, activeContext, baseUrl, resolver, parser, termDef: null, cancellationToken).ConfigureAwait(false);
+        }
+
         //Type-scoped contexts: when the node has @type, apply each
         //matching term's ScopedContextEntries in alphabetical order of
         //type IRIs per W3C JSON-LD 1.1 §4.1.4 step 8. The application
@@ -246,11 +315,11 @@ public static class JsonLdExpansionTree
                         .ConfigureAwait(false);
                     if(expandedGraph is IReadOnlyList<object?> graphList)
                     {
-                        result["@graph"] = graphList;
+                        result["@graph"] = DropFreeFloating(graphList);
                     }
                     else if(expandedGraph is not null)
                     {
-                        result["@graph"] = new List<object?> { expandedGraph };
+                        result["@graph"] = DropFreeFloating(new List<object?> { expandedGraph });
                     }
 
                     continue;
@@ -319,7 +388,20 @@ public static class JsonLdExpansionTree
                     {
                         continue;
                     }
-                    result[expandedKey] = WrapAsArray(expandedValue);
+
+                    IReadOnlyList<object?> valueArray = WrapAsArray(expandedValue);
+
+                    //A term defined as a reverse property routes its values
+                    //under the node's @reverse map, keyed by the reverse IRI.
+                    if(termDef?.ReverseProperty is { } reverseIri)
+                    {
+                        AddReverseValues(result, reverseIri, valueArray);
+                        continue;
+                    }
+
+                    //Multiple keys expanding to the same IRI merge into one
+                    //value array rather than overwriting.
+                    AddValues(result, expandedKey, valueArray);
                     continue;
                 }
             }
@@ -876,6 +958,42 @@ public static class JsonLdExpansionTree
             }
         }
         return result;
+    }
+
+    /// <summary>
+    /// Adds a value array under a key, merging with any values already
+    /// present so multiple keys expanding to the same IRI accumulate.
+    /// </summary>
+    private static void AddValues(Dictionary<string, object?> target, string key, IReadOnlyList<object?> values)
+    {
+        if(target.TryGetValue(key, out object? existing) && existing is IReadOnlyList<object?> existingList)
+        {
+            List<object?> merged = new(existingList);
+            merged.AddRange(values);
+            target[key] = merged;
+
+            return;
+        }
+
+        target[key] = values;
+    }
+
+    /// <summary>
+    /// Adds reverse-property values into the node's <c>@reverse</c> map,
+    /// creating it on first use and merging repeated reverse IRIs.
+    /// </summary>
+    private static void AddReverseValues(Dictionary<string, object?> target, string reverseIri, IReadOnlyList<object?> values)
+    {
+        if(target.TryGetValue("@reverse", out object? existing) && existing is Dictionary<string, object?> reverseMap)
+        {
+            AddValues(reverseMap, reverseIri, values);
+
+            return;
+        }
+
+        Dictionary<string, object?> created = new(StringComparer.Ordinal);
+        AddValues(created, reverseIri, values);
+        target["@reverse"] = created;
     }
 
     private static IReadOnlyList<object?> WrapAsArray(object? value)
