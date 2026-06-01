@@ -556,7 +556,9 @@ public static partial class ContextProcessing
         bool hasDirectionMapping = value.HasDirectionMapping;
         List<string> containerMapping = [];
         bool isPrefix = value.Prefix;
-        bool isProtected = value.Protected || contextProtected;
+        //A term-level @protected (including an explicit false) overrides the
+        //context-level @protected default.
+        bool isProtected = value.HasProtected ? value.Protected : contextProtected;
         bool isReverse = false;
         string? reverseProperty = null;
         string? nestValue = value.Nest;

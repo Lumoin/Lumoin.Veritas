@@ -240,6 +240,7 @@ public static class ContextExtraction
         bool reverse = false;
         string? reverseIri = null;
         bool @protected = false;
+        bool hasProtected = false;
         bool prefix = false;
         string? nest = null;
         string? index = null;
@@ -294,6 +295,7 @@ public static class ContextExtraction
                 }
                 case "@protected":
                 {
+                    hasProtected = true;
                     @protected = RequireBoolean(field.Value, JsonLdErrorCode.InvalidProtectedValue, "A term definition's @protected");
                     break;
                 }
@@ -346,6 +348,7 @@ public static class ContextExtraction
             Reverse = reverse,
             ReverseIri = reverseIri,
             Protected = @protected,
+            HasProtected = hasProtected,
             Prefix = prefix,
             Nest = nest,
             Index = index,

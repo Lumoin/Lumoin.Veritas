@@ -64,8 +64,11 @@ public sealed class LinkedDataTermSource
     /// <summary>Gets or initialises the reverse-property IRI when <see cref="Reverse"/> is <see langword="true"/>.</summary>
     public string? ReverseIri { get; init; }
 
-    /// <summary>Indicates whether the term is marked <c>@protected</c>.</summary>
+    /// <summary>Indicates whether the term is marked <c>@protected</c>. Meaningful only when <see cref="HasProtected"/> is <see langword="true"/>.</summary>
     public bool Protected { get; init; }
+
+    /// <summary>Gets a value indicating whether <c>@protected</c> was set on the term itself (overriding the context-level default).</summary>
+    public bool HasProtected { get; init; }
 
     /// <summary>Indicates whether the term is marked <c>@prefix</c>.</summary>
     public bool Prefix { get; init; }
