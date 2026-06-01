@@ -44,10 +44,7 @@ internal sealed class W3cSparqlSyntaxTests
     /// list). They are reported as inconclusive rather than failing the suite; if any ever starts
     /// passing, the run fails so the entry is removed.
     /// </summary>
-    private static Dictionary<string, string> KnownGaps { get; } = new(StringComparer.Ordinal)
-    {
-        ["syntax-propertyPaths-01.rq"] = "standalone blank-node property list — needs the sugar-expansion pass",
-    };
+    private static Dictionary<string, string> KnownGaps { get; } = new(StringComparer.Ordinal);
 
     /// <summary>Runs one SPARQL 1.1 query-syntax test.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>

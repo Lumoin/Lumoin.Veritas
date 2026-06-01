@@ -4034,13 +4034,14 @@ public sealed class SparqlParser
             return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.PropertyPath, StartSpan = Current.Span });
         }
 
-        //An RDF 1.2 reified triple may stand alone as a subject with an empty property list
-        //(ReifiedTripleBlockPath): it asserts its inner triple and reifier without further properties.
-        //Hand the faithful term up as a standalone node rather than erroring. A bare triple term <<( … )>>,
-        //a collection, or any other subject still requires a predicate-object list here.
-        if(frame.TripleAccumulator!.Count == 0 && frame.Subject is ReifiedTriple)
+        //A TriplesNodePath (blank-node property list or collection) carries its own properties, so the
+        //trailing PropertyListPath may be empty: `{ [ :p ?x ] }` and `{ ( :a :b ) }` are complete triple
+        //blocks. An RDF 1.2 reified triple likewise stands alone (ReifiedTripleBlockPath). Hand the faithful
+        //term up as a standalone node rather than erroring; the normaliser lowers its inner triples. A bare
+        //variable, IRI, literal, or triple term `<<( … )>>` still requires a predicate-object list here.
+        if(frame.TripleAccumulator!.Count == 0 && CanStandAloneAsTriplesNode(frame.Subject))
         {
-            return StepResult.Done(frame.Subject);
+            return StepResult.Done(frame.Subject!);
         }
 
         //A missing predicate finalises the triple run with the triples gathered so far, plus a
@@ -4050,6 +4051,19 @@ public sealed class SparqlParser
 
         return StepResult.Done(frame.TripleAccumulator!);
     }
+
+    /// <summary>
+    /// Whether a parsed subject term forms a complete <c>TriplesSameSubjectPath</c> on its own, with an
+    /// empty trailing property list. Per the grammar's <c>TriplesNodePath PropertyListPath</c> alternative a
+    /// blank-node property list or collection needs no predicate of its own (it carries its properties), and
+    /// an RDF 1.2 reified triple stands alone as a <c>ReifiedTripleBlockPath</c>. A bare variable, IRI,
+    /// literal, or triple term takes the <c>VarOrTerm PropertyListPathNotEmpty</c> alternative and still
+    /// requires a predicate-object list.
+    /// </summary>
+    /// <param name="subject">The parsed subject term, or <see langword="null"/>.</param>
+    /// <returns><see langword="true"/> when the subject may stand alone as a triple block.</returns>
+    private static bool CanStandAloneAsTriplesNode(TriplePatternTerm? subject)
+        => subject is BlankNodePropertyListTerm or CollectionTerm or ReifiedTriple;
 
     /// <summary>Converts the popped property path into a verb term — unwrapping a bare predicate — and moves to the objects.</summary>
     /// <param name="frame">The triple frame.</param>

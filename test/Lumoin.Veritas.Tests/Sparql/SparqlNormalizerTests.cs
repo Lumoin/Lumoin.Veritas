@@ -87,6 +87,37 @@ internal sealed class SparqlNormalizerTests
         Assert.AreEqual($"{Ex}b", IriValue(property.Object));
     }
 
+    /// <summary>
+    /// A standalone blank-node property list (a <c>TriplesNodePath</c> with an empty trailing property list,
+    /// e.g. <c>{ [ :a :b ] }</c>) lowers to its own predicate-object triple on a fresh blank node.
+    /// </summary>
+    [TestMethod]
+    public void LowersStandaloneBlankNodePropertyList()
+    {
+        using Utf8StringPool pool = new();
+        IReadOnlyList<TriplePattern> triples = NormalizedBlockTriples("PREFIX : <http://example.org/> SELECT * WHERE { [ :a :b ] }", pool);
+
+        Assert.HasCount(1, triples);
+
+        TriplePattern property = SingleByPredicate(triples, $"{Ex}a");
+        Assert.AreEqual($"{Ex}b", IriValue(property.Object));
+        _ = BlankNodeLabel(property.Subject);
+    }
+
+    /// <summary>A standalone collection (<c>{ ( :a ) }</c>) lowers to its <c>rdf:first</c>/<c>rdf:rest</c> chain.</summary>
+    [TestMethod]
+    public void LowersStandaloneCollection()
+    {
+        using Utf8StringPool pool = new();
+        IReadOnlyList<TriplePattern> triples = NormalizedBlockTriples("PREFIX : <http://example.org/> SELECT * WHERE { ( :a ) }", pool);
+
+        Assert.HasCount(2, triples);
+
+        TriplePattern first = SingleByPredicate(triples, RdfFirst);
+        Assert.AreEqual($"{Ex}a", IriValue(first.Object));
+        Assert.AreEqual(RdfNil, IriValue(SingleByPredicate(triples, RdfRest).Object));
+    }
+
     /// <summary>By default a reified triple lowers to only the <c>rdf:reifies</c> reification triple; the inner triple is NOT asserted.</summary>
     [TestMethod]
     public void LowersReifiedTripleWithoutAssertingInnerTriple()
