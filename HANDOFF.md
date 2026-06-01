@@ -27,14 +27,25 @@ project. The W3C fixtures predate strict C14N namespace sorting — that's why t
 `Xml/XmlLiteralCanonicalizerTests`).
 
 **Remaining roadmap (tasks, my order; each is a focused effort):**
-1. **Query-syntax negatives — TAIL** (scope analysis DONE). Remaining `W3cSparqlSyntaxTests.KnownGaps`: **codepoint
-   escapes** (`codepoint-esc-01/02/07/08` positive + `codepoint-esc-bad-03` negative — `\uXXXX`/`\UXXXXXXXX` processed
-   at the lexer, subtle: esc-01 encodes the whole query, esc-07 escapes whitespace/`*`, esc-08 `"` opens a
-   string, esc-02 `\` makes a `\` in a PN_LOCAL, **esc-bad-03 `"\\u0041"`** = a codepoint escape producing `A`
-   inside a string → invalid `\A` string-escape → reject; the codepoint pass interacts with string-escape
-   processing — get the order right); the **PN_LOCAL escaping nuance** (`syn-bad-pname-06`); and the **standalone
-   blank-node property-list** sugar (`syntax-propertyPaths-01`). Also: light up the generic-typed
-   (`NegativeSyntaxTest11`) update-syntax entries the eval-class type-guard skips.
+1. **Query-syntax negatives — TAIL** (scope analysis DONE). The remaining `W3cSparqlSyntaxTests.KnownGaps` split into
+   ONE feature + one parser sugar:
+   - **The full lexer escape mechanism (do it whole, not the tested subset — user-directed).** `codepoint-esc-01/02/
+     07/08` + `codepoint-esc-bad-03` + `syn-bad-pname-06` are NOT independent — they are one feature seen from
+     different angles. ⚠ Lesson learned: fixing `syn-bad-pname-06` (reject `\:`) in isolation REGRESSES
+     `codepoint-esc-06` (which only "passed" because the PN_LOCAL `\`-branch blindly `AdvanceCount(2)`, tolerating
+     `\u` as escaping `u` — wrong value, but positive-syntax tests don't check values). **Design (final form):** a
+     single **codepoint-decode layer over the lexer input** — `\uXXXX`/`\UXXXXXXXX` decoded uniformly EVERYWHERE
+     before tokenization (the §19.2 model; streaming-capable, ≤10-byte lookahead for `\U`). Then the lexer's scattered
+     inline `\u` handling collapses into that one place; PN_LOCAL gets real `PN_LOCAL_ESC` validation (accept the
+     reserved set `_~.-!$&'()*+,;=/?#@%`, reject `\:`); string-escape validation rejects bad escapes (`\A`). Spec
+     ordering: codepoint-decode BEFORE string-escape (esc-04 `\\u0074`→`\t` valid; esc-bad-03 `\\u0041`→`\A`
+     reject). Two spec-inference behaviors the tests confirm: a codepoint-escaped `"` yields a structural quote
+     (esc-08 depends on it) and a codepoint-escaped LF yields a raw newline illegal in a single-line string —
+     codepoint escapes cannot smuggle quotes/newlines into strings. The whole cluster (esc-01/02/06/07/08 + esc-bad-03 + pname-06)
+     falls out coherently from this one layer.
+   - **Standalone blank-node property-list** sugar (`syntax-propertyPaths-01`: `{ [ :p|:q|:r ?X ] }`) — a parser
+     change (a bare `[…]` as a triples block), independent of the escape work.
+   - Also: light up the generic-typed (`NegativeSyntaxTest11`) update-syntax entries the eval-class type-guard skips.
 2. **SHACL Advanced Features (SHACL-AF)** — SPARQL-based constraints/rules/functions/targets; reuses the now-complete
    SPARQL engine. Large ratchet.
 3. **Performance rework — pluggable WCOJ backends** (LAST, per user): the 4-seam taxonomy + BenchmarkDotNet vehicle.
