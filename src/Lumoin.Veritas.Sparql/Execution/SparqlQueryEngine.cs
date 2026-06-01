@@ -277,7 +277,7 @@ public sealed class SparqlQueryEngine
         ArgumentNullException.ThrowIfNull(resources);
 
         DescribeStrategy describe = strategy ?? SparqlDescribe.ConciseBoundedDescription;
-        GraphMatchOps ops = dataset.DefaultGraph.AsMatchOps();
+        GraphMatchOps ops = GuardMatchOps(dataset.DefaultGraph.AsMatchOps());
 
         List<TermId> ids = new(resources.Count);
         foreach(RdfTerm resource in resources)
@@ -799,6 +799,45 @@ public sealed class SparqlQueryEngine
         }
 
         return solutions;
+    }
+
+    /// <summary>
+    /// Wraps a store's match operations with the engine's access-control policy so the read paths that go through
+    /// <see cref="GraphMatchOps"/> rather than the BGP <c>Query</c> — property paths
+    /// (<see cref="PropertyPathEvaluator"/>) and <c>DESCRIBE</c> — are gated identically: each matched triple is
+    /// consulted and only an <see cref="AccessDecision.Allow"/> keeps it (<see cref="AccessDecision.Deny"/> and
+    /// <see cref="AccessDecision.NotFound"/> drop it, exactly as in a basic graph pattern). With no policy the
+    /// operations are returned unchanged, so the common path pays nothing.
+    /// </summary>
+    /// <param name="ops">The store's unguarded match operations.</param>
+    /// <returns>The same operations when there is no policy, otherwise an access-filtered wrapper.</returns>
+    private GraphMatchOps GuardMatchOps(GraphMatchOps ops)
+    {
+        if(accessControl is null)
+        {
+            return ops;
+        }
+
+        return new GraphMatchOps(
+            (subject, predicate, @object, cancellationToken) => FilterByAccessAsync(ops.MatchTriples(subject, predicate, @object, cancellationToken), cancellationToken),
+            (subjects, predicate, @object, cancellationToken) => FilterByAccessAsync(ops.MatchTriplesBySubjects(subjects, predicate, @object, cancellationToken), cancellationToken),
+            (subject, predicate, objects, cancellationToken) => FilterByAccessAsync(ops.MatchTriplesByObjects(subject, predicate, objects, cancellationToken), cancellationToken));
+    }
+
+    /// <summary>Yields only the matched triples the access-control policy allows; a <c>Deny</c> or <c>NotFound</c> drops the triple, mirroring the BGP gate.</summary>
+    /// <param name="triples">The unguarded matched triples.</param>
+    /// <param name="cancellationToken">A token that aborts enumeration and the access consultation.</param>
+    /// <returns>The allowed triples.</returns>
+    private async IAsyncEnumerable<EncodedTriple> FilterByAccessAsync(IAsyncEnumerable<EncodedTriple> triples, [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await foreach(EncodedTriple triple in triples.WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+            AccessDecision decision = await accessControl!(new AccessRequest(triple, accessContext!), cancellationToken).ConfigureAwait(false);
+            if(decision == AccessDecision.Allow)
+            {
+                yield return triple;
+            }
+        }
     }
 
     /// <summary>
@@ -1402,7 +1441,7 @@ public sealed class SparqlQueryEngine
     private async ValueTask<IReadOnlyList<SparqlSolution>> EvaluatePathAsync(Path path, HypertrieGraphStore graphStore, CancellationToken cancellationToken)
     {
         PropertyPath rdfPath = ConvertPath(path.PathExpression);
-        GraphMatchOps ops = graphStore.AsMatchOps();
+        GraphMatchOps ops = GuardMatchOps(graphStore.AsMatchOps());
         (TermId? subjectId, SparqlVariable? subjectVariable) = ResolveEndpoint(path.Subject);
         (TermId? objectId, SparqlVariable? objectVariable) = ResolveEndpoint(path.Object);
 

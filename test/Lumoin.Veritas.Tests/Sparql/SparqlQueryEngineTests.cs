@@ -280,6 +280,37 @@ internal sealed class SparqlQueryEngineTests
         Assert.AreSame(supplied, seen);
     }
 
+    /// <summary>Access control gates a property-path read (which goes through the match-ops path, not the BGP join): a deny-all policy makes a transitive path yield nothing.</summary>
+    [TestMethod]
+    public async Task AccessControlGatesPropertyPathTraversal()
+    {
+        using Utf8StringPool pool = new();
+        DataTriple[] data = [new DataTriple(Iri("a"), Iri("p"), Iri("b")), new DataTriple(Iri("b"), Iri("p"), Iri("c"))];
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { :a :p+ ?o }", pool);
+
+        SparqlQueryEngine open = await SparqlQueryEngine.BuildAsync(data, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.HasCount(2, await open.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false));
+
+        AccessControlDelegate denyAll = (request, cancellationToken) => new ValueTask<AccessDecision>(AccessDecision.Deny);
+        SparqlQueryEngine gated = await SparqlQueryEngine.BuildAsync(data, accessControl: denyAll, accessContext: new TestAccessContext("auditor"), cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.IsEmpty(await gated.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false));
+    }
+
+    /// <summary>Access control gates a DESCRIBE (which goes through the match-ops path): a deny-all policy makes the description empty.</summary>
+    [TestMethod]
+    public async Task AccessControlGatesDescribe()
+    {
+        DataTriple[] data = [new DataTriple(Iri("a"), Iri("p"), Iri("b"))];
+        IReadOnlyList<RdfTerm> resources = [Iri("a")];
+
+        SparqlQueryEngine open = await SparqlQueryEngine.BuildAsync(data, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.HasCount(1, await open.DescribeAsync(resources, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false));
+
+        AccessControlDelegate denyAll = (request, cancellationToken) => new ValueTask<AccessDecision>(AccessDecision.Deny);
+        SparqlQueryEngine gated = await SparqlQueryEngine.BuildAsync(data, accessControl: denyAll, accessContext: new TestAccessContext("auditor"), cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.IsEmpty(await gated.DescribeAsync(resources, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false));
+    }
+
     /// <summary>Two triples sharing a variable join (the translator merges them into one BGP); the join variable is bound consistently and projected away when not selected.</summary>
     [TestMethod]
     public async Task TwoTriplePatternsJoinOnSharedVariable()
