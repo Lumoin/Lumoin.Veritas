@@ -139,6 +139,30 @@ public enum JsonLdErrorCode
     /// <summary>A <c>@reverse</c> property was not a valid IRI.</summary>
     InvalidReverseProperty,
 
+    /// <summary>A node object's <c>@id</c> value was not a string.</summary>
+    InvalidIdValue,
+
+    /// <summary>A node object's <c>@type</c> value was not a string or array of strings.</summary>
+    InvalidTypeValue,
+
+    /// <summary>A node object's <c>@reverse</c> value was not a map.</summary>
+    InvalidReverseValue,
+
+    /// <summary>An <c>@reverse</c> map contained a key that expands to a keyword.</summary>
+    InvalidReversePropertyMap,
+
+    /// <summary>A reverse property's value was a value object or list object, which a reverse property may not take.</summary>
+    InvalidReversePropertyValue,
+
+    /// <summary>A language-map value was not a string (or array of strings / null).</summary>
+    InvalidLanguageMapValue,
+
+    /// <summary>A <c>@list</c> or <c>@set</c> object carried a disallowed sibling key.</summary>
+    InvalidSetOrListObject,
+
+    /// <summary>Two distinct keys in a node object expanded to the same keyword.</summary>
+    CollidingKeywords,
+
     /// <summary>A <c>@type</c> value in a term definition was not a valid IRI or keyword.</summary>
     InvalidTypeMappingTermDefinition,
 

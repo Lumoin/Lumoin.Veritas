@@ -262,6 +262,7 @@ public static class JsonLdExpansionTree
         //unwrap (@set). No term coercion applies here.
         if(obj.TryGetProperty("@list", out JsonLdNode topLevelList))
         {
+            EnsureValidListOrSetObject(obj, activeContext, "@list");
             List<object?> listMembers = await ExpandMembersAsync(
                 topLevelList, activeContext, baseUrl, resolver, parser, termDef: null, cancellationToken).ConfigureAwait(false);
 
@@ -269,6 +270,7 @@ public static class JsonLdExpansionTree
         }
         if(obj.TryGetProperty("@set", out JsonLdNode topLevelSet))
         {
+            EnsureValidListOrSetObject(obj, activeContext, "@set");
             return await ExpandMembersAsync(
                 topLevelSet, activeContext, baseUrl, resolver, parser, termDef: null, cancellationToken).ConfigureAwait(false);
         }
@@ -351,13 +353,24 @@ public static class JsonLdExpansionTree
             {
                 case "@id":
                 {
-                    if(value.Kind == JsonLdNodeKind.String)
+                    if(value.Kind != JsonLdNodeKind.String)
                     {
-                        //A keyword-like @id (e.g. "@ignoreMe") expands to null
-                        //and is preserved as such rather than echoed verbatim.
-                        string raw = value.GetString();
-                        result["@id"] = activeContext.ExpandIri(raw, documentRelative: true);
+                        throw new JsonLdProcessingException(
+                            JsonLdErrorCode.InvalidIdValue,
+                            "A node object's @id value must be a string.");
                     }
+
+                    if(result.ContainsKey("@id"))
+                    {
+                        throw new JsonLdProcessingException(
+                            JsonLdErrorCode.CollidingKeywords,
+                            "Two keys expanded to @id in the same node object.");
+                    }
+
+                    //A keyword-like @id (e.g. "@ignoreMe") expands to null
+                    //and is preserved as such rather than echoed verbatim.
+                    string raw = value.GetString();
+                    result["@id"] = activeContext.ExpandIri(raw, documentRelative: true);
                     continue;
                 }
                 case "@type":
@@ -393,15 +406,19 @@ public static class JsonLdExpansionTree
                     //expanded normally but stored under the @reverse key
                     //rather than at node level. RDF projection swaps
                     //subject/object for these.
-                    if(value.Kind == JsonLdNodeKind.Object)
+                    if(value.Kind != JsonLdNodeKind.Object)
                     {
-                        Dictionary<string, object?> reverseMap = await ExpandReverseAsync(
-                            value, activeContext, baseUrl, resolver, parser, cancellationToken)
-                            .ConfigureAwait(false);
-                        if(reverseMap.Count > 0)
-                        {
-                            result["@reverse"] = reverseMap;
-                        }
+                        throw new JsonLdProcessingException(
+                            JsonLdErrorCode.InvalidReverseValue,
+                            "A node object's @reverse value must be a map.");
+                    }
+
+                    Dictionary<string, object?> reverseMap = await ExpandReverseAsync(
+                        value, activeContext, baseUrl, resolver, parser, cancellationToken)
+                        .ConfigureAwait(false);
+                    if(reverseMap.Count > 0)
+                    {
+                        result["@reverse"] = reverseMap;
                     }
 
                     continue;
@@ -516,8 +533,11 @@ public static class JsonLdExpansionTree
 
                     //A term defined as a reverse property routes its values
                     //under the node's @reverse map, keyed by the reverse IRI.
+                    //A reverse property may only take node references, never
+                    //value objects or list objects.
                     if(termDef?.ReverseProperty is { } reverseIri)
                     {
+                        EnsureNoReversePropertyValueObjects(valueArray);
                         AddReverseValues(result, reverseIri, valueArray);
                         continue;
                     }
@@ -661,6 +681,7 @@ public static class JsonLdExpansionTree
             //the property array (the @set wrapper never survives expansion).
             if(item.TryGetProperty("@list", out JsonLdNode listValue))
             {
+                EnsureValidListOrSetObject(item, activeContext, "@list");
                 List<object?> listMembers = await ExpandMembersAsync(
                     listValue, activeContext, baseUrl, resolver, parser, termDef, cancellationToken).ConfigureAwait(false);
 
@@ -668,6 +689,7 @@ public static class JsonLdExpansionTree
             }
             if(item.TryGetProperty("@set", out JsonLdNode setValue))
             {
+                EnsureValidListOrSetObject(item, activeContext, "@set");
                 return await ExpandMembersAsync(
                     setValue, activeContext, baseUrl, resolver, parser, termDef, cancellationToken).ConfigureAwait(false);
             }
@@ -768,8 +790,21 @@ public static class JsonLdExpansionTree
         foreach(KeyValuePair<string, JsonLdNode> property in reverseObj.EnumerateObject())
         {
             string? expandedKey = activeContext.ExpandIri(property.Key, vocab: true);
-            if(expandedKey is null
-                || (!expandedKey.Contains(':', StringComparison.Ordinal) && !IriUtils.IsKeyword(expandedKey)))
+            if(expandedKey is null)
+            {
+                continue;
+            }
+
+            //A reverse map describes properties of which the node is the
+            //object, so its keys may not expand to keywords.
+            if(IriUtils.IsKeyword(expandedKey))
+            {
+                throw new JsonLdProcessingException(
+                    JsonLdErrorCode.InvalidReversePropertyMap,
+                    "An @reverse map may not contain a key that expands to a keyword.");
+            }
+
+            if(!expandedKey.Contains(':', StringComparison.Ordinal))
             {
                 continue;
             }
@@ -784,13 +819,65 @@ public static class JsonLdExpansionTree
                 property.Value, activeContext, baseUrl, resolver, parser, termDef, cancellationToken)
                 .ConfigureAwait(false);
 
-            if(expandedValue is not null)
+            if(expandedValue is null)
             {
-                result[expandedKey] = WrapAsArray(expandedValue);
+                continue;
             }
+
+            IReadOnlyList<object?> valueArray = WrapAsArray(expandedValue);
+            EnsureNoReversePropertyValueObjects(valueArray);
+            result[expandedKey] = valueArray;
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Throws <see cref="JsonLdProcessingException"/> with the
+    /// <c>invalid reverse property value</c> error when any of a reverse
+    /// property's expanded values is a value object or list object — a
+    /// reverse property may only point at node references.
+    /// </summary>
+    /// <param name="values">The expanded value array for a reverse property.</param>
+    private static void EnsureNoReversePropertyValueObjects(IReadOnlyList<object?> values)
+    {
+        foreach(object? value in values)
+        {
+            if(value is IReadOnlyDictionary<string, object?> map
+                && (map.ContainsKey("@value") || map.ContainsKey("@list")))
+            {
+                throw new JsonLdProcessingException(
+                    JsonLdErrorCode.InvalidReversePropertyValue,
+                    "A reverse property's value must be a node reference, not a value or list object.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Throws <see cref="JsonLdProcessingException"/> with the
+    /// <c>invalid set or list object</c> error when a <c>@list</c> or
+    /// <c>@set</c> object carries a sibling key other than the container
+    /// keyword itself or <c>@index</c>.
+    /// </summary>
+    /// <param name="obj">The candidate list or set object.</param>
+    /// <param name="activeContext">The context that expands the sibling keys.</param>
+    /// <param name="container">The container keyword (<c>@list</c> or <c>@set</c>).</param>
+    private static void EnsureValidListOrSetObject(JsonLdNode obj, LinkedDataContext activeContext, string container)
+    {
+        foreach(KeyValuePair<string, JsonLdNode> property in obj.EnumerateObject())
+        {
+            string? expandedKey = activeContext.ExpandIri(property.Key, vocab: true);
+            if(expandedKey is null
+                || string.Equals(expandedKey, container, StringComparison.Ordinal)
+                || string.Equals(expandedKey, "@index", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            throw new JsonLdProcessingException(
+                JsonLdErrorCode.InvalidSetOrListObject,
+                string.Create(CultureInfo.InvariantCulture, $"A {container} object may only contain {container} and @index entries."));
+        }
     }
 
     /// <summary>
@@ -890,16 +977,18 @@ public static class JsonLdExpansionTree
                 return null;
             }
 
+            //Each value under a language map must be a language-tagged
+            //string (or null); anything else is an invalid language map value.
+            if(item.Kind != JsonLdNodeKind.String)
+            {
+                throw new JsonLdProcessingException(
+                    JsonLdErrorCode.InvalidLanguageMapValue,
+                    "A language-map value must be a string.");
+            }
+
             Dictionary<string, object?> valueObject = new(StringComparer.Ordinal)
             {
-                ["@value"] = item.Kind switch
-                {
-                    JsonLdNodeKind.String => item.GetString(),
-                    JsonLdNodeKind.True => (object?)true,
-                    JsonLdNodeKind.False => (object?)false,
-                    JsonLdNodeKind.Number => ParseNumber(item.GetRawNumber()),
-                    _ => null
-                },
+                ["@value"] = item.GetString(),
                 ["@language"] = mapKey
             };
 
@@ -981,26 +1070,45 @@ public static class JsonLdExpansionTree
     private static List<object?>? ExpandTypeValue(JsonLdNode value, LinkedDataContext activeContext)
     {
         //A node object's @type expands to an array of IRIs per the W3C
-        //JSON-LD 1.1 expanded-form convention, even for a single type.
-        if(value.Kind == JsonLdNodeKind.String)
+        //JSON-LD 1.1 expanded-form convention, even for a single type. The
+        //value must be a string or an array of strings; anything else is an
+        //invalid type value (a JSON null contributes no types).
+        switch(value.Kind)
         {
-            string raw = value.GetString();
-            return new List<object?> { activeContext.ExpandIri(raw, vocab: true, documentRelative: true) ?? raw };
-        }
-        if(value.Kind == JsonLdNodeKind.Array)
-        {
-            List<object?> items = new();
-            foreach(JsonLdNode item in value.EnumerateArray())
+            case JsonLdNodeKind.Null:
             {
-                if(item.Kind == JsonLdNodeKind.String)
+                return null;
+            }
+            case JsonLdNodeKind.String:
+            {
+                string raw = value.GetString();
+                return new List<object?> { activeContext.ExpandIri(raw, vocab: true, documentRelative: true) ?? raw };
+            }
+            case JsonLdNodeKind.Array:
+            {
+                List<object?> items = new();
+                foreach(JsonLdNode item in value.EnumerateArray())
                 {
+                    if(item.Kind != JsonLdNodeKind.String)
+                    {
+                        throw new JsonLdProcessingException(
+                            JsonLdErrorCode.InvalidTypeValue,
+                            "A node object's @type value must be a string or an array of strings.");
+                    }
+
                     string raw = item.GetString();
                     items.Add(activeContext.ExpandIri(raw, vocab: true, documentRelative: true) ?? raw);
                 }
+
+                return items;
             }
-            return items;
+            default:
+            {
+                throw new JsonLdProcessingException(
+                    JsonLdErrorCode.InvalidTypeValue,
+                    "A node object's @type value must be a string or an array of strings.");
+            }
         }
-        return null;
     }
 
     /// <summary>
