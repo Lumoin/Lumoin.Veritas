@@ -1053,9 +1053,20 @@ public static class JsonLdExpansionTree
             return expandedItem;
         }
 
+        //A term with a property-valued @index turns the map key into a value
+        //of that property rather than an @index marker; this key is tracked so
+        //the @graph wrapping below keeps it at the outer level.
+        string? propertyValuedIndexKey = null;
         if(isIndex && !mapKeyIsNone)
         {
-            nodeObject["@index"] = mapKey;
+            if(termDef?.IndexMapping is { } indexProperty && !string.Equals(indexProperty, "@index", StringComparison.Ordinal))
+            {
+                propertyValuedIndexKey = AddPropertyValuedIndex(nodeObject, indexProperty, mapKey, activeContext);
+            }
+            else
+            {
+                nodeObject["@index"] = mapKey;
+            }
         }
 
         if(isIdMap && !mapKeyIsNone && !nodeObject.ContainsKey("@id"))
@@ -1096,7 +1107,9 @@ public static class JsonLdExpansionTree
             Dictionary<string, object?> inner = new(StringComparer.Ordinal);
             foreach(KeyValuePair<string, object?> kv in nodeObject)
             {
-                if((isIdMap && kv.Key == "@id") || (isIndex && kv.Key == "@index"))
+                if((isIdMap && kv.Key == "@id")
+                    || (isIndex && kv.Key == "@index")
+                    || (propertyValuedIndexKey is not null && string.Equals(kv.Key, propertyValuedIndexKey, StringComparison.Ordinal)))
                 {
                     outer[kv.Key] = kv.Value;
                 }
@@ -1111,6 +1124,56 @@ public static class JsonLdExpansionTree
         }
 
         return nodeObject;
+    }
+
+    /// <summary>
+    /// Implements a property-valued <c>@index</c>: the map key becomes a value
+    /// of the index property on <paramref name="nodeObject"/> (prepended before
+    /// any existing values), coerced by the index property's own term
+    /// definition. Returns the expanded index-property IRI so the caller can
+    /// keep it at the outer level of an <c>@graph</c> wrapping.
+    /// </summary>
+    /// <param name="nodeObject">The expanded node object receiving the property value.</param>
+    /// <param name="indexProperty">The index property term (the term's <c>@index</c> value).</param>
+    /// <param name="mapKey">The map key contributed as the property's value.</param>
+    /// <param name="activeContext">The active context for IRI expansion and coercion.</param>
+    /// <returns>The expanded index-property IRI.</returns>
+    private static string AddPropertyValuedIndex(
+        Dictionary<string, object?> nodeObject, string indexProperty, string mapKey, LinkedDataContext activeContext)
+    {
+        //A property cannot be attached to a value or list object.
+        if(nodeObject.ContainsKey("@value") || nodeObject.ContainsKey("@list"))
+        {
+            throw new JsonLdProcessingException(
+                JsonLdErrorCode.InvalidTermDefinition,
+                "A property-valued @index cannot add a property to a value object.");
+        }
+
+        string expandedProperty = activeContext.ExpandIri(indexProperty, vocab: true) ?? indexProperty;
+        TermDefinition? indexTermDef = activeContext.TryGetTerm(indexProperty, out TermDefinition? def) ? def : null;
+        Dictionary<string, object?> indexValue = indexTermDef?.TypeMapping switch
+        {
+            "@id" => new Dictionary<string, object?>(StringComparer.Ordinal) { ["@id"] = activeContext.ExpandIri(mapKey, documentRelative: true) },
+            "@vocab" => new Dictionary<string, object?>(StringComparer.Ordinal) { ["@id"] = activeContext.ExpandIri(mapKey, vocab: true, documentRelative: true) },
+            _ => new Dictionary<string, object?>(StringComparer.Ordinal) { ["@value"] = mapKey }
+        };
+
+        List<object?> values = new() { indexValue };
+        if(nodeObject.TryGetValue(expandedProperty, out object? existing))
+        {
+            if(existing is IReadOnlyList<object?> existingList)
+            {
+                values.AddRange(existingList);
+            }
+            else if(existing is not null)
+            {
+                values.Add(existing);
+            }
+        }
+
+        nodeObject[expandedProperty] = values;
+
+        return expandedProperty;
     }
 
     private static List<object?>? ExpandTypeValue(JsonLdNode value, LinkedDataContext activeContext)
