@@ -329,6 +329,12 @@ public static class JsonLdExpansionTree
         JsonLdParserDelegate parser,
         CancellationToken cancellationToken)
     {
+        //@nest entries are processed only after every regular key, so a
+        //property that appears both at the node and under an @nest accumulates
+        //its base values first and the nested values afterward. Multiple @nest
+        //aliases are processed in lexicographic key order.
+        List<KeyValuePair<string, JsonLdNode>> deferredNests = new();
+
         foreach(KeyValuePair<string, JsonLdNode> property in obj.EnumerateObject())
         {
             string key = property.Key;
@@ -426,11 +432,9 @@ public static class JsonLdExpansionTree
                 case "@nest":
                 {
                     //@nest lifts a nested object's properties into the
-                    //current node (same scope), so its properties are
-                    //expanded into the same result map.
-                    await ExpandNestIntoAsync(
-                        value, result, activeContext, typeExpansionContext, baseUrl, resolver, parser, cancellationToken)
-                        .ConfigureAwait(false);
+                    //current node (same scope). Defer until all regular keys
+                    //are processed so nested values append after base values.
+                    deferredNests.Add(new KeyValuePair<string, JsonLdNode>(key, value));
                     continue;
                 }
                 case "@included":
@@ -548,6 +552,14 @@ public static class JsonLdExpansionTree
                     continue;
                 }
             }
+        }
+
+        deferredNests.Sort(static (left, right) => string.CompareOrdinal(left.Key, right.Key));
+        foreach(KeyValuePair<string, JsonLdNode> nest in deferredNests)
+        {
+            await ExpandNestIntoAsync(
+                nest.Value, result, activeContext, typeExpansionContext, baseUrl, resolver, parser, cancellationToken)
+                .ConfigureAwait(false);
         }
     }
 
