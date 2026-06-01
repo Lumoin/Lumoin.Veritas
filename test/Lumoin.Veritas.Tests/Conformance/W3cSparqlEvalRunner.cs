@@ -429,23 +429,50 @@ internal static class W3cSparqlEvalRunner
 
         bool ordered = query.Modifier.Order is not null;
         SparqlResultSet expected;
-        try
+
+        //A SELECT/ASK result given as an RDF graph (the W3C rs:ResultSet vocabulary in Turtle / N-Triples) is read
+        //into a result set and value-compared, just like the .srx/.srj/.tsv serializations.
+        if(string.Equals(extension, ".ttl", StringComparison.OrdinalIgnoreCase) || string.Equals(extension, ".nt", StringComparison.OrdinalIgnoreCase))
         {
-            expected = extension switch
+            List<Quad> resultGraph;
+            try
             {
-                _ when string.Equals(extension, ".srj", StringComparison.OrdinalIgnoreCase) => SparqlResultsJsonReader.Read(expectedBytes),
-                _ when string.Equals(extension, ".srx", StringComparison.OrdinalIgnoreCase) => SparqlResultsXmlReader.Read(expectedBytes),
-                _ when string.Equals(extension, ".tsv", StringComparison.OrdinalIgnoreCase) => SparqlResultsTsvReader.Read(expectedBytes),
-                _ => throw new NotSupportedException($"Expected result format '{extension}' (a graph result) is not yet compared.")
-            };
+                resultGraph = await LoadGraphAsync(testCase.ExpectedPath!, cancellationToken).ConfigureAwait(false);
+            }
+            catch(InvalidOperationException ex)
+            {
+                return new W3cOutcome(W3cOutcomeStatus.Skipped, $"Expected result-set graph is in a format this harness cannot read: {ex.Message}");
+            }
+
+            try
+            {
+                expected = SparqlResultSetGraphReader.Read(resultGraph);
+            }
+            catch(FormatException ex)
+            {
+                return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expected result-set graph did not parse: {ex.Message}");
+            }
         }
-        catch(NotSupportedException ex)
+        else
         {
-            return new W3cOutcome(W3cOutcomeStatus.Skipped, ex.Message);
-        }
-        catch(FormatException ex)
-        {
-            return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expected SPARQL results fixture did not parse: {ex.Message}");
+            try
+            {
+                expected = extension switch
+                {
+                    _ when string.Equals(extension, ".srj", StringComparison.OrdinalIgnoreCase) => SparqlResultsJsonReader.Read(expectedBytes),
+                    _ when string.Equals(extension, ".srx", StringComparison.OrdinalIgnoreCase) => SparqlResultsXmlReader.Read(expectedBytes),
+                    _ when string.Equals(extension, ".tsv", StringComparison.OrdinalIgnoreCase) => SparqlResultsTsvReader.Read(expectedBytes),
+                    _ => throw new NotSupportedException($"Expected result format '{extension}' (a graph result) is not yet compared.")
+                };
+            }
+            catch(NotSupportedException ex)
+            {
+                return new W3cOutcome(W3cOutcomeStatus.Skipped, ex.Message);
+            }
+            catch(FormatException ex)
+            {
+                return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expected SPARQL results fixture did not parse: {ex.Message}");
+            }
         }
 
         bool equal = SparqlResultComparer.AreEquivalent(actual, expected, ordered);

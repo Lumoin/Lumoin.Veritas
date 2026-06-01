@@ -36,12 +36,130 @@ internal static class SparqlPreBinding
             return query;
         }
 
+        EnsureSupported(query, bindings);
+
         return query with
         {
             Where = query.Where with { Pattern = SubstitutePattern(query.Where.Pattern, bindings) },
             Form = SubstituteForm(query.Form, bindings),
             Modifier = SubstituteModifier(query.Modifier, bindings),
         };
+    }
+
+    /// <summary>The pre-bound variables whose pre-binding a sub-<c>SELECT</c> must carry through by projecting them.</summary>
+    private static SparqlVariable ThisVariable { get; } = new(Utf8String.FromString("this"));
+
+    /// <summary>The pre-bound value variable a value-scoped constraint binds.</summary>
+    private static SparqlVariable ValueVariable { get; } = new(Utf8String.FromString("value"));
+
+    /// <summary>
+    /// Enforces the SHACL §5.2.1 restrictions on a query that undergoes pre-binding: a <c>MINUS</c>,
+    /// <c>VALUES</c>, <c>SERVICE</c>, an assignment (<c>BIND … AS</c> / <c>SELECT (… AS ?v)</c>) to a pre-bound
+    /// variable, or a sub-<c>SELECT</c> that does not project the pre-bound focus/value variable make the
+    /// substitution ill-defined; each throws <see cref="ShaclSparqlPreBindingException"/> so the SHACL
+    /// processing fails rather than producing an unspecified report. The walk is iterative (no recursion).
+    /// </summary>
+    /// <param name="query">The query about to be substituted.</param>
+    /// <param name="bindings">The pre-bound variable→value map.</param>
+    private static void EnsureSupported(SparqlQuery query, Dictionary<SparqlVariable, RdfTerm> bindings)
+    {
+        EnsureNoAssignmentToPreBound(query.Form, bindings);
+
+        Stack<GraphPattern> work = new();
+        work.Push(query.Where.Pattern);
+
+        while(work.Count > 0)
+        {
+            GraphPattern pattern = work.Pop();
+            switch(pattern)
+            {
+                case MinusPattern: throw Unsupported("MINUS");
+                case ServicePattern: throw Unsupported("SERVICE (federated query)");
+                case ValuesPattern: throw Unsupported("VALUES");
+                case BindPattern bind when bindings.ContainsKey(bind.AsVariable): throw Unsupported($"a BIND assigning the pre-bound variable ?{bind.AsVariable.Name}");
+                case SubSelectPattern subSelect:
+                {
+                    EnsureSubSelectProjectsPreBound(subSelect.InnerQuery, bindings);
+                    EnsureNoAssignmentToPreBound(subSelect.InnerQuery.Form, bindings);
+                    break;
+                }
+
+                default: break;
+            }
+
+            foreach(GraphPattern child in PatternChildren(pattern))
+            {
+                work.Push(child);
+            }
+        }
+    }
+
+    /// <summary>Throws when a <c>SELECT (expr AS ?v)</c> projection assigns a pre-bound variable.</summary>
+    /// <param name="form">The query form.</param>
+    /// <param name="bindings">The pre-bound variable→value map.</param>
+    private static void EnsureNoAssignmentToPreBound(QueryForm form, Dictionary<SparqlVariable, RdfTerm> bindings)
+    {
+        if(form is not SelectQuery select)
+        {
+            return;
+        }
+
+        foreach(SelectProjection projection in select.Projections)
+        {
+            if(projection is SelectExpressionAs assignment && bindings.ContainsKey(assignment.AsVariable))
+            {
+                throw Unsupported($"an AS assignment to the pre-bound variable ?{assignment.AsVariable.Name}");
+            }
+        }
+    }
+
+    /// <summary>Throws when a sub-<c>SELECT</c> does not project a pre-bound focus/value variable it must carry through (a <c>SELECT *</c> never does).</summary>
+    /// <param name="inner">The sub-select's inner query.</param>
+    /// <param name="bindings">The pre-bound variable→value map.</param>
+    private static void EnsureSubSelectProjectsPreBound(SparqlQuery inner, Dictionary<SparqlVariable, RdfTerm> bindings)
+    {
+        if(inner.Form is not SelectQuery select)
+        {
+            return;
+        }
+
+        foreach(SparqlVariable focus in new[] { ThisVariable, ValueVariable })
+        {
+            if(!bindings.ContainsKey(focus))
+            {
+                continue;
+            }
+
+            if(select.IsStar || !ProjectsBareVariable(select, focus))
+            {
+                throw Unsupported($"a sub-SELECT that does not project the pre-bound variable ?{focus.Name}");
+            }
+        }
+    }
+
+    /// <summary>Whether a sub-<c>SELECT</c> explicitly projects a variable as a bare projection (carrying it into the inner scope).</summary>
+    /// <param name="select">The select head.</param>
+    /// <param name="variable">The variable.</param>
+    /// <returns><see langword="true"/> when the variable is a bare projection.</returns>
+    private static bool ProjectsBareVariable(SelectQuery select, SparqlVariable variable)
+    {
+        foreach(SelectProjection projection in select.Projections)
+        {
+            if(projection is SelectVariable bare && bare.Variable.Equals(variable))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Builds the §5.2.1 pre-binding failure for an unsupported construct.</summary>
+    /// <param name="construct">The unsupported construct, for the message.</param>
+    /// <returns>The exception to throw.</returns>
+    private static ShaclSparqlPreBindingException Unsupported(string construct)
+    {
+        return new ShaclSparqlPreBindingException($"SHACL-SPARQL pre-binding (§5.2.1) does not support {construct}.");
     }
 
     /// <summary>Builds the variable→value map from a single-row pre-binding block, skipping any <c>UNDEF</c> (null) cell.</summary>

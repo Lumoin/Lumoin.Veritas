@@ -11,6 +11,7 @@ using Lumoin.Veritas.Shacl;
 using Lumoin.Veritas.Shacl.Components;
 using Lumoin.Veritas.Shacl.Loading;
 using Lumoin.Veritas.Shacl.Validation;
+using Lumoin.Veritas.Shacl.Validation.Evaluators;
 using Lumoin.Veritas.Turtle;
 
 namespace Lumoin.Veritas.Tests.Conformance;
@@ -55,6 +56,28 @@ internal static class W3cShaclRunner
     /// <param name="cancellationToken">A token to cancel parsing and validation.</param>
     /// <returns>The outcome.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="testCase"/> is <c>null</c>.</exception>
+    private const string ManifestResultPredicate = "http://www.w3.org/2001/sw/DataAccess/tests/test-manifest#result";
+
+    private const string ShaclTestFailure = "http://www.w3.org/ns/shacl-test#Failure";
+
+    /// <summary>Whether the manifest declares <c>mf:result sht:Failure</c> — the test expects SHACL processing to fail rather than report.</summary>
+    /// <param name="manifestQuads">The manifest (leaf) quads.</param>
+    /// <returns><see langword="true"/> when a <c>sht:Failure</c> result is declared.</returns>
+    private static bool ExpectsFailure(List<Quad> manifestQuads)
+    {
+        foreach(Quad quad in manifestQuads)
+        {
+            if(string.Equals(quad.Predicate.Iri.ToString(), ManifestResultPredicate, StringComparison.Ordinal)
+                && quad.Object is NamedNode result
+                && string.Equals(result.Iri.ToString(), ShaclTestFailure, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public static async Task<W3cOutcome> RunAsync(W3cTestCase testCase, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(testCase);
@@ -102,6 +125,10 @@ internal static class W3cShaclRunner
             ? dataStore
             : BuildStore(shapesQuads, dictionary);
 
+        //A test whose mf:result is sht:Failure expects SHACL processing itself to fail (e.g. a SHACL-SPARQL
+        //constraint using a construct §5.2.1 forbids under pre-binding), not to produce a validation report.
+        bool expectsFailure = ExpectsFailure(manifestQuads);
+
         ValidationReport report;
         try
         {
@@ -116,9 +143,20 @@ internal static class W3cShaclRunner
                 registry, dataStore.AsMatchOps(), dictionary, ShaclBuiltInEvaluators.All, TimeProvider.System,
                 shapesGraphMatchOps: shapesStore.AsMatchOps(), shapesGraphIri: shapesGraphIri, cancellationToken: cancellationToken).ConfigureAwait(false);
         }
+        catch(ShaclSparqlPreBindingException ex)
+        {
+            return expectsFailure
+                ? new W3cOutcome(W3cOutcomeStatus.Passed, $"Validation failed as expected (sht:Failure): {ex.Message}")
+                : new W3cOutcome(W3cOutcomeStatus.Failed, $"Validation threw {ex.GetType().Name}: {ex.Message}");
+        }
         catch(Exception ex) when(ex is not OperationCanceledException)
         {
             return new W3cOutcome(W3cOutcomeStatus.Failed, $"Validation threw {ex.GetType().Name}: {ex.Message}");
+        }
+
+        if(expectsFailure)
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Failed, "Expected SHACL processing failure (sht:Failure) but validation produced a report.");
         }
 
         List<Quad> expected = StripMessages(ExtractReportSubgraph(manifestQuads));
