@@ -267,6 +267,7 @@ public sealed class SparqlQueryEngine
                 results[new ResultKey(node, graph)] = node switch
                 {
                     Graph graphNode => CombineGraph(graphNode, graph, results),
+                    Join boundJoin when IsServiceBoundJoin(boundJoin) => await CombineServiceBoundJoinAsync(boundJoin, graph, results, cancellationToken).ConfigureAwait(false),
                     Filter or Extend or LeftJoin => await CombineExpressionOperatorAsync(node, graph, results, cancellationToken).ConfigureAwait(false),
                     _ => Combine(node, graph, results, expressionContext)
                 };
@@ -495,9 +496,10 @@ public sealed class SparqlQueryEngine
     {
         if(service.Endpoint is not GraphIriTerm endpoint)
         {
-            return service.Silent
-                ? SingleEmptySolution
-                : throw new NotSupportedException("SERVICE with a variable endpoint needs bound-join evaluation (the endpoint is supplied by upstream bindings) and is not yet executable; SERVICE <iri> is supported.");
+            //A variable endpoint is resolved per left binding by the enclosing Join's bound-join
+            //(CombineServiceBoundJoinAsync); on its own — with no surrounding solutions to supply the
+            //endpoint — the service produces nothing.
+            return [];
         }
 
         if(serviceClient is null)
@@ -519,6 +521,121 @@ public sealed class SparqlQueryEngine
             //SILENT: a federation failure contributes the join identity, so the surrounding pattern is unaffected.
             return SingleEmptySolution;
         }
+    }
+
+    /// <summary>Whether <paramref name="join"/> has a variable-endpoint SERVICE child, which is evaluated as a bound-join (the endpoint is supplied by the other side's bindings) rather than as a standalone leaf.</summary>
+    /// <param name="join">The join to test.</param>
+    /// <returns><see langword="true"/> when one side is a <see cref="Service"/> with a variable endpoint.</returns>
+    private static bool IsServiceBoundJoin(Join join)
+    {
+        return join.Left is Service { Endpoint: GraphVariableTerm } || join.Right is Service { Endpoint: GraphVariableTerm };
+    }
+
+    /// <summary>
+    /// Evaluates a join whose one side is a variable-endpoint <c>SERVICE</c> as a bound-join (§18.5): the other
+    /// side's solutions supply the endpoint, so the incoming solutions are grouped by the IRI bound to the
+    /// endpoint variable, the inner pattern is sent once per distinct endpoint, and each endpoint's results are
+    /// joined back into its group. A solution whose endpoint variable is unbound (or not an IRI) cannot drive the
+    /// service: under <c>SILENT</c> it passes through (the join identity), otherwise it is an error. <c>SILENT</c>
+    /// likewise turns a missing transport or a per-endpoint failure into the identity.
+    /// </summary>
+    /// <param name="join">The join carrying the variable-endpoint SERVICE on one side.</param>
+    /// <param name="graph">The active graph the join's children were evaluated under.</param>
+    /// <param name="results">The map of already-evaluated (operator, graph) keys to their solution sequences.</param>
+    /// <param name="cancellationToken">A token that aborts the remote calls.</param>
+    /// <returns>The bound-join's solution sequence.</returns>
+    private async ValueTask<IReadOnlyList<SparqlSolution>> CombineServiceBoundJoinAsync(Join join, TermId graph, Dictionary<ResultKey, IReadOnlyList<SparqlSolution>> results, CancellationToken cancellationToken)
+    {
+        (Service service, AlgebraOperator bindingChild) = join.Right is Service { Endpoint: GraphVariableTerm } rightService
+            ? (rightService, join.Left)
+            : ((Service)join.Left, join.Right);
+
+        IReadOnlyList<SparqlSolution> bindings = results[new ResultKey(bindingChild, graph)];
+        SparqlVariable endpointVariable = ((GraphVariableTerm)service.Endpoint).Variable;
+
+        //Group the incoming solutions by the IRI bound to the endpoint variable, so each distinct endpoint is
+        //queried once; first-seen endpoint order is preserved. Solutions that do not bind the endpoint to an IRI
+        //cannot run the service and are handled separately.
+        Dictionary<Utf8String, List<SparqlSolution>> byEndpoint = [];
+        List<Utf8String> endpointOrder = [];
+        List<SparqlSolution> unbound = [];
+        foreach(SparqlSolution binding in bindings)
+        {
+            if(binding.TryGetValue(endpointVariable, out RdfTerm value) && value is NamedNode endpointIri)
+            {
+                if(!byEndpoint.TryGetValue(endpointIri.Iri, out List<SparqlSolution>? group))
+                {
+                    group = [];
+                    byEndpoint[endpointIri.Iri] = group;
+                    endpointOrder.Add(endpointIri.Iri);
+                }
+
+                group.Add(binding);
+            }
+            else
+            {
+                unbound.Add(binding);
+            }
+        }
+
+        List<SparqlSolution> joined = [];
+        if(endpointOrder.Count > 0 && serviceClient is null)
+        {
+            //SILENT with no transport: each group contributes the join identity (its solutions pass through).
+            return service.Silent
+                ? Passthrough(endpointOrder, byEndpoint, unbound)
+                : throw new NotSupportedException("SERVICE with a variable endpoint requires a SparqlClient transport, but the engine was constructed without one.");
+        }
+
+        if(serviceClient is not null)
+        {
+            string query = SparqlQueryTextWriter.ToSelectQuery(service.InnerPattern);
+            foreach(Utf8String endpoint in endpointOrder)
+            {
+                List<SparqlSolution> group = byEndpoint[endpoint];
+                try
+                {
+                    SparqlResultSet remote = await serviceClient.QueryAsync(new IriRef(endpoint, default), query, cancellationToken).ConfigureAwait(false);
+                    joined.AddRange(JoinSolutions(group, remote.Solutions));
+                }
+                catch(Exception ex) when(service.Silent && ex is not OperationCanceledException)
+                {
+                    //SILENT: a failure at one endpoint contributes the identity, so that endpoint's group passes through.
+                    joined.AddRange(group);
+                }
+            }
+        }
+
+        //A solution that does not bind the endpoint to an IRI cannot run the service: identity under SILENT, else an error.
+        if(unbound.Count > 0)
+        {
+            if(!service.Silent)
+            {
+                throw new NotSupportedException("SERVICE with a variable endpoint left the endpoint unbound (or not an IRI) in some solutions; bind it before the SERVICE, or use SERVICE SILENT.");
+            }
+
+            joined.AddRange(unbound);
+        }
+
+        return joined;
+    }
+
+    /// <summary>The bound-join identity: every grouped and unbound solution passes through unchanged (used when SILENT suppresses the service entirely).</summary>
+    /// <param name="endpointOrder">The distinct endpoints in first-seen order.</param>
+    /// <param name="byEndpoint">The solutions grouped by endpoint.</param>
+    /// <param name="unbound">The solutions that bound no endpoint IRI.</param>
+    /// <returns>All incoming solutions, unchanged.</returns>
+    private static List<SparqlSolution> Passthrough(List<Utf8String> endpointOrder, Dictionary<Utf8String, List<SparqlSolution>> byEndpoint, List<SparqlSolution> unbound)
+    {
+        List<SparqlSolution> all = [];
+        foreach(Utf8String endpoint in endpointOrder)
+        {
+            all.AddRange(byEndpoint[endpoint]);
+        }
+
+        all.AddRange(unbound);
+
+        return all;
     }
 
     /// <summary>Combines an operator's already-evaluated child sequences (read from <paramref name="results"/> under the same active graph) into its own sequence.</summary>

@@ -99,6 +99,74 @@ internal sealed class SparqlQueryEngineTests
             async () => await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
     }
 
+    /// <summary>A variable-endpoint SERVICE is a bound-join: each left binding's endpoint IRI is queried separately and the per-endpoint results join back into that binding (so endpoints are not crossed).</summary>
+    [TestMethod]
+    public async Task ServiceVariableEndpointResolvesPerBinding()
+    {
+        using Utf8StringPool pool = new();
+        List<IriRef> calledEndpoints = [];
+        SparqlClient client = new((endpoint, query, cancellationToken) =>
+        {
+            calledEndpoints.Add(endpoint);
+
+            //Each endpoint answers about a different subject; if the engine crossed endpoints, the join would drop the row.
+            SparqlSolution row = endpoint.Value.Equals(Utf8String.FromString(Ex + "remote1"))
+                ? new SparqlSolution([new SparqlBinding(Variable("x"), Iri("a")), new SparqlBinding(Variable("v"), Iri("v1"))])
+                : new SparqlSolution([new SparqlBinding(Variable("x"), Iri("b")), new SparqlBinding(Variable("v"), Iri("v2"))]);
+
+            return ValueTask.FromResult(SparqlResultSet.ForSelect([Utf8String.FromString("x"), Utf8String.FromString("v")], [row]));
+        });
+        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(
+            [new DataTriple(Iri("a"), Iri("ep"), Iri("remote1")), new DataTriple(Iri("b"), Iri("ep"), Iri("remote2"))],
+            serviceClient: client, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?x :ep ?e . SERVICE ?e { ?x :z ?v } }", pool);
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(2, calledEndpoints);
+        Assert.HasCount(2, solutions);
+
+        SparqlSolution forA = solutions.Single(s => ValueIri(s, "x") == Ex + "a");
+        Assert.AreEqual(Ex + "remote1", ValueIri(forA, "e"));
+        Assert.AreEqual(Ex + "v1", ValueIri(forA, "v"));
+
+        SparqlSolution forB = solutions.Single(s => ValueIri(s, "x") == Ex + "b");
+        Assert.AreEqual(Ex + "remote2", ValueIri(forB, "e"));
+        Assert.AreEqual(Ex + "v2", ValueIri(forB, "v"));
+    }
+
+    /// <summary>A variable-endpoint SERVICE SILENT whose endpoint variable is never bound contributes the join identity, so the surrounding solutions survive and the transport is never called.</summary>
+    [TestMethod]
+    public async Task ServiceVariableEndpointSilentPassesThroughWhenUnbound()
+    {
+        using Utf8StringPool pool = new();
+        SparqlClient client = new((endpoint, query, cancellationToken) => throw new System.InvalidOperationException("the transport must not be called for an unbound endpoint"));
+        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(
+            [new DataTriple(Iri("a"), Iri("ep"), Iri("remote1")), new DataTriple(Iri("b"), Iri("ep"), Iri("remote2"))],
+            serviceClient: client, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?x :ep ?e . SERVICE SILENT ?unbound { ?x :z ?v } }", pool);
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(2, solutions);
+        Assert.IsTrue(solutions.All(s => !s.TryGetValue(Variable("v"), out _)));
+    }
+
+    /// <summary>A non-silent variable-endpoint SERVICE whose endpoint variable is unbound is refused (the endpoint cannot be determined).</summary>
+    [TestMethod]
+    public async Task ServiceVariableEndpointUnboundIsRefused()
+    {
+        using Utf8StringPool pool = new();
+        SparqlClient client = new((endpoint, query, cancellationToken) => ValueTask.FromResult(SparqlResultSet.ForSelect([], [])));
+        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(
+            [new DataTriple(Iri("a"), Iri("ep"), Iri("remote1"))], serviceClient: client, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?x :ep ?e . SERVICE ?unbound { ?x :z ?v } }", pool);
+
+        await Assert.ThrowsExactlyAsync<System.NotSupportedException>(
+            async () => await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
     /// <summary>Two triples sharing a variable join (the translator merges them into one BGP); the join variable is bound consistently and projected away when not selected.</summary>
     [TestMethod]
     public async Task TwoTriplePatternsJoinOnSharedVariable()
