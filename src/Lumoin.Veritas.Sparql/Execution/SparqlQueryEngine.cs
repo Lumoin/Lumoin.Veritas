@@ -194,6 +194,55 @@ public sealed class SparqlQueryEngine
     }
 
     /// <summary>
+    /// Returns the engine scoped to a query's <c>FROM</c>/<c>FROM NAMED</c> dataset clause (SPARQL 1.2 §13.2). An
+    /// empty clause leaves this engine unchanged; a non-empty clause OVERRIDES the default dataset, so the returned
+    /// engine evaluates against the effective dataset built from the clause graphs — the default graph is the RDF
+    /// merge of the <c>FROM</c> graphs, and each <c>FROM NAMED &lt;iri&gt;</c> is a named graph keyed by that IRI
+    /// (so a <c>GRAPH &lt;iri&gt;</c> form resolves to it). Every clause IRI is resolved to its triples through
+    /// <paramref name="resolver"/> (the same seam <c>LOAD</c> uses); the resolver decides whether an IRI names a
+    /// local graph or a remote document. The returned engine inherits this one's expression context and service
+    /// client. Once obtained, evaluate against it with <see cref="EvaluateAsync(AlgebraOperator, CancellationToken)"/>
+    /// (or <see cref="DescribeAsync"/>) exactly as for an engine with no dataset clause.
+    /// </summary>
+    /// <param name="datasetClause">The query's dataset clause.</param>
+    /// <param name="resolver">The resolver each clause IRI is fetched through; required when the clause is non-empty.</param>
+    /// <param name="cancellationToken">A token that aborts resolution and the effective-dataset build.</param>
+    /// <returns>This engine when the clause is empty, otherwise an engine over the effective dataset.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="datasetClause"/> is <see langword="null"/>.</exception>
+    /// <exception cref="NotSupportedException">The clause is non-empty but no <paramref name="resolver"/> was supplied.</exception>
+    public async ValueTask<SparqlQueryEngine> WithDatasetAsync(DatasetClause datasetClause, GraphSourceResolver? resolver, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(datasetClause);
+
+        if(datasetClause.DefaultGraphs.Count == 0 && datasetClause.NamedGraphs.Count == 0)
+        {
+            return this;
+        }
+
+        if(resolver is null)
+        {
+            throw new NotSupportedException("A query with a FROM / FROM NAMED clause needs a GraphSourceResolver to resolve its dataset graphs, but none was supplied.");
+        }
+
+        //The default graph is the RDF merge of all FROM graphs (concatenation into one default-graph store); each
+        //FROM NAMED graph is a named graph keyed by its (absolute) IRI.
+        List<DataTriple> defaultGraph = [];
+        foreach(IriRef from in datasetClause.DefaultGraphs)
+        {
+            defaultGraph.AddRange(await resolver(from, cancellationToken).ConfigureAwait(false));
+        }
+
+        List<(RdfTerm Name, IEnumerable<DataTriple> Triples)> named = new(datasetClause.NamedGraphs.Count);
+        foreach(IriRef fromNamed in datasetClause.NamedGraphs)
+        {
+            IReadOnlyList<DataTriple> triples = await resolver(fromNamed, cancellationToken).ConfigureAwait(false);
+            named.Add((new NamedNode(fromNamed.Value), triples));
+        }
+
+        return await BuildDatasetAsync(defaultGraph, named, expressionContext, serviceClient, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Describes the given resources as an RDF graph (SPARQL 1.2 §16.4, the <c>DESCRIBE</c> result). The exact
     /// triples are implementation-defined; <paramref name="strategy"/> chooses the description algorithm per call,
     /// defaulting to the Concise Bounded Description (<see cref="SparqlDescribe.ConciseBoundedDescription"/>).

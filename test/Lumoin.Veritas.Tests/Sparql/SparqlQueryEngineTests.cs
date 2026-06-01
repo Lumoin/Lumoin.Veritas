@@ -167,6 +167,78 @@ internal sealed class SparqlQueryEngineTests
             async () => await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
     }
 
+    /// <summary>A single FROM graph becomes the default graph, overriding the engine's own data (§13.2).</summary>
+    [TestMethod]
+    public async Task FromSingleGraphScopesAndOverridesDefaultGraph()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQueryEngine baseEngine = await BuildEngineAsync(("base", "p", "base")).ConfigureAwait(false);
+        DatasetClause clause = new(default, [FromIri("g1")], []);
+        GraphSourceResolver resolver = (source, cancellationToken) => GraphFor(source, ("g1", [new DataTriple(Iri("a"), Iri("p"), Iri("b"))]));
+
+        SparqlQueryEngine scoped = await baseEngine.WithDatasetAsync(clause, resolver, TestContext.CancellationToken).ConfigureAwait(false);
+        AlgebraOperator algebra = Translate("SELECT * WHERE { ?s ?p ?o }", pool);
+        IReadOnlyList<SparqlSolution> solutions = await scoped.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(Ex + "a", ValueIri(solutions.Single(), "s"));
+    }
+
+    /// <summary>Multiple FROM graphs merge into one default graph.</summary>
+    [TestMethod]
+    public async Task MultipleFromGraphsMergeIntoTheDefaultGraph()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQueryEngine baseEngine = await BuildEngineAsync(("base", "p", "base")).ConfigureAwait(false);
+        DatasetClause clause = new(default, [FromIri("g1"), FromIri("g2")], []);
+        GraphSourceResolver resolver = (source, cancellationToken) => GraphFor(source,
+            ("g1", [new DataTriple(Iri("a"), Iri("p"), Iri("b"))]),
+            ("g2", [new DataTriple(Iri("c"), Iri("p"), Iri("d"))]));
+
+        SparqlQueryEngine scoped = await baseEngine.WithDatasetAsync(clause, resolver, TestContext.CancellationToken).ConfigureAwait(false);
+        AlgebraOperator algebra = Translate("SELECT * WHERE { ?s ?p ?o }", pool);
+        IReadOnlyList<SparqlSolution> solutions = await scoped.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        string[] subjects = [.. solutions.Select(solution => ValueIri(solution, "s"))];
+        Assert.HasCount(2, subjects);
+        Assert.Contains(Ex + "a", subjects);
+        Assert.Contains(Ex + "c", subjects);
+    }
+
+    /// <summary>A FROM NAMED graph is exposed under its IRI to a GRAPH form, and (with no FROM) the default graph is empty.</summary>
+    [TestMethod]
+    public async Task FromNamedExposesGraphAndLeavesDefaultEmpty()
+    {
+        using Utf8StringPool pool = new();
+        SparqlQueryEngine baseEngine = await BuildEngineAsync(("base", "p", "base")).ConfigureAwait(false);
+        DatasetClause clause = new(default, [], [FromIri("g1")]);
+        GraphSourceResolver resolver = (source, cancellationToken) => GraphFor(source, ("g1", [new DataTriple(Iri("a"), Iri("p"), Iri("b"))]));
+
+        SparqlQueryEngine scoped = await baseEngine.WithDatasetAsync(clause, resolver, TestContext.CancellationToken).ConfigureAwait(false);
+
+        AlgebraOperator named = Translate("SELECT * WHERE { GRAPH <http://example.org/g1> { ?s ?p ?o } }", pool);
+        IReadOnlyList<SparqlSolution> namedSolutions = await scoped.EvaluateAsync(named, TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(Ex + "a", ValueIri(namedSolutions.Single(), "s"));
+
+        AlgebraOperator defaultGraph = Translate("SELECT * WHERE { ?s ?p ?o }", pool);
+        IReadOnlyList<SparqlSolution> defaultSolutions = await scoped.EvaluateAsync(defaultGraph, TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.IsEmpty(defaultSolutions);
+    }
+
+    /// <summary>A FROM / FROM NAMED clause with no resolver is refused; an empty clause returns the same engine unchanged.</summary>
+    [TestMethod]
+    public async Task DatasetClauseRequiresResolverUnlessEmpty()
+    {
+        SparqlQueryEngine baseEngine = await BuildEngineAsync(("base", "p", "base")).ConfigureAwait(false);
+
+        DatasetClause withFrom = new(default, [FromIri("g1")], []);
+        await Assert.ThrowsExactlyAsync<System.NotSupportedException>(
+            async () => await baseEngine.WithDatasetAsync(withFrom, resolver: null, TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+        DatasetClause empty = new(default, [], []);
+        SparqlQueryEngine same = await baseEngine.WithDatasetAsync(empty, resolver: null, TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreSame(baseEngine, same);
+    }
+
     /// <summary>Two triples sharing a variable join (the translator merges them into one BGP); the join variable is bound consistently and projected away when not selected.</summary>
     [TestMethod]
     public async Task TwoTriplePatternsJoinOnSharedVariable()
@@ -1177,6 +1249,31 @@ internal sealed class SparqlQueryEngineTests
     private static NamedNode Iri(string localName)
     {
         return new NamedNode(Utf8String.FromString(Ex + localName));
+    }
+
+    /// <summary>Builds an example-namespace dataset-clause IRI from a local name.</summary>
+    /// <param name="localName">The local name appended to the example prefix.</param>
+    /// <returns>The IRI reference.</returns>
+    private static IriRef FromIri(string localName)
+    {
+        return new IriRef(Utf8String.FromString(Ex + localName), default);
+    }
+
+    /// <summary>A canned <see cref="GraphSourceResolver"/> body: serves the triples of whichever example-namespace graph the source IRI names, or the empty graph.</summary>
+    /// <param name="source">The clause IRI to resolve.</param>
+    /// <param name="graphs">The available graphs as (local-name, triples) pairs.</param>
+    /// <returns>The named graph's triples, or the empty graph.</returns>
+    private static ValueTask<IReadOnlyList<DataTriple>> GraphFor(IriRef source, params (string LocalName, DataTriple[] Triples)[] graphs)
+    {
+        foreach((string localName, DataTriple[] triples) in graphs)
+        {
+            if(source.Value.Equals(Utf8String.FromString(Ex + localName)))
+            {
+                return ValueTask.FromResult<IReadOnlyList<DataTriple>>(triples);
+            }
+        }
+
+        return ValueTask.FromResult<IReadOnlyList<DataTriple>>([]);
     }
 
     /// <summary>Builds a SPARQL variable from its name (without the leading marker).</summary>

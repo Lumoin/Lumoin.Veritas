@@ -336,23 +336,12 @@ internal static class W3cSparqlEvalRunner
         List<(RdfTerm Name, IEnumerable<DataTriple> Triples)> namedGraphs;
         try
         {
-            //An in-query FROM / FROM NAMED clause defines the dataset (SPARQL §13.2), overriding the manifest's
-            //qt:data / qt:graphData mapping: the default graph is the merge of the FROM graphs, the named graphs are
-            //the FROM NAMED graphs. Each clause IRI resolves to a sibling file the harness loads.
-            if(query.Dataset.DefaultGraphs.Count > 0 || query.Dataset.NamedGraphs.Count > 0)
-            {
-                data = await LoadDatasetGraphsAsync(query.Dataset.DefaultGraphs, cancellationToken).ConfigureAwait(false);
-                namedGraphs = await LoadDatasetNamedGraphsAsync(query.Dataset.NamedGraphs, cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                data = await LoadDataAsync(testCase.QueryDataPath, cancellationToken).ConfigureAwait(false);
-                namedGraphs = await LoadNamedGraphsAsync(testCase.GraphDataPaths, cancellationToken).ConfigureAwait(false);
+            data = await LoadDataAsync(testCase.QueryDataPath, cancellationToken).ConfigureAwait(false);
+            namedGraphs = await LoadNamedGraphsAsync(testCase.GraphDataPaths, cancellationToken).ConfigureAwait(false);
 
-                //A single TriG / N-Quads data file can itself carry named graphs (beyond the default graph already in
-                //`data`); fold those into the dataset too.
-                namedGraphs.AddRange(await LoadNamedFromFileAsync(testCase.QueryDataPath, cancellationToken).ConfigureAwait(false));
-            }
+            //A single TriG / N-Quads data file can itself carry named graphs (beyond the default graph already in
+            //`data`); fold those into the dataset too.
+            namedGraphs.AddRange(await LoadNamedFromFileAsync(testCase.QueryDataPath, cancellationToken).ConfigureAwait(false));
         }
         catch(InvalidOperationException ex)
         {
@@ -373,6 +362,19 @@ internal static class W3cSparqlEvalRunner
         SparqlQueryEngine engine = namedGraphs.Count == 0
             ? await SparqlQueryEngine.BuildAsync(data, context, cancellationToken: cancellationToken).ConfigureAwait(false)
             : await SparqlQueryEngine.BuildDatasetAsync(data, namedGraphs, context, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        //An in-query FROM / FROM NAMED clause defines the dataset (SPARQL §13.2), OVERRIDING the manifest's
+        //qt:data / qt:graphData: the engine itself resolves each clause IRI (a sibling file) and scopes to the
+        //effective dataset — default graph = the merge of the FROM graphs, named graphs = the FROM NAMED graphs.
+        try
+        {
+            engine = await engine.WithDatasetAsync(query.Dataset, ResolveGraphFromFileAsync, cancellationToken).ConfigureAwait(false);
+        }
+        catch(InvalidOperationException ex)
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Skipped, $"Could not load a FROM / FROM NAMED graph (unsupported format or malformed): {ex.Message}");
+        }
+
         SparqlQuery normalized = (SparqlQuery)new SparqlNormalizer(pool).Normalize(query);
 
         //CONSTRUCT / DESCRIBE produce an RDF graph; compare it to the expected graph up to blank-node isomorphism
@@ -752,35 +754,13 @@ internal static class W3cSparqlEvalRunner
         throw new InvalidOperationException($"Graph fixture format '{extension}' is not readable by this harness.");
     }
 
-    /// <summary>Loads the merge of an in-query <c>FROM</c> clause's graphs as the default-graph triples.</summary>
-    /// <param name="graphs">The <c>FROM</c> clause IRIs.</param>
+    /// <summary>The <see cref="GraphSourceResolver"/> the engine resolves an in-query <c>FROM</c> / <c>FROM NAMED</c> clause IRI through: it names a sibling file the harness loads (the engine itself does the merge and dataset assembly).</summary>
+    /// <param name="source">The dataset-clause IRI (already absolute).</param>
     /// <param name="cancellationToken">A token to cancel reading.</param>
-    /// <returns>The merged default-graph triples.</returns>
-    private static async Task<List<DataTriple>> LoadDatasetGraphsAsync(IReadOnlyList<IriRef> graphs, CancellationToken cancellationToken)
+    /// <returns>The graph's triples.</returns>
+    private static async ValueTask<IReadOnlyList<DataTriple>> ResolveGraphFromFileAsync(IriRef source, CancellationToken cancellationToken)
     {
-        List<DataTriple> data = [];
-        foreach(IriRef graph in graphs)
-        {
-            data.AddRange(await LoadDataAsync(GraphPath(graph), cancellationToken).ConfigureAwait(false));
-        }
-
-        return data;
-    }
-
-    /// <summary>Loads each in-query <c>FROM NAMED</c> clause's graph, keyed by its (absolute) clause IRI — the IRI a <c>GRAPH &lt;iri&gt;</c> form resolves to.</summary>
-    /// <param name="graphs">The <c>FROM NAMED</c> clause IRIs.</param>
-    /// <param name="cancellationToken">A token to cancel reading.</param>
-    /// <returns>The named graphs as (graph-name, triples) pairs.</returns>
-    private static async Task<List<(RdfTerm Name, IEnumerable<DataTriple> Triples)>> LoadDatasetNamedGraphsAsync(IReadOnlyList<IriRef> graphs, CancellationToken cancellationToken)
-    {
-        List<(RdfTerm Name, IEnumerable<DataTriple> Triples)> named = [];
-        foreach(IriRef graph in graphs)
-        {
-            RdfTerm name = new NamedNode(graph.Value);
-            named.Add((name, await LoadDataAsync(GraphPath(graph), cancellationToken).ConfigureAwait(false)));
-        }
-
-        return named;
+        return await LoadDataAsync(GraphPath(source), cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Resolves a dataset-clause IRI (already absolute) to its local file path.</summary>
