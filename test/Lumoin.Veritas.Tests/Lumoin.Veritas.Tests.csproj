@@ -17,10 +17,20 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!--
+      Kestrel + HttpContext/IHttpApplication mapping types live in the
+      Microsoft.AspNetCore.App shared framework, not as NuGet packages. Only the
+      SPARQL federation test harness (an in-loopback Kestrel endpoint + an
+      HttpClient transport) needs them; the Lumoin.Veritas.Sparql library never
+      references HTTP — SERVICE goes through the injected SparqlClient seam.
+    -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="CsCheck" />
     <PackageReference Include="LiquidTestReports.Markdown" />
     <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
-    <PackageReference Include="System.Formats.Cbor" />
     <PackageReference Update="Microsoft.Testing.Extensions.CodeCoverage">
       <VersionOverride>18.6.2</VersionOverride>
     </PackageReference>
