@@ -6,35 +6,35 @@ AST → algebra → translator → hypertrie backend + executor subset → SHACL
 unlock). **Batch 2 = Milestones D–F** (full algebra/aggregation, CONSTRUCT/
 DESCRIBE/JSON results, conformance push).
 
-## ⭐ CURRENT STATE (2026-06-01, **harness GREEN (0 failures)**; SPARQL Update + RDF/XML conformance done, on `sparql-query-engine`, tree clean)
+## ⭐ CURRENT STATE (2026-06-01, **harness GREEN (0 failures)**; SPARQL Update + RDF/XML conformance COMPLETE, on `sparql-query-engine`, tree clean)
 
 **Post-Update roadmap (user: work through all in preferred order, PERFORMANCE LAST).** Conformance is GREEN
-(3821 tests, 0 failed, 252 skip). Delivered since Update: the **RDF/XML conformance ratchet** (roadmap item 1, now
-done — commits `6d40949` + `03856b4`). The W3C RDF/XML suites (`rdf11/rdf-xml` + `rdf12/rdf-xml`, pinned `674da26`)
-are vendored to `Material/Rdf/` and wired via `Conformance/RdfXmlConformanceReader.cs` + `Xml/W3cRdfXmlTests.cs`
-(per-suite base = `mf:assumedTestBase` + the fixture's path relative to the suite root — handles sub-folders and the
-rdf12 `eval/` dir, more correct than the originally-planned filename-only base). **193/197 pass, 0 fail**, with the
-RDF 1.1 reader conformance-complete and RDF 1.2-in-XML implemented (base direction `its:dir`, triple terms
-`parseType="Triple"`, annotation `rdf:annotation`/`rdf:annotationNodeID` → `rdf:reifies` triple terms — all in
-`Lumoin.Veritas.Xml/RdfXmlReader.cs`). Only **4 reds remain in `W3cRdfXmlTests.KnownGaps`** — all needing
-`rdf:parseType="Literal"` XML canonicalisation (`xml-canon-test001/002`, `rdf12-xml-an-13/14`): the reader's
-`InnerXml` emits the raw markup, but the expected XMLLiteral is the **Canonical-XML form** (in-scope namespaces
-hoisted, no self-closing tags). Closing it = either a hand-rolled Canonical-XML 1.0 serializer or a
-`System.Security.Cryptography.Xml` (`XmlDsigC14NTransform`) dependency in the Xml project — a deliberate
-dependency/scope choice left for the user.
+(3823 tests, 0 failed, 248 skip). **The RDF/XML conformance ratchet is DONE — 197/197, 0 reds** (roadmap item 1
+complete; commits `6d40949` + `03856b4` + `1636474`). The W3C RDF/XML suites (`rdf11/rdf-xml` + `rdf12/rdf-xml`,
+pinned `674da26`) are vendored to `Material/Rdf/` and wired via `Conformance/RdfXmlConformanceReader.cs` +
+`Xml/W3cRdfXmlTests.cs` (per-suite base = `mf:assumedTestBase` + the fixture's path relative to the suite root —
+handles sub-folders and the rdf12 `eval/` dir). The RDF 1.1 reader is conformance-complete, RDF 1.2-in-XML is
+implemented (base direction `its:dir`, triple terms `parseType="Triple"`, annotation `rdf:annotation`/
+`rdf:annotationNodeID` → `rdf:reifies` triple terms — all in `Lumoin.Veritas.Xml/RdfXmlReader.cs`), and
+**`rdf:parseType="Literal"` canonicalisation is a pluggable `XmlLiteralCanonicalizer` delegate seam**
+(`XmlLiteralCanonicalizers.DocumentOrder` = source-order namespace hoisting, the W3C-fixture/raptor/rdflib form and
+the reader default; `XmlLiteralCanonicalizers.Canonical` = strict Canonical XML 1.0 via `XmlDsigC14NTransform`, the
+XML-DSig form for signing — `[UnsupportedOSPlatform("browser")]`, so the default stays cross-platform). The fixtures
+use source order, so the default matches them; `System.Security.Cryptography.Xml` is now referenced by the Xml
+project. The W3C fixtures predate strict C14N namespace sorting — that's why the knob exists (see
+`Xml/XmlLiteralCanonicalizerTests`).
 
 **Remaining roadmap (tasks, my order; each is a focused effort):**
-1. **RDF/XML `parseType="Literal"` canonicalisation** — the last 4 RDF/XML reds (Canonical-XML 1.0; see above).
-2. **CSV/TSV + JSON (`.srj`) SPARQL results readers** — finish results-format support; vendor `csv-tsv-res`/`json-res`.
-3. **Query-syntax negatives** — the `W3cSparqlSyntaxTests` KnownGaps: static scope analysis (GROUP BY/projection/BIND
+1. **CSV/TSV + JSON (`.srj`) SPARQL results readers** — finish results-format support; vendor `csv-tsv-res`/`json-res`.
+2. **Query-syntax negatives** — the `W3cSparqlSyntaxTests` KnownGaps: static scope analysis (GROUP BY/projection/BIND
    scope, nested aggregates) + lexer codepoint-escape/PN_LOCAL refinements. Also: light up the generic-typed
    (`NegativeSyntaxTest11`) update-syntax entries the eval-class type-guard currently skips (~real coverage).
-4. **Aggregate edge case** — "Protect from error in AVG" (the lone `AggregateExpression` skip).
-5. **SHACL Advanced Features (SHACL-AF)** — SPARQL-based constraints/rules/functions/targets; reuses the now-complete
+3. **Aggregate edge case** — "Protect from error in AVG" (the lone `AggregateExpression` skip).
+4. **SHACL Advanced Features (SHACL-AF)** — SPARQL-based constraints/rules/functions/targets; reuses the now-complete
    SPARQL engine. Large ratchet.
-6. **Performance rework — pluggable WCOJ backends** (LAST, per user): the 4-seam taxonomy + BenchmarkDotNet vehicle.
+5. **Performance rework — pluggable WCOJ backends** (LAST, per user): the 4-seam taxonomy + BenchmarkDotNet vehicle.
 
-### RDF/XML reader notes (for the canonicalisation follow-up and future maintenance)
+### RDF/XML reader notes (future maintenance)
 - The reader (`RdfXmlReader.cs`) is value-based (`XDocument` + explicit stack, no recursion). RDF 1.2 mode is detected
   by `IsVersion12` (an `AncestorsAndSelf` walk for `rdf:version="1.2"`); `its:dir` resolves the same way
   (`EffectiveDirection`). `dir`/`Triple` are version-gated; **`rdf:annotation` is NOT** (the `an-*` fixtures omit
@@ -42,6 +42,10 @@ dependency/scope choice left for the user.
 - `ResolveObject` returns `RdfTerm?`: `null` = "asserts nothing" (a `parseType="Triple"` outside RDF 1.2 mode); the
   property loop skips it. Triple-term object nesting is folded with an explicit chain stack (`BuildTripleTerm` +
   `Assemble`).
+- `parseType="Literal"` canonicalisation is the `XmlLiteralCanonicalizer` seam (`Read`'s optional param, default
+  `XmlLiteralCanonicalizers.DocumentOrder`). To flip production to strict Canonical XML 1.0, pass
+  `XmlLiteralCanonicalizers.Canonical` (XML-DSig form; not on `browser`). A third strategy plugs in here to match any
+  other implementation's XML-literal form.
 - Negative-syntax validation lives in `ValidateNodeElement` / `ValidatePropertyElement` (term-position rules, NCName
   rdf:ID/nodeID, identity-attr exclusivity, parseType+resource, duplicate rdf:ID). `IsStructuralAttribute` excludes
   no-namespace attrs + `rdf:version`/`its:*`/`rdf:annotation(NodeID)` from the property-attribute shorthand.
@@ -51,7 +55,7 @@ dependency/scope choice left for the user.
 ### Build/test (always, per [[feedback_build_test_command_shape]])
 - `dotnet build <csproj> -clp:ErrorsOnly --nologo` (PowerShell), separate from the test run.
 - Test exe (Bash, `cd /c/projektit/Lumoin.Veritas` first): `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe" --filter "FullyQualifiedName~<X>" > tempdocs/out.txt 2>&1` then Grep `total:|failed:`. ⚠ Some update/syntax negatives can hang the parser if a recovery path doesn't advance — wrap runs in `timeout`. Kill stray `Lumoin.Veritas.Tests` processes before rebuilding (they lock the DLLs).
-- Tree is clean at `03856b4`; branch `sparql-query-engine`.
+- Tree is clean at `1636474`; branch `sparql-query-engine`.
 
 ---
 
