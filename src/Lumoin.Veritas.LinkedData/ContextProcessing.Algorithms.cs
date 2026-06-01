@@ -413,6 +413,43 @@ public static partial class ContextProcessing
             cancellationToken);
     }
 
+    /// <summary>
+    /// Ensures the prefix of a compact-IRI value (e.g. <c>xsd</c> in
+    /// <c>xsd:dateTime</c>) is defined before that value is expanded, by
+    /// recursively creating the prefix's term definition when it is declared
+    /// later in the same local context. Leaves the context unchanged when the
+    /// value is not a compact IRI or its prefix is not a pending local term.
+    /// </summary>
+    private static async ValueTask<LinkedDataContext> EnsurePrefixDefinedAsync(
+        LinkedDataContext activeContext,
+        IReadOnlyDictionary<string, LinkedDataTermSource> localContext,
+        string? compactValue,
+        string? baseUrl,
+        FetchRemoteResourceDelegate fetcher,
+        ParseRemoteContextDelegate parser,
+        ProbeContextCacheDelegate? cache,
+        List<string> remoteContexts,
+        Dictionary<string, bool> defined,
+        bool overrideProtected,
+        bool contextProtected,
+        int depth,
+        CancellationToken cancellationToken)
+    {
+        string? prefix = compactValue is null ? null : TryGetCompactIriPrefix(compactValue);
+        if(prefix is not null
+            && localContext.ContainsKey(prefix)
+            && (!defined.TryGetValue(prefix, out bool prefixDone) || !prefixDone))
+        {
+            activeContext = await CreateTermDefinitionCoreAsync(
+                activeContext, localContext, prefix, baseUrl,
+                fetcher, parser, cache, remoteContexts, defined,
+                overrideProtected, contextProtected, depth, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        return activeContext;
+    }
+
     private static async ValueTask<LinkedDataContext> CreateTermDefinitionCoreAsync(
         LinkedDataContext activeContext,
         IReadOnlyDictionary<string, LinkedDataTermSource> localContext,
@@ -512,6 +549,14 @@ public static partial class ContextProcessing
 
         if(value.Type is not null)
         {
+            //Resolve a compact-IRI @type's prefix dependency first (the
+            //prefix may be defined later in the same local context), so the
+            //type mapping expands to its absolute IRI.
+            activeContext = await EnsurePrefixDefinedAsync(
+                activeContext, localContext, value.Type, baseUrl,
+                fetcher, parser, cache, remoteContexts, defined,
+                overrideProtected, contextProtected, depth, cancellationToken).ConfigureAwait(false);
+
             string? expandedType = TryExpandTermType(activeContext, value.Type);
             if(expandedType is null)
             {
@@ -566,6 +611,12 @@ public static partial class ContextProcessing
             //Handle @id resolution.
             if(value.Iri is not null)
             {
+                //Resolve a compact-IRI @id's prefix dependency first.
+                activeContext = await EnsurePrefixDefinedAsync(
+                    activeContext, localContext, value.Iri, baseUrl,
+                    fetcher, parser, cache, remoteContexts, defined,
+                    overrideProtected, contextProtected, depth, cancellationToken).ConfigureAwait(false);
+
                 termIriMapping = ExpandTermIdMapping(activeContext, termName, value.Iri);
                 isPrefix = isPrefix || TermShapeIndicatesPrefix(termName, termIriMapping is not null);
             }
