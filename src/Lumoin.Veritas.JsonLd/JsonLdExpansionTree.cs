@@ -992,6 +992,11 @@ public static class JsonLdExpansionTree
         bool isGraph,
         CancellationToken cancellationToken)
     {
+        //A map key of @none (directly or through a keyword alias) carries no
+        //discriminator: its values are added without an @id/@type/@index/
+        //@language marker.
+        bool mapKeyIsNone = string.Equals(activeContext.ExpandIri(mapKey, vocab: true), "@none", StringComparison.Ordinal);
+
         //For @language container, the map key IS the language tag and
         //each item is a scalar value (or array of scalars). Build a
         //value object with @language attached.
@@ -1013,9 +1018,13 @@ public static class JsonLdExpansionTree
 
             Dictionary<string, object?> valueObject = new(StringComparer.Ordinal)
             {
-                ["@value"] = item.GetString(),
-                ["@language"] = mapKey
+                ["@value"] = item.GetString()
             };
+
+            if(!mapKeyIsNone)
+            {
+                valueObject["@language"] = mapKey;
+            }
 
             //A base direction (from the term, or the context default) attaches
             //to each language-map value alongside its language tag.
@@ -1044,18 +1053,18 @@ public static class JsonLdExpansionTree
             return expandedItem;
         }
 
-        if(isIndex)
+        if(isIndex && !mapKeyIsNone)
         {
             nodeObject["@index"] = mapKey;
         }
 
-        if(isIdMap)
+        if(isIdMap && !mapKeyIsNone)
         {
             string? expandedId = activeContext.ExpandIri(mapKey, documentRelative: true);
             nodeObject["@id"] = expandedId ?? mapKey;
         }
 
-        if(isTypeMap)
+        if(isTypeMap && !mapKeyIsNone)
         {
             string? expandedType = activeContext.ExpandIri(mapKey, vocab: true);
             //The discriminator type is prepended to the node's @type set,
