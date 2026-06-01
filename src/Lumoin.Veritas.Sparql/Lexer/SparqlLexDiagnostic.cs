@@ -58,6 +58,7 @@ public readonly record struct SparqlLexDiagnostic(SparqlLexErrorCode Code, Sourc
             SparqlLexErrorCode.UnrecognisedIdentifier => Format($"Unrecognised identifier '{detail}' at line {line} column {columnNumber}."),
             SparqlLexErrorCode.TruncatedPrefixedNameEscape => Format($"Truncated escape inside prefixed name at line {line} column {columnNumber}."),
             SparqlLexErrorCode.MalformedPercentEscape => Format($"Malformed percent escape inside prefixed name at line {line} column {columnNumber}."),
+            SparqlLexErrorCode.InvalidPrefixedNameEscape => Format($"Invalid prefixed-name escape '{detail}' at line {line} column {columnNumber}; only PN_LOCAL_ESC characters may be escaped."),
             SparqlLexErrorCode.ExpectedDigit => Format($"Expected digit after '{detail}' at line {line} column {columnNumber}."),
             SparqlLexErrorCode.ExpectedExponentDigits => Format($"Expected exponent digits at line {line} column {columnNumber}."),
             SparqlLexErrorCode.InvalidNumericLiteral => Format($"Invalid numeric literal at line {line} column {columnNumber}."),

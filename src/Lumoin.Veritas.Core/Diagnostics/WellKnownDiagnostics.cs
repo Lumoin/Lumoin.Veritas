@@ -152,6 +152,10 @@ public static class WellKnownDiagnostics
         /// <summary>A <c>|</c> appeared where no <c>|}</c> annotation close was expected.</summary>
         /// <remarks>RDF 1.2 annotation-block close <c>|}</c>. See <see href="https://www.w3.org/TR/rdf12-turtle/#sec-grammar-grammar">RDF 1.2 Turtle grammar</see>.</remarks>
         public static Utf8String UnexpectedPipe { get; } = new("LX0030"u8.ToArray());
+
+        /// <summary>A backslash escape inside a prefixed name named a character outside the <c>PN_LOCAL_ESC</c> reserved set.</summary>
+        /// <remarks>Lexer rule for <c>PN_LOCAL_ESC</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rPN_LOCAL_ESC">SPARQL 1.2 §19.8 [PN_LOCAL_ESC]</see>.</remarks>
+        public static Utf8String InvalidPrefixedNameEscape { get; } = new("LX0031"u8.ToArray());
     }
 
     /// <summary>Turtle parser diagnostics (<c>TT</c> prefix).</summary>

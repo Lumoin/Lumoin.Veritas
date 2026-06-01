@@ -50,12 +50,10 @@ public sealed class SparqlLexer
     private long consumed;
     private int line;
     private int column;
-    private bool pendingCarriageReturn;
     private bool atFinalBuffer = true;
-    private long byteOffsetBase;
+    private int decoderDiagnosticsCopied;
     private SparqlLexDiagnostic pendingDiagnostic;
     private SparqlTokenGrowthContext scratchToken;
-    private readonly List<SparqlToken> pendingTokens = [];
     private readonly List<SparqlLexDiagnostic> diagnostics = [];
 
     /// <summary>
@@ -76,13 +74,23 @@ public sealed class SparqlLexer
     /// <param name="pool">The pool used to intern token payloads.</param>
     /// <param name="limits">Resource limits applied while lexing; defaults to <see cref="SparqlLexerLimits.Default"/>.</param>
     public SparqlLexer(Utf8StringPool pool, SparqlLexerLimits? limits = null)
-        : this(ReadOnlySequence<byte>.Empty, pool, limits)
     {
+        ArgumentNullException.ThrowIfNull(pool);
+
+        Source = ReadOnlySequence<byte>.Empty;
+        Pool = pool;
+        Limits = limits ?? SparqlLexerLimits.Default;
     }
 
     /// <summary>
     /// Initialises a new <see cref="SparqlLexer"/> for the supplied UTF-8 source sequence.
     /// </summary>
+    /// <remarks>
+    /// The whole buffer is codepoint-decoded up front (SPARQL 1.2 §19.2) through
+    /// <see cref="SparqlCodepointDecoder"/>; <see cref="Source"/> is the decoded byte stream, and the
+    /// decoder's offset map translates decoded positions back to source coordinates for token and
+    /// diagnostic spans.
+    /// </remarks>
     /// <param name="source">The UTF-8 encoded query text, possibly spanning segments.</param>
     /// <param name="pool">The pool used to intern token payloads.</param>
     /// <param name="limits">Resource limits applied while lexing; defaults to <see cref="SparqlLexerLimits.Default"/>.</param>
@@ -90,9 +98,24 @@ public sealed class SparqlLexer
     {
         ArgumentNullException.ThrowIfNull(pool);
 
-        Source = source;
         Pool = pool;
         Limits = limits ?? SparqlLexerLimits.Default;
+
+        if(source.IsSingleSegment)
+        {
+            Decoder.Feed(source.FirstSpan, isFinal: true);
+        }
+        else
+        {
+            Decoder.Feed(source.ToArray(), isFinal: true);
+        }
+
+        Source = new ReadOnlySequence<byte>(Decoder.Decoded);
+
+        foreach(SparqlLexDiagnostic diagnostic in Decoder.Diagnostics)
+        {
+            diagnostics.Add(diagnostic);
+        }
     }
 
     /// <summary>Gets the UTF-8 source bytes being lexed.</summary>
@@ -103,6 +126,9 @@ public sealed class SparqlLexer
 
     /// <summary>Gets the resource limits applied while lexing.</summary>
     private SparqlLexerLimits Limits { get; }
+
+    /// <summary>Gets the codepoint-escape decoder that produces the decoded byte stream and its source-offset map.</summary>
+    private SparqlCodepointDecoder Decoder { get; } = new();
 
     /// <summary>
     /// Gets the lexical diagnostics recorded while tokenising, in source order — one entry for each
@@ -196,82 +222,82 @@ public sealed class SparqlLexer
 
             atFinalBuffer = result.IsCompleted;
 
-            DrainResult drained = DrainBuffer(result.Buffer);
+            //Codepoint-decode the newly available source (SPARQL 1.2 §19.2) into the decoder's running
+            //decoded buffer; the tokeniser then runs over the decoded bytes. The pipe resumes after the
+            //source the decoder consumed, so a partial escape spanning the buffer end is re-presented next
+            //read.
+            int sourceConsumed = FeedDecoder(result.Buffer, atFinalBuffer);
+            SequencePosition resumePosition = result.Buffer.GetPosition(sourceConsumed);
+            ReadOnlySequence<byte> decodedSource = new(Decoder.Decoded);
+            bool reachedEnd = false;
 
-            foreach(SparqlToken token in pendingTokens)
+            while(true)
             {
+                //A SequenceReader is a ref struct and cannot live across a yield, so each token is lexed by
+                //a helper that returns before the yield.
+                SparqlLexStatus status = LexNextDecodedToken(decodedSource, out SparqlToken token);
+
+                if(status == SparqlLexStatus.NeedMore)
+                {
+                    break;
+                }
+
                 yield return token;
+
+                if(token.Kind == SparqlTokenKind.EndOfInput)
+                {
+                    reachedEnd = true;
+
+                    break;
+                }
             }
 
-            pipeReader.AdvanceTo(drained.Consumed, drained.Examined);
+            pipeReader.AdvanceTo(resumePosition, result.Buffer.End);
 
-            if(drained.ReachedEnd)
+            if(reachedEnd)
             {
                 yield break;
             }
         }
     }
 
-    private DrainResult DrainBuffer(ReadOnlySequence<byte> buffer)
+    private SparqlLexStatus LexNextDecodedToken(ReadOnlySequence<byte> decodedSource, out SparqlToken token)
     {
-        pendingTokens.Clear();
+        SequenceReader<byte> reader = new(decodedSource);
+        reader.Advance(consumed);
 
-        SequenceReader<byte> reader = new(buffer);
+        SparqlLexStatus status = TryLexToken(ref reader, out token);
 
-        int committedLine = line;
-        int committedColumn = column;
-        bool committedPending = pendingCarriageReturn;
-        SequencePosition committedPosition = reader.Position;
-        long committedConsumed = 0;
-
-        while(true)
+        if(status == SparqlLexStatus.NeedMore)
         {
-            SparqlLexStatus status = TryLexToken(ref reader, out SparqlToken token);
-
-            if(status == SparqlLexStatus.Complete)
-            {
-                pendingTokens.Add(token);
-
-                committedLine = line;
-                committedColumn = column;
-                committedPending = pendingCarriageReturn;
-                committedPosition = reader.Position;
-                committedConsumed = reader.Consumed;
-
-                if(token.Kind == SparqlTokenKind.EndOfInput)
-                {
-                    byteOffsetBase += committedConsumed;
-
-                    return new DrainResult(committedPosition, committedPosition, reachedEnd: true);
-                }
-
-                continue;
-            }
-
-            if(status == SparqlLexStatus.Error)
-            {
-                SparqlToken errorToken = RecordErrorAndRecover(ref reader);
-                pendingTokens.Add(errorToken);
-
-                committedLine = line;
-                committedColumn = column;
-                committedPending = pendingCarriageReturn;
-                committedPosition = reader.Position;
-                committedConsumed = reader.Consumed;
-
-                continue;
-            }
-
-            //NeedMore: discard the partial token by restoring the committed boundary; the driver
-            //reads more bytes and re-lexes from there. The examined position is the buffer end so the
-            //pipe knows the whole buffer was inspected and must grow before the next read.
-            line = committedLine;
-            column = committedColumn;
-            pendingCarriageReturn = committedPending;
-            byteOffsetBase += committedConsumed;
-
-            return new DrainResult(committedPosition, buffer.End, reachedEnd: false);
+            //Leave the running offset where it was so the partial token is re-lexed once more decoded
+            //bytes arrive.
+            return status;
         }
+
+        if(status == SparqlLexStatus.Error)
+        {
+            token = RecordErrorAndRecover(ref reader);
+        }
+
+        consumed = reader.Consumed;
+
+        return status;
+    }
+
+    private int FeedDecoder(ReadOnlySequence<byte> buffer, bool isFinal)
+    {
+        int sourceConsumed = buffer.IsSingleSegment
+            ? Decoder.Feed(buffer.FirstSpan, isFinal)
+            : Decoder.Feed(buffer.ToArray(), isFinal);
+
+        while(decoderDiagnosticsCopied < Decoder.Diagnostics.Count)
+        {
+            diagnostics.Add(Decoder.Diagnostics[decoderDiagnosticsCopied]);
+            decoderDiagnosticsCopied++;
+        }
+
+        return sourceConsumed;
     }
 
     private SparqlLexStatus TryLexToken(ref SequenceReader<byte> reader, out SparqlToken token)
@@ -1019,23 +1045,9 @@ public sealed class SparqlLexer
                     return SparqlLexStatus.Complete;
                 }
 
-                if(b == (byte)'\\')
-                {
-                    int escapeStart = Offset(reader.Consumed);
-                    int escapeLine = line;
-                    int escapeColumn = column;
-
-                    SparqlLexStatus escapeStatus = ReadUcharEscape(ref reader, escapeStart, escapeLine, escapeColumn, out uint decoded);
-                    if(escapeStatus != SparqlLexStatus.Complete)
-                    {
-                        return escapeStatus;
-                    }
-
-                    written = AppendCodepoint(decoded, ref scratch, written);
-                    continue;
-                }
-
-                if(b < 0x21 || b == (byte)'"' || b == (byte)'<' || b == (byte)'{' || b == (byte)'}' || b == (byte)'|' || b == (byte)'^' || b == (byte)'`')
+                //IRIREF excludes the backslash; codepoint escapes are decoded before tokenisation, so any
+                //backslash reaching the IRI body is an illegal byte.
+                if(b < 0x21 || b == (byte)'"' || b == (byte)'<' || b == (byte)'{' || b == (byte)'}' || b == (byte)'|' || b == (byte)'^' || b == (byte)'`' || b == (byte)'\\')
                 {
                     return Fail(
                         SparqlLexErrorCode.InvalidIriByte,
@@ -1078,85 +1090,6 @@ public sealed class SparqlLexer
         {
             scratch.Dispose();
         }
-    }
-
-    private SparqlLexStatus ReadUcharEscape(ref SequenceReader<byte> reader, int escapeStart, int escapeLine, int escapeColumn, out uint codepoint)
-    {
-        codepoint = 0;
-
-        if(!reader.TryPeek(1, out byte marker))
-        {
-            if(!atFinalBuffer)
-            {
-                return SparqlLexStatus.NeedMore;
-            }
-
-            return Fail(
-                SparqlLexErrorCode.TruncatedEscape,
-                SourceSpan.SingleLine(escapeStart, Offset(reader.Consumed), escapeLine, escapeColumn, column));
-        }
-
-        int hexCount = marker switch
-        {
-            (byte)'u' => 4,
-            (byte)'U' => 8,
-            _ => -1
-        };
-
-        if(hexCount < 0)
-        {
-            return Fail(
-                SparqlLexErrorCode.InvalidEscape,
-                SourceSpan.SingleLine(escapeStart, Offset(reader.Consumed) + 2, escapeLine, escapeColumn, column + 2),
-                FormatEscape(marker));
-        }
-
-        if(reader.Remaining < 2 + hexCount)
-        {
-            if(!atFinalBuffer)
-            {
-                return SparqlLexStatus.NeedMore;
-            }
-
-            return Fail(
-                SparqlLexErrorCode.TruncatedEscape,
-                SourceSpan.SingleLine(escapeStart, Offset(reader.Length), escapeLine, escapeColumn, column));
-        }
-
-        AdvanceCount(ref reader, 2);
-
-        for(int i = 0; i < hexCount; i++)
-        {
-            reader.TryPeek(out byte hex);
-            if(!TryHexValue(hex, out uint digit))
-            {
-                return Fail(
-                    SparqlLexErrorCode.InvalidHexDigit,
-                    SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 1, line, column, column + 1),
-                    ((char)hex).ToString());
-            }
-
-            codepoint = (codepoint << 4) | digit;
-            Advance(ref reader);
-        }
-
-        if(codepoint >= (uint)UnicodeConstants.SurrogateRangeFirst && codepoint <= (uint)UnicodeConstants.SurrogateRangeLast)
-        {
-            return Fail(
-                SparqlLexErrorCode.SurrogateCodePoint,
-                SourceSpan.SingleLine(escapeStart, Offset(reader.Consumed), escapeLine, escapeColumn, column),
-                FormatCodePoint(codepoint));
-        }
-
-        if(codepoint > (uint)UnicodeConstants.MaximumCodePoint)
-        {
-            return Fail(
-                SparqlLexErrorCode.CodePointOutOfRange,
-                SourceSpan.SingleLine(escapeStart, Offset(reader.Consumed), escapeLine, escapeColumn, column),
-                FormatCodePoint(codepoint));
-        }
-
-        return SparqlLexStatus.Complete;
     }
 
     private SparqlLexStatus LexString(ref SequenceReader<byte> reader, byte quote, out SparqlToken token)
@@ -1478,43 +1411,17 @@ public sealed class SparqlLexer
                 return SparqlLexStatus.Complete;
             }
 
-            case (byte)'u':
-            case (byte)'U':
-            {
-                int escapeStart = Offset(reader.Consumed);
-                int escapeLine = line;
-                int escapeColumn = column;
-
-                SparqlLexStatus status = ReadUcharEscape(ref reader, escapeStart, escapeLine, escapeColumn, out uint decoded);
-                if(status != SparqlLexStatus.Complete)
-                {
-                    return status;
-                }
-
-                written = AppendCodepoint(decoded, ref owner, written);
-
-                return SparqlLexStatus.Complete;
-            }
-
             default:
             {
+                //Numeric codepoint escapes (\u/\U) are decoded before tokenisation, so the only escapes
+                //the string body sees are ECHAR; any other marker (for example a \A produced by decoding
+                //\\u0041) is an invalid string escape.
                 return Fail(
                     SparqlLexErrorCode.InvalidEscape,
                     SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 2, line, column, column + 2),
                     FormatEscape(marker));
             }
         }
-    }
-
-    private int AppendCodepoint(uint codepoint, ref IMemoryOwner<byte> owner, int written)
-    {
-        Span<char> chars = stackalloc char[2];
-        int charCount = new Rune((int)codepoint).EncodeToUtf16(chars);
-        int maxBytes = Encoding.UTF8.GetMaxByteCount(charCount);
-        EnsureScratchCapacity(ref owner, written + maxBytes);
-        int encoded = Encoding.UTF8.GetBytes(chars[..charCount], owner.Memory.Span[written..]);
-
-        return written + encoded;
     }
 
     private SparqlLexStatus LexBlankNodeLabel(ref SequenceReader<byte> reader, out SparqlToken token)
@@ -1730,7 +1637,9 @@ public sealed class SparqlLexer
     {
         token = default;
 
-        SequencePosition startPosition = reader.Sequence.GetPosition(startByte - byteOffsetBase);
+        //ContinueNumeric runs with the reader still at the literal's first byte, so its position is the
+        //start position; capturing it directly avoids reconstructing a decoded position from a source offset.
+        SequencePosition startPosition = reader.Position;
         bool sawDecimal = false;
         bool sawExponent = false;
         bool sawDigit = false;
@@ -1964,7 +1873,7 @@ public sealed class SparqlLexer
 
             if(b == (byte)'\\')
             {
-                if(!reader.TryPeek(1, out _))
+                if(!reader.TryPeek(1, out byte escaped))
                 {
                     if(!atFinalBuffer)
                     {
@@ -1974,6 +1883,17 @@ public sealed class SparqlLexer
                     return Fail(
                         SparqlLexErrorCode.TruncatedPrefixedNameEscape,
                         SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 1, line, column, column + 1));
+                }
+
+                //PN_LOCAL_ESC permits escaping only a fixed reserved set; a backslash before any other
+                //character (for example '\:') is not a valid local-name escape. Codepoint escapes are
+                //already decoded, so a surviving backslash is a literal PN_LOCAL_ESC introducer.
+                if(!IsPnLocalEscChar(escaped))
+                {
+                    return Fail(
+                        SparqlLexErrorCode.InvalidPrefixedNameEscape,
+                        SourceSpan.SingleLine(Offset(reader.Consumed), Offset(reader.Consumed) + 2, line, column, column + 2),
+                        FormatEscape(escaped));
                 }
 
                 AdvanceCount(ref reader, 2);
@@ -2063,31 +1983,13 @@ public sealed class SparqlLexer
 
     private void Advance(ref SequenceReader<byte> reader)
     {
-        reader.TryRead(out byte b);
+        reader.TryRead(out _);
 
-        if(b == (byte)'\n')
-        {
-            if(pendingCarriageReturn)
-            {
-                pendingCarriageReturn = false;
-            }
-            else
-            {
-                line++;
-                column = 0;
-            }
-        }
-        else if(b == (byte)'\r')
-        {
-            line++;
-            column = 0;
-            pendingCarriageReturn = true;
-        }
-        else
-        {
-            pendingCarriageReturn = false;
-            column++;
-        }
+        //Line and column are the source coordinates of the new decoded position, taken from the decoder's
+        //map (which already resolved CR/LF and the source columns spanned by any escape).
+        int decodedPosition = (int)reader.Consumed;
+        line = Decoder.SourceLineAt(decodedPosition);
+        column = Decoder.SourceColumnAt(decodedPosition);
     }
 
     private void AdvanceCount(ref SequenceReader<byte> reader, int count)
@@ -2154,7 +2056,9 @@ public sealed class SparqlLexer
 
     private int Offset(long consumedInReader)
     {
-        return (int)(byteOffsetBase + consumedInReader);
+        //The reader walks the decoded byte stream; the decoder's map translates a decoded position back
+        //to the originating source byte offset so spans report source coordinates.
+        return Decoder.SourceOffsetAt((int)consumedInReader);
     }
 
     private static SourceSpan CaptureSpan(int startByte, int endByte, int startLine, int startColumn, int endLine, int endColumn)
@@ -2170,11 +2074,6 @@ public sealed class SparqlLexer
     private static string FormatEscape(byte marker)
     {
         return string.Concat("\\", ((char)marker).ToString());
-    }
-
-    private static string FormatCodePoint(uint codepoint)
-    {
-        return string.Concat("U+", codepoint.ToString("X4", System.Globalization.CultureInfo.InvariantCulture));
     }
 
     private static bool IsWhitespaceByte(byte b)
@@ -2211,6 +2110,19 @@ public sealed class SparqlLexer
     private static bool IsPnChars(byte b)
     {
         return IsPnCharsUOrDigit(b) || b == (byte)'-' || b == 0xB7;
+    }
+
+    private static bool IsPnLocalEscChar(byte b)
+    {
+        //PN_LOCAL_ESC ::= '\' ( '_' | '~' | '.' | '-' | '!' | '$' | '&' | "'" | '(' | ')' | '*' | '+'
+        //                       | ',' | ';' | '=' | '/' | '?' | '#' | '@' | '%' )
+        return b switch
+        {
+            (byte)'_' or (byte)'~' or (byte)'.' or (byte)'-' or (byte)'!' or (byte)'$' or (byte)'&'
+                or (byte)'\'' or (byte)'(' or (byte)')' or (byte)'*' or (byte)'+' or (byte)',' or (byte)';'
+                or (byte)'=' or (byte)'/' or (byte)'?' or (byte)'#' or (byte)'@' or (byte)'%' => true,
+            _ => false
+        };
     }
 
     private static bool IsVarNameStart(byte b)
@@ -2326,20 +2238,4 @@ public sealed class SparqlLexer
     /// </summary>
     [DebuggerBrowsable(DebuggerBrowsableState.Never)]
     internal int Position => (int)consumed;
-
-    /// <summary>
-    /// The result of draining one pipe buffer: where the pipe should resume (the last completed token
-    /// boundary), how far it was examined (the buffer end), and whether end of input was reached.
-    /// </summary>
-    private readonly struct DrainResult(SequencePosition consumed, SequencePosition examined, bool reachedEnd)
-    {
-        /// <summary>Gets the position the pipe should resume from.</summary>
-        public SequencePosition Consumed { get; } = consumed;
-
-        /// <summary>Gets the position up to which the buffer was examined.</summary>
-        public SequencePosition Examined { get; } = examined;
-
-        /// <summary>Gets whether end of input was reached.</summary>
-        public bool ReachedEnd { get; } = reachedEnd;
-    }
 }

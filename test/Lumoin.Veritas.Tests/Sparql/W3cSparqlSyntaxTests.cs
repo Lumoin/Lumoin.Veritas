@@ -46,13 +46,7 @@ internal sealed class W3cSparqlSyntaxTests
     /// </summary>
     private static Dictionary<string, string> KnownGaps { get; } = new(StringComparer.Ordinal)
     {
-        ["syn-bad-pname-06"] = "PN_LOCAL escaping nuance — lexer refinement",
         ["syntax-propertyPaths-01.rq"] = "standalone blank-node property list — needs the sugar-expansion pass",
-        ["codepoint-esc-01.rq"] = "numeric codepoint escapes (\\uXXXX / \\UXXXXXXXX) in tokens — lexer refinement",
-        ["codepoint-esc-02.rq"] = "numeric codepoint escapes (\\uXXXX / \\UXXXXXXXX) in tokens — lexer refinement",
-        ["codepoint-esc-bad-03.rq"] = "ill-formed numeric codepoint escape must be rejected — lexer refinement",
-        ["codepoint-esc-07.rq"] = "numeric codepoint escapes (\\uXXXX / \\UXXXXXXXX) in tokens — lexer refinement",
-        ["codepoint-esc-08.rq"] = "numeric codepoint escapes (\\uXXXX / \\UXXXXXXXX) in tokens — lexer refinement",
     };
 
     /// <summary>Runs one SPARQL 1.1 query-syntax test.</summary>

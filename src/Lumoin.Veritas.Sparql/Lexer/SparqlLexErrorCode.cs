@@ -74,6 +74,9 @@ public enum SparqlLexErrorCode
     /// <summary>A percent escape inside a prefixed name was not two hex digits.</summary>
     MalformedPercentEscape,
 
+    /// <summary>A backslash escape inside a prefixed name named a character outside the <c>PN_LOCAL_ESC</c> reserved set.</summary>
+    InvalidPrefixedNameEscape,
+
     /// <summary>A digit was expected (for example after a sign or decimal point) but not found.</summary>
     ExpectedDigit,
 

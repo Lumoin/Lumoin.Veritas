@@ -1,5 +1,10 @@
+using System;
+using System.Buffers;
 using System.Collections.Generic;
+using System.IO.Pipelines;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Sparql;
 using Lumoin.Veritas.Sparql.Lexer;
@@ -240,6 +245,128 @@ internal sealed class SparqlLexerTests
     }
 
     /// <summary>
+    /// A query encoded entirely in codepoint escapes (SPARQL 1.2 §19.2) decodes before tokenisation, so
+    /// <c>ASK {}</c> lexes as <c>ASK {}</c>.
+    /// </summary>
+    [TestMethod]
+    public void CodepointEscapesDecodeBeforeTokenising()
+    {
+        CollectionAssert.AreEqual(
+            new[] { SparqlTokenKind.AskKeyword, SparqlTokenKind.OpenBrace, SparqlTokenKind.CloseBrace },
+            Kinds(Lex("\\u0041\\u0053\\u004B\\u0020\\u007B\\u007D")));
+    }
+
+    /// <summary>A codepoint-escaped quotation mark becomes a structural quote that opens a string literal.</summary>
+    [TestMethod]
+    public void CodepointEscapedQuoteOpensStringLiteral()
+    {
+        List<SparqlToken> tokens = Lex("\\u0022value\"");
+
+        Assert.AreEqual(SparqlTokenKind.StringLiteral, tokens[0].Kind);
+        Assert.AreEqual("value", tokens[0].Value.ToString());
+    }
+
+    /// <summary>
+    /// Codepoint decoding precedes string-escape interpretation: <c>"\\u0041"</c> decodes to the
+    /// invalid string escape <c>\A</c> and is rejected, while <c>"\\u0074"</c> decodes to the valid
+    /// escape <c>\t</c> (a tab).
+    /// </summary>
+    [TestMethod]
+    public void DecodedBackslashEscapeIsValidatedAsStringEscape()
+    {
+        (List<SparqlToken> bad, IReadOnlyList<SparqlLexDiagnostic> diagnostics) = LexWithDiagnostics("\"\\\\u0041\"");
+        CollectionAssert.AreEqual(new[] { SparqlTokenKind.Error }, Kinds(bad));
+        Assert.AreEqual(SparqlLexErrorCode.InvalidEscape, diagnostics[0].Code);
+
+        List<SparqlToken> good = Lex("\"\\\\u0074\"");
+        Assert.AreEqual(SparqlTokenKind.StringLiteral, good[0].Kind);
+        Assert.AreEqual("\t", good[0].Value.ToString());
+    }
+
+    /// <summary>A backslash escaping a non-<c>PN_LOCAL_ESC</c> character (here <c>\:</c>) in a local name is rejected.</summary>
+    [TestMethod]
+    public void InvalidPnLocalEscapeIsRejected()
+    {
+        (_, IReadOnlyList<SparqlLexDiagnostic> diagnostics) = LexWithDiagnostics("ns:a\\:b");
+
+        Assert.HasCount(1, diagnostics);
+        Assert.AreEqual(SparqlLexErrorCode.InvalidPrefixedNameEscape, diagnostics[0].Code);
+    }
+
+    /// <summary>
+    /// A token following a codepoint escape reports its true source coordinates, not decoded ones: after
+    /// the six-byte <c> </c> the variable <c>?x</c> begins at source byte and column six.
+    /// </summary>
+    [TestMethod]
+    public void SpanReportsSourceCoordinatesAfterEscape()
+    {
+        List<SparqlToken> tokens = Lex("\\u0020?x");
+
+        Assert.AreEqual(SparqlTokenKind.Variable, tokens[0].Kind);
+        Assert.AreEqual(6, tokens[0].Span.StartByte);
+        Assert.AreEqual(6, tokens[0].Span.StartColumn);
+    }
+
+    /// <summary>The pipe-driven path decodes codepoint escapes and yields the same tokens as the whole-buffer path.</summary>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    public async Task TokenizeAsyncDecodesCodepointEscapes()
+    {
+        List<SparqlToken> tokens = await TokenizeAsync([Encoding.UTF8.GetBytes("\\u0041\\u0053\\u004B\\u0020\\u007B\\u007D")]).ConfigureAwait(false);
+
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                SparqlTokenKind.AskKeyword, SparqlTokenKind.OpenBrace, SparqlTokenKind.CloseBrace,
+                SparqlTokenKind.EndOfInput,
+            },
+            Kinds(tokens));
+    }
+
+    /// <summary>
+    /// A numeric codepoint escape split across two pipe reads decodes once the remaining bytes arrive: the
+    /// held partial escape is re-presented on the next read, so <c>ASK {}</c> still yields <c>ASK {}</c>.
+    /// </summary>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    public async Task TokenizeAsyncHandlesEscapeSplitAcrossReads()
+    {
+        //The first read ends mid-escape ("\u00"); the second supplies "7D", completing } = '}'.
+        List<SparqlToken> tokens = await TokenizeAsync(
+        [
+            Encoding.UTF8.GetBytes("ASK {\\u00"),
+            Encoding.UTF8.GetBytes("7D"),
+        ]).ConfigureAwait(false);
+
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                SparqlTokenKind.AskKeyword, SparqlTokenKind.OpenBrace, SparqlTokenKind.CloseBrace,
+                SparqlTokenKind.EndOfInput,
+            },
+            Kinds(tokens));
+    }
+
+    /// <summary>
+    /// Tokenises the supplied source chunks through the pipe-driven path, one chunk delivered per
+    /// <see cref="PipeReader.ReadAsync"/>, returning every token including the end-of-input sentinel.
+    /// </summary>
+    /// <param name="chunks">The source byte chunks, delivered in order.</param>
+    /// <returns>The tokens produced by <see cref="SparqlLexer.TokenizeAsync"/>.</returns>
+    private static async Task<List<SparqlToken>> TokenizeAsync(IReadOnlyList<byte[]> chunks)
+    {
+        using Utf8StringPool pool = new();
+        SparqlLexer lexer = new(pool);
+        List<SparqlToken> tokens = [];
+        await foreach(SparqlToken token in lexer.TokenizeAsync(new ChunkedPipeReader(chunks)).ConfigureAwait(false))
+        {
+            tokens.Add(token);
+        }
+
+        return tokens;
+    }
+
+    /// <summary>
     /// Lexes <paramref name="query"/> to a materialised token list with the trailing
     /// <see cref="SparqlTokenKind.EndOfInput"/> removed.
     /// </summary>
@@ -298,5 +425,63 @@ internal sealed class SparqlLexerTests
         }
 
         return kinds;
+    }
+
+    /// <summary>
+    /// A <see cref="PipeReader"/> that delivers a fixed list of byte chunks one chunk per
+    /// <see cref="ReadAsync"/>, accumulating unconsumed bytes across reads. It makes the pipe-driven
+    /// lexer's read boundaries deterministic, so an escape can be split across two reads on purpose.
+    /// </summary>
+    /// <param name="chunks">The source byte chunks, delivered in order.</param>
+    private sealed class ChunkedPipeReader(IReadOnlyList<byte[]> chunks) : PipeReader
+    {
+        private byte[] buffered = [];
+        private int nextChunk;
+        private ReadOnlySequence<byte> current;
+
+        /// <inheritdoc/>
+        public override ValueTask<ReadResult> ReadAsync(CancellationToken cancellationToken = default)
+        {
+            if(nextChunk < chunks.Count)
+            {
+                byte[] next = chunks[nextChunk];
+                nextChunk++;
+                byte[] combined = new byte[buffered.Length + next.Length];
+                buffered.CopyTo(combined, 0);
+                next.CopyTo(combined, buffered.Length);
+                buffered = combined;
+            }
+
+            current = new ReadOnlySequence<byte>(buffered);
+
+            return new ValueTask<ReadResult>(new ReadResult(current, isCanceled: false, isCompleted: nextChunk >= chunks.Count));
+        }
+
+        /// <inheritdoc/>
+        public override void AdvanceTo(SequencePosition consumed) => AdvanceTo(consumed, consumed);
+
+        /// <inheritdoc/>
+        public override void AdvanceTo(SequencePosition consumed, SequencePosition examined)
+        {
+            buffered = buffered[(int)current.GetOffset(consumed)..];
+        }
+
+        /// <inheritdoc/>
+        public override void CancelPendingRead()
+        {
+        }
+
+        /// <inheritdoc/>
+        public override void Complete(Exception? exception = null)
+        {
+        }
+
+        /// <inheritdoc/>
+        public override bool TryRead(out ReadResult result)
+        {
+            result = default;
+
+            return false;
+        }
     }
 }

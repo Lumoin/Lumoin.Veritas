@@ -64,6 +64,7 @@ internal static class SparqlLexDiagnosticBridge
             SparqlLexErrorCode.UnrecognisedIdentifier => WellKnownDiagnostics.Lexer.UnrecognisedIdentifier,
             SparqlLexErrorCode.TruncatedPrefixedNameEscape => WellKnownDiagnostics.Lexer.TruncatedPrefixedNameEscape,
             SparqlLexErrorCode.MalformedPercentEscape => WellKnownDiagnostics.Lexer.MalformedPercentEscape,
+            SparqlLexErrorCode.InvalidPrefixedNameEscape => WellKnownDiagnostics.Lexer.InvalidPrefixedNameEscape,
             SparqlLexErrorCode.ExpectedDigit => WellKnownDiagnostics.Lexer.ExpectedDigit,
             SparqlLexErrorCode.ExpectedExponentDigits => WellKnownDiagnostics.Lexer.ExpectedExponentDigits,
             SparqlLexErrorCode.InvalidNumericLiteral => WellKnownDiagnostics.Lexer.InvalidNumericLiteral,
