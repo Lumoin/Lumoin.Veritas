@@ -688,7 +688,16 @@ public static class JsonLdExpansionTree
     {
         List<object?> items = new();
 
+        //Map containers are expanded with their keys in lexicographic order,
+        //matching the expanded-form convention the W3C fixtures use.
+        List<KeyValuePair<string, JsonLdNode>> entries = new();
         foreach(KeyValuePair<string, JsonLdNode> entry in value.EnumerateObject())
+        {
+            entries.Add(entry);
+        }
+        entries.Sort(static (left, right) => string.CompareOrdinal(left.Key, right.Key));
+
+        foreach(KeyValuePair<string, JsonLdNode> entry in entries)
         {
             string mapKey = entry.Key;
             JsonLdNode mapValue = entry.Value;
