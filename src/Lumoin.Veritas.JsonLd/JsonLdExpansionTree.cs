@@ -335,7 +335,18 @@ public static class JsonLdExpansionTree
         //aliases are processed in lexicographic key order.
         List<KeyValuePair<string, JsonLdNode>> deferredNests = new();
 
+        //Keys are processed in lexicographic order (W3C JSON-LD 1.1 §4.3.2 /
+        //jsonld.js): this is observable only where several keys fold into the
+        //same output array (e.g. an aliased `type` and the keyword `@type`),
+        //since the result object's own key order is not significant.
+        List<KeyValuePair<string, JsonLdNode>> orderedProperties = new();
         foreach(KeyValuePair<string, JsonLdNode> property in obj.EnumerateObject())
+        {
+            orderedProperties.Add(property);
+        }
+        orderedProperties.Sort(static (left, right) => string.CompareOrdinal(left.Key, right.Key));
+
+        foreach(KeyValuePair<string, JsonLdNode> property in orderedProperties)
         {
             string key = property.Key;
             JsonLdNode value = property.Value;
