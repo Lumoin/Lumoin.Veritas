@@ -28,13 +28,15 @@ public static class JsonSchemaValidator
     /// <param name="instance">The instance to validate.</param>
     /// <param name="loader">A loader for documents reached by <c>$ref</c> outside the root schema, or <see langword="null"/>.</param>
     /// <param name="baseUri">The root schema's retrieval base URI, or <see langword="null"/> for none.</param>
+    /// <param name="regexMatch">The regular-expression matcher for <c>pattern</c>/<c>patternProperties</c>, or <see langword="null"/> for the default <see cref="Regex"/>-backed one.</param>
     /// <returns>The validation result.</returns>
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
         Justification = "The engine resolves references via the RFC 3986 string-based IriResolver; System.Uri is intentionally not used on this path.")]
-    public static ValidationResult Validate(JsonNode schema, JsonNode instance, SchemaDocumentLoader? loader = null, string? baseUri = null)
+    public static ValidationResult Validate(JsonNode schema, JsonNode instance, SchemaDocumentLoader? loader = null, string? baseUri = null, RegexMatchDelegate? regexMatch = null)
     {
         string rootBase = baseUri ?? string.Empty;
         SchemaRegistry registry = new(schema, rootBase, loader);
+        RegexMatchDelegate match = regexMatch ?? DefaultRegexMatch;
         List<ValidationError> errors = [];
         Frame root = new()
         {
@@ -58,17 +60,20 @@ public static class JsonSchemaValidator
                 continue;
             }
 
-            OpenFrame(frame, stack, errors, registry);
+            OpenFrame(frame, stack, errors, registry, match);
         }
 
         return new ValidationResult(root.Result, errors);
     }
 
+    /// <summary>The default regular-expression matcher, backed by <see cref="Regex"/>. Matching is unanchored, as JSON Schema requires.</summary>
+    private static RegexMatchDelegate DefaultRegexMatch { get; } = static (pattern, input) => Regex.IsMatch(input, pattern);
+
     /// <summary>Opens a frame: evaluates its self-contained keywords and pushes child frames for its applicators.</summary>
     /// <param name="frame">The frame being opened.</param>
     /// <param name="stack">The work stack.</param>
     /// <param name="errors">The accumulating error list.</param>
-    private static void OpenFrame(Frame frame, Stack<(Frame, bool)> stack, List<ValidationError> errors, SchemaRegistry registry)
+    private static void OpenFrame(Frame frame, Stack<(Frame, bool)> stack, List<ValidationError> errors, SchemaRegistry registry, RegexMatchDelegate match)
     {
         //A boolean schema asserts directly: true accepts everything, false rejects everything.
         if(frame.Schema.Kind is JsonNodeKind.True or JsonNodeKind.False)
@@ -92,7 +97,7 @@ public static class JsonSchemaValidator
             return;
         }
 
-        EvaluateSelfKeywords(frame, errors);
+        EvaluateSelfKeywords(frame, errors, match);
 
         //An $id establishes the base URI for this schema's references and subschemas.
         string effectiveBase = frame.BaseUri;
@@ -112,7 +117,7 @@ public static class JsonSchemaValidator
         stack.Push((frame, true));
 
         List<ChildRequest> children = [];
-        CollectApplicatorChildren(frame, children);
+        CollectApplicatorChildren(frame, children, match);
         foreach(ChildRequest request in children)
         {
             Frame child = new()
@@ -551,7 +556,7 @@ public static class JsonSchemaValidator
     /// <summary>Evaluates the keywords whose assertion depends only on this instance node (not on subschemas).</summary>
     /// <param name="frame">The frame whose schema and instance are evaluated.</param>
     /// <param name="errors">The accumulating error list.</param>
-    private static void EvaluateSelfKeywords(Frame frame, List<ValidationError> errors)
+    private static void EvaluateSelfKeywords(Frame frame, List<ValidationError> errors, RegexMatchDelegate match)
     {
         JsonNode schema = frame.Schema;
         JsonNode instance = frame.Instance;
@@ -572,7 +577,7 @@ public static class JsonSchemaValidator
         }
 
         EvaluateNumericKeywords(frame, errors);
-        EvaluateStringKeywords(frame, errors);
+        EvaluateStringKeywords(frame, errors, match);
         EvaluateArraySelfKeywords(frame, errors);
         EvaluateObjectSelfKeywords(frame, errors);
     }
@@ -620,7 +625,7 @@ public static class JsonSchemaValidator
     /// <summary>Evaluates the string assertions (length bounds, <c>pattern</c>) when the instance is a string.</summary>
     /// <param name="frame">The frame.</param>
     /// <param name="errors">The accumulating error list.</param>
-    private static void EvaluateStringKeywords(Frame frame, List<ValidationError> errors)
+    private static void EvaluateStringKeywords(Frame frame, List<ValidationError> errors, RegexMatchDelegate match)
     {
         JsonNode schema = frame.Schema;
         JsonNode instance = frame.Instance;
@@ -641,7 +646,7 @@ public static class JsonSchemaValidator
             Fail(frame, errors, JsonSchemaKeywords.MaxLength, "The string is longer than the maximum length.");
         }
 
-        if(schema.TryGetProperty(JsonSchemaKeywords.Pattern, out JsonNode pattern) && pattern.Kind == JsonNodeKind.String && !Regex.IsMatch(text, pattern.GetString()))
+        if(schema.TryGetProperty(JsonSchemaKeywords.Pattern, out JsonNode pattern) && pattern.Kind == JsonNodeKind.String && !match(pattern.GetString(), text))
         {
             Fail(frame, errors, JsonSchemaKeywords.Pattern, "The string does not match the required pattern.");
         }
@@ -736,7 +741,7 @@ public static class JsonSchemaValidator
     /// <summary>Collects the child frame requests for this frame's applicator keywords.</summary>
     /// <param name="frame">The frame whose applicators are expanded.</param>
     /// <param name="requests">The list to populate with child requests.</param>
-    private static void CollectApplicatorChildren(Frame frame, List<ChildRequest> requests)
+    private static void CollectApplicatorChildren(Frame frame, List<ChildRequest> requests, RegexMatchDelegate match)
     {
         JsonNode schema = frame.Schema;
 
@@ -758,7 +763,7 @@ public static class JsonSchemaValidator
 
         if(frame.Instance.Kind == JsonNodeKind.Object)
         {
-            CollectObjectApplicators(frame, requests);
+            CollectObjectApplicators(frame, requests, match);
         }
 
         if(frame.Instance.Kind == JsonNodeKind.Array)
@@ -801,7 +806,7 @@ public static class JsonSchemaValidator
     /// <summary>Collects <c>properties</c> and <c>additionalProperties</c> child requests for an object instance.</summary>
     /// <param name="frame">The frame.</param>
     /// <param name="requests">The list to populate.</param>
-    private static void CollectObjectApplicators(Frame frame, List<ChildRequest> requests)
+    private static void CollectObjectApplicators(Frame frame, List<ChildRequest> requests, RegexMatchDelegate match)
     {
         JsonNode schema = frame.Schema;
         Dictionary<string, JsonNode> members = ReadObject(frame.Instance);
@@ -834,7 +839,7 @@ public static class JsonSchemaValidator
             {
                 foreach(KeyValuePair<string, JsonNode> member in members)
                 {
-                    if(Regex.IsMatch(member.Key, definition.Key))
+                    if(match(definition.Key, member.Key))
                     {
                         covered.Add(member.Key);
                         requests.Add(new ChildRequest(
