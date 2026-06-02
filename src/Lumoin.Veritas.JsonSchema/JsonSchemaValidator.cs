@@ -67,7 +67,41 @@ public static class JsonSchemaValidator
     }
 
     /// <summary>The default regular-expression matcher, backed by <see cref="Regex"/>. Matching is unanchored, as JSON Schema requires.</summary>
-    private static RegexMatchDelegate DefaultRegexMatch { get; } = static (pattern, input) => Regex.IsMatch(input, pattern);
+    private static RegexMatchDelegate DefaultRegexMatch { get; } = static (pattern, input) => Regex.IsMatch(input, TranslateUnicodePropertyNames(pattern));
+
+    /// <summary>The ECMA-262 long Unicode general-category names mapped to the short codes the BCL <see cref="Regex"/> accepts.</summary>
+    private static Dictionary<string, string> UnicodePropertyShortNames { get; } = new(StringComparer.Ordinal)
+    {
+        ["Letter"] = "L", ["Uppercase_Letter"] = "Lu", ["Lowercase_Letter"] = "Ll", ["Titlecase_Letter"] = "Lt",
+        ["Modifier_Letter"] = "Lm", ["Other_Letter"] = "Lo",
+        ["Mark"] = "M", ["Nonspacing_Mark"] = "Mn", ["Spacing_Mark"] = "Mc", ["Enclosing_Mark"] = "Me",
+        ["Number"] = "N", ["Decimal_Number"] = "Nd", ["Letter_Number"] = "Nl", ["Other_Number"] = "No",
+        ["Punctuation"] = "P", ["Connector_Punctuation"] = "Pc", ["Dash_Punctuation"] = "Pd",
+        ["Open_Punctuation"] = "Ps", ["Close_Punctuation"] = "Pe", ["Initial_Punctuation"] = "Pi",
+        ["Final_Punctuation"] = "Pf", ["Other_Punctuation"] = "Po",
+        ["Symbol"] = "S", ["Math_Symbol"] = "Sm", ["Currency_Symbol"] = "Sc", ["Modifier_Symbol"] = "Sk", ["Other_Symbol"] = "So",
+        ["Separator"] = "Z", ["Space_Separator"] = "Zs", ["Line_Separator"] = "Zl", ["Paragraph_Separator"] = "Zp",
+        ["Other"] = "C", ["Control"] = "Cc", ["Format"] = "Cf", ["Surrogate"] = "Cs", ["Private_Use"] = "Co", ["Unassigned"] = "Cn"
+    };
+
+    /// <summary>Matches an ECMA-262 Unicode property escape (<c>\p{Name}</c> / <c>\P{Name}</c>).</summary>
+    private static Regex UnicodePropertyEscape { get; } = new(@"\\([pP])\{([A-Za-z_]+)\}", RegexOptions.CultureInvariant);
+
+    /// <summary>Rewrites ECMA-262 long Unicode general-category names (<c>\p{Letter}</c>) to the short codes (<c>\p{L}</c>) the BCL engine understands; other escapes pass through unchanged.</summary>
+    /// <param name="pattern">The pattern from the schema.</param>
+    /// <returns>The pattern with long property names rewritten.</returns>
+    private static string TranslateUnicodePropertyNames(string pattern)
+    {
+        if(!pattern.Contains("\\p{", StringComparison.Ordinal) && !pattern.Contains("\\P{", StringComparison.Ordinal))
+        {
+            return pattern;
+        }
+
+        return UnicodePropertyEscape.Replace(pattern, static escape =>
+            UnicodePropertyShortNames.TryGetValue(escape.Groups[2].Value, out string? shortName)
+                ? $"\\{escape.Groups[1].Value}{{{shortName}}}"
+                : escape.Value);
+    }
 
     /// <summary>Opens a frame: evaluates its self-contained keywords and pushes child frames for its applicators.</summary>
     /// <param name="frame">The frame being opened.</param>
@@ -99,9 +133,10 @@ public static class JsonSchemaValidator
 
         EvaluateSelfKeywords(frame, errors, match);
 
-        //An $id establishes the base URI for this schema's references and subschemas.
+        //An $id establishes the base URI for this schema's references and subschemas. A reference target
+        //reached at its canonical URI already has its $id folded into BaseUri, so it is not applied again.
         string effectiveBase = frame.BaseUri;
-        if(frame.Schema.TryGetProperty(JsonSchemaKeywords.Id, out JsonNode id) && id.Kind == JsonNodeKind.String)
+        if(!frame.BaseIsCanonical && frame.Schema.TryGetProperty(JsonSchemaKeywords.Id, out JsonNode id) && id.Kind == JsonNodeKind.String)
         {
             effectiveBase = IriResolver.ResolveIri(frame.BaseUri, id.GetString());
         }
@@ -185,6 +220,7 @@ public static class JsonSchemaValidator
             Parent = frame,
             SpawnKeyword = keyword,
             BaseUri = targetBase,
+            BaseIsCanonical = true,
             DynamicScope = referenceScope
         };
     }
@@ -1197,6 +1233,9 @@ public static class JsonSchemaValidator
 
         /// <summary>Gets the applicator keyword that produced this frame, or <see langword="null"/> for the root.</summary>
         public string? SpawnKeyword { get; init; }
+
+        /// <summary>Gets a value indicating whether this frame's <c>$id</c> is already reflected in <see cref="BaseUri"/> (a reference target reached at its canonical URI), so it must not be applied again.</summary>
+        public bool BaseIsCanonical { get; init; }
 
         /// <summary>Gets the object member name this frame applies to, or <see langword="null"/> when it is not a member applicator.</summary>
         public string? MemberName { get; init; }
