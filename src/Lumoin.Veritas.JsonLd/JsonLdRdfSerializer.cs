@@ -275,19 +275,27 @@ public static class JsonLdRdfSerializer
     /// </summary>
     private static (string Lexical, string Datatype) NumberLexical(string raw, string? type)
     {
-        bool integral = raw.IndexOf('.', StringComparison.Ordinal) < 0
-            && raw.IndexOf('e', StringComparison.Ordinal) < 0
-            && raw.IndexOf('E', StringComparison.Ordinal) < 0;
+        //A number maps to xsd:integer only when its VALUE is integral and below
+        //10^21 (so 10.0 → "10", but 1e21 and 9.9 → xsd:double); the test is on
+        //the value, not the lexical token. The datatype is the coercion when one
+        //is given, else integer/double by the value's shape; the lexical form is
+        //the canonical xsd:double form whenever the value is non-integral or the
+        //term coerces to xsd:double (so 9.9 coerced to xsd:integer is "9.9E0").
+        bool integerValue = double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double value)
+            && !double.IsInfinity(value)
+            && value == Math.Truncate(value)
+            && Math.Abs(value) < 1e21;
 
-        //The datatype is the coercion when one is given, else integer/double by
-        //the number's shape. The lexical form is the canonical xsd:double form
-        //whenever the number is non-integral OR coerced to xsd:double (so e.g.
-        //9.9 coerced to xsd:integer is still "9.9E0"); a plain integer stays as
-        //written.
-        string datatype = type ?? (integral ? XsdInteger : XsdDouble);
-        bool useDoubleForm = !integral || string.Equals(type, XsdDouble, StringComparison.Ordinal);
+        string datatype = type ?? (integerValue ? XsdInteger : XsdDouble);
+        bool useDoubleForm = !integerValue || string.Equals(type, XsdDouble, StringComparison.Ordinal);
 
-        return (useDoubleForm ? CanonicalDouble(raw) : raw, datatype);
+        return (useDoubleForm ? CanonicalDouble(raw) : IntegerLexical(value), datatype);
+    }
+
+    /// <summary>Formats an integral double as its canonical xsd:integer lexical form (no decimal point or exponent; negative zero normalizes to <c>"0"</c>).</summary>
+    private static string IntegerLexical(double value)
+    {
+        return value == 0 ? "0" : value.ToString("0", CultureInfo.InvariantCulture);
     }
 
     /// <summary>
