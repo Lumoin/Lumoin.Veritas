@@ -54,6 +54,7 @@ internal static class W3cJsonLdRunner
             "toRdf" => await RunToRdfAsync(testCase, cancellationToken).ConfigureAwait(false),
             "compact" => await RunCompactAsync(testCase, cancellationToken).ConfigureAwait(false),
             "fromRdf" => await RunFromRdfAsync(testCase, cancellationToken).ConfigureAwait(false),
+            "flatten" => await RunFlattenAsync(testCase, cancellationToken).ConfigureAwait(false),
             _ => new W3cOutcome(W3cOutcomeStatus.Skipped, $"Operation '{testCase.Operation}' is not wired yet.")
         };
     }
@@ -206,6 +207,64 @@ internal static class W3cJsonLdRunner
         return JsonEquals(actualNode, expected)
             ? new W3cOutcome(W3cOutcomeStatus.Passed, "fromRdf matches.")
             : new W3cOutcome(W3cOutcomeStatus.Failed, $"fromRdf output does not match.\n  actual:   {Preview(actualNode)}\n  expected: {Preview(expected)}");
+    }
+
+    /// <summary>Runs a <c>flatten</c> case: expands then flattens the input (optionally compacting against a provided context), and compares to the expected document.</summary>
+    /// <param name="testCase">The case.</param>
+    /// <param name="cancellationToken">A token that aborts the run.</param>
+    /// <returns>The outcome.</returns>
+    private static async ValueTask<W3cOutcome> RunFlattenAsync(JsonLdTestCase testCase, CancellationToken cancellationToken)
+    {
+        JsonNode input = StjJsonAdapter.Parse(await ReadUtf8Async(testCase.InputPath, cancellationToken).ConfigureAwait(false));
+        string baseUrl = testCase.OptionBase ?? testCase.InputUrl;
+        ContextResolverDelegate resolver = CorpusResolver(testCase);
+        JsonNode? expandContext = await LoadExpandContextAsync(testCase, cancellationToken).ConfigureAwait(false);
+
+        object? flattened;
+        try
+        {
+            IReadOnlyList<object?> expanded = await JsonLdExpansionTree.ExpandAsync(
+                input, baseUrl, resolver, StjJsonAdapter.Parse, expandContext, cancellationToken).ConfigureAwait(false);
+            flattened = JsonLdFlattener.Flatten(expanded);
+
+            if(testCase.ContextPath is not null)
+            {
+                //A flatten context compacts the flattened node map (like a compact step over the flat array).
+                JsonNode contextDocument = StjJsonAdapter.Parse(await ReadUtf8Async(testCase.ContextPath, cancellationToken).ConfigureAwait(false));
+                JsonNode contextValue = contextDocument.TryGetProperty("@context", out JsonNode embedded) ? embedded : contextDocument;
+                LinkedDataContext activeContext = await ContextProcessor.ProcessAsync(
+                    LinkedDataContext.Empty, contextValue, baseUrl, resolver, StjJsonAdapter.Parse, cancellationToken).ConfigureAwait(false);
+                JsonNode flattenedNode = ExpandedToModelNode((IReadOnlyList<object?>)flattened!);
+                flattened = await JsonLdCompactor.CompactAsync(
+                    flattenedNode, activeContext, resolver, StjJsonAdapter.Parse, baseUrl, testCase.CompactArrays, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch(Exception exception) when(exception is not OperationCanceledException)
+        {
+            return testCase.IsPositive
+                ? new W3cOutcome(W3cOutcomeStatus.Failed, $"flatten threw: {exception.Message}")
+                : new W3cOutcome(W3cOutcomeStatus.Passed, $"Raised the expected processing error ('{testCase.ExpectErrorCode}').");
+        }
+
+        if(!testCase.IsPositive)
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expected error '{testCase.ExpectErrorCode}', but flatten succeeded.");
+        }
+
+        if(testCase.ExpectPath is null)
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Passed, "Processed without error.");
+        }
+
+        //With a context the flattened form was compacted, so it carries @context like a compact result.
+        StjJsonNode? actual = testCase.ContextPath is not null
+            ? WrapWithContext(ToJsonNode(flattened), testCase.ContextPath)
+            : ToJsonNode(flattened);
+        StjJsonNode? expected = StjJsonNode.Parse(await File.ReadAllBytesAsync(testCase.ExpectPath!, cancellationToken).ConfigureAwait(false));
+
+        return JsonEquals(actual, expected)
+            ? new W3cOutcome(W3cOutcomeStatus.Passed, "flatten matches.")
+            : new W3cOutcome(W3cOutcomeStatus.Failed, $"flatten output does not match.\n  actual:   {Preview(actual)}\n  expected: {Preview(expected)}");
     }
 
     /// <summary>Runs a <c>compact</c> case: expands the input, processes the provided context, compacts against it, and compares to the expected document.</summary>
