@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Json;
 using Lumoin.Veritas.JsonLd;
+using Lumoin.Veritas.JsonLd.Document;
 using Lumoin.Veritas.LinkedData;
 
 namespace Lumoin.Veritas.Tests.Conformance;
@@ -38,12 +39,6 @@ internal static class W3cJsonLdRunner
             return new W3cOutcome(W3cOutcomeStatus.Skipped, "JSON-LD 1.0 behaviour is not modelled (engine targets 1.1).");
         }
 
-        //The expandContext option (expand as if the document carried this @context) is not modelled yet.
-        if(testCase.ExpandContextPath is not null)
-        {
-            return new W3cOutcome(W3cOutcomeStatus.Skipped, "The expandContext option is not modelled yet.");
-        }
-
         return testCase.Operation switch
         {
             "expand" => await RunExpandAsync(testCase, cancellationToken).ConfigureAwait(false),
@@ -61,12 +56,24 @@ internal static class W3cJsonLdRunner
         string baseUrl = testCase.OptionBase ?? testCase.InputUrl;
         ContextResolverDelegate resolver = CorpusResolver(testCase);
 
+        //The expandContext option initializes the active context from a separate
+        //context document before the input is expanded. Read it and hand its
+        //@context value (the document is a {"@context": …} wrapper) to the expander.
+        JsonLdNode? expandContext = null;
+        if(testCase.ExpandContextPath is not null)
+        {
+            JsonLdNode expandContextDocument = StjJsonLdAdapter.Parse(await ReadUtf8Async(testCase.ExpandContextPath, cancellationToken).ConfigureAwait(false));
+            expandContext = expandContextDocument.TryGetProperty("@context", out JsonLdNode contextValue)
+                ? contextValue
+                : expandContextDocument;
+        }
+
         if(testCase.IsPositive)
         {
             IReadOnlyList<object?> expanded;
             try
             {
-                expanded = await JsonLdExpansionTree.ExpandAsync(input, baseUrl, resolver, StjJsonLdAdapter.Parse, cancellationToken).ConfigureAwait(false);
+                expanded = await JsonLdExpansionTree.ExpandAsync(input, baseUrl, resolver, StjJsonLdAdapter.Parse, expandContext, cancellationToken).ConfigureAwait(false);
             }
             catch(Exception exception) when(exception is not OperationCanceledException)
             {
@@ -85,7 +92,7 @@ internal static class W3cJsonLdRunner
         //Negative test: expansion must raise a JSON-LD processing error.
         try
         {
-            await JsonLdExpansionTree.ExpandAsync(input, baseUrl, resolver, StjJsonLdAdapter.Parse, cancellationToken).ConfigureAwait(false);
+            await JsonLdExpansionTree.ExpandAsync(input, baseUrl, resolver, StjJsonLdAdapter.Parse, expandContext, cancellationToken).ConfigureAwait(false);
 
             return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expected error '{testCase.ExpectErrorCode}', but expansion succeeded.");
         }

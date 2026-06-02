@@ -64,11 +64,36 @@ public static class JsonLdExpansionTree
     /// <returns>The expanded document as an object graph.</returns>
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
         Justification = "baseUrl follows the JSON-LD specification convention of string URIs.")]
+    public static ValueTask<IReadOnlyList<object?>> ExpandAsync(
+        JsonLdNode document,
+        string? baseUrl,
+        ContextResolverDelegate resolver,
+        JsonLdParserDelegate parser,
+        CancellationToken cancellationToken = default)
+    {
+        return ExpandAsync(document, baseUrl, resolver, parser, expandContext: null, cancellationToken);
+    }
+
+    /// <summary>
+    /// Expands a JSON-LD document, first initializing the active context from a
+    /// caller-supplied <paramref name="expandContext"/> (the JSON-LD 1.1 API
+    /// <c>expandContext</c> option) before the document's own <c>@context</c>.
+    /// </summary>
+    /// <param name="document">The root document node.</param>
+    /// <param name="baseUrl">Optional base URL for document-relative IRIs.</param>
+    /// <param name="resolver">Delegate that resolves remote <c>@context</c> URLs.</param>
+    /// <param name="parser">Delegate that parses fetched context bytes.</param>
+    /// <param name="expandContext">A context value used to seed the active context, or <see langword="null"/>.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The expanded document as an object graph.</returns>
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
+        Justification = "baseUrl follows the JSON-LD specification convention of string URIs.")]
     public static async ValueTask<IReadOnlyList<object?>> ExpandAsync(
         JsonLdNode document,
         string? baseUrl,
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
+        JsonLdNode? expandContext,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(resolver);
@@ -80,6 +105,15 @@ public static class JsonLdExpansionTree
             //Record the document base as the original base URL too, so a
             //full context reset (@context: null) can restore it per spec.
             activeContext = activeContext.WithBaseIri(baseUrl).WithOriginalBaseUrl(baseUrl);
+        }
+
+        //The expandContext API option initializes the active context before
+        //the document is processed (W3C JSON-LD 1.1 API §"expandContext"); the
+        //document's own @context, if any, then extends it.
+        if(expandContext is { } seedContext)
+        {
+            activeContext = await ContextProcessor.ProcessAsync(
+                activeContext, seedContext, baseUrl, resolver, parser, cancellationToken).ConfigureAwait(false);
         }
 
         //The document's own @context is processed by ExpandObjectAsync when
