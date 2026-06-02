@@ -307,7 +307,15 @@ public static class JsonLdExpansionTree
             List<object?> listMembers = await ExpandMembersAsync(
                 topLevelList, activeContext, baseUrl, resolver, parser, termDef: null, nestArraysAsLists: true, cancellationToken).ConfigureAwait(false);
 
-            return new Dictionary<string, object?>(StringComparer.Ordinal) { [JsonLdKeywords.List] = listMembers };
+            Dictionary<string, object?> listObject = new(StringComparer.Ordinal) { [JsonLdKeywords.List] = listMembers };
+
+            //A list object preserves a sibling @index (a node-level @index keeps its verbatim string value).
+            if(TryFindKeywordValue(obj, activeContext, JsonLdKeywords.Index, out JsonNode listIndex) && listIndex.Kind == JsonNodeKind.String)
+            {
+                listObject[JsonLdKeywords.Index] = listIndex.GetString();
+            }
+
+            return listObject;
         }
         if(TryFindKeywordValue(obj, activeContext, JsonLdKeywords.Set, out JsonNode topLevelSet))
         {
@@ -803,7 +811,15 @@ public static class JsonLdExpansionTree
                 List<object?> listMembers = await ExpandMembersAsync(
                     listValue, activeContext, baseUrl, resolver, parser, termDef, nestArraysAsLists: true, cancellationToken).ConfigureAwait(false);
 
-                return new Dictionary<string, object?>(StringComparer.Ordinal) { [JsonLdKeywords.List] = listMembers };
+                Dictionary<string, object?> listObject = new(StringComparer.Ordinal) { [JsonLdKeywords.List] = listMembers };
+
+                //A list object preserves a sibling @index (a node-level @index keeps its verbatim string value).
+                if(TryFindKeywordValue(item, activeContext, JsonLdKeywords.Index, out JsonNode listIndex) && listIndex.Kind == JsonNodeKind.String)
+                {
+                    listObject[JsonLdKeywords.Index] = listIndex.GetString();
+                }
+
+                return listObject;
             }
             if(TryFindKeywordValue(item, activeContext, JsonLdKeywords.Set, out JsonNode setValue))
             {
