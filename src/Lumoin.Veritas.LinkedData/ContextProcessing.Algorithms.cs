@@ -570,6 +570,12 @@ public static partial class ContextProcessing
                     .ConfigureAwait(false);
             }
 
+            string? simpleExpandedId = activeContext.ExpandIri(iriMapping, vocab: true);
+            activeContext = await EnsureTermIriFormConsistentAsync(
+                activeContext, localContext, termName, iriMapping, simpleExpandedId,
+                baseUrl, fetcher, parser, cache, remoteContexts, defined,
+                overrideProtected, contextProtected, depth, cancellationToken).ConfigureAwait(false);
+
             TermDefinition definition = BuildSimpleStringTermDefinition(
                 activeContext, termName, iriMapping, contextProtected);
             activeContext = SetTermDefinitionInternal(activeContext, termName, definition, overrideProtected);
@@ -682,24 +688,16 @@ public static partial class ContextProcessing
                     overrideProtected, contextProtected, depth, cancellationToken).ConfigureAwait(false);
 
                 termIriMapping = ExpandTermIdMapping(activeContext, termName, value.Iri);
-                isPrefix = isPrefix || TermShapeIndicatesPrefix(termName, termIriMapping is not null);
 
-                //When the term itself is a compact IRI (its prefix is a
-                //defined term), an @id that resolves to a different IRI than
-                //the term's own expansion is an invalid IRI mapping.
-                int termColon = termName.IndexOf(':', StringComparison.Ordinal);
-                if(termColon > 0 && termIriMapping is not null)
-                {
-                    string termPrefix = termName[..termColon];
-                    if(activeContext.TryGetTerm(termPrefix, out TermDefinition? prefixDef)
-                        && prefixDef?.IriMapping is not null
-                        && !string.Equals(termIriMapping, ExpandCompactIriTerm(activeContext, termName), StringComparison.Ordinal))
-                    {
-                        throw new LinkedDataProcessingException(
-                            "invalid IRI mapping",
-                            string.Create(CultureInfo.InvariantCulture, $"Term '{termName}' is a compact IRI whose @id does not match its expansion."));
-                    }
-                }
+                //A term whose name has the form of an IRI (it contains a
+                //slash or a colon followed by a non-colon) must expand to the
+                //same IRI as its @id mapping; otherwise the definition is an
+                //invalid IRI mapping (W3C JSON-LD 1.1 §4.1.2). This also
+                //rejects an absolute-IRI-shaped term whose @id is a keyword.
+                activeContext = await EnsureTermIriFormConsistentAsync(
+                    activeContext, localContext, termName, value.Iri, termIriMapping,
+                    baseUrl, fetcher, parser, cache, remoteContexts, defined,
+                    overrideProtected, contextProtected, depth, cancellationToken).ConfigureAwait(false);
             }
             else if(termName.Contains(':', StringComparison.Ordinal))
             {
@@ -779,12 +777,23 @@ public static partial class ContextProcessing
                 string.Create(CultureInfo.InvariantCulture, $"@index in term definition for '{termName}' requires an @index container and a non-keyword value."));
         }
 
-        //@prefix - if explicitly set, validate. If keyword IRI, reject.
-        if(value.Prefix && !IsPrefixCompatibleWithIri(termIriMapping))
+        //@prefix - if explicitly set, validate. A compact-IRI-shaped term
+        //(containing ':' or '/') may not be flagged a prefix, and a term whose
+        //IRI maps to a keyword may not be a prefix (W3C JSON-LD 1.1 §4.1.2).
+        if(value.Prefix)
         {
-            throw new LinkedDataProcessingException(
-                "invalid term definition",
-                string.Create(CultureInfo.InvariantCulture, $"Term '{termName}' maps to a keyword and cannot be a prefix."));
+            if(termName.Contains(':', StringComparison.Ordinal) || termName.Contains('/', StringComparison.Ordinal))
+            {
+                throw new LinkedDataProcessingException(
+                    "invalid term definition",
+                    string.Create(CultureInfo.InvariantCulture, $"@prefix may not be used on the compact-IRI term '{termName}'."));
+            }
+            if(!IsPrefixCompatibleWithIri(termIriMapping))
+            {
+                throw new LinkedDataProcessingException(
+                    "invalid term definition",
+                    string.Create(CultureInfo.InvariantCulture, $"Term '{termName}' maps to a keyword and cannot be a prefix."));
+            }
         }
 
         //@language with normalisation.
@@ -853,6 +862,89 @@ public static partial class ContextProcessing
         activeContext = SetTermDefinitionInternal(activeContext, termName, termDefinition, overrideProtected);
         defined[termName] = true;
         return activeContext;
+    }
+
+    /// <summary>
+    /// Enforces the W3C JSON-LD 1.1 §4.1.2 rule that a term whose name has the
+    /// form of an IRI must expand to the same IRI as its <c>@id</c> mapping.
+    /// The check runs only when the raw <c>@id</c> differs from the term name;
+    /// when the term contains a colon, its prefix is defined first so the
+    /// term's own expansion is accurate. A mismatch is an invalid IRI mapping.
+    /// </summary>
+    private static async ValueTask<LinkedDataContext> EnsureTermIriFormConsistentAsync(
+        LinkedDataContext activeContext,
+        IReadOnlyDictionary<string, LinkedDataTermSource> localContext,
+        string termName,
+        string? rawId,
+        string? expandedId,
+        string? baseUrl,
+        FetchRemoteResourceDelegate fetcher,
+        ParseRemoteContextDelegate parser,
+        ProbeContextCacheDelegate? cache,
+        List<string> remoteContexts,
+        Dictionary<string, bool> defined,
+        bool overrideProtected,
+        bool contextProtected,
+        int depth,
+        CancellationToken cancellationToken)
+    {
+        if(rawId is null
+            || string.Equals(rawId, termName, StringComparison.Ordinal)
+            || !TermHasIriForm(termName))
+        {
+            return activeContext;
+        }
+
+        int colon = termName.IndexOf(':', StringComparison.Ordinal);
+        if(colon > 0)
+        {
+            string prefix = termName[..colon];
+            if(localContext.ContainsKey(prefix)
+                && (!defined.TryGetValue(prefix, out bool prefixDone) || !prefixDone))
+            {
+                activeContext = await CreateTermDefinitionCoreAsync(
+                    activeContext, localContext, prefix, baseUrl,
+                    fetcher, parser, cache, remoteContexts, defined,
+                    overrideProtected, contextProtected, depth, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+
+        string? termIri = activeContext.ExpandIri(termName, vocab: true);
+        if(!string.Equals(termIri, expandedId, StringComparison.Ordinal))
+        {
+            throw new LinkedDataProcessingException(
+                "invalid IRI mapping",
+                string.Create(CultureInfo.InvariantCulture, $"Term '{termName}' has the form of an IRI but does not expand to its @id mapping."));
+        }
+
+        return activeContext;
+    }
+
+    /// <summary>
+    /// Indicates whether <paramref name="term"/> has the form of an IRI per the
+    /// W3C JSON-LD 1.1 regex <c>(?::[^:])|\/</c>: it contains a slash, or a
+    /// colon followed by a non-colon character.
+    /// </summary>
+    private static bool TermHasIriForm(string term)
+    {
+        if(term.Contains('/', StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        int colon = term.IndexOf(':', StringComparison.Ordinal);
+        while(colon >= 0 && colon + 1 < term.Length)
+        {
+            if(term[colon + 1] != ':')
+            {
+                return true;
+            }
+
+            colon = term.IndexOf(':', colon + 1);
+        }
+
+        return false;
     }
 
     private static LinkedDataContext SetTermDefinitionInternal(
