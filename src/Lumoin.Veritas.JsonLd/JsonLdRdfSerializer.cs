@@ -515,9 +515,16 @@ public static class JsonLdRdfSerializer
     /// </summary>
     private static bool IsWellFormedIri(string iri)
     {
+        int hashCount = 0;
         foreach(char character in iri)
         {
             if(character <= ' ' || character is '<' or '>' or '"' or '{' or '}' or '|' or '\\' or '^' or '`')
+            {
+                return false;
+            }
+
+            //An IRI has at most one fragment: a second unescaped '#' is malformed.
+            if(character == '#' && ++hashCount > 1)
             {
                 return false;
             }
