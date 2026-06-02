@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text.RegularExpressions;
+using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Iris;
 using Lumoin.Veritas.Json;
 using Ptr = Lumoin.Veritas.JsonPointer.JsonPointer;
@@ -23,6 +24,23 @@ namespace Lumoin.Veritas.JsonSchema;
 /// </remarks>
 public static class JsonSchemaValidator
 {
+    /// <summary>Validates a UTF-8 JSON instance against a UTF-8 JSON schema, parsing both with the supplied parser.</summary>
+    /// <param name="schema">The UTF-8 JSON schema document.</param>
+    /// <param name="instance">The UTF-8 JSON instance document.</param>
+    /// <param name="parse">The JSON parser (for example <c>StjJsonAdapter.Parse</c> from Lumoin.Veritas.Json.Stj).</param>
+    /// <param name="loader">A loader for documents reached by <c>$ref</c> outside the root schema, or <see langword="null"/>.</param>
+    /// <param name="baseUri">The root schema's retrieval base URI, or <see langword="null"/> for none.</param>
+    /// <param name="regexMatch">The regular-expression matcher, or <see langword="null"/> for the default.</param>
+    /// <returns>The validation result.</returns>
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
+        Justification = "The engine resolves references via the RFC 3986 string-based IriResolver; System.Uri is intentionally not used on this path.")]
+    public static ValidationResult Validate(Utf8String schema, Utf8String instance, ParseJsonDelegate parse, SchemaDocumentLoader? loader = null, string? baseUri = null, RegexMatchDelegate? regexMatch = null)
+    {
+        ArgumentNullException.ThrowIfNull(parse);
+
+        return Validate(parse(schema), parse(instance), loader, baseUri, regexMatch);
+    }
+
     /// <summary>Validates an instance against a schema.</summary>
     /// <param name="schema">The schema node (an object schema, or a boolean schema <c>true</c>/<c>false</c>).</param>
     /// <param name="instance">The instance to validate.</param>
