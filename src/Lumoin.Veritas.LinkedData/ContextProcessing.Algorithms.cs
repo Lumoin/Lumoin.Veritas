@@ -112,24 +112,44 @@ public static partial class ContextProcessing
                 continue;
             }
 
-            //Inline context: apply directives then iterate terms.
-            result = ApplyContextDirectives(result, entry, overrideProtected);
-
-            //Handle @import recursively (resolve and merge before processing terms).
+            //@import (§4.1.2): the referenced context is dereferenced and
+            //MERGED into this context — the imported term definitions and
+            //directives form the base, the current entry's override them, and
+            //the merged whole is processed under THIS entry's @protected (so
+            //imported terms become protected when the importing context is).
+            IReadOnlyDictionary<string, LinkedDataTermSource> termsToProcess = entry.Terms;
             if(entry.Import is not null)
             {
-                result = await ProcessRemoteContextCoreAsync(
-                    result, entry.Import, baseUrl, fetcher, parser, cache,
-                    remoteContexts, overrideProtected, propagate, depth,
-                    cancellationToken, isImport: true).ConfigureAwait(false);
+                LinkedDataContextEntry imported = await ResolveImportedContextAsync(
+                    result, entry.Import, entry.BaseUrl ?? baseUrl, fetcher, parser, cache,
+                    remoteContexts, overrideProtected, propagate, depth, cancellationToken)
+                    .ConfigureAwait(false);
+
+                //Imported directives apply first; the current entry overrides them below.
+                result = ApplyContextDirectives(result, imported, overrideProtected);
+
+                if(imported.Terms is not null)
+                {
+                    Dictionary<string, LinkedDataTermSource> merged = new(imported.Terms, StringComparer.Ordinal);
+                    foreach(KeyValuePair<string, LinkedDataTermSource> term in entry.Terms)
+                    {
+                        merged[term.Key] = term.Value;
+                    }
+
+                    termsToProcess = merged;
+                }
             }
+
+            //Inline context: apply the current entry's directives (overriding
+            //any imported ones) then iterate terms.
+            result = ApplyContextDirectives(result, entry, overrideProtected);
 
             bool contextProtected = entry.Protected ?? false;
             Dictionary<string, bool> defined = [];
-            foreach(string termName in entry.Terms.Keys)
+            foreach(string termName in termsToProcess.Keys)
             {
                 result = await CreateTermDefinitionCoreAsync(
-                    result, entry.Terms, termName, entry.BaseUrl ?? baseUrl,
+                    result, termsToProcess, termName, entry.BaseUrl ?? baseUrl,
                     fetcher, parser, cache, remoteContexts, defined,
                     overrideProtected, contextProtected, depth,
                     cancellationToken).ConfigureAwait(false);
@@ -292,6 +312,69 @@ public static partial class ContextProcessing
             activeContext, embeddedEntries, effectiveBase, fetcher, parser, cache,
             overrideProtected, propagate, branchContexts, depth + 1,
             cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Dereferences an <c>@import</c> target and returns its single inline
+    /// context entry (terms + directives). The target must resolve to a single
+    /// context map and must not itself contain <c>@import</c> (W3C JSON-LD 1.1
+    /// §4.1.2 — nested imports are invalid).
+    /// </summary>
+    private static async ValueTask<LinkedDataContextEntry> ResolveImportedContextAsync(
+        LinkedDataContext activeContext,
+        string importUrl,
+        string? baseUrl,
+        FetchRemoteResourceDelegate fetcher,
+        ParseRemoteContextDelegate parser,
+        ProbeContextCacheDelegate? cache,
+        List<string> remoteContexts,
+        bool overrideProtected,
+        bool propagate,
+        int depth,
+        CancellationToken cancellationToken)
+    {
+        _ = activeContext;
+        _ = overrideProtected;
+        _ = propagate;
+        _ = remoteContexts;
+        _ = depth;
+
+        string resolvedUri = baseUrl is not null
+            ? IriUtils.ResolveIri(baseUrl, importUrl)
+            : importUrl;
+
+        RemoteResource? resource = cache is null
+            ? null
+            : await cache(resolvedUri, cancellationToken).ConfigureAwait(false);
+        resource ??= await fetcher(resolvedUri, baseUrl, cancellationToken).ConfigureAwait(false);
+
+        IReadOnlyDictionary<string, object?> parsed =
+            await parser(resource, cancellationToken).ConfigureAwait(false);
+
+        //An @import must reference a single context map, not an array or
+        //string-referenced (wrapped) context.
+        if(parsed.Count == 1
+            && parsed.TryGetValue("@context", out object? wrappedImport)
+            && wrappedImport is not IReadOnlyDictionary<string, object?>)
+        {
+            throw new LinkedDataProcessingException(
+                "invalid remote context",
+                string.Create(CultureInfo.InvariantCulture, $"@import '{importUrl}' must reference a single context map."));
+        }
+
+        string effectiveBase = resource.FinalUrl ?? resolvedUri;
+        LinkedDataContextEntry[] entries = ConvertParsedContextToEntries(parsed, effectiveBase);
+        LinkedDataContextEntry inline = Array.Find(entries, static e => e.Terms is not null)
+            ?? new LinkedDataContextEntry(new Dictionary<string, LinkedDataTermSource>(), effectiveBase, "import-empty");
+
+        if(inline.Import is not null)
+        {
+            throw new LinkedDataProcessingException(
+                "invalid context entry",
+                string.Create(CultureInfo.InvariantCulture, $"@import target '{importUrl}' must not itself contain @import."));
+        }
+
+        return inline;
     }
 
     private static LinkedDataContextEntry[] ConvertParsedContextToEntries(
