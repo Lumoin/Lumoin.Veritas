@@ -76,7 +76,20 @@ public static class JsonLdCompactor
         }
         if(IriUtils.IsKeyword(iri))
         {
-            return iri;
+            //A keyword compacts to a term that aliases it (e.g. "id" → @id), if one is defined.
+            string? keywordAlias = null;
+            foreach(string termName in activeContext.Terms)
+            {
+                if(activeContext.TryGetTerm(termName, out TermDefinition? def)
+                    && def is { IriMapping: { } mapping }
+                    && string.Equals(mapping, iri, StringComparison.Ordinal)
+                    && IsBetterCandidate(termName, keywordAlias))
+                {
+                    keywordAlias = termName;
+                }
+            }
+
+            return keywordAlias ?? iri;
         }
 
         //Phase 1: direct term match. Pick shortest-then-ordinal-least.
@@ -339,18 +352,18 @@ public static class JsonLdCompactor
                     //(no @vocab relative; an @id is never an unqualified term).
                     if(expandedValue.Kind == JsonNodeKind.String)
                     {
-                        result[JsonLdKeywords.Id] = CompactIri(activeContext, expandedValue.GetString(), vocab: false);
+                        result[CompactKey(activeContext, JsonLdKeywords.Id)] = CompactIri(activeContext, expandedValue.GetString(), vocab: false);
                     }
                     else
                     {
-                        result[JsonLdKeywords.Id] = ToObjectGraph(expandedValue);
+                        result[CompactKey(activeContext, JsonLdKeywords.Id)] = ToObjectGraph(expandedValue);
                     }
                     break;
                 }
                 case var k when JsonLdKeywords.IsType(k):
                 {
                     //@type values are class IRIs; vocab-relative compaction applies.
-                    result[JsonLdKeywords.Type] = CompactTypeValue(expandedValue, activeContext);
+                    result[CompactKey(activeContext, JsonLdKeywords.Type)] = CompactTypeValue(expandedValue, activeContext);
                     break;
                 }
                 case var k when JsonLdKeywords.IsContext(k) || JsonLdKeywords.IsGraph(k):
@@ -359,7 +372,7 @@ public static class JsonLdCompactor
                     //itself. @graph's contents are compacted as a normal element.
                     if(JsonLdKeywords.IsGraph(expandedKey))
                     {
-                        result[JsonLdKeywords.Graph] = CompactElement(expandedValue, activeContext);
+                        result[CompactKey(activeContext, JsonLdKeywords.Graph)] = CompactElement(expandedValue, activeContext);
                     }
                     else
                     {
@@ -389,7 +402,7 @@ public static class JsonLdCompactor
                             compactedReverse[compactInnerKey] = CompactValueOrElement(inner.Value, activeContext, innerTerm);
                         }
 
-                        result[JsonLdKeywords.Reverse] = compactedReverse;
+                        result[CompactKey(activeContext, JsonLdKeywords.Reverse)] = compactedReverse;
                     }
 
                     break;
@@ -479,6 +492,15 @@ public static class JsonLdCompactor
             return new List<object?> { single };
         }
         return single;
+    }
+
+    /// <summary>Compacts a keyword key to the term that aliases it (e.g. <c>@id</c> → <c>id</c>), or the keyword itself.</summary>
+    /// <param name="activeContext">The active context.</param>
+    /// <param name="keyword">The keyword.</param>
+    /// <returns>The alias term, or the keyword unchanged.</returns>
+    private static string CompactKey(LinkedDataContext activeContext, string keyword)
+    {
+        return CompactIri(activeContext, keyword, vocab: true) ?? keyword;
     }
 
     /// <summary>Whether a node is a bare node reference — an object whose only member is <c>@id</c>.</summary>
