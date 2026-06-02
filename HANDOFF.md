@@ -1,5 +1,25 @@
 # Handoff — Lumoin.Veritas.Sparql (Batch 1: Milestones A–C, SHACL-SPARQL unlock)
 
+---
+## ⭐⭐ READ THIS FIRST — SESSION 3 RESUME (2026-06-02, branch `sparql-query-engine`, tree clean)
+
+JSON-LD is the active workstream. **Memory `project_jsonld_conformance` has the full detail — read it.** State now:
+- **Expand: 100% conformant (0 fail).** All 29 ratcheted to 0 this session (last was tc013 = revert type-scoped ctx to previous before expanding a `@type`-container map, in `JsonLdExpansionTree.ExpandPropertyValueAsync`). `expandContext` API option implemented (`ExpandAsync` overload taking `JsonLdNode? expandContext`).
+- **toRdf: UNIFIED + 450/467 (17 fail).** New `src/Lumoin.Veritas.JsonLd/JsonLdRdfSerializer.cs` = expanded-object-graph → quads, run over the conformant `JsonLdExpansionTree.ExpandAsync` (NOT the old parallel `JsonLdExpander`, now retire-able). Remaining 17 tail = RFC 3986 abnormal relative-IRI resolution (`t0120–0126`,`te111/112`; ⚠ in shared Core `IriUtils.ResolveIri` — fix carefully, Turtle/SPARQL share it), `rdfDirection` option (`tdi09–12`; niche, unmodeled), singles (`te122`,`tjs12`,`trt01`,`ttn02`).
+- **Keywords centralized:** `src/Lumoin.Veritas.LinkedData/JsonLdKeywords.cs` (`static readonly` + `IsX` + `Equals`(ReferenceEquals→ordinal) + `GetCanonicalizedValue` + `IsKeyword`/`IsContextDirective`); all `"@…"` literals in JsonLd+LinkedData reference it (only the definitions + comment/error prose keep raw strings). Context-processing dispatch switches were rewritten as declarative dict-reads.
+- **Suite: 4552 total, 17 fail (all toRdf tail), 39 skip.** Skips justified: 2 Bluesky `.car` + JSON-LD **1.0** processing-mode (out of scope: 1.1-only engine; 1.0 superseded — user agreed not relevant).
+
+**⚠ HARD DIRECTIVE (user):** NEVER name or refer to the vendored JS reference implementations under `tempdocs/` in code, comments, or docs. Use them only to learn algorithm shape.
+
+**NEXT QUEUE (user: "push through all this"):**
+1. **Compact** — wire the `compact` op unified (expand → `JsonLdCompactor.Compact` over the expanded form → structural compare); corpus already vendored (`Material/JsonLd/compact`). Add a `RunCompactAsync` arm + `[JsonLdManifestData("compact")]` test method (mirror toRdf). RED-baseline+ratchet.
+2. **New project `Lumoin.Veritas.JsonSchema`** — JSON Schema **2020-12** validation + official JSON-Schema-Test-Suite ratchet (RED-baseline). Reuse the remote-loader / local-cache / `AccessContext` delegate seams for `$ref`/`$id`. Build an ergonomic API for schema.org-typed data; validation results should map back to RDF terms (for the selective-disclosure use case that motivates this).
+3. **JSON Pointer** — bring it into Lumoin.Veritas (needed for `$ref` fragments). Reference `..\Verifiable\src\Verifiable.JsonPointer` + its tests for API shape (don't have to copy the design); goal is to eventually remove that project from the Verifiable solution.
+
+Build/test per [[feedback_build_test_command_shape]]: `dotnet build test/Lumoin.Veritas.Tests/Lumoin.Veritas.Tests.csproj -clp:ErrorsOnly --nologo` (PowerShell), then (Bash) `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe" --filter "FullyQualifiedName~JsonLd" > tempdocs/out.txt 2>&1`. Regression guard: `grep -iE "^\s*failed " tempdocs/out.txt | grep -vE "expand #|compact #|toRdf #|fromRdf #"` must be EMPTY. Rebuild the TEST project (stale-dll trap).
+---
+
+
 Branch: `sparql-query-engine` (off `main`). Executing the SPARQL implementation
 specification. Two-batch split: **Batch 1 = Milestones A–C** (lexer → parser →
 AST → algebra → translator → hypertrie backend + executor subset → SHACL-SPARQL
