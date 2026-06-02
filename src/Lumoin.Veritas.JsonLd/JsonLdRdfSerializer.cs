@@ -255,7 +255,7 @@ public static class JsonLdRdfSerializer
         (string lexical, string datatype) = rawValue switch
         {
             bool boolean => (boolean ? "true" : "false", type ?? XsdBoolean),
-            long integer => (integer.ToString(CultureInfo.InvariantCulture), type ?? XsdInteger),
+            long integer => NumberLexical(integer.ToString(CultureInfo.InvariantCulture), type),
             JsonLdJsonNumber number => NumberLexical(number.Raw, type),
             double real => NumberLexical(real.ToString("R", CultureInfo.InvariantCulture), type),
             _ => (LexicalForm(rawValue), type ?? (language is not null ? RdfLangString : XsdString))
@@ -279,17 +279,15 @@ public static class JsonLdRdfSerializer
             && raw.IndexOf('e', StringComparison.Ordinal) < 0
             && raw.IndexOf('E', StringComparison.Ordinal) < 0;
 
-        if(type is null && integral)
-        {
-            return (raw, XsdInteger);
-        }
+        //The datatype is the coercion when one is given, else integer/double by
+        //the number's shape. The lexical form is the canonical xsd:double form
+        //whenever the number is non-integral OR coerced to xsd:double (so e.g.
+        //9.9 coerced to xsd:integer is still "9.9E0"); a plain integer stays as
+        //written.
+        string datatype = type ?? (integral ? XsdInteger : XsdDouble);
+        bool useDoubleForm = !integral || string.Equals(type, XsdDouble, StringComparison.Ordinal);
 
-        if(type is not null && !string.Equals(type, XsdDouble, StringComparison.Ordinal))
-        {
-            return (raw, type);
-        }
-
-        return (CanonicalDouble(raw), XsdDouble);
+        return (useDoubleForm ? CanonicalDouble(raw) : raw, datatype);
     }
 
     /// <summary>
