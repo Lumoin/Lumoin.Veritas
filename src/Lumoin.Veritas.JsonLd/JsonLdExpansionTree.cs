@@ -342,10 +342,10 @@ public static class JsonLdExpansionTree
         //aliases are processed in lexicographic key order.
         List<KeyValuePair<string, JsonLdNode>> deferredNests = new();
 
-        //Keys are processed in lexicographic order (W3C JSON-LD 1.1 §4.3.2 /
-        //jsonld.js): this is observable only where several keys fold into the
-        //same output array (e.g. an aliased `type` and the keyword `@type`),
-        //since the result object's own key order is not significant.
+        //Keys are processed in lexicographic order (W3C JSON-LD 1.1 §4.3.2):
+        //this is observable only where several keys fold into the same output
+        //array (e.g. an aliased `type` and the keyword `@type`), since the
+        //result object's own key order is not significant.
         List<KeyValuePair<string, JsonLdNode>> orderedProperties = new();
         foreach(KeyValuePair<string, JsonLdNode> property in obj.EnumerateObject())
         {
@@ -1079,7 +1079,7 @@ public static class JsonLdExpansionTree
 
         //Under a @type map the key is a type whose term may carry a type-scoped
         //context; it applies (non-propagating) while expanding this key's value
-        //(W3C JSON-LD 1.1 §4.3.2 / jsonld.js _expandIndexMap).
+        //(W3C JSON-LD 1.1 §4.3.2).
         if(isTypeMap && !mapKeyIsNone
             && activeContext.TryGetTerm(mapKey, out TermDefinition? keyTermDef)
             && keyTermDef is { ScopedContextEntries: { } keyScopedEntries })
