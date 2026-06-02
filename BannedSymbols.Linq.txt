@@ -1,0 +1,7 @@
+M:System.Linq.Enumerable.ToArray``1(System.Collections.Generic.IEnumerable{``0});Use a rented IMemoryOwner<T>, stackalloc, or a pre-sized buffer; LINQ ToArray allocates an array of unknown size and discards the enumeration.
+M:System.Linq.Enumerable.ToList``1(System.Collections.Generic.IEnumerable{``0});Use a pre-sized List<T> (new List<T>(capacity)) or a pool-rented buffer; LINQ ToList grows by doubling and over-allocates.
+M:System.Linq.Enumerable.ToHashSet``1(System.Collections.Generic.IEnumerable{``0});Build the HashSet<T> directly with new HashSet<T>(capacity) and Add in a loop; LINQ ToHashSet has no capacity hint.
+M:System.Linq.Enumerable.ToHashSet``1(System.Collections.Generic.IEnumerable{``0},System.Collections.Generic.IEqualityComparer{``0});Build the HashSet<T> directly with new HashSet<T>(capacity, comparer) and Add in a loop.
+M:System.Linq.Enumerable.ToLookup``2(System.Collections.Generic.IEnumerable{``0},System.Func{``0,``1});Build the lookup data structure directly; LINQ Lookup uses an internal grouping representation that cannot be sized in advance.
+M:System.Collections.Immutable.ImmutableArray.ToImmutableArray``1(System.Collections.Generic.IEnumerable{``0});Use ImmutableArray.CreateRange with a pre-counted source, or build via ImmutableArray.CreateBuilder with a capacity.
+M:System.Collections.Immutable.ImmutableList.ToImmutableList``1(System.Collections.Generic.IEnumerable{``0});Use ImmutableList.CreateRange with a pre-counted source, or build via ImmutableList.CreateBuilder.

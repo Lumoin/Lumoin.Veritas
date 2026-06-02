@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Veritas.JsonPointer</RootNamespace>
+    <Description>An RFC 6901 JSON Pointer value type with zero external dependencies: parse, compose, escape, compare, and convert to/from URI fragments. Format-neutral — evaluation against a concrete document (JSON, the JsonLdNode model, POCOs) is layered on top.</Description>
+  </PropertyGroup>
+
+</Project>

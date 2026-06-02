@@ -97,6 +97,12 @@ See full changelog at https://github.com/lumoin/Veritas/blob/main/CHANGELOG.md.]
     same clock-discipline as production. Fixes are listed in
     BannedSymbols.txt itself — typically "use TimeProvider".
 
+    BannedSymbols.Linq.txt bans the unsized LINQ/Immutable materialization
+    operators (ToArray/ToList/ToHashSet/ToLookup/ToImmutable*) — a hot-path
+    allocation discipline for library code. It is added to every project
+    EXCEPT *.Tests: test code may use LINQ freely (clarity over the
+    allocation concern that motivates the ban in production).
+
     BannedSymbols.Serialization.txt bans the System.Text.Json
     namespace; it is added to every project except the serialization
     projects (Lumoin.Veritas.Json, Lumoin.Veritas.Cbor). Tests are not
@@ -136,6 +142,10 @@ See full changelog at https://github.com/lumoin/Veritas/blob/main/CHANGELOG.md.]
 
   <ItemGroup>
     <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.txt" />
+  </ItemGroup>
+
+  <ItemGroup Condition="!$(MSBuildProjectName.EndsWith('.Tests'))">
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.Linq.txt" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(MSBuildProjectName)' != 'Lumoin.Veritas.Json' AND '$(MSBuildProjectName)' != 'Lumoin.Veritas.Cbor' AND !$(MSBuildProjectName.EndsWith('.Tests'))">

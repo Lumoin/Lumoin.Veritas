@@ -393,6 +393,9 @@
           "Lumoin.Veritas.LinkedData": "[0.0.0, )"
         }
       },
+      "lumoin.veritas.jsonpointer": {
+        "type": "Project"
+      },
       "lumoin.veritas.linkeddata": {
         "type": "Project",
         "dependencies": {
