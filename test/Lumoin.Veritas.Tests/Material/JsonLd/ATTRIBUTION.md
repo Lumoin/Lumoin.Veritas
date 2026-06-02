@@ -18,13 +18,14 @@ Only the operations `Lumoin.Veritas.JsonLd` implements are vendored:
 - `expand-manifest.jsonld` + `expand/`   — JSON-LD expansion tests
 - `compact-manifest.jsonld` + `compact/` — JSON-LD compaction tests
 - `toRdf-manifest.jsonld` + `toRdf/`     — JSON-LD → RDF (N-Quads) tests
+- `fromRdf-manifest.jsonld` + `fromRdf/` — RDF (N-Quads) → JSON-LD tests
+- `flatten-manifest.jsonld` + `flatten/` — JSON-LD flattening tests
 - `manifest.jsonld`, `context.jsonld`, `vocab.jsonld`, `vocab.ttl`,
   `vocab_context.jsonld` — shared root manifest / contexts the tests
   reference.
 
-The upstream `flatten/`, `fromRdf/` (operations not implemented),
-`html/`, `remote-doc/` (require HTML extraction / real remote
-fetching), and the rendering/tooling assets (`*.html`, `*.haml`,
+The upstream `html/`, `remote-doc/` (require HTML extraction / real
+remote fetching), and the rendering/tooling assets (`*.html`, `*.haml`,
 `Rakefile`, `mk_vocab.rb`, `README.md`) are deliberately not vendored.
 
 ## Manifest shape

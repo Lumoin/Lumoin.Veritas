@@ -53,6 +53,7 @@ internal static class W3cJsonLdRunner
             "expand" => await RunExpandAsync(testCase, cancellationToken).ConfigureAwait(false),
             "toRdf" => await RunToRdfAsync(testCase, cancellationToken).ConfigureAwait(false),
             "compact" => await RunCompactAsync(testCase, cancellationToken).ConfigureAwait(false),
+            "fromRdf" => await RunFromRdfAsync(testCase, cancellationToken).ConfigureAwait(false),
             _ => new W3cOutcome(W3cOutcomeStatus.Skipped, $"Operation '{testCase.Operation}' is not wired yet.")
         };
     }
@@ -160,6 +161,51 @@ internal static class W3cJsonLdRunner
         return QuadSetIsomorphism.AreIsomorphic(actual, expected)
             ? new W3cOutcome(W3cOutcomeStatus.Passed, $"toRdf matches ({actual.Count} quads).")
             : new W3cOutcome(W3cOutcomeStatus.Failed, $"toRdf differs: actual={actual.Count} quads, expected={expected.Count} quads.");
+    }
+
+    /// <summary>Runs a <c>fromRdf</c> case: parses the input N-Quads, serializes them as JSON-LD, and compares to the expected document.</summary>
+    /// <param name="testCase">The case.</param>
+    /// <param name="cancellationToken">A token that aborts the run.</param>
+    /// <returns>The outcome.</returns>
+    private static async ValueTask<W3cOutcome> RunFromRdfAsync(JsonLdTestCase testCase, CancellationToken cancellationToken)
+    {
+        using Utf8StringPool pool = new();
+        object? actual;
+        try
+        {
+            List<Quad> quads = [];
+            byte[] inputBytes = await File.ReadAllBytesAsync(testCase.InputPath, cancellationToken).ConfigureAwait(false);
+            await foreach(Quad quad in NQuadsReader.ReadAsync(inputBytes, pool, cancellationToken).ConfigureAwait(false))
+            {
+                quads.Add(quad);
+            }
+
+            actual = JsonLdRdfDeserializer.FromRdf(
+                quads, testCase.UseNativeTypes, testCase.UseRdfType, DirectionModeFor(testCase.RdfDirection), StjJsonAdapter.Parse);
+        }
+        catch(Exception exception) when(exception is not OperationCanceledException)
+        {
+            return testCase.IsPositive
+                ? new W3cOutcome(W3cOutcomeStatus.Failed, $"fromRdf threw: {exception.Message}")
+                : new W3cOutcome(W3cOutcomeStatus.Passed, $"Raised the expected processing error ('{testCase.ExpectErrorCode}').");
+        }
+
+        if(!testCase.IsPositive)
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expected error '{testCase.ExpectErrorCode}', but fromRdf succeeded.");
+        }
+
+        if(testCase.ExpectPath is null)
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Passed, "Processed without error.");
+        }
+
+        StjJsonNode? actualNode = ToJsonNode(actual);
+        StjJsonNode? expected = StjJsonNode.Parse(await File.ReadAllBytesAsync(testCase.ExpectPath!, cancellationToken).ConfigureAwait(false));
+
+        return JsonEquals(actualNode, expected)
+            ? new W3cOutcome(W3cOutcomeStatus.Passed, "fromRdf matches.")
+            : new W3cOutcome(W3cOutcomeStatus.Failed, $"fromRdf output does not match.\n  actual:   {Preview(actualNode)}\n  expected: {Preview(expected)}");
     }
 
     /// <summary>Runs a <c>compact</c> case: expands the input, processes the provided context, compacts against it, and compares to the expected document.</summary>
@@ -442,8 +488,20 @@ internal static class W3cJsonLdRunner
 
                 return true;
             }
-            case StjJsonValue when expected is StjJsonValue:
+            case StjJsonValue actualValue when expected is StjJsonValue expectedValue:
             {
+                //JSON numbers compare by value (1.23 and 1.23E0, or 10 and 10.0, are the same JSON number);
+                //strings/booleans compare by their serialized token.
+                if(actualValue.GetValueKind() == System.Text.Json.JsonValueKind.Number
+                    && expectedValue.GetValueKind() == System.Text.Json.JsonValueKind.Number)
+                {
+                    //Compare via the number token parsed to double, so a long-backed and a JsonElement-backed
+                    //value (e.g. 1 vs 1, or 0.11 vs 1.1E-1) compare by numeric value regardless of backing.
+                    return double.TryParse(actualValue.ToJsonString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double actualNumber)
+                        && double.TryParse(expectedValue.ToJsonString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double expectedNumber)
+                        && actualNumber.Equals(expectedNumber);
+                }
+
                 return string.Equals(actual.ToJsonString(), expected.ToJsonString(), StringComparison.Ordinal);
             }
             default:

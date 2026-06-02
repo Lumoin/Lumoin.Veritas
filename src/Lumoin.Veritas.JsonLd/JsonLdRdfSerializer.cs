@@ -25,21 +25,6 @@ namespace Lumoin.Veritas.JsonLd;
 /// </remarks>
 public static class JsonLdRdfSerializer
 {
-    private const string RdfType = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
-    private const string RdfFirst = "http://www.w3.org/1999/02/22-rdf-syntax-ns#first";
-    private const string RdfRest = "http://www.w3.org/1999/02/22-rdf-syntax-ns#rest";
-    private const string RdfNil = "http://www.w3.org/1999/02/22-rdf-syntax-ns#nil";
-    private const string RdfJson = "http://www.w3.org/1999/02/22-rdf-syntax-ns#JSON";
-    private const string XsdString = "http://www.w3.org/2001/XMLSchema#string";
-    private const string XsdBoolean = "http://www.w3.org/2001/XMLSchema#boolean";
-    private const string XsdInteger = "http://www.w3.org/2001/XMLSchema#integer";
-    private const string XsdDouble = "http://www.w3.org/2001/XMLSchema#double";
-    private const string RdfLangString = "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString";
-    private const string RdfValue = "http://www.w3.org/1999/02/22-rdf-syntax-ns#value";
-    private const string RdfLanguage = "http://www.w3.org/1999/02/22-rdf-syntax-ns#language";
-    private const string RdfDirection = "http://www.w3.org/1999/02/22-rdf-syntax-ns#direction";
-    private const string I18nNamespace = "https://www.w3.org/ns/i18n#";
-
     private static long blankNodeCounter;
 
     /// <summary>
@@ -102,7 +87,7 @@ public static class JsonLdRdfSerializer
 
             if(JsonLdKeywords.IsType(key))
             {
-                NamedNode rdfType = new(state.Pool.Intern(RdfType));
+                NamedNode rdfType = new(state.Pool.Intern(JsonLdRdfTerms.RdfType));
                 foreach(object? type in AsList(property.Value))
                 {
                     if(type is string typeIri && TryMakeNode(state, typeIri, out RdfTerm? typeTerm))
@@ -243,20 +228,20 @@ public static class JsonLdRdfSerializer
     private static BlankNode EmitCompoundLiteral(SerializationState state, IReadOnlyDictionary<string, object?> valueObject, RdfTerm? graph)
     {
         BlankNode node = state.MintBlankNode();
-        NamedNode xsdString = new(state.Pool.Intern(XsdString));
+        NamedNode xsdString = new(state.Pool.Intern(JsonLdRdfTerms.XsdString));
 
-        state.Emit(node, new NamedNode(state.Pool.Intern(RdfValue)),
+        state.Emit(node, new NamedNode(state.Pool.Intern(JsonLdRdfTerms.RdfValue)),
             new Literal(state.Pool.Intern(LexicalForm(valueObject.GetValueOrDefault(JsonLdKeywords.Value))), xsdString), graph);
 
         if(valueObject.GetValueOrDefault(JsonLdKeywords.Language) is string language)
         {
-            state.Emit(node, new NamedNode(state.Pool.Intern(RdfLanguage)),
+            state.Emit(node, new NamedNode(state.Pool.Intern(JsonLdRdfTerms.RdfLanguage)),
                 new Literal(state.Pool.Intern(language.ToLowerInvariant()), xsdString), graph);
         }
 
         if(valueObject.GetValueOrDefault(JsonLdKeywords.Direction) is string direction)
         {
-            state.Emit(node, new NamedNode(state.Pool.Intern(RdfDirection)),
+            state.Emit(node, new NamedNode(state.Pool.Intern(JsonLdRdfTerms.RdfDirection)),
                 new Literal(state.Pool.Intern(direction), xsdString), graph);
         }
 
@@ -268,12 +253,12 @@ public static class JsonLdRdfSerializer
         IReadOnlyList<object?> items = AsList(listValue);
         if(items.Count == 0)
         {
-            return new NamedNode(state.Pool.Intern(RdfNil));
+            return new NamedNode(state.Pool.Intern(JsonLdRdfTerms.RdfNil));
         }
 
-        NamedNode rdfFirst = new(state.Pool.Intern(RdfFirst));
-        NamedNode rdfRest = new(state.Pool.Intern(RdfRest));
-        NamedNode rdfNil = new(state.Pool.Intern(RdfNil));
+        NamedNode rdfFirst = new(state.Pool.Intern(JsonLdRdfTerms.RdfFirst));
+        NamedNode rdfRest = new(state.Pool.Intern(JsonLdRdfTerms.RdfRest));
+        NamedNode rdfNil = new(state.Pool.Intern(JsonLdRdfTerms.RdfNil));
 
         //Allocate one blank node per list cell, then thread first/rest links.
         BlankNode[] cells = new BlankNode[items.Count];
@@ -316,7 +301,7 @@ public static class JsonLdRdfSerializer
         //encoded as a https://www.w3.org/ns/i18n#<language>_<direction> datatype.
         if(state.RdfDirection == DirectionMode.I18nDatatype && direction is not null && type is null)
         {
-            string i18nDatatype = string.Concat(I18nNamespace, language?.ToLowerInvariant() ?? string.Empty, "_", direction);
+            string i18nDatatype = string.Concat(JsonLdRdfTerms.I18nNamespace, language?.ToLowerInvariant() ?? string.Empty, "_", direction);
             literal = new Literal(state.Pool.Intern(LexicalForm(rawValue)), new NamedNode(state.Pool.Intern(i18nDatatype)));
 
             return true;
@@ -326,21 +311,21 @@ public static class JsonLdRdfSerializer
         //ordered object keys, no insignificant whitespace) under rdf:JSON.
         if(JsonLdKeywords.IsJson(type))
         {
-            literal = new Literal(state.Pool.Intern(CanonicalJson(rawValue)), new NamedNode(state.Pool.Intern(RdfJson)));
+            literal = new Literal(state.Pool.Intern(CanonicalJson(rawValue)), new NamedNode(state.Pool.Intern(JsonLdRdfTerms.RdfJson)));
             return true;
         }
 
         (string lexical, string datatype) = rawValue switch
         {
-            bool boolean => (boolean ? "true" : "false", type ?? XsdBoolean),
+            bool boolean => (XsdBooleanLexical.Canonical(boolean), type ?? JsonLdRdfTerms.XsdBoolean),
             long integer => NumberLexical(integer.ToString(CultureInfo.InvariantCulture), type),
             JsonLdJsonNumber number => NumberLexical(number.Raw, type),
             double real => NumberLexical(real.ToString("R", CultureInfo.InvariantCulture), type),
-            _ => (LexicalForm(rawValue), type ?? (language is not null ? RdfLangString : XsdString))
+            _ => (LexicalForm(rawValue), type ?? (language is not null ? JsonLdRdfTerms.RdfLangString : JsonLdRdfTerms.XsdString))
         };
 
         literal = language is not null && type is null
-            ? new Literal(state.Pool.Intern(lexical), new NamedNode(state.Pool.Intern(RdfLangString)), state.Pool.Intern(language))
+            ? new Literal(state.Pool.Intern(lexical), new NamedNode(state.Pool.Intern(JsonLdRdfTerms.RdfLangString)), state.Pool.Intern(language))
             : new Literal(state.Pool.Intern(lexical), new NamedNode(state.Pool.Intern(datatype)));
         return true;
     }
@@ -364,8 +349,8 @@ public static class JsonLdRdfSerializer
             && value == Math.Truncate(value)
             && Math.Abs(value) < 1e21;
 
-        string datatype = type ?? (integerValue ? XsdInteger : XsdDouble);
-        bool useDoubleForm = !integerValue || string.Equals(type, XsdDouble, StringComparison.Ordinal);
+        string datatype = type ?? (integerValue ? JsonLdRdfTerms.XsdInteger : JsonLdRdfTerms.XsdDouble);
+        bool useDoubleForm = !integerValue || string.Equals(type, JsonLdRdfTerms.XsdDouble, StringComparison.Ordinal);
 
         return (useDoubleForm ? CanonicalDouble(raw) : IntegerLexical(value), datatype);
     }

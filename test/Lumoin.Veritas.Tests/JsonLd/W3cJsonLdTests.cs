@@ -54,4 +54,16 @@ internal sealed class W3cJsonLdTests
 
         ConformanceAssertions.Apply(outcome);
     }
+
+    /// <summary>Runs one JSON-LD fromRdf test from the vendored manifest.</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>A task that completes when the case has run and been asserted.</returns>
+    [TestMethod]
+    [JsonLdManifestData("fromRdf")]
+    public async Task RunW3cJsonLdFromRdfTest(JsonLdTestCase testCase)
+    {
+        W3cOutcome outcome = await W3cJsonLdRunner.RunAsync(testCase, TestContext.CancellationToken).ConfigureAwait(false);
+
+        ConformanceAssertions.Apply(outcome);
+    }
 }

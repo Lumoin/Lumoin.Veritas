@@ -66,6 +66,8 @@ internal static class JsonLdManifestLoader
         string? specVersion = null;
         string? rdfDirection = null;
         bool compactArrays = true;
+        bool useNativeTypes = false;
+        bool useRdfType = false;
         if(entry.TryGetProperty("option", out JsonNode option) && option.Kind == JsonNodeKind.Object)
         {
             optionBase = StringOrNull(option, "base");
@@ -76,6 +78,14 @@ internal static class JsonLdManifestLoader
             if(option.TryGetProperty("compactArrays", out JsonNode compactArraysNode) && compactArraysNode.Kind == JsonNodeKind.False)
             {
                 compactArrays = false;
+            }
+            if(option.TryGetProperty("useNativeTypes", out JsonNode useNativeTypesNode) && useNativeTypesNode.Kind == JsonNodeKind.True)
+            {
+                useNativeTypes = true;
+            }
+            if(option.TryGetProperty("useRdfType", out JsonNode useRdfTypeNode) && useRdfTypeNode.Kind == JsonNodeKind.True)
+            {
+                useRdfType = true;
             }
         }
 
@@ -96,6 +106,8 @@ internal static class JsonLdManifestLoader
             SpecVersion: specVersion,
             RdfDirection: rdfDirection,
             CompactArrays: compactArrays,
+            UseNativeTypes: useNativeTypes,
+            UseRdfType: useRdfType,
             CorpusDirectory: corpusDirectory);
     }
 

@@ -219,20 +219,10 @@ public static class RdfValueComparer
         return XsdDuration.Compare(leftValue, leftSpace, rightValue, rightSpace);
     }
 
-    //XSD §3.2.2: lexical forms "true" / "1" map to true,
-    //"false" / "0" map to false. Anything else is invalid. Switch
-    //expression with tuple result so the out parameter is assigned
-    //once at the call site.
+    //XSD §3.2.2 boolean lexical mapping, centralized in Core.XsdBooleanLexical.
     private static bool TryParseBoolean(string lexical, out bool result)
     {
-        (bool matched, result) = lexical switch
-        {
-            "true" or "1" => (true, true),
-            "false" or "0" => (true, false),
-            _ => (false, default(bool)),
-        };
-
-        return matched;
+        return XsdBooleanLexical.TryParse(lexical, out result);
     }
 
     private static ComparisonResult SignToResult(int sign)

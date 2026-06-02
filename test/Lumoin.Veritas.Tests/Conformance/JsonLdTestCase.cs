@@ -21,6 +21,8 @@ namespace Lumoin.Veritas.Tests.Conformance;
 /// <param name="ProcessingMode">The <c>option.processingMode</c> (for example <c>json-ld-1.1</c>), or <see langword="null"/>.</param>
 /// <param name="SpecVersion">The <c>option.specVersion</c> (for example <c>json-ld-1.1</c>), or <see langword="null"/>.</param>
 /// <param name="CompactArrays">The <c>option.compactArrays</c> flag (defaults to <see langword="true"/> per the API default).</param>
+/// <param name="UseNativeTypes">The <c>option.useNativeTypes</c> flag (fromRdf: emit native JSON numbers/booleans; defaults to <see langword="false"/>).</param>
+/// <param name="UseRdfType">The <c>option.useRdfType</c> flag (fromRdf: keep <c>rdf:type</c> as a property; defaults to <see langword="false"/>).</param>
 /// <param name="CorpusDirectory">The absolute <c>Material/JsonLd</c> directory the suite's URLs map back to.</param>
 internal sealed record JsonLdTestCase(
     string Id,
@@ -39,4 +41,6 @@ internal sealed record JsonLdTestCase(
     string? SpecVersion,
     string? RdfDirection,
     bool CompactArrays,
+    bool UseNativeTypes,
+    bool UseRdfType,
     string CorpusDirectory);
