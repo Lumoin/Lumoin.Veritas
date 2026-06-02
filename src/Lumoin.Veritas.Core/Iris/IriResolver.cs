@@ -30,7 +30,7 @@ public static class IriResolver
     {
         ArgumentNullException.ThrowIfNull(value);
 
-        int colonIndex = value.IndexOf(':', StringComparison.Ordinal);
+        int colonIndex = value.IndexOf(UriDelimiters.SchemeSeparator, StringComparison.Ordinal);
         if(colonIndex <= 0)
         {
             return false;
@@ -128,7 +128,7 @@ public static class IriResolver
     private static UriParts Parse(string value)
     {
         string? fragment = null;
-        int hash = value.IndexOf('#', StringComparison.Ordinal);
+        int hash = value.IndexOf(UriDelimiters.FragmentPrefix, StringComparison.Ordinal);
         if(hash >= 0)
         {
             fragment = value[(hash + 1)..];
@@ -136,7 +136,7 @@ public static class IriResolver
         }
 
         string? query = null;
-        int question = value.IndexOf('?', StringComparison.Ordinal);
+        int question = value.IndexOf(UriDelimiters.QueryPrefix, StringComparison.Ordinal);
         if(question >= 0)
         {
             query = value[(question + 1)..];
@@ -144,8 +144,8 @@ public static class IriResolver
         }
 
         string? scheme = null;
-        int colon = value.IndexOf(':', StringComparison.Ordinal);
-        int firstSlash = value.IndexOf('/', StringComparison.Ordinal);
+        int colon = value.IndexOf(UriDelimiters.SchemeSeparator, StringComparison.Ordinal);
+        int firstSlash = value.IndexOf(UriDelimiters.PathSeparator, StringComparison.Ordinal);
         if(colon > 0 && (firstSlash < 0 || colon < firstSlash) && IsScheme(value[..colon]))
         {
             scheme = value[..colon];
@@ -153,10 +153,10 @@ public static class IriResolver
         }
 
         string? authority = null;
-        if(value.StartsWith("//", StringComparison.Ordinal))
+        if(value.StartsWith(UriDelimiters.AuthorityPrefix, StringComparison.Ordinal))
         {
-            string rest = value[2..];
-            int slash = rest.IndexOf('/', StringComparison.Ordinal);
+            string rest = value[UriDelimiters.AuthorityPrefix.Length..];
+            int slash = rest.IndexOf(UriDelimiters.PathSeparator, StringComparison.Ordinal);
             authority = slash < 0 ? rest : rest[..slash];
             value = slash < 0 ? string.Empty : rest[slash..];
         }
@@ -189,10 +189,10 @@ public static class IriResolver
     {
         if(@base.Authority is not null && @base.Path.Length == 0)
         {
-            return "/" + referencePath;
+            return UriDelimiters.PathSeparator + referencePath;
         }
 
-        int lastSlash = @base.Path.LastIndexOf('/');
+        int lastSlash = @base.Path.LastIndexOf(UriDelimiters.PathSeparator);
 
         return lastSlash < 0 ? referencePath : string.Concat(@base.Path[..(lastSlash + 1)], referencePath);
     }
@@ -235,8 +235,8 @@ public static class IriResolver
             }
             else
             {
-                int start = input[0] == '/' ? 1 : 0;
-                int next = input.IndexOf('/', start);
+                int start = input[0] == UriDelimiters.PathSeparator ? 1 : 0;
+                int next = input.IndexOf(UriDelimiters.PathSeparator, start);
                 if(next < 0)
                 {
                     output.Append(input);
@@ -259,7 +259,7 @@ public static class IriResolver
         int lastSlash = -1;
         for(int i = output.Length - 1; i >= 0; i--)
         {
-            if(output[i] == '/')
+            if(output[i] == UriDelimiters.PathSeparator)
             {
                 lastSlash = i;
                 break;
@@ -275,23 +275,23 @@ public static class IriResolver
         StringBuilder result = new();
         if(scheme is not null)
         {
-            result.Append(scheme).Append(':');
+            result.Append(scheme).Append(UriDelimiters.SchemeSeparator);
         }
 
         if(authority is not null)
         {
-            result.Append("//").Append(authority);
+            result.Append(UriDelimiters.AuthorityPrefix).Append(authority);
         }
 
         result.Append(path);
         if(query is not null)
         {
-            result.Append('?').Append(query);
+            result.Append(UriDelimiters.QueryPrefix).Append(query);
         }
 
         if(fragment is not null)
         {
-            result.Append('#').Append(fragment);
+            result.Append(UriDelimiters.FragmentPrefix).Append(fragment);
         }
 
         return result.ToString();
