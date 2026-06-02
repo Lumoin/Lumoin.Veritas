@@ -19,6 +19,7 @@ internal sealed class SchemaRegistry
 {
     private readonly Dictionary<string, JsonNode> resourcesByUri = new(StringComparer.Ordinal);
     private readonly Dictionary<string, JsonNode> nodesByAnchor = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, JsonNode> nodesByDynamicAnchor = new(StringComparer.Ordinal);
     private readonly SchemaDocumentLoader? loader;
 
     /// <summary>The keywords whose value is a single subschema.</summary>
@@ -90,6 +91,42 @@ internal sealed class SchemaRegistry
         return nodesByAnchor.TryGetValue(documentUri + "#" + fragment, out target);
     }
 
+    /// <summary>Resolves a <c>$dynamicRef</c> against a base URI and the dynamic scope.</summary>
+    /// <param name="baseUri">The base URI in effect where the reference appears.</param>
+    /// <param name="reference">The <c>$dynamicRef</c> value.</param>
+    /// <param name="dynamicScopeOutermostFirst">The base URIs of the dynamic scope, outermost resource first.</param>
+    /// <param name="target">On success, the referenced schema node.</param>
+    /// <param name="targetBaseUri">On success, the base URI in effect at the target.</param>
+    /// <returns><see langword="true"/> when the reference resolves.</returns>
+    public bool TryResolveDynamic(string baseUri, string reference, IReadOnlyList<string> dynamicScopeOutermostFirst, out JsonNode target, out string targetBaseUri)
+    {
+        target = default;
+        targetBaseUri = string.Empty;
+
+        string absolute = IriResolver.ResolveIri(baseUri, reference);
+        int hash = absolute.IndexOf('#', StringComparison.Ordinal);
+        string documentUri = hash < 0 ? absolute : absolute[..hash];
+        string fragment = hash < 0 ? string.Empty : absolute[(hash + 1)..];
+
+        //Dynamic resolution applies only when the reference names a plain-name $dynamicAnchor that the
+        //statically-resolved target's resource also declares; then the OUTERMOST such anchor in the
+        //dynamic scope wins. Otherwise $dynamicRef behaves exactly like $ref.
+        if(fragment.Length > 0 && fragment[0] != '/' && nodesByDynamicAnchor.ContainsKey(documentUri + "#" + fragment))
+        {
+            foreach(string scopeBase in dynamicScopeOutermostFirst)
+            {
+                if(nodesByDynamicAnchor.TryGetValue(scopeBase + "#" + fragment, out target))
+                {
+                    targetBaseUri = scopeBase;
+
+                    return true;
+                }
+            }
+        }
+
+        return TryResolve(baseUri, reference, out target, out targetBaseUri);
+    }
+
     /// <summary>Loads a remote document through the loader and indexes it.</summary>
     /// <param name="documentUri">The absolute document URI.</param>
     /// <param name="document">On success, the loaded document root.</param>
@@ -135,6 +172,14 @@ internal sealed class SchemaRegistry
             if(node.TryGetProperty(JsonSchemaKeywords.Anchor, out JsonNode anchor) && anchor.Kind == JsonNodeKind.String)
             {
                 nodesByAnchor[effectiveBase + "#" + anchor.GetString()] = node;
+            }
+
+            //A $dynamicAnchor is also a plain-name anchor for ordinary $ref, and additionally a dynamic target.
+            if(node.TryGetProperty(JsonSchemaKeywords.DynamicAnchor, out JsonNode dynamicAnchor) && dynamicAnchor.Kind == JsonNodeKind.String)
+            {
+                string key = effectiveBase + "#" + dynamicAnchor.GetString();
+                nodesByAnchor.TryAdd(key, node);
+                nodesByDynamicAnchor[key] = node;
             }
 
             PushSubschemas(node, effectiveBase, pending);

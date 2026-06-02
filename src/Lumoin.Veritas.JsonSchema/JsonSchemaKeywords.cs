@@ -136,4 +136,10 @@ public static class JsonSchemaKeywords
 
     /// <summary>The <c>unevaluatedItems</c> keyword — the subschema for array elements no other keyword evaluated.</summary>
     public static readonly string UnevaluatedItems = "unevaluatedItems";
+
+    /// <summary>The <c>$dynamicAnchor</c> keyword — a fragment that can be the target of a dynamic reference.</summary>
+    public static readonly string DynamicAnchor = "$dynamicAnchor";
+
+    /// <summary>The <c>$dynamicRef</c> keyword — a reference resolved against the dynamic scope.</summary>
+    public static readonly string DynamicRef = "$dynamicRef";
 }

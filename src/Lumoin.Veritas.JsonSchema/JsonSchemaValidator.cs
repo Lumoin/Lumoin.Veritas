@@ -42,7 +42,8 @@ public static class JsonSchemaValidator
             Instance = instance,
             InstanceLocation = Ptr.Root,
             KeywordLocation = Ptr.Root,
-            BaseUri = rootBase
+            BaseUri = rootBase,
+            DynamicScope = new ScopeNode(rootBase, null)
         };
 
         Stack<(Frame Frame, bool Closing)> stack = new();
@@ -102,6 +103,11 @@ public static class JsonSchemaValidator
 
         frame.EffectiveBase = effectiveBase;
 
+        //An $id starting a new resource extends the dynamic scope that this frame's subschemas inherit.
+        ScopeNode parentScope = frame.DynamicScope ?? new ScopeNode(frame.BaseUri, null);
+        ScopeNode childScope = string.Equals(parentScope.BaseUri, effectiveBase, StringComparison.Ordinal) ? parentScope : new ScopeNode(effectiveBase, parentScope);
+        frame.ChildScope = childScope;
+
         //The frame's Close must run after every child, so it is pushed first (children pushed above it pop first).
         stack.Push((frame, true));
 
@@ -119,7 +125,8 @@ public static class JsonSchemaValidator
                 SpawnKeyword = request.Keyword,
                 MemberName = request.MemberName,
                 ItemIndex = request.ItemIndex,
-                BaseUri = effectiveBase
+                BaseUri = effectiveBase,
+                DynamicScope = childScope
             };
 
             stack.Push((child, false));
@@ -131,22 +138,66 @@ public static class JsonSchemaValidator
         {
             if(registry.TryResolve(effectiveBase, reference.GetString(), out JsonNode target, out string targetBase))
             {
-                stack.Push((new Frame
-                {
-                    Schema = target,
-                    Instance = frame.Instance,
-                    InstanceLocation = frame.InstanceLocation,
-                    KeywordLocation = frame.KeywordLocation.Append(JsonSchemaKeywords.Ref),
-                    Parent = frame,
-                    SpawnKeyword = JsonSchemaKeywords.Ref,
-                    BaseUri = targetBase
-                }, false));
+                stack.Push((MakeReferenceChild(frame, target, targetBase, JsonSchemaKeywords.Ref, childScope), false));
             }
             else
             {
                 Fail(frame, errors, JsonSchemaKeywords.Ref, "The reference could not be resolved.");
             }
         }
+
+        //$dynamicRef resolves to the outermost matching $dynamicAnchor in the dynamic scope (or like $ref otherwise).
+        if(frame.Schema.TryGetProperty(JsonSchemaKeywords.DynamicRef, out JsonNode dynamicReference) && dynamicReference.Kind == JsonNodeKind.String)
+        {
+            if(registry.TryResolveDynamic(effectiveBase, dynamicReference.GetString(), OutermostFirst(childScope), out JsonNode target, out string targetBase))
+            {
+                stack.Push((MakeReferenceChild(frame, target, targetBase, JsonSchemaKeywords.DynamicRef, childScope), false));
+            }
+            else
+            {
+                Fail(frame, errors, JsonSchemaKeywords.DynamicRef, "The dynamic reference could not be resolved.");
+            }
+        }
+    }
+
+    /// <summary>Builds a child frame for a resolved reference, extending the dynamic scope with the target resource.</summary>
+    /// <param name="frame">The referencing frame.</param>
+    /// <param name="target">The resolved target schema.</param>
+    /// <param name="targetBase">The base URI in effect at the target.</param>
+    /// <param name="keyword">The reference keyword (<c>$ref</c> or <c>$dynamicRef</c>).</param>
+    /// <param name="childScope">The dynamic scope in effect at the referencing frame.</param>
+    /// <returns>The reference child frame.</returns>
+    private static Frame MakeReferenceChild(Frame frame, JsonNode target, string targetBase, string keyword, ScopeNode childScope)
+    {
+        ScopeNode referenceScope = string.Equals(childScope.BaseUri, targetBase, StringComparison.Ordinal) ? childScope : new ScopeNode(targetBase, childScope);
+
+        return new Frame
+        {
+            Schema = target,
+            Instance = frame.Instance,
+            InstanceLocation = frame.InstanceLocation,
+            KeywordLocation = frame.KeywordLocation.Append(keyword),
+            Parent = frame,
+            SpawnKeyword = keyword,
+            BaseUri = targetBase,
+            DynamicScope = referenceScope
+        };
+    }
+
+    /// <summary>Returns the dynamic scope's resource base URIs, outermost resource first.</summary>
+    /// <param name="scope">The dynamic scope (innermost first), or <see langword="null"/>.</param>
+    /// <returns>The base URIs, outermost first.</returns>
+    private static List<string> OutermostFirst(ScopeNode? scope)
+    {
+        List<string> bases = [];
+        for(ScopeNode? current = scope; current is not null; current = current.Outer)
+        {
+            bases.Add(current.BaseUri);
+        }
+
+        bases.Reverse();
+
+        return bases;
     }
 
     /// <summary>Closes a frame: combines its children, applies <c>unevaluated*</c> in a second pass, and reports to its parent.</summary>
@@ -209,7 +260,8 @@ public static class JsonSchemaValidator
                         Parent = frame,
                         SpawnKeyword = JsonSchemaKeywords.UnevaluatedProperties,
                         MemberName = member.Key,
-                        BaseUri = frame.EffectiveBase
+                        BaseUri = frame.EffectiveBase,
+                        DynamicScope = frame.ChildScope
                     }, false));
                     spawned = true;
                 }
@@ -232,7 +284,8 @@ public static class JsonSchemaValidator
                         Parent = frame,
                         SpawnKeyword = JsonSchemaKeywords.UnevaluatedItems,
                         ItemIndex = index,
-                        BaseUri = frame.EffectiveBase
+                        BaseUri = frame.EffectiveBase,
+                        DynamicScope = frame.ChildScope
                     }, false));
                     spawned = true;
                 }
@@ -383,6 +436,7 @@ public static class JsonSchemaValidator
             || ReferenceEquals(keyword, JsonSchemaKeywords.AnyOf)
             || ReferenceEquals(keyword, JsonSchemaKeywords.OneOf)
             || ReferenceEquals(keyword, JsonSchemaKeywords.Ref)
+            || ReferenceEquals(keyword, JsonSchemaKeywords.DynamicRef)
             || ReferenceEquals(keyword, JsonSchemaKeywords.DependentSchemas);
     }
 
@@ -1127,6 +1181,12 @@ public static class JsonSchemaValidator
         /// <summary>Gets the base URI in effect for this frame's references and subschemas.</summary>
         public required string BaseUri { get; init; }
 
+        /// <summary>Gets the dynamic scope in effect at this frame (innermost resource first), for <c>$dynamicRef</c> resolution.</summary>
+        public ScopeNode? DynamicScope { get; init; }
+
+        /// <summary>Gets or sets the dynamic scope this frame's children inherit (this frame's scope extended by its own <c>$id</c>).</summary>
+        public ScopeNode? ChildScope { get; set; }
+
         /// <summary>Gets the parent frame this frame reports its result to, or <see langword="null"/> for the root.</summary>
         public Frame? Parent { get; init; }
 
@@ -1160,4 +1220,9 @@ public static class JsonSchemaValidator
         /// <summary>Gets the indices of this array instance's elements that were evaluated, computed when the frame closes.</summary>
         public HashSet<int> EvaluatedItems { get; } = [];
     }
+
+    /// <summary>One entry of the dynamic scope: a schema-resource base URI and the enclosing scope.</summary>
+    /// <param name="BaseUri">The resource base URI (innermost when this is the scope head).</param>
+    /// <param name="Outer">The enclosing dynamic scope, or <see langword="null"/> at the root.</param>
+    private sealed record ScopeNode(string BaseUri, ScopeNode? Outer);
 }
