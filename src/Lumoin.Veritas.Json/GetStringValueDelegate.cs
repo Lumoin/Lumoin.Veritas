@@ -1,8 +1,8 @@
-namespace Lumoin.Veritas.JsonLd.Document;
+namespace Lumoin.Veritas.Json;
 
 /// <summary>
 /// Returns the decoded .NET string value of a node whose kind is
-/// <see cref="JsonLdNodeKind.String"/>.
+/// <see cref="JsonNodeKind.String"/>.
 /// </summary>
 /// <remarks>
 /// JSON-LD processing decodes string values to .NET <see cref="string"/> because
@@ -11,7 +11,7 @@ namespace Lumoin.Veritas.JsonLd.Document;
 /// through other paths when zero-copy semantics are required.
 /// </remarks>
 /// <param name="handle">
-/// The handle of a node whose kind is <see cref="JsonLdNodeKind.String"/>.
+/// The handle of a node whose kind is <see cref="JsonNodeKind.String"/>.
 /// </param>
 /// <returns>The decoded string value.</returns>
 public delegate string GetStringValueDelegate(object handle);

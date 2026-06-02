@@ -6,7 +6,7 @@ using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Json;
 using Lumoin.Veritas.JsonLd;
 using Lumoin.Veritas.JsonLd.Adapters;
-using Lumoin.Veritas.JsonLd.Document;
+using Lumoin.Veritas.Json.Stj;
 
 namespace Lumoin.Veritas.Tests.JsonLd;
 
@@ -20,7 +20,7 @@ internal sealed class CborLdInputNodeAdapterTests
     [TestMethod]
     public void PrimitiveStringRoundTrip()
     {
-        JsonLdNode node = ParseJson("\"hello\"");
+        JsonNode node = ParseJson("\"hello\"");
         CborLdInputNode converted = CborLdInputNodeAdapter.FromJsonLd(node);
         Assert.IsInstanceOfType<CborLdInputString>(converted);
         Assert.AreEqual("hello", ((CborLdInputString)converted).Value);
@@ -98,14 +98,14 @@ internal sealed class CborLdInputNodeAdapterTests
     [TestMethod]
     public void ToJsonLdExposesPrimitiveKinds()
     {
-        Assert.AreEqual(JsonLdNodeKind.Null, CborLdInputNodeAdapter.ToJsonLd(CborLdInputNull.Instance).Kind);
-        Assert.AreEqual(JsonLdNodeKind.True, CborLdInputNodeAdapter.ToJsonLd(new CborLdInputBool(true)).Kind);
-        Assert.AreEqual(JsonLdNodeKind.False, CborLdInputNodeAdapter.ToJsonLd(new CborLdInputBool(false)).Kind);
-        Assert.AreEqual(JsonLdNodeKind.String, CborLdInputNodeAdapter.ToJsonLd(new CborLdInputString("hi")).Kind);
-        Assert.AreEqual(JsonLdNodeKind.Number, CborLdInputNodeAdapter.ToJsonLd(new CborLdInputInt(42)).Kind);
-        Assert.AreEqual(JsonLdNodeKind.Number, CborLdInputNodeAdapter.ToJsonLd(new CborLdInputDouble(3.14)).Kind);
-        Assert.AreEqual(JsonLdNodeKind.Array, CborLdInputNodeAdapter.ToJsonLd(new CborLdInputArray(System.Array.Empty<CborLdInputNode>())).Kind);
-        Assert.AreEqual(JsonLdNodeKind.Object, CborLdInputNodeAdapter.ToJsonLd(new CborLdInputMap(System.Array.Empty<KeyValuePair<string, CborLdInputNode>>())).Kind);
+        Assert.AreEqual(JsonNodeKind.Null, CborLdInputNodeAdapter.ToJsonLd(CborLdInputNull.Instance).Kind);
+        Assert.AreEqual(JsonNodeKind.True, CborLdInputNodeAdapter.ToJsonLd(new CborLdInputBool(true)).Kind);
+        Assert.AreEqual(JsonNodeKind.False, CborLdInputNodeAdapter.ToJsonLd(new CborLdInputBool(false)).Kind);
+        Assert.AreEqual(JsonNodeKind.String, CborLdInputNodeAdapter.ToJsonLd(new CborLdInputString("hi")).Kind);
+        Assert.AreEqual(JsonNodeKind.Number, CborLdInputNodeAdapter.ToJsonLd(new CborLdInputInt(42)).Kind);
+        Assert.AreEqual(JsonNodeKind.Number, CborLdInputNodeAdapter.ToJsonLd(new CborLdInputDouble(3.14)).Kind);
+        Assert.AreEqual(JsonNodeKind.Array, CborLdInputNodeAdapter.ToJsonLd(new CborLdInputArray(System.Array.Empty<CborLdInputNode>())).Kind);
+        Assert.AreEqual(JsonNodeKind.Object, CborLdInputNodeAdapter.ToJsonLd(new CborLdInputMap(System.Array.Empty<KeyValuePair<string, CborLdInputNode>>())).Kind);
     }
 
     [TestMethod]
@@ -113,10 +113,10 @@ internal sealed class CborLdInputNodeAdapterTests
     {
         //CborLdInputInt round-trips through GetRawNumber as an integer-shaped
         //lexical form so a consumer can re-classify it as Int64-compatible.
-        JsonLdNode node = CborLdInputNodeAdapter.ToJsonLd(new CborLdInputInt(42));
+        JsonNode node = CborLdInputNodeAdapter.ToJsonLd(new CborLdInputInt(42));
         Assert.AreEqual("42", node.GetRawNumber());
 
-        JsonLdNode big = CborLdInputNodeAdapter.ToJsonLd(new CborLdInputInt(long.MaxValue));
+        JsonNode big = CborLdInputNodeAdapter.ToJsonLd(new CborLdInputInt(long.MaxValue));
         Assert.AreEqual(long.MaxValue.ToString(System.Globalization.CultureInfo.InvariantCulture), big.GetRawNumber());
     }
 
@@ -124,7 +124,7 @@ internal sealed class CborLdInputNodeAdapterTests
     public void ToJsonLdNumberKindPreservesDoubleForm()
     {
         //Round-trip ("R") format ensures the double reparses to the same value.
-        JsonLdNode node = CborLdInputNodeAdapter.ToJsonLd(new CborLdInputDouble(3.14));
+        JsonNode node = CborLdInputNodeAdapter.ToJsonLd(new CborLdInputDouble(3.14));
         string raw = node.GetRawNumber();
         Assert.AreEqual(3.14, double.Parse(raw, System.Globalization.CultureInfo.InvariantCulture));
     }
@@ -139,10 +139,10 @@ internal sealed class CborLdInputNodeAdapterTests
             new CborLdInputString("c")
         });
 
-        JsonLdNode root = CborLdInputNodeAdapter.ToJsonLd(array);
-        Assert.AreEqual(JsonLdNodeKind.Array, root.Kind);
+        JsonNode root = CborLdInputNodeAdapter.ToJsonLd(array);
+        Assert.AreEqual(JsonNodeKind.Array, root.Kind);
         List<string> collected = new();
-        foreach(JsonLdNode item in root.EnumerateArray())
+        foreach(JsonNode item in root.EnumerateArray())
         {
             collected.Add(item.GetString());
         }
@@ -158,19 +158,19 @@ internal sealed class CborLdInputNodeAdapterTests
             new KeyValuePair<string, CborLdInputNode>("age", new CborLdInputInt(30))
         });
 
-        JsonLdNode root = CborLdInputNodeAdapter.ToJsonLd(map);
-        Assert.AreEqual(JsonLdNodeKind.Object, root.Kind);
+        JsonNode root = CborLdInputNodeAdapter.ToJsonLd(map);
+        Assert.AreEqual(JsonNodeKind.Object, root.Kind);
 
         List<string> keys = new();
-        foreach(KeyValuePair<string, JsonLdNode> entry in root.EnumerateObject())
+        foreach(KeyValuePair<string, JsonNode> entry in root.EnumerateObject())
         {
             keys.Add(entry.Key);
         }
         CollectionAssert.AreEqual(NameAgeArray, keys);
 
-        Assert.IsTrue(root.TryGetProperty("name", out JsonLdNode nameNode));
+        Assert.IsTrue(root.TryGetProperty("name", out JsonNode nameNode));
         Assert.AreEqual("Alice", nameNode.GetString());
-        Assert.IsTrue(root.TryGetProperty("age", out JsonLdNode ageNode));
+        Assert.IsTrue(root.TryGetProperty("age", out JsonNode ageNode));
         Assert.AreEqual("30", ageNode.GetRawNumber());
         Assert.IsFalse(root.TryGetProperty("missing", out _));
     }
@@ -181,7 +181,7 @@ internal sealed class CborLdInputNodeAdapterTests
         //Byte strings have no JSON equivalent; navigation raises a clear
         //exception. The ToJsonLd call itself succeeds (handle is wrapped)
         //but the first Kind query fails.
-        JsonLdNode wrapped = CborLdInputNodeAdapter.ToJsonLd(new CborLdInputBytes(new byte[] { 1, 2, 3 }));
+        JsonNode wrapped = CborLdInputNodeAdapter.ToJsonLd(new CborLdInputBytes(new byte[] { 1, 2, 3 }));
         Assert.ThrowsExactly<InvalidOperationException>(() => _ = wrapped.Kind);
     }
 
@@ -204,7 +204,7 @@ internal sealed class CborLdInputNodeAdapterTests
             """;
 
         CborLdInputNode first = CborLdInputNodeAdapter.FromJsonLd(ParseJson(json));
-        JsonLdNode reExposed = CborLdInputNodeAdapter.ToJsonLd(first);
+        JsonNode reExposed = CborLdInputNodeAdapter.ToJsonLd(first);
         CborLdInputNode second = CborLdInputNodeAdapter.FromJsonLd(reExposed);
 
         AssertStructurallyEqual(first, second);
@@ -230,29 +230,29 @@ internal sealed class CborLdInputNodeAdapterTests
             }))
         });
 
-        JsonLdNode rootJson = CborLdInputNodeAdapter.ToJsonLd(root);
-        Assert.AreEqual(JsonLdNodeKind.Object, rootJson.Kind);
+        JsonNode rootJson = CborLdInputNodeAdapter.ToJsonLd(root);
+        Assert.AreEqual(JsonNodeKind.Object, rootJson.Kind);
 
-        Assert.IsTrue(rootJson.TryGetProperty("@id", out JsonLdNode idNode));
+        Assert.IsTrue(rootJson.TryGetProperty("@id", out JsonNode idNode));
         Assert.AreEqual("urn:test", idNode.GetString());
 
-        Assert.IsTrue(rootJson.TryGetProperty("count", out JsonLdNode countNode));
+        Assert.IsTrue(rootJson.TryGetProperty("count", out JsonNode countNode));
         Assert.AreEqual("7", countNode.GetRawNumber());
 
-        Assert.IsTrue(rootJson.TryGetProperty("ratio", out JsonLdNode ratioNode));
+        Assert.IsTrue(rootJson.TryGetProperty("ratio", out JsonNode ratioNode));
         Assert.AreEqual(0.5, double.Parse(ratioNode.GetRawNumber(), System.Globalization.CultureInfo.InvariantCulture));
 
-        Assert.IsTrue(rootJson.TryGetProperty("present", out JsonLdNode presentNode));
-        Assert.AreEqual(JsonLdNodeKind.True, presentNode.Kind);
+        Assert.IsTrue(rootJson.TryGetProperty("present", out JsonNode presentNode));
+        Assert.AreEqual(JsonNodeKind.True, presentNode.Kind);
         Assert.IsTrue(presentNode.GetBoolean());
 
-        Assert.IsTrue(rootJson.TryGetProperty("absent", out JsonLdNode absentNode));
-        Assert.AreEqual(JsonLdNodeKind.Null, absentNode.Kind);
+        Assert.IsTrue(rootJson.TryGetProperty("absent", out JsonNode absentNode));
+        Assert.AreEqual(JsonNodeKind.Null, absentNode.Kind);
 
-        Assert.IsTrue(rootJson.TryGetProperty("items", out JsonLdNode itemsNode));
-        Assert.AreEqual(JsonLdNodeKind.Array, itemsNode.Kind);
+        Assert.IsTrue(rootJson.TryGetProperty("items", out JsonNode itemsNode));
+        Assert.AreEqual(JsonNodeKind.Array, itemsNode.Kind);
         List<string> rawNumbers = new();
-        foreach(JsonLdNode item in itemsNode.EnumerateArray())
+        foreach(JsonNode item in itemsNode.EnumerateArray())
         {
             rawNumbers.Add(item.GetRawNumber());
         }
@@ -266,10 +266,10 @@ internal sealed class CborLdInputNodeAdapterTests
         //identity over the same handle. The resulting node is still
         //navigable through the same navigator.
         CborLdInputString original = new("hello");
-        JsonLdNode wrapped = CborLdInputNodeAdapter.ToJsonLd(original);
-        JsonLdNode cloned = wrapped.Clone();
+        JsonNode wrapped = CborLdInputNodeAdapter.ToJsonLd(original);
+        JsonNode cloned = wrapped.Clone();
 
-        Assert.AreEqual(JsonLdNodeKind.String, cloned.Kind);
+        Assert.AreEqual(JsonNodeKind.String, cloned.Kind);
         Assert.AreEqual("hello", cloned.GetString());
     }
 
@@ -336,9 +336,9 @@ internal sealed class CborLdInputNodeAdapterTests
         }
     }
 
-    private static JsonLdNode ParseJson(string json)
+    private static JsonNode ParseJson(string json)
     {
         Utf8String utf8 = Utf8String.WithoutPrecomputedHash(Encoding.UTF8.GetBytes(json));
-        return StjJsonLdAdapter.Parse(utf8);
+        return StjJsonAdapter.Parse(utf8);
     }
 }

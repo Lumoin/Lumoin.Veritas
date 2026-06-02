@@ -1,18 +1,12 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>    
+  <PropertyGroup>
     <RootNamespace>Lumoin.Veritas.Json</RootNamespace>
-    <Description>JSON serialization layer for Lumoin.Veritas. Owns the System.Text.Json dependency and provides AOT-compatible serialization for all Veritas types that cross the JSON boundary.</Description>
+    <Description>The JSON value model for Lumoin.Veritas: a backend-agnostic node handle, navigator, and parse seam. Carries no System.Text.Json dependency; a concrete parser is supplied through the parse delegate.</Description>
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Lumoin.Veritas.Canonicalization\Lumoin.Veritas.Canonicalization.csproj" />
-    <ProjectReference Include="..\Lumoin.Veritas.CborLd\Lumoin.Veritas.CborLd.csproj" />
     <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
-    <ProjectReference Include="..\Lumoin.Veritas.JsonLd\Lumoin.Veritas.JsonLd.csproj" />
-    <ProjectReference Include="..\Lumoin.Veritas.NQuads\Lumoin.Veritas.NQuads.csproj" />
-    <ProjectReference Include="..\Lumoin.Veritas.Skos\Lumoin.Veritas.Skos.csproj" />
-    <ProjectReference Include="..\Lumoin.Veritas.Sparql\Lumoin.Veritas.Sparql.csproj" />
   </ItemGroup>
- 
+
 </Project>

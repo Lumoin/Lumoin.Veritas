@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using System.Threading.Tasks;
+using Lumoin.Veritas.Json;
 using Lumoin.Veritas.LinkedData;
 
 namespace Lumoin.Veritas.JsonLd;
@@ -13,7 +14,7 @@ namespace Lumoin.Veritas.JsonLd;
 /// delegating to <see cref="ContextProcessing"/> in
 /// <c>Lumoin.Veritas.LinkedData</c>. The shell is responsible for
 /// adapting the legacy <see cref="ContextResolverDelegate"/> /
-/// <see cref="JsonLdParserDelegate"/> pair into the
+/// <see cref="ParseJsonDelegate"/> pair into the
 /// <see cref="FetchRemoteResourceDelegate"/> /
 /// <see cref="ParseRemoteContextDelegate"/> shape the format-agnostic
 /// core consumes, and for wrapping any
@@ -39,10 +40,10 @@ public static class ContextProcessor
         Justification = "baseUrl follows JSON-LD spec which uses string URIs throughout the processing algorithm.")]
     public static async ValueTask<LinkedDataContext> ProcessAsync(
         LinkedDataContext activeContext,
-        JsonLdNode localContext,
+        JsonNode localContext,
         string? baseUrl,
         ContextResolverDelegate resolver,
-        JsonLdParserDelegate parser,
+        ParseJsonDelegate parser,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(activeContext);

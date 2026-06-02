@@ -1,7 +1,7 @@
-namespace Lumoin.Veritas.JsonLd.Document;
+namespace Lumoin.Veritas.Json;
 
 /// <summary>
-/// Categorises a <see cref="JsonLdNode"/> by the kind of JSON value it represents.
+/// Categorises a <see cref="JsonNode"/> by the kind of JSON value it represents.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -16,7 +16,7 @@ namespace Lumoin.Veritas.JsonLd.Document;
 /// of the JSON token grammar, where <c>true</c> and <c>false</c> are distinct tokens.
 /// </para>
 /// </remarks>
-public enum JsonLdNodeKind
+public enum JsonNodeKind
 {
     /// <summary>The JSON null literal.</summary>
     Null,

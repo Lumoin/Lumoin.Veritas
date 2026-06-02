@@ -1,11 +1,11 @@
 using System.Diagnostics;
 
-namespace Lumoin.Veritas.JsonLd.Document;
+namespace Lumoin.Veritas.Json;
 
 /// <summary>
 /// A dispatch table of static method groups supplied by an adapter to read JSON
 /// values from opaque handles. A single navigator instance is shared across every
-/// <see cref="JsonLdNode"/> the adapter produces.
+/// <see cref="JsonNode"/> the adapter produces.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -21,11 +21,11 @@ namespace Lumoin.Veritas.JsonLd.Document;
 /// error rather than a runtime null-reference at the first call site that needs it.
 /// </para>
 /// </remarks>
-[DebuggerDisplay("JsonLdNodeNavigator")]
-public sealed class JsonLdNodeNavigator
+[DebuggerDisplay("JsonNodeNavigator")]
+public sealed class JsonNodeNavigator
 {
     /// <summary>
-    /// Gets the delegate that returns a node's <see cref="JsonLdNodeKind"/>.
+    /// Gets the delegate that returns a node's <see cref="JsonNodeKind"/>.
     /// </summary>
     public required GetNodeKindDelegate GetKind { get; init; }
 

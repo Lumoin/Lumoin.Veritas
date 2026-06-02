@@ -136,6 +136,12 @@
           "System.IO.Hashing": "[10.0.8, )"
         }
       },
+      "lumoin.veritas.json": {
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Veritas.Core": "[0.0.0, )"
+        }
+      },
       "lumoin.veritas.linkeddata": {
         "type": "Project",
         "dependencies": {

@@ -2,7 +2,7 @@ using System.Collections.Generic;
 using System.Text;
 using Lumoin.Veritas.Cbor.CborLd;
 using Lumoin.Veritas.Core;
-using Lumoin.Veritas.Json;
+using Lumoin.Veritas.Json.Stj;
 
 namespace Lumoin.Veritas.Tests.CborLd;
 
@@ -21,7 +21,7 @@ internal sealed class CborLdRegistryJsonLoaderTests
     [TestMethod]
     public void LoadsMinimalEntryWithIdOnly()
     {
-        CborLdRegistryEntry entry = CborLdRegistryJsonLoader.LoadEntry(Utf8(/*lang=json,strict*/ """
+        CborLdRegistryEntry entry = LoadEntry(Utf8(/*lang=json,strict*/ """
             {"id": 42}
             """));
 
@@ -36,7 +36,7 @@ internal sealed class CborLdRegistryJsonLoaderTests
     [TestMethod]
     public void LoadsKeywordsTable()
     {
-        CborLdRegistryEntry entry = CborLdRegistryJsonLoader.LoadEntry(Utf8(/*lang=json,strict*/ """
+        CborLdRegistryEntry entry = LoadEntry(Utf8(/*lang=json,strict*/ """
             {
               "id": 1,
               "keywords": { "@context": 0, "@id": 2, "@type": 4 }
@@ -53,7 +53,7 @@ internal sealed class CborLdRegistryJsonLoaderTests
     public void LoadsCompactFormTerms()
     {
         //Compact form: "termName": <int>. Sets the codec id with no Type.
-        CborLdRegistryEntry entry = CborLdRegistryJsonLoader.LoadEntry(Utf8(/*lang=json,strict*/ """
+        CborLdRegistryEntry entry = LoadEntry(Utf8(/*lang=json,strict*/ """
             {
               "id": 1,
               "terms": { "name": 100, "age": 102 }
@@ -70,7 +70,7 @@ internal sealed class CborLdRegistryJsonLoaderTests
     public void LoadsFullFormTypedTerm()
     {
         //Full form: "termName": { "id": <int>, "type": <string|null> }
-        CborLdRegistryEntry entry = CborLdRegistryJsonLoader.LoadEntry(Utf8(/*lang=json,strict*/ """
+        CborLdRegistryEntry entry = LoadEntry(Utf8(/*lang=json,strict*/ """
             {
               "id": 1,
               "terms": {
@@ -87,7 +87,7 @@ internal sealed class CborLdRegistryJsonLoaderTests
     [TestMethod]
     public void LoadsRegistryProvidedTypeTable()
     {
-        CborLdRegistryEntry entry = CborLdRegistryJsonLoader.LoadEntry(Utf8(/*lang=json,strict*/ """
+        CborLdRegistryEntry entry = LoadEntry(Utf8(/*lang=json,strict*/ """
             {
               "id": 1,
               "typeTables": {
@@ -110,7 +110,7 @@ internal sealed class CborLdRegistryJsonLoaderTests
     {
         //W3C CBOR-LD 1.0: the typeTables object's value may be the literal
         //string "callerProvidedTable" indicating the table is caller-supplied.
-        CborLdRegistryEntry entry = CborLdRegistryJsonLoader.LoadEntry(Utf8(/*lang=json,strict*/ """
+        CborLdRegistryEntry entry = LoadEntry(Utf8(/*lang=json,strict*/ """
             {
               "id": 1,
               "typeTables": {
@@ -128,7 +128,7 @@ internal sealed class CborLdRegistryJsonLoaderTests
     public void LoadsMixedTypeTables()
     {
         //One registry-provided, one caller-provided in the same entry.
-        CborLdRegistryEntry entry = CborLdRegistryJsonLoader.LoadEntry(Utf8(/*lang=json,strict*/ """
+        CborLdRegistryEntry entry = LoadEntry(Utf8(/*lang=json,strict*/ """
             {
               "id": 1,
               "typeTables": {
@@ -147,7 +147,7 @@ internal sealed class CborLdRegistryJsonLoaderTests
     [TestMethod]
     public void LoadsProcessingModelAndProvisional()
     {
-        CborLdRegistryEntry entry = CborLdRegistryJsonLoader.LoadEntry(Utf8(/*lang=json,strict*/ """
+        CborLdRegistryEntry entry = LoadEntry(Utf8(/*lang=json,strict*/ """
             {
               "id": 7,
               "processingModel": "experimental",
@@ -162,7 +162,7 @@ internal sealed class CborLdRegistryJsonLoaderTests
     [TestMethod]
     public void LoadEntriesParsesArray()
     {
-        IReadOnlyList<CborLdRegistryEntry> entries = CborLdRegistryJsonLoader.LoadEntries(Utf8(/*lang=json,strict*/ """
+        IReadOnlyList<CborLdRegistryEntry> entries = LoadEntries(Utf8(/*lang=json,strict*/ """
             [
               { "id": 1, "keywords": { "@id": 2 } },
               { "id": 2, "terms": { "name": 100 } },
@@ -180,7 +180,7 @@ internal sealed class CborLdRegistryJsonLoaderTests
     public void MalformedJsonThrowsProcessingException()
     {
         CborLdProcessingException ex = Assert.ThrowsExactly<CborLdProcessingException>(() =>
-            CborLdRegistryJsonLoader.LoadEntry(Utf8("{ this is not valid json")));
+            LoadEntry(Utf8("{ this is not valid json")));
 
         Assert.AreEqual("invalid registry json", ex.ErrorCode);
     }
@@ -189,7 +189,7 @@ internal sealed class CborLdRegistryJsonLoaderTests
     public void MissingIdThrowsProcessingException()
     {
         CborLdProcessingException ex = Assert.ThrowsExactly<CborLdProcessingException>(() =>
-            CborLdRegistryJsonLoader.LoadEntry(Utf8(/*lang=json,strict*/ """
+            LoadEntry(Utf8(/*lang=json,strict*/ """
                 {"keywords": {}}
                 """)));
 
@@ -203,7 +203,7 @@ internal sealed class CborLdRegistryJsonLoaderTests
         //Any string value in typeTables other than the spec sentinel
         //"callerProvidedTable" is an error.
         CborLdProcessingException ex = Assert.ThrowsExactly<CborLdProcessingException>(() =>
-            CborLdRegistryJsonLoader.LoadEntry(Utf8(/*lang=json,strict*/ """
+            LoadEntry(Utf8(/*lang=json,strict*/ """
                 {
                   "id": 1,
                   "typeTables": { "url": "somethingElse" }
@@ -218,7 +218,7 @@ internal sealed class CborLdRegistryJsonLoaderTests
     public void NonObjectTopLevelInLoadEntriesThrows()
     {
         CborLdProcessingException ex = Assert.ThrowsExactly<CborLdProcessingException>(() =>
-            CborLdRegistryJsonLoader.LoadEntries(Utf8(/*lang=json,strict*/ """
+            LoadEntries(Utf8(/*lang=json,strict*/ """
                 {"id": 1}
                 """)));
 
@@ -231,7 +231,7 @@ internal sealed class CborLdRegistryJsonLoaderTests
         //Second entry (index 1) is malformed; the error message must
         //identify the index so the caller can locate the bad entry.
         CborLdProcessingException ex = Assert.ThrowsExactly<CborLdProcessingException>(() =>
-            CborLdRegistryJsonLoader.LoadEntries(Utf8(/*lang=json,strict*/ """
+            LoadEntries(Utf8(/*lang=json,strict*/ """
                 [
                   {"id": 1},
                   {"keywords": {}}
@@ -240,4 +240,12 @@ internal sealed class CborLdRegistryJsonLoaderTests
 
         Assert.Contains("index 1", ex.Message);
     }
+
+    /// <summary>Parses a single registry entry, supplying the System.Text.Json-backed parser.</summary>
+    private static CborLdRegistryEntry LoadEntry(Utf8String utf8Json)
+        => CborLdRegistryJsonLoader.LoadEntry(utf8Json, StjJsonAdapter.Parse);
+
+    /// <summary>Parses an array of registry entries, supplying the System.Text.Json-backed parser.</summary>
+    private static IReadOnlyList<CborLdRegistryEntry> LoadEntries(Utf8String utf8Json)
+        => CborLdRegistryJsonLoader.LoadEntries(utf8Json, StjJsonAdapter.Parse);
 }

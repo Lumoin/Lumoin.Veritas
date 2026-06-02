@@ -3,6 +3,7 @@ using Lumoin.Veritas.Json;
 using Lumoin.Veritas.JsonLd;
 using Lumoin.Veritas.LinkedData;
 using System.Text;
+using Lumoin.Veritas.Json.Stj;
 
 namespace Lumoin.Veritas.Tests.JsonLd;
 
@@ -21,9 +22,9 @@ internal sealed class ContextProcessorTests
             .WithVocabularyMapping("http://example.org/")
             .WithDefaultLanguage("en");
 
-        JsonLdNode doc = ParseJson("null");
+        JsonNode doc = ParseJson("null");
         LinkedDataContext result = await ContextProcessor.ProcessAsync(
-            initial, doc, null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken)
+            initial, doc, null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken)
             .ConfigureAwait(false);
 
         Assert.IsNull(result.VocabularyMapping);
@@ -33,12 +34,12 @@ internal sealed class ContextProcessorTests
     [TestMethod]
     public async Task ProcessInlineContextSetsVocab()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {"@vocab": "http://schema.org/"}
             """);
 
         LinkedDataContext result = await ContextProcessor.ProcessAsync(
-            LinkedDataContext.Empty, doc, null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken)
+            LinkedDataContext.Empty, doc, null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken)
             .ConfigureAwait(false);
 
         Assert.AreEqual("http://schema.org/", result.VocabularyMapping);
@@ -47,12 +48,12 @@ internal sealed class ContextProcessorTests
     [TestMethod]
     public async Task ProcessInlineContextSetsBase()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {"@base": "http://example.org/base/"}
             """);
 
         LinkedDataContext result = await ContextProcessor.ProcessAsync(
-            LinkedDataContext.Empty, doc, null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken)
+            LinkedDataContext.Empty, doc, null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken)
             .ConfigureAwait(false);
 
         Assert.AreEqual("http://example.org/base/", result.BaseIri);
@@ -61,12 +62,12 @@ internal sealed class ContextProcessorTests
     [TestMethod]
     public async Task ProcessInlineContextSetsLanguage()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {"@language": "fr"}
             """);
 
         LinkedDataContext result = await ContextProcessor.ProcessAsync(
-            LinkedDataContext.Empty, doc, null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken)
+            LinkedDataContext.Empty, doc, null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken)
             .ConfigureAwait(false);
 
         Assert.AreEqual("fr", result.DefaultLanguage);
@@ -75,7 +76,7 @@ internal sealed class ContextProcessorTests
     [TestMethod]
     public async Task ProcessInlineContextDefinesSimpleTerm()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {
                 "@vocab": "http://example.org/",
                 "name": "http://schema.org/name"
@@ -83,7 +84,7 @@ internal sealed class ContextProcessorTests
             """);
 
         LinkedDataContext result = await ContextProcessor.ProcessAsync(
-            LinkedDataContext.Empty, doc, null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken)
+            LinkedDataContext.Empty, doc, null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken)
             .ConfigureAwait(false);
 
         Assert.IsTrue(result.TryGetTerm("name", out TermDefinition? def));
@@ -93,7 +94,7 @@ internal sealed class ContextProcessorTests
     [TestMethod]
     public async Task ProcessInlineContextDefinesExpandedTermDefinition()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {
                 "knows": {
                     "@id": "http://xmlns.com/foaf/0.1/knows",
@@ -103,7 +104,7 @@ internal sealed class ContextProcessorTests
             """);
 
         LinkedDataContext result = await ContextProcessor.ProcessAsync(
-            LinkedDataContext.Empty, doc, null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken)
+            LinkedDataContext.Empty, doc, null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken)
             .ConfigureAwait(false);
 
         Assert.IsTrue(result.TryGetTerm("knows", out TermDefinition? def));
@@ -114,7 +115,7 @@ internal sealed class ContextProcessorTests
     [TestMethod]
     public async Task ProcessArrayContextAppliesInOrder()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             [
                 {"@vocab": "http://example.org/"},
                 {"@language": "de"}
@@ -122,7 +123,7 @@ internal sealed class ContextProcessorTests
             """);
 
         LinkedDataContext result = await ContextProcessor.ProcessAsync(
-            LinkedDataContext.Empty, doc, null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken)
+            LinkedDataContext.Empty, doc, null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken)
             .ConfigureAwait(false);
 
         Assert.AreEqual("http://example.org/", result.VocabularyMapping);
@@ -132,7 +133,7 @@ internal sealed class ContextProcessorTests
     [TestMethod]
     public async Task ProcessNullContextInArrayResetsTerms()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             [
                 {"@vocab": "http://example.org/", "name": "http://schema.org/name"},
                 null,
@@ -141,7 +142,7 @@ internal sealed class ContextProcessorTests
             """);
 
         LinkedDataContext result = await ContextProcessor.ProcessAsync(
-            LinkedDataContext.Empty, doc, null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken)
+            LinkedDataContext.Empty, doc, null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken)
             .ConfigureAwait(false);
 
         Assert.AreEqual("http://other.org/", result.VocabularyMapping);
@@ -152,7 +153,7 @@ internal sealed class ContextProcessorTests
     [TestMethod]
     public async Task ProcessContextWithPrefixExpandsCompactIri()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {
                 "foaf": "http://xmlns.com/foaf/0.1/",
                 "name": "foaf:name"
@@ -160,7 +161,7 @@ internal sealed class ContextProcessorTests
             """);
 
         LinkedDataContext result = await ContextProcessor.ProcessAsync(
-            LinkedDataContext.Empty, doc, null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken)
+            LinkedDataContext.Empty, doc, null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken)
             .ConfigureAwait(false);
 
         Assert.IsTrue(result.TryGetTerm("name", out TermDefinition? def));
@@ -170,12 +171,12 @@ internal sealed class ContextProcessorTests
     [TestMethod]
     public async Task ProcessContextWithDirectionSetsDirection()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {"@direction": "rtl"}
             """);
 
         LinkedDataContext result = await ContextProcessor.ProcessAsync(
-            LinkedDataContext.Empty, doc, null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken)
+            LinkedDataContext.Empty, doc, null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken)
             .ConfigureAwait(false);
 
         Assert.AreEqual("rtl", result.DefaultBaseDirection);
@@ -184,13 +185,13 @@ internal sealed class ContextProcessorTests
     [TestMethod]
     public async Task ProcessContextWithInvalidDirectionThrows()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {"@direction": "invalid"}
             """);
 
         await Assert.ThrowsExactlyAsync<JsonLdProcessingException>(
             async () => await ContextProcessor.ProcessAsync(
-                LinkedDataContext.Empty, doc, null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken)
+                LinkedDataContext.Empty, doc, null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken)
                 .ConfigureAwait(false))
             .ConfigureAwait(false);
     }
@@ -211,10 +212,10 @@ internal sealed class ContextProcessorTests
             return ValueTask.FromResult<Utf8String?>(body);
         };
 
-        JsonLdNode doc = ParseJson($"\"{remoteContextUri}\"");
+        JsonNode doc = ParseJson($"\"{remoteContextUri}\"");
 
         LinkedDataContext result = await ContextProcessor.ProcessAsync(
-            LinkedDataContext.Empty, doc, null, resolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken)
+            LinkedDataContext.Empty, doc, null, resolver, StjJsonAdapter.Parse, TestContext.CancellationToken)
             .ConfigureAwait(false);
 
         Assert.AreEqual("http://example.org/", result.VocabularyMapping);
@@ -223,11 +224,11 @@ internal sealed class ContextProcessorTests
     [TestMethod]
     public async Task ProcessRemoteContextThrowsWhenResolverReturnsNull()
     {
-        JsonLdNode doc = ParseJson("\"http://example.org/missing.jsonld\"");
+        JsonNode doc = ParseJson("\"http://example.org/missing.jsonld\"");
 
         JsonLdProcessingException ex = await Assert.ThrowsExactlyAsync<JsonLdProcessingException>(
             async () => await ContextProcessor.ProcessAsync(
-                LinkedDataContext.Empty, doc, null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken)
+                LinkedDataContext.Empty, doc, null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken)
                 .ConfigureAwait(false))
             .ConfigureAwait(false);
 
@@ -237,7 +238,7 @@ internal sealed class ContextProcessorTests
     [TestMethod]
     public async Task ProcessContextWithProtectedTermPreventsOverride()
     {
-        JsonLdNode first = ParseJson(/*lang=json,strict*/ """
+        JsonNode first = ParseJson(/*lang=json,strict*/ """
             {
                 "@protected": true,
                 "name": "http://schema.org/name"
@@ -245,10 +246,10 @@ internal sealed class ContextProcessorTests
             """);
 
         LinkedDataContext withProtected = await ContextProcessor.ProcessAsync(
-            LinkedDataContext.Empty, first, null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken)
+            LinkedDataContext.Empty, first, null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken)
             .ConfigureAwait(false);
 
-        JsonLdNode second = ParseJson(/*lang=json,strict*/ """
+        JsonNode second = ParseJson(/*lang=json,strict*/ """
             {
                 "name": "http://example.org/differentName"
             }
@@ -256,7 +257,7 @@ internal sealed class ContextProcessorTests
 
         await Assert.ThrowsExactlyAsync<JsonLdProcessingException>(
             async () => await ContextProcessor.ProcessAsync(
-                withProtected, second, null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken)
+                withProtected, second, null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken)
                 .ConfigureAwait(false))
             .ConfigureAwait(false);
     }
@@ -264,7 +265,7 @@ internal sealed class ContextProcessorTests
     [TestMethod]
     public async Task ProcessContextWithContainerMapping()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {
                 "tags": {
                     "@id": "http://example.org/tags",
@@ -274,7 +275,7 @@ internal sealed class ContextProcessorTests
             """);
 
         LinkedDataContext result = await ContextProcessor.ProcessAsync(
-            LinkedDataContext.Empty, doc, null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken)
+            LinkedDataContext.Empty, doc, null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken)
             .ConfigureAwait(false);
 
         Assert.IsTrue(result.TryGetTerm("tags", out TermDefinition? def));
@@ -294,16 +295,16 @@ internal sealed class ContextProcessorTests
     }
 
     /// <summary>
-    /// Parses a .NET string of JSON text into a <see cref="JsonLdNode"/> via the
-    /// bundled <see cref="StjJsonLdAdapter"/>. The bytes are not interned in any
+    /// Parses a .NET string of JSON text into a <see cref="JsonNode"/> via the
+    /// bundled <see cref="StjJsonAdapter"/>. The bytes are not interned in any
     /// pool because they live only for the duration of this call.
     /// </summary>
     /// <param name="json">The JSON text to parse.</param>
     /// <returns>The parsed document root.</returns>
-    private static JsonLdNode ParseJson(string json)
+    private static JsonNode ParseJson(string json)
     {
         Utf8String utf8 = Utf8String.WithoutPrecomputedHash(Encoding.UTF8.GetBytes(json));
 
-        return StjJsonLdAdapter.Parse(utf8);
+        return StjJsonAdapter.Parse(utf8);
     }
 }

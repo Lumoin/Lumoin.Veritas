@@ -1,6 +1,6 @@
 using System;
 
-namespace Lumoin.Veritas.Json;
+namespace Lumoin.Veritas.Rdf.Json;
 
 /// <summary>
 /// The well-known property names and value tokens of the

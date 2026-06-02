@@ -6,7 +6,7 @@ namespace Lumoin.Veritas.Cbor.CborLd;
 /// <summary>
 /// The format-neutral document tree shape that the CBOR-LD encoder accepts
 /// and the decoder produces. Consumers convert their format-specific tree
-/// (a JSON-LD <c>JsonLdNode</c> from <c>Lumoin.Veritas.JsonLd</c>, or any
+/// (a JSON-LD <c>JsonNode</c> from <c>Lumoin.Veritas.JsonLd</c>, or any
 /// other source) to this shape at the CBOR-LD boundary.
 /// </summary>
 /// <remarks>

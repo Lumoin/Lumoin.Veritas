@@ -358,6 +358,7 @@
         "dependencies": {
           "Lumoin.Veritas.Cbor": "[0.0.0, )",
           "Lumoin.Veritas.Core": "[0.0.0, )",
+          "Lumoin.Veritas.Json": "[0.0.0, )",
           "Lumoin.Veritas.LinkedData": "[0.0.0, )"
         }
       },
@@ -376,13 +377,14 @@
       "lumoin.veritas.json": {
         "type": "Project",
         "dependencies": {
-          "Lumoin.Veritas.Canonicalization": "[0.0.0, )",
-          "Lumoin.Veritas.CborLd": "[0.0.0, )",
+          "Lumoin.Veritas.Core": "[0.0.0, )"
+        }
+      },
+      "lumoin.veritas.json.stj": {
+        "type": "Project",
+        "dependencies": {
           "Lumoin.Veritas.Core": "[0.0.0, )",
-          "Lumoin.Veritas.JsonLd": "[0.0.0, )",
-          "Lumoin.Veritas.NQuads": "[0.0.0, )",
-          "Lumoin.Veritas.Skos": "[0.0.0, )",
-          "Lumoin.Veritas.Sparql": "[0.0.0, )"
+          "Lumoin.Veritas.Json": "[0.0.0, )"
         }
       },
       "lumoin.veritas.jsonld": {
@@ -390,6 +392,7 @@
         "dependencies": {
           "Lumoin.Veritas.CborLd": "[0.0.0, )",
           "Lumoin.Veritas.Core": "[0.0.0, )",
+          "Lumoin.Veritas.Json": "[0.0.0, )",
           "Lumoin.Veritas.LinkedData": "[0.0.0, )"
         }
       },
@@ -419,6 +422,13 @@
         "type": "Project",
         "dependencies": {
           "Lumoin.Veritas.Core": "[0.0.0, )"
+        }
+      },
+      "lumoin.veritas.rdf.json": {
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Veritas.Core": "[0.0.0, )",
+          "Lumoin.Veritas.Sparql": "[0.0.0, )"
         }
       },
       "lumoin.veritas.shacl": {

@@ -1,6 +1,6 @@
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Sourcing;
-using Lumoin.Veritas.JsonLd.Document;
+using Lumoin.Veritas.Json;
 using Lumoin.Veritas.LinkedData;
 using System;
 using System.Collections.Generic;
@@ -24,7 +24,7 @@ namespace Lumoin.Veritas.JsonLd;
 /// <para>
 /// The implementation follows the JSON-LD 1.1 Processing Algorithms specification.
 /// This is the non-streaming implementation: the full document is parsed into a
-/// <see cref="JsonLdNode"/> tree, then processed to produce quads.
+/// <see cref="JsonNode"/> tree, then processed to produce quads.
 /// </para>
 /// </remarks>
 public static class JsonLdExpander
@@ -45,9 +45,9 @@ public static class JsonLdExpander
     /// Expands a JSON-LD document and extracts all RDF quads.
     /// </summary>
     /// <param name="document">
-    /// The root <see cref="JsonLdNode"/> of the JSON-LD document. Callers obtain
+    /// The root <see cref="JsonNode"/> of the JSON-LD document. Callers obtain
     /// this by parsing UTF-8 JSON bytes with the parser provided by their chosen
-    /// JSON adapter (e.g. <c>StjJsonLdAdapter.Parse</c> in the bundled adapter).
+    /// JSON adapter (e.g. <c>StjJsonAdapter.Parse</c> in the bundled adapter).
     /// </param>
     /// <param name="baseUrl">The base URL of the document.</param>
     /// <param name="resolver">The delegate for resolving remote contexts.</param>
@@ -61,10 +61,10 @@ public static class JsonLdExpander
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
         Justification = "baseUrl follows JSON-LD spec which uses string URIs throughout the processing algorithm.")]
     public static async IAsyncEnumerable<Quad> ExtractQuadsAsync(
-        JsonLdNode document,
+        JsonNode document,
         string? baseUrl,
         ContextResolverDelegate resolver,
-        JsonLdParserDelegate parser,
+        ParseJsonDelegate parser,
         Utf8StringPool pool,
         [EnumeratorCancellation]
         CancellationToken cancellationToken = default)
@@ -81,8 +81,8 @@ public static class JsonLdExpander
         }
 
         //Process document-level @context if present.
-        if(document.Kind == JsonLdNodeKind.Object
-            && document.TryGetProperty(JsonLdKeywords.Context, out JsonLdNode contextElement))
+        if(document.Kind == JsonNodeKind.Object
+            && document.TryGetProperty(JsonLdKeywords.Context, out JsonNode contextElement))
         {
             activeContext = await ContextProcessor.ProcessAsync(
                 activeContext, contextElement, baseUrl, resolver, parser, cancellationToken)
@@ -105,9 +105,9 @@ public static class JsonLdExpander
     /// per-quad provenance via <see cref="EmittedQuad"/>.
     /// </summary>
     /// <param name="document">
-    /// The root <see cref="JsonLdNode"/> of the JSON-LD document. Callers obtain
+    /// The root <see cref="JsonNode"/> of the JSON-LD document. Callers obtain
     /// this by parsing UTF-8 JSON bytes with the parser provided by their chosen
-    /// JSON adapter (e.g. <c>StjJsonLdAdapter.Parse</c> in the bundled adapter).
+    /// JSON adapter (e.g. <c>StjJsonAdapter.Parse</c> in the bundled adapter).
     /// </param>
     /// <param name="documentId">
     /// Identity of the parsed document. By convention this is the application's
@@ -141,8 +141,8 @@ public static class JsonLdExpander
     /// </para>
     /// <para>
     /// <b>No <c>SourceSpan</c> at this layer.</b> The underlying
-    /// <see cref="JsonLdNode"/> abstraction is parser-neutral and the
-    /// bundled <c>StjJsonLdAdapter</c> uses
+    /// <see cref="JsonNode"/> abstraction is parser-neutral and the
+    /// bundled <c>StjJsonAdapter</c> uses
     /// <c>System.Text.Json.JsonElement</c>, which does not expose byte
     /// offsets, line numbers, or column numbers. Source attribution at the
     /// JSON-LD layer is therefore document-level only. A future span-aware
@@ -153,11 +153,11 @@ public static class JsonLdExpander
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
         Justification = "baseUrl follows JSON-LD spec which uses string URIs throughout the processing algorithm.")]
     public static async IAsyncEnumerable<EmittedQuad> ExtractQuadsWithSourceAsync(
-        JsonLdNode document,
+        JsonNode document,
         DocumentId documentId,
         string? baseUrl,
         ContextResolverDelegate resolver,
-        JsonLdParserDelegate parser,
+        ParseJsonDelegate parser,
         Utf8StringPool pool,
         [EnumeratorCancellation]
         CancellationToken cancellationToken = default)
@@ -174,8 +174,8 @@ public static class JsonLdExpander
         }
 
         //Process document-level @context if present.
-        if(document.Kind == JsonLdNodeKind.Object
-            && document.TryGetProperty(JsonLdKeywords.Context, out JsonLdNode contextElement))
+        if(document.Kind == JsonNodeKind.Object
+            && document.TryGetProperty(JsonLdKeywords.Context, out JsonNode contextElement))
         {
             activeContext = await ContextProcessor.ProcessAsync(
                 activeContext, contextElement, baseUrl, resolver, parser, cancellationToken)
@@ -200,11 +200,11 @@ public static class JsonLdExpander
     }
 
     private static async Task ExpandNodeAsync(
-        JsonLdNode element,
+        JsonNode element,
         LinkedDataContext activeContext,
         string? baseUrl,
         ContextResolverDelegate resolver,
-        JsonLdParserDelegate parser,
+        ParseJsonDelegate parser,
         RdfTerm? graphName,
         List<Quad> quads,
         Utf8StringPool pool,
@@ -212,15 +212,15 @@ public static class JsonLdExpander
     {
         switch(element.Kind)
         {
-            case JsonLdNodeKind.Array:
-                foreach(JsonLdNode item in element.EnumerateArray())
+            case JsonNodeKind.Array:
+                foreach(JsonNode item in element.EnumerateArray())
                 {
                     await ExpandNodeAsync(item, activeContext, baseUrl, resolver, parser,
                         graphName, quads, pool, cancellationToken).ConfigureAwait(false);
                 }
                 break;
 
-            case JsonLdNodeKind.Object:
+            case JsonNodeKind.Object:
                 await ExpandObjectAsync(element, activeContext, baseUrl, resolver, parser,
                     graphName, quads, pool, cancellationToken).ConfigureAwait(false);
                 break;
@@ -228,11 +228,11 @@ public static class JsonLdExpander
     }
 
     private static async Task ExpandObjectAsync(
-        JsonLdNode obj,
+        JsonNode obj,
         LinkedDataContext activeContext,
         string? baseUrl,
         ContextResolverDelegate resolver,
-        JsonLdParserDelegate parser,
+        ParseJsonDelegate parser,
         RdfTerm? graphName,
         List<Quad> quads,
         Utf8StringPool pool,
@@ -240,7 +240,7 @@ public static class JsonLdExpander
         RdfTerm? providedSubject = null)
     {
         //Process @context if present, updating the active context for this object.
-        if(obj.TryGetProperty(JsonLdKeywords.Context, out JsonLdNode localContextElement))
+        if(obj.TryGetProperty(JsonLdKeywords.Context, out JsonNode localContextElement))
         {
             activeContext = await ContextProcessor.ProcessAsync(
                 activeContext, localContextElement, baseUrl, resolver, parser, cancellationToken)
@@ -251,13 +251,13 @@ public static class JsonLdExpander
         RdfTerm subject = providedSubject ?? DetermineSubject(obj, activeContext, pool);
 
         //Process @type.
-        if(obj.TryGetProperty(JsonLdKeywords.Type, out JsonLdNode typeElement))
+        if(obj.TryGetProperty(JsonLdKeywords.Type, out JsonNode typeElement))
         {
             ProcessTypeValues(typeElement, subject, activeContext, graphName, quads, pool);
         }
 
         //Process @graph: creates a named graph scope.
-        if(obj.TryGetProperty(JsonLdKeywords.Graph, out JsonLdNode graphElement))
+        if(obj.TryGetProperty(JsonLdKeywords.Graph, out JsonNode graphElement))
         {
             RdfTerm namedGraph = subject;
             await ExpandNodeAsync(graphElement, activeContext, baseUrl, resolver, parser,
@@ -265,7 +265,7 @@ public static class JsonLdExpander
         }
 
         //Process all other properties.
-        foreach((string name, JsonLdNode propertyValue) in obj.EnumerateObject())
+        foreach((string name, JsonNode propertyValue) in obj.EnumerateObject())
         {
             if(JsonLdKeywords.IsContext(name) || JsonLdKeywords.IsId(name) || JsonLdKeywords.IsType(name) || JsonLdKeywords.IsGraph(name))
             {
@@ -280,12 +280,12 @@ public static class JsonLdExpander
 
     private static async Task ExpandPropertyAsync(
         string propertyName,
-        JsonLdNode value,
+        JsonNode value,
         RdfTerm subject,
         LinkedDataContext activeContext,
         string? baseUrl,
         ContextResolverDelegate resolver,
-        JsonLdParserDelegate parser,
+        ParseJsonDelegate parser,
         RdfTerm? graphName,
         List<Quad> quads,
         Utf8StringPool pool,
@@ -325,13 +325,13 @@ public static class JsonLdExpander
     }
 
     private static async Task ExpandValueAsync(
-        JsonLdNode value,
+        JsonNode value,
         RdfTerm subject,
         NamedNode predicate,
         LinkedDataContext activeContext,
         string? baseUrl,
         ContextResolverDelegate resolver,
-        JsonLdParserDelegate parser,
+        ParseJsonDelegate parser,
         TermDefinition? termDef,
         RdfTerm? graphName,
         List<Quad> quads,
@@ -341,7 +341,7 @@ public static class JsonLdExpander
         bool isList = termDef?.ContainerMapping.Contains(JsonLdKeywords.List) == true;
 
         //Handle array values.
-        if(value.Kind == JsonLdNodeKind.Array)
+        if(value.Kind == JsonNodeKind.Array)
         {
             if(isList)
             {
@@ -350,7 +350,7 @@ public static class JsonLdExpander
             }
             else
             {
-                foreach(JsonLdNode item in value.EnumerateArray())
+                foreach(JsonNode item in value.EnumerateArray())
                 {
                     await ExpandValueAsync(item, subject, predicate, activeContext, baseUrl, resolver, parser,
                         termDef, graphName, quads, pool, cancellationToken).ConfigureAwait(false);
@@ -361,7 +361,7 @@ public static class JsonLdExpander
         }
 
         //Handle @value objects.
-        if(value.Kind == JsonLdNodeKind.Object && value.TryGetProperty(JsonLdKeywords.Value, out _))
+        if(value.Kind == JsonNodeKind.Object && value.TryGetProperty(JsonLdKeywords.Value, out _))
         {
             RdfTerm? objectTerm = ProcessValueObject(value, activeContext, termDef, pool);
             if(objectTerm is not null)
@@ -373,9 +373,9 @@ public static class JsonLdExpander
         }
 
         //Handle @id objects (node references or anonymous nodes).
-        if(value.Kind == JsonLdNodeKind.Object && value.TryGetProperty(JsonLdKeywords.Id, out JsonLdNode refId))
+        if(value.Kind == JsonNodeKind.Object && value.TryGetProperty(JsonLdKeywords.Id, out JsonNode refId))
         {
-            string idStr = refId.Kind == JsonLdNodeKind.String ? refId.GetString() : "";
+            string idStr = refId.Kind == JsonNodeKind.String ? refId.GetString() : "";
             string? expandedId = activeContext.ExpandIri(idStr, documentRelative: true);
 
             RdfTerm objectNode = expandedId is not null
@@ -394,7 +394,7 @@ public static class JsonLdExpander
         }
 
         //Recurse into nested objects.
-        if(value.Kind == JsonLdNodeKind.Object)
+        if(value.Kind == JsonNodeKind.Object)
         {
             BlankNode nestedNode = NewBlankNode(pool);
             EmitQuad(subject, predicate, nestedNode, graphName, quads);
@@ -413,7 +413,7 @@ public static class JsonLdExpander
     }
 
     private static async Task ExpandListAsync(
-        JsonLdNode array,
+        JsonNode array,
         RdfTerm subject,
         NamedNode predicate,
         LinkedDataContext activeContext,
@@ -435,15 +435,15 @@ public static class JsonLdExpander
 
         //Collect list items first, then build the linked list structure.
         List<RdfTerm> items = [];
-        foreach(JsonLdNode item in array.EnumerateArray())
+        foreach(JsonNode item in array.EnumerateArray())
         {
             RdfTerm? objectTerm = null;
 
-            if(item.Kind == JsonLdNodeKind.Object && item.TryGetProperty(JsonLdKeywords.Value, out _))
+            if(item.Kind == JsonNodeKind.Object && item.TryGetProperty(JsonLdKeywords.Value, out _))
             {
                 objectTerm = ProcessValueObject(item, activeContext, termDef, pool);
             }
-            else if(item.Kind is not JsonLdNodeKind.Object)
+            else if(item.Kind is not JsonNodeKind.Object)
             {
                 objectTerm = ExpandScalarValue(item, activeContext, termDef, pool);
             }
@@ -488,10 +488,10 @@ public static class JsonLdExpander
         await Task.CompletedTask.ConfigureAwait(false);
     }
 
-    private static RdfTerm DetermineSubject(JsonLdNode obj, LinkedDataContext activeContext, Utf8StringPool pool)
+    private static RdfTerm DetermineSubject(JsonNode obj, LinkedDataContext activeContext, Utf8StringPool pool)
     {
-        if(obj.TryGetProperty(JsonLdKeywords.Id, out JsonLdNode idElement)
-            && idElement.Kind == JsonLdNodeKind.String)
+        if(obj.TryGetProperty(JsonLdKeywords.Id, out JsonNode idElement)
+            && idElement.Kind == JsonNodeKind.String)
         {
             string idValue = idElement.GetString();
             string? expanded = activeContext.ExpandIri(idValue, documentRelative: true);
@@ -511,7 +511,7 @@ public static class JsonLdExpander
     }
 
     private static void ProcessTypeValues(
-        JsonLdNode typeElement,
+        JsonNode typeElement,
         RdfTerm subject,
         LinkedDataContext activeContext,
         RdfTerm? graphName,
@@ -532,15 +532,15 @@ public static class JsonLdExpander
             EmitQuad(subject, rdfType, typeNode, graphName, quads);
         }
 
-        if(typeElement.Kind == JsonLdNodeKind.String)
+        if(typeElement.Kind == JsonNodeKind.String)
         {
             EmitType(typeElement.GetString());
         }
-        else if(typeElement.Kind == JsonLdNodeKind.Array)
+        else if(typeElement.Kind == JsonNodeKind.Array)
         {
-            foreach(JsonLdNode typeItem in typeElement.EnumerateArray())
+            foreach(JsonNode typeItem in typeElement.EnumerateArray())
             {
-                if(typeItem.Kind == JsonLdNodeKind.String)
+                if(typeItem.Kind == JsonNodeKind.String)
                 {
                     EmitType(typeItem.GetString());
                 }
@@ -549,7 +549,7 @@ public static class JsonLdExpander
     }
 
     private static Literal? ProcessValueObject(
-        JsonLdNode valueObject,
+        JsonNode valueObject,
         LinkedDataContext activeContext,
         TermDefinition? termDef,
         Utf8StringPool pool)
@@ -557,21 +557,21 @@ public static class JsonLdExpander
         _ = activeContext;
         _ = termDef;
 
-        if(!valueObject.TryGetProperty(JsonLdKeywords.Value, out JsonLdNode valueElement))
+        if(!valueObject.TryGetProperty(JsonLdKeywords.Value, out JsonNode valueElement))
         {
             return null;
         }
 
         //Get the datatype.
         string? datatype = null;
-        if(valueObject.TryGetProperty(JsonLdKeywords.Type, out JsonLdNode typeEl) && typeEl.Kind == JsonLdNodeKind.String)
+        if(valueObject.TryGetProperty(JsonLdKeywords.Type, out JsonNode typeEl) && typeEl.Kind == JsonNodeKind.String)
         {
             datatype = typeEl.GetString();
         }
 
         //Get the language.
         string? language = null;
-        if(valueObject.TryGetProperty(JsonLdKeywords.Language, out JsonLdNode langEl) && langEl.Kind == JsonLdNodeKind.String)
+        if(valueObject.TryGetProperty(JsonLdKeywords.Language, out JsonNode langEl) && langEl.Kind == JsonNodeKind.String)
         {
             language = langEl.GetString();
         }
@@ -581,11 +581,11 @@ public static class JsonLdExpander
         //spec violation and we surface it as InvalidValueObject.
         string valueStr = valueElement.Kind switch
         {
-            JsonLdNodeKind.String => valueElement.GetString(),
-            JsonLdNodeKind.True => "true",
-            JsonLdNodeKind.False => "false",
-            JsonLdNodeKind.Number => valueElement.GetRawNumber(),
-            JsonLdNodeKind.Null => "null",
+            JsonNodeKind.String => valueElement.GetString(),
+            JsonNodeKind.True => "true",
+            JsonNodeKind.False => "false",
+            JsonNodeKind.Number => valueElement.GetRawNumber(),
+            JsonNodeKind.Null => "null",
             _ => throw new JsonLdProcessingException(
                 JsonLdErrorCode.InvalidValueObject,
                 $"@value must be a string, number, boolean, or null. Got '{valueElement.Kind}'.")
@@ -612,14 +612,14 @@ public static class JsonLdExpander
     }
 
     private static RdfTerm? ExpandScalarValue(
-        JsonLdNode value,
+        JsonNode value,
         LinkedDataContext activeContext,
         TermDefinition? termDef,
         Utf8StringPool pool)
     {
         switch(value.Kind)
         {
-            case JsonLdNodeKind.String:
+            case JsonNodeKind.String:
             {
                 string str = value.GetString();
 
@@ -666,21 +666,21 @@ public static class JsonLdExpander
                 return new Literal(pool.Intern(str), xsdStr);
             }
 
-            case JsonLdNodeKind.True:
+            case JsonNodeKind.True:
             {
                 NamedNode boolType = new(pool.Intern(XsdBoolean));
 
                 return new Literal(pool.Intern("true"), boolType);
             }
 
-            case JsonLdNodeKind.False:
+            case JsonNodeKind.False:
             {
                 NamedNode boolType = new(pool.Intern(XsdBoolean));
 
                 return new Literal(pool.Intern("false"), boolType);
             }
 
-            case JsonLdNodeKind.Number:
+            case JsonNodeKind.Number:
             {
                 string raw = value.GetRawNumber();
                 string datatypeIri = raw.Contains('.', StringComparison.Ordinal) || raw.Contains('e', StringComparison.Ordinal) || raw.Contains('E', StringComparison.Ordinal)

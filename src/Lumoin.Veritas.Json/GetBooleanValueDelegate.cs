@@ -1,8 +1,8 @@
-namespace Lumoin.Veritas.JsonLd.Document;
+namespace Lumoin.Veritas.Json;
 
 /// <summary>
-/// Returns the boolean value of a node whose kind is <see cref="JsonLdNodeKind.True"/>
-/// or <see cref="JsonLdNodeKind.False"/>.
+/// Returns the boolean value of a node whose kind is <see cref="JsonNodeKind.True"/>
+/// or <see cref="JsonNodeKind.False"/>.
 /// </summary>
 /// <remarks>
 /// Implementations may treat this as a pure dispatch on the kind, since the kind
@@ -11,8 +11,8 @@ namespace Lumoin.Veritas.JsonLd.Document;
 /// representation the adapter uses internally.
 /// </remarks>
 /// <param name="handle">
-/// The handle of a node whose kind is <see cref="JsonLdNodeKind.True"/>
-/// or <see cref="JsonLdNodeKind.False"/>.
+/// The handle of a node whose kind is <see cref="JsonNodeKind.True"/>
+/// or <see cref="JsonNodeKind.False"/>.
 /// </param>
 /// <returns>The boolean value.</returns>
 public delegate bool GetBooleanValueDelegate(object handle);

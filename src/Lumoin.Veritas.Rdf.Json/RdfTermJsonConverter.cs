@@ -3,7 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Lumoin.Veritas.Core;
 
-namespace Lumoin.Veritas.Json;
+namespace Lumoin.Veritas.Rdf.Json;
 
 /// <summary>
 /// Converts <see cref="RdfTerm"/> and its subtypes to and from JSON.

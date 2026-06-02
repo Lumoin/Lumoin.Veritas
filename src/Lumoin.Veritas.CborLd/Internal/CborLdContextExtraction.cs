@@ -15,7 +15,7 @@ namespace Lumoin.Veritas.Cbor.CborLd.Internal;
 /// <c>Lumoin.Veritas.LinkedData.ContextProcessing</c> core. Mirrors
 /// <c>Lumoin.Veritas.JsonLd.ContextExtraction</c> but inspects the
 /// CBOR-LD node shape (`CborLdInputString`, `CborLdInputMap`, etc.)
-/// instead of <c>JsonLdNode</c>.
+/// instead of <c>JsonNode</c>.
 /// </summary>
 /// <remarks>
 /// The iterative-stack convention applies — no method-call recursion

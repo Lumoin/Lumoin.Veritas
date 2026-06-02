@@ -4,6 +4,7 @@ using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Json;
 using Lumoin.Veritas.JsonLd;
 using Lumoin.Veritas.LinkedData;
+using Lumoin.Veritas.Json.Stj;
 
 namespace Lumoin.Veritas.Tests.JsonLd;
 
@@ -13,7 +14,7 @@ internal sealed class ContextExtractionTests
     [TestMethod]
     public void ExtractSingleUrlString()
     {
-        JsonLdNode contextNode = ParseJson("\"http://example.org/ctx\"");
+        JsonNode contextNode = ParseJson("\"http://example.org/ctx\"");
         int keyCounter = 0;
 
         IReadOnlyList<LinkedDataContextEntry> entries = ContextExtraction.ExtractEntries(
@@ -27,7 +28,7 @@ internal sealed class ContextExtractionTests
     [TestMethod]
     public void ExtractNullEntryProducesReset()
     {
-        JsonLdNode contextNode = ParseJson("null");
+        JsonNode contextNode = ParseJson("null");
         int keyCounter = 0;
 
         IReadOnlyList<LinkedDataContextEntry> entries = ContextExtraction.ExtractEntries(
@@ -47,7 +48,7 @@ internal sealed class ContextExtractionTests
                 "age": {"@id": "http://schema.org/age", "@type": "http://www.w3.org/2001/XMLSchema#integer"}
             }
             """;
-        JsonLdNode contextNode = ParseJson(json);
+        JsonNode contextNode = ParseJson(json);
         int keyCounter = 0;
 
         IReadOnlyList<LinkedDataContextEntry> entries = ContextExtraction.ExtractEntries(
@@ -74,7 +75,7 @@ internal sealed class ContextExtractionTests
                 {"name": "http://schema.org/name"}
             ]
             """;
-        JsonLdNode contextNode = ParseJson(json);
+        JsonNode contextNode = ParseJson(json);
         int keyCounter = 0;
 
         IReadOnlyList<LinkedDataContextEntry> entries = ContextExtraction.ExtractEntries(
@@ -100,7 +101,7 @@ internal sealed class ContextExtractionTests
                 }
             }
             """;
-        JsonLdNode contextNode = ParseJson(json);
+        JsonNode contextNode = ParseJson(json);
         int keyCounter = 0;
 
         IReadOnlyList<LinkedDataContextEntry> entries = ContextExtraction.ExtractEntries(
@@ -126,7 +127,7 @@ internal sealed class ContextExtractionTests
                 }
             }
             """;
-        JsonLdNode contextNode = ParseJson(json);
+        JsonNode contextNode = ParseJson(json);
         int keyCounter = 0;
 
         IReadOnlyList<LinkedDataContextEntry> entries = ContextExtraction.ExtractEntries(
@@ -148,7 +149,7 @@ internal sealed class ContextExtractionTests
                 "age": "http://schema.org/age"
             }
             """;
-        JsonLdNode contextNode = ParseJson(json);
+        JsonNode contextNode = ParseJson(json);
         int keyCounter = 0;
 
         IReadOnlyList<LinkedDataContextEntry> entries = ContextExtraction.ExtractEntries(
@@ -161,9 +162,9 @@ internal sealed class ContextExtractionTests
         Assert.AreNotEqual(entry.SyntheticKey, nameKey);
     }
 
-    private static JsonLdNode ParseJson(string json)
+    private static JsonNode ParseJson(string json)
     {
         Utf8String utf8 = Utf8String.WithoutPrecomputedHash(Encoding.UTF8.GetBytes(json));
-        return StjJsonLdAdapter.Parse(utf8);
+        return StjJsonAdapter.Parse(utf8);
     }
 }

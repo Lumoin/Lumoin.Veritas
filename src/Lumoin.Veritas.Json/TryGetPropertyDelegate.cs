@@ -1,8 +1,8 @@
-namespace Lumoin.Veritas.JsonLd.Document;
+namespace Lumoin.Veritas.Json;
 
 /// <summary>
 /// Attempts to locate a property by name within a node whose kind is
-/// <see cref="JsonLdNodeKind.Object"/>.
+/// <see cref="JsonNodeKind.Object"/>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -18,16 +18,16 @@ namespace Lumoin.Veritas.JsonLd.Document;
 /// </para>
 /// </remarks>
 /// <param name="handle">
-/// The handle of a node whose kind is <see cref="JsonLdNodeKind.Object"/>.
+/// The handle of a node whose kind is <see cref="JsonNodeKind.Object"/>.
 /// </param>
 /// <param name="name">The property name to look up.</param>
 /// <param name="value">
 /// When the method returns <see langword="true"/>, contains the matching
-/// property's value as a <see cref="JsonLdNode"/>. When the method returns
-/// <see langword="false"/>, contains a default <see cref="JsonLdNode"/> whose
-/// <see cref="JsonLdNode.Handle"/> is <see langword="null"/>.
+/// property's value as a <see cref="JsonNode"/>. When the method returns
+/// <see langword="false"/>, contains a default <see cref="JsonNode"/> whose
+/// <see cref="JsonNode.Handle"/> is <see langword="null"/>.
 /// </param>
 /// <returns>
 /// <see langword="true"/> if the property exists; otherwise, <see langword="false"/>.
 /// </returns>
-public delegate bool TryGetPropertyDelegate(object handle, string name, out JsonLdNode value);
+public delegate bool TryGetPropertyDelegate(object handle, string name, out JsonNode value);

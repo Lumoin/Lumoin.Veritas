@@ -4,7 +4,7 @@ using System.IO;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Json;
 using Lumoin.Veritas.JsonLd;
-using Lumoin.Veritas.JsonLd.Document;
+using Lumoin.Veritas.Json.Stj;
 
 namespace Lumoin.Veritas.Tests.Conformance;
 
@@ -12,7 +12,7 @@ namespace Lumoin.Veritas.Tests.Conformance;
 /// Loads a vendored W3C JSON-LD API test manifest (a <c>.jsonld</c> document — JSON with a top-level
 /// <c>baseIri</c> and a <c>sequence</c> of entries) into <see cref="JsonLdTestCase"/> rows. The JSON-LD manifests
 /// are not Turtle, so this is a separate loader from <see cref="W3cManifestLoader"/>; it reads the manifest
-/// through the JSON-LD library's own <see cref="JsonLdNode"/> model and resolves each entry's file references
+/// through the JSON-LD library's own <see cref="JsonNode"/> model and resolves each entry's file references
 /// against the manifest's directory.
 /// </summary>
 internal static class JsonLdManifestLoader
@@ -26,13 +26,13 @@ internal static class JsonLdManifestLoader
 
         string corpusDirectory = W3cCorpusPath.LibraryDirectory("JsonLd");
         string manifestPath = Path.Combine(corpusDirectory, $"{operation}-manifest.jsonld");
-        JsonLdNode root = StjJsonLdAdapter.Parse(new Utf8String(File.ReadAllBytes(manifestPath)));
+        JsonNode root = StjJsonAdapter.Parse(new Utf8String(File.ReadAllBytes(manifestPath)));
 
-        string baseIri = root.TryGetProperty("baseIri", out JsonLdNode baseNode) ? baseNode.GetString() : string.Empty;
+        string baseIri = root.TryGetProperty("baseIri", out JsonNode baseNode) ? baseNode.GetString() : string.Empty;
         List<JsonLdTestCase> cases = [];
-        if(root.TryGetProperty("sequence", out JsonLdNode sequence))
+        if(root.TryGetProperty("sequence", out JsonNode sequence))
         {
-            foreach(JsonLdNode entry in sequence.EnumerateArray())
+            foreach(JsonNode entry in sequence.EnumerateArray())
             {
                 cases.Add(BuildCase(entry, operation, baseIri, corpusDirectory));
             }
@@ -47,7 +47,7 @@ internal static class JsonLdManifestLoader
     /// <param name="baseIri">The manifest's retrieval URL space.</param>
     /// <param name="corpusDirectory">The absolute corpus directory.</param>
     /// <returns>The test case.</returns>
-    private static JsonLdTestCase BuildCase(JsonLdNode entry, string operation, string baseIri, string corpusDirectory)
+    private static JsonLdTestCase BuildCase(JsonNode entry, string operation, string baseIri, string corpusDirectory)
     {
         string id = StringOrNull(entry, "@id") ?? string.Empty;
         string name = StringOrNull(entry, "name") ?? id;
@@ -65,7 +65,7 @@ internal static class JsonLdManifestLoader
         string? processingMode = null;
         string? specVersion = null;
         string? rdfDirection = null;
-        if(entry.TryGetProperty("option", out JsonLdNode option) && option.Kind == JsonLdNodeKind.Object)
+        if(entry.TryGetProperty("option", out JsonNode option) && option.Kind == JsonNodeKind.Object)
         {
             optionBase = StringOrNull(option, "base");
             expandContext = StringOrNull(option, "expandContext");
@@ -97,23 +97,23 @@ internal static class JsonLdManifestLoader
     /// <param name="entry">The entry node.</param>
     /// <param name="typeName">The type name to look for.</param>
     /// <returns><see langword="true"/> when present.</returns>
-    private static bool TypeContains(JsonLdNode entry, string typeName)
+    private static bool TypeContains(JsonNode entry, string typeName)
     {
-        if(!entry.TryGetProperty("@type", out JsonLdNode type))
+        if(!entry.TryGetProperty("@type", out JsonNode type))
         {
             return false;
         }
 
-        if(type.Kind == JsonLdNodeKind.String)
+        if(type.Kind == JsonNodeKind.String)
         {
             return string.Equals(type.GetString(), typeName, StringComparison.Ordinal);
         }
 
-        if(type.Kind == JsonLdNodeKind.Array)
+        if(type.Kind == JsonNodeKind.Array)
         {
-            foreach(JsonLdNode element in type.EnumerateArray())
+            foreach(JsonNode element in type.EnumerateArray())
             {
-                if(element.Kind == JsonLdNodeKind.String && string.Equals(element.GetString(), typeName, StringComparison.Ordinal))
+                if(element.Kind == JsonNodeKind.String && string.Equals(element.GetString(), typeName, StringComparison.Ordinal))
                 {
                     return true;
                 }
@@ -127,9 +127,9 @@ internal static class JsonLdManifestLoader
     /// <param name="node">The containing object node.</param>
     /// <param name="property">The property name.</param>
     /// <returns>The string value, or <see langword="null"/>.</returns>
-    private static string? StringOrNull(JsonLdNode node, string property)
+    private static string? StringOrNull(JsonNode node, string property)
     {
-        return node.TryGetProperty(property, out JsonLdNode value) && value.Kind == JsonLdNodeKind.String
+        return node.TryGetProperty(property, out JsonNode value) && value.Kind == JsonNodeKind.String
             ? value.GetString()
             : null;
     }

@@ -5,6 +5,7 @@ using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
 using Lumoin.Veritas.Sparql.Results;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using Lumoin.Veritas.Rdf.Json;
 using TripleTerm = Lumoin.Veritas.Core.TripleTerm;
 
 namespace Lumoin.Veritas.Tests.Sparql;

@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using System.Threading.Tasks;
+using Lumoin.Veritas.Json;
 using Lumoin.Veritas.LinkedData;
 
 namespace Lumoin.Veritas.JsonLd;
@@ -11,7 +12,7 @@ namespace Lumoin.Veritas.JsonLd;
 /// context within the JSON-LD pipeline. Bridges the JSON-LD
 /// pipeline's delegate types
 /// (<see cref="ContextResolverDelegate"/>,
-/// <see cref="JsonLdParserDelegate"/>) into the format-agnostic
+/// <see cref="ParseJsonDelegate"/>) into the format-agnostic
 /// shapes the <c>LinkedData</c> layer's
 /// <c>ContextProcessing.ApplyEmbeddedContextsAsync</c> accepts.
 /// </summary>
@@ -46,7 +47,7 @@ internal static class JsonLdScopedContextHelper
         IReadOnlyList<LinkedDataContextEntry> scopedEntries,
         string? baseUrl,
         ContextResolverDelegate resolver,
-        JsonLdParserDelegate parser,
+        ParseJsonDelegate parser,
         CancellationToken cancellationToken,
         bool propagate = true,
         bool overrideProtected = false)

@@ -1,9 +1,9 @@
 using System.Collections.Generic;
 
-namespace Lumoin.Veritas.JsonLd.Document;
+namespace Lumoin.Veritas.Json;
 
 /// <summary>
-/// Yields every property of a node whose kind is <see cref="JsonLdNodeKind.Object"/>,
+/// Yields every property of a node whose kind is <see cref="JsonNodeKind.Object"/>,
 /// in document order, as a sequence of name-and-value pairs.
 /// </summary>
 /// <remarks>
@@ -16,12 +16,12 @@ namespace Lumoin.Veritas.JsonLd.Document;
 /// <para>
 /// Property names are returned as .NET strings because JSON-LD uses them as
 /// dictionary keys throughout context processing and expansion. The yielded
-/// <see cref="JsonLdNode"/> values share the same
-/// <see cref="JsonLdNode.Navigator"/> as the object node.
+/// <see cref="JsonNode"/> values share the same
+/// <see cref="JsonNode.Navigator"/> as the object node.
 /// </para>
 /// </remarks>
 /// <param name="handle">
-/// The handle of a node whose kind is <see cref="JsonLdNodeKind.Object"/>.
+/// The handle of a node whose kind is <see cref="JsonNodeKind.Object"/>.
 /// </param>
 /// <returns>The object's properties in document order.</returns>
-public delegate IEnumerable<KeyValuePair<string, JsonLdNode>> EnumerateObjectDelegate(object handle);
+public delegate IEnumerable<KeyValuePair<string, JsonNode>> EnumerateObjectDelegate(object handle);

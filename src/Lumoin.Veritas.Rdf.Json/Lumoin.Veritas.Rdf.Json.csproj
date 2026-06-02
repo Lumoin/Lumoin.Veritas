@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Veritas.Rdf.Json</RootNamespace>
+    <Description>RDF-to-JSON bindings for Lumoin.Veritas: the SPARQL 1.1 Query Results JSON Format reader and writer, and RDF term and quad JSON converters. Owns its System.Text.Json dependency.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Sparql\Lumoin.Veritas.Sparql.csproj" />
+  </ItemGroup>
+
+</Project>

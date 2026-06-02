@@ -1,18 +1,17 @@
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
-using Lumoin.Veritas.JsonLd;
 
-namespace Lumoin.Veritas.JsonLd.Document;
+namespace Lumoin.Veritas.Json;
 
 /// <summary>
-/// Adds ergonomic dispatch methods on <see cref="JsonLdNode"/> that delegate to its
-/// <see cref="JsonLdNode.Navigator"/>.
+/// Adds ergonomic dispatch methods on <see cref="JsonNode"/> that delegate to its
+/// <see cref="JsonNode.Navigator"/>.
 /// </summary>
 /// <remarks>
 /// <para>
 /// These extensions allow JSON-LD library code to read <c>node.Kind</c>,
 /// <c>node.TryGetProperty(name, out var value)</c>, and the rest as if they
-/// were instance members of <see cref="JsonLdNode"/>, while keeping the struct
+/// were instance members of <see cref="JsonNode"/>, while keeping the struct
 /// itself a pure data carrier. The dispatch is one delegate invocation, the
 /// same shape as a virtual call but supplied by the adapter rather than the
 /// type system.
@@ -24,15 +23,15 @@ namespace Lumoin.Veritas.JsonLd.Document;
 /// </para>
 /// </remarks>
 [SuppressMessage("Design", "CA1034:Nested types should not be visible",
-    Justification = "The C# 14 extension(JsonLdNode) block compiles to a synthetic nested type. The nesting is a compiler implementation detail and is not part of the user-facing surface of the containing class.")]
-public static class JsonLdNodeOperations
+    Justification = "The C# 14 extension(JsonNode) block compiles to a synthetic nested type. The nesting is a compiler implementation detail and is not part of the user-facing surface of the containing class.")]
+public static class JsonNodeOperations
 {
-    extension(JsonLdNode node)
+    extension(JsonNode node)
     {
         /// <summary>
-        /// Gets the <see cref="JsonLdNodeKind"/> of this node.
+        /// Gets the <see cref="JsonNodeKind"/> of this node.
         /// </summary>
-        public JsonLdNodeKind Kind
+        public JsonNodeKind Kind
             => node.Navigator!.GetKind(node.Handle!);
 
         /// <summary>
@@ -62,26 +61,26 @@ public static class JsonLdNodeOperations
         /// <param name="name">The property name.</param>
         /// <param name="value">
         /// On success, the property's value; on failure, a default
-        /// <see cref="JsonLdNode"/>.
+        /// <see cref="JsonNode"/>.
         /// </param>
         /// <returns>
         /// <see langword="true"/> if the property exists; otherwise, <see langword="false"/>.
         /// </returns>
-        public bool TryGetProperty(string name, out JsonLdNode value)
+        public bool TryGetProperty(string name, out JsonNode value)
             => node.Navigator!.TryGetProperty(node.Handle!, name, out value);
 
         /// <summary>
         /// Yields the elements of this array-kind node in document order.
         /// </summary>
         /// <returns>The array elements.</returns>
-        public IEnumerable<JsonLdNode> EnumerateArray()
+        public IEnumerable<JsonNode> EnumerateArray()
             => node.Navigator!.EnumerateArray(node.Handle!);
 
         /// <summary>
         /// Yields the properties of this object-kind node in document order.
         /// </summary>
         /// <returns>The object properties.</returns>
-        public IEnumerable<KeyValuePair<string, JsonLdNode>> EnumerateObject()
+        public IEnumerable<KeyValuePair<string, JsonNode>> EnumerateObject()
             => node.Navigator!.EnumerateObject(node.Handle!);
 
         /// <summary>
@@ -89,7 +88,7 @@ public static class JsonLdNodeOperations
         /// long-term storage outside the original document's scope.
         /// </summary>
         /// <returns>The detached copy.</returns>
-        public JsonLdNode Clone()
+        public JsonNode Clone()
             => node.Navigator!.Clone(node.Handle!);
     }
 }

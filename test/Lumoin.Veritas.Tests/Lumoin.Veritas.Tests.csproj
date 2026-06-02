@@ -60,9 +60,11 @@
     <ProjectReference Include="..\..\src\Lumoin.Veritas.JsonPointer\Lumoin.Veritas.JsonPointer.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.LinkedData\Lumoin.Veritas.LinkedData.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Json\Lumoin.Veritas.Json.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Json.Stj\Lumoin.Veritas.Json.Stj.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.NQuads\Lumoin.Veritas.NQuads.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Owl\Lumoin.Veritas.Owl.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Rdf\Lumoin.Veritas.Rdf.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Rdf.Json\Lumoin.Veritas.Rdf.Json.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Shacl\Lumoin.Veritas.Shacl.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Skos\Lumoin.Veritas.Skos.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Sparql\Lumoin.Veritas.Sparql.csproj" />

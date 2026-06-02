@@ -2,16 +2,16 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using Lumoin.Veritas.Cbor.CborLd;
-using Lumoin.Veritas.JsonLd.Document;
+using Lumoin.Veritas.Json;
 
 namespace Lumoin.Veritas.JsonLd.Adapters;
 
 /// <summary>
-/// Converts between a JSON-LD-shaped <see cref="JsonLdNode"/> tree and a
+/// Converts between a JSON-LD-shaped <see cref="JsonNode"/> tree and a
 /// format-neutral <see cref="CborLdInputNode"/> tree in both directions:
 /// <see cref="FromJsonLd"/> walks a JSON-LD tree and produces the
 /// equivalent CBOR-LD input tree, and <see cref="ToJsonLd"/> wraps a
-/// CBOR-LD input tree as a <see cref="JsonLdNode"/> backed by a CBOR-LD-
+/// CBOR-LD input tree as a <see cref="JsonNode"/> backed by a CBOR-LD-
 /// reading navigator (no JSON-bytes intermediate).
 /// </summary>
 /// <remarks>
@@ -27,19 +27,19 @@ namespace Lumoin.Veritas.JsonLd.Adapters;
 public static class CborLdInputNodeAdapter
 {
     /// <summary>
-    /// Converts a <see cref="JsonLdNode"/> tree to its
+    /// Converts a <see cref="JsonNode"/> tree to its
     /// <see cref="CborLdInputNode"/> equivalent.
     /// </summary>
     /// <param name="node">The JSON-LD node to convert.</param>
     /// <returns>The equivalent CBOR-LD input node.</returns>
     /// <exception cref="ArgumentException">The node has a default
-    /// <see cref="JsonLdNode.Handle"/> or
-    /// <see cref="JsonLdNode.Navigator"/>.</exception>
-    public static CborLdInputNode FromJsonLd(JsonLdNode node)
+    /// <see cref="JsonNode.Handle"/> or
+    /// <see cref="JsonNode.Navigator"/>.</exception>
+    public static CborLdInputNode FromJsonLd(JsonNode node)
     {
         if(node.Handle is null || node.Navigator is null)
         {
-            throw new ArgumentException("FromJsonLd requires a fully-initialised JsonLdNode.", nameof(node));
+            throw new ArgumentException("FromJsonLd requires a fully-initialised JsonNode.", nameof(node));
         }
 
         Stack<Frame> stack = new();
@@ -49,45 +49,45 @@ public static class CborLdInputNodeAdapter
         while(stack.Count > 0)
         {
             Frame frame = stack.Peek();
-            JsonLdNodeNavigator navigator = frame.Node.Navigator!;
+            JsonNodeNavigator navigator = frame.Node.Navigator!;
             object handle = frame.Node.Handle!;
-            JsonLdNodeKind kind = navigator.GetKind(handle);
+            JsonNodeKind kind = navigator.GetKind(handle);
 
             switch(kind)
             {
-                case JsonLdNodeKind.Null:
+                case JsonNodeKind.Null:
                 {
                     rootResult = Complete(stack, frame, CborLdInputNull.Instance, rootResult);
                     break;
                 }
-                case JsonLdNodeKind.True:
+                case JsonNodeKind.True:
                 {
                     rootResult = Complete(stack, frame, new CborLdInputBool(true), rootResult);
                     break;
                 }
-                case JsonLdNodeKind.False:
+                case JsonNodeKind.False:
                 {
                     rootResult = Complete(stack, frame, new CborLdInputBool(false), rootResult);
                     break;
                 }
-                case JsonLdNodeKind.String:
+                case JsonNodeKind.String:
                 {
                     rootResult = Complete(stack, frame, new CborLdInputString(navigator.GetString(handle)), rootResult);
                     break;
                 }
-                case JsonLdNodeKind.Number:
+                case JsonNodeKind.Number:
                 {
                     string raw = navigator.GetRawNumber(handle);
                     CborLdInputNode numberNode = ParseNumber(raw);
                     rootResult = Complete(stack, frame, numberNode, rootResult);
                     break;
                 }
-                case JsonLdNodeKind.Array:
+                case JsonNodeKind.Array:
                 {
                     if(!frame.MaterialisedChildren)
                     {
-                        List<JsonLdNode> children = [];
-                        foreach(JsonLdNode child in navigator.EnumerateArray(handle))
+                        List<JsonNode> children = [];
+                        foreach(JsonNode child in navigator.EnumerateArray(handle))
                         {
                             children.Add(child);
                         }
@@ -107,12 +107,12 @@ public static class CborLdInputNodeAdapter
                     }
                     break;
                 }
-                case JsonLdNodeKind.Object:
+                case JsonNodeKind.Object:
                 {
                     if(!frame.MaterialisedChildren)
                     {
-                        List<KeyValuePair<string, JsonLdNode>> children = [];
-                        foreach(KeyValuePair<string, JsonLdNode> child in navigator.EnumerateObject(handle))
+                        List<KeyValuePair<string, JsonNode>> children = [];
+                        foreach(KeyValuePair<string, JsonNode> child in navigator.EnumerateObject(handle))
                         {
                             children.Add(child);
                         }
@@ -122,7 +122,7 @@ public static class CborLdInputNodeAdapter
                     }
                     if(frame.NextIndex < frame.ObjectChildren!.Count)
                     {
-                        KeyValuePair<string, JsonLdNode> entry = frame.ObjectChildren[frame.NextIndex];
+                        KeyValuePair<string, JsonNode> entry = frame.ObjectChildren[frame.NextIndex];
                         frame.NextIndex++;
                         stack.Push(new Frame(entry.Value, parent: frame, parentKey: entry.Key, parentIndex: -1));
                     }
@@ -136,7 +136,7 @@ public static class CborLdInputNodeAdapter
                 default:
                 {
                     throw new InvalidOperationException(
-                        string.Create(CultureInfo.InvariantCulture, $"Unrecognised JsonLdNodeKind: {kind}."));
+                        string.Create(CultureInfo.InvariantCulture, $"Unrecognised JsonNodeKind: {kind}."));
                 }
             }
         }
@@ -146,7 +146,7 @@ public static class CborLdInputNodeAdapter
 
     /// <summary>
     /// Converts a <see cref="CborLdInputNode"/> tree to a
-    /// <see cref="JsonLdNode"/> backed by a navigator that reads CBOR-LD
+    /// <see cref="JsonNode"/> backed by a navigator that reads CBOR-LD
     /// input nodes directly. The resulting node is independent of any
     /// JSON document; it carries the original <paramref name="node"/> as
     /// its handle and reads through a dedicated navigator without going
@@ -171,10 +171,10 @@ public static class CborLdInputNodeAdapter
     /// shortest decimal form ("R") so reparses preserve the value.
     /// </para>
     /// </remarks>
-    public static JsonLdNode ToJsonLd(CborLdInputNode node)
+    public static JsonNode ToJsonLd(CborLdInputNode node)
     {
         ArgumentNullException.ThrowIfNull(node);
-        return new JsonLdNode(node, CborLdJsonLdNavigator.Instance);
+        return new JsonNode(node, CborLdJsonLdNavigator.Instance);
     }
 
     private static CborLdInputNode? Complete(
@@ -217,13 +217,13 @@ public static class CborLdInputNodeAdapter
 
     /// <summary>
     /// Adapter-side navigator exposing a <see cref="CborLdInputNode"/>
-    /// tree through the <see cref="JsonLdNodeNavigator"/> contract. The
+    /// tree through the <see cref="JsonNodeNavigator"/> contract. The
     /// handle for every node is the <see cref="CborLdInputNode"/> itself;
     /// no boxing, no intermediate buffer, no parallel tree.
     /// </summary>
     internal static class CborLdJsonLdNavigator
     {
-        public static JsonLdNodeNavigator Instance { get; } = new JsonLdNodeNavigator
+        public static JsonNodeNavigator Instance { get; } = new JsonNodeNavigator
         {
             GetKind = GetKind,
             GetString = GetString,
@@ -235,17 +235,17 @@ public static class CborLdInputNodeAdapter
             Clone = Clone
         };
 
-        private static JsonLdNodeKind GetKind(object handle)
+        private static JsonNodeKind GetKind(object handle)
         {
             return handle switch
             {
-                CborLdInputNull => JsonLdNodeKind.Null,
-                CborLdInputBool b => b.Value ? JsonLdNodeKind.True : JsonLdNodeKind.False,
-                CborLdInputString => JsonLdNodeKind.String,
-                CborLdInputInt => JsonLdNodeKind.Number,
-                CborLdInputDouble => JsonLdNodeKind.Number,
-                CborLdInputArray => JsonLdNodeKind.Array,
-                CborLdInputMap => JsonLdNodeKind.Object,
+                CborLdInputNull => JsonNodeKind.Null,
+                CborLdInputBool b => b.Value ? JsonNodeKind.True : JsonNodeKind.False,
+                CborLdInputString => JsonNodeKind.String,
+                CborLdInputInt => JsonNodeKind.Number,
+                CborLdInputDouble => JsonNodeKind.Number,
+                CborLdInputArray => JsonNodeKind.Array,
+                CborLdInputMap => JsonNodeKind.Object,
                 CborLdInputBytes => throw new InvalidOperationException(
                     "CBOR-LD byte strings have no JSON equivalent; pre-encode to base64 before calling ToJsonLd."),
                 _ => throw new InvalidOperationException(
@@ -287,7 +287,7 @@ public static class CborLdInputNodeAdapter
             };
         }
 
-        private static bool TryGetProperty(object handle, string name, out JsonLdNode value)
+        private static bool TryGetProperty(object handle, string name, out JsonNode value)
         {
             if(handle is CborLdInputMap map)
             {
@@ -295,7 +295,7 @@ public static class CborLdInputNodeAdapter
                 {
                     if(string.Equals(entry.Key, name, StringComparison.Ordinal))
                     {
-                        value = new JsonLdNode(entry.Value, Instance);
+                        value = new JsonNode(entry.Value, Instance);
                         return true;
                     }
                 }
@@ -304,7 +304,7 @@ public static class CborLdInputNodeAdapter
             return false;
         }
 
-        private static IEnumerable<JsonLdNode> EnumerateArray(object handle)
+        private static IEnumerable<JsonNode> EnumerateArray(object handle)
         {
             if(handle is not CborLdInputArray array)
             {
@@ -314,15 +314,15 @@ public static class CborLdInputNodeAdapter
             return EnumerateArrayCore(array);
         }
 
-        private static IEnumerable<JsonLdNode> EnumerateArrayCore(CborLdInputArray array)
+        private static IEnumerable<JsonNode> EnumerateArrayCore(CborLdInputArray array)
         {
             foreach(CborLdInputNode item in array.Items)
             {
-                yield return new JsonLdNode(item, Instance);
+                yield return new JsonNode(item, Instance);
             }
         }
 
-        private static IEnumerable<KeyValuePair<string, JsonLdNode>> EnumerateObject(object handle)
+        private static IEnumerable<KeyValuePair<string, JsonNode>> EnumerateObject(object handle)
         {
             if(handle is not CborLdInputMap map)
             {
@@ -332,27 +332,27 @@ public static class CborLdInputNodeAdapter
             return EnumerateObjectCore(map);
         }
 
-        private static IEnumerable<KeyValuePair<string, JsonLdNode>> EnumerateObjectCore(CborLdInputMap map)
+        private static IEnumerable<KeyValuePair<string, JsonNode>> EnumerateObjectCore(CborLdInputMap map)
         {
             foreach(KeyValuePair<string, CborLdInputNode> entry in map.Entries)
             {
-                yield return new KeyValuePair<string, JsonLdNode>(
+                yield return new KeyValuePair<string, JsonNode>(
                     entry.Key,
-                    new JsonLdNode(entry.Value, Instance));
+                    new JsonNode(entry.Value, Instance));
             }
         }
 
-        private static JsonLdNode Clone(object handle)
+        private static JsonNode Clone(object handle)
         {
             //CborLdInputNode instances are already independent value
             //carriers; cloning is identity.
-            return new JsonLdNode(handle, Instance);
+            return new JsonNode(handle, Instance);
         }
     }
 
     private sealed class Frame
     {
-        public Frame(JsonLdNode node, Frame? parent, string? parentKey, int parentIndex)
+        public Frame(JsonNode node, Frame? parent, string? parentKey, int parentIndex)
         {
             Node = node;
             Parent = parent;
@@ -360,7 +360,7 @@ public static class CborLdInputNodeAdapter
             ParentIndex = parentIndex;
         }
 
-        public JsonLdNode Node { get; }
+        public JsonNode Node { get; }
         public Frame? Parent { get; }
         public string? ParentKey { get; }
         public int ParentIndex { get; }
@@ -368,8 +368,8 @@ public static class CborLdInputNodeAdapter
         public bool MaterialisedChildren { get; set; }
         public int NextIndex { get; set; }
 
-        public List<JsonLdNode>? ArrayChildren { get; set; }
-        public List<KeyValuePair<string, JsonLdNode>>? ObjectChildren { get; set; }
+        public List<JsonNode>? ArrayChildren { get; set; }
+        public List<KeyValuePair<string, JsonNode>>? ObjectChildren { get; set; }
 
         public List<CborLdInputNode>? Items { get; set; }
         public List<KeyValuePair<string, CborLdInputNode>>? Entries { get; set; }

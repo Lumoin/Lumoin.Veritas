@@ -104,10 +104,14 @@ See full changelog at https://github.com/lumoin/Veritas/blob/main/CHANGELOG.md.]
     allocation concern that motivates the ban in production).
 
     BannedSymbols.Serialization.txt bans the System.Text.Json
-    namespace; it is added to every project except the serialization
-    projects (Lumoin.Veritas.Json, Lumoin.Veritas.Cbor). Tests are not
-    exempt for the JSON ban; uniform discipline matches the clock ban
-    above.
+    namespace; it is added to every project except the JSON engine and
+    binding projects that own that dependency (Lumoin.Veritas.Json.Stj,
+    Lumoin.Veritas.Rdf.Json) and Lumoin.Veritas.Cbor. The base
+    Lumoin.Veritas.Json model project is bound by the ban: it is
+    backend-agnostic and reaches System.Text.Json only through the
+    injected parse delegate implemented in Lumoin.Veritas.Json.Stj.
+    Tests are not exempt for the JSON ban; uniform discipline matches the
+    clock ban above.
 
     BannedSymbols.Xml.txt bans the System.Xml / System.Xml.Linq
     namespaces; it is added to every project except Lumoin.Veritas.Xml,
@@ -148,7 +152,7 @@ See full changelog at https://github.com/lumoin/Veritas/blob/main/CHANGELOG.md.]
     <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.Linq.txt" />
   </ItemGroup>
 
-  <ItemGroup Condition="'$(MSBuildProjectName)' != 'Lumoin.Veritas.Json' AND '$(MSBuildProjectName)' != 'Lumoin.Veritas.Cbor' AND !$(MSBuildProjectName.EndsWith('.Tests'))">
+  <ItemGroup Condition="'$(MSBuildProjectName)' != 'Lumoin.Veritas.Json.Stj' AND '$(MSBuildProjectName)' != 'Lumoin.Veritas.Rdf.Json' AND '$(MSBuildProjectName)' != 'Lumoin.Veritas.Cbor' AND !$(MSBuildProjectName.EndsWith('.Tests'))">
     <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.Serialization.txt" />
   </ItemGroup>
 

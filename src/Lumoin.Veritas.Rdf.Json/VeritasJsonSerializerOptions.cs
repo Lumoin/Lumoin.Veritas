@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Lumoin.Veritas.Json;
+namespace Lumoin.Veritas.Rdf.Json;
 
 /// <summary>
 /// Provides pre-configured <see cref="JsonSerializerOptions"/> for Veritas JSON serialization.

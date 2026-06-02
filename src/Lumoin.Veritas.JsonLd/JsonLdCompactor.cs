@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
-using Lumoin.Veritas.JsonLd.Document;
+using Lumoin.Veritas.Json;
 using Lumoin.Veritas.LinkedData;
 
 namespace Lumoin.Veritas.JsonLd;
@@ -153,7 +153,7 @@ public static class JsonLdCompactor
     /// <param name="expanded">The expanded JSON-LD element.</param>
     /// <param name="activeContext">The context against which to compact.</param>
     /// <returns>The compacted element as an object graph.</returns>
-    public static object? Compact(JsonLdNode expanded, LinkedDataContext activeContext)
+    public static object? Compact(JsonNode expanded, LinkedDataContext activeContext)
     {
         ArgumentNullException.ThrowIfNull(activeContext);
 
@@ -198,21 +198,21 @@ public static class JsonLdCompactor
     /// <param name="valueObject">An expanded value object.</param>
     /// <param name="termDefinition">The term definition under which the value appears, or <c>null</c> for none.</param>
     /// <returns>The compact value form.</returns>
-    public static object? CompactValue(JsonLdNode valueObject, TermDefinition? termDefinition)
+    public static object? CompactValue(JsonNode valueObject, TermDefinition? termDefinition)
     {
-        if(valueObject.Kind != JsonLdNodeKind.Object)
+        if(valueObject.Kind != JsonNodeKind.Object)
         {
             //Not a value object; pass through.
             return ToObjectGraph(valueObject);
         }
 
-        if(!valueObject.TryGetProperty(JsonLdKeywords.Value, out JsonLdNode valueNode))
+        if(!valueObject.TryGetProperty(JsonLdKeywords.Value, out JsonNode valueNode))
         {
             return ToObjectGraph(valueObject);
         }
 
-        bool hasType = valueObject.TryGetProperty(JsonLdKeywords.Type, out JsonLdNode typeNode);
-        bool hasLanguage = valueObject.TryGetProperty(JsonLdKeywords.Language, out JsonLdNode languageNode);
+        bool hasType = valueObject.TryGetProperty(JsonLdKeywords.Type, out JsonNode typeNode);
+        bool hasLanguage = valueObject.TryGetProperty(JsonLdKeywords.Language, out JsonNode languageNode);
 
         //If the surrounding term's coercion matches the value's type or
         //language, unwrap to the bare literal. Otherwise, emit a compact
@@ -220,14 +220,14 @@ public static class JsonLdCompactor
         if(termDefinition is not null)
         {
             if(hasType
-                && typeNode.Kind == JsonLdNodeKind.String
+                && typeNode.Kind == JsonNodeKind.String
                 && termDefinition.TypeMapping is { } typeCoerce
                 && string.Equals(typeNode.GetString(), typeCoerce, StringComparison.Ordinal))
             {
                 return ToObjectGraph(valueNode);
             }
             if(hasLanguage
-                && languageNode.Kind == JsonLdNodeKind.String
+                && languageNode.Kind == JsonNodeKind.String
                 && termDefinition.LanguageMapping is { } langCoerce
                 && string.Equals(languageNode.GetString(), langCoerce, StringComparison.Ordinal))
             {
@@ -235,7 +235,7 @@ public static class JsonLdCompactor
             }
             //An untyped, unlanguaged plain string under a term with no
             //type coercion: unwrap.
-            if(!hasType && !hasLanguage && valueNode.Kind != JsonLdNodeKind.Object)
+            if(!hasType && !hasLanguage && valueNode.Kind != JsonNodeKind.Object)
             {
                 return ToObjectGraph(valueNode);
             }
@@ -243,7 +243,7 @@ public static class JsonLdCompactor
         else
         {
             //No surrounding term context: unwrap plain literals only.
-            if(!hasType && !hasLanguage && valueNode.Kind != JsonLdNodeKind.Object)
+            if(!hasType && !hasLanguage && valueNode.Kind != JsonNodeKind.Object)
             {
                 return ToObjectGraph(valueNode);
             }
@@ -255,39 +255,39 @@ public static class JsonLdCompactor
         {
             [JsonLdKeywords.Value] = ToObjectGraph(valueNode)
         };
-        if(hasType && typeNode.Kind == JsonLdNodeKind.String)
+        if(hasType && typeNode.Kind == JsonNodeKind.String)
         {
             //Compaction context is unavailable to this primitive; emit @type as-is.
             compactedObject[JsonLdKeywords.Type] = typeNode.GetString();
         }
-        if(hasLanguage && languageNode.Kind == JsonLdNodeKind.String)
+        if(hasLanguage && languageNode.Kind == JsonNodeKind.String)
         {
             compactedObject[JsonLdKeywords.Language] = languageNode.GetString();
         }
         return compactedObject;
     }
 
-    private static object? CompactElement(JsonLdNode element, LinkedDataContext activeContext)
+    private static object? CompactElement(JsonNode element, LinkedDataContext activeContext)
     {
         return element.Kind switch
         {
-            JsonLdNodeKind.Array => CompactArray(element, activeContext),
-            JsonLdNodeKind.Object => CompactNodeObject(element, activeContext),
+            JsonNodeKind.Array => CompactArray(element, activeContext),
+            JsonNodeKind.Object => CompactNodeObject(element, activeContext),
             _ => ToObjectGraph(element)
         };
     }
 
-    private static List<object?> CompactArray(JsonLdNode array, LinkedDataContext activeContext)
+    private static List<object?> CompactArray(JsonNode array, LinkedDataContext activeContext)
     {
         List<object?> items = new();
-        foreach(JsonLdNode item in array.EnumerateArray())
+        foreach(JsonNode item in array.EnumerateArray())
         {
             items.Add(CompactElement(item, activeContext));
         }
         return items;
     }
 
-    private static object? CompactNodeObject(JsonLdNode obj, LinkedDataContext activeContext)
+    private static object? CompactNodeObject(JsonNode obj, LinkedDataContext activeContext)
     {
         //Value object detection: a JSON-LD value object has @value as an
         //own property. Route through CompactValue.
@@ -298,10 +298,10 @@ public static class JsonLdCompactor
 
         Dictionary<string, object?> result = new(StringComparer.Ordinal);
 
-        foreach(KeyValuePair<string, JsonLdNode> property in obj.EnumerateObject())
+        foreach(KeyValuePair<string, JsonNode> property in obj.EnumerateObject())
         {
             string expandedKey = property.Key;
-            JsonLdNode expandedValue = property.Value;
+            JsonNode expandedValue = property.Value;
 
             switch(expandedKey)
             {
@@ -309,7 +309,7 @@ public static class JsonLdCompactor
                 {
                     //@id values are resource IRIs; compact in document-IRI mode
                     //(no @vocab relative; an @id is never an unqualified term).
-                    if(expandedValue.Kind == JsonLdNodeKind.String)
+                    if(expandedValue.Kind == JsonNodeKind.String)
                     {
                         result[JsonLdKeywords.Id] = CompactIri(activeContext, expandedValue.GetString(), vocab: false);
                     }
@@ -345,11 +345,11 @@ public static class JsonLdCompactor
                     //@reverse value is an object of expanded predicates →
                     //value arrays. Compact each predicate to its term/compact
                     //IRI form and emit under @reverse on the output.
-                    if(expandedValue.Kind == JsonLdNodeKind.Object)
+                    if(expandedValue.Kind == JsonNodeKind.Object)
                     {
                         Dictionary<string, object?> compactedReverse = new(StringComparer.Ordinal);
 
-                        foreach(KeyValuePair<string, JsonLdNode> inner in expandedValue.EnumerateObject())
+                        foreach(KeyValuePair<string, JsonNode> inner in expandedValue.EnumerateObject())
                         {
                             string compactInnerKey = CompactIri(activeContext, inner.Key, vocab: true) ?? inner.Key;
                             TermDefinition? innerTerm = null;
@@ -388,7 +388,7 @@ public static class JsonLdCompactor
         return result;
     }
 
-    private static object? CompactValueOrElement(JsonLdNode element, LinkedDataContext activeContext, TermDefinition? termDef)
+    private static object? CompactValueOrElement(JsonNode element, LinkedDataContext activeContext, TermDefinition? termDef)
     {
         bool isSet = termDef is not null && HasContainer(termDef, JsonLdKeywords.Set);
         bool isList = termDef is not null && HasContainer(termDef, JsonLdKeywords.List);
@@ -427,14 +427,14 @@ public static class JsonLdCompactor
             return CompactGraphContainerAlone(element, activeContext, termDef);
         }
 
-        if(element.Kind == JsonLdNodeKind.Array)
+        if(element.Kind == JsonNodeKind.Array)
         {
             //Expanded values are arrays per spec; compact each item. When the
             //resulting list has a single item, unwrap (the default
             //compactArrays = true behaviour) — unless @container is @set,
             //which forces the array shape.
             List<object?> compactedItems = new();
-            foreach(JsonLdNode item in element.EnumerateArray())
+            foreach(JsonNode item in element.EnumerateArray())
             {
                 compactedItems.Add(CompactItem(item, activeContext, termDef));
             }
@@ -471,15 +471,15 @@ public static class JsonLdCompactor
     /// compact form is the bare array. RDF round-trip projects the bare
     /// array back to an <c>rdf:List</c> chain on re-expansion.
     /// </summary>
-    private static object? CompactListContainer(JsonLdNode element, LinkedDataContext activeContext, TermDefinition? termDef)
+    private static object? CompactListContainer(JsonNode element, LinkedDataContext activeContext, TermDefinition? termDef)
     {
-        if(element.Kind == JsonLdNodeKind.Array)
+        if(element.Kind == JsonNodeKind.Array)
         {
-            foreach(JsonLdNode item in element.EnumerateArray())
+            foreach(JsonNode item in element.EnumerateArray())
             {
-                if(item.Kind == JsonLdNodeKind.Object
-                    && item.TryGetProperty(JsonLdKeywords.List, out JsonLdNode listArray)
-                    && listArray.Kind == JsonLdNodeKind.Array)
+                if(item.Kind == JsonNodeKind.Object
+                    && item.TryGetProperty(JsonLdKeywords.List, out JsonNode listArray)
+                    && listArray.Kind == JsonNodeKind.Array)
                 {
                     return MaterialiseListItems(listArray, activeContext, termDef);
                 }
@@ -487,19 +487,19 @@ public static class JsonLdCompactor
             //No @list wrapper found in the expanded array: defensive fallback.
             return CompactItem(element, activeContext, termDef);
         }
-        if(element.Kind == JsonLdNodeKind.Object
-            && element.TryGetProperty(JsonLdKeywords.List, out JsonLdNode innerList)
-            && innerList.Kind == JsonLdNodeKind.Array)
+        if(element.Kind == JsonNodeKind.Object
+            && element.TryGetProperty(JsonLdKeywords.List, out JsonNode innerList)
+            && innerList.Kind == JsonNodeKind.Array)
         {
             return MaterialiseListItems(innerList, activeContext, termDef);
         }
         return CompactItem(element, activeContext, termDef);
     }
 
-    private static List<object?> MaterialiseListItems(JsonLdNode listArray, LinkedDataContext activeContext, TermDefinition? termDef)
+    private static List<object?> MaterialiseListItems(JsonNode listArray, LinkedDataContext activeContext, TermDefinition? termDef)
     {
         List<object?> compacted = new();
-        foreach(JsonLdNode listItem in listArray.EnumerateArray())
+        foreach(JsonNode listItem in listArray.EnumerateArray())
         {
             compacted.Add(CompactItem(listItem, activeContext, termDef));
         }
@@ -514,13 +514,13 @@ public static class JsonLdCompactor
     /// Items lacking <c>@language</c> are excluded from the map; if no
     /// items match, falls back to standard value compaction.
     /// </summary>
-    private static object? CompactLanguageContainer(JsonLdNode element, LinkedDataContext activeContext, TermDefinition? termDef)
+    private static object? CompactLanguageContainer(JsonNode element, LinkedDataContext activeContext, TermDefinition? termDef)
     {
         Dictionary<string, List<object?>> bucketed = new(StringComparer.Ordinal);
 
-        if(element.Kind == JsonLdNodeKind.Array)
+        if(element.Kind == JsonNodeKind.Array)
         {
-            foreach(JsonLdNode item in element.EnumerateArray())
+            foreach(JsonNode item in element.EnumerateArray())
             {
                 CollectLanguageValue(item, bucketed);
             }
@@ -545,18 +545,18 @@ public static class JsonLdCompactor
         return result;
     }
 
-    private static void CollectLanguageValue(JsonLdNode item, Dictionary<string, List<object?>> bucketed)
+    private static void CollectLanguageValue(JsonNode item, Dictionary<string, List<object?>> bucketed)
     {
-        if(item.Kind != JsonLdNodeKind.Object)
+        if(item.Kind != JsonNodeKind.Object)
         {
             return;
         }
-        if(!item.TryGetProperty(JsonLdKeywords.Value, out JsonLdNode valueNode))
+        if(!item.TryGetProperty(JsonLdKeywords.Value, out JsonNode valueNode))
         {
             return;
         }
-        if(!item.TryGetProperty(JsonLdKeywords.Language, out JsonLdNode languageNode)
-            || languageNode.Kind != JsonLdNodeKind.String)
+        if(!item.TryGetProperty(JsonLdKeywords.Language, out JsonNode languageNode)
+            || languageNode.Kind != JsonNodeKind.String)
         {
             return;
         }
@@ -585,7 +585,7 @@ public static class JsonLdCompactor
     /// wraps each item as <c>{"@graph": [...]}</c> under the map key.
     /// </remarks>
     private static object? CompactMapContainer(
-        JsonLdNode element,
+        JsonNode element,
         LinkedDataContext activeContext,
         TermDefinition? termDef,
         bool useIndex,
@@ -595,9 +595,9 @@ public static class JsonLdCompactor
     {
         Dictionary<string, List<object?>> bucketed = new(StringComparer.Ordinal);
 
-        if(element.Kind == JsonLdNodeKind.Array)
+        if(element.Kind == JsonNodeKind.Array)
         {
-            foreach(JsonLdNode item in element.EnumerateArray())
+            foreach(JsonNode item in element.EnumerateArray())
             {
                 CollectMapValue(item, activeContext, termDef, useIndex, useId, useType, useGraph, bucketed);
             }
@@ -623,7 +623,7 @@ public static class JsonLdCompactor
     }
 
     private static void CollectMapValue(
-        JsonLdNode item,
+        JsonNode item,
         LinkedDataContext activeContext,
         TermDefinition? termDef,
         bool useIndex,
@@ -632,7 +632,7 @@ public static class JsonLdCompactor
         bool useGraph,
         Dictionary<string, List<object?>> bucketed)
     {
-        if(item.Kind != JsonLdNodeKind.Object)
+        if(item.Kind != JsonNodeKind.Object)
         {
             return;
         }
@@ -640,30 +640,30 @@ public static class JsonLdCompactor
         //Extract the map key from the appropriate discriminator. Index
         //wins when explicitly set; otherwise @id, otherwise @type.
         string? mapKey = null;
-        if(useIndex && item.TryGetProperty(JsonLdKeywords.Index, out JsonLdNode indexNode)
-            && indexNode.Kind == JsonLdNodeKind.String)
+        if(useIndex && item.TryGetProperty(JsonLdKeywords.Index, out JsonNode indexNode)
+            && indexNode.Kind == JsonNodeKind.String)
         {
             mapKey = indexNode.GetString();
         }
-        else if(useId && item.TryGetProperty(JsonLdKeywords.Id, out JsonLdNode idNode)
-            && idNode.Kind == JsonLdNodeKind.String)
+        else if(useId && item.TryGetProperty(JsonLdKeywords.Id, out JsonNode idNode)
+            && idNode.Kind == JsonNodeKind.String)
         {
             //@id keys compact in document-IRI mode (no @vocab-relative).
             mapKey = CompactIri(activeContext, idNode.GetString(), vocab: false);
         }
-        else if(useType && item.TryGetProperty(JsonLdKeywords.Type, out JsonLdNode typeNode))
+        else if(useType && item.TryGetProperty(JsonLdKeywords.Type, out JsonNode typeNode))
         {
             //@type may be a single string or an array; the spec uses the
             //first type when multiple are present.
-            if(typeNode.Kind == JsonLdNodeKind.String)
+            if(typeNode.Kind == JsonNodeKind.String)
             {
                 mapKey = CompactIri(activeContext, typeNode.GetString(), vocab: true);
             }
-            else if(typeNode.Kind == JsonLdNodeKind.Array)
+            else if(typeNode.Kind == JsonNodeKind.Array)
             {
-                foreach(JsonLdNode typeItem in typeNode.EnumerateArray())
+                foreach(JsonNode typeItem in typeNode.EnumerateArray())
                 {
-                    if(typeItem.Kind == JsonLdNodeKind.String)
+                    if(typeItem.Kind == JsonNodeKind.String)
                     {
                         mapKey = CompactIri(activeContext, typeItem.GetString(), vocab: true);
                         break;
@@ -694,8 +694,8 @@ public static class JsonLdCompactor
             {
                 //Only remove @type when it is the key. If @type has
                 //multiple values and we used the first, leave the rest.
-                if(item.TryGetProperty(JsonLdKeywords.Type, out JsonLdNode typeNode)
-                    && typeNode.Kind == JsonLdNodeKind.String)
+                if(item.TryGetProperty(JsonLdKeywords.Type, out JsonNode typeNode)
+                    && typeNode.Kind == JsonNodeKind.String)
                 {
                     dict.Remove(JsonLdKeywords.Type);
                 }
@@ -728,13 +728,13 @@ public static class JsonLdCompactor
     /// object; single-item arrays unwrap unless the term also carries
     /// <c>@set</c> semantics elsewhere.
     /// </summary>
-    private static object? CompactGraphContainerAlone(JsonLdNode element, LinkedDataContext activeContext, TermDefinition? termDef)
+    private static object? CompactGraphContainerAlone(JsonNode element, LinkedDataContext activeContext, TermDefinition? termDef)
     {
         _ = termDef;
-        if(element.Kind == JsonLdNodeKind.Array)
+        if(element.Kind == JsonNodeKind.Array)
         {
             List<object?> wrapped = new();
-            foreach(JsonLdNode item in element.EnumerateArray())
+            foreach(JsonNode item in element.EnumerateArray())
             {
                 wrapped.Add(WrapAsGraph(item, activeContext));
             }
@@ -743,11 +743,11 @@ public static class JsonLdCompactor
         return WrapAsGraph(element, activeContext);
     }
 
-    private static object WrapAsGraph(JsonLdNode item, LinkedDataContext activeContext)
+    private static object WrapAsGraph(JsonNode item, LinkedDataContext activeContext)
     {
         //If the item is already a graph object, compact it. Otherwise
         //wrap its compact form in {"@graph": [...]}.
-        if(item.Kind == JsonLdNodeKind.Object && item.TryGetProperty(JsonLdKeywords.Graph, out _))
+        if(item.Kind == JsonNodeKind.Object && item.TryGetProperty(JsonLdKeywords.Graph, out _))
         {
             object? compactedGraph = CompactNodeObject(item, activeContext);
             return compactedGraph ?? new Dictionary<string, object?>(StringComparer.Ordinal);
@@ -760,9 +760,9 @@ public static class JsonLdCompactor
         };
     }
 
-    private static object? CompactItem(JsonLdNode item, LinkedDataContext activeContext, TermDefinition? termDef)
+    private static object? CompactItem(JsonNode item, LinkedDataContext activeContext, TermDefinition? termDef)
     {
-        if(item.Kind == JsonLdNodeKind.Object)
+        if(item.Kind == JsonNodeKind.Object)
         {
             if(item.TryGetProperty(JsonLdKeywords.Value, out _))
             {
@@ -770,25 +770,25 @@ public static class JsonLdCompactor
             }
             return CompactNodeObject(item, activeContext);
         }
-        if(item.Kind == JsonLdNodeKind.Array)
+        if(item.Kind == JsonNodeKind.Array)
         {
             return CompactArray(item, activeContext);
         }
         return ToObjectGraph(item);
     }
 
-    private static object? CompactTypeValue(JsonLdNode typeValue, LinkedDataContext activeContext)
+    private static object? CompactTypeValue(JsonNode typeValue, LinkedDataContext activeContext)
     {
-        if(typeValue.Kind == JsonLdNodeKind.String)
+        if(typeValue.Kind == JsonNodeKind.String)
         {
             return CompactIri(activeContext, typeValue.GetString(), vocab: true);
         }
-        if(typeValue.Kind == JsonLdNodeKind.Array)
+        if(typeValue.Kind == JsonNodeKind.Array)
         {
             List<object?> items = new();
-            foreach(JsonLdNode item in typeValue.EnumerateArray())
+            foreach(JsonNode item in typeValue.EnumerateArray())
             {
-                if(item.Kind == JsonLdNodeKind.String)
+                if(item.Kind == JsonNodeKind.String)
                 {
                     items.Add(CompactIri(activeContext, item.GetString(), vocab: true));
                 }
@@ -895,35 +895,35 @@ public static class JsonLdCompactor
         return full;
     }
 
-    private static object? ToObjectGraph(JsonLdNode node)
+    private static object? ToObjectGraph(JsonNode node)
     {
         return node.Kind switch
         {
-            JsonLdNodeKind.Null => null,
-            JsonLdNodeKind.String => node.GetString(),
-            JsonLdNodeKind.True => true,
-            JsonLdNodeKind.False => false,
-            JsonLdNodeKind.Number => ParseNumberLiteral(node.GetRawNumber()),
-            JsonLdNodeKind.Array => MaterialiseArray(node),
-            JsonLdNodeKind.Object => MaterialiseObject(node),
+            JsonNodeKind.Null => null,
+            JsonNodeKind.String => node.GetString(),
+            JsonNodeKind.True => true,
+            JsonNodeKind.False => false,
+            JsonNodeKind.Number => ParseNumberLiteral(node.GetRawNumber()),
+            JsonNodeKind.Array => MaterialiseArray(node),
+            JsonNodeKind.Object => MaterialiseObject(node),
             _ => null
         };
     }
 
-    private static List<object?> MaterialiseArray(JsonLdNode array)
+    private static List<object?> MaterialiseArray(JsonNode array)
     {
         List<object?> items = new();
-        foreach(JsonLdNode item in array.EnumerateArray())
+        foreach(JsonNode item in array.EnumerateArray())
         {
             items.Add(ToObjectGraph(item));
         }
         return items;
     }
 
-    private static Dictionary<string, object?> MaterialiseObject(JsonLdNode obj)
+    private static Dictionary<string, object?> MaterialiseObject(JsonNode obj)
     {
         Dictionary<string, object?> result = new(StringComparer.Ordinal);
-        foreach(KeyValuePair<string, JsonLdNode> property in obj.EnumerateObject())
+        foreach(KeyValuePair<string, JsonNode> property in obj.EnumerateObject())
         {
             result[property.Key] = ToObjectGraph(property.Value);
         }

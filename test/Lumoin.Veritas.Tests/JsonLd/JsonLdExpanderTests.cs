@@ -3,6 +3,7 @@ using Lumoin.Veritas.Json;
 using Lumoin.Veritas.JsonLd;
 using Lumoin.Veritas.LinkedData;
 using System.Text;
+using Lumoin.Veritas.Json.Stj;
 
 namespace Lumoin.Veritas.Tests.JsonLd;
 
@@ -17,7 +18,7 @@ internal sealed class JsonLdExpanderTests
     [TestMethod]
     public async Task ExtractQuadsFromSimpleDocument()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {
                 "@context": {"@vocab": "http://schema.org/"},
                 "@id": "http://example.org/person/1",
@@ -37,7 +38,7 @@ internal sealed class JsonLdExpanderTests
     [TestMethod]
     public async Task ExtractQuadsFromStringLiteralProperty()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {
                 "@context": {"@vocab": "http://schema.org/"},
                 "@id": "http://example.org/person/1",
@@ -56,7 +57,7 @@ internal sealed class JsonLdExpanderTests
     [TestMethod]
     public async Task ExtractQuadsFromLanguageTaggedProperty()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {
                 "@context": {
                     "@vocab": "http://schema.org/",
@@ -79,7 +80,7 @@ internal sealed class JsonLdExpanderTests
     [TestMethod]
     public async Task ExtractQuadsFromBooleanLiteral()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {
                 "@context": {"@vocab": "http://schema.org/"},
                 "@id": "http://example.org/thing",
@@ -98,7 +99,7 @@ internal sealed class JsonLdExpanderTests
     [TestMethod]
     public async Task ExtractQuadsFromIntegerLiteral()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {
                 "@context": {"@vocab": "http://schema.org/"},
                 "@id": "http://example.org/thing",
@@ -117,7 +118,7 @@ internal sealed class JsonLdExpanderTests
     [TestMethod]
     public async Task ExtractQuadsFromTypeCoercedIdProperty()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {
                 "@context": {
                     "@vocab": "http://schema.org/",
@@ -138,7 +139,7 @@ internal sealed class JsonLdExpanderTests
     [TestMethod]
     public async Task ExtractQuadsFromNestedObject()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {
                 "@context": {"@vocab": "http://schema.org/"},
                 "@id": "http://example.org/alice",
@@ -166,7 +167,7 @@ internal sealed class JsonLdExpanderTests
     [TestMethod]
     public async Task ExtractQuadsFromNamedGraph()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {
                 "@context": {"@vocab": "http://schema.org/"},
                 "@id": "http://example.org/graph1",
@@ -187,7 +188,7 @@ internal sealed class JsonLdExpanderTests
     [TestMethod]
     public async Task ExtractQuadsFromMultipleTypes()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {
                 "@context": {"@vocab": "http://schema.org/"},
                 "@id": "http://example.org/thing",
@@ -212,7 +213,7 @@ internal sealed class JsonLdExpanderTests
     [TestMethod]
     public async Task ExtractQuadsFromArrayProperty()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {
                 "@context": {"@vocab": "http://schema.org/"},
                 "@id": "http://example.org/thing",
@@ -237,7 +238,7 @@ internal sealed class JsonLdExpanderTests
     [TestMethod]
     public async Task ExtractQuadsFromExplicitValueObject()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {
                 "@context": {"@vocab": "http://schema.org/"},
                 "@id": "http://example.org/thing",
@@ -256,7 +257,7 @@ internal sealed class JsonLdExpanderTests
     [TestMethod]
     public async Task ExtractQuadsFromCompactIriInContext()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {
                 "@context": {
                     "schema": "http://schema.org/",
@@ -279,7 +280,7 @@ internal sealed class JsonLdExpanderTests
     [TestMethod]
     public async Task ExtractQuadsUsesBaseUrlForRelativeIds()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {
                 "@context": {"@vocab": "http://schema.org/"},
                 "@id": "person/1",
@@ -291,7 +292,7 @@ internal sealed class JsonLdExpanderTests
         List<Quad> quads = [];
 
         await foreach(Quad quad in JsonLdExpander.ExtractQuadsAsync(
-            doc, "http://example.org/", NullResolver, StjJsonLdAdapter.Parse, pool, TestContext.CancellationToken)
+            doc, "http://example.org/", NullResolver, StjJsonAdapter.Parse, pool, TestContext.CancellationToken)
             .ConfigureAwait(false))
         {
             quads.Add(quad);
@@ -302,16 +303,16 @@ internal sealed class JsonLdExpanderTests
     }
 
     /// <summary>
-    /// Parses a .NET string of JSON text into a <see cref="JsonLdNode"/> via the
-    /// bundled <see cref="StjJsonLdAdapter"/>.
+    /// Parses a .NET string of JSON text into a <see cref="JsonNode"/> via the
+    /// bundled <see cref="StjJsonAdapter"/>.
     /// </summary>
     /// <param name="json">The JSON text to parse.</param>
     /// <returns>The parsed document root.</returns>
-    private static JsonLdNode ParseJson(string json)
+    private static JsonNode ParseJson(string json)
     {
         Utf8String utf8 = Utf8String.WithoutPrecomputedHash(Encoding.UTF8.GetBytes(json));
 
-        return StjJsonLdAdapter.Parse(utf8);
+        return StjJsonAdapter.Parse(utf8);
     }
 
     /// <summary>
@@ -321,13 +322,13 @@ internal sealed class JsonLdExpanderTests
     /// <param name="doc">The pre-parsed JSON-LD root node.</param>
     /// <param name="cancellationToken">Token to cancel the enumeration.</param>
     /// <returns>The full list of quads produced by the expander.</returns>
-    private static async Task<List<Quad>> ExtractAsync(JsonLdNode doc, CancellationToken cancellationToken)
+    private static async Task<List<Quad>> ExtractAsync(JsonNode doc, CancellationToken cancellationToken)
     {
         using Utf8StringPool pool = new();
         List<Quad> quads = [];
 
         await foreach(Quad quad in JsonLdExpander.ExtractQuadsAsync(
-            doc, null, NullResolver, StjJsonLdAdapter.Parse, pool, cancellationToken).ConfigureAwait(false))
+            doc, null, NullResolver, StjJsonAdapter.Parse, pool, cancellationToken).ConfigureAwait(false))
         {
             quads.Add(quad);
         }

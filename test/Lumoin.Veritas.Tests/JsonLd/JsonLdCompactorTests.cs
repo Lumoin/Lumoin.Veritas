@@ -3,8 +3,8 @@ using System.Text;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Json;
 using Lumoin.Veritas.JsonLd;
-using Lumoin.Veritas.JsonLd.Document;
 using Lumoin.Veritas.LinkedData;
+using Lumoin.Veritas.Json.Stj;
 
 namespace Lumoin.Veritas.Tests.JsonLd;
 
@@ -13,8 +13,8 @@ internal sealed class JsonLdCompactorTests
 {
     public required TestContext TestContext { get; set; }
 
-    private static JsonLdNode ParseJson(string json) =>
-        StjJsonLdAdapter.Parse(new Utf8String(Encoding.UTF8.GetBytes(json)));
+    private static JsonNode ParseJson(string json) =>
+        StjJsonAdapter.Parse(new Utf8String(Encoding.UTF8.GetBytes(json)));
 
     private static string[] SetContainer { get; } = ["@set"];
     private static string[] ListContainer { get; } = ["@list"];
@@ -154,7 +154,7 @@ internal sealed class JsonLdCompactorTests
     [TestMethod]
     public void CompactValueUnwrapsPlainLiteral()
     {
-        JsonLdNode valueObj = ParseJson(/*lang=json,strict*/ """
+        JsonNode valueObj = ParseJson(/*lang=json,strict*/ """
             {"@value": "Alice"}
             """);
 
@@ -167,7 +167,7 @@ internal sealed class JsonLdCompactorTests
     public void CompactValueUnwrapsWhenTypeCoercionMatches()
     {
         //Value has @type=xsd:date; term's TypeMapping matches.
-        JsonLdNode valueObj = ParseJson(/*lang=json,strict*/ """
+        JsonNode valueObj = ParseJson(/*lang=json,strict*/ """
             {"@value": "2024-01-15", "@type": "http://www.w3.org/2001/XMLSchema#date"}
             """);
         TermDefinition term = new()
@@ -184,7 +184,7 @@ internal sealed class JsonLdCompactorTests
     [TestMethod]
     public void CompactValuePreservesValueObjectWhenTypeMismatched()
     {
-        JsonLdNode valueObj = ParseJson(/*lang=json,strict*/ """
+        JsonNode valueObj = ParseJson(/*lang=json,strict*/ """
             {"@value": "2024-01-15", "@type": "http://www.w3.org/2001/XMLSchema#date"}
             """);
         TermDefinition term = new()
@@ -204,7 +204,7 @@ internal sealed class JsonLdCompactorTests
     [TestMethod]
     public void CompactValueUnwrapsWhenLanguageMatches()
     {
-        JsonLdNode valueObj = ParseJson(/*lang=json,strict*/ """
+        JsonNode valueObj = ParseJson(/*lang=json,strict*/ """
             {"@value": "Bonjour", "@language": "fr"}
             """);
         TermDefinition term = new()
@@ -227,7 +227,7 @@ internal sealed class JsonLdCompactorTests
     public void CompactWalksNodeObjectAndEmitsContext()
     {
         //Expanded form: one property with a value-object array.
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "@id": "http://example.org/person/1",
               "http://schema.org/name": [{"@value": "Alice"}]
@@ -250,7 +250,7 @@ internal sealed class JsonLdCompactorTests
     [TestMethod]
     public void CompactCompactsTypeViaVocab()
     {
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "@id": "http://example.org/p/1",
               "@type": "http://schema.org/Person"
@@ -273,7 +273,7 @@ internal sealed class JsonLdCompactorTests
     {
         //Expanded form always wraps property values in an array. Compaction
         //unwraps single-item arrays per the default compactArrays=true.
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "http://schema.org/name": [{"@value": "Alice"}]
             }
@@ -290,7 +290,7 @@ internal sealed class JsonLdCompactorTests
     [TestMethod]
     public void CompactPreservesMultiItemArrays()
     {
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "http://schema.org/tags": [
                 {"@value": "alpha"},
@@ -316,7 +316,7 @@ internal sealed class JsonLdCompactorTests
     {
         //An empty active context has nothing meaningful to emit at the top;
         //the result is just the compacted body.
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {"@id": "http://example.org/x"}
             """);
 
@@ -330,7 +330,7 @@ internal sealed class JsonLdCompactorTests
     [TestMethod]
     public void CompactNestedNodeObjectRecurses()
     {
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "@id": "http://example.org/p/1",
               "http://schema.org/knows": [{
@@ -358,7 +358,7 @@ internal sealed class JsonLdCompactorTests
     {
         //A property whose IRI has no direct term but matches a registered
         //prefix term compacts to the prefix:suffix form.
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "http://schema.org/unmapped": [{"@value": "x"}]
             }
@@ -382,7 +382,7 @@ internal sealed class JsonLdCompactorTests
     {
         //Without @set, a single-item array unwraps. With @set, the array
         //shape is preserved even for one value.
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "http://schema.org/tag": [{"@value": "alpha"}]
             }
@@ -410,7 +410,7 @@ internal sealed class JsonLdCompactorTests
         //in the property's array. Compact form under @container=@list is
         //the bare JSON array — order preserved (RDF projection emits as
         //rdf:List).
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "http://schema.org/steps": [{
                 "@list": [
@@ -442,7 +442,7 @@ internal sealed class JsonLdCompactorTests
     [TestMethod]
     public void CompactListContainerWithEmptyListYieldsEmptyArray()
     {
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "http://schema.org/steps": [{ "@list": [] }]
             }
@@ -466,7 +466,7 @@ internal sealed class JsonLdCompactorTests
     {
         //Expanded form: array of {@value, @language}. Compact under
         //@container=@language: a single object keyed by language tag.
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "http://www.w3.org/2000/01/rdf-schema#label": [
                 {"@value": "Hello", "@language": "en"},
@@ -496,7 +496,7 @@ internal sealed class JsonLdCompactorTests
     public void CompactLanguageContainerCollectsMultipleValuesPerLanguageIntoArray()
     {
         //Two English values: the map value at "en" becomes an array.
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "http://www.w3.org/2000/01/rdf-schema#label": [
                 {"@value": "Hello", "@language": "en"},
@@ -534,7 +534,7 @@ internal sealed class JsonLdCompactorTests
         //Expanded form carries an @index property on each item; compact
         //form is a map keyed by the index strings. The @index property is
         //removed from the inner value because it's now in the map key.
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "http://example.org/items": [
                 {"@index": "sku-1", "http://example.org/name": [{"@value": "Widget"}]},
@@ -567,7 +567,7 @@ internal sealed class JsonLdCompactorTests
     public void CompactIndexContainerCollectsRepeatsIntoArray()
     {
         //Two items with the same @index → array under that key.
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "http://example.org/items": [
                 {"@index": "shared", "http://example.org/name": [{"@value": "Alpha"}]},
@@ -597,7 +597,7 @@ internal sealed class JsonLdCompactorTests
     {
         //@id container: each node-object item is keyed by its @id IRI;
         //the @id property is removed from the value.
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "http://example.org/people": [
                 {"@id": "http://example.org/alice", "http://example.org/name": [{"@value": "Alice"}]},
@@ -631,7 +631,7 @@ internal sealed class JsonLdCompactorTests
         //@type container: items keyed by their @type, which compacts
         //vocab-relative when @vocab is set. @type is removed from the
         //inner value (single-string case).
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "http://example.org/members": [
                 {"@type": "http://schema.org/Person",       "http://example.org/name": [{"@value": "Alice"}]},
@@ -665,7 +665,7 @@ internal sealed class JsonLdCompactorTests
     {
         //@graph container alone: each item becomes a graph object
         //{"@graph": ...}.
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "http://example.org/snapshot": [
                 {
@@ -698,7 +698,7 @@ internal sealed class JsonLdCompactorTests
     {
         //@graph + @id combination: map keyed by node @id, value is
         //{"@graph": ...}.
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "http://example.org/versions": [
                 {
@@ -736,7 +736,7 @@ internal sealed class JsonLdCompactorTests
     [TestMethod]
     public void CompactGraphIndexContainerKeysGraphsByIndex()
     {
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "http://example.org/chapters": [
                 {"@index": "ch1", "http://example.org/title": [{"@value": "Intro"}]},
@@ -768,7 +768,7 @@ internal sealed class JsonLdCompactorTests
     {
         //Compactor counterpart to expander @reverse: each predicate under
         //@reverse compacts to its term/compact form while staying grouped.
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "@id": "http://ex/alice",
               "@reverse": {
@@ -793,7 +793,7 @@ internal sealed class JsonLdCompactorTests
     {
         //A term with a container mapping must emit "@container" in the
         //compacted @context so re-expansion sees the same shape.
-        JsonLdNode expanded = ParseJson(/*lang=json,strict*/ """
+        JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "http://schema.org/tag": [{"@value": "alpha"}]
             }

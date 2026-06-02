@@ -129,6 +129,7 @@
         "dependencies": {
           "Lumoin.Veritas.Cbor": "[0.0.0, )",
           "Lumoin.Veritas.Core": "[0.0.0, )",
+          "Lumoin.Veritas.Json": "[0.0.0, )",
           "Lumoin.Veritas.LinkedData": "[0.0.0, )"
         }
       },
@@ -142,6 +143,12 @@
         "type": "Project",
         "dependencies": {
           "System.IO.Hashing": "[10.0.8, )"
+        }
+      },
+      "lumoin.veritas.json": {
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Veritas.Core": "[0.0.0, )"
         }
       },
       "lumoin.veritas.linkeddata": {

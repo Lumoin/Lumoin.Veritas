@@ -5,6 +5,7 @@ using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Json;
 using Lumoin.Veritas.JsonLd;
 using Lumoin.Veritas.LinkedData;
+using Lumoin.Veritas.Json.Stj;
 
 namespace Lumoin.Veritas.Tests.JsonLd;
 
@@ -18,8 +19,8 @@ internal sealed class JsonLdExpansionTreeTests
 {
     public required TestContext TestContext { get; set; }
 
-    private static JsonLdNode ParseJson(string json) =>
-        StjJsonLdAdapter.Parse(new Utf8String(Encoding.UTF8.GetBytes(json)));
+    private static JsonNode ParseJson(string json) =>
+        StjJsonAdapter.Parse(new Utf8String(Encoding.UTF8.GetBytes(json)));
 
     private static ContextResolverDelegate NullResolver { get; } =
         (_, _) => ValueTask.FromResult<Utf8String?>(null);
@@ -29,7 +30,7 @@ internal sealed class JsonLdExpansionTreeTests
     {
         //Compact: {"@context": {"name": "http://schema.org/name"}, "name": "Alice"}
         //Expanded: [{"http://schema.org/name": [{"@value": "Alice"}]}]
-        JsonLdNode input = ParseJson(/*lang=json,strict*/ """
+        JsonNode input = ParseJson(/*lang=json,strict*/ """
             {
               "@context": {"name": "http://schema.org/name"},
               "name": "Alice"
@@ -37,7 +38,7 @@ internal sealed class JsonLdExpansionTreeTests
             """);
 
         IReadOnlyList<object?> result = await JsonLdExpansionTree.ExpandAsync(
-            input, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
+            input, baseUrl: null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.HasCount(1, result);
         IReadOnlyDictionary<string, object?> node = (IReadOnlyDictionary<string, object?>)result[0]!;
@@ -53,7 +54,7 @@ internal sealed class JsonLdExpansionTreeTests
     {
         //@id document-relative-resolved (with no @base, stays as given).
         //@type vocab-relative.
-        JsonLdNode input = ParseJson(/*lang=json,strict*/ """
+        JsonNode input = ParseJson(/*lang=json,strict*/ """
             {
               "@context": {"@vocab": "http://schema.org/"},
               "@id": "http://example.org/p/1",
@@ -63,7 +64,7 @@ internal sealed class JsonLdExpansionTreeTests
             """);
 
         IReadOnlyList<object?> result = await JsonLdExpansionTree.ExpandAsync(
-            input, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
+            input, baseUrl: null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
 
         IReadOnlyDictionary<string, object?> node = (IReadOnlyDictionary<string, object?>)result[0]!;
         Assert.AreEqual("http://example.org/p/1", node["@id"]);
@@ -79,7 +80,7 @@ internal sealed class JsonLdExpansionTreeTests
     {
         //Term "birthDate" coerces values to xsd:date. The scalar string
         //becomes a value object preserving the type.
-        JsonLdNode input = ParseJson(/*lang=json,strict*/ """
+        JsonNode input = ParseJson(/*lang=json,strict*/ """
             {
               "@context": {
                 "birthDate": {
@@ -92,7 +93,7 @@ internal sealed class JsonLdExpansionTreeTests
             """);
 
         IReadOnlyList<object?> result = await JsonLdExpansionTree.ExpandAsync(
-            input, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
+            input, baseUrl: null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
 
         IReadOnlyDictionary<string, object?> node = (IReadOnlyDictionary<string, object?>)result[0]!;
         IReadOnlyList<object?> values = (IReadOnlyList<object?>)node["http://schema.org/birthDate"]!;
@@ -104,7 +105,7 @@ internal sealed class JsonLdExpansionTreeTests
     [TestMethod]
     public async Task ScalarUnderLanguagedTermBecomesValueObjectWithLanguage()
     {
-        JsonLdNode input = ParseJson(/*lang=json,strict*/ """
+        JsonNode input = ParseJson(/*lang=json,strict*/ """
             {
               "@context": {
                 "greeting": {
@@ -117,7 +118,7 @@ internal sealed class JsonLdExpansionTreeTests
             """);
 
         IReadOnlyList<object?> result = await JsonLdExpansionTree.ExpandAsync(
-            input, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
+            input, baseUrl: null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
 
         IReadOnlyDictionary<string, object?> node = (IReadOnlyDictionary<string, object?>)result[0]!;
         IReadOnlyList<object?> values = (IReadOnlyList<object?>)node["http://example.org/greeting"]!;
@@ -131,12 +132,12 @@ internal sealed class JsonLdExpansionTreeTests
     {
         //A single-valued property in compact form becomes an array in
         //expanded form, per JSON-LD 1.1 §5.2.
-        JsonLdNode input = ParseJson(/*lang=json,strict*/ """
+        JsonNode input = ParseJson(/*lang=json,strict*/ """
             {"@context": {"name": "http://ex/name"}, "name": "Alice"}
             """);
 
         IReadOnlyList<object?> result = await JsonLdExpansionTree.ExpandAsync(
-            input, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
+            input, baseUrl: null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
 
         IReadOnlyDictionary<string, object?> node = (IReadOnlyDictionary<string, object?>)result[0]!;
         Assert.IsInstanceOfType<IReadOnlyList<object?>>(node["http://ex/name"]);
@@ -145,7 +146,7 @@ internal sealed class JsonLdExpansionTreeTests
     [TestMethod]
     public async Task ExpandsNestedNodeObjectRecursively()
     {
-        JsonLdNode input = ParseJson(/*lang=json,strict*/ """
+        JsonNode input = ParseJson(/*lang=json,strict*/ """
             {
               "@context": {
                 "name": "http://schema.org/name",
@@ -161,7 +162,7 @@ internal sealed class JsonLdExpansionTreeTests
             """);
 
         IReadOnlyList<object?> result = await JsonLdExpansionTree.ExpandAsync(
-            input, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
+            input, baseUrl: null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
 
         IReadOnlyDictionary<string, object?> alice = (IReadOnlyDictionary<string, object?>)result[0]!;
         Assert.AreEqual("http://ex/alice", alice["@id"]);
@@ -178,7 +179,7 @@ internal sealed class JsonLdExpansionTreeTests
     {
         //@container=@list: compact array becomes {"@list": [...]} in
         //expanded form.
-        JsonLdNode input = ParseJson(/*lang=json,strict*/ """
+        JsonNode input = ParseJson(/*lang=json,strict*/ """
             {
               "@context": {
                 "steps": {"@id": "http://ex/steps", "@container": "@list"}
@@ -188,7 +189,7 @@ internal sealed class JsonLdExpansionTreeTests
             """);
 
         IReadOnlyList<object?> result = await JsonLdExpansionTree.ExpandAsync(
-            input, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
+            input, baseUrl: null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
 
         IReadOnlyDictionary<string, object?> node = (IReadOnlyDictionary<string, object?>)result[0]!;
         IReadOnlyList<object?> values = (IReadOnlyList<object?>)node["http://ex/steps"]!;
@@ -204,7 +205,7 @@ internal sealed class JsonLdExpansionTreeTests
     {
         //Input is already in value-object form ({"@value": ..., "@type": ...}).
         //Expansion is idempotent: passes through.
-        JsonLdNode input = ParseJson(/*lang=json,strict*/ """
+        JsonNode input = ParseJson(/*lang=json,strict*/ """
             {
               "@context": {"birthDate": "http://schema.org/birthDate"},
               "birthDate": {
@@ -215,7 +216,7 @@ internal sealed class JsonLdExpansionTreeTests
             """);
 
         IReadOnlyList<object?> result = await JsonLdExpansionTree.ExpandAsync(
-            input, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
+            input, baseUrl: null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
 
         IReadOnlyDictionary<string, object?> node = (IReadOnlyDictionary<string, object?>)result[0]!;
         IReadOnlyList<object?> values = (IReadOnlyList<object?>)node["http://schema.org/birthDate"]!;
@@ -229,7 +230,7 @@ internal sealed class JsonLdExpansionTreeTests
     {
         //@container=@language: compact {lang: value} map → expanded array
         //of {"@value", "@language"} objects.
-        JsonLdNode input = ParseJson(/*lang=json,strict*/ """
+        JsonNode input = ParseJson(/*lang=json,strict*/ """
             {
               "@context": {
                 "label": {
@@ -245,7 +246,7 @@ internal sealed class JsonLdExpansionTreeTests
             """);
 
         IReadOnlyList<object?> result = await JsonLdExpansionTree.ExpandAsync(
-            input, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
+            input, baseUrl: null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
 
         IReadOnlyDictionary<string, object?> node = (IReadOnlyDictionary<string, object?>)result[0]!;
         IReadOnlyList<object?> labels = (IReadOnlyList<object?>)node["http://www.w3.org/2000/01/rdf-schema#label"]!;
@@ -275,7 +276,7 @@ internal sealed class JsonLdExpansionTreeTests
     [TestMethod]
     public async Task ExpandsIndexContainerAttachingIndexToEachItem()
     {
-        JsonLdNode input = ParseJson(/*lang=json,strict*/ """
+        JsonNode input = ParseJson(/*lang=json,strict*/ """
             {
               "@context": {
                 "items": {"@id": "http://ex/items", "@container": "@index"},
@@ -289,7 +290,7 @@ internal sealed class JsonLdExpansionTreeTests
             """);
 
         IReadOnlyList<object?> result = await JsonLdExpansionTree.ExpandAsync(
-            input, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
+            input, baseUrl: null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
 
         IReadOnlyDictionary<string, object?> node = (IReadOnlyDictionary<string, object?>)result[0]!;
         IReadOnlyList<object?> items = (IReadOnlyList<object?>)node["http://ex/items"]!;
@@ -312,7 +313,7 @@ internal sealed class JsonLdExpansionTreeTests
     [TestMethod]
     public async Task ExpandsIdContainerAttachingIdToEachItem()
     {
-        JsonLdNode input = ParseJson(/*lang=json,strict*/ """
+        JsonNode input = ParseJson(/*lang=json,strict*/ """
             {
               "@context": {
                 "people": {"@id": "http://ex/people", "@container": "@id"},
@@ -326,7 +327,7 @@ internal sealed class JsonLdExpansionTreeTests
             """);
 
         IReadOnlyList<object?> result = await JsonLdExpansionTree.ExpandAsync(
-            input, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
+            input, baseUrl: null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
 
         IReadOnlyDictionary<string, object?> node = (IReadOnlyDictionary<string, object?>)result[0]!;
         IReadOnlyList<object?> people = (IReadOnlyList<object?>)node["http://ex/people"]!;
@@ -346,7 +347,7 @@ internal sealed class JsonLdExpansionTreeTests
     [TestMethod]
     public async Task ExpandsTypeContainerAttachingTypeToEachItem()
     {
-        JsonLdNode input = ParseJson(/*lang=json,strict*/ """
+        JsonNode input = ParseJson(/*lang=json,strict*/ """
             {
               "@context": {
                 "@vocab": "http://schema.org/",
@@ -361,7 +362,7 @@ internal sealed class JsonLdExpansionTreeTests
             """);
 
         IReadOnlyList<object?> result = await JsonLdExpansionTree.ExpandAsync(
-            input, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
+            input, baseUrl: null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
 
         IReadOnlyDictionary<string, object?> node = (IReadOnlyDictionary<string, object?>)result[0]!;
         IReadOnlyList<object?> members = (IReadOnlyList<object?>)node["http://ex/members"]!;
@@ -386,7 +387,7 @@ internal sealed class JsonLdExpansionTreeTests
         //Type-scoped context: a Person term carries an inner @context
         //defining "name". When @type=Person is encountered on a node,
         //the inner context applies for that node's properties.
-        JsonLdNode input = ParseJson(/*lang=json,strict*/ """
+        JsonNode input = ParseJson(/*lang=json,strict*/ """
             {
               "@context": {
                 "Person": {
@@ -400,7 +401,7 @@ internal sealed class JsonLdExpansionTreeTests
             """);
 
         IReadOnlyList<object?> result = await JsonLdExpansionTree.ExpandAsync(
-            input, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
+            input, baseUrl: null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
 
         IReadOnlyDictionary<string, object?> node = (IReadOnlyDictionary<string, object?>)result[0]!;
         //After type-scoped context applied, "name" expands to the
@@ -414,7 +415,7 @@ internal sealed class JsonLdExpansionTreeTests
         //Property-scoped context: a Container term carries an inner
         //@context defining "inner". The inner context applies only
         //when descending into Container's value.
-        JsonLdNode input = ParseJson(/*lang=json,strict*/ """
+        JsonNode input = ParseJson(/*lang=json,strict*/ """
             {
               "@context": {
                 "Container": {
@@ -429,7 +430,7 @@ internal sealed class JsonLdExpansionTreeTests
             """);
 
         IReadOnlyList<object?> result = await JsonLdExpansionTree.ExpandAsync(
-            input, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
+            input, baseUrl: null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
 
         IReadOnlyDictionary<string, object?> node = (IReadOnlyDictionary<string, object?>)result[0]!;
         IReadOnlyList<object?> containerValues = (IReadOnlyList<object?>)node["http://example.org/container"]!;
@@ -443,7 +444,7 @@ internal sealed class JsonLdExpansionTreeTests
     {
         //@reverse: properties under it expand normally but stay grouped
         //under @reverse in the output, so RDF projection can swap S/O.
-        JsonLdNode input = ParseJson(/*lang=json,strict*/ """
+        JsonNode input = ParseJson(/*lang=json,strict*/ """
             {
               "@context": {
                 "parent": "http://example.org/parent",
@@ -457,7 +458,7 @@ internal sealed class JsonLdExpansionTreeTests
             """);
 
         IReadOnlyList<object?> result = await JsonLdExpansionTree.ExpandAsync(
-            input, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
+            input, baseUrl: null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
 
         IReadOnlyDictionary<string, object?> node = (IReadOnlyDictionary<string, object?>)result[0]!;
         Assert.IsTrue(node.ContainsKey("@reverse"));
@@ -473,7 +474,7 @@ internal sealed class JsonLdExpansionTreeTests
     {
         //A property whose name is neither a JSON-LD keyword nor a known
         //term and doesn't look like an IRI is dropped per JSON-LD 1.1 §5.
-        JsonLdNode input = ParseJson(/*lang=json,strict*/ """
+        JsonNode input = ParseJson(/*lang=json,strict*/ """
             {
               "@context": {"name": "http://ex/name"},
               "name": "Alice",
@@ -482,7 +483,7 @@ internal sealed class JsonLdExpansionTreeTests
             """);
 
         IReadOnlyList<object?> result = await JsonLdExpansionTree.ExpandAsync(
-            input, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
+            input, baseUrl: null, NullResolver, StjJsonAdapter.Parse, TestContext.CancellationToken).ConfigureAwait(false);
 
         IReadOnlyDictionary<string, object?> node = (IReadOnlyDictionary<string, object?>)result[0]!;
         Assert.IsTrue(node.ContainsKey("http://ex/name"));

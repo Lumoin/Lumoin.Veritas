@@ -1,15 +1,18 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Json;
 using Lumoin.Veritas.JsonLd;
-using Lumoin.Veritas.JsonLd.Document;
 using Lumoin.Veritas.LinkedData;
 using Lumoin.Veritas.NQuads;
+using Lumoin.Veritas.Json.Stj;
+using StjJsonNode = System.Text.Json.Nodes.JsonNode;
+using StjJsonObject = System.Text.Json.Nodes.JsonObject;
+using StjJsonArray = System.Text.Json.Nodes.JsonArray;
+using StjJsonValue = System.Text.Json.Nodes.JsonValue;
 
 namespace Lumoin.Veritas.Tests.Conformance;
 
@@ -59,18 +62,18 @@ internal static class W3cJsonLdRunner
     /// <returns>The outcome.</returns>
     private static async ValueTask<W3cOutcome> RunExpandAsync(JsonLdTestCase testCase, CancellationToken cancellationToken)
     {
-        JsonLdNode input = StjJsonLdAdapter.Parse(await ReadUtf8Async(testCase.InputPath, cancellationToken).ConfigureAwait(false));
+        JsonNode input = StjJsonAdapter.Parse(await ReadUtf8Async(testCase.InputPath, cancellationToken).ConfigureAwait(false));
         string baseUrl = testCase.OptionBase ?? testCase.InputUrl;
         ContextResolverDelegate resolver = CorpusResolver(testCase);
 
-        JsonLdNode? expandContext = await LoadExpandContextAsync(testCase, cancellationToken).ConfigureAwait(false);
+        JsonNode? expandContext = await LoadExpandContextAsync(testCase, cancellationToken).ConfigureAwait(false);
 
         if(testCase.IsPositive)
         {
             IReadOnlyList<object?> expanded;
             try
             {
-                expanded = await JsonLdExpansionTree.ExpandAsync(input, baseUrl, resolver, StjJsonLdAdapter.Parse, expandContext, cancellationToken).ConfigureAwait(false);
+                expanded = await JsonLdExpansionTree.ExpandAsync(input, baseUrl, resolver, StjJsonAdapter.Parse, expandContext, cancellationToken).ConfigureAwait(false);
             }
             catch(Exception exception) when(exception is not OperationCanceledException)
             {
@@ -84,9 +87,9 @@ internal static class W3cJsonLdRunner
                 return new W3cOutcome(W3cOutcomeStatus.Passed, "Expanded without error.");
             }
 
-            JsonNode? actual = ToJsonNode(expanded);
+            StjJsonNode? actual = ToJsonNode(expanded);
             byte[] expectedBytes = await File.ReadAllBytesAsync(testCase.ExpectPath!, cancellationToken).ConfigureAwait(false);
-            JsonNode? expected = JsonNode.Parse(expectedBytes);
+            StjJsonNode? expected = StjJsonNode.Parse(expectedBytes);
 
             return JsonEquals(actual, expected)
                 ? new W3cOutcome(W3cOutcomeStatus.Passed, "Expanded output matches.")
@@ -96,7 +99,7 @@ internal static class W3cJsonLdRunner
         //Negative test: expansion must raise a JSON-LD processing error.
         try
         {
-            await JsonLdExpansionTree.ExpandAsync(input, baseUrl, resolver, StjJsonLdAdapter.Parse, expandContext, cancellationToken).ConfigureAwait(false);
+            await JsonLdExpansionTree.ExpandAsync(input, baseUrl, resolver, StjJsonAdapter.Parse, expandContext, cancellationToken).ConfigureAwait(false);
 
             return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expected error '{testCase.ExpectErrorCode}', but expansion succeeded.");
         }
@@ -112,10 +115,10 @@ internal static class W3cJsonLdRunner
     /// <returns>The outcome.</returns>
     private static async ValueTask<W3cOutcome> RunToRdfAsync(JsonLdTestCase testCase, CancellationToken cancellationToken)
     {
-        JsonLdNode input = StjJsonLdAdapter.Parse(await ReadUtf8Async(testCase.InputPath, cancellationToken).ConfigureAwait(false));
+        JsonNode input = StjJsonAdapter.Parse(await ReadUtf8Async(testCase.InputPath, cancellationToken).ConfigureAwait(false));
         string baseUrl = testCase.OptionBase ?? testCase.InputUrl;
         ContextResolverDelegate resolver = CorpusResolver(testCase);
-        JsonLdNode? expandContext = await LoadExpandContextAsync(testCase, cancellationToken).ConfigureAwait(false);
+        JsonNode? expandContext = await LoadExpandContextAsync(testCase, cancellationToken).ConfigureAwait(false);
         using Utf8StringPool pool = new();
 
         List<Quad> actual;
@@ -124,7 +127,7 @@ internal static class W3cJsonLdRunner
             //Unified path: extract RDF from the conformant expanded object graph
             //(JsonLdExpansionTree) rather than a parallel expansion.
             IReadOnlyList<object?> expanded = await JsonLdExpansionTree.ExpandAsync(
-                input, baseUrl, resolver, StjJsonLdAdapter.Parse, expandContext, cancellationToken).ConfigureAwait(false);
+                input, baseUrl, resolver, StjJsonAdapter.Parse, expandContext, cancellationToken).ConfigureAwait(false);
             actual = JsonLdRdfSerializer.Serialize(expanded, pool, DirectionModeFor(testCase.RdfDirection));
         }
         catch(Exception exception) when(exception is not OperationCanceledException)
@@ -175,16 +178,16 @@ internal static class W3cJsonLdRunner
     /// <param name="testCase">The case.</param>
     /// <param name="cancellationToken">A token that aborts the run.</param>
     /// <returns>The context value node, or <see langword="null"/>.</returns>
-    private static async ValueTask<JsonLdNode?> LoadExpandContextAsync(JsonLdTestCase testCase, CancellationToken cancellationToken)
+    private static async ValueTask<JsonNode?> LoadExpandContextAsync(JsonLdTestCase testCase, CancellationToken cancellationToken)
     {
         if(testCase.ExpandContextPath is null)
         {
             return null;
         }
 
-        JsonLdNode document = StjJsonLdAdapter.Parse(await ReadUtf8Async(testCase.ExpandContextPath, cancellationToken).ConfigureAwait(false));
+        JsonNode document = StjJsonAdapter.Parse(await ReadUtf8Async(testCase.ExpandContextPath, cancellationToken).ConfigureAwait(false));
 
-        return document.TryGetProperty("@context", out JsonLdNode contextValue) ? contextValue : document;
+        return document.TryGetProperty("@context", out JsonNode contextValue) ? contextValue : document;
     }
 
     /// <summary>Builds a context resolver that maps a URL under the suite's <c>baseIri</c> to the vendored corpus file.</summary>
@@ -229,7 +232,7 @@ internal static class W3cJsonLdRunner
     /// <summary>A short single-line JSON rendering of a node for a mismatch message.</summary>
     /// <param name="node">The node, or <see langword="null"/>.</param>
     /// <returns>The truncated JSON text.</returns>
-    private static string Preview(JsonNode? node)
+    private static string Preview(StjJsonNode? node)
     {
         string json = node?.ToJsonString() ?? "null";
 
@@ -239,7 +242,7 @@ internal static class W3cJsonLdRunner
     /// <summary>Converts the expander's object-graph output (dictionaries / lists / scalars) to a <see cref="JsonNode"/> for comparison.</summary>
     /// <param name="value">The object-graph value.</param>
     /// <returns>The equivalent JSON node, or <see langword="null"/> for a JSON null.</returns>
-    private static JsonNode? ToJsonNode(object? value)
+    private static StjJsonNode? ToJsonNode(object? value)
     {
         switch(value)
         {
@@ -249,7 +252,7 @@ internal static class W3cJsonLdRunner
             }
             case IReadOnlyDictionary<string, object?> dictionary:
             {
-                JsonObject jsonObject = [];
+                StjJsonObject jsonObject = [];
                 foreach(KeyValuePair<string, object?> entry in dictionary)
                 {
                     jsonObject[entry.Key] = ToJsonNode(entry.Value);
@@ -259,7 +262,7 @@ internal static class W3cJsonLdRunner
             }
             case IReadOnlyList<object?> list:
             {
-                JsonArray jsonArray = [];
+                StjJsonArray jsonArray = [];
                 foreach(object? element in list)
                 {
                     jsonArray.Add(ToJsonNode(element));
@@ -271,27 +274,27 @@ internal static class W3cJsonLdRunner
             {
                 //A @json literal preserves the raw number token; parse it back
                 //to a JSON number node so the lexical form is compared verbatim.
-                return JsonNode.Parse(rawNumber.Raw);
+                return StjJsonNode.Parse(rawNumber.Raw);
             }
             case string text:
             {
-                return JsonValue.Create(text);
+                return StjJsonValue.Create(text);
             }
             case bool boolean:
             {
-                return JsonValue.Create(boolean);
+                return StjJsonValue.Create(boolean);
             }
             case long integer:
             {
-                return JsonValue.Create(integer);
+                return StjJsonValue.Create(integer);
             }
             case double real:
             {
-                return JsonValue.Create(real);
+                return StjJsonValue.Create(real);
             }
             default:
             {
-                return JsonValue.Create(value.ToString());
+                return StjJsonValue.Create(value.ToString());
             }
         }
     }
@@ -300,7 +303,7 @@ internal static class W3cJsonLdRunner
     /// <param name="actual">The produced node.</param>
     /// <param name="expected">The expected node.</param>
     /// <returns><see langword="true"/> when structurally equal.</returns>
-    private static bool JsonEquals(JsonNode? actual, JsonNode? expected)
+    private static bool JsonEquals(StjJsonNode? actual, StjJsonNode? expected)
     {
         if(actual is null || expected is null)
         {
@@ -309,16 +312,16 @@ internal static class W3cJsonLdRunner
 
         switch(actual)
         {
-            case JsonObject actualObject when expected is JsonObject expectedObject:
+            case StjJsonObject actualObject when expected is StjJsonObject expectedObject:
             {
                 if(actualObject.Count != expectedObject.Count)
                 {
                     return false;
                 }
 
-                foreach(KeyValuePair<string, JsonNode?> entry in actualObject)
+                foreach(KeyValuePair<string, StjJsonNode?> entry in actualObject)
                 {
-                    if(!expectedObject.TryGetPropertyValue(entry.Key, out JsonNode? expectedValue) || !JsonEquals(entry.Value, expectedValue))
+                    if(!expectedObject.TryGetPropertyValue(entry.Key, out StjJsonNode? expectedValue) || !JsonEquals(entry.Value, expectedValue))
                     {
                         return false;
                     }
@@ -326,7 +329,7 @@ internal static class W3cJsonLdRunner
 
                 return true;
             }
-            case JsonArray actualArray when expected is JsonArray expectedArray:
+            case StjJsonArray actualArray when expected is StjJsonArray expectedArray:
             {
                 if(actualArray.Count != expectedArray.Count)
                 {
@@ -343,7 +346,7 @@ internal static class W3cJsonLdRunner
 
                 return true;
             }
-            case JsonValue when expected is JsonValue:
+            case StjJsonValue when expected is StjJsonValue:
             {
                 return string.Equals(actual.ToJsonString(), expected.ToJsonString(), StringComparison.Ordinal);
             }

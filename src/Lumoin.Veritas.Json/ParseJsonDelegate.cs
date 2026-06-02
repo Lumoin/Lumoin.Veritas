@@ -1,18 +1,18 @@
 using Lumoin.Veritas.Core;
-using Lumoin.Veritas.LinkedData;
 
-namespace Lumoin.Veritas.JsonLd;
+namespace Lumoin.Veritas.Json;
 
 /// <summary>
-/// Parses a UTF-8 JSON byte sequence into a <see cref="JsonLdNode"/> tree.
+/// Parses a UTF-8 JSON byte sequence into a <see cref="JsonNode"/> tree.
 /// </summary>
 /// <remarks>
 /// <para>
-/// This delegate is the parsing boundary in the JSON-LD pipeline. The
-/// <see cref="ContextResolverDelegate"/> fetches raw UTF-8 bytes; this delegate
-/// turns them into the navigator-backed node tree the JSON-LD algorithms
-/// consume. Separating I/O from parsing lets either be swapped without
-/// affecting the other.
+/// This delegate is the parsing boundary of the JSON model: it turns raw UTF-8
+/// bytes into the navigator-backed node tree that consumers read through
+/// <see cref="JsonNodeNavigator"/>. The concrete parser (the
+/// <c>System.Text.Json</c>-backed adapter, or any alternative back end) is
+/// supplied here, so consumers depend on the node model without binding to a
+/// specific JSON library.
 /// </para>
 /// <para>
 /// The input is a <see cref="Utf8String"/> rather than a .NET <see cref="string"/>
@@ -21,7 +21,7 @@ namespace Lumoin.Veritas.JsonLd;
 /// adapter parses UTF-8 directly.
 /// </para>
 /// <para>
-/// The returned <see cref="JsonLdNode"/> must have a lifetime independent of
+/// The returned <see cref="JsonNode"/> must have a lifetime independent of
 /// the input bytes, since the input may be released as soon as the parser
 /// returns. Adapters whose nodes hold references back into the source bytes
 /// must clone or copy as part of parsing.
@@ -29,6 +29,6 @@ namespace Lumoin.Veritas.JsonLd;
 /// </remarks>
 /// <param name="utf8Json">The UTF-8 encoded JSON document.</param>
 /// <returns>
-/// The root <see cref="JsonLdNode"/> of the parsed document.
+/// The root <see cref="JsonNode"/> of the parsed document.
 /// </returns>
-public delegate JsonLdNode JsonLdParserDelegate(Utf8String utf8Json);
+public delegate JsonNode ParseJsonDelegate(Utf8String utf8Json);

@@ -4,15 +4,15 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
-using Lumoin.Veritas.JsonLd.Document;
+using Lumoin.Veritas.Json;
 using Lumoin.Veritas.LinkedData;
 
 namespace Lumoin.Veritas.JsonLd;
 
 /// <summary>
 /// Canonical JSON-LD remote-context parser. Composes a
-/// <see cref="JsonLdParserDelegate"/> (supplied by the application) with
-/// a walker that flattens the parsed <see cref="JsonLdNode"/> tree into
+/// <see cref="ParseJsonDelegate"/> (supplied by the application) with
+/// a walker that flattens the parsed <see cref="JsonNode"/> tree into
 /// the format-neutral <see cref="IReadOnlyDictionary{TKey, TValue}"/>
 /// shape that
 /// <c>Lumoin.Veritas.LinkedData.ContextProcessing.ProcessRemoteContextAsync</c>
@@ -36,7 +36,7 @@ public static class JsonLdRemoteContextParsing
     /// <param name="jsonParser">The application's JSON parser implementation.</param>
     /// <returns>A <see cref="ParseRemoteContextDelegate"/> ready for wiring.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="jsonParser"/> is <see langword="null"/>.</exception>
-    public static ParseRemoteContextDelegate Create(JsonLdParserDelegate jsonParser)
+    public static ParseRemoteContextDelegate Create(ParseJsonDelegate jsonParser)
     {
         ArgumentNullException.ThrowIfNull(jsonParser);
         return (resource, cancellationToken) =>
@@ -48,17 +48,17 @@ public static class JsonLdRemoteContextParsing
             //Utf8String for the parser. Use the no-precomputed-hash form
             //since these bytes are consumed once and not used as a key.
             Utf8String utf8 = Utf8String.WithoutPrecomputedHash(resource.Bytes);
-            JsonLdNode root = jsonParser(utf8);
+            JsonNode root = jsonParser(utf8);
 
             //A remote context document must be a single map carrying @context.
-            if(root.Kind != JsonLdNodeKind.Object)
+            if(root.Kind != JsonNodeKind.Object)
             {
                 throw new JsonLdProcessingException(
                     JsonLdErrorCode.InvalidRemoteContext,
                     string.Create(CultureInfo.InvariantCulture, $"Remote context document at '{resource.FinalUrl}' must be a JSON object."));
             }
 
-            if(!root.TryGetProperty(JsonLdKeywords.Context, out JsonLdNode contextNode))
+            if(!root.TryGetProperty(JsonLdKeywords.Context, out JsonNode contextNode))
             {
                 throw new JsonLdProcessingException(
                     JsonLdErrorCode.InvalidRemoteContext,
@@ -119,27 +119,27 @@ public static class JsonLdRemoteContextParsing
         };
     }
 
-    private static object? FlattenNode(JsonLdNode node)
+    private static object? FlattenNode(JsonNode node)
     {
         switch(node.Kind)
         {
-            case JsonLdNodeKind.Null:
+            case JsonNodeKind.Null:
             {
                 return null;
             }
-            case JsonLdNodeKind.True:
+            case JsonNodeKind.True:
             {
                 return true;
             }
-            case JsonLdNodeKind.False:
+            case JsonNodeKind.False:
             {
                 return false;
             }
-            case JsonLdNodeKind.String:
+            case JsonNodeKind.String:
             {
                 return node.GetString();
             }
-            case JsonLdNodeKind.Number:
+            case JsonNodeKind.Number:
             {
                 string raw = node.GetRawNumber();
                 if(long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out long asInt))
@@ -152,19 +152,19 @@ public static class JsonLdRemoteContextParsing
                 }
                 return raw;
             }
-            case JsonLdNodeKind.Array:
+            case JsonNodeKind.Array:
             {
                 List<object?> result = [];
-                foreach(JsonLdNode element in node.EnumerateArray())
+                foreach(JsonNode element in node.EnumerateArray())
                 {
                     result.Add(FlattenNode(element));
                 }
                 return result;
             }
-            case JsonLdNodeKind.Object:
+            case JsonNodeKind.Object:
             {
                 Dictionary<string, object?> result = [];
-                foreach(KeyValuePair<string, JsonLdNode> entry in node.EnumerateObject())
+                foreach(KeyValuePair<string, JsonNode> entry in node.EnumerateObject())
                 {
                     result[entry.Key] = FlattenNode(entry.Value);
                 }
@@ -173,7 +173,7 @@ public static class JsonLdRemoteContextParsing
             default:
             {
                 throw new InvalidOperationException(
-                    string.Create(CultureInfo.InvariantCulture, $"Unhandled JsonLdNodeKind {node.Kind}."));
+                    string.Create(CultureInfo.InvariantCulture, $"Unhandled JsonNodeKind {node.Kind}."));
             }
         }
     }

@@ -8,6 +8,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Lumoin.Veritas.Cbor\Lumoin.Veritas.Cbor.csproj" />
     <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Json\Lumoin.Veritas.Json.csproj" />
     <ProjectReference Include="..\Lumoin.Veritas.LinkedData\Lumoin.Veritas.LinkedData.csproj" />
   </ItemGroup>
 

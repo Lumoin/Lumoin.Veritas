@@ -1,23 +1,22 @@
 using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
-using Lumoin.Veritas.JsonLd.Document;
 
-namespace Lumoin.Veritas.JsonLd;
+namespace Lumoin.Veritas.Json;
 
 /// <summary>
 /// A handle to a single node in a JSON document, decoupled from any particular
 /// JSON library. The handle carries an opaque payload supplied by an adapter
-/// together with the <see cref="JsonLdNodeNavigator"/> that knows how to read
+/// together with the <see cref="JsonNodeNavigator"/> that knows how to read
 /// the payload.
 /// </summary>
 /// <remarks>
 /// <para>
-/// This type is the JSON-LD library's only contact with parsed JSON content.
-/// The library reads values, properties, and array elements through the navigator's
-/// delegates, never by referencing types from a specific JSON library. The
-/// <see cref="Lumoin.Veritas.Json"/> project supplies a navigator backed by
-/// <c>System.Text.Json</c>; alternative back ends could supply their own.
+/// This type is a consumer's only contact with parsed JSON content. Consumers
+/// read values, properties, and array elements through the navigator's
+/// delegates, never by referencing types from a specific JSON library. A
+/// back end (the <c>System.Text.Json</c>-backed adapter, or an alternative)
+/// supplies a navigator together with the handles it produces.
 /// </para>
 /// <para>
 /// Instances are lightweight value-type wrappers. The <see cref="Handle"/> is
@@ -43,7 +42,7 @@ namespace Lumoin.Veritas.JsonLd;
 /// </para>
 /// </remarks>
 [DebuggerDisplay("{DebuggerLabel,nq}")]
-public readonly struct JsonLdNode: IEquatable<JsonLdNode>
+public readonly struct JsonNode: IEquatable<JsonNode>
 {
     /// <summary>
     /// Initialises a new node bound to the given handle and navigator.
@@ -56,7 +55,7 @@ public readonly struct JsonLdNode: IEquatable<JsonLdNode>
     /// The dispatch table that reads values from <paramref name="handle"/>.
     /// May not be <see langword="null"/>.
     /// </param>
-    public JsonLdNode(object handle, JsonLdNodeNavigator navigator)
+    public JsonNode(object handle, JsonNodeNavigator navigator)
     {
         ArgumentNullException.ThrowIfNull(handle);
         ArgumentNullException.ThrowIfNull(navigator);
@@ -75,7 +74,7 @@ public readonly struct JsonLdNode: IEquatable<JsonLdNode>
     /// <summary>
     /// Gets the dispatch table that reads values from <see cref="Handle"/>.
     /// </summary>
-    public JsonLdNodeNavigator? Navigator { get; }
+    public JsonNodeNavigator? Navigator { get; }
 
     /// <summary>
     /// Gets the debugger label describing this node. Used by the type's
@@ -83,8 +82,8 @@ public readonly struct JsonLdNode: IEquatable<JsonLdNode>
     /// </summary>
     private string DebuggerLabel
         => Handle is null || Navigator is null
-            ? "JsonLdNode (default)"
-            : $"JsonLdNode {{Kind={Navigator.GetKind(Handle)}, Handle={Handle.GetType().Name}}}";
+            ? "JsonNode (default)"
+            : $"JsonNode {{Kind={Navigator.GetKind(Handle)}, Handle={Handle.GetType().Name}}}";
 
     /// <summary>
     /// Determines whether this node refers to the same handle and navigator
@@ -96,7 +95,7 @@ public readonly struct JsonLdNode: IEquatable<JsonLdNode>
     /// <see langword="true"/> when both nodes share the same handle reference
     /// and the same navigator reference; otherwise, <see langword="false"/>.
     /// </returns>
-    public bool Equals(JsonLdNode other)
+    public bool Equals(JsonNode other)
     {
         return ReferenceEquals(Handle, other.Handle)
             && ReferenceEquals(Navigator, other.Navigator);
@@ -105,7 +104,7 @@ public readonly struct JsonLdNode: IEquatable<JsonLdNode>
     /// <inheritdoc/>
     public override bool Equals(object? obj)
     {
-        return obj is JsonLdNode other && Equals(other);
+        return obj is JsonNode other && Equals(other);
     }
 
     /// <summary>
@@ -124,19 +123,19 @@ public readonly struct JsonLdNode: IEquatable<JsonLdNode>
     }
 
     /// <summary>
-    /// Determines whether two <see cref="JsonLdNode"/> instances refer to the
+    /// Determines whether two <see cref="JsonNode"/> instances refer to the
     /// same handle and navigator.
     /// </summary>
-    public static bool operator ==(JsonLdNode left, JsonLdNode right)
+    public static bool operator ==(JsonNode left, JsonNode right)
     {
         return left.Equals(right);
     }
 
     /// <summary>
-    /// Determines whether two <see cref="JsonLdNode"/> instances do not refer
+    /// Determines whether two <see cref="JsonNode"/> instances do not refer
     /// to the same handle and navigator.
     /// </summary>
-    public static bool operator !=(JsonLdNode left, JsonLdNode right)
+    public static bool operator !=(JsonNode left, JsonNode right)
     {
         return !left.Equals(right);
     }

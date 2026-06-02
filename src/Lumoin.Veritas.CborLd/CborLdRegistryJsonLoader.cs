@@ -1,17 +1,16 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Text.Json;
-using Lumoin.Veritas.Cbor.CborLd;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Json;
 
-namespace Lumoin.Veritas.Json;
+namespace Lumoin.Veritas.Cbor.CborLd;
 
 /// <summary>
 /// Parses W3C CBOR-LD 1.0 registry JSON into <see cref="CborLdRegistryEntry"/>
-/// instances. The loader owns the <see cref="System.Text.Json"/> dependency
-/// on behalf of consumers; <see cref="CborLdRegistryEntry"/> and its
-/// supporting types carry no JSON references.
+/// instances. The loader reads through the backend-agnostic <see cref="JsonNode"/>
+/// model; the concrete JSON parser is supplied as a <see cref="ParseJsonDelegate"/>,
+/// so this project carries no dependency on a specific JSON library.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -38,45 +37,40 @@ public static class CborLdRegistryJsonLoader
     /// Parses a single registry-entry JSON document.
     /// </summary>
     /// <param name="utf8Json">UTF-8 encoded JSON describing one registry entry.</param>
+    /// <param name="parse">The JSON parser that turns the bytes into a <see cref="JsonNode"/> tree.</param>
     /// <returns>The parsed registry entry.</returns>
     /// <exception cref="CborLdProcessingException">The JSON is not a registry entry, or a required field is missing or malformed.</exception>
-    public static CborLdRegistryEntry LoadEntry(Utf8String utf8Json)
+    public static CborLdRegistryEntry LoadEntry(Utf8String utf8Json, ParseJsonDelegate parse)
     {
-        JsonElement root = ParseRoot(utf8Json);
-        try
-        {
-            return LoadEntryFromElement(root);
-        }
-        finally
-        {
-            //JsonElement is detached from any document after Clone; no
-            //disposal is required. ParseRoot returns a cloned element.
-        }
+        JsonNode root = ParseRoot(utf8Json, parse);
+
+        return LoadEntryFromNode(root);
     }
 
     /// <summary>
     /// Parses a JSON document containing an array of registry entries.
     /// </summary>
     /// <param name="utf8Json">UTF-8 encoded JSON containing a top-level array of entries.</param>
+    /// <param name="parse">The JSON parser that turns the bytes into a <see cref="JsonNode"/> tree.</param>
     /// <returns>The parsed entries in document order.</returns>
     /// <exception cref="CborLdProcessingException">The JSON is not an array, or any entry is malformed.</exception>
-    public static IReadOnlyList<CborLdRegistryEntry> LoadEntries(Utf8String utf8Json)
+    public static IReadOnlyList<CborLdRegistryEntry> LoadEntries(Utf8String utf8Json, ParseJsonDelegate parse)
     {
-        JsonElement root = ParseRoot(utf8Json);
-        if(root.ValueKind != JsonValueKind.Array)
+        JsonNode root = ParseRoot(utf8Json, parse);
+        if(root.Kind != JsonNodeKind.Array)
         {
             throw new CborLdProcessingException(
                 "invalid registry document",
-                $"Expected a top-level JSON array of registry entries; got {root.ValueKind}.");
+                $"Expected a top-level JSON array of registry entries; got {root.Kind}.");
         }
 
-        List<CborLdRegistryEntry> entries = new(root.GetArrayLength());
+        List<CborLdRegistryEntry> entries = [];
         int index = 0;
-        foreach(JsonElement element in root.EnumerateArray())
+        foreach(JsonNode element in root.EnumerateArray())
         {
             try
             {
-                entries.Add(LoadEntryFromElement(element));
+                entries.Add(LoadEntryFromNode(element));
             }
             catch(CborLdProcessingException ex)
             {
@@ -85,19 +79,22 @@ public static class CborLdRegistryJsonLoader
                     string.Create(CultureInfo.InvariantCulture, $"Failed to load registry entry at array index {index}: {ex.Message}"),
                     ex);
             }
+
             index++;
         }
+
         return entries;
     }
 
-    private static JsonElement ParseRoot(Utf8String utf8Json)
+    private static JsonNode ParseRoot(Utf8String utf8Json, ParseJsonDelegate parse)
     {
+        ArgumentNullException.ThrowIfNull(parse);
+
         try
         {
-            using JsonDocument document = JsonDocument.Parse(utf8Json.Memory);
-            return document.RootElement.Clone();
+            return parse(utf8Json);
         }
-        catch(JsonException ex)
+        catch(Exception ex) when(ex is not CborLdProcessingException)
         {
             throw new CborLdProcessingException(
                 "invalid registry json",
@@ -106,13 +103,13 @@ public static class CborLdRegistryJsonLoader
         }
     }
 
-    private static CborLdRegistryEntry LoadEntryFromElement(JsonElement entry)
+    private static CborLdRegistryEntry LoadEntryFromNode(JsonNode entry)
     {
-        if(entry.ValueKind != JsonValueKind.Object)
+        if(entry.Kind != JsonNodeKind.Object)
         {
             throw new CborLdProcessingException(
                 "invalid registry entry",
-                $"Registry entry must be a JSON object; got {entry.ValueKind}.");
+                $"Registry entry must be a JSON object; got {entry.Kind}.");
         }
 
         int id = RequiredInt(entry, "id");
@@ -131,183 +128,215 @@ public static class CborLdRegistryJsonLoader
             typeTables: typeTables.Count > 0 ? typeTables : null);
     }
 
-    private static Dictionary<string, CborLdKeywordCodec> LoadKeywords(JsonElement entry)
+    private static Dictionary<string, CborLdKeywordCodec> LoadKeywords(JsonNode entry)
     {
         Dictionary<string, CborLdKeywordCodec> result = new(StringComparer.Ordinal);
-        if(!entry.TryGetProperty("keywords", out JsonElement keywords))
+        if(!entry.TryGetProperty("keywords", out JsonNode keywords))
         {
             return result;
         }
-        if(keywords.ValueKind != JsonValueKind.Object)
+
+        if(keywords.Kind != JsonNodeKind.Object)
         {
             throw new CborLdProcessingException(
                 "invalid registry entry",
-                $"Field 'keywords' must be a JSON object; got {keywords.ValueKind}.");
+                $"Field 'keywords' must be a JSON object; got {keywords.Kind}.");
         }
-        foreach(JsonProperty property in keywords.EnumerateObject())
+
+        foreach(KeyValuePair<string, JsonNode> property in keywords.EnumerateObject())
         {
-            if(!property.Value.TryGetInt32(out int codecId))
+            if(!TryGetInt32(property.Value, out int codecId))
             {
                 throw new CborLdProcessingException(
                     "invalid registry entry",
-                    $"Keyword codec for '{property.Name}' must be an integer; got {property.Value.ValueKind}.");
+                    $"Keyword codec for '{property.Key}' must be an integer; got {property.Value.Kind}.");
             }
-            result[property.Name] = new CborLdKeywordCodec(property.Name, codecId);
+
+            result[property.Key] = new CborLdKeywordCodec(property.Key, codecId);
         }
+
         return result;
     }
 
-    private static Dictionary<string, CborLdTermCodec> LoadTerms(JsonElement entry)
+    private static Dictionary<string, CborLdTermCodec> LoadTerms(JsonNode entry)
     {
         Dictionary<string, CborLdTermCodec> result = new(StringComparer.Ordinal);
-        if(!entry.TryGetProperty("terms", out JsonElement terms))
+        if(!entry.TryGetProperty("terms", out JsonNode terms))
         {
             return result;
         }
-        if(terms.ValueKind != JsonValueKind.Object)
+
+        if(terms.Kind != JsonNodeKind.Object)
         {
             throw new CborLdProcessingException(
                 "invalid registry entry",
-                $"Field 'terms' must be a JSON object; got {terms.ValueKind}.");
+                $"Field 'terms' must be a JSON object; got {terms.Kind}.");
         }
-        foreach(JsonProperty property in terms.EnumerateObject())
+
+        foreach(KeyValuePair<string, JsonNode> property in terms.EnumerateObject())
         {
-            result[property.Name] = LoadTermCodec(property.Name, property.Value);
+            result[property.Key] = LoadTermCodec(property.Key, property.Value);
         }
+
         return result;
     }
 
-    private static CborLdTermCodec LoadTermCodec(string termName, JsonElement value)
+    private static CborLdTermCodec LoadTermCodec(string termName, JsonNode value)
     {
         //Compact form: "termName": <int>
-        if(value.ValueKind == JsonValueKind.Number)
+        if(value.Kind == JsonNodeKind.Number)
         {
-            if(!value.TryGetInt32(out int codecId))
+            if(!TryGetInt32(value, out int codecId))
             {
                 throw new CborLdProcessingException(
                     "invalid registry entry",
                     $"Term codec id for '{termName}' must be a 32-bit integer.");
             }
+
             return new CborLdTermCodec(termName, codecId);
         }
 
         //Full form: "termName": { "id": <int>, "type": <string|null> }
-        if(value.ValueKind != JsonValueKind.Object)
+        if(value.Kind != JsonNodeKind.Object)
         {
             throw new CborLdProcessingException(
                 "invalid registry entry",
-                $"Term codec for '{termName}' must be an integer or an object; got {value.ValueKind}.");
+                $"Term codec for '{termName}' must be an integer or an object; got {value.Kind}.");
         }
+
         int id = RequiredInt(value, "id");
         string? type = OptionalString(value, "type");
+
         return new CborLdTermCodec(termName, id, type);
     }
 
-    private static Dictionary<string, CborLdTypeTableSource> LoadTypeTables(JsonElement entry)
+    private static Dictionary<string, CborLdTypeTableSource> LoadTypeTables(JsonNode entry)
     {
         Dictionary<string, CborLdTypeTableSource> result = new(StringComparer.Ordinal);
-        if(!entry.TryGetProperty("typeTables", out JsonElement typeTables))
+        if(!entry.TryGetProperty("typeTables", out JsonNode typeTables))
         {
             return result;
         }
-        if(typeTables.ValueKind != JsonValueKind.Object)
+
+        if(typeTables.Kind != JsonNodeKind.Object)
         {
             throw new CborLdProcessingException(
                 "invalid registry entry",
-                $"Field 'typeTables' must be a JSON object; got {typeTables.ValueKind}.");
+                $"Field 'typeTables' must be a JSON object; got {typeTables.Kind}.");
         }
-        foreach(JsonProperty property in typeTables.EnumerateObject())
+
+        foreach(KeyValuePair<string, JsonNode> property in typeTables.EnumerateObject())
         {
-            result[property.Name] = LoadTypeTableSource(property.Name, property.Value);
+            result[property.Key] = LoadTypeTableSource(property.Key, property.Value);
         }
+
         return result;
     }
 
-    private static CborLdTypeTableSource LoadTypeTableSource(string typeName, JsonElement value)
+    private static CborLdTypeTableSource LoadTypeTableSource(string typeName, JsonNode value)
     {
         //Caller-provided sentinel per W3C CBOR-LD 1.0: the typeTables array
         //may contain the literal string "callerProvidedTable" to indicate
         //the table is supplied at encode/decode time.
-        if(value.ValueKind == JsonValueKind.String)
+        if(value.Kind == JsonNodeKind.String)
         {
             string text = value.GetString() ?? string.Empty;
             if(text == CborLdCallerProvidedTypeTableMarker.SentinelValue)
             {
                 return CborLdTypeTableSource.CallerProvided();
             }
+
             throw new CborLdProcessingException(
                 "invalid registry entry",
                 $"Type table '{typeName}' has unknown string sentinel '{text}'. The only spec-defined string sentinel is '{CborLdCallerProvidedTypeTableMarker.SentinelValue}'.");
         }
 
         //Registry-provided table: object mapping string keys to integer values.
-        if(value.ValueKind != JsonValueKind.Object)
+        if(value.Kind != JsonNodeKind.Object)
         {
             throw new CborLdProcessingException(
                 "invalid registry entry",
-                $"Type table '{typeName}' must be an object of string-to-integer mappings or the sentinel string '{CborLdCallerProvidedTypeTableMarker.SentinelValue}'; got {value.ValueKind}.");
+                $"Type table '{typeName}' must be an object of string-to-integer mappings or the sentinel string '{CborLdCallerProvidedTypeTableMarker.SentinelValue}'; got {value.Kind}.");
         }
+
         Dictionary<string, int> mappings = new(StringComparer.Ordinal);
-        foreach(JsonProperty mapping in value.EnumerateObject())
+        foreach(KeyValuePair<string, JsonNode> mapping in value.EnumerateObject())
         {
-            if(!mapping.Value.TryGetInt32(out int mappedId))
+            if(!TryGetInt32(mapping.Value, out int mappedId))
             {
                 throw new CborLdProcessingException(
                     "invalid registry entry",
-                    $"Type table '{typeName}' value for key '{mapping.Name}' must be a 32-bit integer.");
+                    $"Type table '{typeName}' value for key '{mapping.Key}' must be a 32-bit integer.");
             }
-            mappings[mapping.Name] = mappedId;
+
+            mappings[mapping.Key] = mappedId;
         }
+
         return CborLdTypeTableSource.FromRegistry(mappings);
     }
 
-    private static int RequiredInt(JsonElement parent, string fieldName)
+    private static int RequiredInt(JsonNode parent, string fieldName)
     {
-        if(!parent.TryGetProperty(fieldName, out JsonElement value))
+        if(!parent.TryGetProperty(fieldName, out JsonNode value))
         {
             throw new CborLdProcessingException(
                 "invalid registry entry",
                 $"Required field '{fieldName}' is missing.");
         }
-        if(!value.TryGetInt32(out int parsed))
+
+        if(!TryGetInt32(value, out int parsed))
         {
             throw new CborLdProcessingException(
                 "invalid registry entry",
-                $"Field '{fieldName}' must be a 32-bit integer; got {value.ValueKind}.");
+                $"Field '{fieldName}' must be a 32-bit integer; got {value.Kind}.");
         }
+
         return parsed;
     }
 
-    private static string? OptionalString(JsonElement parent, string fieldName)
+    private static string? OptionalString(JsonNode parent, string fieldName)
     {
-        if(!parent.TryGetProperty(fieldName, out JsonElement value))
+        if(!parent.TryGetProperty(fieldName, out JsonNode value))
         {
             return null;
         }
-        return value.ValueKind switch
+
+        return value.Kind switch
         {
-            JsonValueKind.Null => null,
-            JsonValueKind.String => value.GetString(),
+            JsonNodeKind.Null => null,
+            JsonNodeKind.String => value.GetString(),
             _ => throw new CborLdProcessingException(
                 "invalid registry entry",
-                $"Field '{fieldName}' must be a string or null; got {value.ValueKind}.")
+                $"Field '{fieldName}' must be a string or null; got {value.Kind}.")
         };
     }
 
-    private static bool? OptionalBoolean(JsonElement parent, string fieldName)
+    private static bool? OptionalBoolean(JsonNode parent, string fieldName)
     {
-        if(!parent.TryGetProperty(fieldName, out JsonElement value))
+        if(!parent.TryGetProperty(fieldName, out JsonNode value))
         {
             return null;
         }
-        return value.ValueKind switch
+
+        return value.Kind switch
         {
-            JsonValueKind.Null => null,
-            JsonValueKind.True => true,
-            JsonValueKind.False => false,
+            JsonNodeKind.Null => null,
+            JsonNodeKind.True => true,
+            JsonNodeKind.False => false,
             _ => throw new CborLdProcessingException(
                 "invalid registry entry",
-                $"Field '{fieldName}' must be a boolean or null; got {value.ValueKind}.")
+                $"Field '{fieldName}' must be a boolean or null; got {value.Kind}.")
         };
+    }
+
+    private static bool TryGetInt32(JsonNode value, out int parsed)
+    {
+        parsed = 0;
+        if(value.Kind != JsonNodeKind.Number)
+        {
+            return false;
+        }
+
+        return int.TryParse(value.GetRawNumber(), NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out parsed);
     }
 }

@@ -1,5 +1,6 @@
 using Lumoin.Veritas.JsonLd;
 using Lumoin.Veritas.LinkedData;
+using Lumoin.Veritas.Json;
 
 namespace Lumoin.Veritas.Tests.LinkedData;
 
@@ -10,7 +11,7 @@ namespace Lumoin.Veritas.Tests.LinkedData;
 /// <see cref="LinkedDataContext{TNode}.WithoutTerm"/> and consulted by
 /// <see cref="LinkedDataContext{TNode}.TryGetPrefixTerm"/>. The
 /// behaviour is independent of <c>TNode</c>; the tests pick
-/// <see cref="JsonLdNode"/> for the parameter.
+/// <see cref="JsonNode"/> for the parameter.
 /// </summary>
 [TestClass]
 internal sealed class LinkedDataContextPrefixIndexTests

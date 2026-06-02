@@ -1,7 +1,7 @@
-namespace Lumoin.Veritas.JsonLd.Document;
+namespace Lumoin.Veritas.Json;
 
 /// <summary>
-/// Returns the raw lexical form of a node whose kind is <see cref="JsonLdNodeKind.Number"/>.
+/// Returns the raw lexical form of a node whose kind is <see cref="JsonNodeKind.Number"/>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -19,7 +19,7 @@ namespace Lumoin.Veritas.JsonLd.Document;
 /// </para>
 /// </remarks>
 /// <param name="handle">
-/// The handle of a node whose kind is <see cref="JsonLdNodeKind.Number"/>.
+/// The handle of a node whose kind is <see cref="JsonNodeKind.Number"/>.
 /// </param>
 /// <returns>The raw JSON lexical form of the number.</returns>
 public delegate string GetRawNumberDelegate(object handle);

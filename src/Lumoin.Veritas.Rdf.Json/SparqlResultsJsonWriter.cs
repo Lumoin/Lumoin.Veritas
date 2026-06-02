@@ -7,7 +7,7 @@ using Lumoin.Veritas.Sparql.Execution;
 using Lumoin.Veritas.Sparql.Results;
 using TripleTerm = Lumoin.Veritas.Core.TripleTerm;
 
-namespace Lumoin.Veritas.Json;
+namespace Lumoin.Veritas.Rdf.Json;
 
 /// <summary>
 /// Writes a <see cref="SparqlResultSet"/> in the

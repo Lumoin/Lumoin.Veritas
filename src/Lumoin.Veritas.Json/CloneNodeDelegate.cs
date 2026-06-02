@@ -1,4 +1,4 @@
-namespace Lumoin.Veritas.JsonLd.Document;
+namespace Lumoin.Veritas.Json;
 
 /// <summary>
 /// Produces a copy of the given node whose lifetime is independent of any
@@ -20,4 +20,4 @@ namespace Lumoin.Veritas.JsonLd.Document;
 /// </remarks>
 /// <param name="handle">The handle to clone.</param>
 /// <returns>A handle to a node equivalent in content but with an independent lifetime.</returns>
-public delegate JsonLdNode CloneNodeDelegate(object handle);
+public delegate JsonNode CloneNodeDelegate(object handle);

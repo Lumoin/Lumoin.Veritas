@@ -1,7 +1,7 @@
 using System.Text.Json.Serialization;
 using Lumoin.Veritas.Core;
 
-namespace Lumoin.Veritas.Json;
+namespace Lumoin.Veritas.Rdf.Json;
 
 /// <summary>
 /// The source-generated <see cref="JsonSerializerContext"/> for Veritas types.

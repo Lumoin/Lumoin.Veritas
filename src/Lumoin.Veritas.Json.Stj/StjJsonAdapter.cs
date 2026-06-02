@@ -2,14 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.Text.Json;
 using Lumoin.Veritas.Core;
-using Lumoin.Veritas.JsonLd;
-using Lumoin.Veritas.JsonLd.Document;
+using Lumoin.Veritas.Json;
 
-namespace Lumoin.Veritas.Json;
+namespace Lumoin.Veritas.Json.Stj;
 
 /// <summary>
-/// Implements the <see cref="JsonLdNodeNavigator"/> and
-/// <see cref="JsonLdParserDelegate"/> contracts on top of <see cref="System.Text.Json"/>.
+/// Implements the <see cref="JsonNodeNavigator"/> and
+/// <see cref="ParseJsonDelegate"/> contracts on top of <see cref="System.Text.Json"/>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -33,14 +32,14 @@ namespace Lumoin.Veritas.Json;
 /// document lifetime.
 /// </para>
 /// </remarks>
-public static class StjJsonLdAdapter
+public static class StjJsonAdapter
 {
     /// <summary>
-    /// Gets the singleton navigator instance. Every <see cref="JsonLdNode"/>
+    /// Gets the singleton navigator instance. Every <see cref="JsonNode"/>
     /// produced by this adapter shares this navigator. The instance is built
     /// from static method-group references and captures no state.
     /// </summary>
-    public static JsonLdNodeNavigator Navigator { get; } = new JsonLdNodeNavigator
+    public static JsonNodeNavigator Navigator { get; } = new JsonNodeNavigator
     {
         GetKind = GetKind,
         GetString = GetString,
@@ -53,38 +52,38 @@ public static class StjJsonLdAdapter
     };
 
     /// <summary>
-    /// Wraps an existing <see cref="JsonElement"/> as a <see cref="JsonLdNode"/>
+    /// Wraps an existing <see cref="JsonElement"/> as a <see cref="JsonNode"/>
     /// bound to this adapter's navigator.
     /// </summary>
     /// <remarks>
     /// The element's lifetime is the caller's responsibility. If the element
     /// belongs to a <see cref="JsonDocument"/> that may be disposed before the
-    /// returned <see cref="JsonLdNode"/> is finished with, call
+    /// returned <see cref="JsonNode"/> is finished with, call
     /// <see cref="JsonElement.Clone"/> on the element first.
     /// </remarks>
     /// <param name="element">The element to wrap.</param>
-    /// <returns>A <see cref="JsonLdNode"/> referring to <paramref name="element"/>.</returns>
-    public static JsonLdNode From(JsonElement element)
+    /// <returns>A <see cref="JsonNode"/> referring to <paramref name="element"/>.</returns>
+    public static JsonNode From(JsonElement element)
     {
-        return new JsonLdNode(element, Navigator);
+        return new JsonNode(element, Navigator);
     }
 
     /// <summary>
-    /// Parses a UTF-8 JSON document into a <see cref="JsonLdNode"/> whose
+    /// Parses a UTF-8 JSON document into a <see cref="JsonNode"/> whose
     /// lifetime is independent of any owning <see cref="JsonDocument"/>.
     /// </summary>
     /// <remarks>
     /// The implementation parses the bytes, clones the root element, and
     /// disposes the parser document. The returned node carries its own buffer
     /// and remains valid for as long as the caller holds a reference to it.
-    /// Suitable as a <see cref="JsonLdParserDelegate"/>.
+    /// Suitable as a <see cref="ParseJsonDelegate"/>.
     /// </remarks>
     /// <param name="utf8Json">The UTF-8 encoded JSON bytes.</param>
     /// <returns>The parsed root node.</returns>
     /// <exception cref="JsonException">
     /// The input is not valid JSON.
     /// </exception>
-    public static JsonLdNode Parse(Utf8String utf8Json)
+    public static JsonNode Parse(Utf8String utf8Json)
     {
         // The document is disposed at the end of the using block; the cloned root remains valid.
         using JsonDocument document = JsonDocument.Parse(utf8Json.Memory);
@@ -95,7 +94,7 @@ public static class StjJsonLdAdapter
 
     /// <summary>
     /// Maps the underlying <see cref="JsonElement.ValueKind"/> to a
-    /// <see cref="JsonLdNodeKind"/>.
+    /// <see cref="JsonNodeKind"/>.
     /// </summary>
     /// <remarks>
     /// <see cref="JsonValueKind.Undefined"/> is reachable only when the caller
@@ -104,19 +103,19 @@ public static class StjJsonLdAdapter
     /// undefined node-kind value into the JSON-LD model.
     /// </remarks>
     /// <param name="handle">The boxed <see cref="JsonElement"/>.</param>
-    /// <returns>The corresponding <see cref="JsonLdNodeKind"/>.</returns>
-    private static JsonLdNodeKind GetKind(object handle)
+    /// <returns>The corresponding <see cref="JsonNodeKind"/>.</returns>
+    private static JsonNodeKind GetKind(object handle)
     {
         JsonElement element = (JsonElement)handle;
         return element.ValueKind switch
         {
-            JsonValueKind.Null => JsonLdNodeKind.Null,
-            JsonValueKind.String => JsonLdNodeKind.String,
-            JsonValueKind.Number => JsonLdNodeKind.Number,
-            JsonValueKind.True => JsonLdNodeKind.True,
-            JsonValueKind.False => JsonLdNodeKind.False,
-            JsonValueKind.Object => JsonLdNodeKind.Object,
-            JsonValueKind.Array => JsonLdNodeKind.Array,
+            JsonValueKind.Null => JsonNodeKind.Null,
+            JsonValueKind.String => JsonNodeKind.String,
+            JsonValueKind.Number => JsonNodeKind.Number,
+            JsonValueKind.True => JsonNodeKind.True,
+            JsonValueKind.False => JsonNodeKind.False,
+            JsonValueKind.Object => JsonNodeKind.Object,
+            JsonValueKind.Array => JsonNodeKind.Array,
             JsonValueKind.Undefined => throw new InvalidOperationException(
                 "An undefined JsonElement was supplied to the JSON-LD adapter. Default JsonElement instances cannot be used as handles."),
             _ => throw new InvalidOperationException(
@@ -170,19 +169,19 @@ public static class StjJsonLdAdapter
     /// <summary>
     /// Locates a property by name in an object-kind element. Wraps STJ's
     /// <see cref="JsonElement.TryGetProperty(string, out JsonElement)"/> with
-    /// <see cref="JsonLdNode"/>-shaped output so the dispatch surface is
+    /// <see cref="JsonNode"/>-shaped output so the dispatch surface is
     /// uniform across adapters.
     /// </summary>
     /// <param name="handle">The boxed <see cref="JsonElement"/>.</param>
     /// <param name="name">The property name.</param>
     /// <param name="value">
-    /// On success, a <see cref="JsonLdNode"/> referring to the property value;
-    /// on failure, a <see langword="default"/> <see cref="JsonLdNode"/>.
+    /// On success, a <see cref="JsonNode"/> referring to the property value;
+    /// on failure, a <see langword="default"/> <see cref="JsonNode"/>.
     /// </param>
     /// <returns>
     /// <see langword="true"/> if the property exists; otherwise, <see langword="false"/>.
     /// </returns>
-    private static bool TryGetProperty(object handle, string name, out JsonLdNode value)
+    private static bool TryGetProperty(object handle, string name, out JsonNode value)
     {
         JsonElement element = (JsonElement)handle;
         if(element.TryGetProperty(name, out JsonElement propertyValue))
@@ -198,7 +197,7 @@ public static class StjJsonLdAdapter
 
     /// <summary>
     /// Yields every element of an array-kind element in document order, each
-    /// wrapped in a <see cref="JsonLdNode"/>.
+    /// wrapped in a <see cref="JsonNode"/>.
     /// </summary>
     /// <remarks>
     /// The <c>yield return</c> form allocates one iterator state machine per
@@ -208,7 +207,7 @@ public static class StjJsonLdAdapter
     /// </remarks>
     /// <param name="handle">The boxed <see cref="JsonElement"/>.</param>
     /// <returns>The array elements as JSON-LD nodes.</returns>
-    private static IEnumerable<JsonLdNode> EnumerateArray(object handle)
+    private static IEnumerable<JsonNode> EnumerateArray(object handle)
     {
         JsonElement element = (JsonElement)handle;
         foreach(JsonElement child in element.EnumerateArray())
@@ -224,12 +223,12 @@ public static class StjJsonLdAdapter
     /// </summary>
     /// <param name="handle">The boxed <see cref="JsonElement"/>.</param>
     /// <returns>The object properties as name-and-node pairs.</returns>
-    private static IEnumerable<KeyValuePair<string, JsonLdNode>> EnumerateObject(object handle)
+    private static IEnumerable<KeyValuePair<string, JsonNode>> EnumerateObject(object handle)
     {
         JsonElement element = (JsonElement)handle;
         foreach(JsonProperty property in element.EnumerateObject())
         {
-            yield return new KeyValuePair<string, JsonLdNode>(property.Name, From(property.Value));
+            yield return new KeyValuePair<string, JsonNode>(property.Name, From(property.Value));
         }
     }
 
@@ -240,8 +239,8 @@ public static class StjJsonLdAdapter
     /// buffer.
     /// </summary>
     /// <param name="handle">The boxed <see cref="JsonElement"/>.</param>
-    /// <returns>A detached clone wrapped as a <see cref="JsonLdNode"/>.</returns>
-    private static JsonLdNode Clone(object handle)
+    /// <returns>A detached clone wrapped as a <see cref="JsonNode"/>.</returns>
+    private static JsonNode Clone(object handle)
     {
         JsonElement element = (JsonElement)handle;
         JsonElement detached = element.Clone();

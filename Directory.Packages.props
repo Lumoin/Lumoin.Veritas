@@ -5,8 +5,8 @@
   </PropertyGroup>
   <!--
     Core library packages allowed in any project. Library projects, the serialization
-    projects (Lumoin.Veritas.Json, Lumoin.Veritas.Cbor), test projects, and benchmark
-    projects may all reference these.
+    projects (Lumoin.Veritas.Json.Stj, Lumoin.Veritas.Rdf.Json, Lumoin.Veritas.Cbor),
+    test projects, and benchmark projects may all reference these.
   -->
   <ItemGroup Label="Library">
     <PackageVersion Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" Version="3.12.0-beta1.25218.8" />
@@ -16,8 +16,9 @@
     <PackageVersion Include="System.Security.Cryptography.Xml" Version="10.0.6" />
   </ItemGroup>
   <!--
-    Serialization packages restricted to the serialization projects (Lumoin.Veritas.Json,
-    Lumoin.Veritas.Cbor) and to test and benchmark projects. Library projects must remain
+    Serialization packages restricted to the serialization projects (Lumoin.Veritas.Json.Stj,
+    Lumoin.Veritas.Rdf.Json, Lumoin.Veritas.Cbor) and to test and benchmark projects. Library
+    projects must remain
     serialization-agnostic so consumers can pick their serialization layer at composition
     time; pulling System.Text.Json (or any future serialization runtime such as
     System.Formats.Cbor) into a library project violates that contract.
@@ -60,12 +61,13 @@
     peers, not a dependency chain).
   -->
   <PropertyGroup>
-    <RestrictedSerializationProjects>Lumoin.Veritas.Cbor;Lumoin.Veritas.Json</RestrictedSerializationProjects>
+    <RestrictedSerializationProjects>Lumoin.Veritas.Cbor;Lumoin.Veritas.Json.Stj;Lumoin.Veritas.Rdf.Json</RestrictedSerializationProjects>
   </PropertyGroup>
   <!--
     Validates that a project does not reference packages outside its allowed set of labels.
     Library projects are limited to the Library label. The serialization projects
-    (Lumoin.Veritas.Json, Lumoin.Veritas.Cbor) additionally allow the Serialization label.
+    (Lumoin.Veritas.Json.Stj, Lumoin.Veritas.Rdf.Json, Lumoin.Veritas.Cbor) additionally
+    allow the Serialization label.
     Test and benchmark projects skip validation; they may reference any package.
     Runs after package references are collected but before compilation begins. Skips
     validation during design-time builds for IDE responsiveness.
@@ -74,7 +76,7 @@
     <PropertyGroup>
       <_IsTestProject Condition="$(MSBuildProjectName.EndsWith('.Tests'))">true</_IsTestProject>
       <_IsBenchmarkProject Condition="$(MSBuildProjectName.EndsWith('.Benchmarks'))">true</_IsBenchmarkProject>
-      <_IsSerializationProject Condition="'$(MSBuildProjectName)' == 'Lumoin.Veritas.Json' OR '$(MSBuildProjectName)' == 'Lumoin.Veritas.Cbor'">true</_IsSerializationProject>
+      <_IsSerializationProject Condition="'$(MSBuildProjectName)' == 'Lumoin.Veritas.Json.Stj' OR '$(MSBuildProjectName)' == 'Lumoin.Veritas.Rdf.Json' OR '$(MSBuildProjectName)' == 'Lumoin.Veritas.Cbor'">true</_IsSerializationProject>
       <_IsLibraryProject Condition="'$(_IsTestProject)' != 'true' AND '$(_IsBenchmarkProject)' != 'true' AND '$(_IsSerializationProject)' != 'true'">true</_IsLibraryProject>
       <_AdditionalAllowedLabels Condition="'$(_IsSerializationProject)' == 'true'">Serialization</_AdditionalAllowedLabels>
     </PropertyGroup>
@@ -82,9 +84,10 @@
   </Target>
   <!--
     Validates that the serialization projects are referenced only by test and benchmark
-    projects, plus the explicitly whitelisted Lumoin.Veritas.CborLd library, which is
-    designed to layer CBOR-LD semantics on top of Lumoin.Veritas.Cbor and intentionally
-    takes that dependency. Every other library project and the serialization projects
+    projects, plus the explicitly whitelisted Lumoin.Veritas.CborLd library, which layers
+    CBOR-LD semantics on top of Lumoin.Veritas.Cbor and intentionally takes that dependency,
+    and Lumoin.Veritas.JsonLd, which transitively reaches Lumoin.Veritas.Cbor through
+    Lumoin.Veritas.CborLd. Every other library project and the serialization projects
     themselves cannot take a project reference to any project listed in
     RestrictedSerializationProjects. Runs after project references are resolved.
   -->
@@ -93,15 +96,14 @@
       <_IsTestProject Condition="$(MSBuildProjectName.EndsWith('.Tests'))">true</_IsTestProject>
       <_IsBenchmarkProject Condition="$(MSBuildProjectName.EndsWith('.Benchmarks'))">true</_IsBenchmarkProject>
       <_IsCborLdProject Condition="'$(MSBuildProjectName)' == 'Lumoin.Veritas.CborLd'">true</_IsCborLdProject>
+      <!-- JsonLd transitively references Lumoin.Veritas.Cbor through Lumoin.Veritas.CborLd;
+           the CBOR-LD input-node adapter in JsonLd intentionally takes that edge. -->
       <_IsJsonLdProject Condition="'$(MSBuildProjectName)' == 'Lumoin.Veritas.JsonLd'">true</_IsJsonLdProject>
-      <!-- Lumoin.Veritas.Json transitively depends on CBOR-LD via JsonLd; the adapter
-           in JsonLd intentionally takes that edge. -->
-      <_IsJsonSerializationProject Condition="'$(MSBuildProjectName)' == 'Lumoin.Veritas.Json'">true</_IsJsonSerializationProject>
       <!-- BenchmarkDotNet generates an autogenerated host project at runtime that
            references the benchmark assembly; the generated name is not under our
            control. Exempt it explicitly. -->
       <_IsBdnAutogeneratedProject Condition="'$(MSBuildProjectName)' == 'BenchmarkDotNet.Autogenerated'">true</_IsBdnAutogeneratedProject>
-      <_IsAllowedToReferenceSerializationProjects Condition="'$(_IsTestProject)' == 'true' OR '$(_IsBenchmarkProject)' == 'true' OR '$(_IsCborLdProject)' == 'true' OR '$(_IsJsonLdProject)' == 'true' OR '$(_IsJsonSerializationProject)' == 'true' OR '$(_IsBdnAutogeneratedProject)' == 'true'">true</_IsAllowedToReferenceSerializationProjects>
+      <_IsAllowedToReferenceSerializationProjects Condition="'$(_IsTestProject)' == 'true' OR '$(_IsBenchmarkProject)' == 'true' OR '$(_IsCborLdProject)' == 'true' OR '$(_IsJsonLdProject)' == 'true' OR '$(_IsBdnAutogeneratedProject)' == 'true'">true</_IsAllowedToReferenceSerializationProjects>
     </PropertyGroup>
     <ValidateSerializationProjectReferences Condition="'$(_IsAllowedToReferenceSerializationProjects)' != 'true' AND '@(ProjectReference)' != ''" ProjectName="$(MSBuildProjectName)" ProjectReferences="@(ProjectReference)" RestrictedProjects="$(RestrictedSerializationProjects)" />
   </Target>
@@ -193,9 +195,9 @@
   </UsingTask>
   <!--
     Inline Roslyn task for validating project references to serialization projects.
-    Ensures that only test and benchmark projects can take a project reference to
-    Lumoin.Veritas.Json or Lumoin.Veritas.Cbor. Compiled once per build session and
-    cached in memory.
+    Ensures that only test and benchmark projects (plus the whitelisted CborLd / JsonLd
+    libraries) can take a project reference to a restricted serialization project. Compiled
+    once per build session and cached in memory.
   -->
   <UsingTask TaskName="ValidateSerializationProjectReferences" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
     <ParameterGroup>
@@ -238,7 +240,7 @@
                 Log.LogError(
                     $"Restricted project reference(s) '{string.Join(", ", violations)}' " +
                     $"found in '{ProjectName}'. " +
-                    "Lumoin.Veritas.Json and Lumoin.Veritas.Cbor can only be referenced by *.Tests and *.Benchmarks projects.");
+                    "The serialization projects (Lumoin.Veritas.Cbor, Lumoin.Veritas.Json.Stj, Lumoin.Veritas.Rdf.Json) can only be referenced by *.Tests and *.Benchmarks projects (plus the whitelisted CborLd / JsonLd libraries).");
                 return false;
             }
 

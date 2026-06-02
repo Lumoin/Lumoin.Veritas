@@ -4,6 +4,7 @@ using Lumoin.Veritas.Json;
 using Lumoin.Veritas.JsonLd;
 using Lumoin.Veritas.LinkedData;
 using System.Text;
+using Lumoin.Veritas.Json.Stj;
 
 namespace Lumoin.Veritas.Tests.JsonLd;
 
@@ -28,7 +29,7 @@ internal sealed class JsonLdExpanderSourceTests
     [TestMethod]
     public async Task ExtractQuadsWithSourceAsyncProducesEmittedQuadsWithSourceRef()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {
                 "@context": {"name": "http://example.org/name"},
                 "@id": "http://example.org/alice",
@@ -41,7 +42,7 @@ internal sealed class JsonLdExpanderSourceTests
 
         List<EmittedQuad> result = [];
         await foreach(EmittedQuad emitted in JsonLdExpander.ExtractQuadsWithSourceAsync(
-            doc, documentId, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse,
+            doc, documentId, baseUrl: null, NullResolver, StjJsonAdapter.Parse,
             pool, TestContext.CancellationToken).ConfigureAwait(false))
         {
             result.Add(emitted);
@@ -57,7 +58,7 @@ internal sealed class JsonLdExpanderSourceTests
     [TestMethod]
     public async Task ExtractQuadsWithSourceAsyncAssignsSequentialIndexesStartingAtZero()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {
                 "@context": {"name": "http://example.org/name", "knows": "http://example.org/knows"},
                 "@id": "http://example.org/alice",
@@ -71,7 +72,7 @@ internal sealed class JsonLdExpanderSourceTests
 
         List<EmittedQuad> result = [];
         await foreach(EmittedQuad emitted in JsonLdExpander.ExtractQuadsWithSourceAsync(
-            doc, documentId, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse,
+            doc, documentId, baseUrl: null, NullResolver, StjJsonAdapter.Parse,
             pool, TestContext.CancellationToken).ConfigureAwait(false))
         {
             result.Add(emitted);
@@ -87,7 +88,7 @@ internal sealed class JsonLdExpanderSourceTests
     [TestMethod]
     public async Task ExtractQuadsWithSourceAsyncCarriesDocumentIdOnEverySource()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """
             {
                 "@context": {"name": "http://example.org/name"},
                 "@id": "http://example.org/alice",
@@ -99,7 +100,7 @@ internal sealed class JsonLdExpanderSourceTests
         using Utf8StringPool pool = new();
 
         await foreach(EmittedQuad emitted in JsonLdExpander.ExtractQuadsWithSourceAsync(
-            doc, documentId, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse,
+            doc, documentId, baseUrl: null, NullResolver, StjJsonAdapter.Parse,
             pool, TestContext.CancellationToken).ConfigureAwait(false))
         {
             Assert.AreEqual(documentId, emitted.Source!.Value.DocumentId);
@@ -121,21 +122,21 @@ internal sealed class JsonLdExpanderSourceTests
 
         DocumentId documentId = new(0xABCD);
 
-        JsonLdNode doc1 = ParseJson(json);
+        JsonNode doc1 = ParseJson(json);
         using Utf8StringPool pool1 = new();
         List<Quad> bare = [];
         await foreach(Quad q in JsonLdExpander.ExtractQuadsAsync(
-            doc1, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse,
+            doc1, baseUrl: null, NullResolver, StjJsonAdapter.Parse,
             pool1, TestContext.CancellationToken).ConfigureAwait(false))
         {
             bare.Add(q);
         }
 
-        JsonLdNode doc2 = ParseJson(json);
+        JsonNode doc2 = ParseJson(json);
         using Utf8StringPool pool2 = new();
         List<EmittedQuad> sourced = [];
         await foreach(EmittedQuad e in JsonLdExpander.ExtractQuadsWithSourceAsync(
-            doc2, documentId, baseUrl: null, NullResolver, StjJsonLdAdapter.Parse,
+            doc2, documentId, baseUrl: null, NullResolver, StjJsonAdapter.Parse,
             pool2, TestContext.CancellationToken).ConfigureAwait(false))
         {
             sourced.Add(e);
@@ -151,7 +152,7 @@ internal sealed class JsonLdExpanderSourceTests
     [TestMethod]
     public async Task ExtractQuadsWithSourceAsyncRejectsNullParser()
     {
-        JsonLdNode doc = ParseJson(/*lang=json,strict*/ """{"@id":"http://example.org/x"}""");
+        JsonNode doc = ParseJson(/*lang=json,strict*/ """{"@id":"http://example.org/x"}""");
         DocumentId documentId = new(0xABCD);
         using Utf8StringPool pool = new();
 
@@ -167,15 +168,15 @@ internal sealed class JsonLdExpanderSourceTests
     }
 
     /// <summary>
-    /// Parses a .NET string of JSON text into a <see cref="JsonLdNode"/> via the
-    /// bundled <see cref="StjJsonLdAdapter"/>.
+    /// Parses a .NET string of JSON text into a <see cref="JsonNode"/> via the
+    /// bundled <see cref="StjJsonAdapter"/>.
     /// </summary>
     /// <param name="json">The JSON text to parse.</param>
     /// <returns>The parsed document root.</returns>
-    private static JsonLdNode ParseJson(string json)
+    private static JsonNode ParseJson(string json)
     {
         Utf8String utf8 = Utf8String.WithoutPrecomputedHash(Encoding.UTF8.GetBytes(json));
 
-        return StjJsonLdAdapter.Parse(utf8);
+        return StjJsonAdapter.Parse(utf8);
     }
 }
