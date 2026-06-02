@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text.RegularExpressions;
+using Lumoin.Veritas.Core.Iris;
 using Lumoin.Veritas.Json;
 using Ptr = Lumoin.Veritas.JsonPointer.JsonPointer;
 
@@ -24,16 +26,23 @@ public static class JsonSchemaValidator
     /// <summary>Validates an instance against a schema.</summary>
     /// <param name="schema">The schema node (an object schema, or a boolean schema <c>true</c>/<c>false</c>).</param>
     /// <param name="instance">The instance to validate.</param>
+    /// <param name="loader">A loader for documents reached by <c>$ref</c> outside the root schema, or <see langword="null"/>.</param>
+    /// <param name="baseUri">The root schema's retrieval base URI, or <see langword="null"/> for none.</param>
     /// <returns>The validation result.</returns>
-    public static ValidationResult Validate(JsonNode schema, JsonNode instance)
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
+        Justification = "The engine resolves references via the RFC 3986 string-based IriResolver; System.Uri is intentionally not used on this path.")]
+    public static ValidationResult Validate(JsonNode schema, JsonNode instance, SchemaDocumentLoader? loader = null, string? baseUri = null)
     {
+        string rootBase = baseUri ?? string.Empty;
+        SchemaRegistry registry = new(schema, rootBase, loader);
         List<ValidationError> errors = [];
         Frame root = new()
         {
             Schema = schema,
             Instance = instance,
             InstanceLocation = Ptr.Root,
-            KeywordLocation = Ptr.Root
+            KeywordLocation = Ptr.Root,
+            BaseUri = rootBase
         };
 
         Stack<(Frame Frame, bool Closing)> stack = new();
@@ -48,7 +57,7 @@ public static class JsonSchemaValidator
                 continue;
             }
 
-            OpenFrame(frame, stack, errors);
+            OpenFrame(frame, stack, errors, registry);
         }
 
         return new ValidationResult(root.Result, errors);
@@ -58,7 +67,7 @@ public static class JsonSchemaValidator
     /// <param name="frame">The frame being opened.</param>
     /// <param name="stack">The work stack.</param>
     /// <param name="errors">The accumulating error list.</param>
-    private static void OpenFrame(Frame frame, Stack<(Frame, bool)> stack, List<ValidationError> errors)
+    private static void OpenFrame(Frame frame, Stack<(Frame, bool)> stack, List<ValidationError> errors, SchemaRegistry registry)
     {
         //A boolean schema asserts directly: true accepts everything, false rejects everything.
         if(frame.Schema.Kind is JsonNodeKind.True or JsonNodeKind.False)
@@ -84,6 +93,13 @@ public static class JsonSchemaValidator
 
         EvaluateSelfKeywords(frame, errors);
 
+        //An $id establishes the base URI for this schema's references and subschemas.
+        string effectiveBase = frame.BaseUri;
+        if(frame.Schema.TryGetProperty(JsonSchemaKeywords.Id, out JsonNode id) && id.Kind == JsonNodeKind.String)
+        {
+            effectiveBase = IriResolver.ResolveIri(frame.BaseUri, id.GetString());
+        }
+
         //The frame's Close must run after every child, so it is pushed first (children pushed above it pop first).
         stack.Push((frame, true));
 
@@ -98,10 +114,34 @@ public static class JsonSchemaValidator
                 InstanceLocation = request.InstanceLocation,
                 KeywordLocation = request.KeywordLocation,
                 Parent = frame,
-                SpawnKeyword = request.Keyword
+                SpawnKeyword = request.Keyword,
+                BaseUri = effectiveBase
             };
 
             stack.Push((child, false));
+        }
+
+        //$ref evaluates the referenced schema against the same instance node; in 2020-12 its
+        //sibling keywords still apply (handled above as ordinary children).
+        if(frame.Schema.TryGetProperty(JsonSchemaKeywords.Ref, out JsonNode reference) && reference.Kind == JsonNodeKind.String)
+        {
+            if(registry.TryResolve(effectiveBase, reference.GetString(), out JsonNode target, out string targetBase))
+            {
+                stack.Push((new Frame
+                {
+                    Schema = target,
+                    Instance = frame.Instance,
+                    InstanceLocation = frame.InstanceLocation,
+                    KeywordLocation = frame.KeywordLocation.Append(JsonSchemaKeywords.Ref),
+                    Parent = frame,
+                    SpawnKeyword = JsonSchemaKeywords.Ref,
+                    BaseUri = targetBase
+                }, false));
+            }
+            else
+            {
+                Fail(frame, errors, JsonSchemaKeywords.Ref, "The reference could not be resolved.");
+            }
         }
     }
 
@@ -820,6 +860,9 @@ public static class JsonSchemaValidator
 
         /// <summary>Gets the keyword location of this frame.</summary>
         public required Ptr KeywordLocation { get; init; }
+
+        /// <summary>Gets the base URI in effect for this frame's references and subschemas.</summary>
+        public required string BaseUri { get; init; }
 
         /// <summary>Gets the parent frame this frame reports its result to, or <see langword="null"/> for the root.</summary>
         public Frame? Parent { get; init; }

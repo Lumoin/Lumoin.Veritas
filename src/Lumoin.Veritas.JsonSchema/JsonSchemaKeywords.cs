@@ -118,4 +118,16 @@ public static class JsonSchemaKeywords
 
     /// <summary>The <c>maxContains</c> keyword — the maximum number of <c>contains</c> matches.</summary>
     public static readonly string MaxContains = "maxContains";
+
+    /// <summary>The <c>$ref</c> keyword — a reference to another schema.</summary>
+    public static readonly string Ref = "$ref";
+
+    /// <summary>The <c>$id</c> keyword — the base URI a schema establishes for its subschemas and references.</summary>
+    public static readonly string Id = "$id";
+
+    /// <summary>The <c>$anchor</c> keyword — a plain-name fragment that can be referenced.</summary>
+    public static readonly string Anchor = "$anchor";
+
+    /// <summary>The <c>$defs</c> keyword — a container for reusable subschemas (reached only through <c>$ref</c>).</summary>
+    public static readonly string Defs = "$defs";
 }
