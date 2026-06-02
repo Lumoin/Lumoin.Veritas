@@ -173,7 +173,7 @@ public static class JsonLdCompactor
         {
             Dictionary<string, object?> withContext = new(bodyMap.Count + 1, StringComparer.Ordinal)
             {
-                ["@context"] = emittedContext
+                [JsonLdKeywords.Context] = emittedContext
             };
             foreach(KeyValuePair<string, object?> kv in bodyMap)
             {
@@ -185,8 +185,8 @@ public static class JsonLdCompactor
         //Array or scalar body: wrap into a graph object so @context can attach.
         return new Dictionary<string, object?>(2, StringComparer.Ordinal)
         {
-            ["@context"] = emittedContext,
-            ["@graph"] = compactedBody
+            [JsonLdKeywords.Context] = emittedContext,
+            [JsonLdKeywords.Graph] = compactedBody
         };
     }
 
@@ -206,13 +206,13 @@ public static class JsonLdCompactor
             return ToObjectGraph(valueObject);
         }
 
-        if(!valueObject.TryGetProperty("@value", out JsonLdNode valueNode))
+        if(!valueObject.TryGetProperty(JsonLdKeywords.Value, out JsonLdNode valueNode))
         {
             return ToObjectGraph(valueObject);
         }
 
-        bool hasType = valueObject.TryGetProperty("@type", out JsonLdNode typeNode);
-        bool hasLanguage = valueObject.TryGetProperty("@language", out JsonLdNode languageNode);
+        bool hasType = valueObject.TryGetProperty(JsonLdKeywords.Type, out JsonLdNode typeNode);
+        bool hasLanguage = valueObject.TryGetProperty(JsonLdKeywords.Language, out JsonLdNode languageNode);
 
         //If the surrounding term's coercion matches the value's type or
         //language, unwrap to the bare literal. Otherwise, emit a compact
@@ -253,16 +253,16 @@ public static class JsonLdCompactor
         //relative compaction so type IRIs surface as terms when defined.
         Dictionary<string, object?> compactedObject = new(StringComparer.Ordinal)
         {
-            ["@value"] = ToObjectGraph(valueNode)
+            [JsonLdKeywords.Value] = ToObjectGraph(valueNode)
         };
         if(hasType && typeNode.Kind == JsonLdNodeKind.String)
         {
             //Compaction context is unavailable to this primitive; emit @type as-is.
-            compactedObject["@type"] = typeNode.GetString();
+            compactedObject[JsonLdKeywords.Type] = typeNode.GetString();
         }
         if(hasLanguage && languageNode.Kind == JsonLdNodeKind.String)
         {
-            compactedObject["@language"] = languageNode.GetString();
+            compactedObject[JsonLdKeywords.Language] = languageNode.GetString();
         }
         return compactedObject;
     }
@@ -291,7 +291,7 @@ public static class JsonLdCompactor
     {
         //Value object detection: a JSON-LD value object has @value as an
         //own property. Route through CompactValue.
-        if(obj.TryGetProperty("@value", out _))
+        if(obj.TryGetProperty(JsonLdKeywords.Value, out _))
         {
             return CompactValue(obj, termDefinition: null);
         }
@@ -305,34 +305,33 @@ public static class JsonLdCompactor
 
             switch(expandedKey)
             {
-                case "@id":
+                case var k when JsonLdKeywords.IsId(k):
                 {
                     //@id values are resource IRIs; compact in document-IRI mode
                     //(no @vocab relative; an @id is never an unqualified term).
                     if(expandedValue.Kind == JsonLdNodeKind.String)
                     {
-                        result["@id"] = CompactIri(activeContext, expandedValue.GetString(), vocab: false);
+                        result[JsonLdKeywords.Id] = CompactIri(activeContext, expandedValue.GetString(), vocab: false);
                     }
                     else
                     {
-                        result["@id"] = ToObjectGraph(expandedValue);
+                        result[JsonLdKeywords.Id] = ToObjectGraph(expandedValue);
                     }
                     break;
                 }
-                case "@type":
+                case var k when JsonLdKeywords.IsType(k):
                 {
                     //@type values are class IRIs; vocab-relative compaction applies.
-                    result["@type"] = CompactTypeValue(expandedValue, activeContext);
+                    result[JsonLdKeywords.Type] = CompactTypeValue(expandedValue, activeContext);
                     break;
                 }
-                case "@context":
-                case "@graph":
+                case var k when JsonLdKeywords.IsContext(k) || JsonLdKeywords.IsGraph(k):
                 {
                     //Pass through container keys without IRI compaction on the key
                     //itself. @graph's contents are compacted as a normal element.
-                    if(expandedKey == "@graph")
+                    if(JsonLdKeywords.IsGraph(expandedKey))
                     {
-                        result["@graph"] = CompactElement(expandedValue, activeContext);
+                        result[JsonLdKeywords.Graph] = CompactElement(expandedValue, activeContext);
                     }
                     else
                     {
@@ -341,7 +340,7 @@ public static class JsonLdCompactor
 
                     break;
                 }
-                case "@reverse":
+                case var k when JsonLdKeywords.IsReverse(k):
                 {
                     //@reverse value is an object of expanded predicates →
                     //value arrays. Compact each predicate to its term/compact
@@ -362,7 +361,7 @@ public static class JsonLdCompactor
                             compactedReverse[compactInnerKey] = CompactValueOrElement(inner.Value, activeContext, innerTerm);
                         }
 
-                        result["@reverse"] = compactedReverse;
+                        result[JsonLdKeywords.Reverse] = compactedReverse;
                     }
 
                     break;
@@ -391,13 +390,13 @@ public static class JsonLdCompactor
 
     private static object? CompactValueOrElement(JsonLdNode element, LinkedDataContext activeContext, TermDefinition? termDef)
     {
-        bool isSet = termDef is not null && HasContainer(termDef, "@set");
-        bool isList = termDef is not null && HasContainer(termDef, "@list");
-        bool isLanguage = termDef is not null && HasContainer(termDef, "@language");
-        bool isIndex = termDef is not null && HasContainer(termDef, "@index");
-        bool isIdMap = termDef is not null && HasContainer(termDef, "@id");
-        bool isTypeMap = termDef is not null && HasContainer(termDef, "@type");
-        bool isGraph = termDef is not null && HasContainer(termDef, "@graph");
+        bool isSet = termDef is not null && HasContainer(termDef, JsonLdKeywords.Set);
+        bool isList = termDef is not null && HasContainer(termDef, JsonLdKeywords.List);
+        bool isLanguage = termDef is not null && HasContainer(termDef, JsonLdKeywords.Language);
+        bool isIndex = termDef is not null && HasContainer(termDef, JsonLdKeywords.Index);
+        bool isIdMap = termDef is not null && HasContainer(termDef, JsonLdKeywords.Id);
+        bool isTypeMap = termDef is not null && HasContainer(termDef, JsonLdKeywords.Type);
+        bool isGraph = termDef is not null && HasContainer(termDef, JsonLdKeywords.Graph);
 
         //@list container: expanded form is {"@list": [...]}; compact form
         //is a bare array of compacted items.
@@ -479,7 +478,7 @@ public static class JsonLdCompactor
             foreach(JsonLdNode item in element.EnumerateArray())
             {
                 if(item.Kind == JsonLdNodeKind.Object
-                    && item.TryGetProperty("@list", out JsonLdNode listArray)
+                    && item.TryGetProperty(JsonLdKeywords.List, out JsonLdNode listArray)
                     && listArray.Kind == JsonLdNodeKind.Array)
                 {
                     return MaterialiseListItems(listArray, activeContext, termDef);
@@ -489,7 +488,7 @@ public static class JsonLdCompactor
             return CompactItem(element, activeContext, termDef);
         }
         if(element.Kind == JsonLdNodeKind.Object
-            && element.TryGetProperty("@list", out JsonLdNode innerList)
+            && element.TryGetProperty(JsonLdKeywords.List, out JsonLdNode innerList)
             && innerList.Kind == JsonLdNodeKind.Array)
         {
             return MaterialiseListItems(innerList, activeContext, termDef);
@@ -552,11 +551,11 @@ public static class JsonLdCompactor
         {
             return;
         }
-        if(!item.TryGetProperty("@value", out JsonLdNode valueNode))
+        if(!item.TryGetProperty(JsonLdKeywords.Value, out JsonLdNode valueNode))
         {
             return;
         }
-        if(!item.TryGetProperty("@language", out JsonLdNode languageNode)
+        if(!item.TryGetProperty(JsonLdKeywords.Language, out JsonLdNode languageNode)
             || languageNode.Kind != JsonLdNodeKind.String)
         {
             return;
@@ -641,18 +640,18 @@ public static class JsonLdCompactor
         //Extract the map key from the appropriate discriminator. Index
         //wins when explicitly set; otherwise @id, otherwise @type.
         string? mapKey = null;
-        if(useIndex && item.TryGetProperty("@index", out JsonLdNode indexNode)
+        if(useIndex && item.TryGetProperty(JsonLdKeywords.Index, out JsonLdNode indexNode)
             && indexNode.Kind == JsonLdNodeKind.String)
         {
             mapKey = indexNode.GetString();
         }
-        else if(useId && item.TryGetProperty("@id", out JsonLdNode idNode)
+        else if(useId && item.TryGetProperty(JsonLdKeywords.Id, out JsonLdNode idNode)
             && idNode.Kind == JsonLdNodeKind.String)
         {
             //@id keys compact in document-IRI mode (no @vocab-relative).
             mapKey = CompactIri(activeContext, idNode.GetString(), vocab: false);
         }
-        else if(useType && item.TryGetProperty("@type", out JsonLdNode typeNode))
+        else if(useType && item.TryGetProperty(JsonLdKeywords.Type, out JsonLdNode typeNode))
         {
             //@type may be a single string or an array; the spec uses the
             //first type when multiple are present.
@@ -685,20 +684,20 @@ public static class JsonLdCompactor
         {
             if(useIndex)
             {
-                dict.Remove("@index");
+                dict.Remove(JsonLdKeywords.Index);
             }
             if(useId)
             {
-                dict.Remove("@id");
+                dict.Remove(JsonLdKeywords.Id);
             }
             if(useType)
             {
                 //Only remove @type when it is the key. If @type has
                 //multiple values and we used the first, leave the rest.
-                if(item.TryGetProperty("@type", out JsonLdNode typeNode)
+                if(item.TryGetProperty(JsonLdKeywords.Type, out JsonLdNode typeNode)
                     && typeNode.Kind == JsonLdNodeKind.String)
                 {
-                    dict.Remove("@type");
+                    dict.Remove(JsonLdKeywords.Type);
                 }
                 //For array @type: the spec is permissive; leaving the
                 //array in place preserves the other types.
@@ -711,7 +710,7 @@ public static class JsonLdCompactor
         {
             compactedItem = new Dictionary<string, object?>(StringComparer.Ordinal)
             {
-                ["@graph"] = compactedItem
+                [JsonLdKeywords.Graph] = compactedItem
             };
         }
 
@@ -748,7 +747,7 @@ public static class JsonLdCompactor
     {
         //If the item is already a graph object, compact it. Otherwise
         //wrap its compact form in {"@graph": [...]}.
-        if(item.Kind == JsonLdNodeKind.Object && item.TryGetProperty("@graph", out _))
+        if(item.Kind == JsonLdNodeKind.Object && item.TryGetProperty(JsonLdKeywords.Graph, out _))
         {
             object? compactedGraph = CompactNodeObject(item, activeContext);
             return compactedGraph ?? new Dictionary<string, object?>(StringComparer.Ordinal);
@@ -757,7 +756,7 @@ public static class JsonLdCompactor
         object? compactedItem = CompactNodeObject(item, activeContext);
         return new Dictionary<string, object?>(StringComparer.Ordinal)
         {
-            ["@graph"] = compactedItem
+            [JsonLdKeywords.Graph] = compactedItem
         };
     }
 
@@ -765,7 +764,7 @@ public static class JsonLdCompactor
     {
         if(item.Kind == JsonLdNodeKind.Object)
         {
-            if(item.TryGetProperty("@value", out _))
+            if(item.TryGetProperty(JsonLdKeywords.Value, out _))
             {
                 return CompactValue(item, termDef);
             }
@@ -808,15 +807,15 @@ public static class JsonLdCompactor
         Dictionary<string, object?> result = new(StringComparer.Ordinal);
         if(activeContext.VocabularyMapping is { } vocabMapping)
         {
-            result["@vocab"] = vocabMapping;
+            result[JsonLdKeywords.Vocab] = vocabMapping;
         }
         if(activeContext.BaseIri is { } baseIri)
         {
-            result["@base"] = baseIri;
+            result[JsonLdKeywords.Base] = baseIri;
         }
         if(activeContext.DefaultLanguage is { } lang)
         {
-            result["@language"] = lang;
+            result[JsonLdKeywords.Language] = lang;
         }
         foreach(string termName in activeContext.Terms)
         {
@@ -859,39 +858,39 @@ public static class JsonLdCompactor
 
         Dictionary<string, object?> full = new(StringComparer.Ordinal)
         {
-            ["@id"] = def.IriMapping
+            [JsonLdKeywords.Id] = def.IriMapping
         };
         if(def.TypeMapping is { } typeMapping)
         {
-            full["@type"] = typeMapping;
+            full[JsonLdKeywords.Type] = typeMapping;
         }
         if(def.HasLanguageMapping)
         {
-            full["@language"] = def.LanguageMapping;
+            full[JsonLdKeywords.Language] = def.LanguageMapping;
         }
         if(def.ContainerMapping.Count > 0)
         {
-            full["@container"] = def.ContainerMapping.Count == 1 ? def.ContainerMapping[0] : (object?)def.ContainerMapping;
+            full[JsonLdKeywords.Container] = def.ContainerMapping.Count == 1 ? def.ContainerMapping[0] : (object?)def.ContainerMapping;
         }
         if(def.Prefix)
         {
-            full["@prefix"] = true;
+            full[JsonLdKeywords.Prefix] = true;
         }
         if(def.Protected)
         {
-            full["@protected"] = true;
+            full[JsonLdKeywords.Protected] = true;
         }
         if(def.ReverseProperty is { } reverse)
         {
-            full["@reverse"] = reverse;
+            full[JsonLdKeywords.Reverse] = reverse;
         }
         if(def.NestValue is { } nest)
         {
-            full["@nest"] = nest;
+            full[JsonLdKeywords.Nest] = nest;
         }
         if(def.IndexMapping is { } index)
         {
-            full["@index"] = index;
+            full[JsonLdKeywords.Index] = index;
         }
         return full;
     }

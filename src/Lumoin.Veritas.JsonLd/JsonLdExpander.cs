@@ -82,7 +82,7 @@ public static class JsonLdExpander
 
         //Process document-level @context if present.
         if(document.Kind == JsonLdNodeKind.Object
-            && document.TryGetProperty("@context", out JsonLdNode contextElement))
+            && document.TryGetProperty(JsonLdKeywords.Context, out JsonLdNode contextElement))
         {
             activeContext = await ContextProcessor.ProcessAsync(
                 activeContext, contextElement, baseUrl, resolver, parser, cancellationToken)
@@ -175,7 +175,7 @@ public static class JsonLdExpander
 
         //Process document-level @context if present.
         if(document.Kind == JsonLdNodeKind.Object
-            && document.TryGetProperty("@context", out JsonLdNode contextElement))
+            && document.TryGetProperty(JsonLdKeywords.Context, out JsonLdNode contextElement))
         {
             activeContext = await ContextProcessor.ProcessAsync(
                 activeContext, contextElement, baseUrl, resolver, parser, cancellationToken)
@@ -240,7 +240,7 @@ public static class JsonLdExpander
         RdfTerm? providedSubject = null)
     {
         //Process @context if present, updating the active context for this object.
-        if(obj.TryGetProperty("@context", out JsonLdNode localContextElement))
+        if(obj.TryGetProperty(JsonLdKeywords.Context, out JsonLdNode localContextElement))
         {
             activeContext = await ContextProcessor.ProcessAsync(
                 activeContext, localContextElement, baseUrl, resolver, parser, cancellationToken)
@@ -251,13 +251,13 @@ public static class JsonLdExpander
         RdfTerm subject = providedSubject ?? DetermineSubject(obj, activeContext, pool);
 
         //Process @type.
-        if(obj.TryGetProperty("@type", out JsonLdNode typeElement))
+        if(obj.TryGetProperty(JsonLdKeywords.Type, out JsonLdNode typeElement))
         {
             ProcessTypeValues(typeElement, subject, activeContext, graphName, quads, pool);
         }
 
         //Process @graph: creates a named graph scope.
-        if(obj.TryGetProperty("@graph", out JsonLdNode graphElement))
+        if(obj.TryGetProperty(JsonLdKeywords.Graph, out JsonLdNode graphElement))
         {
             RdfTerm namedGraph = subject;
             await ExpandNodeAsync(graphElement, activeContext, baseUrl, resolver, parser,
@@ -267,7 +267,7 @@ public static class JsonLdExpander
         //Process all other properties.
         foreach((string name, JsonLdNode propertyValue) in obj.EnumerateObject())
         {
-            if(name is "@context" or "@id" or "@type" or "@graph")
+            if(JsonLdKeywords.IsContext(name) || JsonLdKeywords.IsId(name) || JsonLdKeywords.IsType(name) || JsonLdKeywords.IsGraph(name))
             {
                 continue;
             }
@@ -338,7 +338,7 @@ public static class JsonLdExpander
         Utf8StringPool pool,
         CancellationToken cancellationToken)
     {
-        bool isList = termDef?.ContainerMapping.Contains("@list") == true;
+        bool isList = termDef?.ContainerMapping.Contains(JsonLdKeywords.List) == true;
 
         //Handle array values.
         if(value.Kind == JsonLdNodeKind.Array)
@@ -361,7 +361,7 @@ public static class JsonLdExpander
         }
 
         //Handle @value objects.
-        if(value.Kind == JsonLdNodeKind.Object && value.TryGetProperty("@value", out _))
+        if(value.Kind == JsonLdNodeKind.Object && value.TryGetProperty(JsonLdKeywords.Value, out _))
         {
             RdfTerm? objectTerm = ProcessValueObject(value, activeContext, termDef, pool);
             if(objectTerm is not null)
@@ -373,7 +373,7 @@ public static class JsonLdExpander
         }
 
         //Handle @id objects (node references or anonymous nodes).
-        if(value.Kind == JsonLdNodeKind.Object && value.TryGetProperty("@id", out JsonLdNode refId))
+        if(value.Kind == JsonLdNodeKind.Object && value.TryGetProperty(JsonLdKeywords.Id, out JsonLdNode refId))
         {
             string idStr = refId.Kind == JsonLdNodeKind.String ? refId.GetString() : "";
             string? expandedId = activeContext.ExpandIri(idStr, documentRelative: true);
@@ -439,7 +439,7 @@ public static class JsonLdExpander
         {
             RdfTerm? objectTerm = null;
 
-            if(item.Kind == JsonLdNodeKind.Object && item.TryGetProperty("@value", out _))
+            if(item.Kind == JsonLdNodeKind.Object && item.TryGetProperty(JsonLdKeywords.Value, out _))
             {
                 objectTerm = ProcessValueObject(item, activeContext, termDef, pool);
             }
@@ -490,7 +490,7 @@ public static class JsonLdExpander
 
     private static RdfTerm DetermineSubject(JsonLdNode obj, LinkedDataContext activeContext, Utf8StringPool pool)
     {
-        if(obj.TryGetProperty("@id", out JsonLdNode idElement)
+        if(obj.TryGetProperty(JsonLdKeywords.Id, out JsonLdNode idElement)
             && idElement.Kind == JsonLdNodeKind.String)
         {
             string idValue = idElement.GetString();
@@ -557,21 +557,21 @@ public static class JsonLdExpander
         _ = activeContext;
         _ = termDef;
 
-        if(!valueObject.TryGetProperty("@value", out JsonLdNode valueElement))
+        if(!valueObject.TryGetProperty(JsonLdKeywords.Value, out JsonLdNode valueElement))
         {
             return null;
         }
 
         //Get the datatype.
         string? datatype = null;
-        if(valueObject.TryGetProperty("@type", out JsonLdNode typeEl) && typeEl.Kind == JsonLdNodeKind.String)
+        if(valueObject.TryGetProperty(JsonLdKeywords.Type, out JsonLdNode typeEl) && typeEl.Kind == JsonLdNodeKind.String)
         {
             datatype = typeEl.GetString();
         }
 
         //Get the language.
         string? language = null;
-        if(valueObject.TryGetProperty("@language", out JsonLdNode langEl) && langEl.Kind == JsonLdNodeKind.String)
+        if(valueObject.TryGetProperty(JsonLdKeywords.Language, out JsonLdNode langEl) && langEl.Kind == JsonLdNodeKind.String)
         {
             language = langEl.GetString();
         }
@@ -624,9 +624,9 @@ public static class JsonLdExpander
                 string str = value.GetString();
 
                 //Type coercion to @id.
-                if(termDef?.TypeMapping is "@id" or "@vocab")
+                if(JsonLdKeywords.IsId(termDef?.TypeMapping) || JsonLdKeywords.IsVocab(termDef?.TypeMapping))
                 {
-                    bool useVocab = termDef.TypeMapping == "@vocab";
+                    bool useVocab = JsonLdKeywords.IsVocab(termDef?.TypeMapping);
                     string? expanded = activeContext.ExpandIri(str, vocab: useVocab, documentRelative: !useVocab);
                     if(expanded is null)
                     {
@@ -646,7 +646,8 @@ public static class JsonLdExpander
                 //Explicit datatype from term definition.
                 string? datatypeIri = termDef?.TypeMapping;
 
-                if(datatypeIri is not null && datatypeIri is not "@id" and not "@vocab" and not "@none")
+                if(datatypeIri is not null
+                    && !JsonLdKeywords.IsId(datatypeIri) && !JsonLdKeywords.IsVocab(datatypeIri) && !JsonLdKeywords.IsNone(datatypeIri))
                 {
                     NamedNode datatypeNode = new(pool.Intern(datatypeIri));
 
