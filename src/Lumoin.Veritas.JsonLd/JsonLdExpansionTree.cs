@@ -1771,7 +1771,9 @@ public static class JsonLdExpansionTree
                         JsonNodeKind.String => entry.Value.GetString(),
                         JsonNodeKind.True => (object?)true,
                         JsonNodeKind.False => (object?)false,
-                        JsonNodeKind.Number => ParseNumber(entry.Value.GetRawNumber()),
+                        //A @value number preserves its exact lexical form through expansion (10.0 stays 10.0),
+                        //matching the bare-scalar path; numeric canonicalisation is a toRdf concern.
+                        JsonNodeKind.Number => new JsonLdJsonNumber(entry.Value.GetRawNumber()),
                         _ => null
                     };
                     break;
