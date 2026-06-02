@@ -154,4 +154,11 @@ public static class JsonSchemaKeywords
 
     /// <summary>The URI of the draft 2020-12 standard dialect metaschema.</summary>
     public static readonly string StandardDialectUri = "https://json-schema.org/draft/2020-12/schema";
+
+    /// <summary>The pure-annotation keywords (Meta-Data + Format-Annotation + Content vocabularies) — they assert nothing and produce their value as an annotation.</summary>
+    public static string[] AnnotationKeywords { get; } =
+    [
+        "title", "description", "default", "deprecated", "readOnly", "writeOnly",
+        "examples", "format", "contentEncoding", "contentMediaType", "contentSchema"
+    ];
 }

@@ -52,11 +52,45 @@ public static class JsonSchemaValidator
         Justification = "The engine resolves references via the RFC 3986 string-based IriResolver; System.Uri is intentionally not used on this path.")]
     public static ValidationResult Validate(JsonNode schema, JsonNode instance, SchemaDocumentLoader? loader = null, string? baseUri = null, RegexMatchDelegate? regexMatch = null)
     {
+        Frame root = EvaluateRoot(schema, instance, loader, baseUri, regexMatch, out List<ValidationError> errors, out _);
+
+        return new ValidationResult(root.Result, errors);
+    }
+
+    /// <summary>Validates an instance against a schema and produces the result in a JSON Schema output format.</summary>
+    /// <param name="schema">The schema node.</param>
+    /// <param name="instance">The instance to validate.</param>
+    /// <param name="format">The output format (<see cref="OutputFormat.Flag"/> or <see cref="OutputFormat.Basic"/>).</param>
+    /// <param name="loader">A loader for documents reached by <c>$ref</c> outside the root schema, or <see langword="null"/>.</param>
+    /// <param name="baseUri">The root schema's retrieval base URI, or <see langword="null"/> for none.</param>
+    /// <param name="regexMatch">The regular-expression matcher, or <see langword="null"/> for the default.</param>
+    /// <returns>The root output unit.</returns>
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
+        Justification = "The engine resolves references via the RFC 3986 string-based IriResolver; System.Uri is intentionally not used on this path.")]
+    public static OutputUnit Evaluate(JsonNode schema, JsonNode instance, OutputFormat format, SchemaDocumentLoader? loader = null, string? baseUri = null, RegexMatchDelegate? regexMatch = null)
+    {
+        Frame root = EvaluateRoot(schema, instance, loader, baseUri, regexMatch, out List<ValidationError> errors, out List<OutputUnit> annotations);
+
+        return BuildOutput(root.Result, errors, annotations, format);
+    }
+
+    /// <summary>Runs the evaluation loop, returning the root frame and the gathered errors and (passing) annotations.</summary>
+    /// <param name="schema">The schema node.</param>
+    /// <param name="instance">The instance node.</param>
+    /// <param name="loader">The remote-document loader, or <see langword="null"/>.</param>
+    /// <param name="baseUri">The root base URI, or <see langword="null"/>.</param>
+    /// <param name="regexMatch">The regex matcher, or <see langword="null"/>.</param>
+    /// <param name="errors">The accumulated assertion failures.</param>
+    /// <param name="annotations">The annotation units gathered from passing frames.</param>
+    /// <returns>The root frame, closed.</returns>
+    private static Frame EvaluateRoot(JsonNode schema, JsonNode instance, SchemaDocumentLoader? loader, string? baseUri, RegexMatchDelegate? regexMatch, out List<ValidationError> errors, out List<OutputUnit> annotations)
+    {
         string rootBase = baseUri ?? string.Empty;
         SchemaRegistry registry = new(schema, rootBase, loader);
         RegexMatchDelegate match = regexMatch ?? DefaultRegexMatch;
         bool validationEnabled = IsValidationVocabularyEnabled(schema, rootBase, loader);
-        List<ValidationError> errors = [];
+        errors = [];
+        annotations = [];
         Frame root = new()
         {
             Schema = schema,
@@ -75,14 +109,50 @@ public static class JsonSchemaValidator
             (Frame frame, bool closing) = stack.Pop();
             if(closing)
             {
-                CloseFrame(frame, stack);
+                CloseFrame(frame, stack, annotations);
                 continue;
             }
 
             OpenFrame(frame, stack, errors, registry, match, validationEnabled);
         }
 
-        return new ValidationResult(root.Result, errors);
+        return root;
+    }
+
+    /// <summary>Builds the requested output structure from the evaluation result.</summary>
+    /// <param name="valid">The overall validity.</param>
+    /// <param name="errors">The assertion failures.</param>
+    /// <param name="annotations">The annotation units from passing frames.</param>
+    /// <param name="format">The output format.</param>
+    /// <returns>The root output unit.</returns>
+    private static OutputUnit BuildOutput(bool valid, List<ValidationError> errors, List<OutputUnit> annotations, OutputFormat format)
+    {
+        if(format == OutputFormat.Flag)
+        {
+            return new OutputUnit { Valid = valid };
+        }
+
+        //Basic: on success the flat annotation list, on failure the flat error list (annotations from a
+        //failed schema are dropped).
+        if(valid)
+        {
+            return new OutputUnit { Valid = true, Annotations = annotations };
+        }
+
+        List<OutputUnit> errorUnits = [];
+        foreach(ValidationError error in errors)
+        {
+            errorUnits.Add(new OutputUnit
+            {
+                Valid = false,
+                KeywordLocation = error.KeywordLocation.ToString(),
+                AbsoluteKeywordLocation = error.AbsoluteKeywordLocation,
+                InstanceLocation = error.InstanceLocation.ToString(),
+                Error = error.Message
+            });
+        }
+
+        return new OutputUnit { Valid = false, Errors = errorUnits };
     }
 
     /// <summary>Whether the Validation vocabulary is in effect for the root schema's declared dialect (<c>$schema</c>).</summary>
@@ -188,15 +258,9 @@ public static class JsonSchemaValidator
             return;
         }
 
-        //The Validation vocabulary keywords (type/const/enum/numeric/string/array/object assertions) apply
-        //only when that vocabulary is in effect for the dialect; otherwise they are annotations and ignored.
-        if(validationEnabled)
-        {
-            EvaluateSelfKeywords(frame, errors, match);
-        }
-
         //An $id establishes the base URI for this schema's references and subschemas. A reference target
         //reached at its canonical URI already has its $id folded into BaseUri, so it is not applied again.
+        //Computed before the assertions so failures can record their absolute keyword location.
         string effectiveBase = frame.BaseUri;
         if(!frame.BaseIsCanonical && frame.Schema.TryGetProperty(JsonSchemaKeywords.Id, out JsonNode id) && id.Kind == JsonNodeKind.String)
         {
@@ -204,6 +268,13 @@ public static class JsonSchemaValidator
         }
 
         frame.EffectiveBase = effectiveBase;
+
+        //The Validation vocabulary keywords (type/const/enum/numeric/string/array/object assertions) apply
+        //only when that vocabulary is in effect for the dialect; otherwise they are annotations and ignored.
+        if(validationEnabled)
+        {
+            EvaluateSelfKeywords(frame, errors, match);
+        }
 
         //An $id starting a new resource extends the dynamic scope that this frame's subschemas inherit.
         ScopeNode parentScope = frame.DynamicScope ?? new ScopeNode(frame.BaseUri, null);
@@ -306,7 +377,8 @@ public static class JsonSchemaValidator
     /// <summary>Closes a frame: combines its children, applies <c>unevaluated*</c> in a second pass, and reports to its parent.</summary>
     /// <param name="frame">The frame being closed.</param>
     /// <param name="stack">The work stack, onto which deferred <c>unevaluated*</c> children are pushed.</param>
-    private static void CloseFrame(Frame frame, Stack<(Frame, bool)> stack)
+    /// <param name="annotations">The accumulating annotation units; this frame contributes its annotation keywords when it passes.</param>
+    private static void CloseFrame(Frame frame, Stack<(Frame, bool)> stack, List<OutputUnit> annotations)
     {
         //unevaluatedProperties/unevaluatedItems must see the results of every other keyword first.
         //On the first close, spawn them for the not-yet-evaluated members/items and re-close afterwards.
@@ -326,7 +398,35 @@ public static class JsonSchemaValidator
         frame.Result = frame.SelfValid && CombineChildren(frame);
         frame.EvaluatedProperties.UnionWith(ComputeEvaluatedProperties(frame));
         frame.EvaluatedItems.UnionWith(ComputeEvaluatedItems(frame));
+        CollectAnnotations(frame, annotations);
         frame.Parent?.Children.Add(frame);
+    }
+
+    /// <summary>Adds annotation units for the pure-annotation keywords a passing object frame declares.</summary>
+    /// <param name="frame">The frame.</param>
+    /// <param name="annotations">The accumulating annotation units.</param>
+    private static void CollectAnnotations(Frame frame, List<OutputUnit> annotations)
+    {
+        if(!frame.Result || frame.Schema.Kind != JsonNodeKind.Object)
+        {
+            return;
+        }
+
+        foreach(string keyword in JsonSchemaKeywords.AnnotationKeywords)
+        {
+            if(frame.Schema.TryGetProperty(keyword, out JsonNode value))
+            {
+                Ptr keywordLocation = frame.KeywordLocation.Append(keyword);
+                annotations.Add(new OutputUnit
+                {
+                    Valid = true,
+                    KeywordLocation = keywordLocation.ToString(),
+                    AbsoluteKeywordLocation = frame.EffectiveBase + "#" + keywordLocation,
+                    InstanceLocation = frame.InstanceLocation.ToString(),
+                    Annotation = value
+                });
+            }
+        }
     }
 
     /// <summary>Whether a schema declares <c>unevaluatedProperties</c> or <c>unevaluatedItems</c>.</summary>
@@ -1073,7 +1173,11 @@ public static class JsonSchemaValidator
     private static void Fail(Frame frame, List<ValidationError> errors, string keyword, string message)
     {
         frame.SelfValid = false;
-        errors.Add(new ValidationError(frame.InstanceLocation, frame.KeywordLocation.Append(keyword), message));
+        Ptr keywordLocation = frame.KeywordLocation.Append(keyword);
+        errors.Add(new ValidationError(frame.InstanceLocation, keywordLocation, message)
+        {
+            AbsoluteKeywordLocation = frame.EffectiveBase + "#" + keywordLocation
+        });
     }
 
     /// <summary>Whether the instance matches a <c>type</c> value (a single type name or an array of names).</summary>

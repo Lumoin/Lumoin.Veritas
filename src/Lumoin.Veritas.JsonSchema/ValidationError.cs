@@ -11,4 +11,8 @@ namespace Lumoin.Veritas.JsonSchema;
 public sealed record ValidationError(
     Ptr InstanceLocation,
     Ptr KeywordLocation,
-    string Message);
+    string Message)
+{
+    /// <summary>Gets the absolute keyword location — the failing keyword's URI within its schema resource (<c>$id#/pointer</c>), or <see langword="null"/> when unavailable.</summary>
+    public string? AbsoluteKeywordLocation { get; init; }
+}

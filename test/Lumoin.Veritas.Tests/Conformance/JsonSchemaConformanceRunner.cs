@@ -50,7 +50,7 @@ internal static class JsonSchemaConformanceRunner
     /// <param name="absoluteUri">The absolute document URI.</param>
     /// <param name="document">On success, the parsed document.</param>
     /// <returns><see langword="true"/> when the URI names a vendored document that exists.</returns>
-    private static bool LoadRemote(string absoluteUri, out JsonNode document)
+    internal static bool LoadRemote(string absoluteUri, out JsonNode document)
     {
         const string remotesPrefix = "http://localhost:1234/";
         const string metaschemaPrefix = "https://json-schema.org/draft/2020-12/";
