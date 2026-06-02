@@ -2,6 +2,7 @@ using System;
 using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 
 namespace Lumoin.Veritas.LinkedData;
 
@@ -137,10 +138,11 @@ public static partial class ContextProcessing
             && existing?.Protected == true
             && !overrideProtected)
         {
-            //Protected term: the IRI mappings must match for the
-            //redefinition to be accepted. Compare IRI mappings only;
-            //a fuller check (all fields) is out of scope for this step.
-            if(existing.IriMapping != definition.IriMapping)
+            //Protected term: a redefinition is accepted only when the new
+            //definition is identical to the existing one apart from the
+            //@protected flag itself (W3C JSON-LD 1.1 §4.1.2 step on protected
+            //term redefinition).
+            if(!AreTermDefinitionsEquivalentIgnoringProtected(existing, definition))
             {
                 existingIriMapping = existing.IriMapping;
                 return null;
@@ -151,6 +153,30 @@ public static partial class ContextProcessing
 
         existingIriMapping = null;
         return activeContext.WithTerm(term, definition);
+    }
+
+    /// <summary>
+    /// Compares two term definitions for equality across every field that
+    /// distinguishes a protected redefinition, ignoring only the
+    /// <see cref="TermDefinition.Protected"/> flag. Scoped contexts are
+    /// compared by presence (a definition that gains or loses a scoped context
+    /// is a different definition).
+    /// </summary>
+    private static bool AreTermDefinitionsEquivalentIgnoringProtected(TermDefinition a, TermDefinition b)
+    {
+        return string.Equals(a.IriMapping, b.IriMapping, StringComparison.Ordinal)
+            && a.HasNullMapping == b.HasNullMapping
+            && string.Equals(a.TypeMapping, b.TypeMapping, StringComparison.Ordinal)
+            && string.Equals(a.LanguageMapping, b.LanguageMapping, StringComparison.Ordinal)
+            && a.HasLanguageMapping == b.HasLanguageMapping
+            && string.Equals(a.DirectionMapping, b.DirectionMapping, StringComparison.Ordinal)
+            && a.HasDirectionMapping == b.HasDirectionMapping
+            && string.Equals(a.ReverseProperty, b.ReverseProperty, StringComparison.Ordinal)
+            && string.Equals(a.NestValue, b.NestValue, StringComparison.Ordinal)
+            && string.Equals(a.IndexMapping, b.IndexMapping, StringComparison.Ordinal)
+            && a.Prefix == b.Prefix
+            && (a.ScopedContextEntries is null) == (b.ScopedContextEntries is null)
+            && a.ContainerMapping.SequenceEqual(b.ContainerMapping, StringComparer.Ordinal);
     }
 
     /// <summary>

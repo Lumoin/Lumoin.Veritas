@@ -667,20 +667,38 @@ public static partial class ContextProcessing
 
         defined[termName] = false;
 
-        if(IriUtils.IsKeyword(termName))
+        LinkedDataTermSource value = localContext[termName];
+
+        //@type is the one keyword that may be given a term definition (W3C
+        //JSON-LD 1.1 §4.1.2): an object carrying only @container (which must be
+        //@set, or absent) and/or @id/@protected. Any other keyword — or an
+        //out-of-shape @type definition — is a keyword redefinition error.
+        if(string.Equals(termName, "@type", StringComparison.Ordinal))
+        {
+            bool containerIsSetOrAbsent = value.Containers is null
+                || (value.Containers.Count == 1 && string.Equals(value.Containers[0], "@set", StringComparison.Ordinal));
+            bool onlyTypeAllowedKeys = value.Type is null && !value.Reverse && value.ReverseIri is null
+                && value.Nest is null && value.Index is null && !value.HasLanguageMapping
+                && !value.HasDirectionMapping && value.ScopedContext is null && !value.Prefix;
+            bool hasAtLeastOneKey = value.Containers is not null || value.Iri is not null || value.HasProtected;
+            if(value.IsSimpleString || value.IsRemoval || !containerIsSetOrAbsent || !onlyTypeAllowedKeys || !hasAtLeastOneKey)
+            {
+                throw new LinkedDataProcessingException(
+                    "keyword redefinition",
+                    string.Create(CultureInfo.InvariantCulture, $"Keyword '@type' may only be given a term definition restricted to @container @set, @id, and @protected."));
+            }
+        }
+        else if(IriUtils.IsKeyword(termName))
         {
             throw new LinkedDataProcessingException(
                 "keyword redefinition",
                 string.Create(CultureInfo.InvariantCulture, $"Cannot redefine keyword '{termName}'."));
         }
-
-        if(IriUtils.IsKeywordLike(termName))
+        else if(IriUtils.IsKeywordLike(termName))
         {
             defined[termName] = true;
             return activeContext;
         }
-
-        LinkedDataTermSource value = localContext[termName];
 
         //A null term (`"term": null` or `{"@id": null}`) is DEFINED with a null
         //IRI mapping rather than removed: it expands to nothing yet remains in
