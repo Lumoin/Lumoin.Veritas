@@ -683,10 +683,13 @@ public static partial class ContextProcessing
     /// <returns>The converted term source.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="termName"/> or <paramref name="syntheticKey"/> is <see langword="null"/>.</exception>
     /// <exception cref="InvalidOperationException">The value is not one of the four valid shapes.</exception>
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
+        Justification = "JSON-LD specification uses string URIs throughout the context processing algorithm.")]
     public static LinkedDataTermSource ConvertToTermSource(
         string termName,
         object? value,
-        string syntheticKey)
+        string syntheticKey,
+        string? baseUrl = null)
     {
         ArgumentNullException.ThrowIfNull(termName);
         ArgumentNullException.ThrowIfNull(syntheticKey);
@@ -704,7 +707,7 @@ public static partial class ContextProcessing
 
         if(value is IReadOnlyDictionary<string, object?> dict)
         {
-            return ConvertExpandedTermSource(termName, dict, syntheticKey);
+            return ConvertExpandedTermSource(termName, dict, syntheticKey, baseUrl);
         }
 
         throw new InvalidOperationException(
@@ -714,7 +717,8 @@ public static partial class ContextProcessing
     private static LinkedDataTermSource ConvertExpandedTermSource(
         string termName,
         IReadOnlyDictionary<string, object?> dict,
-        string syntheticKey)
+        string syntheticKey,
+        string? baseUrl = null)
     {
         string? iri = null;
         string? type = null;
@@ -728,6 +732,7 @@ public static partial class ContextProcessing
         bool prefix = false;
         string? nest = null;
         string? index = null;
+        IReadOnlyList<LinkedDataContextEntry>? scopedContext = null;
 
         foreach(KeyValuePair<string, object?> field in dict)
         {
@@ -785,9 +790,20 @@ public static partial class ContextProcessing
                     index = field.Value as string;
                     break;
                 }
-                //Scoped @context handling stays in the orchestrator; the
-                //caller walks nested context dicts and produces nested
-                //LinkedDataContextEntry trees explicitly.
+                //A term inside a REMOTE context may carry a scoped @context.
+                //The inline JSON-LD shell extracts this through its own walker,
+                //but remote contexts arrive through this format-neutral path, so
+                //extract it here. Relative references resolve against the
+                //defining remote context's base URL.
+                case "@context":
+                {
+                    scopedContext = field.Value switch
+                    {
+                        IReadOnlyDictionary<string, object?> contextMap => ConvertParsedContextToEntries(contextMap, baseUrl),
+                        _ => ConvertWrappedContextValue(field.Value, baseUrl)
+                    };
+                    break;
+                }
                 default:
                 {
                     break;
@@ -808,7 +824,8 @@ public static partial class ContextProcessing
             Protected = @protected,
             Prefix = prefix,
             Nest = nest,
-            Index = index
+            Index = index,
+            ScopedContext = scopedContext
         };
     }
 

@@ -100,8 +100,11 @@ public static partial class ContextProcessing
 
             if(entry.Url is not null)
             {
+                //A relative context reference resolves against the base URL of
+                //the context that declared it (the entry's own base when set,
+                //e.g. a scoped context sourced from a remote document).
                 result = await ProcessRemoteContextCoreAsync(
-                    result, entry.Url, baseUrl, fetcher, parser, cache,
+                    result, entry.Url, entry.BaseUrl ?? baseUrl, fetcher, parser, cache,
                     remoteContexts, overrideProtected, propagate, depth,
                     cancellationToken).ConfigureAwait(false);
                 continue;
@@ -462,7 +465,7 @@ public static partial class ContextProcessing
                 {
                     keyCounter++;
                     terms[entry.Key] = ConvertToTermSource(
-                        entry.Key, entry.Value, $"remote-k{keyCounter}-{entry.Key}");
+                        entry.Key, entry.Value, $"remote-k{keyCounter}-{entry.Key}", baseUrl);
                     break;
                 }
             }
@@ -1013,7 +1016,12 @@ public static partial class ContextProcessing
         //(set below). Consumers (JSON-LD expander, CBOR-LD scope helper)
         //re-apply the entries at use-site against the then-current
         //active context.
-        if(value.ScopedContext is not null)
+        //A scoped context that references a remote URL is validated lazily at
+        //use-site, not eagerly here: a self-referential remote scoped context
+        //(a term whose scoped context points back at its own containing
+        //document) would otherwise trip the dereferencing cycle guard during
+        //this throw-away validation even though it expands fine when applied.
+        if(value.ScopedContext is not null && !ScopedContextReferencesRemoteUrl(value.ScopedContext))
         {
             //Pre-validate scoped context by attempting to apply it
             //into a throw-away context (catches errors early at
@@ -1127,6 +1135,24 @@ public static partial class ContextProcessing
             }
 
             colon = term.IndexOf(':', colon + 1);
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Indicates whether any entry of a scoped context is a remote URL
+    /// reference, in which case eager pre-validation is skipped (it is applied
+    /// lazily at use-site to avoid self-reference dereferencing cycles).
+    /// </summary>
+    private static bool ScopedContextReferencesRemoteUrl(IReadOnlyList<LinkedDataContextEntry> entries)
+    {
+        foreach(LinkedDataContextEntry entry in entries)
+        {
+            if(entry.Url is not null)
+            {
+                return true;
+            }
         }
 
         return false;
