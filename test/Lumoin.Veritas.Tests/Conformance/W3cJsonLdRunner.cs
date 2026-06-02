@@ -63,17 +63,7 @@ internal static class W3cJsonLdRunner
         string baseUrl = testCase.OptionBase ?? testCase.InputUrl;
         ContextResolverDelegate resolver = CorpusResolver(testCase);
 
-        //The expandContext option initializes the active context from a separate
-        //context document before the input is expanded. Read it and hand its
-        //@context value (the document is a {"@context": …} wrapper) to the expander.
-        JsonLdNode? expandContext = null;
-        if(testCase.ExpandContextPath is not null)
-        {
-            JsonLdNode expandContextDocument = StjJsonLdAdapter.Parse(await ReadUtf8Async(testCase.ExpandContextPath, cancellationToken).ConfigureAwait(false));
-            expandContext = expandContextDocument.TryGetProperty("@context", out JsonLdNode contextValue)
-                ? contextValue
-                : expandContextDocument;
-        }
+        JsonLdNode? expandContext = await LoadExpandContextAsync(testCase, cancellationToken).ConfigureAwait(false);
 
         if(testCase.IsPositive)
         {
@@ -118,6 +108,7 @@ internal static class W3cJsonLdRunner
         JsonLdNode input = StjJsonLdAdapter.Parse(await ReadUtf8Async(testCase.InputPath, cancellationToken).ConfigureAwait(false));
         string baseUrl = testCase.OptionBase ?? testCase.InputUrl;
         ContextResolverDelegate resolver = CorpusResolver(testCase);
+        JsonLdNode? expandContext = await LoadExpandContextAsync(testCase, cancellationToken).ConfigureAwait(false);
         using Utf8StringPool pool = new();
 
         List<Quad> actual;
@@ -126,7 +117,7 @@ internal static class W3cJsonLdRunner
             //Unified path: extract RDF from the conformant expanded object graph
             //(JsonLdExpansionTree) rather than a parallel expansion.
             IReadOnlyList<object?> expanded = await JsonLdExpansionTree.ExpandAsync(
-                input, baseUrl, resolver, StjJsonLdAdapter.Parse, cancellationToken).ConfigureAwait(false);
+                input, baseUrl, resolver, StjJsonLdAdapter.Parse, expandContext, cancellationToken).ConfigureAwait(false);
             actual = JsonLdRdfSerializer.Serialize(expanded, pool);
         }
         catch(Exception exception) when(exception is not OperationCanceledException)
@@ -151,6 +142,22 @@ internal static class W3cJsonLdRunner
         return QuadSetIsomorphism.AreIsomorphic(actual, expected)
             ? new W3cOutcome(W3cOutcomeStatus.Passed, $"toRdf matches ({actual.Count} quads).")
             : new W3cOutcome(W3cOutcomeStatus.Failed, $"toRdf differs: actual={actual.Count} quads, expected={expected.Count} quads.");
+    }
+
+    /// <summary>Loads the <c>expandContext</c> option document (a <c>{"@context": …}</c> wrapper) and returns its context value, or <see langword="null"/> when the option is absent.</summary>
+    /// <param name="testCase">The case.</param>
+    /// <param name="cancellationToken">A token that aborts the run.</param>
+    /// <returns>The context value node, or <see langword="null"/>.</returns>
+    private static async ValueTask<JsonLdNode?> LoadExpandContextAsync(JsonLdTestCase testCase, CancellationToken cancellationToken)
+    {
+        if(testCase.ExpandContextPath is null)
+        {
+            return null;
+        }
+
+        JsonLdNode document = StjJsonLdAdapter.Parse(await ReadUtf8Async(testCase.ExpandContextPath, cancellationToken).ConfigureAwait(false));
+
+        return document.TryGetProperty("@context", out JsonLdNode contextValue) ? contextValue : document;
     }
 
     /// <summary>Builds a context resolver that maps a URL under the suite's <c>baseIri</c> to the vendored corpus file.</summary>

@@ -107,6 +107,21 @@ public static class JsonLdRdfSerializer
                 continue;
             }
 
+            if(JsonLdKeywords.IsIncluded(key))
+            {
+                //@included carries additional node objects of the same graph;
+                //their quads are emitted alongside this node's.
+                foreach(object? member in AsList(property.Value))
+                {
+                    if(member is IReadOnlyDictionary<string, object?> includedNode)
+                    {
+                        state.PushNode(includedNode, graph);
+                    }
+                }
+
+                continue;
+            }
+
             //Only absolute-IRI (or blank-node) predicates produce triples; any
             //remaining keyword key carries no RDF.
             if(JsonLdKeywords.IsKeyword(key) || !TryMakeNode(state, key, out RdfTerm? predicateTerm) || predicateTerm is not NamedNode predicate)
