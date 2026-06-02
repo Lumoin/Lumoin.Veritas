@@ -30,8 +30,8 @@ namespace Lumoin.Veritas.JsonLd;
 /// Output shape: <see cref="object"/>?, where object maps to
 /// <c>IReadOnlyDictionary&lt;string, object?&gt;</c>, array maps to
 /// <c>IReadOnlyList&lt;object?&gt;</c>, and leaves are <see cref="string"/>,
-/// <see cref="bool"/>, <see cref="long"/>, <see cref="double"/>, or <c>null</c>.
-/// Callers serialise to JSON via their JSON adapter.
+/// <see cref="bool"/>, <see cref="JsonLdJsonNumber"/> (the verbatim number
+/// token), or <c>null</c>. Callers serialise to JSON via their JSON adapter.
 /// </para>
 /// <para>
 /// Deferred to follow-ups: framing (<c>@frame</c>); property- and
@@ -2078,7 +2078,9 @@ public static class JsonLdCompactor
             JsonNodeKind.String => node.GetString(),
             JsonNodeKind.True => true,
             JsonNodeKind.False => false,
-            JsonNodeKind.Number => ParseNumberLiteral(node.GetRawNumber()),
+            //Numbers preserve their raw lexical token (compaction does not canonicalise @value numbers,
+            //and @json literals must round-trip verbatim); the carrier serialises back to the exact form.
+            JsonNodeKind.Number => new JsonLdJsonNumber(node.GetRawNumber()),
             JsonNodeKind.Array => MaterialiseArray(node),
             JsonNodeKind.Object => MaterialiseObject(node),
             _ => null
@@ -2103,20 +2105,6 @@ public static class JsonLdCompactor
             result[property.Key] = ToObjectGraph(property.Value);
         }
         return result;
-    }
-
-    private static object ParseNumberLiteral(string raw)
-    {
-        if(long.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out long longValue))
-        {
-            return longValue;
-        }
-        if(double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double doubleValue))
-        {
-            return doubleValue;
-        }
-        //Fall back to the raw lexical form so no precision is silently dropped.
-        return raw;
     }
 
     private static bool IsBetterCandidate(string candidate, string? current)
