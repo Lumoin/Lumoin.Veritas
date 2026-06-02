@@ -238,9 +238,11 @@ internal static class W3cJsonLdRunner
         //The Compaction API output carries the @context the caller PROVIDED, verbatim — not a context the
         //compactor re-serialized. So take @context from the context document and drop any the body carries.
         StjJsonObject result = [];
-        if(StjJsonNode.Parse(File.ReadAllBytes(contextPath)) is StjJsonObject document && document.TryGetPropertyValue("@context", out StjJsonNode? contextValue))
+        if(StjJsonNode.Parse(File.ReadAllBytes(contextPath)) is StjJsonObject document
+            && document.TryGetPropertyValue("@context", out StjJsonNode? contextValue)
+            && contextValue is not (null or StjJsonObject { Count: 0 }))
         {
-            result["@context"] = contextValue?.DeepClone();
+            result["@context"] = contextValue.DeepClone();
         }
 
         foreach(KeyValuePair<string, StjJsonNode?> member in bodyObject)

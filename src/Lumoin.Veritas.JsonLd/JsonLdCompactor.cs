@@ -223,8 +223,9 @@ public static class JsonLdCompactor
     /// </summary>
     /// <param name="valueObject">An expanded value object.</param>
     /// <param name="termDefinition">The term definition under which the value appears, or <c>null</c> for none.</param>
+    /// <param name="activeContext">The active context, used to compact a retained <c>@type</c> IRI; <c>null</c> emits it unchanged.</param>
     /// <returns>The compact value form.</returns>
-    public static object? CompactValue(JsonNode valueObject, TermDefinition? termDefinition)
+    public static object? CompactValue(JsonNode valueObject, TermDefinition? termDefinition, LinkedDataContext? activeContext = null)
     {
         if(valueObject.Kind != JsonNodeKind.Object)
         {
@@ -283,8 +284,9 @@ public static class JsonLdCompactor
         };
         if(hasType && typeNode.Kind == JsonNodeKind.String)
         {
-            //Compaction context is unavailable to this primitive; emit @type as-is.
-            compactedObject[JsonLdKeywords.Type] = typeNode.GetString();
+            //A value object's @type is a datatype IRI: compact it vocab-relative so a defined term surfaces.
+            string typeIri = typeNode.GetString();
+            compactedObject[JsonLdKeywords.Type] = activeContext is null ? typeIri : CompactIri(activeContext, typeIri, vocab: true) ?? typeIri;
         }
         if(hasLanguage && languageNode.Kind == JsonNodeKind.String)
         {
@@ -319,7 +321,7 @@ public static class JsonLdCompactor
         //own property. Route through CompactValue.
         if(obj.TryGetProperty(JsonLdKeywords.Value, out _))
         {
-            return CompactValue(obj, termDefinition: null);
+            return CompactValue(obj, termDefinition: null, activeContext);
         }
 
         Dictionary<string, object?> result = new(StringComparer.Ordinal);
@@ -792,7 +794,7 @@ public static class JsonLdCompactor
         {
             if(item.TryGetProperty(JsonLdKeywords.Value, out _))
             {
-                return CompactValue(item, termDef);
+                return CompactValue(item, termDef, activeContext);
             }
             return CompactNodeObject(item, activeContext);
         }
