@@ -657,7 +657,7 @@ public static class JsonLdExpansionTree
             value, activeContext, baseUrl, resolver, parser, termDef, cancellationToken)
             .ConfigureAwait(false);
 
-        if(isList && singleExpanded is not null)
+        if(isList && singleExpanded is not null && !IsExpandedListObject(singleExpanded))
         {
             Dictionary<string, object?> listObject = new(StringComparer.Ordinal)
             {
@@ -673,6 +673,18 @@ public static class JsonLdExpansionTree
         }
 
         return singleExpanded;
+    }
+
+    /// <summary>
+    /// Indicates whether an already-expanded value is a list object (a map
+    /// carrying an <c>@list</c> key). A <c>@list</c>-container term whose
+    /// value already expanded to a list object must not be wrapped in a
+    /// second list layer (W3C JSON-LD 1.1 §4.3.2 — expanded value is only
+    /// converted to a list object when it is not already one).
+    /// </summary>
+    private static bool IsExpandedListObject(object? value)
+    {
+        return value is Dictionary<string, object?> map && map.ContainsKey("@list");
     }
 
     /// <summary>
@@ -1271,7 +1283,10 @@ public static class JsonLdExpansionTree
             JsonLdNodeKind.String => element.GetString(),
             JsonLdNodeKind.True => true,
             JsonLdNodeKind.False => false,
-            JsonLdNodeKind.Number => ParseNumber(element.GetRawNumber()),
+            //Native JSON numbers preserve their exact lexical form through
+            //expansion (10.0 stays 10.0, not re-rendered from a parsed double);
+            //canonicalisation is a toRdf concern, not an expansion one.
+            JsonLdNodeKind.Number => new JsonLdJsonNumber(element.GetRawNumber()),
             JsonLdNodeKind.Null => null,
             _ => null
         };

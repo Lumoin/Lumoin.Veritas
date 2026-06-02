@@ -381,11 +381,15 @@ public sealed class LinkedDataContext
                 return value;
             }
 
+            //A term is usable as a compact-IRI prefix only when its prefix
+            //flag is set (W3C JSON-LD 1.1 §4.2.2 IRI Expansion step 6). A
+            //defined-but-non-prefix term (e.g. "@prefix": false) leaves the
+            //value to be treated as a plain absolute IRI below.
             if(TryGetTerm(prefix, out TermDefinition? prefixDefinition)
-                && prefixDefinition?.IriMapping is not null
-                && !IriUtils.IsKeyword(prefixDefinition.IriMapping))
+                && prefixDefinition is { Prefix: true, IriMapping: { } prefixIri }
+                && !IriUtils.IsKeyword(prefixIri))
             {
-                return prefixDefinition.IriMapping + suffix;
+                return prefixIri + suffix;
             }
 
             //If the prefix is not a mapped term, check if the whole value is an absolute IRI.

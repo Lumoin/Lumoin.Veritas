@@ -571,7 +571,7 @@ public static partial class ContextProcessing
             }
 
             TermDefinition definition = BuildSimpleStringTermDefinition(
-                activeContext, iriMapping, contextProtected);
+                activeContext, termName, iriMapping, contextProtected);
             activeContext = SetTermDefinitionInternal(activeContext, termName, definition, overrideProtected);
             defined[termName] = true;
             return activeContext;

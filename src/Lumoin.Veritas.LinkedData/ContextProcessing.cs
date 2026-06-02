@@ -514,19 +514,38 @@ public static partial class ContextProcessing
     /// <exception cref="ArgumentNullException">Any required argument is <see langword="null"/>.</exception>
     public static TermDefinition BuildSimpleStringTermDefinition(
         LinkedDataContext activeContext,
+        string termName,
         string iriMapping,
         bool contextProtected)
     {
         ArgumentNullException.ThrowIfNull(activeContext);
+        ArgumentNullException.ThrowIfNull(termName);
         ArgumentNullException.ThrowIfNull(iriMapping);
 
         string? expanded = activeContext.ExpandIri(iriMapping, vocab: true);
         return new TermDefinition
         {
             IriMapping = expanded,
-            Prefix = !IriUtils.IsKeyword(expanded) && iriMapping.EndsWith(':'),
+            //A simple-string term may be used as a compact-IRI prefix only
+            //when the term itself has no colon and its IRI mapping ends with a
+            //gen-delim character (W3C JSON-LD 1.1 §4.1.2 Create Term Definition).
+            Prefix = !IriUtils.IsKeyword(expanded)
+                && !termName.Contains(':', StringComparison.Ordinal)
+                && EndsWithGenDelim(expanded),
             Protected = contextProtected
         };
+    }
+
+    /// <summary>
+    /// Indicates whether <paramref name="iri"/> ends with an RFC 3987
+    /// gen-delim character (<c>: / ? # [ ] @</c>), the condition under which a
+    /// simple-string term qualifies as a compact-IRI prefix.
+    /// </summary>
+    /// <param name="iri">The candidate IRI mapping, or <see langword="null"/>.</param>
+    /// <returns><see langword="true"/> when the IRI ends with a gen-delim character.</returns>
+    private static bool EndsWithGenDelim(string? iri)
+    {
+        return iri is { Length: > 0 } && iri[^1] is ':' or '/' or '?' or '#' or '[' or ']' or '@';
     }
 
     /// <summary>
