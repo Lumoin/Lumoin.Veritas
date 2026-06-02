@@ -994,8 +994,8 @@ public static class SparqlExpressionEvaluator
             BuiltInFunction.StrBefore => StrBeforeAfter(arguments, before: true),
             BuiltInFunction.StrAfter => StrBeforeAfter(arguments, before: false),
             BuiltInFunction.EncodeForUri => EncodeForUri(arguments[0]),
-            BuiltInFunction.Regex => RegexMatch(arguments),
-            BuiltInFunction.Replace => Replace(arguments),
+            BuiltInFunction.Regex => RegexMatch(arguments, context),
+            BuiltInFunction.Replace => Replace(arguments, context),
             BuiltInFunction.Iri or BuiltInFunction.Uri => Iri(arguments[0], context),
             BuiltInFunction.StrDt => StrDt(arguments),
             BuiltInFunction.StrLang => StrLang(arguments),
@@ -1327,13 +1327,14 @@ public static class SparqlExpressionEvaluator
     /// or unsupported pattern, an unknown flag, or a non-string argument errs.
     /// </summary>
     /// <param name="arguments">The arguments: the text, the pattern, and an optional flag string.</param>
+    /// <param name="context">The expression context, carrying the regular-expression seam.</param>
     /// <returns>A boolean value, or an error.</returns>
-    private static ExpressionValue RegexMatch(ExpressionValue[] arguments)
+    private static ExpressionValue RegexMatch(ExpressionValue[] arguments, SparqlExpressionContext context)
     {
         if(!TryGetStringArgument(arguments[0], out Utf8String text, out _)
             || !TryGetStringArgument(arguments[1], out Utf8String pattern, out _)
             || !TryGetOptionalFlags(arguments, 2, out string? flags)
-            || !TryBuildRegex(pattern.ToString(), flags, out Regex regex))
+            || context.RegexResolver(pattern.ToString(), flags) is not Regex regex)
         {
             return ExpressionValue.Error;
         }
@@ -1347,14 +1348,15 @@ public static class SparqlExpressionEvaluator
     /// unsupported pattern, an unknown flag, or a non-string argument errs.
     /// </summary>
     /// <param name="arguments">The arguments: the source, the pattern, the replacement, and an optional flag string.</param>
+    /// <param name="context">The expression context, carrying the regular-expression seam.</param>
     /// <returns>The replaced string value, or an error.</returns>
-    private static ExpressionValue Replace(ExpressionValue[] arguments)
+    private static ExpressionValue Replace(ExpressionValue[] arguments, SparqlExpressionContext context)
     {
         if(!TryGetStringArgument(arguments[0], out Utf8String source, out Utf8String? language)
             || !TryGetStringArgument(arguments[1], out Utf8String pattern, out _)
             || !TryGetStringArgument(arguments[2], out Utf8String replacement, out _)
             || !TryGetOptionalFlags(arguments, 3, out string? flags)
-            || !TryBuildRegex(pattern.ToString(), flags, out Regex regex))
+            || context.RegexResolver(pattern.ToString(), flags) is not Regex regex)
         {
             return ExpressionValue.Error;
         }
@@ -1396,51 +1398,6 @@ public static class SparqlExpressionEvaluator
         return false;
     }
 
-    /// <summary>Builds a non-backtracking <see cref="Regex"/> from a pattern and XPath flag string (<c>i</c>/<c>s</c>/<c>m</c>/<c>x</c>); a bad pattern, an unsupported construct, or an unknown flag fails.</summary>
-    /// <param name="pattern">The regex pattern.</param>
-    /// <param name="flags">The XPath flag string, or <see langword="null"/>.</param>
-    /// <param name="regex">Receives the compiled regex on success.</param>
-    /// <returns><see langword="true"/> when the regex compiled.</returns>
-    private static bool TryBuildRegex(string pattern, string? flags, out Regex regex)
-    {
-        RegexOptions options = RegexOptions.NonBacktracking | RegexOptions.CultureInvariant;
-        if(flags is not null)
-        {
-            foreach(char flag in flags)
-            {
-                RegexOptions? mapped = flag switch
-                {
-                    'i' => RegexOptions.IgnoreCase,
-                    's' => RegexOptions.Singleline,
-                    'm' => RegexOptions.Multiline,
-                    'x' => RegexOptions.IgnorePatternWhitespace,
-                    _ => null
-                };
-
-                if(mapped is not RegexOptions option)
-                {
-                    regex = null!;
-
-                    return false;
-                }
-
-                options |= option;
-            }
-        }
-
-        try
-        {
-            regex = new Regex(pattern, options);
-
-            return true;
-        }
-        catch(Exception exception) when(exception is ArgumentException or NotSupportedException)
-        {
-            regex = null!;
-
-            return false;
-        }
-    }
 
     /// <summary>
     /// Evaluates <c>IRI</c>/<c>URI</c> (§17.4.2.8): an IRI argument passes through; a plain-string argument becomes

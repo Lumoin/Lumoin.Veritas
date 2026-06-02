@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Hypertrie.AccessControl;
@@ -950,6 +951,24 @@ internal sealed class SparqlQueryEngineTests
         IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.AreEqual("heLLo", LiteralValue(solutions.Single(), "x"));
+    }
+
+    /// <summary>REGEX consults the injected regular-expression seam rather than a fixed engine.</summary>
+    [TestMethod]
+    public async Task RegexUsesInjectedResolverSeam()
+    {
+        //A resolver that ignores the pattern and matches only "X": a pattern that could never match "X"
+        //under the built-in engine still keeps the row, proving the seam decided the match.
+        SparqlRegexResolver resolver = static (pattern, flags) => new Regex("X");
+        SparqlExpressionContext context = new(StubRandomness, StubHash, StubNow, regexResolver: resolver);
+        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(
+            [new DataTriple(Iri("a"), Iri("p"), StringLiteral("X"))], context, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?s WHERE { ?s :p ?v FILTER(REGEX(?v, \"^zzz$\")) }", pool);
+
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(Ex + "a", ValueIri(solutions.Single(), "s"));
     }
 
     /// <summary>IRI builds a named node from a string lexical form.</summary>

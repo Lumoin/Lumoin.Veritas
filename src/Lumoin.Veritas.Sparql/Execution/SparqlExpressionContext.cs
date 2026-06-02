@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 using Lumoin.Veritas.Core;
 
 namespace Lumoin.Veritas.Sparql.Execution;
@@ -37,6 +38,23 @@ public enum SparqlHashAlgorithm
 public delegate byte[] SparqlHashDelegate(SparqlHashAlgorithm algorithm, ReadOnlySpan<byte> data);
 
 /// <summary>
+/// Compiles a regular expression for SPARQL's <c>REGEX</c> and <c>REPLACE</c> (§17.4.3.14–15), or returns
+/// <see langword="null"/> when the pattern or flags cannot be honoured (which makes the function err). This is the
+/// seam through which an application supplies its own regular-expression engine.
+/// </summary>
+/// <remarks>
+/// The returned <see cref="Regex"/> serves both functions — <c>REGEX</c> calls <see cref="Regex.IsMatch(string)"/>
+/// and <c>REPLACE</c> calls <see cref="Regex.Replace(string, string)"/> — so it must be a compiled matcher, not a
+/// match result. The default compiles with <see cref="RegexOptions.NonBacktracking"/> (ReDoS-safe), mapping the
+/// XPath <c>i</c>/<c>s</c>/<c>m</c>/<c>x</c> flags; an application may instead route to a source-generated
+/// (<c>[GeneratedRegex]</c>) or otherwise specialised engine. This mirrors the SHACL pattern-resolver seam.
+/// </remarks>
+/// <param name="pattern">The regular-expression pattern.</param>
+/// <param name="flags">The XPath flag string (<c>i</c>/<c>s</c>/<c>m</c>/<c>x</c>), or <see langword="null"/>.</param>
+/// <returns>A compiled regular expression, or <see langword="null"/> when it cannot be built.</returns>
+public delegate Regex? SparqlRegexResolver(string pattern, string? flags);
+
+/// <summary>
 /// The injected, swappable seams the expression evaluator's non-pure functions consume: randomness
 /// (<c>RAND</c>, <c>UUID</c>, <c>STRUUID</c>), cryptographic digests (<c>MD5</c>/<c>SHA*</c>), and the
 /// query-execution timestamp (<c>NOW</c>).
@@ -62,9 +80,10 @@ public sealed class SparqlExpressionContext
     /// <param name="now">The query-execution instant <c>NOW()</c> returns.</param>
     /// <param name="baseIri">The query's effective base IRI that <c>IRI</c>/<c>URI</c> resolve a relative argument against, or <see langword="null"/> when the query has no base (a relative argument then yields an error).</param>
     /// <param name="blankNodes">The seam that mints <c>BNODE</c>'s blank-node labels; <see langword="null"/> uses <see cref="VeritasBlankNodes.System"/>.</param>
+    /// <param name="regexResolver">The regular-expression seam for <c>REGEX</c>/<c>REPLACE</c>; <see langword="null"/> uses the default non-backtracking engine.</param>
     /// <exception cref="ArgumentNullException">A required seam is <see langword="null"/>.</exception>
-    public SparqlExpressionContext(RandomnessDelegate randomness, SparqlHashDelegate hash, DateTimeOffset now, Utf8String? baseIri = null, BlankNodeDelegate? blankNodes = null)
-        : this(randomness, hash, now, baseIri, new SolutionBlankNodeScope(blankNodes ?? VeritasBlankNodes.System, new Utf8StringPool()))
+    public SparqlExpressionContext(RandomnessDelegate randomness, SparqlHashDelegate hash, DateTimeOffset now, Utf8String? baseIri = null, BlankNodeDelegate? blankNodes = null, SparqlRegexResolver? regexResolver = null)
+        : this(randomness, hash, now, baseIri, new SolutionBlankNodeScope(blankNodes ?? VeritasBlankNodes.System, new Utf8StringPool()), regexResolver)
     {
     }
 
@@ -74,8 +93,9 @@ public sealed class SparqlExpressionContext
     /// <param name="now">The query-execution instant.</param>
     /// <param name="baseIri">The query's effective base IRI, or <see langword="null"/>.</param>
     /// <param name="blankNodeScope">The blank-node correlation scope to carry.</param>
+    /// <param name="regexResolver">The regular-expression seam, or <see langword="null"/> for the default.</param>
     /// <exception cref="ArgumentNullException">A required seam or the scope is <see langword="null"/>.</exception>
-    private SparqlExpressionContext(RandomnessDelegate randomness, SparqlHashDelegate hash, DateTimeOffset now, Utf8String? baseIri, SolutionBlankNodeScope blankNodeScope)
+    private SparqlExpressionContext(RandomnessDelegate randomness, SparqlHashDelegate hash, DateTimeOffset now, Utf8String? baseIri, SolutionBlankNodeScope blankNodeScope, SparqlRegexResolver? regexResolver)
     {
         ArgumentNullException.ThrowIfNull(randomness);
         ArgumentNullException.ThrowIfNull(hash);
@@ -86,6 +106,7 @@ public sealed class SparqlExpressionContext
         Now = now;
         BaseIri = baseIri;
         BlankNodeScope = blankNodeScope;
+        RegexResolver = regexResolver ?? DefaultRegex;
     }
 
     /// <summary>The randomness seam backing <c>RAND</c> (uniform double) and <c>UUID</c>/<c>STRUUID</c> (a fresh UUID).</summary>
@@ -107,12 +128,15 @@ public sealed class SparqlExpressionContext
     /// <summary>The per-solution blank-node identity scope <c>BNODE</c> (§17.4.2.3) builds against — and the substrate SPARQL Update's <c>INSERT … WHERE</c> reuses for per-solution template blank nodes.</summary>
     public SolutionBlankNodeScope BlankNodeScope { get; }
 
+    /// <summary>The regular-expression seam backing <c>REGEX</c> and <c>REPLACE</c> (§17.4.3.14–15).</summary>
+    public SparqlRegexResolver RegexResolver { get; }
+
     /// <summary>Returns a copy of this context with the base IRI replaced — the per-query derivation, since a query carries its own <c>BASE</c> while the seams (randomness, hash, clock) and the blank-node scope are shared.</summary>
     /// <param name="baseIri">The query's effective base IRI, or <see langword="null"/> for none.</param>
     /// <returns>A context identical to this one but for <see cref="BaseIri"/>.</returns>
     public SparqlExpressionContext WithBaseIri(Utf8String? baseIri)
     {
-        return new SparqlExpressionContext(Randomness, Hash, Now, baseIri, BlankNodeScope);
+        return new SparqlExpressionContext(Randomness, Hash, Now, baseIri, BlankNodeScope, RegexResolver);
     }
 
     /// <summary>
@@ -145,5 +169,44 @@ public sealed class SparqlExpressionContext
             SparqlHashAlgorithm.Sha512 => SHA512.HashData(data),
             _ => throw new ArgumentOutOfRangeException(nameof(algorithm), algorithm, "Unknown SPARQL hash algorithm.")
         };
+    }
+
+    /// <summary>The default regular-expression engine: a non-backtracking, culture-invariant <see cref="Regex"/> mapping the XPath <c>i</c>/<c>s</c>/<c>m</c>/<c>x</c> flags; a bad pattern, an unsupported construct, or an unknown flag yields <see langword="null"/>.</summary>
+    /// <param name="pattern">The regular-expression pattern.</param>
+    /// <param name="flags">The XPath flag string, or <see langword="null"/>.</param>
+    /// <returns>The compiled regular expression, or <see langword="null"/>.</returns>
+    private static Regex? DefaultRegex(string pattern, string? flags)
+    {
+        RegexOptions options = RegexOptions.NonBacktracking | RegexOptions.CultureInvariant;
+        if(flags is not null)
+        {
+            foreach(char flag in flags)
+            {
+                RegexOptions? mapped = flag switch
+                {
+                    'i' => RegexOptions.IgnoreCase,
+                    's' => RegexOptions.Singleline,
+                    'm' => RegexOptions.Multiline,
+                    'x' => RegexOptions.IgnorePatternWhitespace,
+                    _ => null
+                };
+
+                if(mapped is not RegexOptions option)
+                {
+                    return null;
+                }
+
+                options |= option;
+            }
+        }
+
+        try
+        {
+            return new Regex(pattern, options);
+        }
+        catch(Exception exception) when(exception is ArgumentException or NotSupportedException)
+        {
+            return null;
+        }
     }
 }
