@@ -221,14 +221,19 @@ public static class JsonLdExpansionTree
         string? baseUrl,
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool suppressContextRevert = false)
     {
         //A non-propagating context (a type-scoped context, or one carrying
         //@propagate: false) from an ancestor is reverted on entry to a new
         //node object, so it does not leak into nested nodes. Value objects
         //and bare node references (@id only) do not establish a new node
         //scope and keep the context unchanged.
-        if(activeContext.PreviousContext is { } revertedContext
+        //A node that is the direct value of a property whose non-propagating
+        //scoped context was just applied keeps that context; only its nested
+        //nodes revert (suppressContextRevert is set for that first node).
+        if(!suppressContextRevert
+            && activeContext.PreviousContext is { } revertedContext
             && !IsValueObject(obj, activeContext)
             && !IsSingleIdReference(obj, activeContext))
         {
@@ -532,7 +537,14 @@ public static class JsonLdExpansionTree
                         //rather than being discarded with the type-scoped
                         //context. With no type-scoped context active, the
                         //nested node simply must not revert.
-                        if(activeContext.PreviousContext is { } revertBase)
+                        //A scoped context carrying @propagate: false applies to
+                        //this property's value but reverts to the pre-scoped
+                        //context on entry to any nested node.
+                        if(!propertyContext.Propagate)
+                        {
+                            propertyContext = propertyContext.WithPreviousContext(activeContext);
+                        }
+                        else if(activeContext.PreviousContext is { } revertBase)
                         {
                             propertyContext = propertyContext.WithPreviousContext(
                                 await ApplyScopedEntriesAsync(
@@ -545,8 +557,13 @@ public static class JsonLdExpansionTree
                         }
                     }
 
+                    //When a property-scoped context does not propagate, the
+                    //scoped context still applies to this property's direct
+                    //value node — only the value's nested nodes revert — so the
+                    //value node suppresses its own context revert.
+                    bool suppressValueRevert = termDef is { ScopedContextEntries: not null } && !propertyContext.Propagate;
                     object? expandedValue = await ExpandPropertyValueAsync(
-                        value, propertyContext, baseUrl, resolver, parser, termDef, cancellationToken)
+                        value, propertyContext, baseUrl, resolver, parser, termDef, cancellationToken, suppressValueRevert)
                         .ConfigureAwait(false);
 
                     //Property values are always emitted as arrays per spec.
@@ -605,7 +622,8 @@ public static class JsonLdExpansionTree
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
         TermDefinition? termDef,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool suppressContextRevert = false)
     {
         //A term coercing to @json keeps the entire value verbatim as a JSON
         //literal (objects, arrays, scalars and null preserved as-is), never
@@ -643,7 +661,7 @@ public static class JsonLdExpansionTree
             foreach(JsonLdNode item in value.EnumerateArray())
             {
                 await AddExpandedMemberAsync(
-                    items, item, activeContext, baseUrl, resolver, parser, termDef, nestArraysAsLists: isList, cancellationToken)
+                    items, item, activeContext, baseUrl, resolver, parser, termDef, nestArraysAsLists: isList, cancellationToken, suppressContextRevert)
                     .ConfigureAwait(false);
             }
 
@@ -674,7 +692,7 @@ public static class JsonLdExpansionTree
         }
 
         object? singleExpanded = await ExpandPropertyItemAsync(
-            value, activeContext, baseUrl, resolver, parser, termDef, cancellationToken)
+            value, activeContext, baseUrl, resolver, parser, termDef, cancellationToken, suppressContextRevert)
             .ConfigureAwait(false);
 
         if(isList && singleExpanded is not null && !IsExpandedListObject(singleExpanded))
@@ -728,7 +746,8 @@ public static class JsonLdExpansionTree
         ContextResolverDelegate resolver,
         JsonLdParserDelegate parser,
         TermDefinition? termDef,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool suppressContextRevert = false)
     {
         if(item.Kind == JsonLdNodeKind.Object)
         {
@@ -751,7 +770,7 @@ public static class JsonLdExpansionTree
                     setValue, activeContext, baseUrl, resolver, parser, termDef, nestArraysAsLists: false, cancellationToken).ConfigureAwait(false);
             }
 
-            return await ExpandObjectAsync(item, activeContext, baseUrl, resolver, parser, cancellationToken)
+            return await ExpandObjectAsync(item, activeContext, baseUrl, resolver, parser, cancellationToken, suppressContextRevert)
                 .ConfigureAwait(false);
         }
 
@@ -810,7 +829,8 @@ public static class JsonLdExpansionTree
         JsonLdParserDelegate parser,
         TermDefinition? termDef,
         bool nestArraysAsLists,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool suppressContextRevert = false)
     {
         //A member of a @list container that is itself an array becomes a
         //nested list object; the nesting recurses (an array of arrays of
@@ -824,7 +844,7 @@ public static class JsonLdExpansionTree
         }
 
         object? expanded = await ExpandPropertyItemAsync(
-            item, activeContext, baseUrl, resolver, parser, termDef, cancellationToken).ConfigureAwait(false);
+            item, activeContext, baseUrl, resolver, parser, termDef, cancellationToken, suppressContextRevert).ConfigureAwait(false);
         if(expanded is null)
         {
             return;
