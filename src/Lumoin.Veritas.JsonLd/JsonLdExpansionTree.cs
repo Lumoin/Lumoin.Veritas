@@ -649,8 +649,16 @@ public static class JsonLdExpansionTree
         //attaching the discriminator (@language/@index/@id/@type) to each.
         if(value.Kind == JsonLdNodeKind.Object && (isLanguage || isIndex || isIdMap || isTypeMap))
         {
+            //A @type-container map reverts the active type-scoped context to its
+            //previous context before expanding (W3C JSON-LD 1.1 §4.3.2): the map
+            //keys are themselves types whose own scoped contexts apply on the
+            //reverted base, so an enclosing type-scoped context must not leak in.
+            LinkedDataContext mapContext = isTypeMap && activeContext.PreviousContext is { } previous
+                ? previous
+                : activeContext;
+
             return await ExpandMapContainerAsync(
-                value, activeContext, baseUrl, resolver, parser, termDef,
+                value, mapContext, baseUrl, resolver, parser, termDef,
                 isLanguage: isLanguage, isIndex: isIndex, isIdMap: isIdMap, isTypeMap: isTypeMap, isGraph: isGraph,
                 cancellationToken).ConfigureAwait(false);
         }
