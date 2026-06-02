@@ -432,13 +432,9 @@ public static class JsonLdExpansionTree
                             "A node object's @reverse value must be a map.");
                     }
 
-                    Dictionary<string, object?> reverseMap = await ExpandReverseAsync(
-                        value, activeContext, baseUrl, resolver, parser, cancellationToken)
+                    await ExpandReverseIntoAsync(
+                        result, value, activeContext, baseUrl, resolver, parser, cancellationToken)
                         .ConfigureAwait(false);
-                    if(reverseMap.Count > 0)
-                    {
-                        result["@reverse"] = reverseMap;
-                    }
 
                     continue;
                 }
@@ -833,14 +829,16 @@ public static class JsonLdExpansionTree
     }
 
     /// <summary>
-    /// Expands the contents of an <c>@reverse</c> entry: each inner
-    /// property is expanded normally and stored in the returned map. The
-    /// caller attaches the result under the <c>@reverse</c> key on the
-    /// surrounding node so RDF projection can swap subject and object.
+    /// Expands the contents of an <c>@reverse</c> entry into the surrounding
+    /// node <paramref name="result"/>: an ordinary inner property is stored
+    /// under the node's <c>@reverse</c> map (subject/object swapped for RDF),
+    /// while a key that is itself a reverse property cancels the two reversals
+    /// and is added as an ordinary forward property (W3C JSON-LD 1.1 §4.3.2).
     /// </summary>
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
         Justification = "baseUrl follows the JSON-LD specification convention of string URIs.")]
-    private static async ValueTask<Dictionary<string, object?>> ExpandReverseAsync(
+    private static async ValueTask ExpandReverseIntoAsync(
+        Dictionary<string, object?> result,
         JsonLdNode reverseObj,
         LinkedDataContext activeContext,
         string? baseUrl,
@@ -848,9 +846,14 @@ public static class JsonLdExpansionTree
         JsonLdParserDelegate parser,
         CancellationToken cancellationToken)
     {
-        Dictionary<string, object?> result = new(StringComparer.Ordinal);
-
+        List<KeyValuePair<string, JsonLdNode>> ordered = new();
         foreach(KeyValuePair<string, JsonLdNode> property in reverseObj.EnumerateObject())
+        {
+            ordered.Add(property);
+        }
+        ordered.Sort(static (left, right) => string.CompareOrdinal(left.Key, right.Key));
+
+        foreach(KeyValuePair<string, JsonLdNode> property in ordered)
         {
             string? expandedKey = activeContext.ExpandIri(property.Key, vocab: true);
             if(expandedKey is null)
@@ -888,11 +891,19 @@ public static class JsonLdExpansionTree
             }
 
             IReadOnlyList<object?> valueArray = WrapAsArray(expandedValue);
-            EnsureNoReversePropertyValueObjects(valueArray);
-            result[expandedKey] = valueArray;
-        }
 
-        return result;
+            //A reverse-of-reverse property cancels back to a forward property
+            //on the node; an ordinary property goes under the @reverse map.
+            if(termDef?.ReverseProperty is not null)
+            {
+                AddValues(result, expandedKey, valueArray);
+            }
+            else
+            {
+                EnsureNoReversePropertyValueObjects(valueArray);
+                AddReverseValues(result, expandedKey, valueArray);
+            }
+        }
     }
 
     /// <summary>
