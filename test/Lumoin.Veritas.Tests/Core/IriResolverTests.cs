@@ -25,11 +25,10 @@ internal sealed class IriResolverTests
         yield return ["g/", "http://a/b/c/g/"];
         yield return ["/g", "http://a/g"];
 
-        //RFC 3986 §5.4.1 gives "http://g"; System.Uri normalises an authority with an empty path
-        //to a single "/", so the resolver — which delegates to System.Uri — yields "http://g/".
-        //The normalisation is benign (empty path is equivalent to "/") and is the project's
-        //established behaviour, shared by the JSON-LD and CBOR-LD layers.
-        yield return ["//g", "http://g/"];
+        //RFC 3986 §5.4.1: an authority with an empty path recomposes with no
+        //trailing slash (the resolver implements §5.2 directly, not via
+        //System.Uri, which would normalise this to "http://g/").
+        yield return ["//g", "http://g"];
         yield return ["?y", "http://a/b/c/d;p?y"];
         yield return ["g?y", "http://a/b/c/g?y"];
         yield return ["#s", "http://a/b/c/d;p?q#s"];

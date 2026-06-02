@@ -496,7 +496,7 @@ public static class JsonLdRdfSerializer
         return builder.ToString();
     }
 
-    /// <summary>Normalizes a JSON number token to its canonical JSON form (an integer literal stays as written; a fractional/exponent value is reduced to the shortest round-tripping decimal).</summary>
+    /// <summary>Normalizes a JSON number token to its canonical JSON form: an integer literal stays as written; any other value is rendered by the ECMAScript <c>Number::toString</c> algorithm that RFC 8785 §3.2.2.3 mandates for canonical JSON.</summary>
     private static string CanonicalJsonNumber(string raw)
     {
         bool integral = raw.IndexOf('.', StringComparison.Ordinal) < 0
@@ -509,8 +509,88 @@ public static class JsonLdRdfSerializer
         }
 
         return double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double value)
-            ? value.ToString("R", CultureInfo.InvariantCulture)
+            ? EcmaScriptNumber(value)
             : raw;
+    }
+
+    /// <summary>
+    /// Renders a finite double using the ECMAScript <c>Number::toString</c>
+    /// algorithm (ECMA-262 §7.1.12.1): the shortest round-tripping decimal, with
+    /// fixed notation for exponents in (-7, 21] and lower-case <c>e</c> exponent
+    /// notation otherwise.
+    /// </summary>
+    private static string EcmaScriptNumber(double value)
+    {
+        if(value == 0)
+        {
+            return "0";
+        }
+
+        bool negative = value < 0;
+        (string digits, int pointPosition) = DecomposeShortest(Math.Abs(value));
+        int significantCount = digits.Length;
+
+        string magnitude;
+        if(pointPosition >= significantCount && pointPosition <= 21)
+        {
+            magnitude = digits + new string('0', pointPosition - significantCount);
+        }
+        else if(pointPosition > 0 && pointPosition <= 21)
+        {
+            magnitude = string.Concat(digits[..pointPosition], ".", digits[pointPosition..]);
+        }
+        else if(pointPosition > -6 && pointPosition <= 0)
+        {
+            magnitude = string.Concat("0.", new string('0', -pointPosition), digits);
+        }
+        else
+        {
+            string mantissa = significantCount == 1 ? digits : string.Concat(digits[..1], ".", digits[1..]);
+            int exponent = pointPosition - 1;
+            magnitude = string.Concat(mantissa, "e", exponent >= 0 ? "+" : "-", Math.Abs(exponent).ToString(CultureInfo.InvariantCulture));
+        }
+
+        return negative ? "-" + magnitude : magnitude;
+    }
+
+    /// <summary>
+    /// Decomposes a positive double into its shortest significant decimal digit
+    /// string and the position of the decimal point relative to the first digit
+    /// (the ECMAScript <c>n</c>: the value is <c>digits × 10^(n − digits.Length)</c>).
+    /// </summary>
+    private static (string Digits, int PointPosition) DecomposeShortest(double value)
+    {
+        string shortest = value.ToString("R", CultureInfo.InvariantCulture);
+
+        int exponent = 0;
+        int exponentIndex = shortest.IndexOf('E', StringComparison.Ordinal);
+        string mantissa = shortest;
+        if(exponentIndex >= 0)
+        {
+            exponent = int.Parse(shortest[(exponentIndex + 1)..], NumberStyles.Integer, CultureInfo.InvariantCulture);
+            mantissa = shortest[..exponentIndex];
+        }
+
+        int dot = mantissa.IndexOf('.', StringComparison.Ordinal);
+        string integerPart = dot < 0 ? mantissa : mantissa[..dot];
+        string fractionPart = dot < 0 ? string.Empty : mantissa[(dot + 1)..];
+        string allDigits = integerPart + fractionPart;
+        int pointPosition = integerPart.Length + exponent;
+
+        int leading = 0;
+        while(leading < allDigits.Length - 1 && allDigits[leading] == '0')
+        {
+            leading++;
+            pointPosition--;
+        }
+
+        int end = allDigits.Length;
+        while(end > leading + 1 && allDigits[end - 1] == '0')
+        {
+            end--;
+        }
+
+        return (allDigits[leading..end], pointPosition);
     }
 
     /// <summary>JSON-escapes a string and wraps it in quotes, using the minimal escaping RFC 8785 requires.</summary>
