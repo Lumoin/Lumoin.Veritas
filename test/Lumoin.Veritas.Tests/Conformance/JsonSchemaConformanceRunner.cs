@@ -43,21 +43,43 @@ internal static class JsonSchemaConformanceRunner
     /// <summary>The directory holding the suite's shared remote schemas.</summary>
     private static string RemotesDirectory { get; } = Path.Combine(W3cCorpusPath.LibraryDirectory("JsonSchema"), "remotes");
 
-    /// <summary>Resolves a <c>$ref</c> to the suite's remote-schema base (<c>http://localhost:1234/</c>) against the vendored <c>remotes/</c> directory.</summary>
+    /// <summary>The directory holding the vendored draft 2020-12 metaschema documents.</summary>
+    private static string MetaschemaDirectory { get; } = Path.Combine(W3cCorpusPath.LibraryDirectory("JsonSchema"), "metaschema");
+
+    /// <summary>Resolves a <c>$ref</c> to the suite's remote schemas (<c>http://localhost:1234/</c>) or the draft 2020-12 metaschema (<c>https://json-schema.org/draft/2020-12/</c>) against the vendored directories.</summary>
     /// <param name="absoluteUri">The absolute document URI.</param>
-    /// <param name="document">On success, the parsed remote document.</param>
-    /// <returns><see langword="true"/> when the URI names a vendored remote schema that exists.</returns>
+    /// <param name="document">On success, the parsed document.</param>
+    /// <returns><see langword="true"/> when the URI names a vendored document that exists.</returns>
     private static bool LoadRemote(string absoluteUri, out JsonNode document)
     {
-        document = default;
-        const string prefix = "http://localhost:1234/";
-        if(!absoluteUri.StartsWith(prefix, StringComparison.Ordinal))
+        const string remotesPrefix = "http://localhost:1234/";
+        const string metaschemaPrefix = "https://json-schema.org/draft/2020-12/";
+
+        if(absoluteUri.StartsWith(remotesPrefix, StringComparison.Ordinal))
         {
-            return false;
+            return TryLoadFile(RemotesDirectory, absoluteUri[remotesPrefix.Length..], out document);
         }
 
-        string relative = absoluteUri[prefix.Length..].Replace('/', Path.DirectorySeparatorChar);
-        string path = Path.Combine(RemotesDirectory, relative);
+        if(absoluteUri.StartsWith(metaschemaPrefix, StringComparison.Ordinal))
+        {
+            //The metaschema URIs carry no file extension (".../schema", ".../meta/core").
+            return TryLoadFile(MetaschemaDirectory, absoluteUri[metaschemaPrefix.Length..] + ".json", out document);
+        }
+
+        document = default;
+
+        return false;
+    }
+
+    /// <summary>Reads and parses a vendored document under a directory, by a forward-slash relative path.</summary>
+    /// <param name="directory">The base directory.</param>
+    /// <param name="relative">The forward-slash relative path within it.</param>
+    /// <param name="document">On success, the parsed document.</param>
+    /// <returns><see langword="true"/> when the file exists.</returns>
+    private static bool TryLoadFile(string directory, string relative, out JsonNode document)
+    {
+        document = default;
+        string path = Path.Combine(directory, relative.Replace('/', Path.DirectorySeparatorChar));
         if(!File.Exists(path))
         {
             return false;

@@ -16,6 +16,16 @@ from the source tree by the test harness (anchored via `[CallerFilePath]`, like 
 other vendored W3C corpora). It is deliberately neither compiled nor copied to the
 build output.
 
+## Metaschema documents
+
+`metaschema/` holds the official JSON Schema **draft 2020-12 dialect metaschema** and its
+vocabulary metaschemas (`schema`, `meta/core`, `meta/applicator`, `meta/unevaluated`,
+`meta/validation`, `meta/meta-data`, `meta/format-annotation`, `meta/content`), retrieved from
+`https://json-schema.org/draft/2020-12/`. They are published by the JSON Schema organisation and
+are free to use. The harness serves them to `$ref`/`$dynamicRef` that target
+`https://json-schema.org/draft/2020-12/…` (so a schema can be validated against the metaschema, and
+custom metaschemas can extend the standard vocabularies).
+
 ## Remote reference convention
 
 The suite resolves remote references under the base URI `http://localhost:1234/`

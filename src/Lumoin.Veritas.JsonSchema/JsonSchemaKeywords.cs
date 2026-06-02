@@ -142,4 +142,16 @@ public static class JsonSchemaKeywords
 
     /// <summary>The <c>$dynamicRef</c> keyword — a reference resolved against the dynamic scope.</summary>
     public static readonly string DynamicRef = "$dynamicRef";
+
+    /// <summary>The <c>$schema</c> keyword — the dialect (metaschema) the schema is written against.</summary>
+    public static readonly string Schema = "$schema";
+
+    /// <summary>The <c>$vocabulary</c> keyword — a metaschema's declared vocabularies and whether each is required.</summary>
+    public static readonly string Vocabulary = "$vocabulary";
+
+    /// <summary>The URI of the draft 2020-12 Validation vocabulary, whose keywords (type, minimum, …) are assertions only when it is in effect.</summary>
+    public static readonly string ValidationVocabularyUri = "https://json-schema.org/draft/2020-12/vocab/validation";
+
+    /// <summary>The URI of the draft 2020-12 standard dialect metaschema.</summary>
+    public static readonly string StandardDialectUri = "https://json-schema.org/draft/2020-12/schema";
 }

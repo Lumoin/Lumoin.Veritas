@@ -37,6 +37,7 @@ public static class JsonSchemaValidator
         string rootBase = baseUri ?? string.Empty;
         SchemaRegistry registry = new(schema, rootBase, loader);
         RegexMatchDelegate match = regexMatch ?? DefaultRegexMatch;
+        bool validationEnabled = IsValidationVocabularyEnabled(schema, rootBase, loader);
         List<ValidationError> errors = [];
         Frame root = new()
         {
@@ -60,10 +61,48 @@ public static class JsonSchemaValidator
                 continue;
             }
 
-            OpenFrame(frame, stack, errors, registry, match);
+            OpenFrame(frame, stack, errors, registry, match, validationEnabled);
         }
 
         return new ValidationResult(root.Result, errors);
+    }
+
+    /// <summary>Whether the Validation vocabulary is in effect for the root schema's declared dialect (<c>$schema</c>).</summary>
+    /// <remarks>
+    /// The standard 2020-12 dialect and any schema without a recognised metaschema enable validation. A custom
+    /// metaschema disables it only by declaring a <c>$vocabulary</c> that omits (or sets to <see langword="false"/>)
+    /// the Validation vocabulary. The dialect is read from the root schema; per-resource dialect switching is not modelled.
+    /// </remarks>
+    /// <param name="schema">The root schema.</param>
+    /// <param name="baseUri">The root base URI.</param>
+    /// <param name="loader">The document loader, used to fetch a custom metaschema.</param>
+    /// <returns><see langword="true"/> when Validation-vocabulary keywords should assert.</returns>
+    private static bool IsValidationVocabularyEnabled(JsonNode schema, string baseUri, SchemaDocumentLoader? loader)
+    {
+        if(schema.Kind != JsonNodeKind.Object || !schema.TryGetProperty(JsonSchemaKeywords.Schema, out JsonNode dialect) || dialect.Kind != JsonNodeKind.String)
+        {
+            return true;
+        }
+
+        string dialectUri = IriResolver.ResolveIri(baseUri, dialect.GetString());
+        int hash = dialectUri.IndexOf('#', StringComparison.Ordinal);
+        if(hash >= 0)
+        {
+            dialectUri = dialectUri[..hash];
+        }
+
+        if(string.Equals(dialectUri, JsonSchemaKeywords.StandardDialectUri, StringComparison.Ordinal) || loader is null || !loader(dialectUri, out JsonNode metaschema))
+        {
+            return true;
+        }
+
+        if(metaschema.Kind != JsonNodeKind.Object || !metaschema.TryGetProperty(JsonSchemaKeywords.Vocabulary, out JsonNode vocabulary) || vocabulary.Kind != JsonNodeKind.Object)
+        {
+            return true;
+        }
+
+        //A $vocabulary that lists the Validation vocabulary uses its boolean; one that omits it disables validation.
+        return vocabulary.TryGetProperty(JsonSchemaKeywords.ValidationVocabularyUri, out JsonNode enabled) && enabled.Kind == JsonNodeKind.True;
     }
 
     /// <summary>The default regular-expression matcher, backed by <see cref="Regex"/>. Matching is unanchored, as JSON Schema requires.</summary>
@@ -107,7 +146,7 @@ public static class JsonSchemaValidator
     /// <param name="frame">The frame being opened.</param>
     /// <param name="stack">The work stack.</param>
     /// <param name="errors">The accumulating error list.</param>
-    private static void OpenFrame(Frame frame, Stack<(Frame, bool)> stack, List<ValidationError> errors, SchemaRegistry registry, RegexMatchDelegate match)
+    private static void OpenFrame(Frame frame, Stack<(Frame, bool)> stack, List<ValidationError> errors, SchemaRegistry registry, RegexMatchDelegate match, bool validationEnabled)
     {
         //A boolean schema asserts directly: true accepts everything, false rejects everything.
         if(frame.Schema.Kind is JsonNodeKind.True or JsonNodeKind.False)
@@ -131,7 +170,12 @@ public static class JsonSchemaValidator
             return;
         }
 
-        EvaluateSelfKeywords(frame, errors, match);
+        //The Validation vocabulary keywords (type/const/enum/numeric/string/array/object assertions) apply
+        //only when that vocabulary is in effect for the dialect; otherwise they are annotations and ignored.
+        if(validationEnabled)
+        {
+            EvaluateSelfKeywords(frame, errors, match);
+        }
 
         //An $id establishes the base URI for this schema's references and subschemas. A reference target
         //reached at its canonical URI already has its $id folded into BaseUri, so it is not applied again.
