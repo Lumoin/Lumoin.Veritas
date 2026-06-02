@@ -58,7 +58,7 @@ public static class JsonLdRemoteContextParsing
                     string.Create(CultureInfo.InvariantCulture, $"Remote context document at '{resource.FinalUrl}' must be a JSON object."));
             }
 
-            if(!root.TryGetProperty("@context", out JsonLdNode contextNode))
+            if(!root.TryGetProperty(JsonLdKeywords.Context, out JsonLdNode contextNode))
             {
                 throw new JsonLdProcessingException(
                     JsonLdErrorCode.InvalidRemoteContext,
@@ -80,7 +80,7 @@ public static class JsonLdRemoteContextParsing
             //algorithm handles that path.
             Dictionary<string, object?> wrapped = new()
             {
-                ["@context"] = flattened
+                [JsonLdKeywords.Context] = flattened
             };
             return ValueTask.FromResult<IReadOnlyDictionary<string, object?>>(wrapped);
         };
