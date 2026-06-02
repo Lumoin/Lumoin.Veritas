@@ -53,7 +53,7 @@ public static class JsonSchemaValidator
             (Frame frame, bool closing) = stack.Pop();
             if(closing)
             {
-                CloseFrame(frame);
+                CloseFrame(frame, stack);
                 continue;
             }
 
@@ -100,6 +100,8 @@ public static class JsonSchemaValidator
             effectiveBase = IriResolver.ResolveIri(frame.BaseUri, id.GetString());
         }
 
+        frame.EffectiveBase = effectiveBase;
+
         //The frame's Close must run after every child, so it is pushed first (children pushed above it pop first).
         stack.Push((frame, true));
 
@@ -115,6 +117,8 @@ public static class JsonSchemaValidator
                 KeywordLocation = request.KeywordLocation,
                 Parent = frame,
                 SpawnKeyword = request.Keyword,
+                MemberName = request.MemberName,
+                ItemIndex = request.ItemIndex,
                 BaseUri = effectiveBase
             };
 
@@ -145,12 +149,251 @@ public static class JsonSchemaValidator
         }
     }
 
-    /// <summary>Closes a frame: combines its self validity with its applicator children and reports the result to its parent.</summary>
+    /// <summary>Closes a frame: combines its children, applies <c>unevaluated*</c> in a second pass, and reports to its parent.</summary>
     /// <param name="frame">The frame being closed.</param>
-    private static void CloseFrame(Frame frame)
+    /// <param name="stack">The work stack, onto which deferred <c>unevaluated*</c> children are pushed.</param>
+    private static void CloseFrame(Frame frame, Stack<(Frame, bool)> stack)
     {
+        //unevaluatedProperties/unevaluatedItems must see the results of every other keyword first.
+        //On the first close, spawn them for the not-yet-evaluated members/items and re-close afterwards.
+        if(frame.Schema.Kind == JsonNodeKind.Object && !frame.UnevaluatedSpawned && HasUnevaluatedKeyword(frame.Schema))
+        {
+            frame.UnevaluatedSpawned = true;
+            HashSet<string> evaluatedProperties = ComputeEvaluatedProperties(frame);
+            HashSet<int> evaluatedItems = ComputeEvaluatedItems(frame);
+
+            //Push this frame's re-close first so it pops AFTER the unevaluated children pushed on top of it.
+            stack.Push((frame, true));
+            SpawnUnevaluated(frame, evaluatedProperties, evaluatedItems, stack);
+
+            return;
+        }
+
         frame.Result = frame.SelfValid && CombineChildren(frame);
-        frame.Parent?.ChildResults.Add((frame.SpawnKeyword!, frame.Result));
+        frame.EvaluatedProperties.UnionWith(ComputeEvaluatedProperties(frame));
+        frame.EvaluatedItems.UnionWith(ComputeEvaluatedItems(frame));
+        frame.Parent?.Children.Add(frame);
+    }
+
+    /// <summary>Whether a schema declares <c>unevaluatedProperties</c> or <c>unevaluatedItems</c>.</summary>
+    /// <param name="schema">The schema object.</param>
+    /// <returns><see langword="true"/> when either keyword is present.</returns>
+    private static bool HasUnevaluatedKeyword(JsonNode schema)
+    {
+        return schema.TryGetProperty(JsonSchemaKeywords.UnevaluatedProperties, out _)
+            || schema.TryGetProperty(JsonSchemaKeywords.UnevaluatedItems, out _);
+    }
+
+    /// <summary>Spawns <c>unevaluated*</c> child frames for the instance members/items no other keyword evaluated.</summary>
+    /// <param name="frame">The frame.</param>
+    /// <param name="evaluatedProperties">The member names already evaluated.</param>
+    /// <param name="evaluatedItems">The element indices already evaluated.</param>
+    /// <param name="stack">The work stack.</param>
+    /// <returns><see langword="true"/> when at least one child was spawned.</returns>
+    private static bool SpawnUnevaluated(Frame frame, HashSet<string> evaluatedProperties, HashSet<int> evaluatedItems, Stack<(Frame, bool)> stack)
+    {
+        bool spawned = false;
+
+        if(frame.Instance.Kind == JsonNodeKind.Object && frame.Schema.TryGetProperty(JsonSchemaKeywords.UnevaluatedProperties, out JsonNode unevaluatedProperties))
+        {
+            foreach(KeyValuePair<string, JsonNode> member in frame.Instance.EnumerateObject())
+            {
+                if(!evaluatedProperties.Contains(member.Key))
+                {
+                    stack.Push((new Frame
+                    {
+                        Schema = unevaluatedProperties,
+                        Instance = member.Value,
+                        InstanceLocation = frame.InstanceLocation.Append(member.Key),
+                        KeywordLocation = frame.KeywordLocation.Append(JsonSchemaKeywords.UnevaluatedProperties),
+                        Parent = frame,
+                        SpawnKeyword = JsonSchemaKeywords.UnevaluatedProperties,
+                        MemberName = member.Key,
+                        BaseUri = frame.EffectiveBase
+                    }, false));
+                    spawned = true;
+                }
+            }
+        }
+
+        if(frame.Instance.Kind == JsonNodeKind.Array && frame.Schema.TryGetProperty(JsonSchemaKeywords.UnevaluatedItems, out JsonNode unevaluatedItems))
+        {
+            int index = 0;
+            foreach(JsonNode element in frame.Instance.EnumerateArray())
+            {
+                if(!evaluatedItems.Contains(index))
+                {
+                    stack.Push((new Frame
+                    {
+                        Schema = unevaluatedItems,
+                        Instance = element,
+                        InstanceLocation = frame.InstanceLocation.Append(index),
+                        KeywordLocation = frame.KeywordLocation.Append(JsonSchemaKeywords.UnevaluatedItems),
+                        Parent = frame,
+                        SpawnKeyword = JsonSchemaKeywords.UnevaluatedItems,
+                        ItemIndex = index,
+                        BaseUri = frame.EffectiveBase
+                    }, false));
+                    spawned = true;
+                }
+
+                index++;
+            }
+        }
+
+        return spawned;
+    }
+
+    /// <summary>Computes the set of this object instance's member names that its passing keywords evaluated.</summary>
+    /// <param name="frame">The frame.</param>
+    /// <returns>The evaluated member names (empty when the instance is not an object).</returns>
+    private static HashSet<string> ComputeEvaluatedProperties(Frame frame)
+    {
+        HashSet<string> evaluated = new(StringComparer.Ordinal);
+        if(frame.Instance.Kind != JsonNodeKind.Object)
+        {
+            return evaluated;
+        }
+
+        foreach(Frame child in frame.Children)
+        {
+            if(!child.Result || IsBranchKeyword(child.SpawnKeyword))
+            {
+                continue;
+            }
+
+            if(child.MemberName is not null && IsMemberKeyword(child.SpawnKeyword))
+            {
+                evaluated.Add(child.MemberName);
+            }
+            else if(IsInPlaceApplicator(child.SpawnKeyword))
+            {
+                evaluated.UnionWith(child.EvaluatedProperties);
+            }
+        }
+
+        UnionBranchEvaluated(frame, evaluated, static child => child.EvaluatedProperties);
+
+        return evaluated;
+    }
+
+    /// <summary>Computes the set of this array instance's element indices that its passing keywords evaluated.</summary>
+    /// <param name="frame">The frame.</param>
+    /// <returns>The evaluated element indices (empty when the instance is not an array).</returns>
+    private static HashSet<int> ComputeEvaluatedItems(Frame frame)
+    {
+        HashSet<int> evaluated = [];
+        if(frame.Instance.Kind != JsonNodeKind.Array)
+        {
+            return evaluated;
+        }
+
+        foreach(Frame child in frame.Children)
+        {
+            if(!child.Result || IsBranchKeyword(child.SpawnKeyword))
+            {
+                continue;
+            }
+
+            if(child.ItemIndex >= 0 && IsItemKeyword(child.SpawnKeyword))
+            {
+                evaluated.Add(child.ItemIndex);
+            }
+            else if(IsInPlaceApplicator(child.SpawnKeyword))
+            {
+                evaluated.UnionWith(child.EvaluatedItems);
+            }
+        }
+
+        UnionBranchEvaluated(frame, evaluated, static child => child.EvaluatedItems);
+
+        return evaluated;
+    }
+
+    /// <summary>Unions the evaluated sets contributed by the selected <c>if</c>/<c>then</c>/<c>else</c> branches.</summary>
+    /// <typeparam name="T">The set element type.</typeparam>
+    /// <param name="frame">The frame.</param>
+    /// <param name="evaluated">The accumulating evaluated set.</param>
+    /// <param name="selector">Selects a child's evaluated set of the relevant kind.</param>
+    private static void UnionBranchEvaluated<T>(Frame frame, HashSet<T> evaluated, Func<Frame, HashSet<T>> selector)
+    {
+        Frame? conditional = FindChild(frame, JsonSchemaKeywords.If);
+        if(conditional is null)
+        {
+            return;
+        }
+
+        if(conditional.Result)
+        {
+            evaluated.UnionWith(selector(conditional));
+        }
+
+        Frame? branch = FindChild(frame, conditional.Result ? JsonSchemaKeywords.Then : JsonSchemaKeywords.Else);
+        if(branch is { Result: true })
+        {
+            evaluated.UnionWith(selector(branch));
+        }
+    }
+
+    /// <summary>Finds this frame's child produced by a given keyword, or <see langword="null"/>.</summary>
+    /// <param name="frame">The frame.</param>
+    /// <param name="keyword">The spawning keyword.</param>
+    /// <returns>The child frame, or <see langword="null"/>.</returns>
+    private static Frame? FindChild(Frame frame, string keyword)
+    {
+        foreach(Frame child in frame.Children)
+        {
+            if(ReferenceEquals(child.SpawnKeyword, keyword))
+            {
+                return child;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>Whether a keyword applies a subschema to an object member (so the member counts as evaluated).</summary>
+    /// <param name="keyword">The spawning keyword.</param>
+    /// <returns><see langword="true"/> for properties / patternProperties / additionalProperties / unevaluatedProperties.</returns>
+    private static bool IsMemberKeyword(string? keyword)
+    {
+        return ReferenceEquals(keyword, JsonSchemaKeywords.Properties)
+            || ReferenceEquals(keyword, JsonSchemaKeywords.PatternProperties)
+            || ReferenceEquals(keyword, JsonSchemaKeywords.AdditionalProperties)
+            || ReferenceEquals(keyword, JsonSchemaKeywords.UnevaluatedProperties);
+    }
+
+    /// <summary>Whether a keyword applies a subschema to an array element (so the element counts as evaluated).</summary>
+    /// <param name="keyword">The spawning keyword.</param>
+    /// <returns><see langword="true"/> for prefixItems / items / contains / unevaluatedItems.</returns>
+    private static bool IsItemKeyword(string? keyword)
+    {
+        return ReferenceEquals(keyword, JsonSchemaKeywords.PrefixItems)
+            || ReferenceEquals(keyword, JsonSchemaKeywords.Items)
+            || ReferenceEquals(keyword, JsonSchemaKeywords.Contains)
+            || ReferenceEquals(keyword, JsonSchemaKeywords.UnevaluatedItems);
+    }
+
+    /// <summary>Whether a keyword is an in-place applicator that shares the instance node and propagates evaluated sets.</summary>
+    /// <param name="keyword">The spawning keyword.</param>
+    /// <returns><see langword="true"/> for allOf / anyOf / oneOf / $ref / dependentSchemas.</returns>
+    private static bool IsInPlaceApplicator(string? keyword)
+    {
+        return ReferenceEquals(keyword, JsonSchemaKeywords.AllOf)
+            || ReferenceEquals(keyword, JsonSchemaKeywords.AnyOf)
+            || ReferenceEquals(keyword, JsonSchemaKeywords.OneOf)
+            || ReferenceEquals(keyword, JsonSchemaKeywords.Ref)
+            || ReferenceEquals(keyword, JsonSchemaKeywords.DependentSchemas);
+    }
+
+    /// <summary>Whether a keyword is part of the <c>if</c>/<c>then</c>/<c>else</c> conditional (combined by branch selection).</summary>
+    /// <param name="keyword">The spawning keyword.</param>
+    /// <returns><see langword="true"/> for if / then / else.</returns>
+    private static bool IsBranchKeyword(string? keyword)
+    {
+        return ReferenceEquals(keyword, JsonSchemaKeywords.If)
+            || ReferenceEquals(keyword, JsonSchemaKeywords.Then)
+            || ReferenceEquals(keyword, JsonSchemaKeywords.Else);
     }
 
     /// <summary>Combines a frame's applicator-child results, grouped by the keyword that produced them.</summary>
@@ -159,10 +402,10 @@ public static class JsonSchemaValidator
     private static bool CombineChildren(Frame frame)
     {
         Dictionary<string, (int Total, int Valid)> groups = new(StringComparer.Ordinal);
-        foreach((string keyword, bool valid) in frame.ChildResults)
+        foreach(Frame child in frame.Children)
         {
-            (int total, int validCount) = groups.TryGetValue(keyword, out (int Total, int Valid) existing) ? existing : (0, 0);
-            groups[keyword] = (total + 1, validCount + (valid ? 1 : 0));
+            (int total, int validCount) = groups.TryGetValue(child.SpawnKeyword!, out (int Total, int Valid) existing) ? existing : (0, 0);
+            groups[child.SpawnKeyword!] = (total + 1, validCount + (child.Result ? 1 : 0));
         }
 
         //if/then/else and contains read sibling keywords, which only exist on an object schema
@@ -451,7 +694,7 @@ public static class JsonSchemaValidator
         //not: a single subschema applied to the same instance node.
         if(schema.TryGetProperty(JsonSchemaKeywords.Not, out JsonNode not))
         {
-            requests.Add(new ChildRequest(JsonSchemaKeywords.Not, not, frame.Instance, frame.InstanceLocation, frame.KeywordLocation.Append(JsonSchemaKeywords.Not)));
+            requests.Add(new ChildRequest(JsonSchemaKeywords.Not, not, frame.Instance, frame.InstanceLocation, frame.KeywordLocation.Append(JsonSchemaKeywords.Not), null, -1));
         }
 
         //if / then / else: each is a subschema applied to the same instance node; the combiner selects the branch.
@@ -484,7 +727,7 @@ public static class JsonSchemaValidator
         int index = 0;
         foreach(JsonNode subschema in array.EnumerateArray())
         {
-            requests.Add(new ChildRequest(keyword, subschema, frame.Instance, frame.InstanceLocation, frame.KeywordLocation.Append(keyword).Append(index)));
+            requests.Add(new ChildRequest(keyword, subschema, frame.Instance, frame.InstanceLocation, frame.KeywordLocation.Append(keyword).Append(index), null, -1));
             index++;
         }
     }
@@ -497,7 +740,7 @@ public static class JsonSchemaValidator
     {
         if(frame.Schema.TryGetProperty(keyword, out JsonNode subschema))
         {
-            requests.Add(new ChildRequest(keyword, subschema, frame.Instance, frame.InstanceLocation, frame.KeywordLocation.Append(keyword)));
+            requests.Add(new ChildRequest(keyword, subschema, frame.Instance, frame.InstanceLocation, frame.KeywordLocation.Append(keyword), null, -1));
         }
     }
 
@@ -522,7 +765,9 @@ public static class JsonSchemaValidator
                         definition.Value,
                         value,
                         frame.InstanceLocation.Append(definition.Key),
-                        frame.KeywordLocation.Append(JsonSchemaKeywords.Properties).Append(definition.Key)));
+                        frame.KeywordLocation.Append(JsonSchemaKeywords.Properties).Append(definition.Key),
+                        definition.Key,
+                        -1));
                 }
             }
         }
@@ -543,7 +788,9 @@ public static class JsonSchemaValidator
                             definition.Value,
                             member.Value,
                             frame.InstanceLocation.Append(member.Key),
-                            frame.KeywordLocation.Append(JsonSchemaKeywords.PatternProperties).Append(definition.Key)));
+                            frame.KeywordLocation.Append(JsonSchemaKeywords.PatternProperties).Append(definition.Key),
+                            member.Key,
+                            -1));
                     }
                 }
             }
@@ -560,7 +807,9 @@ public static class JsonSchemaValidator
                         additional,
                         member.Value,
                         frame.InstanceLocation.Append(member.Key),
-                        frame.KeywordLocation.Append(JsonSchemaKeywords.AdditionalProperties)));
+                        frame.KeywordLocation.Append(JsonSchemaKeywords.AdditionalProperties),
+                        member.Key,
+                        -1));
                 }
             }
         }
@@ -575,7 +824,9 @@ public static class JsonSchemaValidator
                     propertyNames,
                     LiteralJsonNode.String(member.Key),
                     frame.InstanceLocation.Append(member.Key),
-                    frame.KeywordLocation.Append(JsonSchemaKeywords.PropertyNames)));
+                    frame.KeywordLocation.Append(JsonSchemaKeywords.PropertyNames),
+                    null,
+                    -1));
             }
         }
 
@@ -591,7 +842,9 @@ public static class JsonSchemaValidator
                         definition.Value,
                         frame.Instance,
                         frame.InstanceLocation,
-                        frame.KeywordLocation.Append(JsonSchemaKeywords.DependentSchemas).Append(definition.Key)));
+                        frame.KeywordLocation.Append(JsonSchemaKeywords.DependentSchemas).Append(definition.Key),
+                        null,
+                        -1));
                 }
             }
         }
@@ -617,7 +870,9 @@ public static class JsonSchemaValidator
                     prefixSchemas[i],
                     elements[i],
                     frame.InstanceLocation.Append(i),
-                    frame.KeywordLocation.Append(JsonSchemaKeywords.PrefixItems).Append(i)));
+                    frame.KeywordLocation.Append(JsonSchemaKeywords.PrefixItems).Append(i),
+                    null,
+                    i));
             }
         }
 
@@ -630,7 +885,9 @@ public static class JsonSchemaValidator
                     items,
                     elements[i],
                     frame.InstanceLocation.Append(i),
-                    frame.KeywordLocation.Append(JsonSchemaKeywords.Items)));
+                    frame.KeywordLocation.Append(JsonSchemaKeywords.Items),
+                    null,
+                    i));
             }
         }
 
@@ -644,7 +901,9 @@ public static class JsonSchemaValidator
                     contains,
                     elements[i],
                     frame.InstanceLocation.Append(i),
-                    frame.KeywordLocation.Append(JsonSchemaKeywords.Contains)));
+                    frame.KeywordLocation.Append(JsonSchemaKeywords.Contains),
+                    null,
+                    i));
             }
         }
     }
@@ -839,12 +1098,16 @@ public static class JsonSchemaValidator
     /// <param name="Instance">The instance node the subschema applies to.</param>
     /// <param name="InstanceLocation">The child's instance location.</param>
     /// <param name="KeywordLocation">The child's keyword location.</param>
+    /// <param name="MemberName">For an object-member applicator, the member name the subschema applies to; otherwise <see langword="null"/>.</param>
+    /// <param name="ItemIndex">For an array-element applicator, the element index the subschema applies to; otherwise -1.</param>
     private readonly record struct ChildRequest(
         string Keyword,
         JsonNode Schema,
         JsonNode Instance,
         Ptr InstanceLocation,
-        Ptr KeywordLocation);
+        Ptr KeywordLocation,
+        string? MemberName,
+        int ItemIndex);
 
     /// <summary>One node of the evaluation: a schema applied to an instance node, with its place in the result tree.</summary>
     private sealed class Frame
@@ -870,13 +1133,31 @@ public static class JsonSchemaValidator
         /// <summary>Gets the applicator keyword that produced this frame, or <see langword="null"/> for the root.</summary>
         public string? SpawnKeyword { get; init; }
 
+        /// <summary>Gets the object member name this frame applies to, or <see langword="null"/> when it is not a member applicator.</summary>
+        public string? MemberName { get; init; }
+
+        /// <summary>Gets the array element index this frame applies to, or -1 when it is not an element applicator.</summary>
+        public int ItemIndex { get; init; } = -1;
+
+        /// <summary>Gets or sets the base URI established by this frame's own <c>$id</c> (or its inherited base), for closing-time work.</summary>
+        public string EffectiveBase { get; set; } = string.Empty;
+
         /// <summary>Gets or sets whether this frame's self-contained keywords held.</summary>
         public bool SelfValid { get; set; } = true;
 
         /// <summary>Gets or sets the combined result of this frame, set when it closes.</summary>
         public bool Result { get; set; }
 
-        /// <summary>Gets the results reported by this frame's applicator children, as (keyword, valid) pairs.</summary>
-        public List<(string Keyword, bool Valid)> ChildResults { get; } = [];
+        /// <summary>Gets or sets whether this frame has already spawned its <c>unevaluated*</c> children (the second close finalizes).</summary>
+        public bool UnevaluatedSpawned { get; set; }
+
+        /// <summary>Gets the closed child frames this frame's applicators produced.</summary>
+        public List<Frame> Children { get; } = [];
+
+        /// <summary>Gets the names of this object instance's members that were evaluated, computed when the frame closes.</summary>
+        public HashSet<string> EvaluatedProperties { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>Gets the indices of this array instance's elements that were evaluated, computed when the frame closes.</summary>
+        public HashSet<int> EvaluatedItems { get; } = [];
     }
 }

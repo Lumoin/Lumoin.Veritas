@@ -130,4 +130,10 @@ public static class JsonSchemaKeywords
 
     /// <summary>The <c>$defs</c> keyword — a container for reusable subschemas (reached only through <c>$ref</c>).</summary>
     public static readonly string Defs = "$defs";
+
+    /// <summary>The <c>unevaluatedProperties</c> keyword — the subschema for members no other keyword evaluated.</summary>
+    public static readonly string UnevaluatedProperties = "unevaluatedProperties";
+
+    /// <summary>The <c>unevaluatedItems</c> keyword — the subschema for array elements no other keyword evaluated.</summary>
+    public static readonly string UnevaluatedItems = "unevaluatedItems";
 }
