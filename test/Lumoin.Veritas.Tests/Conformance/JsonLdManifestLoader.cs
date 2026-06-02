@@ -51,7 +51,10 @@ internal static class JsonLdManifestLoader
     {
         string id = StringOrNull(entry, "@id") ?? string.Empty;
         string name = StringOrNull(entry, "name") ?? id;
-        bool isPositive = TypeContains(entry, "jld:PositiveEvaluationTest");
+        //A PositiveSyntaxTest carries no expected output: it passes when the
+        //input is processed without error (the runner detects "positive but no
+        //expect file" as a syntax test).
+        bool isPositive = TypeContains(entry, "jld:PositiveEvaluationTest") || TypeContains(entry, "jld:PositiveSyntaxTest");
         string input = StringOrNull(entry, "input") ?? string.Empty;
         string? expect = StringOrNull(entry, "expect");
         string? context = StringOrNull(entry, "context");

@@ -77,6 +77,13 @@ internal static class W3cJsonLdRunner
                 return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expansion threw: {exception.Message}");
             }
 
+            //A positive syntax test (no expected output) passes once expansion
+            //has completed without error.
+            if(testCase.ExpectPath is null)
+            {
+                return new W3cOutcome(W3cOutcomeStatus.Passed, "Expanded without error.");
+            }
+
             JsonNode? actual = ToJsonNode(expanded);
             byte[] expectedBytes = await File.ReadAllBytesAsync(testCase.ExpectPath!, cancellationToken).ConfigureAwait(false);
             JsonNode? expected = JsonNode.Parse(expectedBytes);
@@ -130,6 +137,13 @@ internal static class W3cJsonLdRunner
         if(!testCase.IsPositive)
         {
             return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expected error '{testCase.ExpectErrorCode}', but toRdf succeeded.");
+        }
+
+        //A positive syntax test (no expected output) passes once processing has
+        //completed without error.
+        if(testCase.ExpectPath is null)
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Passed, $"Processed without error ({actual.Count} quads).");
         }
 
         List<Quad> expected = [];
