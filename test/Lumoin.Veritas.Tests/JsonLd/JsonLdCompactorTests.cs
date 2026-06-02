@@ -661,16 +661,23 @@ internal sealed class JsonLdCompactorTests
     }
 
     [TestMethod]
-    public void CompactGraphContainerAloneWrapsAsGraphObject()
+    public void CompactGraphContainerAloneInlinesSimpleGraph()
     {
-        //@graph container alone: each item becomes a graph object
-        //{"@graph": ...}.
+        //@graph container alone (W3C JSON-LD 1.1 §4.1): a simple graph object's
+        //contents inline directly under the term — the @graph wrapper is implied
+        //by the container and dropped from the compact form. The expanded input
+        //is a graph object, the shape the expansion algorithm produces for a
+        //@graph-container term.
         JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "http://example.org/snapshot": [
                 {
-                  "@id": "http://example.org/p/1",
-                  "http://example.org/name": [{"@value": "Alice"}]
+                  "@graph": [
+                    {
+                      "@id": "http://example.org/p/1",
+                      "http://example.org/name": [{"@value": "Alice"}]
+                    }
+                  ]
                 }
               ]
             }
@@ -686,28 +693,29 @@ internal sealed class JsonLdCompactorTests
         IReadOnlyDictionary<string, object?> result = (IReadOnlyDictionary<string, object?>)
             JsonLdCompactor.Compact(expanded, ctx)!;
 
+        //The node inlines under "snapshot" with no explicit @graph wrapper.
         IReadOnlyDictionary<string, object?> snapshot = (IReadOnlyDictionary<string, object?>)result["snapshot"]!;
-        Assert.IsTrue(snapshot.ContainsKey("@graph"));
-        IReadOnlyDictionary<string, object?> wrappedNode = (IReadOnlyDictionary<string, object?>)snapshot["@graph"]!;
-        Assert.AreEqual("http://example.org/p/1", wrappedNode["@id"]);
-        Assert.AreEqual("Alice", wrappedNode["name"]);
+        Assert.IsFalse(snapshot.ContainsKey("@graph"));
+        Assert.AreEqual("http://example.org/p/1", snapshot["@id"]);
+        Assert.AreEqual("Alice", snapshot["name"]);
     }
 
     [TestMethod]
     public void CompactGraphIdContainerKeysGraphsById()
     {
-        //@graph + @id combination: map keyed by node @id, value is
-        //{"@graph": ...}.
+        //@graph + @id combination: a map keyed by the named graph's @id, whose
+        //value is the inlined graph contents (the @graph and @id keys are
+        //carried by the container and map key, so neither appears in the value).
         JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "http://example.org/versions": [
                 {
                   "@id": "http://example.org/v/1",
-                  "http://example.org/note": [{"@value": "first cut"}]
+                  "@graph": [{"http://example.org/note": [{"@value": "first cut"}]}]
                 },
                 {
                   "@id": "http://example.org/v/2",
-                  "http://example.org/note": [{"@value": "second pass"}]
+                  "@graph": [{"http://example.org/note": [{"@value": "second pass"}]}]
                 }
               ]
             }
@@ -726,11 +734,10 @@ internal sealed class JsonLdCompactorTests
         IReadOnlyDictionary<string, object?> versions = (IReadOnlyDictionary<string, object?>)result["versions"]!;
         Assert.HasCount(2, versions);
         IReadOnlyDictionary<string, object?> v1 = (IReadOnlyDictionary<string, object?>)versions["http://example.org/v/1"]!;
-        Assert.IsTrue(v1.ContainsKey("@graph"));
-        IReadOnlyDictionary<string, object?> v1Inner = (IReadOnlyDictionary<string, object?>)v1["@graph"]!;
-        //@id should have been stripped from the inner value (now in map key).
-        Assert.IsFalse(v1Inner.ContainsKey("@id"));
-        Assert.AreEqual("first cut", v1Inner["note"]);
+        //The graph @id became the map key, so neither @id nor an explicit @graph remain.
+        Assert.IsFalse(v1.ContainsKey("@graph"));
+        Assert.IsFalse(v1.ContainsKey("@id"));
+        Assert.AreEqual("first cut", v1["note"]);
     }
 
     [TestMethod]
@@ -739,8 +746,8 @@ internal sealed class JsonLdCompactorTests
         JsonNode expanded = ParseJson(/*lang=json,strict*/ """
             {
               "http://example.org/chapters": [
-                {"@index": "ch1", "http://example.org/title": [{"@value": "Intro"}]},
-                {"@index": "ch2", "http://example.org/title": [{"@value": "Method"}]}
+                {"@index": "ch1", "@graph": [{"http://example.org/title": [{"@value": "Intro"}]}]},
+                {"@index": "ch2", "@graph": [{"http://example.org/title": [{"@value": "Method"}]}]}
               ]
             }
             """);
@@ -757,10 +764,10 @@ internal sealed class JsonLdCompactorTests
 
         IReadOnlyDictionary<string, object?> chapters = (IReadOnlyDictionary<string, object?>)result["chapters"]!;
         IReadOnlyDictionary<string, object?> ch1 = (IReadOnlyDictionary<string, object?>)chapters["ch1"]!;
-        Assert.IsTrue(ch1.ContainsKey("@graph"));
-        IReadOnlyDictionary<string, object?> ch1Inner = (IReadOnlyDictionary<string, object?>)ch1["@graph"]!;
-        Assert.IsFalse(ch1Inner.ContainsKey("@index"));
-        Assert.AreEqual("Intro", ch1Inner["title"]);
+        //The @index became the map key; the value is the inlined graph contents.
+        Assert.IsFalse(ch1.ContainsKey("@graph"));
+        Assert.IsFalse(ch1.ContainsKey("@index"));
+        Assert.AreEqual("Intro", ch1["title"]);
     }
 
     [TestMethod]
