@@ -22,11 +22,11 @@ public static partial class ContextProcessing
     private static FrozenSet<string> ValidContainerKeywords { get; } =
         new HashSet<string>(StringComparer.Ordinal)
         {
-            "@list", "@set", "@language", "@index", "@id", "@graph", "@type", "@none"
+            JsonLdKeywords.List, JsonLdKeywords.Set, JsonLdKeywords.Language, JsonLdKeywords.Index, JsonLdKeywords.Id, JsonLdKeywords.Graph, JsonLdKeywords.Type, JsonLdKeywords.None
         }.ToFrozenSet(StringComparer.Ordinal);
 
     private static FrozenSet<string> ValidReverseContainerKeywords { get; } =
-        new HashSet<string>(StringComparer.Ordinal) { "@set", "@index" }.ToFrozenSet(StringComparer.Ordinal);
+        new HashSet<string>(StringComparer.Ordinal) { JsonLdKeywords.Set, JsonLdKeywords.Index }.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>
     /// Indicates whether <paramref name="candidate"/> is one of the eight
@@ -326,7 +326,7 @@ public static partial class ContextProcessing
         ArgumentNullException.ThrowIfNull(activeContext);
         ArgumentNullException.ThrowIfNull(typeValue);
 
-        if(typeValue is "@id" or "@vocab" or "@json" or "@none")
+        if(JsonLdKeywords.IsId(typeValue) || JsonLdKeywords.IsVocab(typeValue) || JsonLdKeywords.IsJson(typeValue) || JsonLdKeywords.IsNone(typeValue))
         {
             return typeValue;
         }
@@ -405,7 +405,7 @@ public static partial class ContextProcessing
     public static bool IsValidNestValue(string nestValue)
     {
         ArgumentNullException.ThrowIfNull(nestValue);
-        return nestValue == "@nest" || !IriUtils.IsKeyword(nestValue);
+        return JsonLdKeywords.IsNest(nestValue) || !IriUtils.IsKeyword(nestValue);
     }
 
     /// <summary>

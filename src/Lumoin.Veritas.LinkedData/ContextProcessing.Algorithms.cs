@@ -295,7 +295,7 @@ public static partial class ContextProcessing
         //entry) is an invalid remote context.
         if(isImport
             && parsedContext.Count == 1
-            && parsedContext.TryGetValue("@context", out object? importedContext)
+            && parsedContext.TryGetValue(JsonLdKeywords.Context, out object? importedContext)
             && importedContext is not IReadOnlyDictionary<string, object?>)
         {
             throw new LinkedDataProcessingException(
@@ -357,7 +357,7 @@ public static partial class ContextProcessing
         //An @import must reference a single context map, not an array or
         //string-referenced (wrapped) context.
         if(parsed.Count == 1
-            && parsed.TryGetValue("@context", out object? wrappedImport)
+            && parsed.TryGetValue(JsonLdKeywords.Context, out object? wrappedImport)
             && wrappedImport is not IReadOnlyDictionary<string, object?>)
         {
             throw new LinkedDataProcessingException(
@@ -391,7 +391,7 @@ public static partial class ContextProcessing
         //bogus "@context" term (W3C JSON-LD 1.1 §4.1 — a context may reference
         //another context).
         if(parsedContext.Count == 1
-            && parsedContext.TryGetValue("@context", out object? wrapped)
+            && parsedContext.TryGetValue(JsonLdKeywords.Context, out object? wrapped)
             && wrapped is not IReadOnlyDictionary<string, object?>)
         {
             return ConvertWrappedContextValue(wrapped, baseUrl);
@@ -628,10 +628,10 @@ public static partial class ContextProcessing
         //JSON-LD 1.1 §4.1.2): an object carrying only @container (which must be
         //@set, or absent) and/or @id/@protected. Any other keyword — or an
         //out-of-shape @type definition — is a keyword redefinition error.
-        if(string.Equals(termName, "@type", StringComparison.Ordinal))
+        if(string.Equals(termName, JsonLdKeywords.Type, StringComparison.Ordinal))
         {
             bool containerIsSetOrAbsent = value.Containers is null
-                || (value.Containers.Count == 1 && string.Equals(value.Containers[0], "@set", StringComparison.Ordinal));
+                || (value.Containers.Count == 1 && string.Equals(value.Containers[0], JsonLdKeywords.Set, StringComparison.Ordinal));
             bool onlyTypeAllowedKeys = value.Type is null && !value.Reverse && value.ReverseIri is null
                 && value.Nest is null && value.Index is null && !value.HasLanguageMapping
                 && !value.HasDirectionMapping && value.ScopedContext is null && !value.Prefix;
@@ -808,7 +808,7 @@ public static partial class ContextProcessing
             if(value.Iri is not null)
             {
                 //@context may not be aliased by a term.
-                if(string.Equals(value.Iri, "@context", StringComparison.Ordinal))
+                if(string.Equals(value.Iri, JsonLdKeywords.Context, StringComparison.Ordinal))
                 {
                     throw new LinkedDataProcessingException(
                         "invalid keyword alias",
@@ -848,9 +848,9 @@ public static partial class ContextProcessing
                 }
                 termIriMapping = ExpandCompactIriTerm(activeContext, termName);
             }
-            else if(termName == "@type")
+            else if(JsonLdKeywords.IsType(termName))
             {
-                termIriMapping = "@type";
+                termIriMapping = JsonLdKeywords.Type;
             }
             else
             {
@@ -885,7 +885,7 @@ public static partial class ContextProcessing
 
             //@list is exclusive: it may not be combined with any other
             //container keyword.
-            if(containerMapping.Contains("@list") && containerMapping.Count > 1)
+            if(containerMapping.Contains(JsonLdKeywords.List) && containerMapping.Count > 1)
             {
                 throw new LinkedDataProcessingException(
                     "invalid container mapping",
@@ -896,10 +896,10 @@ public static partial class ContextProcessing
         //A @type-container term's type mapping defaults to @id and may only be
         //@id or @vocab (W3C JSON-LD 1.1 §4.1.2). The default makes a string
         //value under such a term expand to a node reference.
-        if(containerMapping.Contains("@type"))
+        if(containerMapping.Contains(JsonLdKeywords.Type))
         {
-            typeMapping ??= "@id";
-            if(typeMapping is not ("@id" or "@vocab"))
+            typeMapping ??= JsonLdKeywords.Id;
+            if(!JsonLdKeywords.IsId(typeMapping) && !JsonLdKeywords.IsVocab(typeMapping))
             {
                 throw new LinkedDataProcessingException(
                     "invalid type mapping",
@@ -910,7 +910,7 @@ public static partial class ContextProcessing
         //A property-valued @index requires an @index container and a
         //non-keyword index property.
         if(indexMapping is not null
-            && (!containerMapping.Contains("@index") || IriUtils.IsKeyword(indexMapping)))
+            && (!containerMapping.Contains(JsonLdKeywords.Index) || IriUtils.IsKeyword(indexMapping)))
         {
             throw new LinkedDataProcessingException(
                 "invalid term definition",
