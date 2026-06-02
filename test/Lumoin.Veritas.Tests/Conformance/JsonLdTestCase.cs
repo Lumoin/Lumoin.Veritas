@@ -20,6 +20,7 @@ namespace Lumoin.Veritas.Tests.Conformance;
 /// <param name="ExpandContextPath">The absolute path of the <c>option.expandContext</c> document, or <see langword="null"/>.</param>
 /// <param name="ProcessingMode">The <c>option.processingMode</c> (for example <c>json-ld-1.1</c>), or <see langword="null"/>.</param>
 /// <param name="SpecVersion">The <c>option.specVersion</c> (for example <c>json-ld-1.1</c>), or <see langword="null"/>.</param>
+/// <param name="CompactArrays">The <c>option.compactArrays</c> flag (defaults to <see langword="true"/> per the API default).</param>
 /// <param name="CorpusDirectory">The absolute <c>Material/JsonLd</c> directory the suite's URLs map back to.</param>
 internal sealed record JsonLdTestCase(
     string Id,
@@ -37,4 +38,5 @@ internal sealed record JsonLdTestCase(
     string? ProcessingMode,
     string? SpecVersion,
     string? RdfDirection,
+    bool CompactArrays,
     string CorpusDirectory);

@@ -229,7 +229,7 @@ public static class JsonLdCompactor
             {
                 compactedBody = new Dictionary<string, object?>(StringComparer.Ordinal);
             }
-            else if(topLevel.Count == 1)
+            else if(topLevel.Count == 1 && compactArrays)
             {
                 compactedBody = topLevel[0];
             }
@@ -701,7 +701,7 @@ public static class JsonLdCompactor
 
         if(isGraph)
         {
-            CompactGraphItem(activeContext, inverse, nestResult, itemActiveProperty, expandedItem, compactedItem, container);
+            CompactGraphItem(activeContext, inverse, env, nestResult, itemActiveProperty, expandedItem, compactedItem, container);
             return;
         }
 
@@ -714,7 +714,8 @@ public static class JsonLdCompactor
             return;
         }
 
-        bool asArray = ContainsContainer(container, JsonLdKeywords.Set)
+        bool asArray = !env.CompactArrays
+            || ContainsContainer(container, JsonLdKeywords.Set)
             || ContainsContainer(container, JsonLdKeywords.List)
             || (compactedItem is IReadOnlyList<object?> emptyList && emptyList.Count == 0)
             || string.Equals(expandedProperty, JsonLdKeywords.List, StringComparison.Ordinal)
@@ -725,6 +726,7 @@ public static class JsonLdCompactor
     /// <summary>Applies graph-container behaviour (§4.1 step 7.6.6): index/id graph maps, simple-graph inlining, or wrapping under the <c>@graph</c> alias.</summary>
     /// <param name="activeContext">The active context.</param>
     /// <param name="inverse">The inverse context.</param>
+    /// <param name="env">The compaction environment (for the compactArrays flag).</param>
     /// <param name="nestResult">The target object the property is added to.</param>
     /// <param name="itemActiveProperty">The compact property.</param>
     /// <param name="expandedItem">The expanded graph object.</param>
@@ -733,6 +735,7 @@ public static class JsonLdCompactor
     private static void CompactGraphItem(
         LinkedDataContext activeContext,
         InverseContext inverse,
+        CompactionEnv env,
         Dictionary<string, object?> nestResult,
         string itemActiveProperty,
         JsonNode expandedItem,
@@ -741,7 +744,7 @@ public static class JsonLdCompactor
     {
         bool hasGraph = ContainsContainer(container, JsonLdKeywords.Graph);
         bool simpleGraph = IsSimpleGraphNode(expandedItem);
-        bool setArray = ContainsContainer(container, JsonLdKeywords.Set);
+        bool setArray = !env.CompactArrays || ContainsContainer(container, JsonLdKeywords.Set);
 
         if(hasGraph && (ContainsContainer(container, JsonLdKeywords.Id)
             || (ContainsContainer(container, JsonLdKeywords.Index) && simpleGraph)))
@@ -771,7 +774,7 @@ public static class JsonLdCompactor
         }
 
         object? wrapped = compactedItem;
-        if(wrapped is IReadOnlyList<object?> single && single.Count == 1)
+        if(env.CompactArrays && wrapped is IReadOnlyList<object?> single && single.Count == 1)
         {
             wrapped = single[0];
         }

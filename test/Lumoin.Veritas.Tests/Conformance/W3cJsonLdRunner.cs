@@ -188,7 +188,7 @@ internal static class W3cJsonLdRunner
                 LinkedDataContext.Empty, contextValue, baseUrl, resolver, StjJsonAdapter.Parse, cancellationToken).ConfigureAwait(false);
 
             compacted = await JsonLdCompactor.CompactAsync(
-                expandedNode, activeContext, resolver, StjJsonAdapter.Parse, baseUrl, compactArrays: true, cancellationToken).ConfigureAwait(false);
+                expandedNode, activeContext, resolver, StjJsonAdapter.Parse, baseUrl, testCase.CompactArrays, cancellationToken).ConfigureAwait(false);
         }
         catch(Exception exception) when(exception is not OperationCanceledException)
         {

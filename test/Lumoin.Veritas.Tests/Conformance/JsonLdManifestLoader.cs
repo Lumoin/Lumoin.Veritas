@@ -65,6 +65,7 @@ internal static class JsonLdManifestLoader
         string? processingMode = null;
         string? specVersion = null;
         string? rdfDirection = null;
+        bool compactArrays = true;
         if(entry.TryGetProperty("option", out JsonNode option) && option.Kind == JsonNodeKind.Object)
         {
             optionBase = StringOrNull(option, "base");
@@ -72,6 +73,10 @@ internal static class JsonLdManifestLoader
             processingMode = StringOrNull(option, "processingMode");
             specVersion = StringOrNull(option, "specVersion");
             rdfDirection = StringOrNull(option, "rdfDirection");
+            if(option.TryGetProperty("compactArrays", out JsonNode compactArraysNode) && compactArraysNode.Kind == JsonNodeKind.False)
+            {
+                compactArrays = false;
+            }
         }
 
         return new JsonLdTestCase(
@@ -90,6 +95,7 @@ internal static class JsonLdManifestLoader
             ProcessingMode: processingMode,
             SpecVersion: specVersion,
             RdfDirection: rdfDirection,
+            CompactArrays: compactArrays,
             CorpusDirectory: corpusDirectory);
     }
 
