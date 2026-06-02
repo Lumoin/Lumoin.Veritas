@@ -77,7 +77,9 @@ public static class JsonLdExpansionTree
         LinkedDataContext activeContext = LinkedDataContext.Empty;
         if(baseUrl is not null)
         {
-            activeContext = activeContext.WithBaseIri(baseUrl);
+            //Record the document base as the original base URL too, so a
+            //full context reset (@context: null) can restore it per spec.
+            activeContext = activeContext.WithBaseIri(baseUrl).WithOriginalBaseUrl(baseUrl);
         }
 
         //The document's own @context is processed by ExpandObjectAsync when

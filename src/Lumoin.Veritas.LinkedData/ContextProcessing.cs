@@ -94,11 +94,19 @@ public static partial class ContextProcessing
         }
 
         protectedTermName = null;
-        LinkedDataContext empty = LinkedDataContext.Empty;
+
+        //A null context resets to a fresh context, but both the base IRI and
+        //the original base URL are restored to the active context's original
+        //base URL (W3C JSON-LD 1.1 §4.1 step 5.1), so document-relative IRIs
+        //still resolve against the document base after the reset.
+        LinkedDataContext empty = LinkedDataContext.Empty
+            .WithOriginalBaseUrl(activeContext.OriginalBaseUrl)
+            .WithBaseIri(activeContext.OriginalBaseUrl);
         if(!activeContext.Propagate)
         {
             empty = empty.WithPreviousContext(activeContext);
         }
+
         return empty;
     }
 
