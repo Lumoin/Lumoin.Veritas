@@ -100,102 +100,59 @@ public static class ContextExtraction
         ref int keyCounter,
         int depth)
     {
-        //Pull out the context-level directives first; the remaining
-        //properties become term definitions.
-        string? @base = null;
-        bool hasBase = false;
-        string? vocab = null;
-        bool hasVocab = false;
-        string? language = null;
-        bool hasLanguage = false;
-        string? direction = null;
-        bool hasDirection = false;
-        bool? propagate = null;
-        bool? @protected = null;
-        string? import = null;
+        //Keyword keys are context-level directives, read and validated
+        //directly below; every non-keyword key is a term definition. Only
+        //JSON-LD 1.1 is modelled, so an @version present must be the number 1.1.
+        if(objectNode.TryGetProperty(JsonLdKeywords.Version, out JsonLdNode versionNode)
+            && (versionNode.Kind != JsonLdNodeKind.Number
+                || !string.Equals(versionNode.GetRawNumber(), "1.1", StringComparison.Ordinal)))
+        {
+            throw new JsonLdProcessingException(
+                JsonLdErrorCode.InvalidVersionValue,
+                "@version must be the number 1.1.");
+        }
 
         Dictionary<string, LinkedDataTermSource> terms = [];
-
         foreach(KeyValuePair<string, JsonLdNode> entry in objectNode.EnumerateObject())
         {
-            switch(entry.Key)
+            //Context-level directives are read declaratively below; every other
+            //key — including keyword-shaped keys such as @type or @context — is a
+            //term definition (where keyword-redefinition is detected and rejected).
+            if(JsonLdKeywords.IsContextDirective(entry.Key))
             {
-                case "@version":
-                {
-                    //Only JSON-LD 1.1 is modelled; @version must be the number 1.1.
-                    if(entry.Value.Kind != JsonLdNodeKind.Number
-                        || !string.Equals(entry.Value.GetRawNumber(), "1.1", StringComparison.Ordinal))
-                    {
-                        throw new JsonLdProcessingException(
-                            JsonLdErrorCode.InvalidVersionValue,
-                            "@version must be the number 1.1.");
-                    }
-
-                    break;
-                }
-                case "@base":
-                {
-                    hasBase = true;
-                    @base = RequireStringOrNull(entry.Value, JsonLdErrorCode.InvalidBaseIri, "@base");
-                    break;
-                }
-                case "@vocab":
-                {
-                    hasVocab = true;
-                    vocab = RequireStringOrNull(entry.Value, JsonLdErrorCode.InvalidVocabMapping, "@vocab");
-                    break;
-                }
-                case "@language":
-                {
-                    hasLanguage = true;
-                    language = RequireStringOrNull(entry.Value, JsonLdErrorCode.InvalidDefaultLanguage, "@language");
-                    break;
-                }
-                case "@direction":
-                {
-                    hasDirection = true;
-                    direction = RequireStringOrNull(entry.Value, JsonLdErrorCode.InvalidBaseDirection, "@direction");
-                    break;
-                }
-                case "@propagate":
-                {
-                    propagate = RequireBoolean(entry.Value, JsonLdErrorCode.InvalidPropagateValue, "@propagate");
-                    break;
-                }
-                case "@protected":
-                {
-                    @protected = RequireBoolean(entry.Value, JsonLdErrorCode.InvalidProtectedValue, "@protected");
-                    break;
-                }
-                case "@import":
-                {
-                    import = RequireString(entry.Value, JsonLdErrorCode.InvalidImportValue, "@import");
-                    break;
-                }
-                default:
-                {
-                    //Regular term definition.
-                    LinkedDataTermSource termSource = ExtractTermSource(
-                        entry.Key, entry.Value, baseUrl, depth + 1, ref keyCounter);
-                    terms[entry.Key] = termSource;
-                    break;
-                }
+                continue;
             }
+
+            terms[entry.Key] = ExtractTermSource(entry.Key, entry.Value, baseUrl, depth + 1, ref keyCounter);
         }
 
         return new LinkedDataContextEntry(terms, baseUrl, MakeKey(ref keyCounter, depth, "inline"))
         {
-            Base = @base,
-            HasBase = hasBase,
-            Vocab = vocab,
-            HasVocab = hasVocab,
-            Language = language,
-            HasLanguage = hasLanguage,
-            Direction = direction,
-            HasDirection = hasDirection,
-            Propagate = propagate,
-            Protected = @protected,
-            Import = import
+            Base = objectNode.TryGetProperty(JsonLdKeywords.Base, out JsonLdNode baseNode)
+                ? RequireStringOrNull(baseNode, JsonLdErrorCode.InvalidBaseIri, JsonLdKeywords.Base)
+                : null,
+            HasBase = objectNode.TryGetProperty(JsonLdKeywords.Base, out _),
+            Vocab = objectNode.TryGetProperty(JsonLdKeywords.Vocab, out JsonLdNode vocabNode)
+                ? RequireStringOrNull(vocabNode, JsonLdErrorCode.InvalidVocabMapping, JsonLdKeywords.Vocab)
+                : null,
+            HasVocab = objectNode.TryGetProperty(JsonLdKeywords.Vocab, out _),
+            Language = objectNode.TryGetProperty(JsonLdKeywords.Language, out JsonLdNode languageNode)
+                ? RequireStringOrNull(languageNode, JsonLdErrorCode.InvalidDefaultLanguage, JsonLdKeywords.Language)
+                : null,
+            HasLanguage = objectNode.TryGetProperty(JsonLdKeywords.Language, out _),
+            Direction = objectNode.TryGetProperty(JsonLdKeywords.Direction, out JsonLdNode directionNode)
+                ? RequireStringOrNull(directionNode, JsonLdErrorCode.InvalidBaseDirection, JsonLdKeywords.Direction)
+                : null,
+            HasDirection = objectNode.TryGetProperty(JsonLdKeywords.Direction, out _),
+            Propagate = objectNode.TryGetProperty(JsonLdKeywords.Propagate, out JsonLdNode propagateNode)
+                ? RequireBoolean(propagateNode, JsonLdErrorCode.InvalidPropagateValue, JsonLdKeywords.Propagate)
+                : null,
+            Protected = objectNode.TryGetProperty(JsonLdKeywords.Protected, out JsonLdNode protectedNode)
+                ? RequireBoolean(protectedNode, JsonLdErrorCode.InvalidProtectedValue, JsonLdKeywords.Protected)
+                : null,
+            Import = objectNode.TryGetProperty(JsonLdKeywords.Import, out JsonLdNode importNode)
+                ? RequireString(importNode, JsonLdErrorCode.InvalidImportValue, JsonLdKeywords.Import)
+                : null
         };
     }
 
@@ -227,131 +184,61 @@ public static class ContextExtraction
                 string.Create(CultureInfo.InvariantCulture, $"Term definition for '{termName}' must be a string, object, or null."));
         }
 
-        //Full term-definition object.
-        string? iri = null;
-        bool isRemoval = false;
-        bool iriExplicitlyNull = false;
-        string? type = null;
-        List<string>? containers = null;
-        string? language = null;
-        bool hasLanguage = false;
-        string? direction = null;
-        bool hasDirection = false;
-        bool reverse = false;
-        string? reverseIri = null;
-        bool @protected = false;
-        bool hasProtected = false;
-        bool prefix = false;
-        string? nest = null;
-        string? index = null;
+        //Full term-definition object: each keyword field is read and validated
+        //directly from the node by its key (a declarative projection in place
+        //of a per-field dispatch switch). Unknown keys are tolerated silently,
+        //as the W3C algorithm warns but continues.
+        bool hasId = termNode.TryGetProperty(JsonLdKeywords.Id, out JsonLdNode idNode);
+
+        //An explicit "@id": null is a removal marker (W3C JSON-LD 1.1 §4.1.2);
+        //the term source then leaves Iri null, indistinguishable to the
+        //algorithm from "no @id specified" (both fall back to vocab expansion).
+        bool isRemoval = hasId && idNode.Kind == JsonLdNodeKind.Null;
+
+        //A scoped @context is extracted ahead of the projection so its nested
+        //synthetic-key counter threads back into this extraction run.
         IReadOnlyList<LinkedDataContextEntry>? scopedContext = null;
-
-        foreach(KeyValuePair<string, JsonLdNode> field in termNode.EnumerateObject())
+        if(termNode.TryGetProperty(JsonLdKeywords.Context, out JsonLdNode contextNode))
         {
-            switch(field.Key)
-            {
-                case "@id":
-                {
-                    if(field.Value.Kind == JsonLdNodeKind.Null)
-                    {
-                        iriExplicitlyNull = true;
-                        //Per JSON-LD 1.1 §4.1.2, an explicit @id: null
-                        //in an object form is also a removal marker.
-                        isRemoval = true;
-                    }
-                    else
-                    {
-                        iri = RequireString(field.Value, JsonLdErrorCode.InvalidIriMapping, "A term definition's @id");
-                    }
-                    break;
-                }
-                case "@type":
-                {
-                    type = RequireString(field.Value, JsonLdErrorCode.InvalidTypeMappingTermDefinition, "A term definition's @type");
-                    break;
-                }
-                case "@reverse":
-                {
-                    reverse = true;
-                    reverseIri = RequireString(field.Value, JsonLdErrorCode.InvalidIriMapping, "A term definition's @reverse");
-                    break;
-                }
-                case "@container":
-                {
-                    containers = ExtractContainerList(field.Value);
-                    break;
-                }
-                case "@language":
-                {
-                    hasLanguage = true;
-                    language = RequireStringOrNull(field.Value, JsonLdErrorCode.InvalidLanguageMapping, "A term definition's @language");
-                    break;
-                }
-                case "@direction":
-                {
-                    hasDirection = true;
-                    direction = RequireStringOrNull(field.Value, JsonLdErrorCode.InvalidBaseDirection, "A term definition's @direction");
-                    break;
-                }
-                case "@protected":
-                {
-                    hasProtected = true;
-                    @protected = RequireBoolean(field.Value, JsonLdErrorCode.InvalidProtectedValue, "A term definition's @protected");
-                    break;
-                }
-                case "@prefix":
-                {
-                    prefix = RequireBoolean(field.Value, JsonLdErrorCode.InvalidPrefixValue, "A term definition's @prefix");
-                    break;
-                }
-                case "@nest":
-                {
-                    nest = RequireString(field.Value, JsonLdErrorCode.InvalidNestValue, "A term definition's @nest");
-                    break;
-                }
-                case "@index":
-                {
-                    index = RequireString(field.Value, JsonLdErrorCode.InvalidTermDefinition, "A term definition's @index");
-                    break;
-                }
-                case "@context":
-                {
-                    int innerCounter = keyCounter;
-                    scopedContext = ExtractEntries(field.Value, baseUrl, ref innerCounter);
-                    keyCounter = innerCounter;
-                    break;
-                }
-                default:
-                {
-                    //Unknown keys are tolerated silently; the W3C algorithm warns but continues.
-                    break;
-                }
-            }
+            int innerCounter = keyCounter;
+            scopedContext = ExtractEntries(contextNode, baseUrl, ref innerCounter);
+            keyCounter = innerCounter;
         }
-
-        //An explicit "@id: null" marker survives by leaving Iri null on
-        //the term source; the caller distinguishes "no @id specified" via
-        //the same surface (algorithm falls back to vocab expansion in
-        //that case). The iriExplicitlyNull local is for documentation
-        //purposes; the algorithm treats both states identically.
-        _ = iriExplicitlyNull;
 
         return new LinkedDataTermSource(syntheticKey)
         {
-            Iri = iri,
-            Type = type,
-            Containers = containers,
-            Language = language,
-            HasLanguageMapping = hasLanguage,
-            Direction = direction,
-            HasDirectionMapping = hasDirection,
-            Reverse = reverse,
-            ReverseIri = reverseIri,
-            Protected = @protected,
-            HasProtected = hasProtected,
-            Prefix = prefix,
-            Nest = nest,
-            Index = index,
+            Iri = hasId && !isRemoval
+                ? RequireString(idNode, JsonLdErrorCode.InvalidIriMapping, "A term definition's @id")
+                : null,
+            Type = termNode.TryGetProperty(JsonLdKeywords.Type, out JsonLdNode typeNode)
+                ? RequireString(typeNode, JsonLdErrorCode.InvalidTypeMappingTermDefinition, "A term definition's @type")
+                : null,
+            Containers = termNode.TryGetProperty(JsonLdKeywords.Container, out JsonLdNode containerNode)
+                ? ExtractContainerList(containerNode)
+                : null,
+            Language = termNode.TryGetProperty(JsonLdKeywords.Language, out JsonLdNode languageNode)
+                ? RequireStringOrNull(languageNode, JsonLdErrorCode.InvalidLanguageMapping, "A term definition's @language")
+                : null,
+            HasLanguageMapping = termNode.TryGetProperty(JsonLdKeywords.Language, out _),
+            Direction = termNode.TryGetProperty(JsonLdKeywords.Direction, out JsonLdNode directionNode)
+                ? RequireStringOrNull(directionNode, JsonLdErrorCode.InvalidBaseDirection, "A term definition's @direction")
+                : null,
+            HasDirectionMapping = termNode.TryGetProperty(JsonLdKeywords.Direction, out _),
+            Reverse = termNode.TryGetProperty(JsonLdKeywords.Reverse, out _),
+            ReverseIri = termNode.TryGetProperty(JsonLdKeywords.Reverse, out JsonLdNode reverseNode)
+                ? RequireString(reverseNode, JsonLdErrorCode.InvalidIriMapping, "A term definition's @reverse")
+                : null,
+            Protected = termNode.TryGetProperty(JsonLdKeywords.Protected, out JsonLdNode protectedNode)
+                && RequireBoolean(protectedNode, JsonLdErrorCode.InvalidProtectedValue, "A term definition's @protected"),
+            HasProtected = termNode.TryGetProperty(JsonLdKeywords.Protected, out _),
+            Prefix = termNode.TryGetProperty(JsonLdKeywords.Prefix, out JsonLdNode prefixNode)
+                && RequireBoolean(prefixNode, JsonLdErrorCode.InvalidPrefixValue, "A term definition's @prefix"),
+            Nest = termNode.TryGetProperty(JsonLdKeywords.Nest, out JsonLdNode nestNode)
+                ? RequireString(nestNode, JsonLdErrorCode.InvalidNestValue, "A term definition's @nest")
+                : null,
+            Index = termNode.TryGetProperty(JsonLdKeywords.Index, out JsonLdNode indexNode)
+                ? RequireString(indexNode, JsonLdErrorCode.InvalidTermDefinition, "A term definition's @index")
+                : null,
             ScopedContext = scopedContext,
             IsRemoval = isRemoval
         };

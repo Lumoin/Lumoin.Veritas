@@ -12,18 +12,10 @@ namespace Lumoin.Veritas.LinkedData;
 /// </summary>
 public static class IriUtils
 {
-    private static HashSet<string> Keywords { get; } =
-    [
-        "@base", "@container", "@context", "@direction", "@graph", "@id",
-        "@import", "@included", "@index", "@json", "@language", "@list",
-        "@nest", "@none", "@prefix", "@propagate", "@protected", "@reverse",
-        "@set", "@type", "@value", "@version", "@vocab"
-    ];
-
     /// <summary>Determines whether a string is a JSON-LD keyword.</summary>
     public static bool IsKeyword(string? value)
     {
-        return value is not null && Keywords.Contains(value);
+        return JsonLdKeywords.IsKeyword(value);
     }
 
     /// <summary>

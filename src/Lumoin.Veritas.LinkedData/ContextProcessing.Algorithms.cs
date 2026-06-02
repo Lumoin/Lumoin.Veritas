@@ -398,94 +398,46 @@ public static partial class ContextProcessing
         }
 
         //The dict-of-object shape's top level represents an inline-context
-        //object. Walk its entries: known directives go on the entry
-        //itself; everything else becomes a term source.
-        Dictionary<string, LinkedDataTermSource> terms = [];
-        string? @base = null;
-        bool hasBase = false;
-        string? vocab = null;
-        bool hasVocab = false;
-        string? language = null;
-        bool hasLanguage = false;
-        string? direction = null;
-        bool hasDirection = false;
-        bool? propagate = null;
-        bool? @protected = null;
-        string? import = null;
-        int keyCounter = 0;
+        //object: keyword keys are directives read directly below, and every
+        //non-keyword key is a term source.
+        static string? Text(IReadOnlyDictionary<string, object?> source, string keyword) =>
+            source.TryGetValue(keyword, out object? value) ? value as string : null;
 
+        static bool? Flag(IReadOnlyDictionary<string, object?> source, string keyword) =>
+            source.TryGetValue(keyword, out object? value) && value is bool flag ? flag : null;
+
+        Dictionary<string, LinkedDataTermSource> terms = [];
+        int keyCounter = 0;
         foreach(KeyValuePair<string, object?> entry in parsedContext)
         {
-            switch(entry.Key)
+            //Context-level directives are read declaratively below; every other
+            //key — including keyword-shaped keys such as @type or @context — is a
+            //term definition (where keyword-redefinition is detected and rejected).
+            if(JsonLdKeywords.IsContextDirective(entry.Key))
             {
-                case "@base":
-                {
-                    hasBase = true;
-                    @base = entry.Value as string;
-                    break;
-                }
-                case "@vocab":
-                {
-                    hasVocab = true;
-                    vocab = entry.Value as string;
-                    break;
-                }
-                case "@language":
-                {
-                    hasLanguage = true;
-                    language = entry.Value as string;
-                    break;
-                }
-                case "@direction":
-                {
-                    hasDirection = true;
-                    direction = entry.Value as string;
-                    break;
-                }
-                case "@propagate":
-                {
-                    if(entry.Value is bool p) propagate = p;
-                    break;
-                }
-                case "@protected":
-                {
-                    if(entry.Value is bool prot) @protected = prot;
-                    break;
-                }
-                case "@import":
-                {
-                    import = entry.Value as string;
-                    break;
-                }
-                case "@version":
-                {
-                    break;
-                }
-                default:
-                {
-                    keyCounter++;
-                    terms[entry.Key] = ConvertToTermSource(
-                        entry.Key, entry.Value, $"remote-k{keyCounter}-{entry.Key}", baseUrl);
-                    break;
-                }
+                continue;
             }
+
+            keyCounter++;
+            terms[entry.Key] = ConvertToTermSource(
+                entry.Key, entry.Value, $"remote-k{keyCounter}-{entry.Key}", baseUrl);
         }
 
         return new[]
         {
             new LinkedDataContextEntry(terms, baseUrl, "remote-inline")
             {
-                Base = @base,
-                HasBase = hasBase,
-                Vocab = vocab,
-                HasVocab = hasVocab,
-                Language = language,
-                HasLanguage = hasLanguage,
-                Direction = direction,
-                HasDirection = hasDirection,
-                Propagate = propagate,
-                Protected = @protected,
-                Import = import
+                Base = Text(parsedContext, JsonLdKeywords.Base),
+                HasBase = parsedContext.ContainsKey(JsonLdKeywords.Base),
+                Vocab = Text(parsedContext, JsonLdKeywords.Vocab),
+                HasVocab = parsedContext.ContainsKey(JsonLdKeywords.Vocab),
+                Language = Text(parsedContext, JsonLdKeywords.Language),
+                HasLanguage = parsedContext.ContainsKey(JsonLdKeywords.Language),
+                Direction = Text(parsedContext, JsonLdKeywords.Direction),
+                HasDirection = parsedContext.ContainsKey(JsonLdKeywords.Direction),
+                Propagate = Flag(parsedContext, JsonLdKeywords.Propagate),
+                Protected = Flag(parsedContext, JsonLdKeywords.Protected),
+                Import = Text(parsedContext, JsonLdKeywords.Import)
             }
         };
     }

@@ -720,112 +720,41 @@ public static partial class ContextProcessing
         string syntheticKey,
         string? baseUrl = null)
     {
-        string? iri = null;
-        string? type = null;
-        List<string>? containers = null;
-        string? language = null;
-        bool hasLanguage = false;
-        string? direction = null;
-        bool reverse = false;
-        string? reverseIri = null;
-        bool @protected = false;
-        bool prefix = false;
-        string? nest = null;
-        string? index = null;
-        IReadOnlyList<LinkedDataContextEntry>? scopedContext = null;
+        //Each term-definition field is read directly from the map by its
+        //keyword key — a declarative projection in place of a per-field
+        //dispatch switch. A term inside a REMOTE context may carry a scoped
+        //@context (the inline JSON-LD shell extracts this through its own
+        //walker, but remote contexts arrive through this format-neutral path);
+        //its relative references resolve against the defining remote base URL.
+        static string? Text(IReadOnlyDictionary<string, object?> source, string keyword) =>
+            source.TryGetValue(keyword, out object? value) ? value as string : null;
 
-        foreach(KeyValuePair<string, object?> field in dict)
-        {
-            switch(field.Key)
-            {
-                case "@id":
-                {
-                    iri = field.Value as string;
-                    break;
-                }
-                case "@type":
-                {
-                    type = field.Value as string;
-                    break;
-                }
-                case "@reverse":
-                {
-                    reverse = true;
-                    reverseIri = field.Value as string;
-                    break;
-                }
-                case "@container":
-                {
-                    containers = ConvertContainerValue(field.Value);
-                    break;
-                }
-                case "@language":
-                {
-                    hasLanguage = true;
-                    language = field.Value as string;
-                    break;
-                }
-                case "@direction":
-                {
-                    direction = field.Value as string;
-                    break;
-                }
-                case "@protected":
-                {
-                    @protected = field.Value is bool b && b;
-                    break;
-                }
-                case "@prefix":
-                {
-                    prefix = field.Value is bool pb && pb;
-                    break;
-                }
-                case "@nest":
-                {
-                    nest = field.Value as string;
-                    break;
-                }
-                case "@index":
-                {
-                    index = field.Value as string;
-                    break;
-                }
-                //A term inside a REMOTE context may carry a scoped @context.
-                //The inline JSON-LD shell extracts this through its own walker,
-                //but remote contexts arrive through this format-neutral path, so
-                //extract it here. Relative references resolve against the
-                //defining remote context's base URL.
-                case "@context":
-                {
-                    scopedContext = field.Value switch
-                    {
-                        IReadOnlyDictionary<string, object?> contextMap => ConvertParsedContextToEntries(contextMap, baseUrl),
-                        _ => ConvertWrappedContextValue(field.Value, baseUrl)
-                    };
-                    break;
-                }
-                default:
-                {
-                    break;
-                }
-            }
-        }
+        static bool Flag(IReadOnlyDictionary<string, object?> source, string keyword) =>
+            source.TryGetValue(keyword, out object? value) && value is true;
+
         _ = termName;
+
         return new LinkedDataTermSource(syntheticKey)
         {
-            Iri = iri,
-            Type = type,
-            Containers = containers,
-            Language = language,
-            HasLanguageMapping = hasLanguage,
-            Direction = direction,
-            Reverse = reverse,
-            ReverseIri = reverseIri,
-            Protected = @protected,
-            Prefix = prefix,
-            Nest = nest,
-            Index = index,
-            ScopedContext = scopedContext
+            Iri = Text(dict, JsonLdKeywords.Id),
+            Type = Text(dict, JsonLdKeywords.Type),
+            Containers = dict.TryGetValue(JsonLdKeywords.Container, out object? container) ? ConvertContainerValue(container) : null,
+            Language = Text(dict, JsonLdKeywords.Language),
+            HasLanguageMapping = dict.ContainsKey(JsonLdKeywords.Language),
+            Direction = Text(dict, JsonLdKeywords.Direction),
+            Reverse = dict.ContainsKey(JsonLdKeywords.Reverse),
+            ReverseIri = Text(dict, JsonLdKeywords.Reverse),
+            Protected = Flag(dict, JsonLdKeywords.Protected),
+            Prefix = Flag(dict, JsonLdKeywords.Prefix),
+            Nest = Text(dict, JsonLdKeywords.Nest),
+            Index = Text(dict, JsonLdKeywords.Index),
+            ScopedContext = dict.TryGetValue(JsonLdKeywords.Context, out object? scoped)
+                ? scoped switch
+                {
+                    IReadOnlyDictionary<string, object?> contextMap => ConvertParsedContextToEntries(contextMap, baseUrl),
+                    _ => ConvertWrappedContextValue(scoped, baseUrl)
+                }
+                : null
         };
     }
 
