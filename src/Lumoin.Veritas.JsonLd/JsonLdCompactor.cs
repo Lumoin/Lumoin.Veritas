@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Threading;
+using System.Threading.Tasks;
+using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Json;
 using Lumoin.Veritas.LinkedData;
 
@@ -161,19 +164,65 @@ public static class JsonLdCompactor
     /// <param name="activeContext">The context against which to compact.</param>
     /// <param name="baseIri">The document base IRI, used for document-relative <c>@id</c> compaction; <c>null</c> leaves absolute IRIs unchanged.</param>
     /// <returns>The compacted element as an object graph.</returns>
+    /// <remarks>
+    /// A synchronous convenience over <see cref="CompactAsync"/> for callers
+    /// whose term-scoped contexts are inline (the case for a context built from
+    /// a single in-memory document). It supplies a resolver/parser that reject
+    /// remote-context fetches; use <see cref="CompactAsync"/> when scoped
+    /// contexts may reference remote documents.
+    /// </remarks>
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
         Justification = "JSON-LD specification uses string URIs throughout the compaction algorithm.")]
     public static object? Compact(JsonNode expanded, LinkedDataContext activeContext, string? baseIri = null)
     {
+        return CompactAsync(expanded, activeContext, RejectRemoteContext, RejectJsonParse, baseIri, compactArrays: true, CancellationToken.None)
+            .AsTask().GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// Compacts <paramref name="expanded"/> against <paramref name="activeContext"/>,
+    /// applying property- and type-scoped contexts during the walk (which may
+    /// require resolving remote contexts through <paramref name="resolver"/>).
+    /// </summary>
+    /// <param name="expanded">The expanded JSON-LD element.</param>
+    /// <param name="activeContext">The context against which to compact.</param>
+    /// <param name="resolver">Resolves remote contexts referenced by scoped contexts.</param>
+    /// <param name="parser">Parses remote context bodies.</param>
+    /// <param name="baseIri">The document base IRI for document-relative <c>@id</c> compaction; <c>null</c> leaves absolute IRIs unchanged.</param>
+    /// <param name="compactArrays">When <see langword="true"/> (the default), single-value arrays without a pinned container collapse to the value.</param>
+    /// <param name="cancellationToken">A token that aborts the operation.</param>
+    /// <returns>The compacted element as an object graph.</returns>
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
+        Justification = "JSON-LD specification uses string URIs throughout the compaction algorithm.")]
+    public static async ValueTask<object?> CompactAsync(
+        JsonNode expanded,
+        LinkedDataContext activeContext,
+        ContextResolverDelegate resolver,
+        ParseJsonDelegate parser,
+        string? baseIri = null,
+        bool compactArrays = true,
+        CancellationToken cancellationToken = default)
+    {
         ArgumentNullException.ThrowIfNull(activeContext);
+        ArgumentNullException.ThrowIfNull(resolver);
+        ArgumentNullException.ThrowIfNull(parser);
+
+        CompactionEnv env = new()
+        {
+            DocumentBase = baseIri,
+            CompactArrays = compactArrays,
+            Resolver = resolver,
+            Parser = parser,
+            CancellationToken = cancellationToken
+        };
 
         InverseContext inverse = BuildInverseContext(activeContext);
-        object? compactedBody = CompactElement(activeContext, inverse, baseIri, activeProperty: null, expanded);
+        object? compactedBody = await CompactElementAsync(activeContext, inverse, env, activeProperty: null, expanded).ConfigureAwait(false);
         IReadOnlyDictionary<string, object?>? emittedContext = EmitContextObject(activeContext);
 
-        //Top-level array normalization (compactArrays, the default): an empty result is the empty node
-        //object {}; a single-element result inlines to that element (the element walker already unwraps a
-        //single top-level item); only a multi-element result is wrapped in a @graph node object.
+        //Top-level array normalization: an empty result is the empty node object {}; a single-element
+        //result inlines to that element (the element walker already unwraps a single top-level item);
+        //only a multi-element result is wrapped in a @graph node object.
         if(compactedBody is IReadOnlyList<object?> topLevel)
         {
             if(topLevel.Count == 0)
@@ -226,6 +275,23 @@ public static class JsonLdCompactor
             [JsonLdKeywords.Context] = emittedContext,
             [JsonLdKeywords.Graph] = compactedBody
         };
+    }
+
+    /// <summary>A resolver for the synchronous <see cref="Compact"/> path: scoped contexts must be inline, so a remote fetch is unsupported.</summary>
+    /// <param name="uri">The requested context URI.</param>
+    /// <param name="cancellationToken">A token (unused).</param>
+    /// <returns>Never returns; always throws.</returns>
+    private static ValueTask<Utf8String?> RejectRemoteContext(Uri uri, CancellationToken cancellationToken)
+    {
+        throw new NotSupportedException($"Compacting with a remote scoped context ('{uri}') requires CompactAsync with a resolver.");
+    }
+
+    /// <summary>A parser for the synchronous <see cref="Compact"/> path; only reached for remote context bodies, which that path does not support.</summary>
+    /// <param name="utf8Json">The raw bytes (unused).</param>
+    /// <returns>Never returns; always throws.</returns>
+    private static JsonNode RejectJsonParse(Utf8String utf8Json)
+    {
+        throw new NotSupportedException("Parsing a remote scoped context requires CompactAsync with a parser.");
     }
 
     /// <summary>
@@ -322,18 +388,18 @@ public static class JsonLdCompactor
     /// </summary>
     /// <param name="activeContext">The active context.</param>
     /// <param name="inverse">The inverse context for term selection.</param>
-    /// <param name="documentBase">The document base IRI for relative compaction, or <c>null</c>.</param>
+    /// <param name="env">The compaction environment (base, compactArrays, resolver/parser for scoped contexts).</param>
     /// <param name="activeProperty">The compact property the element appears under, or <c>null</c>.</param>
     /// <param name="element">The expanded element.</param>
     /// <returns>The compacted element.</returns>
-    private static object? CompactElement(LinkedDataContext activeContext, InverseContext inverse, string? documentBase, string? activeProperty, JsonNode element)
+    private static async ValueTask<object?> CompactElementAsync(LinkedDataContext activeContext, InverseContext inverse, CompactionEnv env, string? activeProperty, JsonNode element)
     {
         if(element.Kind == JsonNodeKind.Array)
         {
             List<object?> result = new();
             foreach(JsonNode item in element.EnumerateArray())
             {
-                object? compactedItem = CompactElement(activeContext, inverse, documentBase, activeProperty, item);
+                object? compactedItem = await CompactElementAsync(activeContext, inverse, env, activeProperty, item).ConfigureAwait(false);
                 if(compactedItem is null)
                 {
                     continue;
@@ -342,8 +408,8 @@ public static class JsonLdCompactor
                 result.Add(compactedItem);
             }
 
-            //compactArrays (the default): a single value collapses unless the active property pins a container.
-            if(result.Count == 1 && ContainerOf(activeContext, activeProperty).Count == 0)
+            //compactArrays: a single value collapses unless disabled or the active property pins a container.
+            if(env.CompactArrays && result.Count == 1 && ContainerOf(activeContext, activeProperty).Count == 0)
             {
                 return result[0];
             }
@@ -357,32 +423,115 @@ public static class JsonLdCompactor
             return ToObjectGraph(element);
         }
 
-        //Value objects and bare node references compact through value compaction.
-        if(IsValueNode(element) || IsSubjectReferenceNode(element))
+        bool isValueOrReference = IsValueNode(element) || IsSubjectReferenceNode(element);
+
+        //Revert a non-propagating (type-scoped) context inherited from an ancestor on entry to a new node
+        //object (W3C JSON-LD 1.1 §4.1 step 4); value objects and bare node references keep the context.
+        if(!isValueOrReference && activeContext.PreviousContext is { } reverted)
         {
-            return CompactValueElement(activeContext, inverse, documentBase, activeProperty, element);
+            activeContext = reverted;
+            inverse = BuildInverseContext(activeContext);
+        }
+
+        //Apply the active property's property-scoped context (§4.1 step 5), before value compaction so a
+        //value object under a coercing scoped term sees the right type/language mapping.
+        if(ScopedEntriesFor(activeContext, activeProperty) is { } propertyScoped)
+        {
+            (activeContext, inverse) = await ApplyScopedAsync(activeContext, propertyScoped, env, propagate: true, overrideProtected: true).ConfigureAwait(false);
+        }
+
+        //Value objects and bare node references compact through value compaction.
+        if(isValueOrReference)
+        {
+            return CompactValueElement(activeContext, inverse, env, activeProperty, element);
         }
 
         //A list object directly under a @list-container property inlines to a bare array.
         if(IsListNode(element) && ContainsContainer(ContainerOf(activeContext, activeProperty), JsonLdKeywords.List)
             && element.TryGetProperty(JsonLdKeywords.List, out JsonNode listInline))
         {
-            return CompactElement(activeContext, inverse, documentBase, activeProperty, listInline);
+            return await CompactElementAsync(activeContext, inverse, env, activeProperty, listInline).ConfigureAwait(false);
         }
 
-        return CompactNodeObject(activeContext, inverse, documentBase, activeProperty, element);
+        return await CompactNodeObjectAsync(activeContext, inverse, env, activeProperty, element).ConfigureAwait(false);
     }
 
-    /// <summary>Compacts a node object (§4.1 step 7 onward): walks its keys in order, compacting keywords and choosing a per-value term for each property.</summary>
-    /// <param name="activeContext">The active context.</param>
-    /// <param name="inverse">The inverse context.</param>
-    /// <param name="documentBase">The document base IRI for relative compaction, or <c>null</c>.</param>
+    /// <summary>Gets a term's pre-extracted scoped-context entries, or <c>null</c> when the property is unmapped or carries no scoped context.</summary>
+    /// <param name="context">The active context.</param>
+    /// <param name="property">The compact property (or compacted type) name.</param>
+    /// <returns>The scoped entries, or <c>null</c>.</returns>
+    private static IReadOnlyList<LinkedDataContextEntry>? ScopedEntriesFor(LinkedDataContext context, string? property)
+    {
+        return property is not null && context.TryGetTerm(property, out TermDefinition? def) && def is { ScopedContextEntries: { } entries }
+            ? entries
+            : null;
+    }
+
+    /// <summary>Applies scoped-context entries to <paramref name="context"/> and returns the merged context together with its freshly built inverse context.</summary>
+    /// <param name="context">The context to extend.</param>
+    /// <param name="entries">The scoped-context entries.</param>
+    /// <param name="env">The compaction environment (base, resolver, parser, cancellation).</param>
+    /// <param name="propagate">Whether the scoped context propagates to nested nodes.</param>
+    /// <param name="overrideProtected">Whether the scoped context may override protected terms.</param>
+    /// <returns>The merged context and its inverse.</returns>
+    private static async ValueTask<(LinkedDataContext Context, InverseContext Inverse)> ApplyScopedAsync(
+        LinkedDataContext context,
+        IReadOnlyList<LinkedDataContextEntry> entries,
+        CompactionEnv env,
+        bool propagate,
+        bool overrideProtected)
+    {
+        LinkedDataContext merged = await JsonLdScopedContextHelper.ApplyAsync(
+            context, entries, env.DocumentBase, env.Resolver, env.Parser, env.CancellationToken, propagate, overrideProtected)
+            .ConfigureAwait(false);
+        return (merged, BuildInverseContext(merged));
+    }
+
+    /// <summary>
+    /// Compacts a node object (§4.1 step 6 onward). On entry the active context
+    /// has already been reverted and had the property-scoped context applied
+    /// (in <see cref="CompactElement"/>); here the node's type-scoped contexts
+    /// are applied, then its keys are walked. <c>@type</c> values are compacted
+    /// against the pre-type-scoped context, the rest against the post-type-scoped
+    /// context.
+    /// </summary>
+    /// <param name="activeContext">The active context (reverted + property-scoped).</param>
+    /// <param name="inverse">The inverse context matching <paramref name="activeContext"/>.</param>
+    /// <param name="env">The compaction environment.</param>
     /// <param name="activeProperty">The compact property the node appears under.</param>
     /// <param name="element">The expanded node object.</param>
     /// <returns>The compacted node object.</returns>
-    private static Dictionary<string, object?> CompactNodeObject(LinkedDataContext activeContext, InverseContext inverse, string? documentBase, string? activeProperty, JsonNode element)
+    private static async ValueTask<Dictionary<string, object?>> CompactNodeObjectAsync(LinkedDataContext activeContext, InverseContext inverse, CompactionEnv env, string? activeProperty, JsonNode element)
     {
         bool insideReverse = string.Equals(activeProperty, JsonLdKeywords.Reverse, StringComparison.Ordinal);
+
+        //The context before type-scoped contexts: @type values compact against it (a type-scoped context
+        //may redefine the vocabulary, which must not affect the type IRIs that triggered it).
+        LinkedDataContext inputContext = activeContext;
+        InverseContext inputInverse = inverse;
+
+        //Type-scoped contexts (§4.1): for each of the node's compacted types in lexicographic order, apply
+        //its term's scoped context (non-propagating). The pre-application context is recorded so nested
+        //nodes revert it on entry.
+        if(element.TryGetProperty(JsonLdKeywords.Type, out JsonNode nodeTypes))
+        {
+            LinkedDataContext beforeTypeScoped = activeContext;
+            foreach(string typeIri in SortedTypeIris(nodeTypes))
+            {
+                string? compactedType = CompactIriCore(inputContext, inputInverse, typeIri, value: null, vocab: true, reverse: false);
+                if(ScopedEntriesFor(inputContext, compactedType) is { } typeScoped)
+                {
+                    (activeContext, inverse) = await ApplyScopedAsync(activeContext, typeScoped, env, propagate: false, overrideProtected: false).ConfigureAwait(false);
+                }
+            }
+
+            if(!ReferenceEquals(activeContext, beforeTypeScoped) && !activeContext.Propagate)
+            {
+                activeContext = activeContext.WithPreviousContext(beforeTypeScoped);
+                inverse = BuildInverseContext(activeContext);
+            }
+        }
+
         Dictionary<string, object?> result = new(StringComparer.Ordinal);
 
         foreach(string expandedProperty in SortedKeys(element))
@@ -391,14 +540,15 @@ public static class JsonLdCompactor
 
             if(JsonLdKeywords.IsId(expandedProperty))
             {
-                object? compactedValue = CompactIdValues(activeContext, inverse, documentBase, expandedValue);
+                object? compactedValue = CompactIdValues(activeContext, inverse, env, expandedValue);
                 result[CompactIriCore(activeContext, inverse, JsonLdKeywords.Id, value: null, vocab: true, reverse: false) ?? JsonLdKeywords.Id] = compactedValue;
                 continue;
             }
 
             if(JsonLdKeywords.IsType(expandedProperty))
             {
-                object? compactedValue = CompactTypeValues(activeContext, inverse, expandedValue);
+                //@type values are compacted against the pre-type-scoped context.
+                object? compactedValue = CompactTypeValues(inputContext, inputInverse, expandedValue);
                 string typeAlias = CompactIriCore(activeContext, inverse, JsonLdKeywords.Type, value: null, vocab: true, reverse: false) ?? JsonLdKeywords.Type;
                 bool typeAsSet = ContainsContainer(ContainerOf(activeContext, typeAlias), JsonLdKeywords.Set);
                 bool isArray = typeAsSet || (compactedValue is IReadOnlyList<object?> && expandedValue.Kind == JsonNodeKind.Array && IsEmptyArray(expandedValue));
@@ -408,7 +558,7 @@ public static class JsonLdCompactor
 
             if(JsonLdKeywords.IsReverse(expandedProperty))
             {
-                CompactReverse(activeContext, inverse, documentBase, expandedValue, result);
+                await CompactReverseAsync(activeContext, inverse, env, expandedValue, result).ConfigureAwait(false);
                 continue;
             }
 
@@ -442,7 +592,7 @@ public static class JsonLdCompactor
             //An IRI property. The expanded value is an array (expansion guarantees this).
             if(expandedValue.Kind != JsonNodeKind.Array)
             {
-                CompactPropertyItem(activeContext, inverse, documentBase, result, expandedProperty, expandedValue, insideReverse);
+                await CompactPropertyItemAsync(activeContext, inverse, env, result, expandedProperty, expandedValue, insideReverse).ConfigureAwait(false);
                 continue;
             }
 
@@ -457,11 +607,36 @@ public static class JsonLdCompactor
 
             foreach(JsonNode expandedItem in expandedValue.EnumerateArray())
             {
-                CompactPropertyItem(activeContext, inverse, documentBase, result, expandedProperty, expandedItem, insideReverse);
+                await CompactPropertyItemAsync(activeContext, inverse, env, result, expandedProperty, expandedItem, insideReverse).ConfigureAwait(false);
             }
         }
 
         return result;
+    }
+
+    /// <summary>Returns the node's <c>@type</c> IRIs in lexicographic order (a single string yields one entry).</summary>
+    /// <param name="typeNode">The expanded <c>@type</c> value (string or array).</param>
+    /// <returns>The sorted type IRIs.</returns>
+    private static List<string> SortedTypeIris(JsonNode typeNode)
+    {
+        List<string> types = new();
+        if(typeNode.Kind == JsonNodeKind.String)
+        {
+            types.Add(typeNode.GetString());
+        }
+        else if(typeNode.Kind == JsonNodeKind.Array)
+        {
+            foreach(JsonNode item in typeNode.EnumerateArray())
+            {
+                if(item.Kind == JsonNodeKind.String)
+                {
+                    types.Add(item.GetString());
+                }
+            }
+        }
+
+        types.Sort(StringComparer.Ordinal);
+        return types;
     }
 
     /// <summary>Compacts a single expanded value of an IRI property (§4.1 step 7.6.x): selects the per-value term, applies container behaviour (@list, @graph, language/index/id/type maps), and adds the result.</summary>
@@ -471,10 +646,10 @@ public static class JsonLdCompactor
     /// <param name="expandedProperty">The expanded property IRI.</param>
     /// <param name="expandedItem">The single expanded value.</param>
     /// <param name="insideReverse">Whether the property is being compacted inside an <c>@reverse</c>.</param>
-    private static void CompactPropertyItem(
+    private static async ValueTask CompactPropertyItemAsync(
         LinkedDataContext activeContext,
         InverseContext inverse,
-        string? documentBase,
+        CompactionEnv env,
         Dictionary<string, object?> result,
         string expandedProperty,
         JsonNode expandedItem,
@@ -497,7 +672,7 @@ public static class JsonLdCompactor
             expandedItem.TryGetProperty(JsonLdKeywords.Graph, out inner);
         }
 
-        object? compactedItem = CompactElement(activeContext, inverse, documentBase, itemActiveProperty, inner);
+        object? compactedItem = await CompactElementAsync(activeContext, inverse, env, itemActiveProperty, inner).ConfigureAwait(false);
 
         if(isList)
         {
@@ -535,7 +710,7 @@ public static class JsonLdCompactor
             || ContainsContainer(container, JsonLdKeywords.Id)
             || ContainsContainer(container, JsonLdKeywords.Type))
         {
-            CompactMapItem(activeContext, inverse, documentBase, nestResult, itemActiveProperty, expandedItem, compactedItem, container);
+            CompactMapItem(activeContext, inverse, env, nestResult, itemActiveProperty, expandedItem, compactedItem, container);
             return;
         }
 
@@ -631,7 +806,7 @@ public static class JsonLdCompactor
     private static void CompactMapItem(
         LinkedDataContext activeContext,
         InverseContext inverse,
-        string? documentBase,
+        CompactionEnv env,
         Dictionary<string, object?> nestResult,
         string itemActiveProperty,
         JsonNode expandedItem,
@@ -690,7 +865,7 @@ public static class JsonLdCompactor
                 //A node carrying only its (now hoisted) @type re-compacts as a bare reference to its @id.
                 if(typeMap.Count == 1 && expandedItem.TryGetProperty(JsonLdKeywords.Id, out JsonNode reId))
                 {
-                    compactedItem = CompactNodeReference(activeContext, inverse, documentBase, itemActiveProperty, reId);
+                    compactedItem = CompactNodeReference(activeContext, inverse, env, itemActiveProperty, reId);
                 }
             }
         }
@@ -704,9 +879,9 @@ public static class JsonLdCompactor
     /// <param name="inverse">The inverse context.</param>
     /// <param name="expandedValue">The expanded reverse map.</param>
     /// <param name="result">The node object under construction.</param>
-    private static void CompactReverse(LinkedDataContext activeContext, InverseContext inverse, string? documentBase, JsonNode expandedValue, Dictionary<string, object?> result)
+    private static async ValueTask CompactReverseAsync(LinkedDataContext activeContext, InverseContext inverse, CompactionEnv env, JsonNode expandedValue, Dictionary<string, object?> result)
     {
-        if(CompactElement(activeContext, inverse, documentBase, JsonLdKeywords.Reverse, expandedValue) is not Dictionary<string, object?> compactedValue)
+        if(await CompactElementAsync(activeContext, inverse, env, JsonLdKeywords.Reverse, expandedValue).ConfigureAwait(false) is not Dictionary<string, object?> compactedValue)
         {
             return;
         }
@@ -736,7 +911,7 @@ public static class JsonLdCompactor
     /// <param name="activeProperty">The compact property the value appears under.</param>
     /// <param name="value">The expanded value object or node reference.</param>
     /// <returns>The compacted value.</returns>
-    private static object? CompactValueElement(LinkedDataContext activeContext, InverseContext inverse, string? documentBase, string? activeProperty, JsonNode value)
+    private static object? CompactValueElement(LinkedDataContext activeContext, InverseContext inverse, CompactionEnv env, string? activeProperty, JsonNode value)
     {
         if(IsValueNode(value))
         {
@@ -815,7 +990,7 @@ public static class JsonLdCompactor
 
         //Node reference.
         value.TryGetProperty(JsonLdKeywords.Id, out JsonNode idNode);
-        return CompactNodeReference(activeContext, inverse, documentBase, activeProperty, idNode);
+        return CompactNodeReference(activeContext, inverse, env, activeProperty, idNode);
     }
 
     /// <summary>Compacts a bare node reference's <c>@id</c> (§ Value Compaction, subject-reference case): a scalar under an <c>@id</c>/<c>@vocab</c>-coerced property or a <c>@graph</c> alias, otherwise the aliased <c>{"@id": ...}</c> object.</summary>
@@ -824,14 +999,14 @@ public static class JsonLdCompactor
     /// <param name="activeProperty">The compact property the reference appears under.</param>
     /// <param name="idNode">The reference's <c>@id</c> value.</param>
     /// <returns>The compacted reference.</returns>
-    private static object? CompactNodeReference(LinkedDataContext activeContext, InverseContext inverse, string? documentBase, string? activeProperty, JsonNode idNode)
+    private static object? CompactNodeReference(LinkedDataContext activeContext, InverseContext inverse, CompactionEnv env, string? activeProperty, JsonNode idNode)
     {
         string? expandedProperty = activeContext.ExpandIri(activeProperty, vocab: true);
         string? referenceType = TypeMappingOf(activeContext, activeProperty);
         string? compacted = CompactIriCore(
             activeContext, inverse, idNode.GetString(), value: null,
             vocab: string.Equals(referenceType, "@vocab", StringComparison.Ordinal), reverse: false,
-            documentBase: activeContext.BaseIri ?? documentBase);
+            documentBase: activeContext.BaseIri ?? env.DocumentBase);
 
         if(string.Equals(referenceType, "@id", StringComparison.Ordinal)
             || string.Equals(referenceType, "@vocab", StringComparison.Ordinal)
@@ -852,9 +1027,9 @@ public static class JsonLdCompactor
     /// <param name="inverse">The inverse context.</param>
     /// <param name="expandedValue">The expanded <c>@id</c> value.</param>
     /// <returns>The compacted id, a scalar for a single value or a list for several.</returns>
-    private static object? CompactIdValues(LinkedDataContext activeContext, InverseContext inverse, string? documentBase, JsonNode expandedValue)
+    private static object? CompactIdValues(LinkedDataContext activeContext, InverseContext inverse, CompactionEnv env, JsonNode expandedValue)
     {
-        string? effectiveBase = activeContext.BaseIri ?? documentBase;
+        string? effectiveBase = activeContext.BaseIri ?? env.DocumentBase;
         if(expandedValue.Kind == JsonNodeKind.String)
         {
             return CompactIriCore(activeContext, inverse, expandedValue.GetString(), value: null, vocab: false, reverse: false, documentBase: effectiveBase);
@@ -2119,6 +2294,29 @@ public static class JsonLdCompactor
             return lengthCompare < 0;
         }
         return string.CompareOrdinal(candidate, current) < 0;
+    }
+
+    /// <summary>
+    /// The per-compaction environment: the constants that flow unchanged
+    /// through the recursive walk (document base, the compactArrays flag, and
+    /// the resolver/parser/cancellation needed to process scoped contexts).
+    /// </summary>
+    private sealed class CompactionEnv
+    {
+        /// <summary>Gets the document base IRI for document-relative <c>@id</c> compaction, or <c>null</c>.</summary>
+        public string? DocumentBase { get; init; }
+
+        /// <summary>Gets a value indicating whether single-value arrays without a pinned container collapse to the value.</summary>
+        public bool CompactArrays { get; init; }
+
+        /// <summary>Gets the resolver for remote contexts referenced by scoped contexts.</summary>
+        public required ContextResolverDelegate Resolver { get; init; }
+
+        /// <summary>Gets the parser for remote context bodies.</summary>
+        public required ParseJsonDelegate Parser { get; init; }
+
+        /// <summary>Gets the token that aborts the operation.</summary>
+        public CancellationToken CancellationToken { get; init; }
     }
 
     /// <summary>
