@@ -579,8 +579,19 @@ public static class JsonLdExpansionTree
         deferredNests.Sort(static (left, right) => string.CompareOrdinal(left.Key, right.Key));
         foreach(KeyValuePair<string, JsonLdNode> nest in deferredNests)
         {
+            //A @nest-alias term may carry a property-scoped context that
+            //applies to the nested properties (W3C JSON-LD 1.1 §4.3.2).
+            LinkedDataContext nestContext = activeContext;
+            if(activeContext.TryGetTerm(nest.Key, out TermDefinition? nestTermDef)
+                && nestTermDef is { ScopedContextEntries: { } nestScopedEntries })
+            {
+                nestContext = await ApplyScopedEntriesAsync(
+                    activeContext, nestScopedEntries, baseUrl, resolver, parser, cancellationToken, overrideProtected: true)
+                    .ConfigureAwait(false);
+            }
+
             await ExpandNestIntoAsync(
-                nest.Value, result, activeContext, typeExpansionContext, baseUrl, resolver, parser, cancellationToken)
+                nest.Value, result, nestContext, typeExpansionContext, baseUrl, resolver, parser, cancellationToken)
                 .ConfigureAwait(false);
         }
     }
