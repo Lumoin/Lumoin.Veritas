@@ -249,7 +249,12 @@ public static partial class ContextProcessing
                 "context overflow",
                 string.Create(CultureInfo.InvariantCulture, $"Recursive context reference detected for '{resolvedUri}'."));
         }
-        remoteContexts.Add(resolvedUri);
+
+        //Cycle detection tracks the current dereferencing CHAIN, not a global
+        //visited set: two sibling contexts may each reference the same shared
+        //context without it being a cycle (W3C JSON-LD 1.1 §4.1). Extend a
+        //fresh per-branch copy rather than mutating the caller's list.
+        List<string> branchContexts = [.. remoteContexts, resolvedUri];
 
         RemoteResource? resource = cache is null
             ? null
@@ -285,7 +290,7 @@ public static partial class ContextProcessing
 
         return await ApplyEmbeddedContextsCoreAsync(
             activeContext, embeddedEntries, effectiveBase, fetcher, parser, cache,
-            overrideProtected, propagate, remoteContexts, depth + 1,
+            overrideProtected, propagate, branchContexts, depth + 1,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -293,6 +298,19 @@ public static partial class ContextProcessing
         IReadOnlyDictionary<string, object?> parsedContext,
         string? baseUrl)
     {
+        //A remote context whose @context value is itself a string (a nested
+        //URL reference), an array, or null is surfaced by the parser as a
+        //single "@context" wrapper. Such a value is a context reference, not a
+        //term map, so convert it to URL/reset entries rather than minting a
+        //bogus "@context" term (W3C JSON-LD 1.1 §4.1 — a context may reference
+        //another context).
+        if(parsedContext.Count == 1
+            && parsedContext.TryGetValue("@context", out object? wrapped)
+            && wrapped is not IReadOnlyDictionary<string, object?>)
+        {
+            return ConvertWrappedContextValue(wrapped, baseUrl);
+        }
+
         //The dict-of-object shape's top level represents an inline-context
         //object. Walk its entries: known directives go on the entry
         //itself; everything else becomes a term source.
@@ -384,6 +402,65 @@ public static partial class ContextProcessing
                 Import = import
             }
         };
+    }
+
+    /// <summary>
+    /// Converts a remote context's wrapped <c>@context</c> value — a URL
+    /// string, an array of references, or <see langword="null"/> — into the
+    /// corresponding ordered <see cref="LinkedDataContextEntry"/> list (URL
+    /// entries, nested inline entries, or a reset).
+    /// </summary>
+    private static LinkedDataContextEntry[] ConvertWrappedContextValue(object? wrapped, string? baseUrl)
+    {
+        switch(wrapped)
+        {
+            case null:
+            {
+                return [new LinkedDataContextEntry((string?)null, baseUrl, "remote-reset")];
+            }
+            case string url:
+            {
+                return [new LinkedDataContextEntry(url, baseUrl, "remote-url")];
+            }
+            case IReadOnlyList<object?> items:
+            {
+                List<LinkedDataContextEntry> entries = [];
+                int index = 0;
+                foreach(object? item in items)
+                {
+                    switch(item)
+                    {
+                        case null:
+                        {
+                            entries.Add(new LinkedDataContextEntry((string?)null, baseUrl, $"remote-reset-{index}"));
+                            break;
+                        }
+                        case string itemUrl:
+                        {
+                            entries.Add(new LinkedDataContextEntry(itemUrl, baseUrl, $"remote-url-{index}"));
+                            break;
+                        }
+                        case IReadOnlyDictionary<string, object?> itemMap:
+                        {
+                            entries.AddRange(ConvertParsedContextToEntries(itemMap, baseUrl));
+                            break;
+                        }
+                        default:
+                        {
+                            break;
+                        }
+                    }
+
+                    index++;
+                }
+
+                return [.. entries];
+            }
+            default:
+            {
+                return [];
+            }
+        }
     }
 
     /// <summary>
