@@ -125,7 +125,7 @@ internal static class W3cJsonLdRunner
             //(JsonLdExpansionTree) rather than a parallel expansion.
             IReadOnlyList<object?> expanded = await JsonLdExpansionTree.ExpandAsync(
                 input, baseUrl, resolver, StjJsonLdAdapter.Parse, expandContext, cancellationToken).ConfigureAwait(false);
-            actual = JsonLdRdfSerializer.Serialize(expanded, pool);
+            actual = JsonLdRdfSerializer.Serialize(expanded, pool, DirectionModeFor(testCase.RdfDirection));
         }
         catch(Exception exception) when(exception is not OperationCanceledException)
         {
@@ -156,6 +156,19 @@ internal static class W3cJsonLdRunner
         return QuadSetIsomorphism.AreIsomorphic(actual, expected)
             ? new W3cOutcome(W3cOutcomeStatus.Passed, $"toRdf matches ({actual.Count} quads).")
             : new W3cOutcome(W3cOutcomeStatus.Failed, $"toRdf differs: actual={actual.Count} quads, expected={expected.Count} quads.");
+    }
+
+    /// <summary>Maps the <c>option.rdfDirection</c> value to the serializer's direction mode.</summary>
+    /// <param name="rdfDirection">The option value, or <see langword="null"/>.</param>
+    /// <returns>The corresponding <see cref="JsonLdRdfSerializer.DirectionMode"/>.</returns>
+    private static JsonLdRdfSerializer.DirectionMode DirectionModeFor(string? rdfDirection)
+    {
+        return rdfDirection switch
+        {
+            "i18n-datatype" => JsonLdRdfSerializer.DirectionMode.I18nDatatype,
+            "compound-literal" => JsonLdRdfSerializer.DirectionMode.CompoundLiteral,
+            _ => JsonLdRdfSerializer.DirectionMode.None
+        };
     }
 
     /// <summary>Loads the <c>expandContext</c> option document (a <c>{"@context": …}</c> wrapper) and returns its context value, or <see langword="null"/> when the option is absent.</summary>

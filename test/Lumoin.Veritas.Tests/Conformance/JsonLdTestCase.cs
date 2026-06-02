@@ -36,4 +36,5 @@ internal sealed record JsonLdTestCase(
     string? ExpandContextPath,
     string? ProcessingMode,
     string? SpecVersion,
+    string? RdfDirection,
     string CorpusDirectory);

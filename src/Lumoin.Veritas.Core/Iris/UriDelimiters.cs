@@ -30,4 +30,24 @@ public static class UriDelimiters
 
     /// <summary>The <c>"//"</c> that introduces the authority component.</summary>
     public const string AuthorityPrefix = "//";
+
+    /// <summary>Returns whether <paramref name="character"/> is the scheme separator (<see cref="SchemeSeparator"/>).</summary>
+    /// <param name="character">The character to test.</param>
+    /// <returns><see langword="true"/> when it is <c>':'</c>.</returns>
+    public static bool IsSchemeSeparator(char character) => character == SchemeSeparator;
+
+    /// <summary>Returns whether <paramref name="character"/> is the path separator (<see cref="PathSeparator"/>).</summary>
+    /// <param name="character">The character to test.</param>
+    /// <returns><see langword="true"/> when it is <c>'/'</c>.</returns>
+    public static bool IsPathSeparator(char character) => character == PathSeparator;
+
+    /// <summary>Returns whether <paramref name="character"/> is the query prefix (<see cref="QueryPrefix"/>).</summary>
+    /// <param name="character">The character to test.</param>
+    /// <returns><see langword="true"/> when it is <c>'?'</c>.</returns>
+    public static bool IsQueryPrefix(char character) => character == QueryPrefix;
+
+    /// <summary>Returns whether <paramref name="character"/> is the fragment prefix (<see cref="FragmentPrefix"/>).</summary>
+    /// <param name="character">The character to test.</param>
+    /// <returns><see langword="true"/> when it is <c>'#'</c>.</returns>
+    public static bool IsFragmentPrefix(char character) => character == FragmentPrefix;
 }

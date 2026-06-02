@@ -64,12 +64,14 @@ internal static class JsonLdManifestLoader
         string? expandContext = null;
         string? processingMode = null;
         string? specVersion = null;
+        string? rdfDirection = null;
         if(entry.TryGetProperty("option", out JsonLdNode option) && option.Kind == JsonLdNodeKind.Object)
         {
             optionBase = StringOrNull(option, "base");
             expandContext = StringOrNull(option, "expandContext");
             processingMode = StringOrNull(option, "processingMode");
             specVersion = StringOrNull(option, "specVersion");
+            rdfDirection = StringOrNull(option, "rdfDirection");
         }
 
         return new JsonLdTestCase(
@@ -87,6 +89,7 @@ internal static class JsonLdManifestLoader
             ExpandContextPath: expandContext is null ? null : Resolve(corpusDirectory, expandContext),
             ProcessingMode: processingMode,
             SpecVersion: specVersion,
+            RdfDirection: rdfDirection,
             CorpusDirectory: corpusDirectory);
     }
 

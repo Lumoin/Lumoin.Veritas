@@ -235,7 +235,7 @@ public static class IriResolver
             }
             else
             {
-                int start = input[0] == UriDelimiters.PathSeparator ? 1 : 0;
+                int start = UriDelimiters.IsPathSeparator(input[0]) ? 1 : 0;
                 int next = input.IndexOf(UriDelimiters.PathSeparator, start);
                 if(next < 0)
                 {
@@ -259,7 +259,7 @@ public static class IriResolver
         int lastSlash = -1;
         for(int i = output.Length - 1; i >= 0; i--)
         {
-            if(output[i] == UriDelimiters.PathSeparator)
+            if(UriDelimiters.IsPathSeparator(output[i]))
             {
                 lastSlash = i;
                 break;

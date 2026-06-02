@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text;
 using System.Threading;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Iris;
 using Lumoin.Veritas.LinkedData;
 
 namespace Lumoin.Veritas.JsonLd;
@@ -33,22 +35,43 @@ public static class JsonLdRdfSerializer
     private const string XsdInteger = "http://www.w3.org/2001/XMLSchema#integer";
     private const string XsdDouble = "http://www.w3.org/2001/XMLSchema#double";
     private const string RdfLangString = "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString";
+    private const string RdfValue = "http://www.w3.org/1999/02/22-rdf-syntax-ns#value";
+    private const string RdfLanguage = "http://www.w3.org/1999/02/22-rdf-syntax-ns#language";
+    private const string RdfDirection = "http://www.w3.org/1999/02/22-rdf-syntax-ns#direction";
+    private const string I18nNamespace = "https://www.w3.org/ns/i18n#";
 
     private static long blankNodeCounter;
+
+    /// <summary>
+    /// How a value object's base <c>@direction</c> is represented in RDF (the
+    /// JSON-LD API <c>rdfDirection</c> option).
+    /// </summary>
+    public enum DirectionMode
+    {
+        /// <summary>Base direction is dropped (the default — RDF has no native direction term).</summary>
+        None,
+
+        /// <summary>A directional literal becomes a plain literal typed with an <c>https://www.w3.org/ns/i18n#</c> datatype encoding the language and direction.</summary>
+        I18nDatatype,
+
+        /// <summary>A directional literal becomes a blank node carrying <c>rdf:value</c>/<c>rdf:language</c>/<c>rdf:direction</c> triples.</summary>
+        CompoundLiteral
+    }
 
     /// <summary>
     /// Serializes an expanded JSON-LD object graph to RDF quads.
     /// </summary>
     /// <param name="expanded">The expanded document (an array of node objects).</param>
     /// <param name="pool">Pool for interning UTF-8 term strings.</param>
+    /// <param name="rdfDirection">How a value object's base <c>@direction</c> is represented in RDF.</param>
     /// <returns>The extracted quads in document order.</returns>
     /// <exception cref="ArgumentNullException">Any argument is <see langword="null"/>.</exception>
-    public static List<Quad> Serialize(IReadOnlyList<object?> expanded, Utf8StringPool pool)
+    public static List<Quad> Serialize(IReadOnlyList<object?> expanded, Utf8StringPool pool, DirectionMode rdfDirection = DirectionMode.None)
     {
         ArgumentNullException.ThrowIfNull(expanded);
         ArgumentNullException.ThrowIfNull(pool);
 
-        SerializationState state = new(pool);
+        SerializationState state = new(pool, rdfDirection);
         foreach(object? element in expanded)
         {
             if(element is IReadOnlyDictionary<string, object?> node && !IsValueOrListObject(node))
@@ -175,6 +198,18 @@ public static class JsonLdRdfSerializer
     {
         switch(value)
         {
+            //A value object carrying a base @direction becomes a compound
+            //literal (a blank node with rdf:value/language/direction) under the
+            //compound-literal rdfDirection mode.
+            case IReadOnlyDictionary<string, object?> map
+                when state.RdfDirection == DirectionMode.CompoundLiteral
+                    && map.ContainsKey(JsonLdKeywords.Value)
+                    && map.GetValueOrDefault(JsonLdKeywords.Direction) is string
+                    && map.GetValueOrDefault(JsonLdKeywords.Type) is null:
+            {
+                objectTerm = EmitCompoundLiteral(state, map, graph);
+                return true;
+            }
             case IReadOnlyDictionary<string, object?> map when map.ContainsKey(JsonLdKeywords.Value):
             {
                 return TryMakeLiteral(state, map, out objectTerm);
@@ -196,6 +231,36 @@ public static class JsonLdRdfSerializer
                 return false;
             }
         }
+    }
+
+    /// <summary>
+    /// Emits a compound literal (RDF 1.1 base-direction representation): a fresh
+    /// blank node carrying <c>rdf:value</c>, and <c>rdf:language</c>/
+    /// <c>rdf:direction</c> when present. Returns the blank node.
+    /// </summary>
+    [SuppressMessage("Globalization", "CA1308:Normalize strings to uppercase",
+        Justification = "BCP47 language subtags are canonically lower-case per the JSON-LD / i18n specifications.")]
+    private static BlankNode EmitCompoundLiteral(SerializationState state, IReadOnlyDictionary<string, object?> valueObject, RdfTerm? graph)
+    {
+        BlankNode node = state.MintBlankNode();
+        NamedNode xsdString = new(state.Pool.Intern(XsdString));
+
+        state.Emit(node, new NamedNode(state.Pool.Intern(RdfValue)),
+            new Literal(state.Pool.Intern(LexicalForm(valueObject.GetValueOrDefault(JsonLdKeywords.Value))), xsdString), graph);
+
+        if(valueObject.GetValueOrDefault(JsonLdKeywords.Language) is string language)
+        {
+            state.Emit(node, new NamedNode(state.Pool.Intern(RdfLanguage)),
+                new Literal(state.Pool.Intern(language.ToLowerInvariant()), xsdString), graph);
+        }
+
+        if(valueObject.GetValueOrDefault(JsonLdKeywords.Direction) is string direction)
+        {
+            state.Emit(node, new NamedNode(state.Pool.Intern(RdfDirection)),
+                new Literal(state.Pool.Intern(direction), xsdString), graph);
+        }
+
+        return node;
     }
 
     private static RdfTerm EmitList(SerializationState state, object? listValue, RdfTerm? graph)
@@ -231,17 +296,30 @@ public static class JsonLdRdfSerializer
         return cells[0];
     }
 
+    [SuppressMessage("Globalization", "CA1308:Normalize strings to uppercase",
+        Justification = "BCP47 language subtags are canonically lower-case per the JSON-LD / i18n specifications.")]
     private static bool TryMakeLiteral(SerializationState state, IReadOnlyDictionary<string, object?> valueObject, out RdfTerm literal)
     {
         object? rawValue = valueObject.GetValueOrDefault(JsonLdKeywords.Value);
         string? type = valueObject.GetValueOrDefault(JsonLdKeywords.Type) as string;
         string? language = valueObject.GetValueOrDefault(JsonLdKeywords.Language) as string;
+        string? direction = valueObject.GetValueOrDefault(JsonLdKeywords.Direction) as string;
 
         //A malformed language tag drops the literal's triple.
         if(language is not null && !IsWellFormedLanguage(language))
         {
             literal = null!;
             return false;
+        }
+
+        //Under the i18n-datatype mode a base @direction on a plain string is
+        //encoded as a https://www.w3.org/ns/i18n#<language>_<direction> datatype.
+        if(state.RdfDirection == DirectionMode.I18nDatatype && direction is not null && type is null)
+        {
+            string i18nDatatype = string.Concat(I18nNamespace, language?.ToLowerInvariant() ?? string.Empty, "_", direction);
+            literal = new Literal(state.Pool.Intern(LexicalForm(rawValue)), new NamedNode(state.Pool.Intern(i18nDatatype)));
+
+            return true;
         }
 
         //@json is serialized to its canonical JSON form (RFC 8785: lexicographically
@@ -524,7 +602,7 @@ public static class JsonLdRdfSerializer
             }
 
             //An IRI has at most one fragment: a second unescaped '#' is malformed.
-            if(character == '#' && ++hashCount > 1)
+            if(UriDelimiters.IsFragmentPrefix(character) && ++hashCount > 1)
             {
                 return false;
             }
@@ -572,15 +650,20 @@ public static class JsonLdRdfSerializer
         private readonly Dictionary<IReadOnlyDictionary<string, object?>, RdfTerm> subjects = new(ReferenceEqualityComparer.Instance);
         private readonly HashSet<IReadOnlyDictionary<string, object?>> pushed = new(ReferenceEqualityComparer.Instance);
 
-        /// <summary>Initialises the state with the interning pool.</summary>
+        /// <summary>Initialises the state with the interning pool and direction mode.</summary>
         /// <param name="pool">The UTF-8 term pool.</param>
-        public SerializationState(Utf8StringPool pool)
+        /// <param name="rdfDirection">How a base <c>@direction</c> is represented in RDF.</param>
+        public SerializationState(Utf8StringPool pool, DirectionMode rdfDirection)
         {
             Pool = pool;
+            RdfDirection = rdfDirection;
         }
 
         /// <summary>Gets the UTF-8 term-interning pool.</summary>
         public Utf8StringPool Pool { get; }
+
+        /// <summary>Gets how a value object's base <c>@direction</c> is represented in RDF.</summary>
+        public DirectionMode RdfDirection { get; }
 
         /// <summary>Gets the emitted quads.</summary>
         public List<Quad> Quads { get; } = [];
