@@ -33,10 +33,15 @@ internal static class W3cJsonLdRunner
     {
         ArgumentNullException.ThrowIfNull(testCase);
 
-        //1.0-specific behaviour is out of scope (the engine targets JSON-LD 1.1).
+        //JSON-LD 1.0 (2014) is superseded by 1.1 (2020); these cases exercise
+        //the 1.0 processing mode, whose sole purpose is to REJECT 1.1 features
+        //(@import, @propagate, scoped contexts, @type:@none, list-of-lists, …).
+        //This engine implements 1.1 only — the conformant stance for a 1.1
+        //processor is to report 1.0-mode cases as not-applicable, so they are
+        //skipped by deliberate scope rather than as an unfinished gap.
         if(IsJsonLd10(testCase.ProcessingMode) || IsJsonLd10(testCase.SpecVersion))
         {
-            return new W3cOutcome(W3cOutcomeStatus.Skipped, "JSON-LD 1.0 behaviour is not modelled (engine targets 1.1).");
+            return new W3cOutcome(W3cOutcomeStatus.Skipped, "JSON-LD 1.0 processing mode is out of scope (engine implements 1.1; 1.0 is superseded).");
         }
 
         return testCase.Operation switch
