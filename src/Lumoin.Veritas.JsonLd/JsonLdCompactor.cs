@@ -481,6 +481,22 @@ public static class JsonLdCompactor
         return single;
     }
 
+    /// <summary>Whether a node is a bare node reference — an object whose only member is <c>@id</c>.</summary>
+    /// <param name="node">The candidate node.</param>
+    /// <returns><see langword="true"/> when the object has exactly one member, <c>@id</c>.</returns>
+    private static bool IsNodeReference(JsonNode node)
+    {
+        int count = 0;
+        bool hasId = false;
+        foreach(KeyValuePair<string, JsonNode> member in node.EnumerateObject())
+        {
+            count++;
+            hasId |= JsonLdKeywords.IsId(member.Key);
+        }
+
+        return count == 1 && hasId;
+    }
+
     private static bool HasContainer(TermDefinition def, string container)
     {
         foreach(string entry in def.ContainerMapping)
@@ -796,6 +812,17 @@ public static class JsonLdCompactor
             {
                 return CompactValue(item, termDef, activeContext);
             }
+
+            //A node reference ({"@id": IRI} and nothing else) under a term coerced to @id/@vocab compacts
+            //to the bare (vocab- or document-relative) IRI string.
+            if(termDef?.TypeMapping is "@id" or "@vocab"
+                && IsNodeReference(item)
+                && item.TryGetProperty(JsonLdKeywords.Id, out JsonNode referenceId)
+                && referenceId.Kind == JsonNodeKind.String)
+            {
+                return CompactIri(activeContext, referenceId.GetString(), vocab: termDef.TypeMapping == "@vocab");
+            }
+
             return CompactNodeObject(item, activeContext);
         }
         if(item.Kind == JsonNodeKind.Array)
