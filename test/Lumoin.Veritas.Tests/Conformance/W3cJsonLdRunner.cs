@@ -52,6 +52,7 @@ internal static class W3cJsonLdRunner
         {
             "expand" => await RunExpandAsync(testCase, cancellationToken).ConfigureAwait(false),
             "toRdf" => await RunToRdfAsync(testCase, cancellationToken).ConfigureAwait(false),
+            "compact" => await RunCompactAsync(testCase, cancellationToken).ConfigureAwait(false),
             _ => new W3cOutcome(W3cOutcomeStatus.Skipped, $"Operation '{testCase.Operation}' is not wired yet.")
         };
     }
@@ -159,6 +160,93 @@ internal static class W3cJsonLdRunner
         return QuadSetIsomorphism.AreIsomorphic(actual, expected)
             ? new W3cOutcome(W3cOutcomeStatus.Passed, $"toRdf matches ({actual.Count} quads).")
             : new W3cOutcome(W3cOutcomeStatus.Failed, $"toRdf differs: actual={actual.Count} quads, expected={expected.Count} quads.");
+    }
+
+    /// <summary>Runs a <c>compact</c> case: expands the input, processes the provided context, compacts against it, and compares to the expected document.</summary>
+    /// <param name="testCase">The case.</param>
+    /// <param name="cancellationToken">A token that aborts the run.</param>
+    /// <returns>The outcome.</returns>
+    private static async ValueTask<W3cOutcome> RunCompactAsync(JsonLdTestCase testCase, CancellationToken cancellationToken)
+    {
+        JsonNode input = StjJsonAdapter.Parse(await ReadUtf8Async(testCase.InputPath, cancellationToken).ConfigureAwait(false));
+        string baseUrl = testCase.OptionBase ?? testCase.InputUrl;
+        ContextResolverDelegate resolver = CorpusResolver(testCase);
+        JsonNode? expandContext = await LoadExpandContextAsync(testCase, cancellationToken).ConfigureAwait(false);
+
+        object? compacted;
+        try
+        {
+            //Compaction runs over the conformant expansion: expand the input, then compact the expanded
+            //form against the active context the provided context document processes to.
+            IReadOnlyList<object?> expanded = await JsonLdExpansionTree.ExpandAsync(
+                input, baseUrl, resolver, StjJsonAdapter.Parse, expandContext, cancellationToken).ConfigureAwait(false);
+            JsonNode expandedNode = ExpandedToModelNode(expanded);
+
+            JsonNode contextDocument = StjJsonAdapter.Parse(await ReadUtf8Async(testCase.ContextPath!, cancellationToken).ConfigureAwait(false));
+            JsonNode contextValue = contextDocument.TryGetProperty("@context", out JsonNode embedded) ? embedded : contextDocument;
+            LinkedDataContext activeContext = await ContextProcessor.ProcessAsync(
+                LinkedDataContext.Empty, contextValue, baseUrl, resolver, StjJsonAdapter.Parse, cancellationToken).ConfigureAwait(false);
+
+            compacted = JsonLdCompactor.Compact(expandedNode, activeContext);
+        }
+        catch(Exception exception) when(exception is not OperationCanceledException)
+        {
+            return testCase.IsPositive
+                ? new W3cOutcome(W3cOutcomeStatus.Failed, $"compact threw: {exception.Message}")
+                : new W3cOutcome(W3cOutcomeStatus.Passed, $"Raised the expected processing error ('{testCase.ExpectErrorCode}').");
+        }
+
+        if(!testCase.IsPositive)
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expected error '{testCase.ExpectErrorCode}', but compact succeeded.");
+        }
+
+        if(testCase.ExpectPath is null)
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Passed, "Compacted without error.");
+        }
+
+        StjJsonNode? actual = WrapWithContext(ToJsonNode(compacted), testCase.ContextPath!);
+        StjJsonNode? expected = StjJsonNode.Parse(await File.ReadAllBytesAsync(testCase.ExpectPath!, cancellationToken).ConfigureAwait(false));
+
+        return JsonEquals(actual, expected)
+            ? new W3cOutcome(W3cOutcomeStatus.Passed, "Compacted output matches.")
+            : new W3cOutcome(W3cOutcomeStatus.Failed, $"Compacted output does not match.\n  actual:   {Preview(actual)}\n  expected: {Preview(expected)}");
+    }
+
+    /// <summary>Serializes the expander's object-graph output and reparses it as a model <see cref="JsonNode"/> for the compactor.</summary>
+    /// <param name="expanded">The expanded object graph.</param>
+    /// <returns>The expanded document as a model node.</returns>
+    private static JsonNode ExpandedToModelNode(IReadOnlyList<object?> expanded)
+    {
+        StjJsonNode? node = ToJsonNode(expanded);
+
+        return StjJsonAdapter.Parse(Utf8String.FromString(node?.ToJsonString() ?? "[]"));
+    }
+
+    /// <summary>Prepends the document's <c>@context</c> to a compacted object result, mirroring the Compaction API output.</summary>
+    /// <param name="body">The compacted body.</param>
+    /// <param name="contextPath">The path to the context document.</param>
+    /// <returns>The body with <c>@context</c> added (objects only).</returns>
+    private static StjJsonNode? WrapWithContext(StjJsonNode? body, string contextPath)
+    {
+        if(body is not StjJsonObject bodyObject)
+        {
+            return body;
+        }
+
+        StjJsonObject result = [];
+        if(StjJsonNode.Parse(File.ReadAllBytes(contextPath)) is StjJsonObject document && document.TryGetPropertyValue("@context", out StjJsonNode? contextValue))
+        {
+            result["@context"] = contextValue?.DeepClone();
+        }
+
+        foreach(KeyValuePair<string, StjJsonNode?> member in bodyObject)
+        {
+            result[member.Key] = member.Value?.DeepClone();
+        }
+
+        return result;
     }
 
     /// <summary>Maps the <c>option.rdfDirection</c> value to the serializer's direction mode.</summary>
