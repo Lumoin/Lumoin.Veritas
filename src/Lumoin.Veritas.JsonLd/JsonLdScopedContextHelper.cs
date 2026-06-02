@@ -18,13 +18,11 @@ namespace Lumoin.Veritas.JsonLd;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Consumed by both <see cref="JsonLdExpander"/> (quad-extraction
-/// path) and <see cref="JsonLdExpansionTree"/> (in-memory tree
-/// path) for property-scoped context handling. Both produce a new
+/// Consumed by <see cref="JsonLdExpansionTree"/> for property-scoped
+/// context handling: it produces a new
 /// <see cref="LinkedDataContext"/> with the scoped entries merged
 /// on top of the input active context, respecting W3C JSON-LD §9.6
-/// lazy-merge semantics. Type-scoped context handling is currently
-/// implemented in <see cref="JsonLdExpansionTree"/> only.
+/// lazy-merge semantics.
 /// </para>
 /// </remarks>
 internal static class JsonLdScopedContextHelper
