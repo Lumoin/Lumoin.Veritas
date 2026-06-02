@@ -88,4 +88,34 @@ public static class JsonSchemaKeywords
 
     /// <summary>The <c>items</c> keyword — the subschema for array elements beyond <c>prefixItems</c>.</summary>
     public static readonly string Items = "items";
+
+    /// <summary>The <c>patternProperties</c> keyword — subschemas applied to members whose name matches a pattern.</summary>
+    public static readonly string PatternProperties = "patternProperties";
+
+    /// <summary>The <c>propertyNames</c> keyword — the subschema each member name must satisfy.</summary>
+    public static readonly string PropertyNames = "propertyNames";
+
+    /// <summary>The <c>dependentRequired</c> keyword — members required when a triggering member is present.</summary>
+    public static readonly string DependentRequired = "dependentRequired";
+
+    /// <summary>The <c>dependentSchemas</c> keyword — subschemas applied when a triggering member is present.</summary>
+    public static readonly string DependentSchemas = "dependentSchemas";
+
+    /// <summary>The <c>if</c> keyword — the condition subschema that selects <c>then</c> or <c>else</c>.</summary>
+    public static readonly string If = "if";
+
+    /// <summary>The <c>then</c> keyword — applied when <c>if</c> holds.</summary>
+    public static readonly string Then = "then";
+
+    /// <summary>The <c>else</c> keyword — applied when <c>if</c> does not hold.</summary>
+    public static readonly string Else = "else";
+
+    /// <summary>The <c>contains</c> keyword — the subschema at least one array element must satisfy.</summary>
+    public static readonly string Contains = "contains";
+
+    /// <summary>The <c>minContains</c> keyword — the minimum number of <c>contains</c> matches.</summary>
+    public static readonly string MinContains = "minContains";
+
+    /// <summary>The <c>maxContains</c> keyword — the maximum number of <c>contains</c> matches.</summary>
+    public static readonly string MaxContains = "maxContains";
 }

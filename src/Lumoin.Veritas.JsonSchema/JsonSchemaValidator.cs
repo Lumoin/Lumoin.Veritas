@@ -109,31 +109,43 @@ public static class JsonSchemaValidator
     /// <param name="frame">The frame being closed.</param>
     private static void CloseFrame(Frame frame)
     {
-        frame.Result = frame.SelfValid && CombineChildren(frame.ChildResults);
+        frame.Result = frame.SelfValid && CombineChildren(frame);
         frame.Parent?.ChildResults.Add((frame.SpawnKeyword!, frame.Result));
     }
 
     /// <summary>Combines a frame's applicator-child results, grouped by the keyword that produced them.</summary>
-    /// <param name="childResults">The child results as (keyword, valid) pairs.</param>
+    /// <param name="frame">The frame whose children are combined.</param>
     /// <returns><see langword="true"/> when every applicator group is satisfied.</returns>
-    private static bool CombineChildren(List<(string Keyword, bool Valid)> childResults)
+    private static bool CombineChildren(Frame frame)
     {
-        if(childResults.Count == 0)
-        {
-            return true;
-        }
-
         Dictionary<string, (int Total, int Valid)> groups = new(StringComparer.Ordinal);
-        foreach((string keyword, bool valid) in childResults)
+        foreach((string keyword, bool valid) in frame.ChildResults)
         {
             (int total, int validCount) = groups.TryGetValue(keyword, out (int Total, int Valid) existing) ? existing : (0, 0);
             groups[keyword] = (total + 1, validCount + (valid ? 1 : 0));
         }
 
+        //if/then/else and contains read sibling keywords, which only exist on an object schema
+        //(a boolean schema carries none, and JsonNode.TryGetProperty is defined only for objects).
+        if(frame.Schema.Kind == JsonNodeKind.Object && (!CombineIfThenElse(frame, groups) || !CombineContains(frame, groups)))
+        {
+            return false;
+        }
+
         foreach(KeyValuePair<string, (int Total, int Valid)> group in groups)
         {
-            (int total, int valid) = group.Value;
             string keyword = group.Key;
+
+            //if / then / else and contains are combined above with their sibling keywords.
+            if(ReferenceEquals(keyword, JsonSchemaKeywords.If)
+                || ReferenceEquals(keyword, JsonSchemaKeywords.Then)
+                || ReferenceEquals(keyword, JsonSchemaKeywords.Else)
+                || ReferenceEquals(keyword, JsonSchemaKeywords.Contains))
+            {
+                continue;
+            }
+
+            (int total, int valid) = group.Value;
             bool satisfied =
                 ReferenceEquals(keyword, JsonSchemaKeywords.AnyOf) ? valid >= 1 :
                 ReferenceEquals(keyword, JsonSchemaKeywords.OneOf) ? valid == 1 :
@@ -147,6 +159,56 @@ public static class JsonSchemaValidator
         }
 
         return true;
+    }
+
+    /// <summary>Combines the <c>if</c>/<c>then</c>/<c>else</c> conditional: <c>if</c> selects which branch must hold.</summary>
+    /// <param name="frame">The frame.</param>
+    /// <param name="groups">The child-result groups.</param>
+    /// <returns><see langword="true"/> when the selected branch holds (or the conditional is absent).</returns>
+    private static bool CombineIfThenElse(Frame frame, Dictionary<string, (int Total, int Valid)> groups)
+    {
+        if(!frame.Schema.TryGetProperty(JsonSchemaKeywords.If, out _))
+        {
+            return true;
+        }
+
+        bool conditionHeld = groups.TryGetValue(JsonSchemaKeywords.If, out (int Total, int Valid) condition) && condition.Total > 0 && condition.Valid == condition.Total;
+        string branch = conditionHeld ? JsonSchemaKeywords.Then : JsonSchemaKeywords.Else;
+
+        return !groups.TryGetValue(branch, out (int Total, int Valid) result) || result.Valid == result.Total;
+    }
+
+    /// <summary>Combines <c>contains</c> with its <c>minContains</c>/<c>maxContains</c> bounds.</summary>
+    /// <param name="frame">The frame.</param>
+    /// <param name="groups">The child-result groups.</param>
+    /// <returns><see langword="true"/> when the match count satisfies the bounds (or <c>contains</c> does not apply).</returns>
+    private static bool CombineContains(Frame frame, Dictionary<string, (int Total, int Valid)> groups)
+    {
+        if(frame.Instance.Kind != JsonNodeKind.Array || !frame.Schema.TryGetProperty(JsonSchemaKeywords.Contains, out _))
+        {
+            return true;
+        }
+
+        int matched = groups.TryGetValue(JsonSchemaKeywords.Contains, out (int Total, int Valid) contains) ? contains.Valid : 0;
+        int minimum = ReadIntKeyword(frame.Schema, JsonSchemaKeywords.MinContains, 1);
+        if(matched < minimum)
+        {
+            return false;
+        }
+
+        return !frame.Schema.TryGetProperty(JsonSchemaKeywords.MaxContains, out JsonNode maximum)
+            || maximum.Kind != JsonNodeKind.Number
+            || matched <= ToInt(maximum);
+    }
+
+    /// <summary>Reads an integer keyword value, or a default when the keyword is absent or not a number.</summary>
+    /// <param name="schema">The schema object.</param>
+    /// <param name="keyword">The keyword name.</param>
+    /// <param name="fallback">The value to use when the keyword is absent or non-numeric.</param>
+    /// <returns>The integer value or the fallback.</returns>
+    private static int ReadIntKeyword(JsonNode schema, string keyword, int fallback)
+    {
+        return schema.TryGetProperty(keyword, out JsonNode value) && value.Kind == JsonNodeKind.Number ? ToInt(value) : fallback;
     }
 
     /// <summary>Evaluates the keywords whose assertion depends only on this instance node (not on subschemas).</summary>
@@ -312,6 +374,26 @@ public static class JsonSchemaValidator
                 }
             }
         }
+
+        //dependentRequired: when a triggering member is present, its dependent members must also be present.
+        if(schema.TryGetProperty(JsonSchemaKeywords.DependentRequired, out JsonNode dependentRequired) && dependentRequired.Kind == JsonNodeKind.Object)
+        {
+            foreach(KeyValuePair<string, JsonNode> dependency in dependentRequired.EnumerateObject())
+            {
+                if(!members.ContainsKey(dependency.Key) || dependency.Value.Kind != JsonNodeKind.Array)
+                {
+                    continue;
+                }
+
+                foreach(JsonNode dependent in dependency.Value.EnumerateArray())
+                {
+                    if(dependent.Kind == JsonNodeKind.String && !members.ContainsKey(dependent.GetString()))
+                    {
+                        Fail(frame, errors, JsonSchemaKeywords.DependentRequired, "A dependent required member is missing.");
+                    }
+                }
+            }
+        }
     }
 
     /// <summary>Collects the child frame requests for this frame's applicator keywords.</summary>
@@ -331,6 +413,11 @@ public static class JsonSchemaValidator
         {
             requests.Add(new ChildRequest(JsonSchemaKeywords.Not, not, frame.Instance, frame.InstanceLocation, frame.KeywordLocation.Append(JsonSchemaKeywords.Not)));
         }
+
+        //if / then / else: each is a subschema applied to the same instance node; the combiner selects the branch.
+        CollectSingleSubschema(frame, JsonSchemaKeywords.If, requests);
+        CollectSingleSubschema(frame, JsonSchemaKeywords.Then, requests);
+        CollectSingleSubschema(frame, JsonSchemaKeywords.Else, requests);
 
         if(frame.Instance.Kind == JsonNodeKind.Object)
         {
@@ -362,6 +449,18 @@ public static class JsonSchemaValidator
         }
     }
 
+    /// <summary>Collects a child request for a keyword whose value is a single subschema applied to the same instance node.</summary>
+    /// <param name="frame">The frame.</param>
+    /// <param name="keyword">The keyword name.</param>
+    /// <param name="requests">The list to populate.</param>
+    private static void CollectSingleSubschema(Frame frame, string keyword, List<ChildRequest> requests)
+    {
+        if(frame.Schema.TryGetProperty(keyword, out JsonNode subschema))
+        {
+            requests.Add(new ChildRequest(keyword, subschema, frame.Instance, frame.InstanceLocation, frame.KeywordLocation.Append(keyword)));
+        }
+    }
+
     /// <summary>Collects <c>properties</c> and <c>additionalProperties</c> child requests for an object instance.</summary>
     /// <param name="frame">The frame.</param>
     /// <param name="requests">The list to populate.</param>
@@ -388,6 +487,28 @@ public static class JsonSchemaValidator
             }
         }
 
+        //patternProperties applies to every member whose name matches the pattern, and those names also
+        //count as covered so additionalProperties does not see them.
+        if(schema.TryGetProperty(JsonSchemaKeywords.PatternProperties, out JsonNode patternProperties) && patternProperties.Kind == JsonNodeKind.Object)
+        {
+            foreach(KeyValuePair<string, JsonNode> definition in patternProperties.EnumerateObject())
+            {
+                foreach(KeyValuePair<string, JsonNode> member in members)
+                {
+                    if(Regex.IsMatch(member.Key, definition.Key))
+                    {
+                        covered.Add(member.Key);
+                        requests.Add(new ChildRequest(
+                            JsonSchemaKeywords.PatternProperties,
+                            definition.Value,
+                            member.Value,
+                            frame.InstanceLocation.Append(member.Key),
+                            frame.KeywordLocation.Append(JsonSchemaKeywords.PatternProperties).Append(definition.Key)));
+                    }
+                }
+            }
+        }
+
         if(schema.TryGetProperty(JsonSchemaKeywords.AdditionalProperties, out JsonNode additional))
         {
             foreach(KeyValuePair<string, JsonNode> member in members)
@@ -400,6 +521,37 @@ public static class JsonSchemaValidator
                         member.Value,
                         frame.InstanceLocation.Append(member.Key),
                         frame.KeywordLocation.Append(JsonSchemaKeywords.AdditionalProperties)));
+                }
+            }
+        }
+
+        //propertyNames validates each member name as a synthesized string instance.
+        if(schema.TryGetProperty(JsonSchemaKeywords.PropertyNames, out JsonNode propertyNames))
+        {
+            foreach(KeyValuePair<string, JsonNode> member in members)
+            {
+                requests.Add(new ChildRequest(
+                    JsonSchemaKeywords.PropertyNames,
+                    propertyNames,
+                    LiteralJsonNode.String(member.Key),
+                    frame.InstanceLocation.Append(member.Key),
+                    frame.KeywordLocation.Append(JsonSchemaKeywords.PropertyNames)));
+            }
+        }
+
+        //dependentSchemas applies a subschema to the whole object when a triggering member is present.
+        if(schema.TryGetProperty(JsonSchemaKeywords.DependentSchemas, out JsonNode dependentSchemas) && dependentSchemas.Kind == JsonNodeKind.Object)
+        {
+            foreach(KeyValuePair<string, JsonNode> definition in dependentSchemas.EnumerateObject())
+            {
+                if(members.ContainsKey(definition.Key))
+                {
+                    requests.Add(new ChildRequest(
+                        JsonSchemaKeywords.DependentSchemas,
+                        definition.Value,
+                        frame.Instance,
+                        frame.InstanceLocation,
+                        frame.KeywordLocation.Append(JsonSchemaKeywords.DependentSchemas).Append(definition.Key)));
                 }
             }
         }
@@ -439,6 +591,20 @@ public static class JsonSchemaValidator
                     elements[i],
                     frame.InstanceLocation.Append(i),
                     frame.KeywordLocation.Append(JsonSchemaKeywords.Items)));
+            }
+        }
+
+        //contains applies to every element; the combiner counts the matches against min/maxContains.
+        if(schema.TryGetProperty(JsonSchemaKeywords.Contains, out JsonNode contains))
+        {
+            for(int i = 0; i < elements.Count; i++)
+            {
+                requests.Add(new ChildRequest(
+                    JsonSchemaKeywords.Contains,
+                    contains,
+                    elements[i],
+                    frame.InstanceLocation.Append(i),
+                    frame.KeywordLocation.Append(JsonSchemaKeywords.Contains)));
             }
         }
     }
