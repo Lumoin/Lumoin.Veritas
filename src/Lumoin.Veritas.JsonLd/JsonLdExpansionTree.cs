@@ -260,7 +260,7 @@ public static class JsonLdExpansionTree
         //A bare @list / @set object reached outside a coercing property
         //(e.g. at the top level): expand its members and re-wrap (@list) or
         //unwrap (@set). No term coercion applies here.
-        if(obj.TryGetProperty("@list", out JsonLdNode topLevelList))
+        if(TryFindKeywordValue(obj, activeContext, "@list", out JsonLdNode topLevelList))
         {
             EnsureValidListOrSetObject(obj, activeContext, "@list");
             List<object?> listMembers = await ExpandMembersAsync(
@@ -268,7 +268,7 @@ public static class JsonLdExpansionTree
 
             return new Dictionary<string, object?>(StringComparer.Ordinal) { ["@list"] = listMembers };
         }
-        if(obj.TryGetProperty("@set", out JsonLdNode topLevelSet))
+        if(TryFindKeywordValue(obj, activeContext, "@set", out JsonLdNode topLevelSet))
         {
             EnsureValidListOrSetObject(obj, activeContext, "@set");
             return await ExpandMembersAsync(
@@ -716,7 +716,7 @@ public static class JsonLdExpansionTree
             //surrounding term) and re-wraps them; an explicit @set object
             //expands to its bare member list, which the caller splices into
             //the property array (the @set wrapper never survives expansion).
-            if(item.TryGetProperty("@list", out JsonLdNode listValue))
+            if(TryFindKeywordValue(item, activeContext, "@list", out JsonLdNode listValue))
             {
                 EnsureValidListOrSetObject(item, activeContext, "@list");
                 List<object?> listMembers = await ExpandMembersAsync(
@@ -724,7 +724,7 @@ public static class JsonLdExpansionTree
 
                 return new Dictionary<string, object?>(StringComparer.Ordinal) { ["@list"] = listMembers };
             }
-            if(item.TryGetProperty("@set", out JsonLdNode setValue))
+            if(TryFindKeywordValue(item, activeContext, "@set", out JsonLdNode setValue))
             {
                 EnsureValidListOrSetObject(item, activeContext, "@set");
                 return await ExpandMembersAsync(
