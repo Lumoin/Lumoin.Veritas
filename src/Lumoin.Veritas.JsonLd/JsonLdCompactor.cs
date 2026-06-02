@@ -652,8 +652,10 @@ public static class JsonLdCompactor
         }
         else if(ContainsContainer(container, JsonLdKeywords.Index))
         {
+            //The index property is expanded, then re-compacted to the form it carries in the compacted item.
             string indexKey = IndexOf(activeContext, itemActiveProperty) ?? JsonLdKeywords.Index;
-            string containerKey = CompactIriCore(activeContext, inverse, indexKey, value: null, vocab: true, reverse: false) ?? indexKey;
+            string expandedIndex = activeContext.ExpandIri(indexKey, vocab: true) ?? indexKey;
+            string containerKey = CompactIriCore(activeContext, inverse, expandedIndex, value: null, vocab: true, reverse: false) ?? expandedIndex;
             if(string.Equals(indexKey, JsonLdKeywords.Index, StringComparison.Ordinal))
             {
                 key = GetStringProperty(expandedItem, JsonLdKeywords.Index);
@@ -664,7 +666,9 @@ public static class JsonLdCompactor
             }
             else
             {
-                key = ExtractPropertyValuedIndexKey(compactedItem, indexKey);
+                //The property carries the compacted index key (containerKey), but a typed index term
+                //(e.g. @type: @vocab) can surface under its term name instead — fall back to the raw key.
+                key = ExtractPropertyValuedIndexKey(compactedItem, containerKey, indexKey);
             }
         }
         else if(ContainsContainer(container, JsonLdKeywords.Id))
@@ -1100,6 +1104,16 @@ public static class JsonLdCompactor
         if(choice is not null)
         {
             return choice;
+        }
+
+        //An absolute IRI that begins with "prefix:" of a defined prefix term would be misread as a compact IRI.
+        foreach(string term in activeContext.Terms)
+        {
+            if(activeContext.TryGetTerm(term, out TermDefinition? def) && def is { Prefix: true }
+                && iri.StartsWith(string.Concat(term, ":"), StringComparison.Ordinal))
+            {
+                throw new JsonLdProcessingException($"Absolute IRI '{iri}' is confused with prefix '{term}'.");
+            }
         }
 
         //Document-relative compaction against the base IRI.
@@ -1570,10 +1584,11 @@ public static class JsonLdCompactor
     {
         if(activeContext.TryGetTerm(itemActiveProperty, out TermDefinition? def) && def is { NestValue: { } nest })
         {
-            //The nest target must resolve to @nest; an invalid value is treated as no nesting here.
+            //The nest target must resolve to @nest (W3C JSON-LD 1.1 §4.1, invalid @nest value).
             if(!string.Equals(activeContext.ExpandIri(nest, vocab: true), JsonLdKeywords.Nest, StringComparison.Ordinal))
             {
-                return result;
+                throw new JsonLdProcessingException(JsonLdErrorCode.InvalidNestValue,
+                    $"Nested property '{itemActiveProperty}' must have an @nest value resolving to @nest, but '{nest}' does not.");
             }
 
             if(result.TryGetValue(nest, out object? existing) && existing is Dictionary<string, object?> nestMap)
@@ -1607,13 +1622,23 @@ public static class JsonLdCompactor
 
     /// <summary>Extracts the first value of a property-valued <c>@index</c> term from a compacted item and trims it from the item, returning the key or <c>null</c> when not a string.</summary>
     /// <param name="compactedItem">The compacted item.</param>
-    /// <param name="indexKey">The index property term.</param>
+    /// <param name="indexKey">The compacted index property key to look up first.</param>
+    /// <param name="fallbackKey">An alternate index property key tried when <paramref name="indexKey"/> is absent.</param>
     /// <returns>The map key, or <c>null</c>.</returns>
-    private static string? ExtractPropertyValuedIndexKey(object? compactedItem, string indexKey)
+    private static string? ExtractPropertyValuedIndexKey(object? compactedItem, string indexKey, string fallbackKey)
     {
-        if(compactedItem is not Dictionary<string, object?> item || !item.TryGetValue(indexKey, out object? raw))
+        if(compactedItem is not Dictionary<string, object?> item)
         {
             return null;
+        }
+
+        if(!item.TryGetValue(indexKey, out object? raw))
+        {
+            indexKey = fallbackKey;
+            if(!item.TryGetValue(indexKey, out raw))
+            {
+                return null;
+            }
         }
 
         List<object?> values = raw as List<object?> ?? new List<object?> { raw };
