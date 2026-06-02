@@ -375,7 +375,7 @@ public static class JsonLdExpansionTree
 
             switch(expandedKey)
             {
-                case "@id":
+                case var k when JsonLdKeywords.IsId(k):
                 {
                     if(value.Kind != JsonLdNodeKind.String)
                     {
@@ -384,7 +384,7 @@ public static class JsonLdExpansionTree
                             "A node object's @id value must be a string.");
                     }
 
-                    if(result.ContainsKey("@id"))
+                    if(result.ContainsKey(JsonLdKeywords.Id))
                     {
                         throw new JsonLdProcessingException(
                             JsonLdErrorCode.CollidingKeywords,
@@ -394,37 +394,37 @@ public static class JsonLdExpansionTree
                     //A keyword-like @id (e.g. "@ignoreMe") expands to null
                     //and is preserved as such rather than echoed verbatim.
                     string raw = value.GetString();
-                    result["@id"] = activeContext.ExpandIri(raw, documentRelative: true);
+                    result[JsonLdKeywords.Id] = activeContext.ExpandIri(raw, documentRelative: true);
                     continue;
                 }
-                case "@type":
+                case var k when JsonLdKeywords.IsType(k):
                 {
                     //@type IRIs expand against the pre-type-scoped context.
                     //Multiple keys expanding to @type (e.g. @type plus an
                     //alias) accumulate into one type array.
                     if(ExpandTypeValue(value, typeExpansionContext) is { } types)
                     {
-                        AddValues(result, "@type", types);
+                        AddValues(result, JsonLdKeywords.Type, types);
                     }
                     continue;
                 }
-                case "@graph":
+                case var k when JsonLdKeywords.IsGraph(k):
                 {
                     object? expandedGraph = await ExpandElementAsync(
                         value, activeContext, baseUrl, resolver, parser, cancellationToken)
                         .ConfigureAwait(false);
                     if(expandedGraph is IReadOnlyList<object?> graphList)
                     {
-                        result["@graph"] = DropFreeFloating(graphList);
+                        result[JsonLdKeywords.Graph] = DropFreeFloating(graphList);
                     }
                     else if(expandedGraph is not null)
                     {
-                        result["@graph"] = DropFreeFloating(new List<object?> { expandedGraph });
+                        result[JsonLdKeywords.Graph] = DropFreeFloating(new List<object?> { expandedGraph });
                     }
 
                     continue;
                 }
-                case "@reverse":
+                case var k when JsonLdKeywords.IsReverse(k):
                 {
                     //@reverse: the value is an object whose properties are
                     //expanded normally but stored under the @reverse key
@@ -443,7 +443,7 @@ public static class JsonLdExpansionTree
 
                     continue;
                 }
-                case "@index":
+                case var k when JsonLdKeywords.IsIndex(k):
                 {
                     //A node-level @index keeps its string value verbatim.
                     if(value.Kind != JsonLdNodeKind.String)
@@ -453,10 +453,10 @@ public static class JsonLdExpansionTree
                             "An @index value must be a string.");
                     }
 
-                    result["@index"] = value.GetString();
+                    result[JsonLdKeywords.Index] = value.GetString();
                     continue;
                 }
-                case "@nest":
+                case var k when JsonLdKeywords.IsNest(k):
                 {
                     //@nest lifts a nested object's properties into the
                     //current node (same scope). Defer until all regular keys
@@ -464,7 +464,7 @@ public static class JsonLdExpansionTree
                     deferredNests.Add(new KeyValuePair<string, JsonLdNode>(key, value));
                     continue;
                 }
-                case "@included":
+                case var k when JsonLdKeywords.IsIncluded(k):
                 {
                     //@included carries additional node objects, collected
                     //into a flat array; multiple @included keys fold together.
@@ -482,7 +482,7 @@ public static class JsonLdExpansionTree
                     foreach(object? node in includedNodes)
                     {
                         if(node is IReadOnlyDictionary<string, object?> map
-                            && (map.ContainsKey("@value") || map.ContainsKey("@list") || map.ContainsKey("@set")))
+                            && (map.ContainsKey(JsonLdKeywords.Value) || map.ContainsKey(JsonLdKeywords.List) || map.ContainsKey(JsonLdKeywords.Set)))
                         {
                             throw new JsonLdProcessingException(
                                 JsonLdErrorCode.InvalidIncludedValue,
@@ -490,21 +490,21 @@ public static class JsonLdExpansionTree
                         }
                     }
 
-                    AddValues(result, "@included", includedNodes);
+                    AddValues(result, JsonLdKeywords.Included, includedNodes);
                     continue;
                 }
                 default:
                 {
                     //JSON-LD keywords other than the ones handled above
                     //are passed through unchanged.
-                    if(IriUtils.IsKeyword(expandedKey) && expandedKey != "@list" && expandedKey != "@set")
+                    if(JsonLdKeywords.IsKeyword(expandedKey) && !JsonLdKeywords.IsList(expandedKey) && !JsonLdKeywords.IsSet(expandedKey))
                     {
                         result[expandedKey] = await ExpandElementAsync(
                             value, activeContext, baseUrl, resolver, parser, cancellationToken)
                             .ConfigureAwait(false);
                         continue;
                     }
-                    if(!expandedKey.Contains(':', StringComparison.Ordinal) && !IriUtils.IsKeyword(expandedKey))
+                    if(!expandedKey.Contains(':', StringComparison.Ordinal) && !JsonLdKeywords.IsKeyword(expandedKey))
                     {
                         //Unmapped term; drop per spec.
                         continue;
@@ -1492,7 +1492,8 @@ public static class JsonLdExpansionTree
     {
         foreach(KeyValuePair<string, JsonLdNode> entry in obj.EnumerateObject())
         {
-            if(activeContext.ExpandIri(entry.Key, vocab: true) is "@value" or "@language" or "@direction")
+            string? expandedKey = activeContext.ExpandIri(entry.Key, vocab: true);
+            if(JsonLdKeywords.IsValue(expandedKey) || JsonLdKeywords.IsLanguage(expandedKey) || JsonLdKeywords.IsDirection(expandedKey))
             {
                 return true;
             }
@@ -1570,18 +1571,18 @@ public static class JsonLdExpansionTree
 
         foreach(KeyValuePair<string, JsonLdNode> entry in value.EnumerateObject())
         {
-            if(string.Equals(entry.Key, "@context", StringComparison.Ordinal))
+            if(JsonLdKeywords.IsContext(entry.Key))
             {
                 continue;
             }
 
             switch(activeContext.ExpandIri(entry.Key, vocab: true))
             {
-                case "@value": valueNode = entry.Value; hasValue = true; break;
-                case "@type": typeNode = entry.Value; hasType = true; break;
-                case "@language": languageNode = entry.Value; hasLanguage = true; break;
-                case "@index": indexNode = entry.Value; hasIndex = true; break;
-                case "@direction": hasDirection = true; break;
+                case var k when JsonLdKeywords.IsValue(k): valueNode = entry.Value; hasValue = true; break;
+                case var k when JsonLdKeywords.IsType(k): typeNode = entry.Value; hasType = true; break;
+                case var k when JsonLdKeywords.IsLanguage(k): languageNode = entry.Value; hasLanguage = true; break;
+                case var k when JsonLdKeywords.IsIndex(k): indexNode = entry.Value; hasIndex = true; break;
+                case var k when JsonLdKeywords.IsDirection(k): hasDirection = true; break;
                 default:
                 {
                     throw new JsonLdProcessingException(
