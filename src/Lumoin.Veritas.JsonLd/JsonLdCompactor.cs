@@ -159,13 +159,16 @@ public static class JsonLdCompactor
     /// </summary>
     /// <param name="expanded">The expanded JSON-LD element.</param>
     /// <param name="activeContext">The context against which to compact.</param>
+    /// <param name="baseIri">The document base IRI, used for document-relative <c>@id</c> compaction; <c>null</c> leaves absolute IRIs unchanged.</param>
     /// <returns>The compacted element as an object graph.</returns>
-    public static object? Compact(JsonNode expanded, LinkedDataContext activeContext)
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
+        Justification = "JSON-LD specification uses string URIs throughout the compaction algorithm.")]
+    public static object? Compact(JsonNode expanded, LinkedDataContext activeContext, string? baseIri = null)
     {
         ArgumentNullException.ThrowIfNull(activeContext);
 
         InverseContext inverse = BuildInverseContext(activeContext);
-        object? compactedBody = CompactElement(activeContext, inverse, activeProperty: null, expanded);
+        object? compactedBody = CompactElement(activeContext, inverse, baseIri, activeProperty: null, expanded);
         IReadOnlyDictionary<string, object?>? emittedContext = EmitContextObject(activeContext);
 
         //Top-level array normalization (compactArrays, the default): an empty result is the empty node
@@ -319,17 +322,18 @@ public static class JsonLdCompactor
     /// </summary>
     /// <param name="activeContext">The active context.</param>
     /// <param name="inverse">The inverse context for term selection.</param>
+    /// <param name="documentBase">The document base IRI for relative compaction, or <c>null</c>.</param>
     /// <param name="activeProperty">The compact property the element appears under, or <c>null</c>.</param>
     /// <param name="element">The expanded element.</param>
     /// <returns>The compacted element.</returns>
-    private static object? CompactElement(LinkedDataContext activeContext, InverseContext inverse, string? activeProperty, JsonNode element)
+    private static object? CompactElement(LinkedDataContext activeContext, InverseContext inverse, string? documentBase, string? activeProperty, JsonNode element)
     {
         if(element.Kind == JsonNodeKind.Array)
         {
             List<object?> result = new();
             foreach(JsonNode item in element.EnumerateArray())
             {
-                object? compactedItem = CompactElement(activeContext, inverse, activeProperty, item);
+                object? compactedItem = CompactElement(activeContext, inverse, documentBase, activeProperty, item);
                 if(compactedItem is null)
                 {
                     continue;
@@ -356,26 +360,27 @@ public static class JsonLdCompactor
         //Value objects and bare node references compact through value compaction.
         if(IsValueNode(element) || IsSubjectReferenceNode(element))
         {
-            return CompactValueElement(activeContext, inverse, activeProperty, element);
+            return CompactValueElement(activeContext, inverse, documentBase, activeProperty, element);
         }
 
         //A list object directly under a @list-container property inlines to a bare array.
         if(IsListNode(element) && ContainsContainer(ContainerOf(activeContext, activeProperty), JsonLdKeywords.List)
             && element.TryGetProperty(JsonLdKeywords.List, out JsonNode listInline))
         {
-            return CompactElement(activeContext, inverse, activeProperty, listInline);
+            return CompactElement(activeContext, inverse, documentBase, activeProperty, listInline);
         }
 
-        return CompactNodeObject(activeContext, inverse, activeProperty, element);
+        return CompactNodeObject(activeContext, inverse, documentBase, activeProperty, element);
     }
 
     /// <summary>Compacts a node object (§4.1 step 7 onward): walks its keys in order, compacting keywords and choosing a per-value term for each property.</summary>
     /// <param name="activeContext">The active context.</param>
     /// <param name="inverse">The inverse context.</param>
+    /// <param name="documentBase">The document base IRI for relative compaction, or <c>null</c>.</param>
     /// <param name="activeProperty">The compact property the node appears under.</param>
     /// <param name="element">The expanded node object.</param>
     /// <returns>The compacted node object.</returns>
-    private static Dictionary<string, object?> CompactNodeObject(LinkedDataContext activeContext, InverseContext inverse, string? activeProperty, JsonNode element)
+    private static Dictionary<string, object?> CompactNodeObject(LinkedDataContext activeContext, InverseContext inverse, string? documentBase, string? activeProperty, JsonNode element)
     {
         bool insideReverse = string.Equals(activeProperty, JsonLdKeywords.Reverse, StringComparison.Ordinal);
         Dictionary<string, object?> result = new(StringComparer.Ordinal);
@@ -386,7 +391,7 @@ public static class JsonLdCompactor
 
             if(JsonLdKeywords.IsId(expandedProperty))
             {
-                object? compactedValue = CompactIdValues(activeContext, inverse, expandedValue);
+                object? compactedValue = CompactIdValues(activeContext, inverse, documentBase, expandedValue);
                 result[CompactIriCore(activeContext, inverse, JsonLdKeywords.Id, value: null, vocab: true, reverse: false) ?? JsonLdKeywords.Id] = compactedValue;
                 continue;
             }
@@ -403,7 +408,7 @@ public static class JsonLdCompactor
 
             if(JsonLdKeywords.IsReverse(expandedProperty))
             {
-                CompactReverse(activeContext, inverse, expandedValue, result);
+                CompactReverse(activeContext, inverse, documentBase, expandedValue, result);
                 continue;
             }
 
@@ -437,7 +442,7 @@ public static class JsonLdCompactor
             //An IRI property. The expanded value is an array (expansion guarantees this).
             if(expandedValue.Kind != JsonNodeKind.Array)
             {
-                CompactPropertyItem(activeContext, inverse, result, expandedProperty, expandedValue, insideReverse);
+                CompactPropertyItem(activeContext, inverse, documentBase, result, expandedProperty, expandedValue, insideReverse);
                 continue;
             }
 
@@ -452,7 +457,7 @@ public static class JsonLdCompactor
 
             foreach(JsonNode expandedItem in expandedValue.EnumerateArray())
             {
-                CompactPropertyItem(activeContext, inverse, result, expandedProperty, expandedItem, insideReverse);
+                CompactPropertyItem(activeContext, inverse, documentBase, result, expandedProperty, expandedItem, insideReverse);
             }
         }
 
@@ -469,6 +474,7 @@ public static class JsonLdCompactor
     private static void CompactPropertyItem(
         LinkedDataContext activeContext,
         InverseContext inverse,
+        string? documentBase,
         Dictionary<string, object?> result,
         string expandedProperty,
         JsonNode expandedItem,
@@ -491,7 +497,7 @@ public static class JsonLdCompactor
             expandedItem.TryGetProperty(JsonLdKeywords.Graph, out inner);
         }
 
-        object? compactedItem = CompactElement(activeContext, inverse, itemActiveProperty, inner);
+        object? compactedItem = CompactElement(activeContext, inverse, documentBase, itemActiveProperty, inner);
 
         if(isList)
         {
@@ -529,7 +535,7 @@ public static class JsonLdCompactor
             || ContainsContainer(container, JsonLdKeywords.Id)
             || ContainsContainer(container, JsonLdKeywords.Type))
         {
-            CompactMapItem(activeContext, inverse, nestResult, itemActiveProperty, expandedItem, compactedItem, container);
+            CompactMapItem(activeContext, inverse, documentBase, nestResult, itemActiveProperty, expandedItem, compactedItem, container);
             return;
         }
 
@@ -625,6 +631,7 @@ public static class JsonLdCompactor
     private static void CompactMapItem(
         LinkedDataContext activeContext,
         InverseContext inverse,
+        string? documentBase,
         Dictionary<string, object?> nestResult,
         string itemActiveProperty,
         JsonNode expandedItem,
@@ -679,7 +686,7 @@ public static class JsonLdCompactor
                 //A node carrying only its (now hoisted) @type re-compacts as a bare reference to its @id.
                 if(typeMap.Count == 1 && expandedItem.TryGetProperty(JsonLdKeywords.Id, out JsonNode reId))
                 {
-                    compactedItem = CompactNodeReference(activeContext, inverse, itemActiveProperty, reId);
+                    compactedItem = CompactNodeReference(activeContext, inverse, documentBase, itemActiveProperty, reId);
                 }
             }
         }
@@ -693,9 +700,9 @@ public static class JsonLdCompactor
     /// <param name="inverse">The inverse context.</param>
     /// <param name="expandedValue">The expanded reverse map.</param>
     /// <param name="result">The node object under construction.</param>
-    private static void CompactReverse(LinkedDataContext activeContext, InverseContext inverse, JsonNode expandedValue, Dictionary<string, object?> result)
+    private static void CompactReverse(LinkedDataContext activeContext, InverseContext inverse, string? documentBase, JsonNode expandedValue, Dictionary<string, object?> result)
     {
-        if(CompactElement(activeContext, inverse, JsonLdKeywords.Reverse, expandedValue) is not Dictionary<string, object?> compactedValue)
+        if(CompactElement(activeContext, inverse, documentBase, JsonLdKeywords.Reverse, expandedValue) is not Dictionary<string, object?> compactedValue)
         {
             return;
         }
@@ -725,7 +732,7 @@ public static class JsonLdCompactor
     /// <param name="activeProperty">The compact property the value appears under.</param>
     /// <param name="value">The expanded value object or node reference.</param>
     /// <returns>The compacted value.</returns>
-    private static object? CompactValueElement(LinkedDataContext activeContext, InverseContext inverse, string? activeProperty, JsonNode value)
+    private static object? CompactValueElement(LinkedDataContext activeContext, InverseContext inverse, string? documentBase, string? activeProperty, JsonNode value)
     {
         if(IsValueNode(value))
         {
@@ -804,7 +811,7 @@ public static class JsonLdCompactor
 
         //Node reference.
         value.TryGetProperty(JsonLdKeywords.Id, out JsonNode idNode);
-        return CompactNodeReference(activeContext, inverse, activeProperty, idNode);
+        return CompactNodeReference(activeContext, inverse, documentBase, activeProperty, idNode);
     }
 
     /// <summary>Compacts a bare node reference's <c>@id</c> (§ Value Compaction, subject-reference case): a scalar under an <c>@id</c>/<c>@vocab</c>-coerced property or a <c>@graph</c> alias, otherwise the aliased <c>{"@id": ...}</c> object.</summary>
@@ -813,13 +820,14 @@ public static class JsonLdCompactor
     /// <param name="activeProperty">The compact property the reference appears under.</param>
     /// <param name="idNode">The reference's <c>@id</c> value.</param>
     /// <returns>The compacted reference.</returns>
-    private static object? CompactNodeReference(LinkedDataContext activeContext, InverseContext inverse, string? activeProperty, JsonNode idNode)
+    private static object? CompactNodeReference(LinkedDataContext activeContext, InverseContext inverse, string? documentBase, string? activeProperty, JsonNode idNode)
     {
         string? expandedProperty = activeContext.ExpandIri(activeProperty, vocab: true);
         string? referenceType = TypeMappingOf(activeContext, activeProperty);
         string? compacted = CompactIriCore(
             activeContext, inverse, idNode.GetString(), value: null,
-            vocab: string.Equals(referenceType, "@vocab", StringComparison.Ordinal), reverse: false);
+            vocab: string.Equals(referenceType, "@vocab", StringComparison.Ordinal), reverse: false,
+            documentBase: activeContext.BaseIri ?? documentBase);
 
         if(string.Equals(referenceType, "@id", StringComparison.Ordinal)
             || string.Equals(referenceType, "@vocab", StringComparison.Ordinal)
@@ -840,11 +848,12 @@ public static class JsonLdCompactor
     /// <param name="inverse">The inverse context.</param>
     /// <param name="expandedValue">The expanded <c>@id</c> value.</param>
     /// <returns>The compacted id, a scalar for a single value or a list for several.</returns>
-    private static object? CompactIdValues(LinkedDataContext activeContext, InverseContext inverse, JsonNode expandedValue)
+    private static object? CompactIdValues(LinkedDataContext activeContext, InverseContext inverse, string? documentBase, JsonNode expandedValue)
     {
+        string? effectiveBase = activeContext.BaseIri ?? documentBase;
         if(expandedValue.Kind == JsonNodeKind.String)
         {
-            return CompactIriCore(activeContext, inverse, expandedValue.GetString(), value: null, vocab: false, reverse: false, documentBase: activeContext.BaseIri);
+            return CompactIriCore(activeContext, inverse, expandedValue.GetString(), value: null, vocab: false, reverse: false, documentBase: effectiveBase);
         }
 
         if(expandedValue.Kind != JsonNodeKind.Array)
@@ -856,7 +865,7 @@ public static class JsonLdCompactor
         foreach(JsonNode item in expandedValue.EnumerateArray())
         {
             compacted.Add(item.Kind == JsonNodeKind.String
-                ? CompactIriCore(activeContext, inverse, item.GetString(), value: null, vocab: false, reverse: false, documentBase: activeContext.BaseIri)
+                ? CompactIriCore(activeContext, inverse, item.GetString(), value: null, vocab: false, reverse: false, documentBase: effectiveBase)
                 : ToObjectGraph(item));
         }
 
@@ -1093,9 +1102,147 @@ public static class JsonLdCompactor
             return choice;
         }
 
-        //Document-relative compaction against the base IRI is deferred; a non-vocab IRI falls through unchanged.
-        _ = documentBase;
+        //Document-relative compaction against the base IRI.
+        if(!vocab && documentBase is not null)
+        {
+            string relative = RemoveBase(documentBase, iri);
+
+            //A relative IRI that reads like a keyword (e.g. "@special") is disambiguated with a "./" prefix.
+            return LooksLikeKeyword(relative) ? string.Concat("./", relative) : relative;
+        }
+
         return iri;
+    }
+
+    /// <summary>
+    /// Expresses <paramref name="iri"/> as a reference relative to
+    /// <paramref name="baseIri"/> (RFC 3986 §5.3 reversed): strips a shared
+    /// scheme/authority/path prefix and prepends <c>../</c> for each diverging
+    /// base path segment. Returns <paramref name="iri"/> unchanged when it does
+    /// not share the base's root.
+    /// </summary>
+    /// <param name="baseIri">The base IRI.</param>
+    /// <param name="iri">The absolute IRI to relativise.</param>
+    /// <returns>The relative reference, or the IRI unchanged.</returns>
+    private static string RemoveBase(string baseIri, string iri)
+    {
+        (string? baseScheme, string? baseAuthority, string basePath, _, _) = ParseIri(baseIri);
+        (string? iriScheme, string? iriAuthority, string iriPath, string? iriQuery, string? iriFragment) = ParseIri(iri);
+
+        string root = baseScheme is not null && baseAuthority is not null
+            ? string.Concat(baseScheme, "://", baseAuthority)
+            : string.Empty;
+
+        if(root.Length == 0 || !iri.StartsWith(root, StringComparison.Ordinal)
+            || iriScheme is null || !string.Equals(iriScheme, baseScheme, StringComparison.Ordinal))
+        {
+            return iri;
+        }
+
+        List<string> baseSegments = new(basePath.Split('/'));
+        List<string> iriSegments = new(iriPath.Split('/'));
+        int last = iriFragment is not null || iriQuery is not null ? 0 : 1;
+
+        while(baseSegments.Count > 0 && iriSegments.Count > last)
+        {
+            if(!string.Equals(baseSegments[0], iriSegments[0], StringComparison.Ordinal))
+            {
+                break;
+            }
+
+            baseSegments.RemoveAt(0);
+            iriSegments.RemoveAt(0);
+        }
+
+        System.Text.StringBuilder builder = new();
+        if(baseSegments.Count > 0)
+        {
+            //The base's final segment is the document itself, not a directory; it does not contribute a "../".
+            baseSegments.RemoveAt(baseSegments.Count - 1);
+            for(int i = 0; i < baseSegments.Count; i++)
+            {
+                builder.Append("../");
+            }
+        }
+
+        builder.Append(string.Join('/', iriSegments));
+        if(iriQuery is not null)
+        {
+            builder.Append('?').Append(iriQuery);
+        }
+        if(iriFragment is not null)
+        {
+            builder.Append('#').Append(iriFragment);
+        }
+
+        string result = builder.ToString();
+        return result.Length == 0 ? "./" : result;
+    }
+
+    /// <summary>Splits an IRI into scheme, authority, path, query, and fragment using the RFC 3986 generic-syntax boundaries.</summary>
+    /// <param name="iri">The IRI to split.</param>
+    /// <returns>The five components; scheme/authority are <c>null</c> when absent, path is always present (possibly empty).</returns>
+    private static (string? Scheme, string? Authority, string Path, string? Query, string? Fragment) ParseIri(string iri)
+    {
+        string rest = iri;
+        string? fragment = null;
+        int hash = rest.IndexOf('#', StringComparison.Ordinal);
+        if(hash >= 0)
+        {
+            fragment = rest[(hash + 1)..];
+            rest = rest[..hash];
+        }
+
+        string? query = null;
+        int question = rest.IndexOf('?', StringComparison.Ordinal);
+        if(question >= 0)
+        {
+            query = rest[(question + 1)..];
+            rest = rest[..question];
+        }
+
+        string? scheme = null;
+        string? authority = null;
+        int schemeSep = rest.IndexOf("://", StringComparison.Ordinal);
+        if(schemeSep >= 0)
+        {
+            scheme = rest[..schemeSep];
+            string afterScheme = rest[(schemeSep + 3)..];
+            int slash = afterScheme.IndexOf('/', StringComparison.Ordinal);
+            if(slash >= 0)
+            {
+                authority = afterScheme[..slash];
+                rest = afterScheme[slash..];
+            }
+            else
+            {
+                authority = afterScheme;
+                rest = string.Empty;
+            }
+        }
+
+        return (scheme, authority, rest, query, fragment);
+    }
+
+    /// <summary>Whether a relative reference reads like a JSON-LD keyword (<c>@</c> followed by ASCII letters), which must be escaped with a <c>./</c> prefix.</summary>
+    /// <param name="value">The relative reference.</param>
+    /// <returns><see langword="true"/> when keyword-like.</returns>
+    private static bool LooksLikeKeyword(string value)
+    {
+        if(value.Length < 2 || value[0] != '@')
+        {
+            return false;
+        }
+
+        for(int i = 1; i < value.Length; i++)
+        {
+            if(!char.IsAsciiLetter(value[i]))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>Determines the type/language profile of a list value for term selection (§4.3 step 3.7), finding the type or language common to all members.</summary>
