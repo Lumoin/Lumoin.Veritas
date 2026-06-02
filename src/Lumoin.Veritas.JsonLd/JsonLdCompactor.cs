@@ -425,6 +425,10 @@ public static class JsonLdCompactor
 
         bool isValueOrReference = IsValueNode(element) || IsSubjectReferenceNode(element);
 
+        //The property-scoped context is looked up from the context as inherited (which may define the
+        //property via an ancestor's type-scoped context), then applied on top of the reverted base.
+        LinkedDataContext beforeRevert = activeContext;
+
         //Revert a non-propagating (type-scoped) context inherited from an ancestor on entry to a new node
         //object (W3C JSON-LD 1.1 §4.1 step 4); value objects and bare node references keep the context.
         if(!isValueOrReference && activeContext.PreviousContext is { } reverted)
@@ -434,10 +438,16 @@ public static class JsonLdCompactor
         }
 
         //Apply the active property's property-scoped context (§4.1 step 5), before value compaction so a
-        //value object under a coercing scoped term sees the right type/language mapping.
-        if(ScopedEntriesFor(activeContext, activeProperty) is { } propertyScoped)
+        //value object under a coercing scoped term sees the right type/language mapping. A non-propagating
+        //scoped context records the pre-application context so its nested nodes revert it.
+        if(ScopedEntriesFor(beforeRevert, activeProperty) is { } propertyScoped)
         {
+            LinkedDataContext beforeApply = activeContext;
             (activeContext, inverse) = await ApplyScopedAsync(activeContext, propertyScoped, env, propagate: true, overrideProtected: true).ConfigureAwait(false);
+            if(!activeContext.Propagate && activeContext.PreviousContext is null)
+            {
+                activeContext = activeContext.WithPreviousContext(beforeApply);
+            }
         }
 
         //Value objects and bare node references compact through value compaction.
