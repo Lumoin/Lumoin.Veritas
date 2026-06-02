@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Text;
 using System.Threading;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.LinkedData;
@@ -243,11 +244,11 @@ public static class JsonLdRdfSerializer
             return false;
         }
 
-        //@json keeps its lexical form under the rdf:JSON datatype (canonical
-        //serialization of the JSON value is a later refinement).
+        //@json is serialized to its canonical JSON form (RFC 8785: lexicographically
+        //ordered object keys, no insignificant whitespace) under rdf:JSON.
         if(JsonLdKeywords.IsJson(type))
         {
-            literal = new Literal(state.Pool.Intern(LexicalForm(rawValue)), new NamedNode(state.Pool.Intern(RdfJson)));
+            literal = new Literal(state.Pool.Intern(CanonicalJson(rawValue)), new NamedNode(state.Pool.Intern(RdfJson)));
             return true;
         }
 
@@ -318,6 +319,156 @@ public static class JsonLdRdfSerializer
 
         return string.Concat(mantissa, "E", exponent);
     }
+
+    /// <summary>
+    /// Serializes a JSON value (the object-graph form of an <c>@json</c> literal)
+    /// to canonical JSON (RFC 8785 JCS): object keys sorted by UTF-16 code unit,
+    /// no insignificant whitespace, minimal string escaping. The walk is an
+    /// explicit output stack — pushed in reverse so popping emits in order — so
+    /// there is no method-call recursion over the JSON tree.
+    /// </summary>
+    private static string CanonicalJson(object? root)
+    {
+        StringBuilder builder = new();
+        Stack<object?> stack = new();
+        stack.Push(root);
+
+        while(stack.Count > 0)
+        {
+            object? item = stack.Pop();
+            switch(item)
+            {
+                case CanonicalToken token:
+                {
+                    builder.Append(token.Text);
+                    break;
+                }
+                case IReadOnlyDictionary<string, object?> map:
+                {
+                    List<string> keys = new(map.Keys);
+                    keys.Sort(StringComparer.Ordinal);
+                    stack.Push(new CanonicalToken("}"));
+                    for(int index = keys.Count - 1; index >= 0; index--)
+                    {
+                        stack.Push(map[keys[index]]);
+                        stack.Push(new CanonicalToken(JsonString(keys[index]) + ":"));
+                        if(index > 0)
+                        {
+                            stack.Push(new CanonicalToken(","));
+                        }
+                    }
+
+                    stack.Push(new CanonicalToken("{"));
+                    break;
+                }
+                case IReadOnlyList<object?> array:
+                {
+                    stack.Push(new CanonicalToken("]"));
+                    for(int index = array.Count - 1; index >= 0; index--)
+                    {
+                        stack.Push(array[index]);
+                        if(index > 0)
+                        {
+                            stack.Push(new CanonicalToken(","));
+                        }
+                    }
+
+                    stack.Push(new CanonicalToken("["));
+                    break;
+                }
+                case string text:
+                {
+                    builder.Append(JsonString(text));
+                    break;
+                }
+                case bool boolean:
+                {
+                    builder.Append(boolean ? "true" : "false");
+                    break;
+                }
+                case long integer:
+                {
+                    builder.Append(integer.ToString(CultureInfo.InvariantCulture));
+                    break;
+                }
+                case double real:
+                {
+                    builder.Append(CanonicalJsonNumber(real.ToString("R", CultureInfo.InvariantCulture)));
+                    break;
+                }
+                case JsonLdJsonNumber number:
+                {
+                    builder.Append(CanonicalJsonNumber(number.Raw));
+                    break;
+                }
+                default:
+                {
+                    builder.Append("null");
+                    break;
+                }
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>Normalizes a JSON number token to its canonical JSON form (an integer literal stays as written; a fractional/exponent value is reduced to the shortest round-tripping decimal).</summary>
+    private static string CanonicalJsonNumber(string raw)
+    {
+        bool integral = raw.IndexOf('.', StringComparison.Ordinal) < 0
+            && raw.IndexOf('e', StringComparison.Ordinal) < 0
+            && raw.IndexOf('E', StringComparison.Ordinal) < 0;
+
+        if(integral)
+        {
+            return raw;
+        }
+
+        return double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double value)
+            ? value.ToString("R", CultureInfo.InvariantCulture)
+            : raw;
+    }
+
+    /// <summary>JSON-escapes a string and wraps it in quotes, using the minimal escaping RFC 8785 requires.</summary>
+    private static string JsonString(string value)
+    {
+        StringBuilder builder = new(value.Length + 2);
+        builder.Append('"');
+        foreach(char character in value)
+        {
+            switch(character)
+            {
+                case '"': builder.Append("\\\""); break;
+                case '\\': builder.Append("\\\\"); break;
+                case '\b': builder.Append("\\b"); break;
+                case '\t': builder.Append("\\t"); break;
+                case '\n': builder.Append("\\n"); break;
+                case '\f': builder.Append("\\f"); break;
+                case '\r': builder.Append("\\r"); break;
+                default:
+                {
+                    if(character < ' ')
+                    {
+                        builder.Append("\\u").Append(((int)character).ToString("x4", CultureInfo.InvariantCulture));
+                    }
+                    else
+                    {
+                        builder.Append(character);
+                    }
+
+                    break;
+                }
+            }
+        }
+
+        builder.Append('"');
+
+        return builder.ToString();
+    }
+
+    /// <summary>A pre-rendered literal fragment of canonical JSON output (punctuation or an already-escaped key), distinguished from a JSON string value that still needs escaping.</summary>
+    /// <param name="Text">The literal text to append.</param>
+    private sealed record CanonicalToken(string Text);
 
     private static string LexicalForm(object? value)
     {
@@ -485,6 +636,7 @@ public static class JsonLdRdfSerializer
 
             BlankNode minted = MintBlankNode();
             subjects[node] = minted;
+
             return minted;
         }
 
