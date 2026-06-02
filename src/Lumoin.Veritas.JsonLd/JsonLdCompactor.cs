@@ -158,12 +158,37 @@ public static class JsonLdCompactor
         ArgumentNullException.ThrowIfNull(activeContext);
 
         object? compactedBody = CompactElement(expanded, activeContext);
-
-        //Top-level emission: when the context has user-defined terms or a
-        //vocabulary mapping, emit @context alongside the compacted body so
-        //the output is self-contained. Arrays are wrapped in a node object
-        //for the @context attachment.
         IReadOnlyDictionary<string, object?>? emittedContext = EmitContextObject(activeContext);
+
+        //Top-level array normalization (compactArrays, the default): an empty result is the empty node
+        //object {}; a single-element result inlines to that element; only a multi-element result is wrapped
+        //in a @graph node object (the form that can carry @context for several top-level nodes).
+        if(compactedBody is IReadOnlyList<object?> topLevel)
+        {
+            if(topLevel.Count == 0)
+            {
+                compactedBody = new Dictionary<string, object?>(StringComparer.Ordinal);
+            }
+            else if(topLevel.Count == 1)
+            {
+                compactedBody = topLevel[0];
+            }
+            else
+            {
+                Dictionary<string, object?> graph = new(emittedContext is null ? 1 : 2, StringComparer.Ordinal);
+                if(emittedContext is not null)
+                {
+                    graph[JsonLdKeywords.Context] = emittedContext;
+                }
+
+                graph[JsonLdKeywords.Graph] = compactedBody;
+
+                return graph;
+            }
+        }
+
+        //When the context has user-defined terms or a vocabulary mapping, emit @context alongside the
+        //compacted body so the output is self-contained.
         if(emittedContext is null)
         {
             return compactedBody;
@@ -179,10 +204,11 @@ public static class JsonLdCompactor
             {
                 withContext[kv.Key] = kv.Value;
             }
+
             return withContext;
         }
 
-        //Array or scalar body: wrap into a graph object so @context can attach.
+        //A scalar body: wrap into a graph object so @context can attach.
         return new Dictionary<string, object?>(2, StringComparer.Ordinal)
         {
             [JsonLdKeywords.Context] = emittedContext,
