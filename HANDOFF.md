@@ -1,7 +1,25 @@
 # Handoff — Lumoin.Veritas.Sparql (Batch 1: Milestones A–C, SHACL-SPARQL unlock)
 
 ---
-## ⭐⭐⭐ READ THIS FIRST — SESSION 4 (2026-06-02, branch `sparql-query-engine`)
+## ⭐⭐⭐⭐ RESUME HERE — SESSION 5 (2026-06-02, branch `sparql-query-engine`, tree clean)
+
+**State (measured this session, full suite run):** 6240 total, **162 failed (all `compact #` RED-baseline), 6026 pass, 52 skip.** Regression guard EMPTY excluding the ratchet markers: `grep -iE "^\s*failed " out.txt | grep -vE "expand #|compact #|toRdf #|fromRdf #|jsonschema"` → 0. The only non-green area is the JSON-LD Compact RED baseline being ratcheted.
+
+**Done (sessions 4–5):** JSON family restructure (STJ-free `Lumoin.Veritas.Json` model ← `Json.Stj` engine / `Rdf.Json` bindings — see memory `project_json_family_layering`); `Lumoin.Veritas.JsonPointer` (RFC 6901, 156 tests); **JSON Schema 2020-12 = 100% conformant (1299/1299)** + Flag/Basic output formats (output-tests 4/4) + `Validate(Utf8String,…,ParseJsonDelegate)` overload (memory `project_jsonschema_next`); **regex seams everywhere** (SHACL `PatternResolver`, SPARQL `SparqlRegexResolver` on `SparqlExpressionContext`, JSON Schema `RegexMatchDelegate`, RDF `[GeneratedRegex]`); retired dead `JsonLdExpander`.
+
+**IN PROGRESS — JSON-LD Compact ratchet (at 162 fail / 71 pass / 13 skip of 246).** Oracle: `W3cJsonLdRunner.RunCompactAsync` over `JsonLdCompactor`, unified onto the conformant expansion (`ContextProcessor.ProcessAsync` builds the active context). Resume loop:
+1. Edit `src/Lumoin.Veritas.JsonLd/JsonLdCompactor.cs` (and rarely the harness).
+2. `dotnet build test/Lumoin.Veritas.Tests/Lumoin.Veritas.Tests.csproj -clp:ErrorsOnly --nologo` (PowerShell), then run the exe (Bash, `&`-prefixed per memory `feedback_build_test_command_shape`) `--filter "FullyQualifiedName~RunW3cJsonLdCompactTest"`. The runner prints actual-vs-expected JSON inline on mismatch.
+3. Survey by first-divergence point across failures; fix the dominant pattern; ratchet down; keep the guard at 0 non-ratchet.
+- **Remaining ~162 cluster (INFERENCE from first-divergence snippet grouping — may hide secondary diffs behind the first):** `@container` handling (`@language` maps, `@index` maps, `@set` array-forcing, `@list`), `@reverse` unwrapping, property-term selection (`term1` vs `ex:term1`), relative-IRI compaction, value objects under coercing terms.
+- **Harness caveat (not a compactor defect):** `WrapWithContext` attaches the provided `@context` verbatim — correct for the suite's root-`$id` cases, an approximation for nested-`$id` resources; some of the 162 may stem from this, not `JsonLdCompactor`.
+
+**NEXT (priority order):** (1) continue Compact 162→0; (2) JSON-LD Flatten/Frame/fromRdf (new algorithms + suites — large); (3) JSON Schema Detailed/Verbose output (no test oracle in the suite — lower value); (4) optional: unify the 3 regex delegates into one Core `RegexResolver` (touches green SHACL/SPARQL — pure DRY); (5) RDF-term provenance seam off `JsonNodeNavigator` for selective disclosure (best designed WITH its Verifiable consumer); (6) CBOR diagnostic tooling — EDN/`<<>>`/hex three-way (memory `project_cbor_diagnostic_tooling`).
+
+**Read memories first:** `project_jsonschema_next`, `project_json_family_layering`, `project_cbor_diagnostic_tooling`, `feedback_factual_no_honest_label`, `feedback_build_test_command_shape`. ⚠ Some memory/docs may be stale — verify a named file/flag still exists before relying on it. ⚠ Never reference the vendored JS reference implementations under `tempdocs/` in code/comments/docs.
+
+---
+## ⭐⭐⭐ SESSION 4 (2026-06-02, branch `sparql-query-engine`)
 
 This session (after JSON-LD Expand/toRdf hit 0): three commits.
 1. **JsonPointer** — new `Lumoin.Veritas.JsonPointer` (RFC 6901) + 156 tests (RFC §5/§6 tables, full surface, CsCheck props). Split the LINQ ban into `BannedSymbols.Linq.txt` (libraries bound; `*.Tests` free).
