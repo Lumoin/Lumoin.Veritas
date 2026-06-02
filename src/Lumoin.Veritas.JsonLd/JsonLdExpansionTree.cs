@@ -1928,7 +1928,12 @@ public static class JsonLdExpansionTree
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            IReadOnlyList<LinkedDataContextEntry>? entriesForType = FindScopedEntriesForType(running, typeIri);
+            //Each type's scoped context is looked up in the context active
+            //BEFORE type-scoped processing began: a prior type's null-reset
+            //context may have cleared the term that carries the next type's
+            //scoped context (W3C JSON-LD 1.1 §4.1.4 — types resolved against
+            //the previous context).
+            IReadOnlyList<LinkedDataContextEntry>? entriesForType = FindScopedEntriesForType(activeContext, typeIri);
             if(entriesForType is null)
             {
                 continue;
