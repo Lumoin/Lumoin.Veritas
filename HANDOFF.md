@@ -14,7 +14,9 @@ This session (after JSON-LD Expand/toRdf hit 0): three commits.
 
 **JSON Schema is feature-complete + 100% conformant for draft 2020-12**, plus **Flag/Basic output formats** (`OutputFormat`/`OutputUnit`/`Evaluate`) with the output-tests suite green (4/4), and a one-call `Validate(Utf8String, Utf8String, ParseJsonDelegate, …)` overload for NuGet consumers. Full suite 6011, 0 fail, 39 skip.
 
-NEXT: (1) **regex seam across SPARQL/SHACL** — SHACL already has `PatternResolver` (delegate, via `ShapeLoaderOptions`); SPARQL `REGEX` is hardcoded `NonBacktracking` with NO seam (`SparqlExpressionEvaluator.TryBuildRegex`, but `SparqlExpressionContext` already carries delegate seams to hook into); RDF uses `[GeneratedRegex]`. Fork: add a SPARQL resolver seam mirroring SHACL (low risk) vs. unify all onto one Core delegate (cleaner, bigger, touches green suites). (2) Detailed/Verbose output. (3) RDF-term provenance seam (via `JsonNodeNavigator`) for selective disclosure. Detail in memory `project_jsonschema_next`.
+**Regex seams: every regex site is now pluggable.** SHACL `PatternResolver` (via `ShapeLoaderOptions`), SPARQL `SparqlRegexResolver` (NEW — a seam on `SparqlExpressionContext` backing `REGEX`/`REPLACE`; default = the prior `NonBacktracking | CultureInvariant` + XPath flag mapping; a test proves an injected resolver overrides it), JSON Schema `RegexMatchDelegate`, RDF `[GeneratedRegex]`. The three delegate *types* are similar but not yet unified into one Core type — an optional DRY consolidation (no capability gap).
+
+NEXT: (1) Detailed/Verbose JSON Schema output. (2) optional: unify the three regex delegates into one Core `RegexResolver`. (3) RDF-term provenance seam (via `JsonNodeNavigator`) for selective disclosure. Detail in memory `project_jsonschema_next`.
 
 ---
 ## ⭐⭐ SESSION 3 RESUME (2026-06-02, branch `sparql-query-engine`, tree clean)
