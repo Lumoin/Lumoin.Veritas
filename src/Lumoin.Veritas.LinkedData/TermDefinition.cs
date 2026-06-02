@@ -36,6 +36,18 @@ public sealed class TermDefinition
     public string? IriMapping { get; init; }
 
     /// <summary>
+    /// Gets a value indicating whether this term was explicitly defined with a
+    /// null IRI mapping (<c>"term": null</c> or <c>{"@id": null}</c>).
+    /// </summary>
+    /// <remarks>
+    /// Such a term is <em>defined</em> (so it may be <see cref="Protected"/> and
+    /// participates in redefinition checks) yet expands to nothing — a key using
+    /// it is dropped during expansion, and it shadows the active <c>@vocab</c>.
+    /// Distinguishes a deliberate null mapping from a term simply absent.
+    /// </remarks>
+    public bool HasNullMapping { get; init; }
+
+    /// <summary>
     /// Gets a value indicating whether this term may be used as a compact IRI prefix.
     /// </summary>
     /// <remarks>

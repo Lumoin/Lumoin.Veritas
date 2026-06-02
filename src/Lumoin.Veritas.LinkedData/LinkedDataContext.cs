@@ -345,6 +345,13 @@ public sealed class LinkedDataContext
         //consulted when expanding an @id or other document-relative value.
         if(TryGetTerm(value, out TermDefinition? definition))
         {
+            //A term defined with an explicit null IRI mapping shadows the
+            //vocabulary and expands to nothing (W3C JSON-LD 1.1 §4.2.2).
+            if(definition is { HasNullMapping: true })
+            {
+                return null;
+            }
+
             if(definition?.IriMapping is { } iriMapping && IriUtils.IsKeyword(iriMapping))
             {
                 return iriMapping;

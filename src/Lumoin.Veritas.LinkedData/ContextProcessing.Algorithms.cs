@@ -682,18 +682,19 @@ public static partial class ContextProcessing
 
         LinkedDataTermSource value = localContext[termName];
 
-        //Removal marker.
+        //A null term (`"term": null` or `{"@id": null}`) is DEFINED with a null
+        //IRI mapping rather than removed: it expands to nothing yet remains in
+        //the context, so it can be protected and a later non-identical
+        //redefinition is rejected (W3C JSON-LD 1.1 §4.1.2).
         if(value.IsRemoval)
         {
-            LinkedDataContext? cleared = TryRemoveTerm(
-                activeContext, termName, overrideProtected, out _);
-            if(cleared is null)
+            TermDefinition nullDefinition = new()
             {
-                throw new LinkedDataProcessingException(
-                    "protected term redefinition",
-                    string.Create(CultureInfo.InvariantCulture, $"Cannot override protected term '{termName}'."));
-            }
-            activeContext = cleared;
+                IriMapping = null,
+                HasNullMapping = true,
+                Protected = value.HasProtected ? value.Protected : contextProtected
+            };
+            activeContext = SetTermDefinitionInternal(activeContext, termName, nullDefinition, overrideProtected);
             defined[termName] = true;
             return activeContext;
         }
