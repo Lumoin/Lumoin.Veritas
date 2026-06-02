@@ -92,7 +92,7 @@ public static class JsonLdExpansionTree
         //A document expanding to a map whose only entry is @graph is
         //replaced by the graph contents (the wrapper carries no node).
         if(expanded is IReadOnlyDictionary<string, object?> { Count: 1 } onlyGraph
-            && onlyGraph.TryGetValue("@graph", out object? graphValue))
+            && onlyGraph.TryGetValue(JsonLdKeywords.Graph, out object? graphValue))
         {
             return graphValue as IReadOnlyList<object?> ?? Array.Empty<object?>();
         }
@@ -146,12 +146,12 @@ public static class JsonLdExpansionTree
         //A value object or list object carries no node assertion at graph
         //level, and a node whose only entry is @id is a bare reference; all
         //are dropped.
-        if(map.ContainsKey("@value") || map.ContainsKey("@list"))
+        if(map.ContainsKey(JsonLdKeywords.Value) || map.ContainsKey(JsonLdKeywords.List))
         {
             return true;
         }
 
-        return map.Count == 1 && map.ContainsKey("@id");
+        return map.Count == 1 && map.ContainsKey(JsonLdKeywords.Id);
     }
 
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
@@ -244,7 +244,7 @@ public static class JsonLdExpansionTree
         //handles embedded @context on nested nodes). A non-propagating
         //embedded context records the pre-application context so the next
         //nested node reverts to it.
-        if(obj.TryGetProperty("@context", out JsonLdNode localContext))
+        if(obj.TryGetProperty(JsonLdKeywords.Context, out JsonLdNode localContext))
         {
             LinkedDataContext beforeEmbedded = activeContext;
             activeContext = await ContextProcessor.ProcessAsync(
@@ -267,17 +267,17 @@ public static class JsonLdExpansionTree
         //A bare @list / @set object reached outside a coercing property
         //(e.g. at the top level): expand its members and re-wrap (@list) or
         //unwrap (@set). No term coercion applies here.
-        if(TryFindKeywordValue(obj, activeContext, "@list", out JsonLdNode topLevelList))
+        if(TryFindKeywordValue(obj, activeContext, JsonLdKeywords.List, out JsonLdNode topLevelList))
         {
-            EnsureValidListOrSetObject(obj, activeContext, "@list");
+            EnsureValidListOrSetObject(obj, activeContext, JsonLdKeywords.List);
             List<object?> listMembers = await ExpandMembersAsync(
                 topLevelList, activeContext, baseUrl, resolver, parser, termDef: null, nestArraysAsLists: true, cancellationToken).ConfigureAwait(false);
 
-            return new Dictionary<string, object?>(StringComparer.Ordinal) { ["@list"] = listMembers };
+            return new Dictionary<string, object?>(StringComparer.Ordinal) { [JsonLdKeywords.List] = listMembers };
         }
-        if(TryFindKeywordValue(obj, activeContext, "@set", out JsonLdNode topLevelSet))
+        if(TryFindKeywordValue(obj, activeContext, JsonLdKeywords.Set, out JsonLdNode topLevelSet))
         {
-            EnsureValidListOrSetObject(obj, activeContext, "@set");
+            EnsureValidListOrSetObject(obj, activeContext, JsonLdKeywords.Set);
             return await ExpandMembersAsync(
                 topLevelSet, activeContext, baseUrl, resolver, parser, termDef: null, nestArraysAsLists: false, cancellationToken).ConfigureAwait(false);
         }
@@ -294,7 +294,7 @@ public static class JsonLdExpansionTree
         //context may nullify or override the vocabulary), so that context is
         //preserved for the @type key below.
         LinkedDataContext typeExpansionContext = activeContext;
-        if(TryFindKeywordValue(obj, activeContext, "@type", out JsonLdNode typeNode))
+        if(TryFindKeywordValue(obj, activeContext, JsonLdKeywords.Type, out JsonLdNode typeNode))
         {
             LinkedDataContext beforeTypeScoped = activeContext;
             LinkedDataContext afterTypeScoped = await ApplyTypeScopedAsync(
@@ -358,7 +358,7 @@ public static class JsonLdExpansionTree
             string key = property.Key;
             JsonLdNode value = property.Value;
 
-            if(string.Equals(key, "@context", StringComparison.Ordinal))
+            if(string.Equals(key, JsonLdKeywords.Context, StringComparison.Ordinal))
             {
                 //Already processed into activeContext above; drop from output.
                 continue;
@@ -628,21 +628,21 @@ public static class JsonLdExpansionTree
         //A term coercing to @json keeps the entire value verbatim as a JSON
         //literal (objects, arrays, scalars and null preserved as-is), never
         //expanded as JSON-LD.
-        if(string.Equals(termDef?.TypeMapping, "@json", StringComparison.Ordinal))
+        if(string.Equals(termDef?.TypeMapping, JsonLdKeywords.Json, StringComparison.Ordinal))
         {
             return new Dictionary<string, object?>(StringComparer.Ordinal)
             {
-                ["@value"] = ConvertJsonLiteral(value),
-                ["@type"] = "@json"
+                [JsonLdKeywords.Value] = ConvertJsonLiteral(value),
+                [JsonLdKeywords.Type] = JsonLdKeywords.Json
             };
         }
 
-        bool isList = termDef is not null && HasContainer(termDef, "@list");
-        bool isLanguage = termDef is not null && HasContainer(termDef, "@language");
-        bool isIndex = termDef is not null && HasContainer(termDef, "@index");
-        bool isIdMap = termDef is not null && HasContainer(termDef, "@id");
-        bool isTypeMap = termDef is not null && HasContainer(termDef, "@type");
-        bool isGraph = termDef is not null && HasContainer(termDef, "@graph");
+        bool isList = termDef is not null && HasContainer(termDef, JsonLdKeywords.List);
+        bool isLanguage = termDef is not null && HasContainer(termDef, JsonLdKeywords.Language);
+        bool isIndex = termDef is not null && HasContainer(termDef, JsonLdKeywords.Index);
+        bool isIdMap = termDef is not null && HasContainer(termDef, JsonLdKeywords.Id);
+        bool isTypeMap = termDef is not null && HasContainer(termDef, JsonLdKeywords.Type);
+        bool isGraph = termDef is not null && HasContainer(termDef, JsonLdKeywords.Graph);
 
         //Map-shaped containers: the compact form is a {key: value} map
         //that expansion reshapes into an array of value/node objects,
@@ -670,7 +670,7 @@ public static class JsonLdExpansionTree
             {
                 Dictionary<string, object?> listObject = new(StringComparer.Ordinal)
                 {
-                    ["@list"] = items
+                    [JsonLdKeywords.List] = items
                 };
 
                 return listObject;
@@ -699,7 +699,7 @@ public static class JsonLdExpansionTree
         {
             Dictionary<string, object?> listObject = new(StringComparer.Ordinal)
             {
-                ["@list"] = new List<object?> { singleExpanded }
+                [JsonLdKeywords.List] = new List<object?> { singleExpanded }
             };
 
             return listObject;
@@ -722,7 +722,7 @@ public static class JsonLdExpansionTree
     /// </summary>
     private static bool IsExpandedListObject(object? value)
     {
-        return value is Dictionary<string, object?> map && map.ContainsKey("@list");
+        return value is Dictionary<string, object?> map && map.ContainsKey(JsonLdKeywords.List);
     }
 
     /// <summary>
@@ -733,7 +733,7 @@ public static class JsonLdExpansionTree
     {
         return new Dictionary<string, object?>(StringComparer.Ordinal)
         {
-            ["@graph"] = new List<object?> { value }
+            [JsonLdKeywords.Graph] = new List<object?> { value }
         };
     }
 
@@ -755,17 +755,17 @@ public static class JsonLdExpansionTree
             //surrounding term) and re-wraps them; an explicit @set object
             //expands to its bare member list, which the caller splices into
             //the property array (the @set wrapper never survives expansion).
-            if(TryFindKeywordValue(item, activeContext, "@list", out JsonLdNode listValue))
+            if(TryFindKeywordValue(item, activeContext, JsonLdKeywords.List, out JsonLdNode listValue))
             {
-                EnsureValidListOrSetObject(item, activeContext, "@list");
+                EnsureValidListOrSetObject(item, activeContext, JsonLdKeywords.List);
                 List<object?> listMembers = await ExpandMembersAsync(
                     listValue, activeContext, baseUrl, resolver, parser, termDef, nestArraysAsLists: true, cancellationToken).ConfigureAwait(false);
 
-                return new Dictionary<string, object?>(StringComparer.Ordinal) { ["@list"] = listMembers };
+                return new Dictionary<string, object?>(StringComparer.Ordinal) { [JsonLdKeywords.List] = listMembers };
             }
-            if(TryFindKeywordValue(item, activeContext, "@set", out JsonLdNode setValue))
+            if(TryFindKeywordValue(item, activeContext, JsonLdKeywords.Set, out JsonLdNode setValue))
             {
-                EnsureValidListOrSetObject(item, activeContext, "@set");
+                EnsureValidListOrSetObject(item, activeContext, JsonLdKeywords.Set);
                 return await ExpandMembersAsync(
                     setValue, activeContext, baseUrl, resolver, parser, termDef, nestArraysAsLists: false, cancellationToken).ConfigureAwait(false);
             }
@@ -839,7 +839,7 @@ public static class JsonLdExpansionTree
         {
             List<object?> innerMembers = await ExpandMembersAsync(
                 item, activeContext, baseUrl, resolver, parser, termDef, nestArraysAsLists: true, cancellationToken).ConfigureAwait(false);
-            members.Add(new Dictionary<string, object?>(StringComparer.Ordinal) { ["@list"] = innerMembers });
+            members.Add(new Dictionary<string, object?>(StringComparer.Ordinal) { [JsonLdKeywords.List] = innerMembers });
             return;
         }
 
@@ -949,7 +949,7 @@ public static class JsonLdExpansionTree
         foreach(object? value in values)
         {
             if(value is IReadOnlyDictionary<string, object?> map
-                && (map.ContainsKey("@value") || map.ContainsKey("@list")))
+                && (map.ContainsKey(JsonLdKeywords.Value) || map.ContainsKey(JsonLdKeywords.List)))
             {
                 throw new JsonLdProcessingException(
                     JsonLdErrorCode.InvalidReversePropertyValue,
@@ -974,7 +974,7 @@ public static class JsonLdExpansionTree
             string? expandedKey = activeContext.ExpandIri(property.Key, vocab: true);
             if(expandedKey is null
                 || string.Equals(expandedKey, container, StringComparison.Ordinal)
-                || string.Equals(expandedKey, "@index", StringComparison.Ordinal))
+                || string.Equals(expandedKey, JsonLdKeywords.Index, StringComparison.Ordinal))
             {
                 continue;
             }
@@ -1075,7 +1075,7 @@ public static class JsonLdExpansionTree
         //A map key of @none (directly or through a keyword alias) carries no
         //discriminator: its values are added without an @id/@type/@index/
         //@language marker.
-        bool mapKeyIsNone = string.Equals(activeContext.ExpandIri(mapKey, vocab: true), "@none", StringComparison.Ordinal);
+        bool mapKeyIsNone = string.Equals(activeContext.ExpandIri(mapKey, vocab: true), JsonLdKeywords.None, StringComparison.Ordinal);
 
         //Under a @type map the key is a type whose term may carry a type-scoped
         //context; it applies (non-propagating) while expanding this key's value
@@ -1110,12 +1110,12 @@ public static class JsonLdExpansionTree
 
             Dictionary<string, object?> valueObject = new(StringComparer.Ordinal)
             {
-                ["@value"] = item.GetString()
+                [JsonLdKeywords.Value] = item.GetString()
             };
 
             if(!mapKeyIsNone)
             {
-                valueObject["@language"] = mapKey;
+                valueObject[JsonLdKeywords.Language] = mapKey;
             }
 
             //A base direction (from the term, or the context default) attaches
@@ -1125,7 +1125,7 @@ public static class JsonLdExpansionTree
                 : activeContext.DefaultBaseDirection;
             if(direction is not null)
             {
-                valueObject["@direction"] = direction;
+                valueObject[JsonLdKeywords.Direction] = direction;
             }
 
             return valueObject;
@@ -1151,23 +1151,23 @@ public static class JsonLdExpansionTree
         string? propertyValuedIndexKey = null;
         if(isIndex && !mapKeyIsNone)
         {
-            if(termDef?.IndexMapping is { } indexProperty && !string.Equals(indexProperty, "@index", StringComparison.Ordinal))
+            if(termDef?.IndexMapping is { } indexProperty && !string.Equals(indexProperty, JsonLdKeywords.Index, StringComparison.Ordinal))
             {
                 propertyValuedIndexKey = AddPropertyValuedIndex(nodeObject, indexProperty, mapKey, activeContext);
             }
-            else if(!nodeObject.ContainsKey("@index"))
+            else if(!nodeObject.ContainsKey(JsonLdKeywords.Index))
             {
                 //A node's own @index overrides the index-map key.
-                nodeObject["@index"] = mapKey;
+                nodeObject[JsonLdKeywords.Index] = mapKey;
             }
         }
 
-        if(isIdMap && !mapKeyIsNone && !nodeObject.ContainsKey("@id"))
+        if(isIdMap && !mapKeyIsNone && !nodeObject.ContainsKey(JsonLdKeywords.Id))
         {
             //The id-map key supplies the @id only when the node object does
             //not already carry one of its own.
             string? expandedId = activeContext.ExpandIri(mapKey, documentRelative: true);
-            nodeObject["@id"] = expandedId ?? mapKey;
+            nodeObject[JsonLdKeywords.Id] = expandedId ?? mapKey;
         }
 
         if(isTypeMap && !mapKeyIsNone)
@@ -1176,7 +1176,7 @@ public static class JsonLdExpansionTree
             //The discriminator type is prepended to the node's @type set,
             //which is always an array in expanded form.
             List<object?> types = new() { expandedType ?? mapKey };
-            if(nodeObject.TryGetValue("@type", out object? existingType))
+            if(nodeObject.TryGetValue(JsonLdKeywords.Type, out object? existingType))
             {
                 if(existingType is IReadOnlyList<object?> existingList)
                 {
@@ -1187,12 +1187,12 @@ public static class JsonLdExpansionTree
                     types.Add(existingType);
                 }
             }
-            nodeObject["@type"] = types;
+            nodeObject[JsonLdKeywords.Type] = types;
         }
 
         //@graph layering: wrap as a graph object. When combined with
         //@id or @index, the inner content is already keyed; just wrap.
-        if(isGraph && !nodeObject.ContainsKey("@graph"))
+        if(isGraph && !nodeObject.ContainsKey(JsonLdKeywords.Graph))
         {
             //Move the inner content under @graph, keeping the @id/@index
             //we just attached at the outer level.
@@ -1200,8 +1200,8 @@ public static class JsonLdExpansionTree
             Dictionary<string, object?> inner = new(StringComparer.Ordinal);
             foreach(KeyValuePair<string, object?> kv in nodeObject)
             {
-                if((isIdMap && kv.Key == "@id")
-                    || (isIndex && kv.Key == "@index")
+                if((isIdMap && kv.Key == JsonLdKeywords.Id)
+                    || (isIndex && kv.Key == JsonLdKeywords.Index)
                     || (propertyValuedIndexKey is not null && string.Equals(kv.Key, propertyValuedIndexKey, StringComparison.Ordinal)))
                 {
                     outer[kv.Key] = kv.Value;
@@ -1211,7 +1211,7 @@ public static class JsonLdExpansionTree
                     inner[kv.Key] = kv.Value;
                 }
             }
-            outer["@graph"] = new List<object?> { inner };
+            outer[JsonLdKeywords.Graph] = new List<object?> { inner };
 
             return outer;
         }
@@ -1235,7 +1235,7 @@ public static class JsonLdExpansionTree
         Dictionary<string, object?> nodeObject, string indexProperty, string mapKey, LinkedDataContext activeContext)
     {
         //A property cannot be attached to a value or list object.
-        if(nodeObject.ContainsKey("@value") || nodeObject.ContainsKey("@list"))
+        if(nodeObject.ContainsKey(JsonLdKeywords.Value) || nodeObject.ContainsKey(JsonLdKeywords.List))
         {
             throw new JsonLdProcessingException(
                 JsonLdErrorCode.InvalidTermDefinition,
@@ -1246,9 +1246,9 @@ public static class JsonLdExpansionTree
         TermDefinition? indexTermDef = activeContext.TryGetTerm(indexProperty, out TermDefinition? def) ? def : null;
         Dictionary<string, object?> indexValue = indexTermDef?.TypeMapping switch
         {
-            "@id" => new Dictionary<string, object?>(StringComparer.Ordinal) { ["@id"] = activeContext.ExpandIri(mapKey, documentRelative: true) },
-            "@vocab" => new Dictionary<string, object?>(StringComparer.Ordinal) { ["@id"] = activeContext.ExpandIri(mapKey, vocab: true, documentRelative: true) },
-            _ => new Dictionary<string, object?>(StringComparer.Ordinal) { ["@value"] = mapKey }
+            { } coercion when JsonLdKeywords.IsId(coercion) => new Dictionary<string, object?>(StringComparer.Ordinal) { [JsonLdKeywords.Id] = activeContext.ExpandIri(mapKey, documentRelative: true) },
+            { } coercion when JsonLdKeywords.IsVocab(coercion) => new Dictionary<string, object?>(StringComparer.Ordinal) { [JsonLdKeywords.Id] = activeContext.ExpandIri(mapKey, vocab: true, documentRelative: true) },
+            _ => new Dictionary<string, object?>(StringComparer.Ordinal) { [JsonLdKeywords.Value] = mapKey }
         };
 
         List<object?> values = new() { indexValue };
@@ -1325,22 +1325,22 @@ public static class JsonLdExpansionTree
         //document-relative; @vocab is vocabulary-relative.
         if(element.Kind == JsonLdNodeKind.String && termDef?.TypeMapping is { } coercion)
         {
-            if(string.Equals(coercion, "@id", StringComparison.Ordinal))
+            if(string.Equals(coercion, JsonLdKeywords.Id, StringComparison.Ordinal))
             {
                 //A keyword-like value (e.g. "@ignoreMe") expands to null and
                 //is preserved as such, not echoed back verbatim.
                 string raw = element.GetString();
                 return new Dictionary<string, object?>(StringComparer.Ordinal)
                 {
-                    ["@id"] = activeContext.ExpandIri(raw, documentRelative: true)
+                    [JsonLdKeywords.Id] = activeContext.ExpandIri(raw, documentRelative: true)
                 };
             }
-            if(string.Equals(coercion, "@vocab", StringComparison.Ordinal))
+            if(string.Equals(coercion, JsonLdKeywords.Vocab, StringComparison.Ordinal))
             {
                 string raw = element.GetString();
                 return new Dictionary<string, object?>(StringComparer.Ordinal)
                 {
-                    ["@id"] = activeContext.ExpandIri(raw, vocab: true, documentRelative: true)
+                    [JsonLdKeywords.Id] = activeContext.ExpandIri(raw, vocab: true, documentRelative: true)
                 };
             }
         }
@@ -1364,12 +1364,12 @@ public static class JsonLdExpansionTree
 
         Dictionary<string, object?> valueObject = new(StringComparer.Ordinal)
         {
-            ["@value"] = rawValue
+            [JsonLdKeywords.Value] = rawValue
         };
 
         if(termDef?.TypeMapping is { } typeMapping && !IriUtils.IsKeyword(typeMapping))
         {
-            valueObject["@type"] = typeMapping;
+            valueObject[JsonLdKeywords.Type] = typeMapping;
         }
         else if(element.Kind == JsonLdNodeKind.String)
         {
@@ -1383,7 +1383,7 @@ public static class JsonLdExpansionTree
                 : activeContext.DefaultLanguage;
             if(language is not null)
             {
-                valueObject["@language"] = language;
+                valueObject[JsonLdKeywords.Language] = language;
             }
 
             string? direction = termDef is { HasDirectionMapping: true }
@@ -1391,7 +1391,7 @@ public static class JsonLdExpansionTree
                 : activeContext.DefaultBaseDirection;
             if(direction is not null)
             {
-                valueObject["@direction"] = direction;
+                valueObject[JsonLdKeywords.Direction] = direction;
             }
         }
 
@@ -1512,12 +1512,12 @@ public static class JsonLdExpansionTree
         bool sawId = false;
         foreach(KeyValuePair<string, JsonLdNode> entry in obj.EnumerateObject())
         {
-            if(string.Equals(entry.Key, "@context", StringComparison.Ordinal))
+            if(string.Equals(entry.Key, JsonLdKeywords.Context, StringComparison.Ordinal))
             {
                 continue;
             }
 
-            if(!string.Equals(activeContext.ExpandIri(entry.Key, vocab: true), "@id", StringComparison.Ordinal))
+            if(!string.Equals(activeContext.ExpandIri(entry.Key, vocab: true), JsonLdKeywords.Id, StringComparison.Ordinal))
             {
                 return false;
             }
@@ -1537,13 +1537,13 @@ public static class JsonLdExpansionTree
     {
         foreach(KeyValuePair<string, JsonLdNode> entry in value.EnumerateObject())
         {
-            if(!string.Equals(activeContext.ExpandIri(entry.Key, vocab: true), "@type", StringComparison.Ordinal))
+            if(!string.Equals(activeContext.ExpandIri(entry.Key, vocab: true), JsonLdKeywords.Type, StringComparison.Ordinal))
             {
                 continue;
             }
 
             if(entry.Value.Kind == JsonLdNodeKind.String
-                && string.Equals(activeContext.ExpandIri(entry.Value.GetString(), vocab: true), "@json", StringComparison.Ordinal))
+                && string.Equals(activeContext.ExpandIri(entry.Value.GetString(), vocab: true), JsonLdKeywords.Json, StringComparison.Ordinal))
             {
                 return true;
             }
@@ -1639,7 +1639,7 @@ public static class JsonLdExpansionTree
 
             string? expandedType = activeContext.ExpandIri(typeNode.GetString(), vocab: true, documentRelative: true);
             if(expandedType is null
-                || (!string.Equals(expandedType, "@json", StringComparison.Ordinal)
+                || (!string.Equals(expandedType, JsonLdKeywords.Json, StringComparison.Ordinal)
                     && (!IriUtils.IsAbsoluteIri(expandedType) || ContainsWhitespace(expandedType))))
             {
                 throw new JsonLdProcessingException(
@@ -1672,17 +1672,17 @@ public static class JsonLdExpansionTree
         //or @type aliases.
         if(IsJsonTypedValueObject(value, activeContext))
         {
-            Dictionary<string, object?> jsonResult = new(StringComparer.Ordinal) { ["@type"] = "@json" };
+            Dictionary<string, object?> jsonResult = new(StringComparer.Ordinal) { [JsonLdKeywords.Type] = JsonLdKeywords.Json };
             foreach(KeyValuePair<string, JsonLdNode> entry in value.EnumerateObject())
             {
                 string? entryKey = activeContext.ExpandIri(entry.Key, vocab: true);
-                if(string.Equals(entryKey, "@value", StringComparison.Ordinal))
+                if(string.Equals(entryKey, JsonLdKeywords.Value, StringComparison.Ordinal))
                 {
-                    jsonResult["@value"] = ConvertJsonLiteral(entry.Value);
+                    jsonResult[JsonLdKeywords.Value] = ConvertJsonLiteral(entry.Value);
                 }
-                else if(string.Equals(entryKey, "@index", StringComparison.Ordinal) && entry.Value.Kind == JsonLdNodeKind.String)
+                else if(string.Equals(entryKey, JsonLdKeywords.Index, StringComparison.Ordinal) && entry.Value.Kind == JsonLdNodeKind.String)
                 {
-                    jsonResult["@index"] = entry.Value.GetString();
+                    jsonResult[JsonLdKeywords.Index] = entry.Value.GetString();
                 }
             }
 
@@ -1699,7 +1699,7 @@ public static class JsonLdExpansionTree
             string? expandedKey = activeContext.ExpandIri(entry.Key, vocab: true);
             switch(expandedKey)
             {
-                case "@value":
+                case var k when JsonLdKeywords.IsValue(k):
                 {
                     //A value object whose @value is JSON null carries no
                     //value and is dropped entirely.
@@ -1708,7 +1708,7 @@ public static class JsonLdExpansionTree
                         return null;
                     }
 
-                    result["@value"] = entry.Value.Kind switch
+                    result[JsonLdKeywords.Value] = entry.Value.Kind switch
                     {
                         JsonLdNodeKind.String => entry.Value.GetString(),
                         JsonLdNodeKind.True => (object?)true,
@@ -1718,37 +1718,37 @@ public static class JsonLdExpansionTree
                     };
                     break;
                 }
-                case "@type":
+                case var k when JsonLdKeywords.IsType(k):
                 {
                     //A value object's @type is a single IRI, not an array.
                     if(entry.Value.Kind == JsonLdNodeKind.String)
                     {
                         string raw = entry.Value.GetString();
-                        result["@type"] = activeContext.ExpandIri(raw, vocab: true, documentRelative: true) ?? raw;
+                        result[JsonLdKeywords.Type] = activeContext.ExpandIri(raw, vocab: true, documentRelative: true) ?? raw;
                     }
                     break;
                 }
-                case "@language":
+                case var k when JsonLdKeywords.IsLanguage(k):
                 {
                     if(entry.Value.Kind == JsonLdNodeKind.String)
                     {
-                        result["@language"] = entry.Value.GetString();
+                        result[JsonLdKeywords.Language] = entry.Value.GetString();
                     }
                     break;
                 }
-                case "@index":
+                case var k when JsonLdKeywords.IsIndex(k):
                 {
                     if(entry.Value.Kind == JsonLdNodeKind.String)
                     {
-                        result["@index"] = entry.Value.GetString();
+                        result[JsonLdKeywords.Index] = entry.Value.GetString();
                     }
                     break;
                 }
-                case "@direction":
+                case var k when JsonLdKeywords.IsDirection(k):
                 {
                     if(entry.Value.Kind == JsonLdNodeKind.String)
                     {
-                        result["@direction"] = entry.Value.GetString();
+                        result[JsonLdKeywords.Direction] = entry.Value.GetString();
                     }
                     break;
                 }
@@ -1762,7 +1762,7 @@ public static class JsonLdExpansionTree
 
         //A value object with no @value (only @language/@direction/@index)
         //carries no value and is dropped entirely.
-        if(!result.ContainsKey("@value"))
+        if(!result.ContainsKey(JsonLdKeywords.Value))
         {
             return null;
         }
@@ -1794,7 +1794,7 @@ public static class JsonLdExpansionTree
     /// </summary>
     private static void AddReverseValues(Dictionary<string, object?> target, string reverseIri, IReadOnlyList<object?> values)
     {
-        if(target.TryGetValue("@reverse", out object? existing) && existing is Dictionary<string, object?> reverseMap)
+        if(target.TryGetValue(JsonLdKeywords.Reverse, out object? existing) && existing is Dictionary<string, object?> reverseMap)
         {
             AddValues(reverseMap, reverseIri, values);
 
@@ -1803,7 +1803,7 @@ public static class JsonLdExpansionTree
 
         Dictionary<string, object?> created = new(StringComparer.Ordinal);
         AddValues(created, reverseIri, values);
-        target["@reverse"] = created;
+        target[JsonLdKeywords.Reverse] = created;
     }
 
     private static IReadOnlyList<object?> WrapAsArray(object? value)
