@@ -58,6 +58,7 @@
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.JsonLd\Lumoin.Veritas.JsonLd.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.JsonPointer\Lumoin.Veritas.JsonPointer.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.JsonSchema\Lumoin.Veritas.JsonSchema.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.LinkedData\Lumoin.Veritas.LinkedData.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Json\Lumoin.Veritas.Json.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Json.Stj\Lumoin.Veritas.Json.Stj.csproj" />

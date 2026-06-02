@@ -1,7 +1,19 @@
 # Handoff — Lumoin.Veritas.Sparql (Batch 1: Milestones A–C, SHACL-SPARQL unlock)
 
 ---
-## ⭐⭐ READ THIS FIRST — SESSION 3 RESUME (2026-06-02, branch `sparql-query-engine`, tree clean)
+## ⭐⭐⭐ READ THIS FIRST — SESSION 4 (2026-06-02, branch `sparql-query-engine`)
+
+This session (after JSON-LD Expand/toRdf hit 0): three commits.
+1. **JsonPointer** — new `Lumoin.Veritas.JsonPointer` (RFC 6901) + 156 tests (RFC §5/§6 tables, full surface, CsCheck props). Split the LINQ ban into `BannedSymbols.Linq.txt` (libraries bound; `*.Tests` free).
+2. **JSON project restructure** — JSON family now mirrors the CBOR family. `Lumoin.Veritas.Json` = STJ-FREE value model (`JsonNode`/`JsonNodeKind`/`JsonNodeNavigator`/`JsonNodeOperations`/`ParseJsonDelegate`), lifted out of JsonLd (renamed `JsonLd*`→`Json*`). `Lumoin.Veritas.Json.Stj` = the only STJ JSON project (`StjJsonAdapter : ParseJsonDelegate`, injected at the boundary). `Lumoin.Veritas.Rdf.Json` = the RDF↔JSON bindings (SPARQL-results JSON, term/quad converters). `CborLdRegistryJsonLoader` → CborLd, on `JsonNode`. Guards (`Directory.Packages.props` restricted set, `Directory.Build.props` STJ-ban exemption) track `Cbor;Json.Stj;Rdf.Json`. Memory `project_json_family_layering`.
+3. **`Lumoin.Veritas.JsonSchema` scaffolded (draft 2020-12)** — validator on the STJ-free `JsonNode` model + `JsonPointer`; iterative two-phase evaluator (NO recursion). Official **JSON-Schema-Test-Suite vendored** (`Material/JsonSchema/`, pinned `60755c1`, MIT) + RED-baseline harness (`Conformance/JsonSchemaTestSuite{Loader,DataAttribute}`, `JsonSchemaConformanceRunner`, `JsonSchemaTestCase`; test class `JsonSchema/JsonSchemaTestSuiteTests`). **Baseline: 1299 cases, 1051 pass / 248 fail** (failures display-named `jsonschema …`; guard pattern now excludes `jsonschema`). First keyword slice: boolean schemas, type, const, enum, numeric (multipleOf/min/max/exclusive), string (min/maxLength/pattern), array (min/maxItems/uniqueItems/items/prefixItems), object (min/maxProperties/required/properties/additionalProperties), applicators allOf/anyOf/oneOf/not. Memory `project_jsonschema_next`.
+
+**Full suite now: 6007 total, 248 fail (all `jsonschema` RED baseline), 5720 pass, 39 skip.** Every non-JsonSchema suite stays green (guard EMPTY excluding `jsonschema`).
+
+**NEXT (ratchet JSON Schema 248→0):** implement `$ref`/`$defs`/`$anchor`/`$dynamicRef`/`$dynamicAnchor` (needs a schema registry + base-URI resolution via Core `IriResolver`; remote `$ref` via the existing async loader seam, `http://localhost:1234/` → `Material/JsonSchema/remotes/`), `if`/`then`/`else`, `contains`/`minContains`/`maxContains`, `patternProperties`, `propertyNames`, `dependentRequired`/`dependentSchemas`, `unevaluatedProperties`/`unevaluatedItems` (need annotation tracking), `format` (annotation by default; optional/ subset later). Each step: rebuild test project, run `--filter "FullyQualifiedName~JsonSchemaTestSuiteTests"`, ratchet the fail count down, guard EMPTY excluding `jsonschema`.
+
+---
+## ⭐⭐ SESSION 3 RESUME (2026-06-02, branch `sparql-query-engine`, tree clean)
 
 JSON-LD is the active workstream. **Memory `project_jsonld_conformance` has the full detail — read it.** State now:
 - **Expand: 100% conformant (0 fail).** All 29 ratcheted to 0 this session (last was tc013 = revert type-scoped ctx to previous before expanding a `@type`-container map, in `JsonLdExpansionTree.ExpandPropertyValueAsync`). `expandContext` API option implemented (`ExpandAsync` overload taking `JsonLdNode? expandContext`).
@@ -16,7 +28,7 @@ JSON-LD is the active workstream. **Memory `project_jsonld_conformance` has the 
 2. **New project `Lumoin.Veritas.JsonSchema`** — JSON Schema **2020-12** validation + official JSON-Schema-Test-Suite ratchet (RED-baseline). Reuse the remote-loader / local-cache / `AccessContext` delegate seams for `$ref`/`$id`. Build an ergonomic API for schema.org-typed data; validation results should map back to RDF terms (for the selective-disclosure use case that motivates this).
 3. **JSON Pointer** — bring it into Lumoin.Veritas (needed for `$ref` fragments). Reference `..\Verifiable\src\Verifiable.JsonPointer` + its tests for API shape (don't have to copy the design); goal is to eventually remove that project from the Verifiable solution.
 
-Build/test per [[feedback_build_test_command_shape]]: `dotnet build test/Lumoin.Veritas.Tests/Lumoin.Veritas.Tests.csproj -clp:ErrorsOnly --nologo` (PowerShell), then (Bash) `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe" --filter "FullyQualifiedName~JsonLd" > tempdocs/out.txt 2>&1`. Regression guard: `grep -iE "^\s*failed " tempdocs/out.txt | grep -vE "expand #|compact #|toRdf #|fromRdf #"` must be EMPTY. Rebuild the TEST project (stale-dll trap).
+Build/test per [[feedback_build_test_command_shape]]: `dotnet build test/Lumoin.Veritas.Tests/Lumoin.Veritas.Tests.csproj -clp:ErrorsOnly --nologo` (PowerShell), then (Bash) `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe" --filter "FullyQualifiedName~JsonLd" > tempdocs/out.txt 2>&1`. Regression guard: `grep -iE "^\s*failed " tempdocs/out.txt | grep -vE "expand #|compact #|toRdf #|fromRdf #|jsonschema"` must be EMPTY. Rebuild the TEST project (stale-dll trap).
 ---
 
 
@@ -28,7 +40,7 @@ DESCRIBE/JSON results, conformance push).
 
 ## ⭐ CURRENT STATE (2026-06-02; RDF + SPARQL + SHACL conformance-complete; **JSON-LD Expand baseline being ratcheted — full suite intentionally RED**; on `sparql-query-engine`, tree clean)
 
-⚠ **The full suite is intentionally RED (not a regression): JSON-LD Expand RED baseline only** (every other suite — RDF/SPARQL/SHACL/Turtle/RDF-XML/CBOR — stays green; the regression guard `grep -iE "^\s*failed " out.txt | grep -vE "expand #|compact #|toRdf #|fromRdf #"` is EMPTY at every commit this session).
+⚠ **The full suite is intentionally RED (not a regression): JSON-LD Expand RED baseline only** (every other suite — RDF/SPARQL/SHACL/Turtle/RDF-XML/CBOR — stays green; the regression guard `grep -iE "^\s*failed " out.txt | grep -vE "expand #|compact #|toRdf #|fromRdf #|jsonschema"` is EMPTY at every commit this session).
 
 ✅ **JSON-LD EXPAND RATCHET — NEAR-COMPLETE (2026-06-02): expand 97 → 245 → 337 → 384 passing (385 — 384 pass / 1 fail / 19 skip).** Faithful-expansion fixes in `JsonLdExpansionTree` + contained context-processing fixes in `Lumoin.Veritas.LinkedData`, each measured against the oracle, no regressions in any other suite. Only **tc013** remains (deeply-nested type-scoped context threaded through a `@container:@type` + `@container:@index` map; needs applying type-scoped contexts inside the index-map expansion — architectural). **Goal (user, 2026-06-02): a fully conforming JSON-LD implementation** — finish expand → wire compact/toRdf (implemented, unverified) → flatten → frame (+fromRdf). **Algorithm-shape reference implementations are vendored under `tempdocs/` (NOT a correctness authority — the W3C suite is). ⚠ USER DIRECTIVE: never name or refer to those vendored reference implementations in code, comments, or docs.**
 
@@ -162,7 +174,7 @@ Goal: drive JSON-LD to **full conformance** — first **Expand to 0 failures**, 
 1. **Edit** `src/Lumoin.Veritas.JsonLd/JsonLdExpansionTree.cs` (expansion) and/or `src/Lumoin.Veritas.LinkedData/ContextProcessing*.cs` + `LinkedDataContext.cs` (context). Pick the next cluster from the bucket list below (cheapest/highest-count first).
 2. **Build the TEST project** (not just the library — stale-dll trap): `dotnet build test/Lumoin.Veritas.Tests/Lumoin.Veritas.Tests.csproj -clp:ErrorsOnly --nologo` (PowerShell).
 3. **Run** (Bash, from repo root): `"test/Lumoin.Veritas.Tests/bin/Debug/net10.0/Lumoin.Veritas.Tests.exe" --filter "FullyQualifiedName~JsonLd" > tempdocs/out.txt 2>&1` then `grep -E "total:|failed:|skipped:" tempdocs/out.txt`. Failures print actual-vs-expected JSON inline; survey with `awk '/^failed expand/{n=$0} /actual:/{a=$0} /expected:/{print n;print "  A:"a;print "  E:"$0}' tempdocs/out.txt`.
-4. **Guard against regressions:** `grep -iE "^\s*failed " tempdocs/out.txt | grep -vE "expand #|compact #|toRdf #|fromRdf #"` must be EMPTY (no unit/other-suite breakage). If a change is net-zero-or-negative or churns >a couple tests in a shared Core file, REVERT it (`git checkout -- <file>`) and note it deferred — don't ship behavioral regressions even within the RED baseline.
+4. **Guard against regressions:** `grep -iE "^\s*failed " tempdocs/out.txt | grep -vE "expand #|compact #|toRdf #|fromRdf #|jsonschema"` must be EMPTY (no unit/other-suite breakage). If a change is net-zero-or-negative or churns >a couple tests in a shared Core file, REVERT it (`git checkout -- <file>`) and note it deferred — don't ship behavioral regressions even within the RED baseline.
 5. **Commit** each green step: `git add -A && git commit -q -m "JsonLd: <what>"`. NO co-author trailer ([[feedback_no_coauthor_trailer]]).
 6. When expand hits 0: run the FULL suite once (`…Tests.exe > tempdocs/full.txt`) to confirm only-JSON-LD-was-touched, then wire Compact + ToRdf in `W3cJsonLdRunner` (recipe below) and ratchet those to 0, then Flatten/Frame.
 - **References (algorithm shape, NOT correctness — W3C suite is authority):** the vendored reference implementations under `tempdocs/`. ⚠ Never name or refer to them in code/comments/docs (user directive).

@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Veritas.JsonSchema</RootNamespace>
+    <Description>A JSON Schema draft 2020-12 validator for Lumoin.Veritas. Validates instances over the backend-agnostic JSON value model and reports errors located by JSON Pointer.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Json\Lumoin.Veritas.Json.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.JsonPointer\Lumoin.Veritas.JsonPointer.csproj" />
+  </ItemGroup>
+
+</Project>
