@@ -1022,6 +1022,18 @@ public static class JsonLdExpansionTree
         //@language marker.
         bool mapKeyIsNone = string.Equals(activeContext.ExpandIri(mapKey, vocab: true), "@none", StringComparison.Ordinal);
 
+        //Under a @type map the key is a type whose term may carry a type-scoped
+        //context; it applies (non-propagating) while expanding this key's value
+        //(W3C JSON-LD 1.1 §4.3.2 / jsonld.js _expandIndexMap).
+        if(isTypeMap && !mapKeyIsNone
+            && activeContext.TryGetTerm(mapKey, out TermDefinition? keyTermDef)
+            && keyTermDef is { ScopedContextEntries: { } keyScopedEntries })
+        {
+            activeContext = await ApplyScopedEntriesAsync(
+                activeContext, keyScopedEntries, baseUrl, resolver, parser, cancellationToken, propagate: false)
+                .ConfigureAwait(false);
+        }
+
         //For @language container, the map key IS the language tag and
         //each item is a scalar value (or array of scalars). Build a
         //value object with @language attached.

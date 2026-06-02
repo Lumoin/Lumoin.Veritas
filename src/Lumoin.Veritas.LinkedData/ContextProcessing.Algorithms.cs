@@ -836,12 +836,18 @@ public static partial class ContextProcessing
             }
         }
 
-        //A @type-container term may only coerce values to @id or @vocab.
-        if(containerMapping.Contains("@type") && typeMapping is not null && typeMapping is not ("@id" or "@vocab"))
+        //A @type-container term's type mapping defaults to @id and may only be
+        //@id or @vocab (W3C JSON-LD 1.1 §4.1.2). The default makes a string
+        //value under such a term expand to a node reference.
+        if(containerMapping.Contains("@type"))
         {
-            throw new LinkedDataProcessingException(
-                "invalid type mapping",
-                string.Create(CultureInfo.InvariantCulture, $"A @type-container term '{termName}' may only set @type to @id or @vocab."));
+            typeMapping ??= "@id";
+            if(typeMapping is not ("@id" or "@vocab"))
+            {
+                throw new LinkedDataProcessingException(
+                    "invalid type mapping",
+                    string.Create(CultureInfo.InvariantCulture, $"A @type-container term '{termName}' may only set @type to @id or @vocab."));
+            }
         }
 
         //A property-valued @index requires an @index container and a
