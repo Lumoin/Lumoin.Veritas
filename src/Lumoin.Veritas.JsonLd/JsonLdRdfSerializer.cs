@@ -66,7 +66,11 @@ public static class JsonLdRdfSerializer
 
     private static void EmitNode(SerializationState state, IReadOnlyDictionary<string, object?> node, RdfTerm? graph)
     {
-        RdfTerm subject = state.SubjectOf(node);
+        //A node whose explicit @id is not a well-formed IRI produces no RDF.
+        if(state.SubjectOf(node) is not { } subject)
+        {
+            return;
+        }
 
         foreach(KeyValuePair<string, object?> property in node)
         {
@@ -157,9 +161,8 @@ public static class JsonLdRdfSerializer
             {
                 //A reverse property swaps subject and object: the referenced
                 //node is the subject and this node is the object.
-                if(value is IReadOnlyDictionary<string, object?> reverseNode)
+                if(value is IReadOnlyDictionary<string, object?> reverseNode && state.SubjectOf(reverseNode) is { } reverseSubject)
                 {
-                    RdfTerm reverseSubject = state.SubjectOf(reverseNode);
                     state.PushNode(reverseNode, graph);
                     state.Emit(reverseSubject, predicate, subject, graph);
                 }
@@ -180,9 +183,9 @@ public static class JsonLdRdfSerializer
                 objectTerm = EmitList(state, listValue, graph);
                 return true;
             }
-            case IReadOnlyDictionary<string, object?> nodeObject:
+            case IReadOnlyDictionary<string, object?> nodeObject when state.SubjectOf(nodeObject) is { } nodeSubject:
             {
-                objectTerm = state.SubjectOf(nodeObject);
+                objectTerm = nodeSubject;
                 state.PushNode(nodeObject, graph);
                 return true;
             }
@@ -232,6 +235,13 @@ public static class JsonLdRdfSerializer
         object? rawValue = valueObject.GetValueOrDefault(JsonLdKeywords.Value);
         string? type = valueObject.GetValueOrDefault(JsonLdKeywords.Type) as string;
         string? language = valueObject.GetValueOrDefault(JsonLdKeywords.Language) as string;
+
+        //A malformed language tag drops the literal's triple.
+        if(language is not null && !IsWellFormedLanguage(language))
+        {
+            literal = null!;
+            return false;
+        }
 
         //@json keeps its lexical form under the rdf:JSON datatype (canonical
         //serialization of the JSON value is a later refinement).
@@ -331,7 +341,7 @@ public static class JsonLdRdfSerializer
             return true;
         }
 
-        if(IriUtils.IsAbsoluteIri(iri))
+        if(IriUtils.IsAbsoluteIri(iri) && IsWellFormedIri(iri))
         {
             term = new NamedNode(state.Pool.Intern(iri));
             return true;
@@ -339,6 +349,42 @@ public static class JsonLdRdfSerializer
 
         term = null!;
         return false;
+    }
+
+    /// <summary>
+    /// Indicates whether an absolute IRI is well-formed enough to appear in a
+    /// triple: a malformed IRI (one containing a space, a control character, or
+    /// an RFC 3987 excluded delimiter) is rejected, and the triple is dropped.
+    /// </summary>
+    private static bool IsWellFormedIri(string iri)
+    {
+        foreach(char character in iri)
+        {
+            if(character <= ' ' || character is '<' or '>' or '"' or '{' or '}' or '|' or '\\' or '^' or '`')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Indicates whether a language tag is well-formed enough to label a
+    /// literal (no spaces or control characters); an invalid tag drops the
+    /// literal's triple.
+    /// </summary>
+    private static bool IsWellFormedLanguage(string language)
+    {
+        foreach(char character in language)
+        {
+            if(!char.IsAsciiLetterOrDigit(character) && character != '-')
+            {
+                return false;
+            }
+        }
+
+        return language.Length > 0;
     }
 
     private static bool IsValueOrListObject(IReadOnlyDictionary<string, object?> map)
@@ -416,25 +462,30 @@ public static class JsonLdRdfSerializer
         /// <summary>Returns the stable RDF subject term for a node instance, minting a blank node when it has no usable <c>@id</c>.</summary>
         /// <param name="node">The node object.</param>
         /// <returns>The subject term.</returns>
-        public RdfTerm SubjectOf(IReadOnlyDictionary<string, object?> node)
+        public RdfTerm? SubjectOf(IReadOnlyDictionary<string, object?> node)
         {
             if(subjects.TryGetValue(node, out RdfTerm? existing))
             {
                 return existing;
             }
 
-            RdfTerm subject;
-            if(node.TryGetValue(JsonLdKeywords.Id, out object? idValue) && idValue is string id && TryMakeNode(this, id, out RdfTerm? fromId))
+            //An explicit @id that is not a well-formed IRI (or blank node) makes
+            //the node unusable as a subject — it yields no RDF (and is not
+            //cached, since the result is always null for that node).
+            if(node.TryGetValue(JsonLdKeywords.Id, out object? idValue) && idValue is string id)
             {
-                subject = fromId;
-            }
-            else
-            {
-                subject = MintBlankNode();
+                if(!TryMakeNode(this, id, out RdfTerm? fromId))
+                {
+                    return null;
+                }
+
+                subjects[node] = fromId;
+                return fromId;
             }
 
-            subjects[node] = subject;
-            return subject;
+            BlankNode minted = MintBlankNode();
+            subjects[node] = minted;
+            return minted;
         }
 
         /// <summary>Mints a fresh, process-unique blank node.</summary>
