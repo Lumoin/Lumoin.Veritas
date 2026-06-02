@@ -9,6 +9,7 @@ using Lumoin.Veritas.Json;
 using Lumoin.Veritas.JsonLd;
 using Lumoin.Veritas.JsonLd.Document;
 using Lumoin.Veritas.LinkedData;
+using Lumoin.Veritas.NQuads;
 
 namespace Lumoin.Veritas.Tests.Conformance;
 
@@ -47,6 +48,7 @@ internal static class W3cJsonLdRunner
         return testCase.Operation switch
         {
             "expand" => await RunExpandAsync(testCase, cancellationToken).ConfigureAwait(false),
+            "toRdf" => await RunToRdfAsync(testCase, cancellationToken).ConfigureAwait(false),
             _ => new W3cOutcome(W3cOutcomeStatus.Skipped, $"Operation '{testCase.Operation}' is not wired yet.")
         };
     }
@@ -105,6 +107,49 @@ internal static class W3cJsonLdRunner
         {
             return new W3cOutcome(W3cOutcomeStatus.Passed, $"Raised the expected processing error ('{testCase.ExpectErrorCode}').");
         }
+    }
+
+    /// <summary>Runs a <c>toRdf</c> case: extracts quads from the input and compares them (under blank-node isomorphism) to the expected N-Quads.</summary>
+    /// <param name="testCase">The case.</param>
+    /// <param name="cancellationToken">A token that aborts the run.</param>
+    /// <returns>The outcome.</returns>
+    private static async ValueTask<W3cOutcome> RunToRdfAsync(JsonLdTestCase testCase, CancellationToken cancellationToken)
+    {
+        JsonLdNode input = StjJsonLdAdapter.Parse(await ReadUtf8Async(testCase.InputPath, cancellationToken).ConfigureAwait(false));
+        string baseUrl = testCase.OptionBase ?? testCase.InputUrl;
+        ContextResolverDelegate resolver = CorpusResolver(testCase);
+        using Utf8StringPool pool = new();
+
+        List<Quad> actual = [];
+        try
+        {
+            await foreach(Quad quad in JsonLdExpander.ExtractQuadsAsync(input, baseUrl, resolver, StjJsonLdAdapter.Parse, pool, cancellationToken).ConfigureAwait(false))
+            {
+                actual.Add(quad);
+            }
+        }
+        catch(Exception exception) when(exception is not OperationCanceledException)
+        {
+            return testCase.IsPositive
+                ? new W3cOutcome(W3cOutcomeStatus.Failed, $"toRdf threw: {exception.Message}")
+                : new W3cOutcome(W3cOutcomeStatus.Passed, $"Raised the expected processing error ('{testCase.ExpectErrorCode}').");
+        }
+
+        if(!testCase.IsPositive)
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expected error '{testCase.ExpectErrorCode}', but toRdf succeeded.");
+        }
+
+        List<Quad> expected = [];
+        byte[] expectedBytes = await File.ReadAllBytesAsync(testCase.ExpectPath!, cancellationToken).ConfigureAwait(false);
+        await foreach(Quad quad in NQuadsReader.ReadAsync(expectedBytes, pool, cancellationToken).ConfigureAwait(false))
+        {
+            expected.Add(quad);
+        }
+
+        return QuadSetIsomorphism.AreIsomorphic(actual, expected)
+            ? new W3cOutcome(W3cOutcomeStatus.Passed, $"toRdf matches ({actual.Count} quads).")
+            : new W3cOutcome(W3cOutcomeStatus.Failed, $"toRdf differs: actual={actual.Count} quads, expected={expected.Count} quads.");
     }
 
     /// <summary>Builds a context resolver that maps a URL under the suite's <c>baseIri</c> to the vendored corpus file.</summary>
