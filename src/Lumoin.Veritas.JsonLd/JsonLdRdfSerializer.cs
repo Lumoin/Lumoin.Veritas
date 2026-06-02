@@ -626,18 +626,20 @@ public static class JsonLdRdfSerializer
                 return existing;
             }
 
-            //An explicit @id that is not a well-formed IRI (or blank node) makes
-            //the node unusable as a subject — it yields no RDF (and is not
-            //cached, since the result is always null for that node).
-            if(node.TryGetValue(JsonLdKeywords.Id, out object? idValue) && idValue is string id)
+            //A node whose @id KEY is present but is not a well-formed IRI/blank
+            //node (a null from a keyword-like @id such as "@ignoreMe", or a
+            //malformed IRI) is unusable as a subject and yields no RDF. Only an
+            //ABSENT @id makes the node an anonymous blank node.
+            if(node.TryGetValue(JsonLdKeywords.Id, out object? idValue))
             {
-                if(!TryMakeNode(this, id, out RdfTerm? fromId))
+                if(idValue is string id && TryMakeNode(this, id, out RdfTerm? fromId))
                 {
-                    return null;
+                    subjects[node] = fromId;
+
+                    return fromId;
                 }
 
-                subjects[node] = fromId;
-                return fromId;
+                return null;
             }
 
             BlankNode minted = MintBlankNode();
