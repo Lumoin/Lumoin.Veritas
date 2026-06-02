@@ -120,13 +120,14 @@ internal static class W3cJsonLdRunner
         ContextResolverDelegate resolver = CorpusResolver(testCase);
         using Utf8StringPool pool = new();
 
-        List<Quad> actual = [];
+        List<Quad> actual;
         try
         {
-            await foreach(Quad quad in JsonLdExpander.ExtractQuadsAsync(input, baseUrl, resolver, StjJsonLdAdapter.Parse, pool, cancellationToken).ConfigureAwait(false))
-            {
-                actual.Add(quad);
-            }
+            //Unified path: extract RDF from the conformant expanded object graph
+            //(JsonLdExpansionTree) rather than a parallel expansion.
+            IReadOnlyList<object?> expanded = await JsonLdExpansionTree.ExpandAsync(
+                input, baseUrl, resolver, StjJsonLdAdapter.Parse, cancellationToken).ConfigureAwait(false);
+            actual = JsonLdRdfSerializer.Serialize(expanded, pool);
         }
         catch(Exception exception) when(exception is not OperationCanceledException)
         {
