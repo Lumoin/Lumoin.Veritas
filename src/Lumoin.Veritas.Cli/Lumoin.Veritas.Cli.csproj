@@ -9,13 +9,13 @@
     <Description>A command-line tool, Model Context Protocol server, and SPARQL 1.1 Protocol HTTP endpoint over the Lumoin.Veritas RDF / SPARQL / SHACL engine.</Description>
 
     <!--
-      The CLI hosts the MCP server (reflection-based tool dispatch) and a Kestrel SPARQL
-      endpoint, neither of which is trim/AOT-clean; the application opts out of the
-      repository-wide AOT/trim analysis rather than carry unsatisfiable annotations.
+      The CLI keeps the repository-wide trim/AOT analysis on (inherited IsAotCompatible /
+      EnableTrimAnalyzer), so every build verifies it stays AOT-safe: the Kestrel endpoint
+      uses the slim host builder and the MCP tool surface is statically registered. The
+      native-AOT binary is produced per RID by the aot-conformance CI job, which passes
+      `-r <rid> -p:PublishAot=true` at publish time — kept off the project so the ordinary
+      build/test legs do not pull the per-RID ILCompiler into the locked restore.
     -->
-    <IsAotCompatible>false</IsAotCompatible>
-    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
-    <ILLinkTreatWarningsAsErrors>false</ILLinkTreatWarningsAsErrors>
   </PropertyGroup>
 
   <!--

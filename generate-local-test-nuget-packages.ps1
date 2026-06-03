@@ -1,0 +1,64 @@
+$projects = @(
+    'Lumoin.Veritas.Canonicalization',
+    'Lumoin.Veritas.Cbor',
+    'Lumoin.Veritas.CborLd',
+    'Lumoin.Veritas.Cid',
+    'Lumoin.Veritas.Core',
+    'Lumoin.Veritas.Json',
+    'Lumoin.Veritas.Json.Stj',
+    'Lumoin.Veritas.JsonLd',
+    'Lumoin.Veritas.JsonPointer',
+    'Lumoin.Veritas.JsonSchema',
+    'Lumoin.Veritas.LinkedData',
+    'Lumoin.Veritas.NQuads',
+    'Lumoin.Veritas.Owl',
+    'Lumoin.Veritas.Rdf',
+    'Lumoin.Veritas.Rdf.Json',
+    'Lumoin.Veritas.Shacl',
+    'Lumoin.Veritas.Skos',
+    'Lumoin.Veritas.Sparql',
+    'Lumoin.Veritas.Turtle',
+    'Lumoin.Veritas.Xml'
+)
+
+$outputDir = './generated-nugets'
+$baseVersion = '0.0.1'
+$sha = git rev-parse --short HEAD 2>$null
+$buildMetadata = ($sha) ? $sha : (Get-Date -Format 'yyyyMMddHHmmss')
+$packageVersion = "$baseVersion-local"
+$informationalVersion = "$baseVersion-local+$buildMetadata"
+
+#Remove all existing packages before generating new ones so stale or malformed
+#packages from previous runs do not accumulate in the output directory.
+if(Test-Path $outputDir)
+{
+    Get-ChildItem -Path $outputDir -Filter '*.nupkg' | Remove-Item -Force
+    Get-ChildItem -Path $outputDir -Filter '*.snupkg' | Remove-Item -Force
+}
+else
+{
+    New-Item -ItemType Directory -Path $outputDir | Out-Null
+}
+
+foreach($project in $projects)
+{
+    #IgnoreSetReleaseNotesProp skips SIL.ReleaseTasks' changelog/release-notes stamping: local
+    #throwaway 0.0.1-local packages should not depend on the repo's release machinery (no CHANGELOG.md needed).
+    dotnet pack --verbosity normal `
+        --configuration Release `
+        --output $outputDir `
+        --include-symbols `
+        --include-source `
+        --property:PackageVersion=$packageVersion `
+        --property:InformationalVersion=$informationalVersion `
+        --property:IgnoreSetReleaseNotesProp=true `
+        "./src/$project/$project.csproj"
+
+    if($LASTEXITCODE -ne 0)
+    {
+        Write-Error "Pack failed for $project."
+        exit $LASTEXITCODE
+    }
+}
+
+Write-Host "Generated packages in $outputDir with version $packageVersion."

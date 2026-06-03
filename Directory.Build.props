@@ -56,7 +56,10 @@
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     <Copyright>Lumoin</Copyright>
-    <PackageIcon>resources/veritas-nuget-logo.png</PackageIcon>
+    <!-- Guarded on the file existing so packing succeeds before a logo is added (NuGet errors with
+         NU5046 when PackageIcon points at a missing file). Drop the logo at
+         resources/veritas-nuget-logo.png and it is picked up automatically. -->
+    <PackageIcon Condition="Exists('$(MSBuildThisFileDirectory)resources/veritas-nuget-logo.png')">resources/veritas-nuget-logo.png</PackageIcon>
     <PackageProjectUrl>https://github.com/lumoin/Lumoin.Veritas/</PackageProjectUrl>
     <Company>Lumoin</Company>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
@@ -168,10 +171,11 @@ See full changelog at https://github.com/lumoin/Veritas/blob/main/CHANGELOG.md.]
     <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.Entropy.txt" />
   </ItemGroup>
 
-  <!-- As this file is used in project file locations, the path is relative to them. -->
-  <!-- Only include logo in packable (non-test) projects. -->
-  <ItemGroup Condition="!$(MSBuildProjectName.EndsWith('Tests'))">
-    <None Include="../../resources/verifiable-nuget-logo.png">
+  <!-- Pack the NuGet logo into packable (non-test) projects, once it exists. Guarded on the file so
+       packing succeeds before the logo is added; the path is absolute (repo-root resources/) so it
+       resolves the same from every project. -->
+  <ItemGroup Condition="!$(MSBuildProjectName.EndsWith('Tests')) AND Exists('$(MSBuildThisFileDirectory)resources/veritas-nuget-logo.png')">
+    <None Include="$(MSBuildThisFileDirectory)resources/veritas-nuget-logo.png">
       <Pack>True</Pack>
       <PackagePath>/resources</PackagePath>
     </None>

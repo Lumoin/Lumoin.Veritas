@@ -2,6 +2,13 @@
   "version": 1,
   "isRoot": true,
   "tools": {
+    "dotnet-coverage": {
+      "version": "17.12.6",
+      "commands": [
+        "dotnet-coverage"
+      ],
+      "rollForward": false
+    },
     "dotnet-trace": {
       "version": "9.0.661903",
       "commands": [
