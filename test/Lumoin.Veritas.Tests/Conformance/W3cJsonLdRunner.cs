@@ -182,7 +182,7 @@ internal static class W3cJsonLdRunner
             IReadOnlyList<object?> expanded = await JsonLdExpansionTree.ExpandAsync(
                 input, baseUrl, resolver, StjJsonAdapter.Parse, expandContext: null, cancellationToken).ConfigureAwait(false);
             IReadOnlyList<object?> expandedFrame = await JsonLdExpansionTree.ExpandAsync(
-                frameDocument, baseUrl, resolver, StjJsonAdapter.Parse, expandContext: null, cancellationToken).ConfigureAwait(false);
+                frameDocument, baseUrl, resolver, StjJsonAdapter.Parse, expandContext: null, frameExpansion: true, cancellationToken).ConfigureAwait(false);
 
             //The merged graph is framed unless the frame carries a top-level @graph.
             bool hasGraph = expandedFrame.Count > 0 && expandedFrame[0] is IReadOnlyDictionary<string, object?> frameObject && frameObject.ContainsKey("@graph");

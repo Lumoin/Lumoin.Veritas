@@ -52,6 +52,21 @@ namespace Lumoin.Veritas.JsonLd;
 public static class JsonLdExpansionTree
 {
     /// <summary>
+    /// The frame-expansion mode for the current expansion run (W3C JSON-LD 1.1
+    /// API, the <c>frameExpansion</c>/<c>isFrame</c> flag): when set, the
+    /// expander keeps empty-object wildcards, framing keywords, and free-floating
+    /// nodes, and relaxes the <c>@id</c>/<c>@type</c>/<c>@value</c> scalar
+    /// constraints. It is an ambient per-run flag (set once at the public entry
+    /// and read at the handful of decision points) rather than a parameter
+    /// threaded through every recursive method; <see cref="AsyncLocal{T}"/>
+    /// scopes it to the executing expansion so parallel runs do not interfere.
+    /// </summary>
+    private static readonly System.Threading.AsyncLocal<bool> frameExpansionScope = new();
+
+    /// <summary>Gets a value indicating whether the current expansion run is in frame-expansion mode.</summary>
+    private static bool FrameExpansion => frameExpansionScope.Value;
+
+    /// <summary>
     /// Expands <paramref name="document"/> to JSON-LD expanded form as an
     /// object graph. The top-level result is an array of expanded node
     /// objects.
@@ -88,13 +103,56 @@ public static class JsonLdExpansionTree
     /// <returns>The expanded document as an object graph.</returns>
     [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
         Justification = "baseUrl follows the JSON-LD specification convention of string URIs.")]
-    public static async ValueTask<IReadOnlyList<object?>> ExpandAsync(
+    public static ValueTask<IReadOnlyList<object?>> ExpandAsync(
         JsonNode document,
         string? baseUrl,
         ContextResolverDelegate resolver,
         ParseJsonDelegate parser,
         JsonNode? expandContext,
         CancellationToken cancellationToken = default)
+    {
+        frameExpansionScope.Value = false;
+        return ExpandInternalAsync(document, baseUrl, resolver, parser, expandContext, cancellationToken);
+    }
+
+    /// <summary>
+    /// Expands a document in frame-expansion mode (the JSON-LD 1.1 API
+    /// <c>frameExpansion</c> option) when <paramref name="frameExpansion"/> is
+    /// set: framing keywords, empty-object wildcards, and free-floating nodes
+    /// are retained for the framing algorithm.
+    /// </summary>
+    /// <param name="document">The frame (or document) node to expand.</param>
+    /// <param name="baseUrl">Optional base URL for document-relative IRIs.</param>
+    /// <param name="resolver">Delegate that resolves remote <c>@context</c> URLs.</param>
+    /// <param name="parser">Delegate that parses fetched context bytes.</param>
+    /// <param name="expandContext">A context value used to seed the active context, or <see langword="null"/>.</param>
+    /// <param name="frameExpansion">Whether to expand in frame mode.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The expanded document as an object graph.</returns>
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
+        Justification = "baseUrl follows the JSON-LD specification convention of string URIs.")]
+    public static ValueTask<IReadOnlyList<object?>> ExpandAsync(
+        JsonNode document,
+        string? baseUrl,
+        ContextResolverDelegate resolver,
+        ParseJsonDelegate parser,
+        JsonNode? expandContext,
+        bool frameExpansion,
+        CancellationToken cancellationToken = default)
+    {
+        frameExpansionScope.Value = frameExpansion;
+        return ExpandInternalAsync(document, baseUrl, resolver, parser, expandContext, cancellationToken);
+    }
+
+    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
+        Justification = "baseUrl follows the JSON-LD specification convention of string URIs.")]
+    private static async ValueTask<IReadOnlyList<object?>> ExpandInternalAsync(
+        JsonNode document,
+        string? baseUrl,
+        ContextResolverDelegate resolver,
+        ParseJsonDelegate parser,
+        JsonNode? expandContext,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(resolver);
         ArgumentNullException.ThrowIfNull(parser);
@@ -150,8 +208,102 @@ public static class JsonLdExpansionTree
     /// is <c>@id</c>, and bare <c>@value</c>/<c>@list</c> objects carry no
     /// assertion at graph level and are removed.
     /// </summary>
+    /// <summary>Whether a node is an object with no members (a frame wildcard).</summary>
+    /// <param name="node">The node.</param>
+    /// <returns><see langword="true"/> when an empty object.</returns>
+    private static bool IsEmptyObject(JsonNode node)
+    {
+        if(node.Kind != JsonNodeKind.Object)
+        {
+            return false;
+        }
+
+        foreach(KeyValuePair<string, JsonNode> _ in node.EnumerateObject())
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>Materializes a frame's non-scalar <c>@value</c> (wildcard object or array) into the object-graph form the framer matches against.</summary>
+    /// <param name="node">The frame <c>@value</c> node.</param>
+    /// <returns>The materialized value.</returns>
+    private static object? MaterializeFrameValue(JsonNode node)
+    {
+        return node.Kind switch
+        {
+            JsonNodeKind.Null => null,
+            JsonNodeKind.String => node.GetString(),
+            JsonNodeKind.True => true,
+            JsonNodeKind.False => false,
+            JsonNodeKind.Number => new JsonLdJsonNumber(node.GetRawNumber()),
+            JsonNodeKind.Array => MaterializeFrameArray(node),
+            JsonNodeKind.Object => MaterializeFrameObject(node),
+            _ => null
+        };
+    }
+
+    /// <summary>Materializes a frame array value.</summary>
+    /// <param name="node">The array node.</param>
+    /// <returns>The materialized list.</returns>
+    private static List<object?> MaterializeFrameArray(JsonNode node)
+    {
+        List<object?> items = new();
+        foreach(JsonNode item in node.EnumerateArray())
+        {
+            items.Add(MaterializeFrameValue(item));
+        }
+
+        return items;
+    }
+
+    /// <summary>Materializes a frame object value.</summary>
+    /// <param name="node">The object node.</param>
+    /// <returns>The materialized map.</returns>
+    private static Dictionary<string, object?> MaterializeFrameObject(JsonNode node)
+    {
+        Dictionary<string, object?> map = new(StringComparer.Ordinal);
+        foreach(KeyValuePair<string, JsonNode> member in node.EnumerateObject())
+        {
+            map[member.Key] = MaterializeFrameValue(member.Value);
+        }
+
+        return map;
+    }
+
+    /// <summary>Expands a frame's non-string <c>@id</c> value: an empty object stays a wildcard, an array becomes the expanded IRIs (both as an array).</summary>
+    /// <param name="value">The frame <c>@id</c> value.</param>
+    /// <param name="activeContext">The active context.</param>
+    /// <returns>The expanded <c>@id</c> array.</returns>
+    private static List<object?> ExpandFrameIdValue(JsonNode value, LinkedDataContext activeContext)
+    {
+        if(value.Kind == JsonNodeKind.Array)
+        {
+            List<object?> ids = new();
+            foreach(JsonNode item in value.EnumerateArray())
+            {
+                if(item.Kind == JsonNodeKind.String)
+                {
+                    ids.Add(activeContext.ExpandIri(item.GetString(), documentRelative: true));
+                }
+            }
+
+            return ids;
+        }
+
+        //An empty object is a wildcard @id pattern (matches any node with an @id).
+        return new List<object?> { new Dictionary<string, object?>(StringComparer.Ordinal) };
+    }
+
     private static List<object?> DropFreeFloating(IReadOnlyList<object?> nodes)
     {
+        //Frame expansion keeps free-floating nodes (a frame's wildcard/@id-only entries must survive).
+        if(FrameExpansion)
+        {
+            return new List<object?>(nodes);
+        }
+
         List<object?> kept = new(nodes.Count);
         foreach(object? node in nodes)
         {
@@ -419,6 +571,13 @@ public static class JsonLdExpansionTree
             {
                 case var k when JsonLdKeywords.IsId(k):
                 {
+                    //In frame-expansion mode @id may be a wildcard ({}) or an array of IRIs, kept as an array.
+                    if(FrameExpansion && value.Kind != JsonNodeKind.String)
+                    {
+                        result[JsonLdKeywords.Id] = ExpandFrameIdValue(value, activeContext);
+                        continue;
+                    }
+
                     if(value.Kind != JsonNodeKind.String)
                     {
                         throw new JsonLdProcessingException(
@@ -436,7 +595,8 @@ public static class JsonLdExpansionTree
                     //A keyword-like @id (e.g. "@ignoreMe") expands to null
                     //and is preserved as such rather than echoed verbatim.
                     string raw = value.GetString();
-                    result[JsonLdKeywords.Id] = activeContext.ExpandIri(raw, documentRelative: true);
+                    object? expandedId = activeContext.ExpandIri(raw, documentRelative: true);
+                    result[JsonLdKeywords.Id] = FrameExpansion ? new List<object?> { expandedId } : expandedId;
                     continue;
                 }
                 case var k when JsonLdKeywords.IsType(k):
@@ -1351,6 +1511,13 @@ public static class JsonLdExpansionTree
                 {
                     if(item.Kind != JsonNodeKind.String)
                     {
+                        //A frame's @type array may carry an empty-object wildcard.
+                        if(FrameExpansion && item.Kind == JsonNodeKind.Object && IsEmptyObject(item))
+                        {
+                            items.Add(new Dictionary<string, object?>(StringComparer.Ordinal));
+                            continue;
+                        }
+
                         throw new JsonLdProcessingException(
                             JsonLdErrorCode.InvalidTypeValue,
                             "A node object's @type value must be a string or an array of strings.");
@@ -1361,6 +1528,11 @@ public static class JsonLdExpansionTree
                 }
 
                 return items;
+            }
+            case JsonNodeKind.Object when FrameExpansion:
+            {
+                //A frame's @type wildcard ({}) matches any typed node.
+                return new List<object?> { new Dictionary<string, object?>(StringComparer.Ordinal) };
             }
             default:
             {
@@ -1657,14 +1829,15 @@ public static class JsonLdExpansionTree
                 "A value object's @type cannot be combined with @language or @direction.");
         }
 
-        if(hasValue && valueNode.Kind is JsonNodeKind.Array or JsonNodeKind.Object)
+        //Frame expansion permits a non-scalar @value (an empty-object wildcard or an array of patterns).
+        if(!FrameExpansion && hasValue && valueNode.Kind is JsonNodeKind.Array or JsonNodeKind.Object)
         {
             throw new JsonLdProcessingException(
                 JsonLdErrorCode.InvalidValueObject,
                 "A value object's @value must be a scalar or null unless typed @json.");
         }
 
-        if((hasLanguage || hasDirection) && hasValue
+        if(!FrameExpansion && (hasLanguage || hasDirection) && hasValue
             && valueNode.Kind is not (JsonNodeKind.String or JsonNodeKind.Null))
         {
             throw new JsonLdProcessingException(
@@ -1774,6 +1947,8 @@ public static class JsonLdExpansionTree
                         //A @value number preserves its exact lexical form through expansion (10.0 stays 10.0),
                         //matching the bare-scalar path; numeric canonicalisation is a toRdf concern.
                         JsonNodeKind.Number => new JsonLdJsonNumber(entry.Value.GetRawNumber()),
+                        //In frame mode a non-scalar @value (wildcard {} or array) is kept verbatim for matching.
+                        JsonNodeKind.Object or JsonNodeKind.Array when FrameExpansion => MaterializeFrameValue(entry.Value),
                         _ => null
                     };
                     break;
