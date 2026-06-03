@@ -69,6 +69,7 @@ internal static class JsonLdManifestLoader
         bool compactArrays = true;
         bool useNativeTypes = false;
         bool useRdfType = false;
+        bool omitGraph = true;
         if(entry.TryGetProperty("option", out JsonNode option) && option.Kind == JsonNodeKind.Object)
         {
             optionBase = StringOrNull(option, "base");
@@ -87,6 +88,10 @@ internal static class JsonLdManifestLoader
             if(option.TryGetProperty("useRdfType", out JsonNode useRdfTypeNode) && useRdfTypeNode.Kind == JsonNodeKind.True)
             {
                 useRdfType = true;
+            }
+            if(option.TryGetProperty("omitGraph", out JsonNode omitGraphNode) && omitGraphNode.Kind == JsonNodeKind.False)
+            {
+                omitGraph = false;
             }
         }
 
@@ -110,6 +115,7 @@ internal static class JsonLdManifestLoader
             UseNativeTypes: useNativeTypes,
             UseRdfType: useRdfType,
             FramePath: frame is null ? null : Resolve(corpusDirectory, frame),
+            OmitGraph: omitGraph,
             CorpusDirectory: corpusDirectory);
     }
 

@@ -24,6 +24,7 @@ namespace Lumoin.Veritas.Tests.Conformance;
 /// <param name="UseNativeTypes">The <c>option.useNativeTypes</c> flag (fromRdf: emit native JSON numbers/booleans; defaults to <see langword="false"/>).</param>
 /// <param name="UseRdfType">The <c>option.useRdfType</c> flag (fromRdf: keep <c>rdf:type</c> as a property; defaults to <see langword="false"/>).</param>
 /// <param name="FramePath">The absolute path of the frame document (frame tests only), or <see langword="null"/>.</param>
+/// <param name="OmitGraph">The <c>option.omitGraph</c> flag (frame tests; defaults to <see langword="true"/> per the 1.1 default).</param>
 /// <param name="CorpusDirectory">The absolute <c>Material/JsonLd</c> directory the suite's URLs map back to.</param>
 internal sealed record JsonLdTestCase(
     string Id,
@@ -45,4 +46,5 @@ internal sealed record JsonLdTestCase(
     bool UseNativeTypes,
     bool UseRdfType,
     string? FramePath,
+    bool OmitGraph,
     string CorpusDirectory);

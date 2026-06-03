@@ -198,6 +198,12 @@ internal static class W3cJsonLdRunner
                 framedNode, activeContext, resolver, StjJsonAdapter.Parse, baseUrl, compactArrays: true, cancellationToken).ConfigureAwait(false);
 
             result = JsonLdFramer.CleanupNull(compacted);
+
+            //omitGraph (1.1 default true) inlines a single result; when false the output is always wrapped in @graph.
+            if(!testCase.OmitGraph)
+            {
+                result = EnsureGraphWrapper(result);
+            }
         }
         catch(Exception exception) when(exception is not OperationCanceledException)
         {
@@ -217,6 +223,43 @@ internal static class W3cJsonLdRunner
         return JsonEquals(actual, expected)
             ? new W3cOutcome(W3cOutcomeStatus.Passed, "frame matches.")
             : new W3cOutcome(W3cOutcomeStatus.Failed, $"frame output does not match.\n  actual:   {Preview(actual)}\n  expected: {Preview(expected)}");
+    }
+
+    /// <summary>Wraps a framed result in <c>@graph</c> (the <c>omitGraph: false</c> form): an existing <c>@graph</c> body is kept, otherwise the body's nodes (excluding a sole <c>@context</c>) become the <c>@graph</c> array. The top-level <c>@context</c> is re-attached by <see cref="WrapWithContext"/>.</summary>
+    /// <param name="result">The framed, compacted result.</param>
+    /// <returns>The <c>@graph</c>-wrapped result.</returns>
+    private static object? EnsureGraphWrapper(object? result)
+    {
+        if(result is IReadOnlyDictionary<string, object?> map)
+        {
+            if(map.ContainsKey("@graph"))
+            {
+                return result;
+            }
+
+            List<object?> nodes = new();
+            Dictionary<string, object?> node = new(StringComparer.Ordinal);
+            foreach(KeyValuePair<string, object?> entry in map)
+            {
+                if(!string.Equals(entry.Key, "@context", StringComparison.Ordinal))
+                {
+                    node[entry.Key] = entry.Value;
+                }
+            }
+            if(node.Count > 0)
+            {
+                nodes.Add(node);
+            }
+
+            return new Dictionary<string, object?>(StringComparer.Ordinal) { ["@graph"] = nodes };
+        }
+
+        if(result is IReadOnlyList<object?> list)
+        {
+            return new Dictionary<string, object?>(StringComparer.Ordinal) { ["@graph"] = new List<object?>(list) };
+        }
+
+        return result;
     }
 
     /// <summary>Runs a <c>fromRdf</c> case: parses the input N-Quads, serializes them as JSON-LD, and compares to the expected document.</summary>
