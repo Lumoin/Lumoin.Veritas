@@ -1559,7 +1559,18 @@ public static class JsonLdExpansionTree
             }
             case JsonNodeKind.Object when FrameExpansion:
             {
-                //A frame's @type wildcard ({}) matches any typed node.
+                //A frame's @type may be a wildcard ({}) or carry an @default type used when a node has none.
+                if(value.TryGetProperty(JsonLdKeywords.Default, out JsonNode defaultNode))
+                {
+                    return new List<object?>
+                    {
+                        new Dictionary<string, object?>(StringComparer.Ordinal)
+                        {
+                            [JsonLdKeywords.Default] = ExpandTypeValue(defaultNode, activeContext) ?? new List<object?>()
+                        }
+                    };
+                }
+
                 return new List<object?> { new Dictionary<string, object?>(StringComparer.Ordinal) };
             }
             default:
