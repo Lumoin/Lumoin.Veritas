@@ -184,15 +184,24 @@ internal static class W3cJsonLdRunner
             IReadOnlyList<object?> expandedFrame = await JsonLdExpansionTree.ExpandAsync(
                 frameDocument, baseUrl, resolver, StjJsonAdapter.Parse, expandContext: null, frameExpansion: true, cancellationToken).ConfigureAwait(false);
 
-            //The merged graph is framed unless the frame carries a top-level @graph.
-            bool hasGraph = expandedFrame.Count > 0 && expandedFrame[0] is IReadOnlyDictionary<string, object?> frameObject && frameObject.ContainsKey("@graph");
-            JsonLdFrameOptions frameOptions = new() { Merged = !hasGraph };
-
-            List<object?> framed = JsonLdFramer.Frame(expanded, expandedFrame, frameOptions);
-
             JsonNode contextValue = frameDocument.TryGetProperty("@context", out JsonNode embedded) ? embedded : frameDocument;
             LinkedDataContext activeContext = await ContextProcessor.ProcessAsync(
                 LinkedDataContext.Empty, contextValue, baseUrl, resolver, StjJsonAdapter.Parse, cancellationToken).ConfigureAwait(false);
+
+            //The default graph is framed when a raw top-level frame key expands to @graph (§ frame the default graph vs the merged graph); the expanded frame can't be used because expansion unwraps a top-level @graph.
+            bool hasGraph = false;
+            foreach(KeyValuePair<string, JsonNode> frameKey in frameDocument.EnumerateObject())
+            {
+                if(string.Equals(activeContext.ExpandIri(frameKey.Key, vocab: true), "@graph", StringComparison.Ordinal))
+                {
+                    hasGraph = true;
+                    break;
+                }
+            }
+
+            JsonLdFrameOptions frameOptions = new() { Merged = !hasGraph };
+
+            List<object?> framed = JsonLdFramer.Frame(expanded, expandedFrame, frameOptions);
             JsonNode framedNode = ExpandedToModelNode(framed);
             object? compacted = await JsonLdCompactor.CompactAsync(
                 framedNode, activeContext, resolver, StjJsonAdapter.Parse, baseUrl, compactArrays: true, cancellationToken).ConfigureAwait(false);

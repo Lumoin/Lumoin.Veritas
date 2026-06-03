@@ -708,7 +708,12 @@ public static class JsonLdFramer
     {
         if(frame.TryGetValue(keyword, out object? value) && value is not null)
         {
-            return UnwrapFlagValue(FirstOrSelf(value)) is true;
+            return UnwrapFlagValue(FirstOrSelf(value)) switch
+            {
+                bool flag => flag,
+                string text => string.Equals(text, "true", StringComparison.Ordinal),
+                _ => defaultValue
+            };
         }
 
         return defaultValue;
@@ -819,7 +824,7 @@ public static class JsonLdFramer
     {
         if(parent is Dictionary<string, object?> node && property is not null)
         {
-            JsonLdNodeMap.AddValue(node, property, output, propertyIsArray: true);
+            JsonLdNodeMap.AddValue(node, property, output, propertyIsArray: true, allowDuplicate: true);
         }
         else if(parent is List<object?> list)
         {

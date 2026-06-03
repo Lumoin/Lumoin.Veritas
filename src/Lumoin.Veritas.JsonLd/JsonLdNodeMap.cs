@@ -107,7 +107,7 @@ internal static class JsonLdNodeMap
                     {
                         foreach(object? value in values)
                         {
-                            AddValue(mergedNode, property, Clone(value), propertyIsArray: true);
+                            AddValue(mergedNode, property, Clone(value), propertyIsArray: true, allowDuplicate: false);
                         }
                     }
                 }
@@ -251,7 +251,7 @@ internal static class JsonLdNodeMap
 
             if(objects.Count == 0)
             {
-                AddValue(subject, property, new List<object?>(), propertyIsArray: true);
+                AddValue(subject, property, new List<object?>(), propertyIsArray: true, allowDuplicate: false);
                 continue;
             }
 
@@ -283,7 +283,7 @@ internal static class JsonLdNodeMap
         {
             //A blank-node @type value is relabelled.
             string typeName = typeIri.StartsWith("_:", StringComparison.Ordinal) ? issuer.GetId(typeIri) : typeIri;
-            AddValue(subject, property, typeName, propertyIsArray: true);
+            AddValue(subject, property, typeName, propertyIsArray: true, allowDuplicate: false);
             return;
         }
 
@@ -296,14 +296,14 @@ internal static class JsonLdNodeMap
             }
 
             string id = IsBlankNode(objectNode) ? issuer.GetId(GetId(objectNode)) : GetId(objectNode)!;
-            AddValue(subject, property, new Dictionary<string, object?>(StringComparer.Ordinal) { [JsonLdKeywords.Id] = id }, propertyIsArray: true);
+            AddValue(subject, property, new Dictionary<string, object?>(StringComparer.Ordinal) { [JsonLdKeywords.Id] = id }, propertyIsArray: true, allowDuplicate: false);
             CreateNodeMap(objectNode, graphs, graph, issuer, id, list: null);
             return;
         }
 
         if(rawObject is IReadOnlyDictionary<string, object?> valueObject && IsValue(valueObject))
         {
-            AddValue(subject, property, RelabelValueType(valueObject, issuer), propertyIsArray: true);
+            AddValue(subject, property, RelabelValueType(valueObject, issuer), propertyIsArray: true, allowDuplicate: false);
             return;
         }
 
@@ -311,13 +311,13 @@ internal static class JsonLdNodeMap
         {
             List<object?> innerList = new();
             CreateNodeMap(listObject[JsonLdKeywords.List], graphs, graph, issuer, name, innerList);
-            AddValue(subject, property, new Dictionary<string, object?>(StringComparer.Ordinal) { [JsonLdKeywords.List] = innerList }, propertyIsArray: true);
+            AddValue(subject, property, new Dictionary<string, object?>(StringComparer.Ordinal) { [JsonLdKeywords.List] = innerList }, propertyIsArray: true, allowDuplicate: false);
             return;
         }
 
         //Any other object recurses (and is added as-is).
         CreateNodeMap(rawObject, graphs, graph, issuer, name, list: null);
-        AddValue(subject, property, rawObject, propertyIsArray: true);
+        AddValue(subject, property, rawObject, propertyIsArray: true, allowDuplicate: false);
     }
 
     /// <summary>Hoists the subjects under a node's <c>@reverse</c> map, adding the back-reference to each referenced subject (§8 step 6.4).</summary>
@@ -357,7 +357,7 @@ internal static class JsonLdNodeMap
 
                 string itemName = IsBlankNode(itemNode) ? issuer.GetId(GetId(itemNode)) : GetId(itemNode)!;
                 CreateNodeMap(itemNode, graphs, graph, issuer, itemName, list: null);
-                AddValue(subjects[itemName], reverseProperty.Key, referencedNode, propertyIsArray: true);
+                AddValue(subjects[itemName], reverseProperty.Key, referencedNode, propertyIsArray: true, allowDuplicate: false);
             }
         }
     }
@@ -396,12 +396,13 @@ internal static class JsonLdNodeMap
         return valueObject;
     }
 
-    /// <summary>Appends a value to a node's property list without introducing duplicates (the node-map building rule, <c>allowDuplicate: false</c>).</summary>
+    /// <summary>Appends a value to a node's property list. Node-map building passes <c>allowDuplicate: false</c> (skip a value already present); framing passes <c>allowDuplicate: true</c> so equal <c>@list</c> members and repeated values are retained.</summary>
     /// <param name="subject">The node.</param>
     /// <param name="property">The property key.</param>
     /// <param name="value">The value to add (or an empty list to ensure the property exists).</param>
     /// <param name="propertyIsArray">Whether the property always holds an array.</param>
-    public static void AddValue(Dictionary<string, object?> subject, string property, object? value, bool propertyIsArray)
+    /// <param name="allowDuplicate">Whether a value equal to one already present is still appended.</param>
+    public static void AddValue(Dictionary<string, object?> subject, string property, object? value, bool propertyIsArray, bool allowDuplicate)
     {
         if(value is List<object?> { Count: 0 } && propertyIsArray && !subject.ContainsKey(property))
         {
@@ -415,11 +416,14 @@ internal static class JsonLdNodeMap
             subject[property] = list;
         }
 
-        foreach(object? present in list)
+        if(!allowDuplicate)
         {
-            if(ValueEquals(present, value))
+            foreach(object? present in list)
             {
-                return;
+                if(ValueEquals(present, value))
+                {
+                    return;
+                }
             }
         }
 
