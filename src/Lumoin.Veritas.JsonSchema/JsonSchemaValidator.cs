@@ -71,7 +71,7 @@ public static class JsonSchemaValidator
     {
         Frame root = EvaluateRoot(schema, instance, loader, baseUri, regexMatch, out List<ValidationError> errors, out List<OutputUnit> annotations);
 
-        return BuildOutput(root.Result, errors, annotations, format);
+        return BuildOutput(root, errors, annotations, format);
     }
 
     /// <summary>Runs the evaluation loop, returning the root frame and the gathered errors and (passing) annotations.</summary>
@@ -120,20 +120,30 @@ public static class JsonSchemaValidator
     }
 
     /// <summary>Builds the requested output structure from the evaluation result.</summary>
-    /// <param name="valid">The overall validity.</param>
+    /// <param name="root">The closed root frame (the head of the evaluation tree).</param>
     /// <param name="errors">The assertion failures.</param>
     /// <param name="annotations">The annotation units from passing frames.</param>
     /// <param name="format">The output format.</param>
     /// <returns>The root output unit.</returns>
-    private static OutputUnit BuildOutput(bool valid, List<ValidationError> errors, List<OutputUnit> annotations, OutputFormat format)
+    private static OutputUnit BuildOutput(Frame root, List<ValidationError> errors, List<OutputUnit> annotations, OutputFormat format)
     {
-        if(format == OutputFormat.Flag)
+        return format switch
         {
-            return new OutputUnit { Valid = valid };
-        }
+            OutputFormat.Flag => new OutputUnit { Valid = root.Result },
+            OutputFormat.Basic => BuildBasic(root.Result, errors, annotations),
+            OutputFormat.Detailed => BuildHierarchical(root, errors, annotations, prune: true),
+            OutputFormat.Verbose => BuildHierarchical(root, errors, annotations, prune: false),
+            _ => new OutputUnit { Valid = root.Result }
+        };
+    }
 
-        //Basic: on success the flat annotation list, on failure the flat error list (annotations from a
-        //failed schema are dropped).
+    /// <summary>Builds the flat Basic output: the annotation list on success, the error list on failure.</summary>
+    /// <param name="valid">The overall validity.</param>
+    /// <param name="errors">The assertion failures.</param>
+    /// <param name="annotations">The annotation units from passing frames.</param>
+    /// <returns>The root output unit.</returns>
+    private static OutputUnit BuildBasic(bool valid, List<ValidationError> errors, List<OutputUnit> annotations)
+    {
         if(valid)
         {
             return new OutputUnit { Valid = true, Annotations = annotations };
@@ -142,17 +152,204 @@ public static class JsonSchemaValidator
         List<OutputUnit> errorUnits = [];
         foreach(ValidationError error in errors)
         {
-            errorUnits.Add(new OutputUnit
-            {
-                Valid = false,
-                KeywordLocation = error.KeywordLocation.ToString(),
-                AbsoluteKeywordLocation = error.AbsoluteKeywordLocation,
-                InstanceLocation = error.InstanceLocation.ToString(),
-                Error = error.Message
-            });
+            errorUnits.Add(ErrorUnit(error));
         }
 
         return new OutputUnit { Valid = false, Errors = errorUnits };
+    }
+
+    /// <summary>Builds the hierarchical (Detailed/Verbose) output by walking the evaluation tree, attaching each frame's self errors and annotations and nesting its child frames.</summary>
+    /// <param name="root">The root frame.</param>
+    /// <param name="errors">The flat assertion failures, distributed to their owning frames.</param>
+    /// <param name="annotations">The flat annotation units, distributed to their owning frames.</param>
+    /// <param name="prune">Whether to drop valid, information-free nodes (Detailed) or keep the full tree (Verbose).</param>
+    /// <returns>The root output unit.</returns>
+    private static OutputUnit BuildHierarchical(Frame root, List<ValidationError> errors, List<OutputUnit> annotations, bool prune)
+    {
+        Dictionary<string, List<OutputUnit>> selfErrors = new(StringComparer.Ordinal);
+        Dictionary<string, List<OutputUnit>> selfAnnotations = new(StringComparer.Ordinal);
+
+        HashSet<string> frameKeywordLocations = new(StringComparer.Ordinal);
+        CollectFrameKeywordLocations(root, frameKeywordLocations);
+
+        foreach(ValidationError error in errors)
+        {
+            string owner = OwningFrameKeywordLocation(error.KeywordLocation.ToString(), frameKeywordLocations);
+            Add(selfErrors, owner, ErrorUnit(error));
+        }
+
+        foreach(OutputUnit annotation in annotations)
+        {
+            string owner = OwningFrameKeywordLocation(annotation.KeywordLocation ?? string.Empty, frameKeywordLocations);
+            Add(selfAnnotations, owner, annotation);
+        }
+
+        OutputUnit unit = BuildFrameUnit(root, selfErrors, selfAnnotations);
+
+        return prune ? Prune(unit, isRoot: true) : unit;
+    }
+
+    /// <summary>Builds the Verbose output unit for one frame: its validity, locations, self error/annotation units, and recursively its child frames.</summary>
+    /// <param name="frame">The frame.</param>
+    /// <param name="selfErrors">Self error units keyed by frame keyword location.</param>
+    /// <param name="selfAnnotations">Self annotation units keyed by frame keyword location.</param>
+    /// <returns>The frame's output unit.</returns>
+    private static OutputUnit BuildFrameUnit(Frame frame, Dictionary<string, List<OutputUnit>> selfErrors, Dictionary<string, List<OutputUnit>> selfAnnotations)
+    {
+        string keywordLocation = frame.KeywordLocation.ToString();
+
+        List<OutputUnit> children = [];
+        if(selfErrors.TryGetValue(keywordLocation, out List<OutputUnit>? frameErrors))
+        {
+            children.AddRange(frameErrors);
+        }
+
+        if(selfAnnotations.TryGetValue(keywordLocation, out List<OutputUnit>? frameAnnotations))
+        {
+            children.AddRange(frameAnnotations);
+        }
+
+        foreach(Frame child in frame.Children)
+        {
+            children.Add(BuildFrameUnit(child, selfErrors, selfAnnotations));
+        }
+
+        OutputUnit unit = new()
+        {
+            Valid = frame.Result,
+            KeywordLocation = keywordLocation,
+            AbsoluteKeywordLocation = frame.EffectiveBase + "#" + keywordLocation,
+            InstanceLocation = frame.InstanceLocation.ToString(),
+            Errors = frame.Result ? null : (children.Count > 0 ? children : [InlineError(frame)]),
+            Annotations = frame.Result && children.Count > 0 ? children : null
+        };
+
+        return unit;
+    }
+
+    /// <summary>Prunes a Verbose tree to a Detailed tree: a non-root node that is valid and carries no annotation, error, or surviving child is dropped.</summary>
+    /// <param name="unit">The unit to prune.</param>
+    /// <param name="isRoot">Whether this is the root unit (always kept).</param>
+    /// <returns>The pruned unit.</returns>
+    private static OutputUnit Prune(OutputUnit unit, bool isRoot)
+    {
+        List<OutputUnit>? prunedErrors = PruneChildren(unit.Errors);
+        List<OutputUnit>? prunedAnnotations = PruneChildren(unit.Annotations);
+
+        return unit with { Errors = prunedErrors, Annotations = prunedAnnotations };
+
+        static List<OutputUnit>? PruneChildren(IReadOnlyList<OutputUnit>? children)
+        {
+            if(children is null)
+            {
+                return null;
+            }
+
+            List<OutputUnit> kept = [];
+            foreach(OutputUnit child in children)
+            {
+                OutputUnit pruned = Prune(child, isRoot: false);
+                if(IsInformative(pruned))
+                {
+                    kept.Add(pruned);
+                }
+            }
+
+            return kept.Count > 0 ? kept : null;
+        }
+    }
+
+    /// <summary>Whether a Detailed node carries information worth keeping: it failed, or it bears an annotation value or surviving children.</summary>
+    /// <param name="unit">The unit.</param>
+    /// <returns><see langword="true"/> when the node should survive pruning.</returns>
+    private static bool IsInformative(OutputUnit unit)
+    {
+        return !unit.Valid
+            || unit.Annotation is not null
+            || unit.Error is not null
+            || unit.Errors is { Count: > 0 }
+            || unit.Annotations is { Count: > 0 };
+    }
+
+    /// <summary>Builds a leaf error output unit from an assertion failure.</summary>
+    /// <param name="error">The assertion failure.</param>
+    /// <returns>The error unit.</returns>
+    private static OutputUnit ErrorUnit(ValidationError error)
+    {
+        return new OutputUnit
+        {
+            Valid = false,
+            KeywordLocation = error.KeywordLocation.ToString(),
+            AbsoluteKeywordLocation = error.AbsoluteKeywordLocation,
+            InstanceLocation = error.InstanceLocation.ToString(),
+            Error = error.Message
+        };
+    }
+
+    /// <summary>Builds a fallback inline error for an invalid frame that gathered no self errors or failing children (so the output unit still carries the required failure detail).</summary>
+    /// <param name="frame">The invalid frame.</param>
+    /// <returns>The error unit.</returns>
+    private static OutputUnit InlineError(Frame frame)
+    {
+        return new OutputUnit
+        {
+            Valid = false,
+            KeywordLocation = frame.KeywordLocation.ToString(),
+            AbsoluteKeywordLocation = frame.EffectiveBase + "#" + frame.KeywordLocation,
+            InstanceLocation = frame.InstanceLocation.ToString(),
+            Error = "The instance does not satisfy the schema."
+        };
+    }
+
+    /// <summary>Collects the keyword locations of every frame in the tree (so a flat error/annotation can be mapped to its owning frame).</summary>
+    /// <param name="frame">The current frame.</param>
+    /// <param name="keywordLocations">The accumulating set of frame keyword locations.</param>
+    private static void CollectFrameKeywordLocations(Frame frame, HashSet<string> keywordLocations)
+    {
+        keywordLocations.Add(frame.KeywordLocation.ToString());
+        foreach(Frame child in frame.Children)
+        {
+            CollectFrameKeywordLocations(child, keywordLocations);
+        }
+    }
+
+    /// <summary>Finds the frame a flat error/annotation belongs to: the deepest frame whose keyword location is a prefix of the unit's keyword location.</summary>
+    /// <param name="keywordLocation">The unit's keyword location.</param>
+    /// <param name="frameKeywordLocations">The set of all frame keyword locations.</param>
+    /// <returns>The owning frame's keyword location (the root's empty pointer when none deeper matches).</returns>
+    private static string OwningFrameKeywordLocation(string keywordLocation, HashSet<string> frameKeywordLocations)
+    {
+        string candidate = keywordLocation;
+        while(true)
+        {
+            if(frameKeywordLocations.Contains(candidate))
+            {
+                return candidate;
+            }
+
+            int lastSlash = candidate.LastIndexOf('/');
+            if(lastSlash < 0)
+            {
+                return string.Empty;
+            }
+
+            candidate = candidate[..lastSlash];
+        }
+    }
+
+    /// <summary>Adds a value to a list keyed by <paramref name="key"/>, creating the list on first use.</summary>
+    /// <param name="map">The keyed lists.</param>
+    /// <param name="key">The key.</param>
+    /// <param name="value">The value to append.</param>
+    private static void Add(Dictionary<string, List<OutputUnit>> map, string key, OutputUnit value)
+    {
+        if(!map.TryGetValue(key, out List<OutputUnit>? list))
+        {
+            list = [];
+            map[key] = list;
+        }
+
+        list.Add(value);
     }
 
     /// <summary>Whether the Validation vocabulary is in effect for the root schema's declared dialect (<c>$schema</c>).</summary>

@@ -65,6 +65,18 @@ internal static class JsonSchemaOutputRunner
 
                 return true;
             }
+            case "detailed":
+            {
+                format = OutputFormat.Detailed;
+
+                return true;
+            }
+            case "verbose":
+            {
+                format = OutputFormat.Verbose;
+
+                return true;
+            }
             default:
             {
                 format = OutputFormat.Flag;
@@ -74,22 +86,60 @@ internal static class JsonSchemaOutputRunner
         }
     }
 
-    /// <summary>Serializes an output unit to canonical JSON bytes.</summary>
+    /// <summary>Serializes an output unit (and its nested units, for Detailed/Verbose) to canonical JSON bytes.</summary>
     /// <param name="output">The root output unit.</param>
     /// <returns>The UTF-8 JSON.</returns>
-    private static Utf8String Serialize(OutputUnit output)
+    public static Utf8String Serialize(OutputUnit output)
     {
+        ArgumentNullException.ThrowIfNull(output);
+
         ArrayBufferWriter<byte> buffer = new();
         using(Utf8JsonWriter writer = new(buffer))
         {
-            writer.WriteStartObject();
-            writer.WriteBoolean("valid", output.Valid);
-            WriteUnitArray(writer, "errors", output.Errors);
-            WriteUnitArray(writer, "annotations", output.Annotations);
-            writer.WriteEndObject();
+            WriteUnit(writer, output);
         }
 
         return new Utf8String(buffer.WrittenSpan.ToArray());
+    }
+
+    /// <summary>Writes one output unit, recursing into its nested error and annotation units.</summary>
+    /// <param name="writer">The writer.</param>
+    /// <param name="unit">The unit.</param>
+    private static void WriteUnit(Utf8JsonWriter writer, OutputUnit unit)
+    {
+        writer.WriteStartObject();
+        writer.WriteBoolean("valid", unit.Valid);
+
+        if(unit.KeywordLocation is not null)
+        {
+            writer.WriteString("keywordLocation", unit.KeywordLocation);
+        }
+
+        if(unit.AbsoluteKeywordLocation is not null)
+        {
+            writer.WriteString("absoluteKeywordLocation", unit.AbsoluteKeywordLocation);
+        }
+
+        if(unit.InstanceLocation is not null)
+        {
+            writer.WriteString("instanceLocation", unit.InstanceLocation);
+        }
+
+        if(unit.Error is not null)
+        {
+            writer.WriteString("error", unit.Error);
+        }
+
+        if(unit.Annotation is { } annotation)
+        {
+            writer.WritePropertyName("annotation");
+            WriteJsonNode(writer, annotation);
+        }
+
+        WriteUnitArray(writer, "errors", unit.Errors);
+        WriteUnitArray(writer, "annotations", unit.Annotations);
+
+        writer.WriteEndObject();
     }
 
     /// <summary>Writes a named array of child output units, if present.</summary>
@@ -106,34 +156,7 @@ internal static class JsonSchemaOutputRunner
         writer.WriteStartArray(name);
         foreach(OutputUnit unit in units)
         {
-            writer.WriteStartObject();
-            if(unit.KeywordLocation is not null)
-            {
-                writer.WriteString("keywordLocation", unit.KeywordLocation);
-            }
-
-            if(unit.AbsoluteKeywordLocation is not null)
-            {
-                writer.WriteString("absoluteKeywordLocation", unit.AbsoluteKeywordLocation);
-            }
-
-            if(unit.InstanceLocation is not null)
-            {
-                writer.WriteString("instanceLocation", unit.InstanceLocation);
-            }
-
-            if(unit.Error is not null)
-            {
-                writer.WriteString("error", unit.Error);
-            }
-
-            if(unit.Annotation is { } annotation)
-            {
-                writer.WritePropertyName("annotation");
-                WriteJsonNode(writer, annotation);
-            }
-
-            writer.WriteEndObject();
+            WriteUnit(writer, unit);
         }
 
         writer.WriteEndArray();
