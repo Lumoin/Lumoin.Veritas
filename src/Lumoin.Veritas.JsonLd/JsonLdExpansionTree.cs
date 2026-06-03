@@ -1873,7 +1873,8 @@ public static class JsonLdExpansionTree
                 "A language- or direction-tagged value object's @value must be a string.");
         }
 
-        if(hasLanguage && languageNode.Kind != JsonNodeKind.String)
+        //Frame expansion permits @language to be an array or an empty-object wildcard.
+        if(!FrameExpansion && hasLanguage && languageNode.Kind != JsonNodeKind.String)
         {
             throw new JsonLdProcessingException(
                 JsonLdErrorCode.InvalidValueObject,
@@ -2002,6 +2003,13 @@ public static class JsonLdExpansionTree
                     if(entry.Value.Kind == JsonNodeKind.String)
                     {
                         result[JsonLdKeywords.Language] = entry.Value.GetString();
+                    }
+                    else if(FrameExpansion)
+                    {
+                        //A frame's @language may be a wildcard ({}) or an array of language tags.
+                        result[JsonLdKeywords.Language] = entry.Value.Kind == JsonNodeKind.Array
+                            ? MaterializeFrameValue(entry.Value)
+                            : new Dictionary<string, object?>(StringComparer.Ordinal);
                     }
                     break;
                 }
