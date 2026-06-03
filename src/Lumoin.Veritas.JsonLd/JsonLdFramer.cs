@@ -48,20 +48,58 @@ public static class JsonLdFramer
         subjects.Sort(StringComparer.Ordinal);
         FrameSubjects(state, subjects, expandedFrame, framed, property: null);
 
+        List<object?> result = CleanupPreserve(framed);
+
         if(options.PruneBlankNodeIdentifiers)
         {
-            //Blank nodes that appear exactly once are pruned during the later compaction.
-            options.BlankNodesToClear.Clear();
+            //A blank node named exactly once carries no shared identity, so its @id is dropped.
+            HashSet<string> prune = new(StringComparer.Ordinal);
             foreach(KeyValuePair<string, List<Dictionary<string, object?>>> entry in state.BlankNodeMap)
             {
                 if(entry.Value.Count == 1)
                 {
-                    options.BlankNodesToClear.Add(entry.Key);
+                    prune.Add(entry.Key);
                 }
+            }
+
+            options.BlankNodesToClear.Clear();
+            options.BlankNodesToClear.UnionWith(prune);
+            foreach(object? node in result)
+            {
+                PruneBlankNodeIds(node, prune);
             }
         }
 
-        return CleanupPreserve(framed);
+        return result;
+    }
+
+    /// <summary>Recursively removes <c>@id</c> entries whose value is a single-use blank node (in <paramref name="prune"/>).</summary>
+    /// <param name="value">The framed value.</param>
+    /// <param name="prune">The single-use blank-node identifiers to drop.</param>
+    private static void PruneBlankNodeIds(object? value, HashSet<string> prune)
+    {
+        if(value is List<object?> list)
+        {
+            foreach(object? item in list)
+            {
+                PruneBlankNodeIds(item, prune);
+            }
+
+            return;
+        }
+
+        if(value is Dictionary<string, object?> map)
+        {
+            if(map.TryGetValue(JsonLdKeywords.Id, out object? id) && id is string blankId && prune.Contains(blankId))
+            {
+                map.Remove(JsonLdKeywords.Id);
+            }
+
+            foreach(object? child in map.Values)
+            {
+                PruneBlankNodeIds(child, prune);
+            }
+        }
     }
 
     /// <summary>Frames a set of subjects against a frame, adding the matched, embedded output to <paramref name="parent"/>.</summary>
@@ -623,8 +661,8 @@ public static class JsonLdFramer
     /// <returns>The embed flag (<c>@once</c>/<c>@always</c>/<c>@never</c>/<c>@link</c>).</returns>
     private static string GetEmbedFlag(Dictionary<string, object?> frame, JsonLdFrameOptions options)
     {
-        object? raw = frame.TryGetValue(JsonLdKeywords.Embed, out object? value) && value is IReadOnlyList<object?> { Count: > 0 } list
-            ? UnwrapFlagValue(list[0])
+        object? raw = frame.TryGetValue(JsonLdKeywords.Embed, out object? value) && value is not null
+            ? UnwrapFlagValue(FirstOrSelf(value))
             : options.Embed;
 
         return raw switch
@@ -643,12 +681,20 @@ public static class JsonLdFramer
     /// <returns>The flag value.</returns>
     private static bool GetBoolFlag(Dictionary<string, object?> frame, string keyword, bool defaultValue)
     {
-        if(frame.TryGetValue(keyword, out object? value) && value is IReadOnlyList<object?> { Count: > 0 } list)
+        if(frame.TryGetValue(keyword, out object? value) && value is not null)
         {
-            return UnwrapFlagValue(list[0]) is true;
+            return UnwrapFlagValue(FirstOrSelf(value)) is true;
         }
 
         return defaultValue;
+    }
+
+    /// <summary>Returns a value's first element when it is a non-empty array, otherwise the value itself (a framing flag may expand to either form).</summary>
+    /// <param name="value">The expanded flag value.</param>
+    /// <returns>The flag scalar carrier.</returns>
+    private static object? FirstOrSelf(object? value)
+    {
+        return value is IReadOnlyList<object?> { Count: > 0 } list ? list[0] : value;
     }
 
     /// <summary>Unwraps a framing-flag value, which expansion may carry as a bare scalar or a <c>{"@value": …}</c> object.</summary>
@@ -834,7 +880,13 @@ public static class JsonLdFramer
     /// <returns>The values.</returns>
     private static List<object?> GetValues(IReadOnlyDictionary<string, object?> node, string key)
     {
-        return node.TryGetValue(key, out object? value) && value is IReadOnlyList<object?> list ? new List<object?>(list) : new List<object?>();
+        return (node.TryGetValue(key, out object? value), value) switch
+        {
+            (false, _) => new List<object?>(),
+            (true, IReadOnlyList<object?> list) => new List<object?>(list),
+            (true, null) => new List<object?>(),
+            _ => new List<object?> { value }
+        };
     }
 
     /// <summary>Whether a list contains a value equal (by <c>compareValues</c>) to the target, or the target is a string present in the list.</summary>
