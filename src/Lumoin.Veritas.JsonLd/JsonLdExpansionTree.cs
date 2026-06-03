@@ -208,6 +208,34 @@ public static class JsonLdExpansionTree
     /// is <c>@id</c>, and bare <c>@value</c>/<c>@list</c> objects carry no
     /// assertion at graph level and are removed.
     /// </summary>
+    /// <summary>Expands a frame value object's non-string <c>@type</c>: an empty object is a wildcard, an array becomes its expanded IRIs (wildcard members kept).</summary>
+    /// <param name="value">The frame <c>@type</c> value.</param>
+    /// <param name="activeContext">The active context.</param>
+    /// <returns>The expanded <c>@type</c> pattern.</returns>
+    private static object? ExpandFrameTypeValue(JsonNode value, LinkedDataContext activeContext)
+    {
+        if(value.Kind == JsonNodeKind.Array)
+        {
+            List<object?> types = new();
+            foreach(JsonNode item in value.EnumerateArray())
+            {
+                if(item.Kind == JsonNodeKind.String)
+                {
+                    string raw = item.GetString();
+                    types.Add(activeContext.ExpandIri(raw, vocab: true, documentRelative: true) ?? raw);
+                }
+                else if(item.Kind == JsonNodeKind.Object && IsEmptyObject(item))
+                {
+                    types.Add(new Dictionary<string, object?>(StringComparer.Ordinal));
+                }
+            }
+
+            return types;
+        }
+
+        return new Dictionary<string, object?>(StringComparer.Ordinal);
+    }
+
     /// <summary>Whether a node is an object with no members (a frame wildcard).</summary>
     /// <param name="node">The node.</param>
     /// <returns><see langword="true"/> when an empty object.</returns>
@@ -1859,7 +1887,8 @@ public static class JsonLdExpansionTree
                 "@index must be a string.");
         }
 
-        if(hasType)
+        //Frame expansion permits a value object's @type to be an array or an empty-object wildcard.
+        if(hasType && !FrameExpansion)
         {
             if(typeNode.Kind != JsonNodeKind.String)
             {
@@ -1955,11 +1984,16 @@ public static class JsonLdExpansionTree
                 }
                 case var k when JsonLdKeywords.IsType(k):
                 {
-                    //A value object's @type is a single IRI, not an array.
+                    //A value object's @type is a single IRI, except in frame mode where it may be a
+                    //wildcard ({}) or an array of IRIs kept for matching.
                     if(entry.Value.Kind == JsonNodeKind.String)
                     {
                         string raw = entry.Value.GetString();
                         result[JsonLdKeywords.Type] = activeContext.ExpandIri(raw, vocab: true, documentRelative: true) ?? raw;
+                    }
+                    else if(FrameExpansion)
+                    {
+                        result[JsonLdKeywords.Type] = ExpandFrameTypeValue(entry.Value, activeContext);
                     }
                     break;
                 }

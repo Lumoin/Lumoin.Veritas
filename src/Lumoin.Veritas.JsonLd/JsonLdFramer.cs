@@ -647,11 +647,36 @@ public static class JsonLdFramer
 
     /// <summary>Validates that a frame is a single-object array, with valid <c>@id</c>/<c>@type</c> entries.</summary>
     /// <param name="frame">The frame to validate.</param>
-    private static void ValidateFrame(IReadOnlyList<object?> frame)
+    private static void ValidateFrame(IReadOnlyList<object?> frameArray)
     {
-        if(frame.Count != 1 || frame[0] is not IReadOnlyDictionary<string, object?>)
+        if(frameArray.Count != 1 || frameArray[0] is not IReadOnlyDictionary<string, object?> frame)
         {
             throw new JsonLdProcessingException("A JSON-LD frame must be a single object.");
+        }
+
+        //@id values must each be a wildcard ({}) or an absolute IRI — never a blank node.
+        if(frame.TryGetValue(JsonLdKeywords.Id, out object? idValue))
+        {
+            foreach(object? id in AsFrameList(idValue))
+            {
+                if(id is not IReadOnlyDictionary<string, object?> && !(id is string idText && IriUtils.IsAbsoluteIri(idText)))
+                {
+                    throw new JsonLdProcessingException("Invalid @id in JSON-LD frame.");
+                }
+            }
+        }
+
+        //@type values must each be a wildcard, an absolute IRI, or @json — never a blank node.
+        if(frame.TryGetValue(JsonLdKeywords.Type, out object? typeValue))
+        {
+            foreach(object? type in AsFrameList(typeValue))
+            {
+                if(type is not IReadOnlyDictionary<string, object?>
+                    && !(type is string typeText && (string.Equals(typeText, JsonLdKeywords.Json, StringComparison.Ordinal) || IriUtils.IsAbsoluteIri(typeText))))
+                {
+                    throw new JsonLdProcessingException("Invalid @type in JSON-LD frame.");
+                }
+            }
         }
     }
 
