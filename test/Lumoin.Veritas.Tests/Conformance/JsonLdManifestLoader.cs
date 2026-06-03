@@ -58,6 +58,7 @@ internal static class JsonLdManifestLoader
         string input = StringOrNull(entry, "input") ?? string.Empty;
         string? expect = StringOrNull(entry, "expect");
         string? context = StringOrNull(entry, "context");
+        string? frame = StringOrNull(entry, "frame");
         string? expectErrorCode = StringOrNull(entry, "expectErrorCode");
 
         string? optionBase = null;
@@ -108,6 +109,7 @@ internal static class JsonLdManifestLoader
             CompactArrays: compactArrays,
             UseNativeTypes: useNativeTypes,
             UseRdfType: useRdfType,
+            FramePath: frame is null ? null : Resolve(corpusDirectory, frame),
             CorpusDirectory: corpusDirectory);
     }
 

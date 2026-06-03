@@ -1,7 +1,10 @@
-# W3C JSON-LD 1.1 API Test Suite
+# W3C JSON-LD 1.1 API + Framing Test Suites
 
-Source: https://github.com/w3c/json-ld-api/tree/main/tests
+Source (expand/compact/toRdf/fromRdf/flatten): https://github.com/w3c/json-ld-api/tree/main/tests
 Pinned commit: 265e6b433a4eb25bad99d941c95f2ccecd6a8c1d (verified 2026-06-01)
+
+Source (frame): https://github.com/w3c/json-ld-framing/tree/main/tests
+Pinned commit: 5437dbc5c0db543ccfa1b6b36197cc3687fc1b34 (verified 2026-06-03)
 
 Licensed under the W3C Software and Document Notice and License
 (BSD-style); see `LICENSE.md`. Copyright © W3C® and the test authors.
@@ -20,6 +23,8 @@ Only the operations `Lumoin.Veritas.JsonLd` implements are vendored:
 - `toRdf-manifest.jsonld` + `toRdf/`     — JSON-LD → RDF (N-Quads) tests
 - `fromRdf-manifest.jsonld` + `fromRdf/` — RDF (N-Quads) → JSON-LD tests
 - `flatten-manifest.jsonld` + `flatten/` — JSON-LD flattening tests
+- `frame-manifest.jsonld` + `frame/`     — JSON-LD framing tests (from the
+  separate `json-ld-framing` repo; each entry adds a `frame` document)
 - `manifest.jsonld`, `context.jsonld`, `vocab.jsonld`, `vocab.ttl`,
   `vocab_context.jsonld` — shared root manifest / contexts the tests
   reference.
