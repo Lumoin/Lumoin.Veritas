@@ -55,6 +55,7 @@ internal static class W3cJsonLdRunner
             "compact" => await RunCompactAsync(testCase, cancellationToken).ConfigureAwait(false),
             "fromRdf" => await RunFromRdfAsync(testCase, cancellationToken).ConfigureAwait(false),
             "flatten" => await RunFlattenAsync(testCase, cancellationToken).ConfigureAwait(false),
+            "frame" => await RunFrameAsync(testCase, cancellationToken).ConfigureAwait(false),
             _ => new W3cOutcome(W3cOutcomeStatus.Skipped, $"Operation '{testCase.Operation}' is not wired yet.")
         };
     }
@@ -162,6 +163,60 @@ internal static class W3cJsonLdRunner
         return QuadSetIsomorphism.AreIsomorphic(actual, expected)
             ? new W3cOutcome(W3cOutcomeStatus.Passed, $"toRdf matches ({actual.Count} quads).")
             : new W3cOutcome(W3cOutcomeStatus.Failed, $"toRdf differs: actual={actual.Count} quads, expected={expected.Count} quads.");
+    }
+
+    /// <summary>Runs a <c>frame</c> case: expands the input and frame, frames, compacts against the frame's context, cleans up <c>@null</c>, and compares to the expected document.</summary>
+    /// <param name="testCase">The case.</param>
+    /// <param name="cancellationToken">A token that aborts the run.</param>
+    /// <returns>The outcome.</returns>
+    private static async ValueTask<W3cOutcome> RunFrameAsync(JsonLdTestCase testCase, CancellationToken cancellationToken)
+    {
+        JsonNode input = StjJsonAdapter.Parse(await ReadUtf8Async(testCase.InputPath, cancellationToken).ConfigureAwait(false));
+        JsonNode frameDocument = StjJsonAdapter.Parse(await ReadUtf8Async(testCase.FramePath!, cancellationToken).ConfigureAwait(false));
+        string baseUrl = testCase.OptionBase ?? testCase.InputUrl;
+        ContextResolverDelegate resolver = CorpusResolver(testCase);
+
+        object? result;
+        try
+        {
+            IReadOnlyList<object?> expanded = await JsonLdExpansionTree.ExpandAsync(
+                input, baseUrl, resolver, StjJsonAdapter.Parse, expandContext: null, cancellationToken).ConfigureAwait(false);
+            IReadOnlyList<object?> expandedFrame = await JsonLdExpansionTree.ExpandAsync(
+                frameDocument, baseUrl, resolver, StjJsonAdapter.Parse, expandContext: null, cancellationToken).ConfigureAwait(false);
+
+            //The merged graph is framed unless the frame carries a top-level @graph.
+            bool hasGraph = expandedFrame.Count > 0 && expandedFrame[0] is IReadOnlyDictionary<string, object?> frameObject && frameObject.ContainsKey("@graph");
+            JsonLdFrameOptions frameOptions = new() { Merged = !hasGraph };
+
+            List<object?> framed = JsonLdFramer.Frame(expanded, expandedFrame, frameOptions);
+
+            JsonNode contextValue = frameDocument.TryGetProperty("@context", out JsonNode embedded) ? embedded : frameDocument;
+            LinkedDataContext activeContext = await ContextProcessor.ProcessAsync(
+                LinkedDataContext.Empty, contextValue, baseUrl, resolver, StjJsonAdapter.Parse, cancellationToken).ConfigureAwait(false);
+            JsonNode framedNode = ExpandedToModelNode(framed);
+            object? compacted = await JsonLdCompactor.CompactAsync(
+                framedNode, activeContext, resolver, StjJsonAdapter.Parse, baseUrl, compactArrays: true, cancellationToken).ConfigureAwait(false);
+
+            result = JsonLdFramer.CleanupNull(compacted);
+        }
+        catch(Exception exception) when(exception is not OperationCanceledException)
+        {
+            return testCase.IsPositive
+                ? new W3cOutcome(W3cOutcomeStatus.Failed, $"frame threw: {exception.Message}")
+                : new W3cOutcome(W3cOutcomeStatus.Passed, $"Raised the expected processing error ('{testCase.ExpectErrorCode}').");
+        }
+
+        if(!testCase.IsPositive)
+        {
+            return new W3cOutcome(W3cOutcomeStatus.Failed, $"Expected error '{testCase.ExpectErrorCode}', but frame succeeded.");
+        }
+
+        StjJsonNode? actual = WrapWithContext(ToJsonNode(result), testCase.FramePath!);
+        StjJsonNode? expected = StjJsonNode.Parse(await File.ReadAllBytesAsync(testCase.ExpectPath!, cancellationToken).ConfigureAwait(false));
+
+        return JsonEquals(actual, expected)
+            ? new W3cOutcome(W3cOutcomeStatus.Passed, "frame matches.")
+            : new W3cOutcome(W3cOutcomeStatus.Failed, $"frame output does not match.\n  actual:   {Preview(actual)}\n  expected: {Preview(expected)}");
     }
 
     /// <summary>Runs a <c>fromRdf</c> case: parses the input N-Quads, serializes them as JSON-LD, and compares to the expected document.</summary>

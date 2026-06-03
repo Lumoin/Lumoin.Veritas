@@ -95,13 +95,32 @@ public static class JsonLdKeywords
     /// <summary>The <c>@vocab</c> keyword — the vocabulary mapping directive.</summary>
     public static readonly string Vocab = "@vocab";
 
+    /// <summary>The <c>@default</c> framing keyword — a property's default value when absent from a matched node.</summary>
+    public static readonly string Default = "@default";
+
+    /// <summary>The <c>@embed</c> framing keyword — the node-embedding mode (<c>@once</c>/<c>@always</c>/<c>@never</c>/<c>@link</c>).</summary>
+    public static readonly string Embed = "@embed";
+
+    /// <summary>The <c>@explicit</c> framing keyword — whether only frame-named properties are kept.</summary>
+    public static readonly string Explicit = "@explicit";
+
+    /// <summary>The <c>@omitDefault</c> framing keyword — whether absent properties are omitted instead of defaulted.</summary>
+    public static readonly string OmitDefault = "@omitDefault";
+
+    /// <summary>The <c>@preserve</c> framing keyword — wraps a value carried verbatim through framing's compaction.</summary>
+    public static readonly string Preserve = "@preserve";
+
+    /// <summary>The <c>@requireAll</c> framing keyword — whether all frame properties must match.</summary>
+    public static readonly string RequireAll = "@requireAll";
+
     /// <summary>Every JSON-LD keyword token, holding the canonical instances above (used for membership tests and canonicalization).</summary>
     public static FrozenSet<string> All { get; } =
         new HashSet<string>(StringComparer.Ordinal)
         {
             Base, Container, Context, Direction, Graph, Id, Import, Included,
             Index, Json, Language, List, Nest, None, Prefix, Propagate,
-            Protected, Reverse, Set, Type, Value, Version, Vocab
+            Protected, Reverse, Set, Type, Value, Version, Vocab,
+            Default, Embed, Explicit, OmitDefault, Preserve, RequireAll
         }.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>Returns whether two keyword tokens are the same, taking a <see cref="object.ReferenceEquals"/> fast-path before an <b>ordinal</b> (case-sensitive) compare — JSON-LD keywords are lower-case <c>"@…"</c> tokens, so the compare is case-sensitive (unlike case-insensitive RFC media types).</summary>
