@@ -133,14 +133,10 @@ jobs:
     - name: Install dependencies
       run: dotnet restore --locked-mode
 
-    - name: Cache local .NET tools
-      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7
-      with:
-        path: ~/.dotnet/tools
-        key: dotnet-tools-${{ runner.os }}-${{ hashFiles('.config/dotnet-tools.json') }}
-        restore-keys: |
-          dotnet-tools-${{ runner.os }}-
-
+    # Local tools (the .config/dotnet-tools.json manifest) restore into the global NuGet
+    # package cache, which setup-dotnet already caches via packages.lock.json — there is
+    # no ~/.dotnet/tools directory to cache separately (that location is for `-g` tools,
+    # and caching its non-existent path fails the post-job tar on Windows).
     - name: Restore local .NET tools
       run: dotnet tool restore
 
