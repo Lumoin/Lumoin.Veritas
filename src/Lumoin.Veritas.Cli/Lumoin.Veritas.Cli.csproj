@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>veritas</ToolCommandName>
+
+    <Title>Veritas command-line, MCP, and SPARQL HTTP server</Title>
+    <Description>A command-line tool, Model Context Protocol server, and SPARQL 1.1 Protocol HTTP endpoint over the Lumoin.Veritas RDF / SPARQL / SHACL engine.</Description>
+
+    <!--
+      The CLI hosts the MCP server (reflection-based tool dispatch) and a Kestrel SPARQL
+      endpoint, neither of which is trim/AOT-clean; the application opts out of the
+      repository-wide AOT/trim analysis rather than carry unsatisfiable annotations.
+    -->
+    <IsAotCompatible>false</IsAotCompatible>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <ILLinkTreatWarningsAsErrors>false</ILLinkTreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <!--
+    The repository declares browser as a supported platform for non-test projects; the
+    Kestrel HTTP server is not reachable on browser, so the declaration is removed here to
+    keep the platform-compatibility analyzer accurate for this application.
+  -->
+  <ItemGroup>
+    <SupportedPlatform Remove="browser" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.CommandLine" />
+    <PackageReference Include="ModelContextProtocol" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Sparql\Lumoin.Veritas.Sparql.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Turtle\Lumoin.Veritas.Turtle.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.NQuads\Lumoin.Veritas.NQuads.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include=".mcp\server.json" Pack="true" PackagePath=".mcp" />
+  </ItemGroup>
+
+</Project>

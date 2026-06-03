@@ -1,0 +1,26 @@
+{
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "io.github.lumoin/veritas",
+    "description": "Tools for querying RDF data with SPARQL over the Lumoin.Veritas engine",
+    "version": "0.0.0",
+    "repository": {
+        "url": "https://github.com/lumoin/Lumoin.Veritas",
+        "source": "github"
+    },
+    "packages": [
+        {
+            "registryType": "nuget",
+            "identifier": "Lumoin.Veritas.Cli",
+            "transport": {
+                "type": "stdio"
+            },
+            "packageArguments": [
+                {
+                    "type": "positional",
+                    "value": "-mcp",
+                    "valueHint": "mcp_flag"
+                }
+            ]
+        }
+    ]
+}
