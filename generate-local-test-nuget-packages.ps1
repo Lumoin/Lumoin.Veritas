@@ -2,6 +2,7 @@ $projects = @(
     'Lumoin.Veritas.Canonicalization',
     'Lumoin.Veritas.Cbor',
     'Lumoin.Veritas.CborLd',
+    'Lumoin.Veritas.Cli',
     'Lumoin.Veritas.Cid',
     'Lumoin.Veritas.Core',
     'Lumoin.Veritas.Json',

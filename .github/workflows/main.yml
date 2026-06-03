@@ -33,8 +33,9 @@ env:
   # packages reference one another (e.g. JsonLd -> CborLd -> Cbor) as NuGet package
   # dependencies at the same version, so a release publishes a coherent set. As the
   # project grows, add the project name here. The Lumoin.Veritas.Cli application
-  # (a `dotnet tool`, not a library) is intentionally excluded; it is packed and
-  # shipped separately.
+  # (a `dotnet tool`, not a library) is excluded from this list; its own
+  # pack-and-verify step below packs it into the same nupkgs output, so it ships
+  # through the same prerelease/deploy channels.
   LIBRARY_PROJECTS: >
     Lumoin.Veritas.Canonicalization
     Lumoin.Veritas.Cbor
@@ -201,6 +202,30 @@ jobs:
             --property:PackageVersion="${PACKAGE_VERSION%%+*}" \
             "$path"
         done
+
+    # Pack the veritas dotnet-tool package and prove it in the same step: install the
+    # just-packed tool from the local output and answer a real query through the
+    # installed command — a tool package that does not work fails its own pack step.
+    # The MCP server manifest version is stamped to match the package before packing.
+    - name: Pack and verify the veritas tool package
+      if: ${{ matrix.os == 'ubuntu-latest' && github.repository_owner == 'lumoin' }}
+      run: |
+        TOOL_VERSION="${PACKAGE_VERSION%%+*}"
+        sed -i 's/"version": "[^"]*"/"version": "'"$TOOL_VERSION"'"/' src/Lumoin.Veritas.Cli/.mcp/server.json
+        dotnet pack --verbosity normal \
+          --configuration "$BUILD_CONFIGURATION" \
+          --no-build \
+          --output nupkgs \
+          --property:PackageVersion="$TOOL_VERSION" \
+          src/Lumoin.Veritas.Cli/Lumoin.Veritas.Cli.csproj
+        dotnet tool install Lumoin.Veritas.Cli --tool-path ./toolcheck --add-source ./nupkgs --version "$TOOL_VERSION"
+        printf '@prefix : <http://example.org/> .\n:alice :knows :bob .\n:alice :knows :carol .\n' > tool-data.ttl
+        printf 'PREFIX : <http://example.org/>\nSELECT ?who WHERE { :alice :knows ?who } ORDER BY ?who\n' > tool-query.rq
+        OUT="$(./toolcheck/veritas query tool-query.rq --data tool-data.ttl)"
+        echo "$OUT"
+        echo "$OUT" | grep -q 'http://example.org/bob'
+        echo "$OUT" | grep -q 'http://example.org/carol'
+        rm -rf ./toolcheck tool-data.ttl tool-query.rq
 
     # Sigstore artifact attestation needs the public-good Fulcio/Rekor transparency
     # log, unavailable while the repository is private — the step errors with the
