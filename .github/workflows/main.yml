@@ -203,29 +203,40 @@ jobs:
             "$path"
         done
 
-    # Pack the veritas dotnet-tool package and prove it in the same step: install the
-    # just-packed tool from the local output and answer a real query through the
-    # installed command — a tool package that does not work fails its own pack step.
-    # The MCP server manifest version is stamped to match the package before packing.
-    - name: Pack and verify the veritas tool package
+    # Pack the veritas tool's top-level pointer package and its framework-dependent `any`
+    # fallback, proving the fallback payload in the same step by answering a real query
+    # through it. The native per-RID tool packages are packed and proven on the matching
+    # aot-conformance legs. A platform listed in the pointer resolves ONLY to its RID
+    # package (no fallback), so the deploy jobs push the pointer last, after every
+    # sub-package. The MCP server manifest version is stamped to the package version.
+    - name: Pack and verify the veritas tool packages (pointer + any)
       if: ${{ matrix.os == 'ubuntu-latest' && github.repository_owner == 'lumoin' }}
       run: |
         TOOL_VERSION="${PACKAGE_VERSION%%+*}"
         sed -i 's/"version": "[^"]*"/"version": "'"$TOOL_VERSION"'"/' src/Lumoin.Veritas.Cli/.mcp/server.json
         dotnet pack --verbosity normal \
           --configuration "$BUILD_CONFIGURATION" \
-          --no-build \
           --output nupkgs \
           --property:PackageVersion="$TOOL_VERSION" \
+          --property:ContinuousIntegrationBuild=true --property:Version=$VERSION --property:InformationalVersion=$PACKAGE_VERSION --property:AssemblyVersion=$TAG_VERSION --property:FileVersion=$TAG_VERSION \
+          -p:PublishAot=true \
           src/Lumoin.Veritas.Cli/Lumoin.Veritas.Cli.csproj
-        dotnet tool install Lumoin.Veritas.Cli --tool-path ./toolcheck --add-source ./nupkgs --version "$TOOL_VERSION"
+        dotnet pack --verbosity normal \
+          --configuration "$BUILD_CONFIGURATION" \
+          --output nupkgs \
+          --property:PackageVersion="$TOOL_VERSION" \
+          --property:ContinuousIntegrationBuild=true --property:Version=$VERSION --property:InformationalVersion=$PACKAGE_VERSION --property:AssemblyVersion=$TAG_VERSION --property:FileVersion=$TAG_VERSION \
+          -r any -p:PublishAot=false \
+          src/Lumoin.Veritas.Cli/Lumoin.Veritas.Cli.csproj
+        mkdir anycheck
+        unzip -q "nupkgs/Lumoin.Veritas.Cli.any.$TOOL_VERSION.nupkg" -d anycheck
         printf '@prefix : <http://example.org/> .\n:alice :knows :bob .\n:alice :knows :carol .\n' > tool-data.ttl
         printf 'PREFIX : <http://example.org/>\nSELECT ?who WHERE { :alice :knows ?who } ORDER BY ?who\n' > tool-query.rq
-        OUT="$(./toolcheck/veritas query tool-query.rq --data tool-data.ttl)"
+        OUT="$(dotnet anycheck/tools/net10.0/any/Lumoin.Veritas.Cli.dll query tool-query.rq --data tool-data.ttl)"
         echo "$OUT"
         echo "$OUT" | grep -q 'http://example.org/bob'
         echo "$OUT" | grep -q 'http://example.org/carol'
-        rm -rf ./toolcheck tool-data.ttl tool-query.rq
+        rm -rf anycheck tool-data.ttl tool-query.rq
 
     # Sigstore artifact attestation needs the public-good Fulcio/Rekor transparency
     # log, unavailable while the repository is private — the step errors with the
@@ -263,7 +274,8 @@ jobs:
       github.event_name == 'release' ||
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'schedule' ||
-      github.ref == 'refs/heads/main'
+      github.ref == 'refs/heads/main' ||
+      github.ref == 'refs/heads/develop'
     permissions:
       contents: read
     runs-on: ${{ matrix.os }}
@@ -312,33 +324,71 @@ jobs:
       if: ${{ matrix.os == 'ubuntu-latest' || matrix.os == 'ubuntu-24.04-arm' }}
       run: sudo apt-get install -y clang zlib1g-dev
 
-    # PublishAot=true produces a self-contained native binary. The restore is
-    # RID-specific (it pulls the ILCompiler runtime package), so it is not run in
-    # --locked-mode here.
-    - name: Publish native AOT (${{ matrix.rid }})
-      run: dotnet publish src/Lumoin.Veritas.Cli/Lumoin.Veritas.Cli.csproj --configuration ${{ env.BUILD_CONFIGURATION }} -r ${{ matrix.rid }} -p:PublishAot=true
-      timeout-minutes: 20
-
-    # Run a real SPARQL query through the native binary on the target. A wrong answer
-    # or non-zero exit fails the job.
-    - name: Run native query smoke test (${{ matrix.rid }})
-      shell: bash
+    # The same version rules as the build job; one run produces one coherent version
+    # across the libraries, the tool pointer, and every RID-specific tool package.
+    - name: Set NuGet package and suffix version
       run: |
-        BIN="src/Lumoin.Veritas.Cli/bin/${{ env.BUILD_CONFIGURATION }}/net10.0/${{ matrix.rid }}/publish/Lumoin.Veritas.Cli"
-        if [ -f "$BIN.exe" ]; then BIN="$BIN.exe"; fi
-        echo "Native binary: $BIN"
+        latestTag=$(git describe --tags --abbrev=0 2>/dev/null || echo 0.0.1)
+        if [[ $GITHUB_EVENT_NAME == 'release' ]]; then
+          arrTag=(${GITHUB_REF//\// })
+          VERSION="${arrTag[2]}"
+          VERSION="${VERSION//v}"
+          echo "PACKAGE_VERSION=${VERSION}+${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "TAG_VERSION=${VERSION}" >> "$GITHUB_ENV"
+        elif [[ $GITHUB_REF == 'refs/heads/develop' ]]; then
+          echo "PACKAGE_VERSION=${latestTag//v}-develop.${GITHUB_RUN_ID}+${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          echo "VERSION=${latestTag//v}-develop.${GITHUB_RUN_ID}+${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          echo "TAG_VERSION=${latestTag//v}" >> "$GITHUB_ENV"
+        else
+          echo "PACKAGE_VERSION=${latestTag//v}-build.${GITHUB_RUN_ID}+${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          echo "VERSION=${latestTag//v}-build.${GITHUB_RUN_ID}+${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          echo "TAG_VERSION=${latestTag//v}" >> "$GITHUB_ENV"
+        fi
+      shell: bash
+
+    # Pack the native-AOT RID-specific tool package on its matching OS and prove it in
+    # the same step: a throwaway local pointer package is packed beside it, the tool is
+    # installed from that local source — which resolves to this RID's native package —
+    # and the installed command must answer a real SPARQL query. Only the RID package is
+    # uploaded; the canonical pointer ships from the build job. The RID-specific restore
+    # pulls the ILCompiler runtime package, so it is not run in --locked-mode here.
+    - name: Pack and verify the native tool package (${{ matrix.rid }})
+      shell: bash
+      timeout-minutes: 25
+      run: |
+        TOOL_VERSION="${PACKAGE_VERSION%%+*}"
+        sed -i.bak 's/"version": "[^"]*"/"version": "'"$TOOL_VERSION"'"/' src/Lumoin.Veritas.Cli/.mcp/server.json && rm -f src/Lumoin.Veritas.Cli/.mcp/server.json.bak
+        dotnet pack --verbosity normal \
+          --configuration "$BUILD_CONFIGURATION" \
+          --output nupkgs \
+          --property:PackageVersion="$TOOL_VERSION" \
+          --property:ContinuousIntegrationBuild=true --property:Version=$VERSION --property:InformationalVersion=$PACKAGE_VERSION --property:AssemblyVersion=$TAG_VERSION --property:FileVersion=$TAG_VERSION \
+          -r ${{ matrix.rid }} -p:PublishAot=true \
+          src/Lumoin.Veritas.Cli/Lumoin.Veritas.Cli.csproj
+        dotnet pack --verbosity quiet \
+          --configuration "$BUILD_CONFIGURATION" \
+          --output toolcheck-src \
+          --property:PackageVersion="$TOOL_VERSION" \
+          -p:PublishAot=true \
+          src/Lumoin.Veritas.Cli/Lumoin.Veritas.Cli.csproj
+        cp nupkgs/Lumoin.Veritas.Cli.${{ matrix.rid }}.$TOOL_VERSION.nupkg toolcheck-src/
+        dotnet tool install Lumoin.Veritas.Cli --tool-path toolcheck --add-source toolcheck-src --version "$TOOL_VERSION"
+        TOOLBIN="toolcheck/veritas"
+        if [ -f "$TOOLBIN.cmd" ]; then TOOLBIN="$TOOLBIN.cmd"; fi
         printf '@prefix : <http://example.org/> .\n:alice :knows :bob .\n:alice :knows :carol .\n' > data.ttl
         printf 'PREFIX : <http://example.org/>\nSELECT ?who WHERE { :alice :knows ?who } ORDER BY ?who\n' > query.rq
-        OUT="$("$BIN" query query.rq --data data.ttl)"
+        OUT="$("$TOOLBIN" query query.rq --data data.ttl)"
         echo "$OUT"
         echo "$OUT" | grep -q 'http://example.org/bob'
         echo "$OUT" | grep -q 'http://example.org/carol'
+        rm -rf toolcheck toolcheck-src data.ttl query.rq
 
-    - name: Upload native binary (${{ matrix.rid }})
+    - name: Upload native tool package (${{ matrix.rid }})
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: veritas-cli-aot-${{ matrix.rid }}
-        path: src/Lumoin.Veritas.Cli/bin/${{ env.BUILD_CONFIGURATION }}/net10.0/${{ matrix.rid }}/publish/Lumoin.Veritas.Cli*
+        name: nupkg-tool-${{ matrix.rid }}
+        path: ./nupkgs/*.nupkg
         retention-days: 14
 
   # Pre-release goes to GitHub Packages on the develop branch. The release deploy goes
@@ -348,7 +398,7 @@ jobs:
     name: Create and upload Lumoin.Veritas pre-release packages to GitHub
     permissions:
       packages: write
-    needs: [ build ]
+    needs: [ build, aot-conformance ]
     if: ${{ github.ref == 'refs/heads/develop' && github.repository_owner == 'lumoin' }}
     runs-on: ubuntu-latest
     steps:
@@ -359,15 +409,23 @@ jobs:
           egress-policy: block
           allowed-endpoints: ${{ env.COMMON_ALLOWED_ENDPOINTS }}
 
-      - name: Download library NuGet packages
+      - name: Download NuGet packages
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: nupkg-libraries
+          pattern: nupkg-*
+          merge-multiple: true
           path: ./nupkgs
 
+      # The tool pointer package goes last: a platform listed in it resolves only to its
+      # RID-specific package, so every sub-package must be on the feed before the pointer.
       - name: Push packages to GitHub feed
         run: |
           for file in ./nupkgs/*.nupkg; do
+            case "$(basename "$file")" in Lumoin.Veritas.Cli.[0-9]*) continue;; esac
+            dotnet nuget push "$file" --source "$GITHUB_FEED" --api-key ${{ secrets.GITHUB_TOKEN }} --skip-duplicate
+          done
+          for file in ./nupkgs/Lumoin.Veritas.Cli.[0-9]*.nupkg; do
+            [ -f "$file" ] || continue
             dotnet nuget push "$file" --source "$GITHUB_FEED" --api-key ${{ secrets.GITHUB_TOKEN }} --skip-duplicate
           done
 
@@ -377,7 +435,7 @@ jobs:
       packages: write
       # id-token is required for NuGet trusted publishing (OIDC).
       id-token: write
-    needs: [ build ]
+    needs: [ build, aot-conformance ]
     if: ${{ github.event_name == 'release' && github.repository_owner == 'lumoin' }}
     runs-on: ubuntu-latest
     steps:
@@ -388,15 +446,24 @@ jobs:
           egress-policy: block
           allowed-endpoints: ${{ env.COMMON_ALLOWED_ENDPOINTS }}
 
-      - name: Download library NuGet packages
+      - name: Download NuGet packages
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: nupkg-libraries
+          pattern: nupkg-*
+          merge-multiple: true
           path: ./nupkgs
 
+      # The tool pointer package goes last in every push: a platform listed in it
+      # resolves only to its RID-specific package, so every sub-package must be on the
+      # feed before the pointer.
       - name: Push packages to GitHub feed
         run: |
           for file in ./nupkgs/*.nupkg; do
+            case "$(basename "$file")" in Lumoin.Veritas.Cli.[0-9]*) continue;; esac
+            dotnet nuget push "$file" --source "$GITHUB_FEED" --api-key ${{ secrets.GITHUB_TOKEN }} --skip-duplicate
+          done
+          for file in ./nupkgs/Lumoin.Veritas.Cli.[0-9]*.nupkg; do
+            [ -f "$file" ] || continue
             dotnet nuget push "$file" --source "$GITHUB_FEED" --api-key ${{ secrets.GITHUB_TOKEN }} --skip-duplicate
           done
 
@@ -412,5 +479,10 @@ jobs:
       - name: Push packages to NuGet.org
         run: |
           for file in ./nupkgs/*.nupkg; do
+            case "$(basename "$file")" in Lumoin.Veritas.Cli.[0-9]*) continue;; esac
+            dotnet nuget push "$file" --source "$NUGET_FEED" --api-key "${{ steps.nuget_login.outputs.NUGET_API_KEY }}" --skip-duplicate
+          done
+          for file in ./nupkgs/Lumoin.Veritas.Cli.[0-9]*.nupkg; do
+            [ -f "$file" ] || continue
             dotnet nuget push "$file" --source "$NUGET_FEED" --api-key "${{ steps.nuget_login.outputs.NUGET_API_KEY }}" --skip-duplicate
           done

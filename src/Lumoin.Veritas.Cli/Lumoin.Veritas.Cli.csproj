@@ -11,11 +11,16 @@
     <!--
       The CLI keeps the repository-wide trim/AOT analysis on (inherited IsAotCompatible /
       EnableTrimAnalyzer), so every build verifies it stays AOT-safe: the Kestrel endpoint
-      uses the slim host builder and the MCP tool surface is statically registered. The
-      native-AOT binary is produced per RID by the aot-conformance CI job, which passes
-      `-r <rid> -p:PublishAot=true` at publish time — kept off the project so the ordinary
-      build/test legs do not pull the per-RID ILCompiler into the locked restore.
+      uses the slim host builder and the MCP tool surface is statically registered.
+
+      The tool ships as RID-specific native-AOT packages plus a framework-dependent `any`
+      fallback (the .NET 10 hybrid tool-packaging model): ToolPackageRuntimeIdentifiers
+      names the RID sub-packages the top-level pointer package lists, and the CI legs pack
+      each native package on its matching OS with `dotnet pack -r <rid> -p:PublishAot=true`.
+      PublishAot stays off the project so the ordinary build/test legs do not pull the
+      per-RID ILCompiler into the locked restore.
     -->
+    <ToolPackageRuntimeIdentifiers>linux-x64;linux-arm64;win-x64;win-arm64;osx-arm64;any</ToolPackageRuntimeIdentifiers>
   </PropertyGroup>
 
   <!--
