@@ -67,10 +67,19 @@ internal static class W3cCorpusPath
 
     private static string TestProjectDirectory()
     {
-        //ThisSourceFile resolves to .../Lumoin.Veritas.Tests/Conformance/W3cCorpusPath.cs.
-        //The test project directory is two levels up.
+        //ThisSourceFile resolves to .../Lumoin.Veritas.Tests/Conformance/W3cCorpusPath.cs at compile
+        //time. A deterministic (ContinuousIntegrationBuild) compilation path-maps it to the
+        //non-existent /_/ root, so when the directory it implies is absent the project directory is
+        //resolved from the runtime output directory
+        //(.../Lumoin.Veritas.Tests/bin/<configuration>/<tfm>/) instead.
         string conformanceDirectory = Path.GetDirectoryName(ThisSourceFile())!;
-        return Path.GetDirectoryName(conformanceDirectory)!;
+        string fromSource = Path.GetDirectoryName(conformanceDirectory)!;
+        if(Directory.Exists(Path.Combine(fromSource, "Material")))
+        {
+            return fromSource;
+        }
+
+        return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../.."));
     }
 
     private static string ThisSourceFile([CallerFilePath] string path = "")
