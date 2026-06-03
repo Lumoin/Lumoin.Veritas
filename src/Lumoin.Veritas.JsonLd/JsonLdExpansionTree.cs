@@ -236,6 +236,16 @@ public static class JsonLdExpansionTree
         return new Dictionary<string, object?>(StringComparer.Ordinal);
     }
 
+    /// <summary>Normalises a BCP47 language tag to lower case, the canonical form JSON-LD expansion stores.</summary>
+    /// <param name="language">The language tag.</param>
+    /// <returns>The lower-cased tag.</returns>
+    [SuppressMessage("Globalization", "CA1308:Normalize strings to uppercase",
+        Justification = "BCP47 language subtags are canonically lower-case per the JSON-LD / i18n specifications.")]
+    private static string LowercaseLanguage(string language)
+    {
+        return language.ToLowerInvariant();
+    }
+
     /// <summary>Whether a node is an object with no members (a frame wildcard).</summary>
     /// <param name="node">The node.</param>
     /// <returns><see langword="true"/> when an empty object.</returns>
@@ -1566,7 +1576,7 @@ public static class JsonLdExpansionTree
                     {
                         new Dictionary<string, object?>(StringComparer.Ordinal)
                         {
-                            [JsonLdKeywords.Default] = ExpandTypeValue(defaultNode, activeContext) ?? new List<object?>()
+                            [JsonLdKeywords.Default] = ExpandTypeValue(defaultNode, activeContext) ?? []
                         }
                     };
                 }
@@ -2013,7 +2023,8 @@ public static class JsonLdExpansionTree
                 {
                     if(entry.Value.Kind == JsonNodeKind.String)
                     {
-                        result[JsonLdKeywords.Language] = entry.Value.GetString();
+                        //A language tag is normalised to lower case during expansion (W3C JSON-LD 1.1 §4.3.2).
+                        result[JsonLdKeywords.Language] = LowercaseLanguage(entry.Value.GetString());
                     }
                     else if(FrameExpansion)
                     {
