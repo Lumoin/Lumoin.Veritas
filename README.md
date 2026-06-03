@@ -1,4 +1,4 @@
-<img style="display: block; margin-inline-start: auto; margin-inline-end: auto;" src="resources/veritas-github-logo.svg" width="800" height="400" alt="Veritas project logo: A shield in green hues with a rounded top tapering downwards in a 'V' shape. In the center a stylized 'V' formed from three converging triples evokes an RDF graph, with one edge elongating across the left corner of the shield to the white background.">
+<img style="display: block; margin-inline-start: auto; margin-inline-end: auto;" src="resources/lumoin-veritas-github-logo.svg" width="800" height="400" alt="Veritas project logo: A shield in green hues with a rounded top tapering downwards in a 'V' shape. In the center a stylized 'V' formed from three converging triples evokes an RDF graph, with one edge elongating across the left corner of the shield to the white background.">
 
 # Lumoin.Veritas
 

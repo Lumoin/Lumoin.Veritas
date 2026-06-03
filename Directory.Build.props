@@ -53,13 +53,14 @@
     <PackageId>$(AssemblyName)</PackageId>
     <Authors>Lumoin and contributors</Authors>
     <Product>Lumoin.Veritas</Product>
+    <!-- A real default description (projects override with a specific one); without it NuGet
+         stamps the placeholder "Package Description" into the nuspec. -->
+    <Description>$(MSBuildProjectName) is part of Lumoin.Veritas, an integrated .NET stack for RDF: graph storage, SPARQL, dataset canonicalization, JSON-LD, SHACL validation, and related W3C standards.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     <Copyright>Lumoin</Copyright>
-    <!-- Guarded on the file existing so packing succeeds before a logo is added (NuGet errors with
-         NU5046 when PackageIcon points at a missing file). Drop the logo at
-         resources/veritas-nuget-logo.png and it is picked up automatically. -->
-    <PackageIcon Condition="Exists('$(MSBuildThisFileDirectory)resources/veritas-nuget-logo.png')">resources/veritas-nuget-logo.png</PackageIcon>
+    <PackageIcon>resources/lumoin-veritas-nuget-logo.png</PackageIcon>
     <PackageProjectUrl>https://github.com/lumoin/Lumoin.Veritas/</PackageProjectUrl>
     <Company>Lumoin</Company>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
@@ -171,13 +172,15 @@ See full changelog at https://github.com/lumoin/Veritas/blob/main/CHANGELOG.md.]
     <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.Entropy.txt" />
   </ItemGroup>
 
-  <!-- Pack the NuGet logo into packable (non-test) projects, once it exists. Guarded on the file so
-       packing succeeds before the logo is added; the path is absolute (repo-root resources/) so it
-       resolves the same from every project. -->
-  <ItemGroup Condition="!$(MSBuildProjectName.EndsWith('Tests')) AND Exists('$(MSBuildThisFileDirectory)resources/veritas-nuget-logo.png')">
-    <None Include="$(MSBuildThisFileDirectory)resources/veritas-nuget-logo.png">
+  <!-- Pack the NuGet logo and the repository readme into packable (non-test) projects. -->
+  <ItemGroup Condition="!$(MSBuildProjectName.EndsWith('Tests'))">
+    <None Include="$(MSBuildThisFileDirectory)resources/lumoin-veritas-nuget-logo.png">
       <Pack>True</Pack>
       <PackagePath>/resources</PackagePath>
+    </None>
+    <None Include="$(MSBuildThisFileDirectory)README.md">
+      <Pack>True</Pack>
+      <PackagePath>/</PackagePath>
     </None>
   </ItemGroup>
 
