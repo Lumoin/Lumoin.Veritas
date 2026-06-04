@@ -7,6 +7,7 @@ using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie;
 using Lumoin.Veritas.Core.Hypertrie.AccessControl;
@@ -539,7 +540,12 @@ public sealed class SparqlQueryEngine
 
         if(op is Bgp bgp)
         {
-            return await EvaluateBgpAsync(bgp, graphStore, cancellationToken).ConfigureAwait(false);
+            //Default-graph patterns route through the engine
+            //rendezvous, which pins this snapshot's store; named
+            //graphs query their store directly.
+            QueryEngineRendezvous? rendezvous = graph.IsNone ? dataset.DefaultGraphRendezvous : null;
+
+            return await EvaluateBgpAsync(bgp, graphStore, rendezvous, cancellationToken).ConfigureAwait(false);
         }
 
         if(op is Path pathOperator)
@@ -740,12 +746,12 @@ public sealed class SparqlQueryEngine
         };
     }
 
-    /// <summary>Evaluates a basic graph pattern against the active graph: encodes it to the backend, runs the worst-case-optimal join engine over <paramref name="graphStore"/>, and decodes each solution.</summary>
+    /// <summary>Evaluates a basic graph pattern against the active graph: encodes it to the backend, runs the worst-case-optimal join engine over <paramref name="graphStore"/> — through <paramref name="rendezvous"/> when one applies, pinning the store so the engine choice never outruns this snapshot — and decodes each solution.</summary>
     /// <param name="bgp">The basic graph pattern.</param>
     /// <param name="graphStore">The active graph's store.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The BGP's solution sequence; empty when a constant in the pattern is absent from the active graph.</returns>
-    private async ValueTask<IReadOnlyList<SparqlSolution>> EvaluateBgpAsync(Bgp bgp, HypertrieGraphStore graphStore, CancellationToken cancellationToken)
+    private async ValueTask<IReadOnlyList<SparqlSolution>> EvaluateBgpAsync(Bgp bgp, HypertrieGraphStore graphStore, QueryEngineRendezvous? rendezvous, CancellationToken cancellationToken)
     {
         VariableRegistry registry = new();
         Dictionary<SparqlVariable, Variable> toBackend = [];
@@ -779,7 +785,11 @@ public sealed class SparqlQueryEngine
         BasicGraphPattern query = new(patterns, registry);
         bool hasTripleTermMatches = tripleTermMatches.Count > 0;
         List<SparqlSolution> solutions = [];
-        await foreach(Solution solution in graphStore.Query(query, TimeProvider.System, accessControl: accessControl, accessContext: accessContext, cancellationToken: cancellationToken).ConfigureAwait(false))
+        IAsyncEnumerable<Solution> backendSolutions = rendezvous is not null
+            ? rendezvous.Query(graphStore, query, TimeProvider.System, accessControl: accessControl, accessContext: accessContext, cancellationToken: cancellationToken)
+            : graphStore.Query(query, TimeProvider.System, accessControl: accessControl, accessContext: accessContext, cancellationToken: cancellationToken);
+
+        await foreach(Solution solution in backendSolutions.ConfigureAwait(false))
         {
             if(!hasTripleTermMatches)
             {

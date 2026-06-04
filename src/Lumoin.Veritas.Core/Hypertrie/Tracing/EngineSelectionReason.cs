@@ -18,4 +18,7 @@ public enum EngineSelectionReason
 
     /// <summary>A derived view was materialised for this query; the event's value field carries the build cost in milliseconds.</summary>
     ViewBuilt = 2,
+
+    /// <summary>The query pinned a store the rendezvous has advanced past — a snapshot taken before a later commit — so it ran on that pinned store directly, preserving snapshot isolation.</summary>
+    SnapshotSuperseded = 3,
 }

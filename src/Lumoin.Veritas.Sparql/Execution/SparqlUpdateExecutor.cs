@@ -264,7 +264,10 @@ public static class SparqlUpdateExecutor
 
         if(defaultTriples.Count > 0)
         {
-            dataset.SetDefaultGraph(await ApplyToStoreAsync(dataset.DefaultGraph, defaultTriples, add, cancellationToken).ConfigureAwait(false));
+            dataset.SetDefaultGraph(
+                await ApplyToStoreAsync(dataset.DefaultGraph, defaultTriples, add, cancellationToken).ConfigureAwait(false),
+                additions: add ? defaultTriples : [],
+                removals: add ? [] : defaultTriples);
         }
 
         foreach((TermId graphId, List<EncodedTriple> triples) in namedTriples)
@@ -497,7 +500,10 @@ public static class SparqlUpdateExecutor
 
         if(isDefault)
         {
-            dataset.SetDefaultGraph(await ApplyToStoreAsync(dataset.DefaultGraph, triples, add: true, cancellationToken).ConfigureAwait(false));
+            dataset.SetDefaultGraph(
+                await ApplyToStoreAsync(dataset.DefaultGraph, triples, add: true, cancellationToken).ConfigureAwait(false),
+                additions: triples,
+                removals: []);
 
             return;
         }
@@ -569,7 +575,10 @@ public static class SparqlUpdateExecutor
             return;
         }
 
-        dataset.SetDefaultGraph(await ApplyToStoreAsync(dataset.DefaultGraph, encoded, add: true, cancellationToken).ConfigureAwait(false));
+        dataset.SetDefaultGraph(
+            await ApplyToStoreAsync(dataset.DefaultGraph, encoded, add: true, cancellationToken).ConfigureAwait(false),
+            additions: encoded,
+            removals: []);
     }
 
     /// <summary>Wraps a group graph pattern as a <c>SELECT *</c> query so the existing translator/engine produce its solutions.</summary>

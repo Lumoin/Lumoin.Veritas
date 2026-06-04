@@ -140,6 +140,42 @@ public sealed class QueryEngineRendezvous
         IdentifierDelegate? identifiers = null,
         CancellationToken cancellationToken = default)
     {
+        return Query(pinnedStore: null, query, timeProvider, planner, accessControl, accessContext, traceHandler, correlationId, identifiers, cancellationToken);
+    }
+
+    /// <summary>
+    /// Evaluates the query against a specific store generation — a
+    /// snapshot a caller pinned before later commits. When the
+    /// rendezvous still holds that generation the policy selects
+    /// normally; when it has advanced past it, the query runs on
+    /// the pinned store directly, preserving snapshot isolation,
+    /// and the decision is announced as
+    /// <see cref="EngineSelectionReason.SnapshotSuperseded"/>.
+    /// </summary>
+    /// <param name="pinnedStore">The store generation the caller's snapshot pinned, or <c>null</c> to use the rendezvous's current generation.</param>
+    /// <param name="query">The basic graph pattern.</param>
+    /// <param name="timeProvider">Clock used to stamp Ticks on emitted trace events.</param>
+    /// <param name="planner">The planner to use, or <c>null</c> to use <see cref="Planners.FirstOccurrence"/>.</param>
+    /// <param name="accessControl">Optional access-control policy. <c>null</c> treats every candidate as allowed.</param>
+    /// <param name="accessContext">Caller-supplied access context. Required when <paramref name="accessControl"/> is non-<c>null</c>.</param>
+    /// <param name="traceHandler">Optional trace handler for query-execution events, including the selection event.</param>
+    /// <param name="correlationId">Correlation id stamped on emitted trace events. Pass <see cref="Guid.Empty"/> to generate a fresh one.</param>
+    /// <param name="identifiers">The identifier source used to mint a fresh correlation id when <paramref name="correlationId"/> is <see cref="Guid.Empty"/>; defaults to <see cref="VeritasIdentifiers.System"/>.</param>
+    /// <param name="cancellationToken">Cancellation token threaded into evaluation.</param>
+    /// <returns>An async sequence of solutions.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="query"/> or <paramref name="timeProvider"/> is <c>null</c>.</exception>
+    public IAsyncEnumerable<Solution> Query(
+        HypertrieGraphStore? pinnedStore,
+        BasicGraphPattern query,
+        TimeProvider timeProvider,
+        Planner? planner = null,
+        AccessControlDelegate? accessControl = null,
+        AccessContext? accessContext = null,
+        TraceHandler<QueryTraceEvent>? traceHandler = null,
+        Guid correlationId = default,
+        IdentifierDelegate? identifiers = null,
+        CancellationToken cancellationToken = default)
+    {
         ArgumentNullException.ThrowIfNull(query);
         ArgumentNullException.ThrowIfNull(timeProvider);
 
@@ -156,17 +192,49 @@ public sealed class QueryEngineRendezvous
             currentView = columnarView;
         }
 
+        if(pinnedStore is not null && !ReferenceEquals(pinnedStore, currentStore))
+        {
+            //The caller's snapshot predates (or sidesteps) the
+            //rendezvous's current generation; the derived view does
+            //not describe it. Run on the pinned store directly.
+            EmitEngineSelected(
+                timeProvider, traceHandler, effectiveCorrelationId,
+                QueryEngineKind.Hypertrie, EngineSelectionReason.SnapshotSuperseded, pinnedStore.Count, buildMilliseconds: 0);
+
+            return pinnedStore.Query(
+                query, timeProvider, planner, accessControl, accessContext, traceHandler, effectiveCorrelationId, identifiers, cancellationToken);
+        }
+
         bool qualifies = query.Patterns.Count >= policy.MinimumPatternsForColumnar;
 
         if(qualifies && currentView is null && policy.BuildViewOnDemand)
         {
-            (currentView, long buildMilliseconds) = EnsureView();
+            (currentView, bool isBuilt, long buildMilliseconds) = EnsureView(currentStore);
 
+            if(currentView is not null)
+            {
+                //A racing query may have built the view first; it
+                //then arrives here as a reuse with zero build cost.
+                EngineSelectionReason reason = isBuilt
+                    ? EngineSelectionReason.ViewBuilt
+                    : EngineSelectionReason.ViewReused;
+
+                EmitEngineSelected(
+                    timeProvider, traceHandler, effectiveCorrelationId,
+                    QueryEngineKind.Columnar, reason, currentView.TripleCount, buildMilliseconds);
+
+                return QueryColumnar(currentView, query, planner, timeProvider, accessControl, accessContext, traceHandler, effectiveCorrelationId, cancellationToken);
+            }
+
+            //A commit advanced the rendezvous past the generation
+            //this query read; the read pair stays the consistent
+            //one to answer on.
             EmitEngineSelected(
                 timeProvider, traceHandler, effectiveCorrelationId,
-                QueryEngineKind.Columnar, EngineSelectionReason.ViewBuilt, currentView.TripleCount, buildMilliseconds);
+                QueryEngineKind.Hypertrie, EngineSelectionReason.SnapshotSuperseded, currentStore.Count, buildMilliseconds: 0);
 
-            return QueryColumnar(currentView, query, planner, timeProvider, accessControl, accessContext, traceHandler, effectiveCorrelationId, cancellationToken);
+            return currentStore.Query(
+                query, timeProvider, planner, accessControl, accessContext, traceHandler, effectiveCorrelationId, identifiers, cancellationToken);
         }
 
         if(qualifies && currentView is not null)
@@ -194,21 +262,32 @@ public sealed class QueryEngineRendezvous
             cancellationToken);
     }
 
-    //Materialises the columnar view for the current store, exactly
-    //once per store generation, preserving the invariant that the
-    //view always pairs with the store published under the same
-    //lock. A racing query that loses the lock reuses the winner's
-    //view and reports zero build cost.
-    private (ColumnarTripleIndex View, long BuildMilliseconds) EnsureView()
+    /// <summary>
+    /// Materialises the columnar view for the given store
+    /// generation, exactly once, preserving the invariant that the
+    /// view always pairs with the store published under the same
+    /// lock.
+    /// </summary>
+    /// <param name="expectedStore">The store generation the caller's decision was made against.</param>
+    /// <returns>
+    /// The view paired with <paramref name="expectedStore"/> and
+    /// whether this call built it (a racing caller that lost the
+    /// build reuses the winner's view with zero build cost) — or no
+    /// view at all when a commit advanced the rendezvous past the
+    /// expected generation while the caller decided.
+    /// </returns>
+    private (ColumnarTripleIndex? View, bool IsBuilt, long BuildMilliseconds) EnsureView(HypertrieGraphStore expectedStore)
     {
         lock(StateLock)
         {
-            //The store may have advanced or another query may have
-            //built the view while this one waited; reuse whatever
-            //pair is current.
+            if(!ReferenceEquals(store, expectedStore))
+            {
+                return (null, false, 0L);
+            }
+
             if(columnarView is not null)
             {
-                return (columnarView, 0L);
+                return (columnarView, false, 0L);
             }
 
             Stopwatch stopwatch = Stopwatch.StartNew();
@@ -217,7 +296,7 @@ public sealed class QueryEngineRendezvous
 
             columnarView = view;
 
-            return (view, stopwatch.ElapsedMilliseconds);
+            return (view, true, stopwatch.ElapsedMilliseconds);
         }
     }
 

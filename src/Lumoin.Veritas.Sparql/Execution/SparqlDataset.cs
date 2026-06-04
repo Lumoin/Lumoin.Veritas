@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie;
 
@@ -31,19 +32,42 @@ public sealed class SparqlDataset
     /// <summary>The default graph — the store queried outside any <c>GRAPH</c> form.</summary>
     public HypertrieGraphStore DefaultGraph { get; }
 
+    /// <summary>
+    /// The engine rendezvous default-graph basic graph patterns
+    /// route through. Queries pin <see cref="DefaultGraph"/>, so a
+    /// rendezvous that has advanced past this dataset's snapshot
+    /// answers on the pinned store, preserving snapshot isolation.
+    /// </summary>
+    public QueryEngineRendezvous DefaultGraphRendezvous { get; }
+
     /// <summary>The graph names of the named graphs, in insertion order — the domain a <c>GRAPH ?g</c> form ranges over.</summary>
     public IReadOnlyList<TermId> GraphNames { get; }
 
-    /// <summary>Constructs a dataset from its default graph and its named graphs.</summary>
+    /// <summary>Constructs a dataset from its default graph and its named graphs, with a fresh engine rendezvous for the default graph.</summary>
     /// <param name="defaultGraph">The default graph.</param>
     /// <param name="namedGraphs">The named graphs keyed by graph-name term id; encoded by the same dictionary as <paramref name="defaultGraph"/>.</param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
     public SparqlDataset(HypertrieGraphStore defaultGraph, IReadOnlyDictionary<TermId, HypertrieGraphStore> namedGraphs)
+        : this(defaultGraph, namedGraphs, new QueryEngineRendezvous(defaultGraph, QueryEnginePolicy.Default))
+    {
+    }
+
+    /// <summary>Constructs a dataset from its default graph, its named graphs, and the long-lived rendezvous whose derived view outlives this snapshot.</summary>
+    /// <param name="defaultGraph">The default graph.</param>
+    /// <param name="namedGraphs">The named graphs keyed by graph-name term id; encoded by the same dictionary as <paramref name="defaultGraph"/>.</param>
+    /// <param name="defaultGraphRendezvous">The rendezvous default-graph patterns route through; typically owned by the mutable dataset so its view persists across snapshots.</param>
+    /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
+    public SparqlDataset(
+        HypertrieGraphStore defaultGraph,
+        IReadOnlyDictionary<TermId, HypertrieGraphStore> namedGraphs,
+        QueryEngineRendezvous defaultGraphRendezvous)
     {
         ArgumentNullException.ThrowIfNull(defaultGraph);
         ArgumentNullException.ThrowIfNull(namedGraphs);
+        ArgumentNullException.ThrowIfNull(defaultGraphRendezvous);
 
         DefaultGraph = defaultGraph;
+        DefaultGraphRendezvous = defaultGraphRendezvous;
         this.namedGraphs = new Dictionary<TermId, HypertrieGraphStore>(namedGraphs);
         GraphNames = [.. this.namedGraphs.Keys];
     }

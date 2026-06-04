@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie;
 using Lumoin.Veritas.Core.Hypertrie.Editing;
@@ -33,6 +34,14 @@ public sealed class MutableSparqlDataset
     /// <summary>The current default-graph store.</summary>
     public HypertrieGraphStore DefaultGraph { get; private set; }
 
+    /// <summary>
+    /// The long-lived engine rendezvous for the default graph. Its
+    /// derived view persists across query snapshots and evolves
+    /// with delta-carrying default-graph replacements; a
+    /// replacement without a delta resets it.
+    /// </summary>
+    public QueryEngineRendezvous DefaultGraphRendezvous { get; private set; }
+
     /// <summary>Constructs a mutable dataset from a shared dictionary, a default-graph store, and named-graph stores.</summary>
     /// <param name="dictionary">The shared term dictionary all graphs encode into.</param>
     /// <param name="defaultGraph">The default-graph store (must be journal-backed to accept edits).</param>
@@ -46,20 +55,21 @@ public sealed class MutableSparqlDataset
 
         Dictionary = dictionary;
         DefaultGraph = defaultGraph;
+        DefaultGraphRendezvous = new QueryEngineRendezvous(defaultGraph, QueryEnginePolicy.Default);
         this.namedGraphs = new Dictionary<TermId, HypertrieGraphStore>(namedGraphs);
     }
 
     /// <summary>The graph-name term ids of the current named graphs.</summary>
     public IReadOnlyCollection<TermId> NamedGraphNames => namedGraphs.Keys;
 
-    /// <summary>Produces a read-only <see cref="SparqlDataset"/> over the current graph stores, for building a query engine.</summary>
+    /// <summary>Produces a read-only <see cref="SparqlDataset"/> over the current graph stores, for building a query engine. The snapshot routes default-graph patterns through the long-lived rendezvous, pinning the snapshot's store.</summary>
     /// <returns>The dataset snapshot.</returns>
     public SparqlDataset Snapshot()
     {
-        return new SparqlDataset(DefaultGraph, namedGraphs);
+        return new SparqlDataset(DefaultGraph, namedGraphs, DefaultGraphRendezvous);
     }
 
-    /// <summary>Produces a read-only <see cref="SparqlDataset"/> over the current named graphs but a different default graph (the <c>WITH</c> graph of a modify's <c>WHERE</c>).</summary>
+    /// <summary>Produces a read-only <see cref="SparqlDataset"/> over the current named graphs but a different default graph (the <c>WITH</c> graph of a modify's <c>WHERE</c>). The substituted default graph is not the rendezvous's generation, so its patterns run on the pinned store directly.</summary>
     /// <param name="defaultGraph">The default-graph store the snapshot uses.</param>
     /// <returns>The dataset snapshot.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="defaultGraph"/> is <see langword="null"/>.</exception>
@@ -67,10 +77,10 @@ public sealed class MutableSparqlDataset
     {
         ArgumentNullException.ThrowIfNull(defaultGraph);
 
-        return new SparqlDataset(defaultGraph, namedGraphs);
+        return new SparqlDataset(defaultGraph, namedGraphs, DefaultGraphRendezvous);
     }
 
-    /// <summary>Replaces the default-graph store.</summary>
+    /// <summary>Replaces the default-graph store without a known delta; the rendezvous resets, and any derived view rebuilds lazily from the new store.</summary>
     /// <param name="store">The new default-graph store.</param>
     /// <exception cref="ArgumentNullException"><paramref name="store"/> is <see langword="null"/>.</exception>
     public void SetDefaultGraph(HypertrieGraphStore store)
@@ -78,6 +88,25 @@ public sealed class MutableSparqlDataset
         ArgumentNullException.ThrowIfNull(store);
 
         DefaultGraph = store;
+        DefaultGraphRendezvous = new QueryEngineRendezvous(store, QueryEnginePolicy.Default);
+    }
+
+    /// <summary>Replaces the default-graph store with its post-commit successor, evolving the rendezvous's derived view by the commit's delta so it stays warm across the write.</summary>
+    /// <param name="store">The new default-graph store.</param>
+    /// <param name="additions">The commit's added triples; triples already present are tolerated.</param>
+    /// <param name="removals">The commit's removed triples; triples already absent are tolerated.</param>
+    /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
+    public void SetDefaultGraph(
+        HypertrieGraphStore store,
+        IReadOnlyCollection<EncodedTriple> additions,
+        IReadOnlyCollection<EncodedTriple> removals)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(additions);
+        ArgumentNullException.ThrowIfNull(removals);
+
+        DefaultGraph = store;
+        DefaultGraphRendezvous.Advance(store, additions, removals);
     }
 
     /// <summary>Adds or replaces the named graph for a graph name.</summary>
