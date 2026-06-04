@@ -1,16 +1,40 @@
 using System;
+using System.Numerics;
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 using Lumoin.Veritas.Core.Encoding;
 
 namespace Lumoin.Veritas.Core.Columnar;
 
 /// <summary>
 /// The search primitives the columnar index and its cursors share:
-/// lower-bound binary search over an ascending slice of a value
-/// column, and its sibling over one position column of a
-/// permutation-sorted triple run.
+/// lower-bound search over an ascending slice of a value column,
+/// and its sibling over one position column of a permutation-sorted
+/// triple run.
 /// </summary>
+/// <remarks>
+/// <para>
+/// <b>Hybrid lower bound.</b> Binary search halves the slice until
+/// it fits the scan window, then a vectorised forward scan finds
+/// the bound: a compare-and-mask per vector of keys replaces the
+/// final data-dependent probe chain, and the window's contiguous
+/// loads come from at most a few cache lines. The vector paths
+/// dispatch on <c>IsHardwareAccelerated</c>, which the JIT treats
+/// as a constant — only the supported path is compiled, with no
+/// per-call dispatch.
+/// </para>
+/// </remarks>
 internal static class ColumnarSearch
 {
+    /// <summary>
+    /// The slice length at or below which the lower-bound search
+    /// switches from probe halving to a forward vector scan. Sized
+    /// to a few vectors' worth of keys — the regime where the
+    /// scan's predictable contiguous loads beat the binary search's
+    /// dependent probes.
+    /// </summary>
+    private const int ScanWindow = 32;
+
     /// <summary>
     /// Returns the smallest index in <c>[lo, hi)</c> whose value is
     /// greater than or equal to <paramref name="target"/>, or
@@ -26,7 +50,7 @@ internal static class ColumnarSearch
         int low = lo;
         int high = hi;
 
-        while(low < high)
+        while(high - low > ScanWindow)
         {
             int mid = low + ((high - low) >> 1);
 
@@ -40,7 +64,57 @@ internal static class ColumnarSearch
             }
         }
 
-        return low;
+        return ScanGreaterEqual(values, low, high, target);
+    }
+
+    //Forward-scans the short ascending window [lo, hi) for the
+    //first value at or above the target.
+    private static int ScanGreaterEqual(ReadOnlySpan<uint> values, int lo, int hi, uint target)
+    {
+        int i = lo;
+
+        if(Vector256.IsHardwareAccelerated)
+        {
+            ref uint first = ref MemoryMarshal.GetReference(values);
+            Vector256<uint> targetVector = Vector256.Create(target);
+
+            for(; i + Vector256<uint>.Count <= hi; i += Vector256<uint>.Count)
+            {
+                Vector256<uint> block = Vector256.LoadUnsafe(in first, (nuint)i);
+                uint mask = Vector256.GreaterThanOrEqual(block, targetVector).ExtractMostSignificantBits();
+
+                if(mask != 0)
+                {
+                    return i + BitOperations.TrailingZeroCount(mask);
+                }
+            }
+        }
+        else if(Vector128.IsHardwareAccelerated)
+        {
+            ref uint first = ref MemoryMarshal.GetReference(values);
+            Vector128<uint> targetVector = Vector128.Create(target);
+
+            for(; i + Vector128<uint>.Count <= hi; i += Vector128<uint>.Count)
+            {
+                Vector128<uint> block = Vector128.LoadUnsafe(in first, (nuint)i);
+                uint mask = Vector128.GreaterThanOrEqual(block, targetVector).ExtractMostSignificantBits();
+
+                if(mask != 0)
+                {
+                    return i + BitOperations.TrailingZeroCount(mask);
+                }
+            }
+        }
+
+        for(; i < hi; i++)
+        {
+            if(values[i] >= target)
+            {
+                return i;
+            }
+        }
+
+        return hi;
     }
 
     /// <summary>
