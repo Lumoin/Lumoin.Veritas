@@ -7,16 +7,19 @@ namespace Lumoin.Veritas.Core.Hypertrie.Storage;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Edge maps adapt their representation to entry count: a freshly
-/// created edge map is <see cref="Empty"/>; the first inserted entry
-/// promotes it to <see cref="Inline"/> (one pair stored in struct
-/// fields, no heap allocation); a second distinct entry promotes it
-/// to <see cref="SortedArray"/> (parallel key/child arrays with
-/// binary search), which then scales to whatever cardinality the
-/// data requires.
+/// Edge maps adapt their representation to entry count and
+/// content: a freshly created edge map is <see cref="Empty"/>;
+/// inserted entries store inline in struct fields
+/// (<see cref="Inline"/>) up to the inline capacity; the next
+/// entry promotes the map to sorted arrays with binary search —
+/// <see cref="SortedKeysOnly"/> when every child slot is the
+/// absence sentinel (the depth-1 leaf shape, where keys alone
+/// carry the data), otherwise <see cref="SortedArray"/> with a
+/// parallel child array. Either sorted form scales to whatever
+/// cardinality the data requires.
 /// </para>
 /// <para>
-/// <b>SortedArray throughout.</b> Sorted parallel arrays are the
+/// <b>Sorted arrays throughout.</b> Sorted arrays are the
 /// canonical high-density representation for hypertrie edge maps.
 /// They give cache-friendly contiguous storage, naturally support
 /// the sorted iteration that worst-case-optimal joins (leapfrog
@@ -34,9 +37,12 @@ public enum EdgeMapKind: byte
     /// <summary>The edge map has no entries.</summary>
     Empty = 0,
 
-    /// <summary>The edge map has exactly one entry, stored inline in the struct's value fields.</summary>
+    /// <summary>The edge map's entries are stored inline in the struct's value fields, up to the inline capacity.</summary>
     Inline = 1,
 
-    /// <summary>The edge map has two or more entries, stored in parallel sorted-key and child arrays. Lookup uses binary search. This representation scales to whatever cardinality the data requires.</summary>
+    /// <summary>The edge map's entries are stored in parallel sorted-key and child arrays. Lookup uses binary search. This representation scales to whatever cardinality the data requires.</summary>
     SortedArray = 2,
+
+    /// <summary>The edge map's entries are stored in a sorted-key array alone — every child slot is the absence sentinel, so no child array is allocated. The depth-1 leaf shape, where the keys themselves are the data.</summary>
+    SortedKeysOnly = 3,
 }

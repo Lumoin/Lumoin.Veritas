@@ -78,7 +78,8 @@ internal sealed class EdgeMapTests
     {
         EdgeMap map = default;
         BuildPools pools = BuildPools.CreateDefault();
-        //Push past the 8-entry Inline boundary so the map is SortedArray.
+        //Push past the 8-entry Inline boundary; absent children make
+        //this the keys-only leaf shape.
         uint[] inputs = [50, 10, 30, 20, 40, 5, 60, 25, 15, 35];
 
         foreach(uint key in inputs)
@@ -86,7 +87,7 @@ internal sealed class EdgeMapTests
             EdgeMap.InsertOrReplace(ref map, key, NodeHandle.None, pools, InlineKeyLookups.Scalar);
         }
 
-        Assert.AreEqual(EdgeMapKind.SortedArray, map.Kind);
+        Assert.AreEqual(EdgeMapKind.SortedKeysOnly, map.Kind);
         Assert.AreEqual(inputs.Length, EdgeMap.Count(in map));
 
         uint[] enumerated = [.. EdgeMap.Enumerate(map).Select(kvp => kvp.Key)];
@@ -144,13 +145,13 @@ internal sealed class EdgeMapTests
         BuildPools pools = BuildPools.CreateDefault();
 
         //Push past the 8-entry Inline boundary, then far enough to
-        //force at least one SortedArray growth.
+        //force at least one keys-only growth.
         for(uint key = 0; key < 32; key++)
         {
             EdgeMap.InsertOrReplace(ref map, key, NodeHandle.None, pools, InlineKeyLookups.Scalar);
         }
 
-        Assert.AreEqual(EdgeMapKind.SortedArray, map.Kind);
+        Assert.AreEqual(EdgeMapKind.SortedKeysOnly, map.Kind);
         Assert.AreEqual(32, EdgeMap.Count(in map));
         Assert.AreEqual(32, map.SortedCount);
     }
@@ -158,11 +159,10 @@ internal sealed class EdgeMapTests
     [TestMethod]
     public void SortedArrayScalesToHighCardinality()
     {
-        //Verify the SortedArray representation handles cardinalities
-        //well past where an earlier design would have promoted to a
-        //hash-table representation. SortedArray scales without
-        //further promotion; the parallel arrays simply grow by
-        //doubling.
+        //Verify the sorted representation handles cardinalities well
+        //past the inline boundary without further promotion; the
+        //backing array simply grows by doubling. Absent children
+        //keep this in the keys-only leaf shape.
         const int total = 4096;
         EdgeMap map = default;
         BuildPools pools = BuildPools.CreateDefault();
@@ -171,7 +171,7 @@ internal sealed class EdgeMapTests
             EdgeMap.InsertOrReplace(ref map, key, NodeHandle.None, pools, InlineKeyLookups.Scalar);
         }
 
-        Assert.AreEqual(EdgeMapKind.SortedArray, map.Kind);
+        Assert.AreEqual(EdgeMapKind.SortedKeysOnly, map.Kind);
         Assert.AreEqual(total, EdgeMap.Count(in map));
     }
 
@@ -208,14 +208,14 @@ internal sealed class EdgeMapTests
             EdgeMap.InsertOrReplace(ref map, key - 1, NodeHandle.None, pools, InlineKeyLookups.Scalar);
         }
 
-        Assert.AreEqual(EdgeMapKind.SortedArray, map.Kind);
+        Assert.AreEqual(EdgeMapKind.SortedKeysOnly, map.Kind);
         bool hasPrevious = false;
         uint previousKey = 0;
         foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(map))
         {
             if(hasPrevious)
             {
-                Assert.IsGreaterThan(previousKey, entry.Key, $"SortedArray order violated at key {entry.Key}; previous key was {previousKey}.");
+                Assert.IsGreaterThan(previousKey, entry.Key, $"Sorted order violated at key {entry.Key}; previous key was {previousKey}.");
             }
 
             hasPrevious = true;
@@ -301,21 +301,22 @@ internal sealed class EdgeMapTests
         BuildPools leftPools = BuildPools.CreateDefault();
         BuildPools rightPools = BuildPools.CreateDefault();
 
-        //Push past the 8-entry Inline boundary so both maps are SortedArray.
+        //Push past the 8-entry Inline boundary so both maps use a
+        //sorted backing array (keys-only — children are absent).
         for(uint k = 1; k <= 9; k++)
         {
             EdgeMap.InsertOrReplace(ref left, k, NodeHandle.None, leftPools, InlineKeyLookups.Scalar);
             EdgeMap.InsertOrReplace(ref right, k, NodeHandle.None, rightPools, InlineKeyLookups.Scalar);
         }
-        Assert.AreEqual(EdgeMapKind.SortedArray, left.Kind);
-        Assert.AreEqual(EdgeMapKind.SortedArray, right.Kind);
+        Assert.AreEqual(EdgeMapKind.SortedKeysOnly, left.Kind);
+        Assert.AreEqual(EdgeMapKind.SortedKeysOnly, right.Kind);
 
         Assert.IsFalse(left.Equals(right));
         Assert.IsTrue(left != right);
     }
 
     [TestMethod]
-    public void InlineTierGrowsToEightThenPromotesToSortedArray()
+    public void InlineTierGrowsToEightThenPromotesToSortedKeysOnly()
     {
         EdgeMap map = default;
         BuildPools pools = BuildPools.CreateDefault();
@@ -327,7 +328,7 @@ internal sealed class EdgeMapTests
         }
 
         EdgeMap.InsertOrReplace(ref map, 9, NodeHandle.None, pools, InlineKeyLookups.Scalar);
-        Assert.AreEqual(EdgeMapKind.SortedArray, map.Kind);
+        Assert.AreEqual(EdgeMapKind.SortedKeysOnly, map.Kind);
         Assert.AreEqual(9, EdgeMap.Count(in map));
 
         //All 9 keys present in ascending order.
@@ -336,6 +337,34 @@ internal sealed class EdgeMapTests
         {
             Assert.AreEqual((uint)(i + 1), keys[i]);
         }
+    }
+
+    [TestMethod]
+    public void RealChildArrivingAtKeysOnlyMapUpgradesToSortedArray()
+    {
+        EdgeMap map = default;
+        BuildPools pools = BuildPools.CreateDefault();
+
+        //Promote into the keys-only shape first.
+        for(uint key = 1; key <= 9; key++)
+        {
+            EdgeMap.InsertOrReplace(ref map, key, NodeHandle.None, pools, InlineKeyLookups.Scalar);
+        }
+
+        Assert.AreEqual(EdgeMapKind.SortedKeysOnly, map.Kind);
+
+        //A real child forces the parallel-array form; prior keys
+        //keep their absent children and the new entry carries its
+        //handle.
+        NodeHandle child = NodeHandle.FromEncoded(77);
+        EdgeMap.InsertOrReplace(ref map, 10U, child, pools, InlineKeyLookups.Scalar);
+
+        Assert.AreEqual(EdgeMapKind.SortedArray, map.Kind);
+        Assert.AreEqual(10, EdgeMap.Count(in map));
+        Assert.IsTrue(EdgeMap.TryGetChild(in map, 10U, InlineKeyLookups.Scalar, out NodeHandle stored));
+        Assert.AreEqual(child, stored);
+        Assert.IsTrue(EdgeMap.TryGetChild(in map, 5U, InlineKeyLookups.Scalar, out NodeHandle absent));
+        Assert.IsTrue(absent.IsNone);
     }
 
     [TestMethod]

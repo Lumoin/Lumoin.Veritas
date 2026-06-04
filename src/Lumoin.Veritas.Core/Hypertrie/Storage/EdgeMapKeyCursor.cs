@@ -236,6 +236,7 @@ public struct EdgeMapKeyCursor: IEquatable<EdgeMapKeyCursor>
         {
             EdgeMapKind.Inline => EdgeMap.InlineKeysSpan(in map),
             EdgeMapKind.SortedArray => EdgeMap.SortedKeysSpan(in map),
+            EdgeMapKind.SortedKeysOnly => EdgeMap.SortedKeysSpan(in map),
             _ => throw new UnreachableException(),
         };
 

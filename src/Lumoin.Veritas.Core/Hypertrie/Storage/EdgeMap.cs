@@ -137,6 +137,7 @@ public struct EdgeMap: IEquatable<EdgeMap>
             EdgeMapKind.Empty => 0,
             EdgeMapKind.Inline => map.InlineCount,
             EdgeMapKind.SortedArray => map.SortedCount,
+            EdgeMapKind.SortedKeysOnly => map.SortedCount,
             _ => throw new UnreachableException(),
         };
     }
@@ -193,6 +194,14 @@ public struct EdgeMap: IEquatable<EdgeMap>
 
                 return false;
             }
+            case EdgeMapKind.SortedKeysOnly:
+            {
+                ReadOnlySpan<uint> keys = SortedKeysSpan(in map);
+
+                child = NodeHandle.None;
+
+                return keys.BinarySearch(key) >= 0;
+            }
             default:
             {
                 throw new UnreachableException();
@@ -243,7 +252,18 @@ public struct EdgeMap: IEquatable<EdgeMap>
                     return;
                 }
 
-                //Inline buffer full — promote to SortedArray.
+                //Inline buffer full — promote to a sorted form.
+                //When every child slot (including the incoming one)
+                //is the absence sentinel — the depth-1 leaf shape —
+                //the child array is pure padding; promote to the
+                //keys-only form and never allocate it.
+                if(child == NodeHandle.None && AllInlineChildrenAreNone(in map))
+                {
+                    PromoteInlineToSortedKeysOnly(ref map, key, pools);
+
+                    return;
+                }
+
                 PromoteInlineToSortedArray(ref map, key, child, pools);
 
                 return;
@@ -279,6 +299,48 @@ public struct EdgeMap: IEquatable<EdgeMap>
 
                 Debug.Assert(IsSortedAscending(SortedKeysSpan(in map)),
                     "Invariant violated: SortedArray must be ascending after insert.");
+
+                return;
+            }
+            case EdgeMapKind.SortedKeysOnly:
+            {
+                //A real child arriving at a keys-only map means the
+                //map is no longer the all-absent leaf shape; upgrade
+                //to the parallel-array form first, then insert
+                //through the SortedArray path.
+                if(child != NodeHandle.None)
+                {
+                    UpgradeKeysOnlyToSortedArray(ref map, pools);
+                    InsertOrReplace(ref map, key, child, pools, inlineLookup);
+
+                    return;
+                }
+
+                ReadOnlySpan<uint> keys = SortedKeysSpan(in map);
+                int searchResult = keys.BinarySearch(key);
+                if(searchResult >= 0)
+                {
+                    //Present, and the child stays absent — no-op.
+                    return;
+                }
+
+                int insertAt = ~searchResult;
+                if(map.SortedCount == map.SortedKeysOwner!.Memory.Length)
+                {
+                    GrowSortedKeysOnly(ref map, pools);
+                }
+
+                Span<uint> writableKeys = map.SortedKeysOwner!.Memory.Span;
+
+                for(int i = map.SortedCount; i > insertAt; i--)
+                {
+                    writableKeys[i] = writableKeys[i - 1];
+                }
+                writableKeys[insertAt] = key;
+                map.SortedCount++;
+
+                Debug.Assert(IsSortedAscending(SortedKeysSpan(in map)),
+                    "Invariant violated: SortedKeysOnly must be ascending after insert.");
 
                 return;
             }
@@ -327,6 +389,18 @@ public struct EdgeMap: IEquatable<EdgeMap>
 
                 yield break;
             }
+            case EdgeMapKind.SortedKeysOnly:
+            {
+                Memory<uint> keys = map.SortedKeysOwner!.Memory;
+                int count = map.SortedCount;
+
+                for(int i = 0; i < count; i++)
+                {
+                    yield return new KeyValuePair<uint, NodeHandle>(keys.Span[i], NodeHandle.None);
+                }
+
+                yield break;
+            }
             default:
             {
                 throw new UnreachableException();
@@ -352,6 +426,7 @@ public struct EdgeMap: IEquatable<EdgeMap>
         {
             EdgeMapKind.Inline => map.InlineKeys[position],
             EdgeMapKind.SortedArray => map.SortedKeysOwner!.Memory.Span[position],
+            EdgeMapKind.SortedKeysOnly => map.SortedKeysOwner!.Memory.Span[position],
             _ => throw new UnreachableException(),
         };
     }
@@ -373,6 +448,7 @@ public struct EdgeMap: IEquatable<EdgeMap>
         {
             EdgeMapKind.Inline => map.InlineChildren[position],
             EdgeMapKind.SortedArray => map.SortedChildrenOwner!.Memory.Span[position],
+            EdgeMapKind.SortedKeysOnly => NodeHandle.None,
             _ => throw new UnreachableException(),
         };
     }
@@ -433,19 +509,27 @@ public struct EdgeMap: IEquatable<EdgeMap>
     /// <param name="map">The map whose rentals to release.</param>
     public static void DisposeRentals(ref EdgeMap map)
     {
-        if(map.Kind != EdgeMapKind.SortedArray)
+        if(map.Kind == EdgeMapKind.SortedArray)
         {
+            Debug.Assert(
+                map.SortedKeysOwner is not null && map.SortedChildrenOwner is not null,
+                "SortedArray EdgeMap stored without owner.");
+
+            map.SortedKeysOwner!.Dispose();
+            map.SortedChildrenOwner!.Dispose();
+            map.SortedKeysOwner = null;
+            map.SortedChildrenOwner = null;
+
             return;
         }
 
-        Debug.Assert(
-            map.SortedKeysOwner is not null && map.SortedChildrenOwner is not null,
-            "SortedArray EdgeMap stored without owner.");
+        if(map.Kind == EdgeMapKind.SortedKeysOnly)
+        {
+            Debug.Assert(map.SortedKeysOwner is not null, "SortedKeysOnly EdgeMap stored without owner.");
 
-        map.SortedKeysOwner!.Dispose();
-        map.SortedChildrenOwner!.Dispose();
-        map.SortedKeysOwner = null;
-        map.SortedChildrenOwner = null;
+            map.SortedKeysOwner!.Dispose();
+            map.SortedKeysOwner = null;
+        }
     }
 
     //Inserts (key, child) into the Inline tier at the position
@@ -527,6 +611,99 @@ public struct EdgeMap: IEquatable<EdgeMap>
 
         Debug.Assert(IsSortedAscending(SortedKeysSpan(in map)),
             "Invariant violated: SortedArray must be ascending after promotion.");
+    }
+
+    //Returns true when every valid Inline child slot holds the
+    //absence sentinel — the depth-1 leaf shape.
+    private static bool AllInlineChildrenAreNone(in EdgeMap map)
+    {
+        for(int i = 0; i < map.InlineCount; i++)
+        {
+            if(map.InlineChildren[i] != NodeHandle.None)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    //Promotes the Inline tier (currently at InlineCapacity entries,
+    //all children absent) plus one additional absent-child entry
+    //into the keys-only sorted representation. No child buffer is
+    //rented.
+    private static void PromoteInlineToSortedKeysOnly(ref EdgeMap map, uint newKey, BuildPools pools)
+    {
+        Debug.Assert(map.InlineCount == InlineCapacity, "Promotion called with Inline tier not full.");
+
+        IMemoryOwner<uint> keysOwner = pools.KeyPool.Rent(SortedArrayInitialCapacity);
+        Span<uint> keys = keysOwner.Memory.Span;
+
+        //Inline tier is ascending; merge the new key into its sorted position via insertion over 9 elements.
+        int insertAt = InlineCapacity;
+        for(int i = 0; i < InlineCapacity; i++)
+        {
+            if(map.InlineKeys[i] > newKey)
+            {
+                insertAt = i;
+                break;
+            }
+        }
+
+        for(int i = 0; i < insertAt; i++)
+        {
+            keys[i] = map.InlineKeys[i];
+        }
+
+        keys[insertAt] = newKey;
+
+        for(int i = insertAt; i < InlineCapacity; i++)
+        {
+            keys[i + 1] = map.InlineKeys[i];
+        }
+
+        map.Kind = EdgeMapKind.SortedKeysOnly;
+        map.SortedKeysOwner = keysOwner;
+        map.SortedChildrenOwner = null;
+        map.SortedCount = InlineCapacity + 1;
+        map.InlineCount = 0;
+
+        Debug.Assert(IsSortedAscending(SortedKeysSpan(in map)),
+            "Invariant violated: SortedKeysOnly must be ascending after promotion.");
+    }
+
+    //Converts a keys-only map into the parallel-array form by
+    //renting a child buffer sized to the keys buffer and filling
+    //the valid prefix with the absence sentinel. Used when a real
+    //child arrives at a map that had only absent children.
+    private static void UpgradeKeysOnlyToSortedArray(ref EdgeMap map, BuildPools pools)
+    {
+        IMemoryOwner<NodeHandle> childrenOwner = pools.ChildPool.Rent(map.SortedKeysOwner!.Memory.Length);
+        Span<NodeHandle> children = childrenOwner.Memory.Span;
+
+        for(int i = 0; i < map.SortedCount; i++)
+        {
+            children[i] = NodeHandle.None;
+        }
+
+        map.Kind = EdgeMapKind.SortedArray;
+        map.SortedChildrenOwner = childrenOwner;
+    }
+
+    //Doubles the keys-only capacity by renting a larger keys
+    //buffer, copying the valid prefix, then disposing the previous
+    //rental.
+    private static void GrowSortedKeysOnly(ref EdgeMap map, BuildPools pools)
+    {
+        IMemoryOwner<uint> oldKeysOwner = map.SortedKeysOwner!;
+
+        int newCapacity = oldKeysOwner.Memory.Length * 2;
+        IMemoryOwner<uint> newKeysOwner = pools.KeyPool.Rent(newCapacity);
+
+        oldKeysOwner.Memory.Span[..map.SortedCount].CopyTo(newKeysOwner.Memory.Span);
+        oldKeysOwner.Dispose();
+
+        map.SortedKeysOwner = newKeysOwner;
     }
 
     //Doubles the SortedArray capacity by renting a larger pair of

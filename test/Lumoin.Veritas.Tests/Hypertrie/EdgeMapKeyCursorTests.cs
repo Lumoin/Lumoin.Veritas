@@ -51,7 +51,8 @@ internal sealed class EdgeMapKeyCursorTests
     {
         EdgeMap map = default;
         BuildPools pools = BuildPools.CreateDefault();
-        //Push past the 8-entry Inline boundary to materialise SortedArray.
+        //Push past the 8-entry Inline boundary to materialise the
+        //sorted backing array (keys-only — children are absent).
         uint[] inputs = [50, 10, 30, 20, 40, 5, 60, 25, 15];
 
         foreach(uint key in inputs)
@@ -59,7 +60,7 @@ internal sealed class EdgeMapKeyCursorTests
             EdgeMap.InsertOrReplace(ref map, key, NodeHandle.None, pools, InlineKeyLookups.Scalar);
         }
 
-        Assert.AreEqual(EdgeMapKind.SortedArray, map.Kind);
+        Assert.AreEqual(EdgeMapKind.SortedKeysOnly, map.Kind);
 
         EdgeMapKeyCursor cursor = CursorOver(in map);
         uint[] visited = new uint[inputs.Length];
