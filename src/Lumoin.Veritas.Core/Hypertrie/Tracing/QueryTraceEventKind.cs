@@ -49,4 +49,7 @@ public enum QueryTraceEventKind
 
     /// <summary>An access-control policy returned Deny for a candidate triple. The audit channel.</summary>
     AccessDenied = 8,
+
+    /// <summary>The query rendezvous chose an execution engine. Carries the engine, the selection reason, the engine's triple count, and the lazy-build cost when a view was materialised — joinable with <see cref="QueryCompleted"/> by correlation id, which is the feedback signal adaptive planners consume.</summary>
+    EngineSelected = 9,
 }

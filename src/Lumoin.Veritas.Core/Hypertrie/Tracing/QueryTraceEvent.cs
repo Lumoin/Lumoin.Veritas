@@ -94,9 +94,25 @@ public readonly record struct QueryTraceEvent: ITraceEvent
     /// <see cref="QueryTraceEventKind.QueryCompleted"/> this is
     /// the number of solutions yielded; for
     /// <see cref="QueryTraceEventKind.QueryStarted"/> the number
-    /// of patterns; <c>0</c> otherwise.
+    /// of patterns; for
+    /// <see cref="QueryTraceEventKind.EngineSelected"/> the
+    /// selected engine's triple count; <c>0</c> otherwise.
     /// </summary>
     public int Count { get; init; }
+
+    /// <summary>
+    /// The execution engine selected, populated only for
+    /// <see cref="QueryTraceEventKind.EngineSelected"/>;
+    /// <c>default</c> otherwise.
+    /// </summary>
+    public QueryEngineKind Engine { get; init; }
+
+    /// <summary>
+    /// Why the engine was selected, populated only for
+    /// <see cref="QueryTraceEventKind.EngineSelected"/>;
+    /// <c>default</c> otherwise.
+    /// </summary>
+    public EngineSelectionReason SelectionReason { get; init; }
 
     /// <summary>
     /// Constructs a <see cref="QueryTraceEventKind.QueryStarted"/>
@@ -311,6 +327,43 @@ public readonly record struct QueryTraceEvent: ITraceEvent
             DeniedPredicate = 0,
             DeniedObject = 0,
             Count = 0,
+        };
+    }
+
+    /// <summary>
+    /// Constructs an <see cref="QueryTraceEventKind.EngineSelected"/>
+    /// event recording a rendezvous decision. <see cref="Count"/>
+    /// carries the selected engine's triple count and
+    /// <see cref="Value"/> the lazy-build cost in milliseconds —
+    /// <c>0</c> when no view was materialised. Joining this event
+    /// with <see cref="QueryTraceEventKind.QueryCompleted"/> by
+    /// correlation id attributes observed query cost to the
+    /// selection decision.
+    /// </summary>
+    public static QueryTraceEvent EngineSelected(
+        long sequenceNumber,
+        long timestampTicks,
+        Guid correlationId,
+        QueryEngineKind engine,
+        EngineSelectionReason reason,
+        int tripleCount,
+        long buildMilliseconds)
+    {
+        return new()
+        {
+            SequenceNumber = sequenceNumber,
+            TimestampTicks = timestampTicks,
+            CorrelationId = correlationId,
+            Kind = QueryTraceEventKind.EngineSelected,
+            PatternIndex = -1,
+            Variable = default,
+            Value = buildMilliseconds,
+            DeniedSubject = 0,
+            DeniedPredicate = 0,
+            DeniedObject = 0,
+            Count = tripleCount,
+            Engine = engine,
+            SelectionReason = reason,
         };
     }
 
