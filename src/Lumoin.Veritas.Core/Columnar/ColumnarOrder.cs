@@ -97,32 +97,15 @@ public sealed class ColumnarOrder
     }
 
     //Builds one permutation's column set: sorts the working array
-    //by the permuted key sequence, then emits all five columns in
-    //a single pass over the sorted run.
+    //by its packed 96-bit permutation keys, then emits all five
+    //columns in a single pass over the sorted run.
     internal static ColumnarOrder Build(EncodedTriple[] working, byte[] permutation)
     {
         byte position0 = permutation[0];
         byte position1 = permutation[1];
         byte position2 = permutation[2];
 
-        Array.Sort(working, (left, right) =>
-        {
-            int byFirst = KeyAt(left, position0).CompareTo(KeyAt(right, position0));
-
-            if(byFirst != 0)
-            {
-                return byFirst;
-            }
-
-            int bySecond = KeyAt(left, position1).CompareTo(KeyAt(right, position1));
-
-            if(bySecond != 0)
-            {
-                return bySecond;
-            }
-
-            return KeyAt(left, position2).CompareTo(KeyAt(right, position2));
-        });
+        ColumnarSearch.SortByPermutation(working, position0, position1, position2);
 
         List<uint> values0 = [];
         List<uint> offsets0 = [];
