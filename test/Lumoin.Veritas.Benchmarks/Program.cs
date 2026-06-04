@@ -74,6 +74,13 @@ internal static class Program
             return;
         }
 
+        if(args.Length > 0 && args[0] == "--profile-wcoj-query-100k")
+        {
+            WcojQuerySoak.RunQuerySoakAsync(100_000, System.TimeSpan.FromSeconds(20)).GetAwaiter().GetResult();
+
+            return;
+        }
+
         //Property-path soak entrypoints. Each cell builds a fresh
         //store, runs three repetitions per path shape, and prints
         //min/median/max wall-clock plus allocation, GC, and peak
