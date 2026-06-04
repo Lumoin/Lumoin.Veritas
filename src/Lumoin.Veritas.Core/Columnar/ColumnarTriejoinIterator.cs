@@ -26,11 +26,16 @@ namespace Lumoin.Veritas.Core.Columnar;
 /// carries all six.
 /// </para>
 /// <para>
-/// <b>Level state.</b> A level's candidate set is one contiguous
-/// slice <c>[lo, hi)</c> of the permutation's value column at that
-/// depth, derived from the parent level's offsets. The per-level
-/// frame is three integers; descent is offset arithmetic into
-/// contiguous arrays, with no node objects between levels.
+/// <b>Merged view.</b> Each level's candidate set is the union of
+/// a contiguous slice <c>[lo, hi)</c> of the base permutation's
+/// value column and the distinct level keys of the accumulated
+/// added-triples run under the current prefix, minus base keys
+/// whose subtrees are fully tombstoned by the removed run. A key
+/// is visible when its net triple count — base minus removed plus
+/// added — is positive; positioning operations skip invisible
+/// keys, so the cursor always rests on a visible key or at end.
+/// With an empty delta the merge degenerates to the pure base
+/// slice at the cost of two slice-emptiness checks per step.
 /// </para>
 /// <para>
 /// <b>Self-joins.</b> A pattern with the same variable in multiple
@@ -40,27 +45,56 @@ namespace Lumoin.Veritas.Core.Columnar;
 /// <para>
 /// <b>Thread safety.</b> An iterator is single-threaded. Multiple
 /// iterators over the same index can run concurrently because the
-/// index is immutable.
+/// index — base and delta both — is immutable.
 /// </para>
 /// </remarks>
 [DebuggerDisplay("ColumnarTriejoinIterator Depth={DescendedLevels} AtEnd={AtEnd}")]
 public sealed class ColumnarTriejoinIterator
 {
-    //One frame per presented level: the level's slice bounds in
-    //the value column and the cursor position within them.
+    //One frame per presented level: the base slice bounds and
+    //cursor, the added-run slice bounds and cursor (the cursor
+    //rests on the first triple of its current key run), and the
+    //removed-run slice bounds for visibility counting.
     private struct LevelFrame
     {
-        /// <summary>The slice's inclusive start index in the level's value column.</summary>
-        public int Lo;
+        /// <summary>The base slice's inclusive start index in the level's value column.</summary>
+        public int BaseLo;
 
-        /// <summary>The slice's exclusive end index in the level's value column.</summary>
-        public int Hi;
+        /// <summary>The base slice's exclusive end index in the level's value column.</summary>
+        public int BaseHi;
 
-        /// <summary>The cursor's current absolute index; in <c>[Lo, Hi]</c>, where <c>Hi</c> means exhausted.</summary>
-        public int Position;
+        /// <summary>The base cursor's current absolute index; in <c>[BaseLo, BaseHi]</c>, where <c>BaseHi</c> means exhausted.</summary>
+        public int BasePos;
+
+        /// <summary>The added run's inclusive start for the current prefix.</summary>
+        public int AddLo;
+
+        /// <summary>The added run's exclusive end for the current prefix.</summary>
+        public int AddHi;
+
+        /// <summary>The added cursor's current index — the first triple of its current key run; <c>AddHi</c> means exhausted.</summary>
+        public int AddPos;
+
+        /// <summary>The removed run's inclusive start for the current prefix.</summary>
+        public int RemLo;
+
+        /// <summary>The removed run's exclusive end for the current prefix.</summary>
+        public int RemHi;
     }
 
+    private readonly ColumnarTripleIndex index;
+
     private readonly ColumnarOrder order;
+
+    private readonly int permutationIndex;
+
+    //The chosen permutation's descent positions: the RDF position
+    //(0=S, 1=P, 2=O) each CSR level orders by.
+    private readonly byte descentPosition0;
+
+    private readonly byte descentPosition1;
+
+    private readonly byte descentPosition2;
 
     //The number of bound positions applied at construction; the
     //CSR level for variable level v is boundCount + v.
@@ -79,7 +113,7 @@ public sealed class ColumnarTriejoinIterator
     private readonly uint[] openedValues;
 
     //True only when the construction-phase bound descent found no
-    //match. Sticky.
+    //visible match. Sticky.
     private readonly bool constructionAtEnd;
 
     /// <summary>The pattern this iterator is matching.</summary>
@@ -97,9 +131,9 @@ public sealed class ColumnarTriejoinIterator
 
     /// <summary>
     /// <c>true</c> when no further keys are available at the
-    /// current level — the cursor at the deepest frame is past its
-    /// last key, or the construction-time bound descent found no
-    /// match.
+    /// current level — both the base and added cursors at the
+    /// deepest frame are past their last keys, or the
+    /// construction-time bound descent found no visible match.
     /// </summary>
     public bool AtEnd
     {
@@ -117,7 +151,7 @@ public sealed class ColumnarTriejoinIterator
 
             ref readonly LevelFrame frame = ref frames[frameCount - 1];
 
-            return frame.Position >= frame.Hi;
+            return frame.BasePos >= frame.BaseHi && frame.AddPos >= frame.AddHi;
         }
     }
 
@@ -140,7 +174,8 @@ public sealed class ColumnarTriejoinIterator
     }
 
     /// <summary>
-    /// The current key at the current level. Undefined when
+    /// The current key at the current level — the smaller of the
+    /// base and added candidates. Undefined when
     /// <see cref="AtEnd"/>.
     /// </summary>
     /// <exception cref="InvalidOperationException">The iterator is at end.</exception>
@@ -154,8 +189,9 @@ public sealed class ColumnarTriejoinIterator
             }
 
             ref readonly LevelFrame frame = ref frames[frameCount - 1];
+            int level = boundCount + frameCount - 1;
 
-            return TermId.FromEncoded(order.ValuesAt(boundCount + frameCount - 1)[frame.Position]);
+            return TermId.FromEncoded(CurrentKeyOf(in frame, level));
         }
     }
 
@@ -184,6 +220,7 @@ public sealed class ColumnarTriejoinIterator
 
         ValidateVariableOrder(pattern, variableOrder);
 
+        this.index = index;
         Pattern = pattern;
         VariableOrder = variableOrder;
         openedValues = new uint[variableOrder.Count];
@@ -209,37 +246,74 @@ public sealed class ColumnarTriejoinIterator
             descent[descentLength++] = (byte)PositionOfVariable(pattern, variableOrder[level]);
         }
 
-        order = index.OrderAt(ColumnarTripleIndex.PermutationIndexFor(descent[..descentLength]));
+        permutationIndex = ColumnarTripleIndex.PermutationIndexFor(descent[..descentLength]);
+        order = index.OrderAt(permutationIndex);
 
-        //Apply the bound prefix: narrow the slice level by level via
-        //exact lookups. A miss leaves the iterator at end.
-        int lo = 0;
-        int hi = order.ValuesAt(0).Length;
+        ReadOnlySpan<byte> positions = ColumnarTripleIndex.PermutationAt(permutationIndex);
+        descentPosition0 = positions[0];
+        descentPosition1 = positions[1];
+        descentPosition2 = positions[2];
+
+        //Apply the bound prefix: narrow the base slice and both
+        //delta runs level by level. A level whose net triple count
+        //is zero leaves the iterator at end.
+        ReadOnlySpan<EncodedTriple> added = index.AddedAt(permutationIndex);
+        ReadOnlySpan<EncodedTriple> removed = index.RemovedAt(permutationIndex);
+
+        int baseLo = 0;
+        int baseHi = order.ValuesAt(0).Length;
+        int addLo = 0;
+        int addHi = added.Length;
+        int remLo = 0;
+        int remHi = removed.Length;
 
         for(int level = 0; level < boundCount; level++)
         {
             uint boundValue = pattern.At(descent[level]).BoundTerm.Encoded;
-            int found = SearchAtLeast(order.ValuesAt(level), lo, hi, boundValue);
+            byte column = DescentPositionAt(level);
 
-            if(found >= hi || order.ValuesAt(level)[found] != boundValue)
+            ReadOnlySpan<uint> values = order.ValuesAt(level);
+            int found = ColumnarSearch.LowerBound(values, baseLo, baseHi, boundValue);
+            bool baseFound = found < baseHi && values[found] == boundValue;
+
+            int addChildLo = ColumnarSearch.LowerBoundByColumn(added, addLo, addHi, column, boundValue);
+            int addChildHi = ColumnarSearch.UpperBoundByColumn(added, addChildLo, addHi, column, boundValue);
+            int remChildLo = ColumnarSearch.LowerBoundByColumn(removed, remLo, remHi, column, boundValue);
+            int remChildHi = ColumnarSearch.UpperBoundByColumn(removed, remChildLo, remHi, column, boundValue);
+
+            int baseTriples = baseFound ? TriplesUnder(level, found) : 0;
+            int net = baseTriples - (remChildHi - remChildLo) + (addChildHi - addChildLo);
+
+            if(net <= 0)
             {
                 constructionAtEnd = true;
 
                 return;
             }
 
-            if(level < 2)
-            {
-                ReadOnlySpan<uint> offsets = order.OffsetsAt(level);
-                lo = (int)offsets[found];
-                hi = (int)offsets[found + 1];
-            }
-            else
+            addLo = addChildLo;
+            addHi = addChildHi;
+            remLo = remChildLo;
+            remHi = remChildHi;
+
+            if(level == 2)
             {
                 //Fully bound pattern verified; no variable levels.
                 Debug.Assert(variableOrder.Count == 0, "A pattern whose bound prefix consumes all three levels has no variables.");
 
                 return;
+            }
+
+            if(baseFound)
+            {
+                ReadOnlySpan<uint> offsets = order.OffsetsAt(level);
+                baseLo = (int)offsets[found];
+                baseHi = (int)offsets[found + 1];
+            }
+            else
+            {
+                baseLo = 0;
+                baseHi = 0;
             }
         }
 
@@ -248,8 +322,20 @@ public sealed class ColumnarTriejoinIterator
             return;
         }
 
-        frames[0] = new LevelFrame { Lo = lo, Hi = hi, Position = lo };
+        frames[0] = new LevelFrame
+        {
+            BaseLo = baseLo,
+            BaseHi = baseHi,
+            BasePos = baseLo,
+            AddLo = addLo,
+            AddHi = addHi,
+            AddPos = addLo,
+            RemLo = remLo,
+            RemHi = remHi,
+        };
         frameCount = 1;
+
+        Normalize(ref frames[0], boundCount);
     }
 
     /// <summary>
@@ -276,8 +362,8 @@ public sealed class ColumnarTriejoinIterator
     /// <summary>
     /// Descends to the next variable level by binding the current
     /// variable to <paramref name="value"/>. Returns <c>true</c>
-    /// when the value exists at this level; <c>false</c> when it
-    /// does not, in which case the iterator's state is unchanged.
+    /// when the value is visible at this level; <c>false</c> when
+    /// it is not, in which case the iterator's state is unchanged.
     /// </summary>
     /// <param name="value">The <see cref="TermId"/> to bind the current variable to.</param>
     /// <returns><c>true</c> when the descent succeeded.</returns>
@@ -296,12 +382,25 @@ public sealed class ColumnarTriejoinIterator
 
         ref readonly LevelFrame frame = ref frames[frameCount - 1];
         int level = boundCount + frameCount - 1;
-        ReadOnlySpan<uint> values = order.ValuesAt(level);
+        byte column = DescentPositionAt(level);
         uint rawValue = value.Encoded;
 
-        int found = SearchAtLeast(values, frame.Lo, frame.Hi, rawValue);
+        ReadOnlySpan<uint> values = order.ValuesAt(level);
+        ReadOnlySpan<EncodedTriple> added = index.AddedAt(permutationIndex);
+        ReadOnlySpan<EncodedTriple> removed = index.RemovedAt(permutationIndex);
 
-        if(found >= frame.Hi || values[found] != rawValue)
+        int found = ColumnarSearch.LowerBound(values, frame.BaseLo, frame.BaseHi, rawValue);
+        bool baseFound = found < frame.BaseHi && values[found] == rawValue;
+
+        int addChildLo = ColumnarSearch.LowerBoundByColumn(added, frame.AddLo, frame.AddHi, column, rawValue);
+        int addChildHi = ColumnarSearch.UpperBoundByColumn(added, addChildLo, frame.AddHi, column, rawValue);
+        int remChildLo = ColumnarSearch.LowerBoundByColumn(removed, frame.RemLo, frame.RemHi, column, rawValue);
+        int remChildHi = ColumnarSearch.UpperBoundByColumn(removed, remChildLo, frame.RemHi, column, rawValue);
+
+        int baseTriples = baseFound ? TriplesUnder(level, found) : 0;
+        int net = baseTriples - (remChildHi - remChildLo) + (addChildHi - addChildLo);
+
+        if(net <= 0)
         {
             return false;
         }
@@ -316,13 +415,31 @@ public sealed class ColumnarTriejoinIterator
             return true;
         }
 
-        ReadOnlySpan<uint> offsets = order.OffsetsAt(level);
-        int childLo = (int)offsets[found];
-        int childHi = (int)offsets[found + 1];
+        int childBaseLo = 0;
+        int childBaseHi = 0;
 
-        frames[frameCount] = new LevelFrame { Lo = childLo, Hi = childHi, Position = childLo };
+        if(baseFound)
+        {
+            ReadOnlySpan<uint> offsets = order.OffsetsAt(level);
+            childBaseLo = (int)offsets[found];
+            childBaseHi = (int)offsets[found + 1];
+        }
+
+        frames[frameCount] = new LevelFrame
+        {
+            BaseLo = childBaseLo,
+            BaseHi = childBaseHi,
+            BasePos = childBaseLo,
+            AddLo = addChildLo,
+            AddHi = addChildHi,
+            AddPos = addChildLo,
+            RemLo = remChildLo,
+            RemHi = remChildHi,
+        };
         frameCount++;
         DescendedLevels++;
+
+        Normalize(ref frames[frameCount - 1], level + 1);
 
         return true;
     }
@@ -369,7 +486,11 @@ public sealed class ColumnarTriejoinIterator
             throw new InvalidOperationException("Cannot restart the current level: all variables are bound, so there is no current level.");
         }
 
-        frames[frameCount - 1].Position = frames[frameCount - 1].Lo;
+        ref LevelFrame frame = ref frames[frameCount - 1];
+        frame.BasePos = frame.BaseLo;
+        frame.AddPos = frame.AddLo;
+
+        Normalize(ref frame, boundCount + frameCount - 1);
     }
 
     /// <summary>
@@ -382,7 +503,27 @@ public sealed class ColumnarTriejoinIterator
             return;
         }
 
-        frames[frameCount - 1].Position++;
+        ref LevelFrame frame = ref frames[frameCount - 1];
+        int level = boundCount + frameCount - 1;
+        uint key = CurrentKeyOf(in frame, level);
+
+        if(frame.BasePos < frame.BaseHi && order.ValuesAt(level)[frame.BasePos] == key)
+        {
+            frame.BasePos++;
+        }
+
+        if(frame.AddPos < frame.AddHi)
+        {
+            ReadOnlySpan<EncodedTriple> added = index.AddedAt(permutationIndex);
+            byte column = DescentPositionAt(level);
+
+            if(ColumnarSearch.ColumnAt(in added[frame.AddPos], column) == key)
+            {
+                frame.AddPos = ColumnarSearch.UpperBoundByColumn(added, frame.AddPos, frame.AddHi, column, key);
+            }
+        }
+
+        Normalize(ref frame, level);
     }
 
     /// <summary>
@@ -399,16 +540,108 @@ public sealed class ColumnarTriejoinIterator
         }
 
         ref LevelFrame frame = ref frames[frameCount - 1];
-        ReadOnlySpan<uint> values = order.ValuesAt(boundCount + frameCount - 1);
-        int found = SearchAtLeast(values, frame.Position, frame.Hi, target.Encoded);
-        frame.Position = found;
+        int level = boundCount + frameCount - 1;
+
+        frame.BasePos = ColumnarSearch.LowerBound(order.ValuesAt(level), frame.BasePos, frame.BaseHi, target.Encoded);
+
+        if(frame.AddPos < frame.AddHi)
+        {
+            frame.AddPos = ColumnarSearch.LowerBoundByColumn(
+                index.AddedAt(permutationIndex), frame.AddPos, frame.AddHi, DescentPositionAt(level), target.Encoded);
+        }
+
+        Normalize(ref frame, level);
     }
 
-    //Returns the smallest index in [lo, hi) whose value is greater
-    //than or equal to `target`, or `hi` when no such index exists.
-    private static int SearchAtLeast(ReadOnlySpan<uint> values, int lo, int hi, uint target)
+    //The smaller of the base and added candidates at the frame's
+    //current positions. At least one side must be live.
+    private uint CurrentKeyOf(in LevelFrame frame, int level)
     {
-        return ColumnarSearch.LowerBound(values, lo, hi, target);
+        uint baseKey = frame.BasePos < frame.BaseHi
+            ? order.ValuesAt(level)[frame.BasePos]
+            : uint.MaxValue;
+        uint addKey = frame.AddPos < frame.AddHi
+            ? ColumnarSearch.ColumnAt(in index.AddedAt(permutationIndex)[frame.AddPos], DescentPositionAt(level))
+            : uint.MaxValue;
+
+        return Math.Min(baseKey, addKey);
+    }
+
+    //Skips base-only keys whose subtrees are fully tombstoned, so
+    //the cursor rests on a visible key or at end. An added-side
+    //candidate is always visible (additions are disjoint from the
+    //base, so nothing tombstones them), and a key present on both
+    //sides is visible through its addition.
+    private void Normalize(ref LevelFrame frame, int level)
+    {
+        if(frame.RemLo == frame.RemHi)
+        {
+            return;
+        }
+
+        ReadOnlySpan<uint> values = order.ValuesAt(level);
+        ReadOnlySpan<EncodedTriple> added = index.AddedAt(permutationIndex);
+        ReadOnlySpan<EncodedTriple> removed = index.RemovedAt(permutationIndex);
+        byte column = DescentPositionAt(level);
+
+        while(frame.BasePos < frame.BaseHi)
+        {
+            uint baseKey = values[frame.BasePos];
+
+            if(frame.AddPos < frame.AddHi
+                && ColumnarSearch.ColumnAt(in added[frame.AddPos], column) <= baseKey)
+            {
+                //The current candidate is an addition (or a key
+                //present on both sides) — visible either way.
+                return;
+            }
+
+            int removedLo = ColumnarSearch.LowerBoundByColumn(removed, frame.RemLo, frame.RemHi, column, baseKey);
+            int removedHi = ColumnarSearch.UpperBoundByColumn(removed, removedLo, frame.RemHi, column, baseKey);
+            int removedCount = removedHi - removedLo;
+
+            if(removedCount == 0 || TriplesUnder(level, frame.BasePos) > removedCount)
+            {
+                return;
+            }
+
+            //Fully tombstoned base key — skip it.
+            frame.BasePos++;
+        }
+    }
+
+    //The number of base triples under the key at `absoluteIndex`
+    //of the given level's value column.
+    private int TriplesUnder(int level, int absoluteIndex)
+    {
+        if(level == 2)
+        {
+            return 1;
+        }
+
+        if(level == 1)
+        {
+            ReadOnlySpan<uint> offsets = order.OffsetsAt(1);
+
+            return (int)(offsets[absoluteIndex + 1] - offsets[absoluteIndex]);
+        }
+
+        ReadOnlySpan<uint> level0Offsets = order.OffsetsAt(0);
+        ReadOnlySpan<uint> level1Offsets = order.OffsetsAt(1);
+
+        return (int)(level1Offsets[(int)level0Offsets[absoluteIndex + 1]] - level1Offsets[(int)level0Offsets[absoluteIndex]]);
+    }
+
+    //The RDF position the given CSR level orders by.
+    private byte DescentPositionAt(int level)
+    {
+        return level switch
+        {
+            0 => descentPosition0,
+            1 => descentPosition1,
+            2 => descentPosition2,
+            _ => throw new ArgumentOutOfRangeException(nameof(level), level, "Level must be 0, 1, or 2."),
+        };
     }
 
     //Returns the RDF position (0=S, 1=P, 2=O) `variable` occupies
