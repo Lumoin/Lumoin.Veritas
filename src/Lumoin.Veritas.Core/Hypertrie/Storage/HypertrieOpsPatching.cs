@@ -333,9 +333,25 @@ public static class HypertrieOpsPatching
             leaf2.Add(new LeafEdit(edit.Inner1, edit.IsAddition));
         }
 
-        //Build the two new edge maps.
-        EdgeMap baseEdgeMap0 = oldD2Handle.IsNone ? default : store.GetByHandle(oldD2Handle).EdgeMaps[0];
-        EdgeMap baseEdgeMap1 = oldD2Handle.IsNone ? default : store.GetByHandle(oldD2Handle).EdgeMaps[1];
+        //Build the two new edge maps. An SEN2 base materialises as
+        //the equivalent pair of single-entry maps with SEN
+        //children — the exact shape the build path would have
+        //produced for the same content before collapsing it.
+        EdgeMap baseEdgeMap0 = default;
+        EdgeMap baseEdgeMap1 = default;
+
+        if(oldD2Handle.IsSingleEntryPair)
+        {
+            (uint pairFirst, uint pairSecond) = store.GetPair(oldD2Handle);
+            EdgeMap.InsertOrReplace(ref baseEdgeMap0, pairFirst, NodeHandle.ForSingleEntry(pairSecond), pools, pools.InlineLookup);
+            EdgeMap.InsertOrReplace(ref baseEdgeMap1, pairSecond, NodeHandle.ForSingleEntry(pairFirst), pools, pools.InlineLookup);
+        }
+        else if(!oldD2Handle.IsNone)
+        {
+            HypertrieNode oldD2 = store.GetByHandle(oldD2Handle);
+            baseEdgeMap0 = oldD2.EdgeMaps[0];
+            baseEdgeMap1 = oldD2.EdgeMaps[1];
+        }
 
         EdgeMap newEdgeMap0 = PatchD2EdgeMap(baseEdgeMap0, byInner1, store, pools);
         EdgeMap newEdgeMap1 = PatchD2EdgeMap(baseEdgeMap1, byInner2, store, pools);
@@ -343,6 +359,21 @@ public static class HypertrieOpsPatching
         if(EdgeMap.Count(in newEdgeMap0) == 0 && EdgeMap.Count(in newEdgeMap1) == 0)
         {
             return NodeHandle.None;
+        }
+
+        //Single-entry result: collapse into the pair arena, exactly
+        //as the build path does, so build and patch converge on the
+        //same representation (and therefore the same canonical
+        //parents) for the same content. Both maps holding exactly
+        //one entry is equivalent to the D2 holding one
+        //(inner1, inner2) pair; the 1-entry maps are Inline-tier
+        //and own no rentals.
+        if(EdgeMap.Count(in newEdgeMap0) == 1 && EdgeMap.Count(in newEdgeMap1) == 1)
+        {
+            uint soleInner1 = EdgeMap.InlineKeysSpan(in newEdgeMap0)[0];
+            uint soleInner2 = EdgeMap.InlineKeysSpan(in newEdgeMap1)[0];
+
+            return store.AllocateSingleEntryPair(soleInner1, soleInner2);
         }
 
         HypertrieNode newD2 = HypertrieNode.Create(2);
@@ -499,6 +530,15 @@ public static class HypertrieOpsPatching
             return false;
         }
 
+        //SEN2 mapping: the subject's whole subtree is one (P, O)
+        //pair — the S-first inner positions in ascending order.
+        if(d2Handle.IsSingleEntryPair)
+        {
+            (uint pairPredicate, uint pairObject) = store.GetPair(d2Handle);
+
+            return pairPredicate == p && pairObject == o;
+        }
+
         HypertrieNode d2 = store.GetByHandle(d2Handle);
 
         //Step 2: D2.EdgeMaps[0] (keyed by P) → leaf indexed by O.
@@ -546,11 +586,12 @@ public static class HypertrieOpsPatching
         {
             foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
             {
-                //SEN children carry their content inline and need
-                //no arena lookup; ComputeIdentifier delegates to
-                //HypertrieOps, which resolves SEN slot identifiers
-                //on the fly from the SEN key.
-                if(entry.Value.IsNone || entry.Value.IsSingleEntry)
+                //SEN children carry their content inline and SEN2
+                //children live in the pair arena — neither needs an
+                //arena lookup; ComputeIdentifier delegates to
+                //HypertrieOps, which resolves their identifiers on
+                //the fly from the slot content.
+                if(!entry.Value.IsArenaHandle)
                 {
                     continue;
                 }

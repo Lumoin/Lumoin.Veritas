@@ -16,12 +16,17 @@ namespace Lumoin.Veritas.Core.Hypertrie.Storage;
 /// <para>
 /// <b>Encoding.</b> Bit 31 is the SEN / FN discriminator:
 /// <c>1</c> means Single-Entry-Node (the slot's low 31 bits encode
-/// the single leaf key directly), <c>0</c> means Full-Node (the low
-/// 31 bits are an arena index resolved through
+/// the single leaf key directly), <c>0</c> means the slot is not a
+/// leaf key — bit 30 then splits that space: <c>1</c> means
+/// Single-Entry-Pair (the low 30 bits index a whole single-entry
+/// depth-2 subtree in <see cref="NodeStore"/>'s pair arena),
+/// <c>0</c> means Full-Node (the low 30 bits are an arena index
+/// resolved through
 /// <see cref="NodeStore.GetByHandle(NodeHandle)"/>). The
-/// all-zeros encoding represents <see cref="None"/>; both FN with
+/// all-zeros encoding represents <see cref="None"/>; FN with
 /// arena index <c>0</c> and SEN with key <c>0</c> are reserved and
-/// must never be constructed.
+/// must never be constructed, while pair index <c>0</c> is a valid
+/// pair-arena slot (the SEN2 tag bit keeps its encoding non-zero).
 /// </para>
 /// <para>
 /// <b>Range.</b> Both arena indices and SEN keys are constrained to
@@ -70,6 +75,12 @@ public readonly record struct NodeHandle(uint Encoded): IComparable<NodeHandle>,
     /// <summary>The bit mask covering the payload (bits 0..30) — either arena index or SEN-encoded key.</summary>
     public const uint ContentMask = 0x7FFFFFFFU;
 
+    /// <summary>The bit mask covering the single-entry-pair tag (bit 30), meaningful only when bit 31 is clear.</summary>
+    public const uint Sen2Tag = 0x40000000U;
+
+    /// <summary>The bit mask covering the pair-arena index payload (bits 0..29) of a single-entry-pair handle.</summary>
+    public const uint Sen2ContentMask = 0x3FFFFFFFU;
+
     /// <summary>
     /// A sentinel representing the absence of a node, encoded as <c>0</c>.
     /// Equal to <c>default(NodeHandle)</c>.
@@ -106,6 +117,28 @@ public readonly record struct NodeHandle(uint Encoded): IComparable<NodeHandle>,
     }
 
     /// <summary>
+    /// Creates a single-entry-pair handle addressing the pair at
+    /// <paramref name="pairIndex"/> in the owning store's pair
+    /// arena. The pair carries a whole single-entry depth-2 subtree
+    /// — its two remaining-position keys in ascending original-
+    /// position order — without allocating a node or an intern
+    /// entry.
+    /// </summary>
+    /// <param name="pairIndex">The pair-arena index. Must fit in 30 bits.</param>
+    /// <returns>An SEN2-tagged handle whose <see cref="PairIndex"/> equals <paramref name="pairIndex"/>.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="pairIndex"/> exceeds 30 bits.</exception>
+    public static NodeHandle ForSingleEntryPair(uint pairIndex)
+    {
+        if((pairIndex & ~Sen2ContentMask) != 0U)
+        {
+            throw new ArgumentOutOfRangeException(nameof(pairIndex), pairIndex,
+                $"Pair-arena index must fit in 30 bits (max 0x{Sen2ContentMask:X}); got 0x{pairIndex:X}.");
+        }
+
+        return new NodeHandle(pairIndex | Sen2Tag);
+    }
+
+    /// <summary>
     /// Returns <c>true</c> when this handle is the <see cref="None"/> sentinel.
     /// </summary>
     public bool IsNone => Encoded == 0U;
@@ -118,11 +151,19 @@ public readonly record struct NodeHandle(uint Encoded): IComparable<NodeHandle>,
     public bool IsSingleEntry => (Encoded & SenTag) != 0U;
 
     /// <summary>
+    /// Returns <c>true</c> when bit 31 is clear and bit 30 is set,
+    /// indicating this slot addresses a single-entry depth-2 pair
+    /// in the owning store's pair arena.
+    /// </summary>
+    public bool IsSingleEntryPair => (Encoded & SenTag) == 0U && (Encoded & Sen2Tag) != 0U;
+
+    /// <summary>
     /// Returns <c>true</c> when this handle addresses a real
     /// <see cref="HypertrieNode"/> in the arena — neither
-    /// <see cref="None"/> nor <see cref="IsSingleEntry"/>.
+    /// <see cref="None"/>, <see cref="IsSingleEntry"/>, nor
+    /// <see cref="IsSingleEntryPair"/>.
     /// </summary>
-    public bool IsArenaHandle => Encoded != 0U && (Encoded & SenTag) == 0U;
+    public bool IsArenaHandle => Encoded != 0U && (Encoded & (SenTag | Sen2Tag)) == 0U;
 
     /// <summary>
     /// The arena index portion of this handle. Meaningful only when
@@ -135,6 +176,12 @@ public readonly record struct NodeHandle(uint Encoded): IComparable<NodeHandle>,
     /// when <see cref="IsSingleEntry"/> is <c>true</c>.
     /// </summary>
     public uint SingleEntryKey => Encoded & ContentMask;
+
+    /// <summary>
+    /// The pair-arena index carried by this handle. Meaningful only
+    /// when <see cref="IsSingleEntryPair"/> is <c>true</c>.
+    /// </summary>
+    public uint PairIndex => Encoded & Sen2ContentMask;
 
     /// <summary>Orders handles by their encoded value.</summary>
     public int CompareTo(NodeHandle other) => Encoded.CompareTo(other.Encoded);

@@ -161,6 +161,24 @@ public sealed class NodeStore: IDisposable
     //growing the outer segments array. Read paths never touch it.
     private object SegmentAllocationLock { get; } = new();
 
+    //The pair arena: single-entry depth-2 subtrees stored as one
+    //packed ulong per pair (high 32 bits the first key, low 32 the
+    //second), addressed by SEN2 handles. Plain managed segments —
+    //8-byte values need no pooling and nothing to dispose. Pairs
+    //are append-only and never deduplicated: duplicate-pair waste
+    //is bounded by 8 bytes per triple, whereas a dedup table would
+    //cost an entry per distinct pair. Like node arena slots, pair
+    //slots are not reclaimed by sweep; they live until store
+    //disposal. The outer array is volatile-published on grow.
+    private ulong[]?[] pairSegments = new ulong[]?[InitialSegmentArrayCapacity];
+
+    //Monotonic next-pair counter. Index 0 is a valid pair slot —
+    //the SEN2 tag bit keeps the handle encoding non-zero.
+    private uint nextPairIndex;
+
+    //Lock covering pair-slot reservation and pair-segment growth.
+    private object PairAllocationLock { get; } = new();
+
     //Number of times a CAS-loop iteration in Intern lost the race
     //and discarded a freshly-allocated handle. Diagnostic only;
     //surfaces pathological contention via Debug.Assert.
@@ -443,6 +461,83 @@ public sealed class NodeStore: IDisposable
     public bool Contains(NodeIdentifier identifier) => Storage.ContainsKey(identifier);
 
     /// <summary>
+    /// Appends a single-entry depth-2 pair to the pair arena and
+    /// returns its SEN2 handle. The pair carries the subtree's two
+    /// remaining-position keys in ascending original-position
+    /// order. Pairs are not deduplicated; identical pairs occupy
+    /// distinct slots, and content identity is preserved by the
+    /// identifier formula, not by slot sharing.
+    /// </summary>
+    /// <param name="first">The lower remaining position's key.</param>
+    /// <param name="second">The higher remaining position's key.</param>
+    /// <returns>An SEN2 handle addressing the appended pair.</returns>
+    public NodeHandle AllocateSingleEntryPair(uint first, uint second)
+    {
+        lock(PairAllocationLock)
+        {
+            uint index = nextPairIndex;
+            if((index & ~NodeHandle.Sen2ContentMask) != 0U)
+            {
+                throw new InvalidOperationException(
+                    $"Pair arena exhausted: next index 0x{index:X} exceeds the 30-bit pair-index space.");
+            }
+
+            int segIndex = (int)(index >> SegmentShift);
+            int offset = (int)(index & SegmentMask);
+
+            if(segIndex >= pairSegments.Length)
+            {
+                int newCapacity = pairSegments.Length * 2;
+                while(segIndex >= newCapacity)
+                {
+                    newCapacity *= 2;
+                }
+
+                ulong[]?[] newArray = new ulong[]?[newCapacity];
+                Array.Copy(pairSegments, newArray, pairSegments.Length);
+                Volatile.Write(ref pairSegments, newArray);
+            }
+
+            pairSegments[segIndex] ??= new ulong[SegmentSize];
+            pairSegments[segIndex]![offset] = ((ulong)first << 32) | second;
+            Volatile.Write(ref nextPairIndex, index + 1);
+
+            return NodeHandle.ForSingleEntryPair(index);
+        }
+    }
+
+    /// <summary>
+    /// Resolves an SEN2 handle to its pair — the single-entry
+    /// depth-2 subtree's two remaining-position keys in ascending
+    /// original-position order.
+    /// </summary>
+    /// <param name="handle">The SEN2 handle to resolve.</param>
+    /// <returns>The pair's keys, lower remaining position first.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="handle"/> is not an SEN2 handle, or its index is out of range.</exception>
+    public (uint First, uint Second) GetPair(NodeHandle handle)
+    {
+        if(!handle.IsSingleEntryPair)
+        {
+            throw new ArgumentOutOfRangeException(nameof(handle), handle.Encoded,
+                "Handle must be a single-entry-pair (SEN2) handle.");
+        }
+
+        uint index = handle.PairIndex;
+        if(index >= Volatile.Read(ref nextPairIndex))
+        {
+            throw new ArgumentOutOfRangeException(nameof(handle), index,
+                $"Pair index must be below {Volatile.Read(ref nextPairIndex)}.");
+        }
+
+        int segIndex = (int)(index >> SegmentShift);
+        int offset = (int)(index & SegmentMask);
+        ulong[]?[] segs = Volatile.Read(ref pairSegments);
+        ulong packed = segs[segIndex]![offset];
+
+        return ((uint)(packed >> 32), (uint)packed);
+    }
+
+    /// <summary>
     /// Binds <paramref name="resource"/>'s lifetime to this store.
     /// The resource is disposed by <see cref="Dispose"/> after the
     /// arena and edge-map cleanup completes. Use this to bind
@@ -718,11 +813,11 @@ public sealed class NodeStore: IDisposable
         lock(SegmentAllocationLock)
         {
             uint handle = nextHandle;
-            if((handle & NodeHandle.SenTag) != 0U)
+            if((handle & (NodeHandle.SenTag | NodeHandle.Sen2Tag)) != 0U)
             {
                 throw new InvalidOperationException(
-                    $"Arena handle space exhausted: next handle 0x{handle:X} collides with the SEN tag bit. " +
-                    $"The arena supports up to {NodeHandle.ContentMask} slots.");
+                    $"Arena handle space exhausted: next handle 0x{handle:X} collides with a tag bit. " +
+                    $"The arena supports up to {NodeHandle.Sen2ContentMask} slots.");
             }
 
             int segIndex = (int)(handle >> SegmentShift);
@@ -771,9 +866,10 @@ public sealed class NodeStore: IDisposable
 
             NodeHandle currentHandle = work.Pop();
             //SEN handles carry their data inline in the parent's
-            //edge map slot — they hold no arena entry and need no
-            //marking. None handles are absence sentinels.
-            if(currentHandle.IsNone || currentHandle.IsSingleEntry)
+            //edge map slot and SEN2 handles live in the pair arena,
+            //which sweep never prunes — neither holds a node arena
+            //entry to mark. None handles are absence sentinels.
+            if(!currentHandle.IsArenaHandle)
             {
                 continue;
             }
@@ -788,7 +884,7 @@ public sealed class NodeStore: IDisposable
             {
                 foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(current.EdgeMaps[position]))
                 {
-                    if(!entry.Value.IsNone && !entry.Value.IsSingleEntry)
+                    if(entry.Value.IsArenaHandle)
                     {
                         work.Push(entry.Value);
                     }
@@ -874,7 +970,7 @@ public sealed class NodeStore: IDisposable
     //Compares two nodes for content equality, used to disambiguate
     //hash collisions during interning. The depth check is the
     //caller's responsibility before this is invoked.
-    private static bool NodeContentEquals(HypertrieNode left, HypertrieNode right)
+    private bool NodeContentEquals(HypertrieNode left, HypertrieNode right)
     {
         Debug.Assert(left.Depth == right.Depth, "Depth must be equal before content comparison.");
 
@@ -895,7 +991,7 @@ public sealed class NodeStore: IDisposable
     //SortedArray-kind map with the same entry set are content
     //equal even though their EdgeMap.Equals would return false
     //because the heap fields (rental owners) differ.
-    private static bool EdgeMapContentEquals(in EdgeMap left, in EdgeMap right)
+    private bool EdgeMapContentEquals(in EdgeMap left, in EdgeMap right)
     {
         int leftCount = EdgeMap.Count(in left);
         int rightCount = EdgeMap.Count(in right);
@@ -917,17 +1013,35 @@ public sealed class NodeStore: IDisposable
                 return false;
             }
 
-            //Children are canonical handles by the time their
-            //parent reaches Intern, so handle equality is exactly
-            //content equality. For depth-1 leaves both sides carry
-            //NodeHandle.None and the comparison still holds.
-            if(entry.Value != rightChild)
+            if(!ChildContentEquals(entry.Value, rightChild))
             {
                 return false;
             }
         }
 
         return true;
+    }
+
+    //Compares two child slots for content equality. FN children
+    //are canonical handles by the time their parent reaches
+    //Intern, so handle equality is exactly content equality —
+    //likewise None sentinels and SEN slots, whose content is the
+    //encoding. SEN2 slots are the exception: pairs are not
+    //deduplicated, so two distinct pair indexes may carry the same
+    //content; resolve both and compare the pairs themselves.
+    private bool ChildContentEquals(NodeHandle left, NodeHandle right)
+    {
+        if(left == right)
+        {
+            return true;
+        }
+
+        if(left.IsSingleEntryPair && right.IsSingleEntryPair)
+        {
+            return GetPair(left) == GetPair(right);
+        }
+
+        return false;
     }
 
     //One node in the collision chain for a given identifier. A

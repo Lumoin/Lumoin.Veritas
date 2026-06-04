@@ -489,7 +489,14 @@ public static class HypertrieOps
         int entryCount = entries.Count;
         if(entryCount == 1)
         {
-            return BuildAndInternSingleEntryDepth2(entries[0], store, pools);
+            //Single-entry fast path: the whole depth-2 subtree
+            //collapses into one pair-arena slot addressed by an
+            //SEN2 handle — no node, no edge maps, no intern entry.
+            //The pair is (Inner1, Inner2): the two remaining
+            //positions' keys in ascending original-position order,
+            //the same invariant the materialised node's edge maps
+            //would encode.
+            return store.AllocateSingleEntryPair(entries[0].Inner1, entries[0].Inner2);
         }
 
         using IMemoryOwner<uint> by1KeysOwner = pools.PermutationPool.Rent(entryCount);
@@ -531,26 +538,6 @@ public static class HypertrieOps
         {
             EdgeMap.InsertOrReplace(ref depth2.EdgeMaps[1], entry.Key, entry.Value, pools, pools.InlineLookup);
         }
-
-        Dictionary<NodeHandle, NodeIdentifier> childIdentifiers = CollectChildIdentifiers(depth2, store, store.Hash);
-        NodeIdentifier identifier = ComputeIdentifier(depth2, store, store.Hash, childIdentifiers);
-        return store.Intern(identifier, depth2);
-    }
-
-    //Single-entry fast path. The depth-2 node holds two SEN
-    //children — one per inner position — without renting from
-    //the pool or running a sort. This case is the dominant
-    //per-call shape for S-first and O-first descents on chain
-    //workloads, where each outer key has a single (inner1, inner2)
-    //pair.
-    private static NodeHandle BuildAndInternSingleEntryDepth2(
-        (uint Inner1, uint Inner2) entry,
-        NodeStore store,
-        BuildPools pools)
-    {
-        HypertrieNode depth2 = HypertrieNode.Create(2);
-        EdgeMap.InsertOrReplace(ref depth2.EdgeMaps[0], entry.Inner1, NodeHandle.ForSingleEntry(entry.Inner2), pools, pools.InlineLookup);
-        EdgeMap.InsertOrReplace(ref depth2.EdgeMaps[1], entry.Inner2, NodeHandle.ForSingleEntry(entry.Inner1), pools, pools.InlineLookup);
 
         Dictionary<NodeHandle, NodeIdentifier> childIdentifiers = CollectChildIdentifiers(depth2, store, store.Hash);
         NodeIdentifier identifier = ComputeIdentifier(depth2, store, store.Hash, childIdentifiers);
@@ -640,12 +627,13 @@ public static class HypertrieOps
         {
             foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
             {
-                //SEN children carry their content inline in the slot,
-                //so they have no arena entry to look up. The parent's
-                //folded identifier mixes their identifier in via
-                //ChildIdentifierValue's SEN branch, computed on the
-                //fly from the SEN key.
-                if(entry.Value.IsNone || entry.Value.IsSingleEntry)
+                //SEN children carry their content inline in the slot
+                //and SEN2 children live in the pair arena — neither
+                //has a node arena entry to look up. The parent's
+                //folded identifier mixes their identifiers in via
+                //ChildIdentifierValue's SEN/SEN2 branches, computed
+                //on the fly from the slot content.
+                if(!entry.Value.IsArenaHandle)
                 {
                     continue;
                 }
@@ -671,9 +659,11 @@ public static class HypertrieOps
     //identifier for the given child slot. None slots contribute
     //the leaf-child marker; SEN slots contribute the synthetic
     //depth-1 identifier their content would produce as an FN leaf;
-    //FN slots look up the precomputed identifier in the table.
+    //SEN2 slots contribute the depth-2 identifier the equivalent
+    //single-entry node would produce; FN slots look up the
+    //precomputed identifier in the table.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static ulong ChildIdentifierValue(NodeHandle child, VeritasHash hash, Dictionary<NodeHandle, NodeIdentifier> table)
+    private static ulong ChildIdentifierValue(NodeHandle child, NodeStore store, VeritasHash hash, Dictionary<NodeHandle, NodeIdentifier> table)
     {
         if(child.IsNone)
         {
@@ -683,6 +673,13 @@ public static class HypertrieOps
         if(child.IsSingleEntry)
         {
             return SenIdentifierValue(hash, child.SingleEntryKey);
+        }
+
+        if(child.IsSingleEntryPair)
+        {
+            (uint first, uint second) = store.GetPair(child);
+
+            return Sen2IdentifierValue(hash, first, second);
         }
 
         return table[child].Value;
@@ -698,6 +695,22 @@ public static class HypertrieOps
     {
         ulong entryHash = NodeEntryHashing.Default(hash, singleKey, LeafChildMarker);
         return entryHash & NodeIdentifier.ContentMask;
+    }
+
+    //The identifier value an SEN2-encoded slot contributes to its
+    //parent's identifier. The pair represents the same content as
+    //a depth-2 node with two SEN children — one entry per inner
+    //edge map, each carrying the other key — so the fold below is
+    //exactly the fold the equivalent node would produce, keeping
+    //identifiers identical across SEN2/FN representations of equal
+    //content.
+    private static ulong Sen2IdentifierValue(VeritasHash hash, uint first, uint second)
+    {
+        NodeIdentifier id = NodeIdentifier.Empty;
+        id = id.Add(NodeEntryHashing.Default(hash, first, SenIdentifierValue(hash, second)));
+        id = id.Add(NodeEntryHashing.Default(hash, second, SenIdentifierValue(hash, first)));
+
+        return id.Value;
     }
 
     //Computes the identifier of a single node by XOR-folding a
@@ -736,7 +749,7 @@ public static class HypertrieOps
         //iterative post-order walk below.
         if(knownChildIdentifiers is not null)
         {
-            return FoldInner(node, hash, knownChildIdentifiers);
+            return FoldInner(node, store, hash, knownChildIdentifiers);
         }
 
         //No children table supplied — compute identifiers for
@@ -744,14 +757,15 @@ public static class HypertrieOps
         //traversal, then fold. This keeps the whole routine
         //non-recursive even for depth-3 inputs.
         Dictionary<NodeHandle, NodeIdentifier> computed = ComputePostOrderIdentifiers(node, store, hash);
-        return FoldInner(node, hash, computed);
+        return FoldInner(node, store, hash, computed);
     }
 
     //Folds a single inner node's identifier given a complete
-    //child-identifier table for its FN children. SEN and None
-    //children resolve via the same path.
+    //child-identifier table for its FN children. SEN, SEN2, and
+    //None children resolve via the same path.
     private static NodeIdentifier FoldInner(
         HypertrieNode node,
+        NodeStore store,
         VeritasHash hash,
         Dictionary<NodeHandle, NodeIdentifier> childIdentifiers)
     {
@@ -760,7 +774,7 @@ public static class HypertrieOps
         {
             foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
             {
-                ulong childIdentifier = ChildIdentifierValue(entry.Value, hash, childIdentifiers);
+                ulong childIdentifier = ChildIdentifierValue(entry.Value, store, hash, childIdentifiers);
                 id = id.Add(NodeEntryHashing.Default(hash, entry.Key, childIdentifier));
             }
         }
@@ -821,7 +835,7 @@ public static class HypertrieOps
             {
                 foreach(KeyValuePair<uint, NodeHandle> entry in EdgeMap.Enumerate(node.EdgeMaps[position]))
                 {
-                    ulong childIdentifier = ChildIdentifierValue(entry.Value, hash, known);
+                    ulong childIdentifier = ChildIdentifierValue(entry.Value, store, hash, known);
                     id = id.Add(NodeEntryHashing.Default(hash, entry.Key, childIdentifier));
                 }
             }
@@ -956,6 +970,15 @@ public static class HypertrieOps
                             yield return senTriple;
                         }
                     }
+                    else if(childHandle.IsSingleEntryPair)
+                    {
+                        (uint pairFirst, uint pairSecond) = store.GetPair(childHandle);
+                        ProcessSingleEntryPairChild(chosenPosition, chosenBound.Encoded, childPending, pairFirst, pairSecond, subject, predicate, @object, out EncodedTriple? produced);
+                        if(produced is EncodedTriple sen2Triple)
+                        {
+                            yield return sen2Triple;
+                        }
+                    }
                     else
                     {
                         HypertrieNode child = store.GetByHandle(childHandle);
@@ -980,6 +1003,15 @@ public static class HypertrieOps
                             yield return senTriple;
                         }
                     }
+                    else if(entry.Value.IsSingleEntryPair)
+                    {
+                        (uint pairFirst, uint pairSecond) = store.GetPair(entry.Value);
+                        ProcessSingleEntryPairChild(chosenPosition, entry.Key, childPending, pairFirst, pairSecond, subject, predicate, @object, out EncodedTriple? produced);
+                        if(produced is EncodedTriple sen2Triple)
+                        {
+                            yield return sen2Triple;
+                        }
+                    }
                     else
                     {
                         HypertrieNode child = store.GetByHandle(entry.Value);
@@ -991,31 +1023,43 @@ public static class HypertrieOps
     }
 
     //Descends one root edge: looks up `outerKey` in the root's edge map
-    //for `outerPosition`, returning the depth-2 mapping node when one
-    //exists. Returns false when the root has no entry for that key or
-    //when the entry is None. SEN at the depth-3 → depth-2 transition
-    //is an invariant violation (SEN appears only at depth-2 → depth-1)
-    //and is rejected via the IsArenaHandle assert.
+    //for `outerPosition`. Returns false when the root has no entry for
+    //that key or when the entry is None. On true, the mapping is
+    //either a real depth-2 node (pairHandle is None) or a single-entry
+    //pair (pairHandle is the SEN2 handle and depth2 is default). SEN
+    //at the depth-3 → depth-2 transition is an invariant violation
+    //(SEN appears only at depth-2 → depth-1).
     private static bool TryDescendRoot(
         HypertrieNode root,
         NodeStore store,
         int outerPosition,
         uint outerKey,
         InlineKeyLookup inlineLookup,
-        out HypertrieNode depth2)
+        out HypertrieNode depth2,
+        out NodeHandle pairHandle)
     {
         if(!EdgeMap.TryGetChild(in root.EdgeMaps[outerPosition], outerKey, inlineLookup, out NodeHandle depth2Handle)
             || depth2Handle.IsNone)
         {
             depth2 = default;
+            pairHandle = NodeHandle.None;
 
             return false;
         }
 
-        Debug.Assert(depth2Handle.IsArenaHandle,
-            "Depth-2 mapping handles are always arena handles; SEN appears only at depth-2 → depth-1.");
+        Debug.Assert(!depth2Handle.IsSingleEntry,
+            "Depth-2 mapping handles are never SEN; SEN appears only at depth-2 → depth-1.");
+
+        if(depth2Handle.IsSingleEntryPair)
+        {
+            depth2 = default;
+            pairHandle = depth2Handle;
+
+            return true;
+        }
 
         depth2 = store.GetByHandle(depth2Handle);
+        pairHandle = NodeHandle.None;
 
         return true;
     }
@@ -1040,12 +1084,34 @@ public static class HypertrieOps
         //BuildPathDepth2 for outerPosition=PositionPredicate, whose
         //inner positions resolve to (Subject, Object) in ascending
         //order.
-        if(!TryDescendRoot(root, store, PositionPredicate, predicate.Encoded, inlineLookup, out HypertrieNode depth2))
+        if(!TryDescendRoot(root, store, PositionPredicate, predicate.Encoded, inlineLookup, out HypertrieNode depth2, out NodeHandle sen2Handle))
         {
             yield break;
         }
 
         uint predicateKey = predicate.Encoded;
+
+        if(sen2Handle.IsSingleEntryPair)
+        {
+            //The predicate's whole mapping is one (subject, object)
+            //pair — the P-first inner positions in ascending order.
+            (uint pairSubject, uint pairObject) = store.GetPair(sen2Handle);
+
+            if(@object.IsNone || @object.Encoded == pairObject)
+            {
+                for(int i = 0; i < subjects.Length; i++)
+                {
+                    if(subjects.Span[i].Encoded == pairSubject)
+                    {
+                        yield return EncodedTriple.FromEncoded(pairSubject, predicateKey, pairObject);
+
+                        break;
+                    }
+                }
+            }
+
+            yield break;
+        }
 
         //Per subject: look up the depth-1 leaf in depth2.EdgeMaps[0]
         //and yield its contents filtered by the optional object bound.
@@ -1106,12 +1172,34 @@ public static class HypertrieOps
     {
         InlineKeyLookup inlineLookup = InlineKeyLookups.Scalar;
 
-        if(!TryDescendRoot(root, store, PositionPredicate, predicate.Encoded, inlineLookup, out HypertrieNode depth2))
+        if(!TryDescendRoot(root, store, PositionPredicate, predicate.Encoded, inlineLookup, out HypertrieNode depth2, out NodeHandle sen2Handle))
         {
             yield break;
         }
 
         uint predicateKey = predicate.Encoded;
+
+        if(sen2Handle.IsSingleEntryPair)
+        {
+            //The predicate's whole mapping is one (subject, object)
+            //pair — the P-first inner positions in ascending order.
+            (uint pairSubject, uint pairObject) = store.GetPair(sen2Handle);
+
+            if(subject.IsNone || subject.Encoded == pairSubject)
+            {
+                for(int i = 0; i < objects.Length; i++)
+                {
+                    if(objects.Span[i].Encoded == pairObject)
+                    {
+                        yield return EncodedTriple.FromEncoded(pairSubject, predicateKey, pairObject);
+
+                        break;
+                    }
+                }
+            }
+
+            yield break;
+        }
 
         for(int i = 0; i < objects.Length; i++)
         {
@@ -1185,6 +1273,71 @@ public static class HypertrieOps
         }
 
         produced = BuildTripleTwoPositions(frame, chosenPosition, chosenValue, lastPosition, senKey);
+    }
+
+    //Resolves an SEN2 child at the depth-3 → depth-2 transition.
+    //The pair carries the two remaining positions' values in
+    //ascending original-position order; this method applies any
+    //bounds on those positions and, on a match, emits the fully-
+    //resolved triple via the out parameter. A null out indicates a
+    //bound mismatch.
+    private static void ProcessSingleEntryPairChild(
+        int chosenPosition,
+        uint chosenValue,
+        byte childPending,
+        uint pairFirst,
+        uint pairSecond,
+        TermId subject,
+        TermId predicate,
+        TermId @object,
+        out EncodedTriple? produced)
+    {
+        Debug.Assert(BitOperations.PopCount((uint)childPending) == 2,
+            "SEN2 child requires exactly two remaining positions; SEN2 below the root descent is an invariant violation.");
+
+        int lowPosition = BitOperations.TrailingZeroCount((uint)childPending);
+        int highPosition = BitOperations.TrailingZeroCount((uint)(childPending & (childPending - 1)));
+
+        TermId lowBound = BoundForPosition(lowPosition, subject, predicate, @object);
+        TermId highBound = BoundForPosition(highPosition, subject, predicate, @object);
+
+        if((!lowBound.IsNone && lowBound.Encoded != pairFirst)
+            || (!highBound.IsNone && highBound.Encoded != pairSecond))
+        {
+            produced = null;
+
+            return;
+        }
+
+        produced = BuildTripleThreePositions(chosenPosition, chosenValue, lowPosition, pairFirst, highPosition, pairSecond);
+    }
+
+    //Builds a triple from three (position, value) resolutions
+    //covering all of subject, predicate, and object. Used at SEN2
+    //descent where the root entry's key and both pair keys resolve
+    //in one step.
+    private static EncodedTriple BuildTripleThreePositions(
+        int firstPosition,
+        uint firstValue,
+        int secondPosition,
+        uint secondValue,
+        int thirdPosition,
+        uint thirdValue)
+    {
+        uint s =
+            firstPosition == PositionSubject ? firstValue :
+            secondPosition == PositionSubject ? secondValue :
+            thirdValue;
+        uint p =
+            firstPosition == PositionPredicate ? firstValue :
+            secondPosition == PositionPredicate ? secondValue :
+            thirdValue;
+        uint o =
+            firstPosition == PositionObject ? firstValue :
+            secondPosition == PositionObject ? secondValue :
+            thirdValue;
+
+        return EncodedTriple.FromEncoded(s, p, o);
     }
 
     //Returns the user-supplied bound for the given original position.

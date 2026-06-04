@@ -89,9 +89,10 @@ internal static class EdgeMapDistribution
         {
             NodeHandle handle = work.Pop();
 
-            //SEN handles carry their leaf inline; they have no arena
-            //entry to walk. Count them separately and move on.
-            if(handle.IsSingleEntry)
+            //SEN handles carry their leaf inline and SEN2 handles
+            //live in the pair arena; neither has a node arena entry
+            //to walk. Count them separately and move on.
+            if(handle.IsSingleEntry || handle.IsSingleEntryPair)
             {
                 senCount++;
 

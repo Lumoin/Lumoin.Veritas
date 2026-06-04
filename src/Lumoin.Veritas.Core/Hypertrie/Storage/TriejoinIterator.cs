@@ -331,9 +331,12 @@ public sealed class TriejoinIterator: IDisposable
         DescentFrame currentFrame = Frames[Frames.Count - 1];
         uint rawValue = value.Encoded;
 
-        //Synthetic SEN-leaf frame: the cursor carries a single key
-        //and the frame's Node is default. Descent succeeds iff the
-        //requested value matches the SEN's key.
+        //Synthetic frame: the cursor carries a single key and the
+        //frame's Node is default. Descent succeeds iff the
+        //requested value matches that key. A pending synthetic key
+        //means a deeper single-key level follows (the SEN2 chain);
+        //pushing its frame keeps the Frames/DescendedLevels
+        //relationship identical to a non-leaf open.
         if(currentFrame.Node.EdgeMaps is null)
         {
             uint senKey = currentFrame.Cursor.CurrentKey;
@@ -343,6 +346,20 @@ public sealed class TriejoinIterator: IDisposable
             }
 
             OpenedValues[DescendedLevels] = rawValue;
+
+            if(currentFrame.PendingSyntheticKey is uint pendingKey)
+            {
+                int consumedIndex = IndexOf(currentFrame.RemainingPositions, LevelPositions[DescendedLevels]);
+                int[] deeperRemaining = WithoutAt(currentFrame.RemainingPositions, consumedIndex);
+
+                Frames.Add(new DescentFrame
+                {
+                    Node = default,
+                    RemainingPositions = deeperRemaining,
+                    Cursor = new EdgeMapKeyCursor(pendingKey),
+                });
+            }
+
             DescendedLevels++;
 
             EmitIteratorAdvanced(VariableOrder[DescendedLevels - 1], rawValue);
@@ -399,6 +416,36 @@ public sealed class TriejoinIterator: IDisposable
                 Node = default,
                 RemainingPositions = childRemainingPositions,
                 Cursor = senCursor,
+            });
+
+            DescendedLevels++;
+
+            EmitIteratorAdvanced(VariableOrder[DescendedLevels - 1], rawValue);
+
+            return true;
+        }
+
+        if(childHandle.IsSingleEntryPair)
+        {
+            //SEN2 child: the whole remaining subtree is one pair,
+            //mapped to the two remaining positions in ascending
+            //order. The next variable level decides which key the
+            //synthetic frame presents; the other key follows as
+            //that frame's pending synthetic key.
+            Debug.Assert(childRemainingPositions.Length == 2,
+                "SEN2 descent requires exactly two remaining positions.");
+
+            (uint pairFirst, uint pairSecond) = Snapshot.Store.GetPair(childHandle);
+            bool nextLevelTakesFirst = LevelPositions[DescendedLevels + 1] == childRemainingPositions[0];
+            uint cursorKey = nextLevelTakesFirst ? pairFirst : pairSecond;
+            uint pendingKey = nextLevelTakesFirst ? pairSecond : pairFirst;
+
+            Frames.Add(new DescentFrame
+            {
+                Node = default,
+                RemainingPositions = childRemainingPositions,
+                Cursor = new EdgeMapKeyCursor(cursorKey),
+                PendingSyntheticKey = pendingKey,
             });
 
             DescendedLevels++;
@@ -624,7 +671,15 @@ public sealed class TriejoinIterator: IDisposable
     {
         HypertrieNode current = Snapshot.Store.GetByHandle(Snapshot.Root);
         int[] remainingPositions = [PositionSubject, PositionPredicate, PositionObject];
-        NodeHandle senChild = NodeHandle.None;
+
+        //Pending synthetic keys produced by SEN or SEN2 descent,
+        //mapped one-to-one onto remainingPositions (ascending).
+        //While any are pending, there is no node left to query —
+        //bounds verify against the keys directly and variables
+        //enumerate them through synthetic cursors.
+        uint pendingKey0 = 0;
+        uint pendingKey1 = 0;
+        int pendingCount = 0;
 
         for(int rdfPosition = 0; rdfPosition < 3; rdfPosition++)
         {
@@ -646,18 +701,29 @@ public sealed class TriejoinIterator: IDisposable
 
             uint boundValue = slot.BoundTerm.Encoded;
 
-            //If a prior iteration descended into an SEN leaf, this
-            //iteration's bound is verified against the SEN's single
-            //key — there is no further edge map to query.
-            if(!senChild.IsNone)
+            //A prior iteration descended into inline keys (SEN or
+            //SEN2); this bound verifies against the pending key at
+            //its position — there is no further edge map to query.
+            if(pendingCount > 0)
             {
-                if(senChild.SingleEntryKey != boundValue)
+                Debug.Assert(pendingCount == remainingPositions.Length,
+                    "Pending synthetic keys must map one-to-one onto the remaining positions.");
+
+                uint expected = positionInRemaining == 0 ? pendingKey0 : pendingKey1;
+
+                if(boundValue != expected)
                 {
                     constructionAtEnd = true;
 
                     return;
                 }
 
+                if(positionInRemaining == 0)
+                {
+                    pendingKey0 = pendingKey1;
+                }
+
+                pendingCount--;
                 remainingPositions = WithoutAt(remainingPositions, positionInRemaining);
 
                 continue;
@@ -685,11 +751,21 @@ public sealed class TriejoinIterator: IDisposable
 
             if(childHandle.IsSingleEntry)
             {
-                //Descended into an SEN leaf. Subsequent bound
-                //iterations compare against the SEN's key directly;
-                //subsequent variable iterations open a synthetic
-                //single-key frame.
-                senChild = childHandle;
+                //Descended into an SEN leaf: one pending key for
+                //the one remaining position.
+                pendingKey0 = childHandle.SingleEntryKey;
+                pendingCount = 1;
+                remainingPositions = WithoutAt(remainingPositions, positionInRemaining);
+
+                continue;
+            }
+
+            if(childHandle.IsSingleEntryPair)
+            {
+                //Descended into an SEN2 pair: two pending keys for
+                //the two remaining positions, in ascending order.
+                (pendingKey0, pendingKey1) = Snapshot.Store.GetPair(childHandle);
+                pendingCount = 2;
                 remainingPositions = WithoutAt(remainingPositions, positionInRemaining);
 
                 continue;
@@ -703,24 +779,41 @@ public sealed class TriejoinIterator: IDisposable
 
         if(VariableOrder.Count == 0)
         {
-            //Fully bound pattern. If a SEN was reached, the bound
-            //verification above already completed (or set
-            //constructionAtEnd). Nothing else to do.
+            //Fully bound pattern. Any pending keys were verified by
+            //the bound loop above (or constructionAtEnd was set).
+            //Nothing else to do.
             return;
         }
 
-        if(!senChild.IsNone)
+        if(pendingCount == 2)
         {
-            //Post-bound frontier landed on a SEN leaf. The next
-            //(and only remaining) variable enumerates the SEN's
-            //single key via a synthetic cursor.
-            EdgeMapKeyCursor senCursor = new(senChild.SingleEntryKey);
+            //Post-bound frontier is an SEN2 pair with both keys
+            //unconsumed. The first variable level decides which key
+            //its synthetic cursor presents; the other follows as
+            //the pending synthetic key.
+            bool firstLevelTakesFirst = LevelPositions[0] == remainingPositions[0];
 
             Frames.Add(new DescentFrame
             {
                 Node = default,
                 RemainingPositions = remainingPositions,
-                Cursor = senCursor,
+                Cursor = new EdgeMapKeyCursor(firstLevelTakesFirst ? pendingKey0 : pendingKey1),
+                PendingSyntheticKey = firstLevelTakesFirst ? pendingKey1 : pendingKey0,
+            });
+
+            return;
+        }
+
+        if(pendingCount == 1)
+        {
+            //Post-bound frontier is a single inline key. The next
+            //(and only remaining) variable enumerates it via a
+            //synthetic cursor.
+            Frames.Add(new DescentFrame
+            {
+                Node = default,
+                RemainingPositions = remainingPositions,
+                Cursor = new EdgeMapKeyCursor(pendingKey0),
             });
 
             return;
@@ -830,10 +923,16 @@ public sealed class TriejoinIterator: IDisposable
     //Next/Seek copy-modify-write through Frames[Frames.Count-1].
     private sealed class DescentFrame
     {
+        /// <summary>The node whose edge map the cursor walks; <c>default</c> for synthetic single-key frames.</summary>
         public required HypertrieNode Node { get; init; }
 
+        /// <summary>The original RDF positions still unresolved at this level, ascending.</summary>
         public required int[] RemainingPositions { get; init; }
 
+        /// <summary>The cursor over this level's keys.</summary>
         public required EdgeMapKeyCursor Cursor { get; set; }
+
+        /// <summary>For a synthetic frame produced by SEN2 descent: the key the level below this one presents, or <c>null</c> when this synthetic frame is the final level.</summary>
+        public uint? PendingSyntheticKey { get; init; }
     }
 }
