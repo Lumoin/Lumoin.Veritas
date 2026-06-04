@@ -406,27 +406,9 @@ public sealed class ColumnarTriejoinIterator
 
     //Returns the smallest index in [lo, hi) whose value is greater
     //than or equal to `target`, or `hi` when no such index exists.
-    //Binary search over the ascending slice.
     private static int SearchAtLeast(ReadOnlySpan<uint> values, int lo, int hi, uint target)
     {
-        int low = lo;
-        int high = hi;
-
-        while(low < high)
-        {
-            int mid = low + ((high - low) >> 1);
-
-            if(values[mid] < target)
-            {
-                low = mid + 1;
-            }
-            else
-            {
-                high = mid;
-            }
-        }
-
-        return low;
+        return ColumnarSearch.LowerBound(values, lo, hi, target);
     }
 
     //Returns the RDF position (0=S, 1=P, 2=O) `variable` occupies

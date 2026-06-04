@@ -148,4 +148,42 @@ public sealed class ColumnarTripleIndex
     {
         return Permutations[permutationIndex];
     }
+
+    /// <summary>
+    /// Tests whether the index contains the given fully-bound
+    /// triple. Three lower-bound searches down the
+    /// subject-predicate-object permutation.
+    /// </summary>
+    /// <param name="subject">The bound subject.</param>
+    /// <param name="predicate">The bound predicate.</param>
+    /// <param name="object">The bound object.</param>
+    /// <returns><c>true</c> when the triple is present.</returns>
+    public bool Contains(TermId subject, TermId predicate, TermId @object)
+    {
+        ColumnarOrder spo = orders[0];
+        Span<uint> keys = [subject.Encoded, predicate.Encoded, @object.Encoded];
+
+        int lo = 0;
+        int hi = spo.ValuesAt(0).Length;
+
+        for(int level = 0; level < 3; level++)
+        {
+            ReadOnlySpan<uint> values = spo.ValuesAt(level);
+            int found = ColumnarSearch.LowerBound(values, lo, hi, keys[level]);
+
+            if(found >= hi || values[found] != keys[level])
+            {
+                return false;
+            }
+
+            if(level < 2)
+            {
+                ReadOnlySpan<uint> offsets = spo.OffsetsAt(level);
+                lo = (int)offsets[found];
+                hi = (int)offsets[found + 1];
+            }
+        }
+
+        return true;
+    }
 }

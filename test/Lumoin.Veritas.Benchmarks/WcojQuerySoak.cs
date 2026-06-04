@@ -2,9 +2,12 @@ using System;
 using System.Diagnostics;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Columnar;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie;
 using Lumoin.Veritas.Core.Hypertrie.Execution;
+using Lumoin.Veritas.Core.Hypertrie.Planning;
 using Lumoin.Veritas.Core.Hypertrie.Query;
 using Lumoin.Veritas.Core.Hypertrie.Storage;
 
@@ -30,9 +33,17 @@ internal static class WcojQuerySoak
     public static async Task RunQuerySoakAsync(int subjectCount, TimeSpan duration)
     {
         EncodedTriple[] triples = SyntheticGraph.GenerateSocial(subjectCount, seed: 42);
+
+        Stopwatch hypertrieBuild = Stopwatch.StartNew();
         HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(triples, VeritasHashing.Default).ConfigureAwait(false);
+        hypertrieBuild.Stop();
+
+        Stopwatch columnarBuild = Stopwatch.StartNew();
+        ColumnarTripleIndex columnar = ColumnarTripleIndex.Build(triples);
+        columnarBuild.Stop();
 
         Console.WriteLine($"WCOJ query soak: {subjectCount} subjects, {triples.Length} triples, {duration.TotalSeconds:F0}s per shape.");
+        Console.WriteLine($"Build: hypertrie {hypertrieBuild.Elapsed.TotalMilliseconds:F1} ms, columnar {columnarBuild.Elapsed.TotalMilliseconds:F1} ms.");
 
         VariableRegistry singleRegistry = new();
         Variable singleS = singleRegistry.GetOrAdd("s");
@@ -67,11 +78,20 @@ internal static class WcojQuerySoak
 
         BasicGraphPattern trianglePattern = new([triangleP1, triangleP2, triangleP3], triangleRegistry);
 
-        await RunShapeAsync(store, "SinglePattern", singlePattern, duration).ConfigureAwait(false);
-        await RunShapeAsync(store, "ThreePatternTriangle", trianglePattern, duration).ConfigureAwait(false);
+        await RunShapeAsync("hypertrie SinglePattern", () => store.Query(singlePattern, TimeProvider.System), duration).ConfigureAwait(false);
+        await RunShapeAsync("columnar  SinglePattern", () => QueryColumnar(columnar, singlePattern), duration).ConfigureAwait(false);
+        await RunShapeAsync("hypertrie ThreePatternTriangle", () => store.Query(trianglePattern, TimeProvider.System), duration).ConfigureAwait(false);
+        await RunShapeAsync("columnar  ThreePatternTriangle", () => QueryColumnar(columnar, trianglePattern), duration).ConfigureAwait(false);
     }
 
-    private static async Task RunShapeAsync(HypertrieGraphStore store, string label, BasicGraphPattern pattern, TimeSpan duration)
+    private static System.Collections.Generic.IAsyncEnumerable<Solution> QueryColumnar(ColumnarTripleIndex index, BasicGraphPattern pattern)
+    {
+        ColumnarBasicGraphPatternEvaluator evaluator = new(index, pattern, Planners.FirstOccurrence(pattern), VeritasClock.System);
+
+        return evaluator.EvaluateAsync();
+    }
+
+    private static async Task RunShapeAsync(string label, Func<System.Collections.Generic.IAsyncEnumerable<Solution>> query, TimeSpan duration)
     {
         long queries = 0;
         long rows = 0;
@@ -79,7 +99,7 @@ internal static class WcojQuerySoak
 
         while(stopwatch.Elapsed < duration)
         {
-            await foreach(Solution _ in store.Query(pattern, TimeProvider.System).ConfigureAwait(false))
+            await foreach(Solution _ in query().ConfigureAwait(false))
             {
                 rows++;
             }
