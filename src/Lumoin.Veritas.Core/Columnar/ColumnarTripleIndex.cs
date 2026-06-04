@@ -181,13 +181,22 @@ public sealed class ColumnarTripleIndex
             return Build(merged);
         }
 
+        //Evolve the per-order runs by linear merge: only this
+        //batch's net effect is sorted (small), and each accumulated
+        //run is walked once — O(batch log batch + accumulated) per
+        //Apply instead of re-sorting the whole accumulated delta.
+        EncodedTriple[] addedInsertions = CollectMissingFrom(newAdded, addedSet);
+        EncodedTriple[] addedDeletions = CollectMissingFrom(addedSet, newAdded);
+        EncodedTriple[] removedInsertions = CollectMissingFrom(newRemoved, removedSet);
+        EncodedTriple[] removedDeletions = CollectMissingFrom(removedSet, newRemoved);
+
         return new ColumnarTripleIndex(
             orders,
             baseTripleCount,
             newAdded,
             newRemoved,
-            SortPerOrder(newAdded),
-            SortPerOrder(newRemoved));
+            MergePerOrder(addedByOrder, addedInsertions, addedDeletions),
+            MergePerOrder(removedByOrder, removedInsertions, removedDeletions));
     }
 
     /// <summary>
@@ -237,31 +246,115 @@ public sealed class ColumnarTripleIndex
         }
     }
 
-    //Materialises one sorted run of the given triples per
-    //permutation.
-    private static EncodedTriple[][] SortPerOrder(HashSet<EncodedTriple> triples)
+    //Collects the members of `source` absent from `reference` —
+    //the net insertions (or deletions) one Apply contributed to a
+    //delta set.
+    private static EncodedTriple[] CollectMissingFrom(HashSet<EncodedTriple> source, HashSet<EncodedTriple> reference)
+    {
+        List<EncodedTriple> result = [];
+
+        foreach(EncodedTriple triple in source)
+        {
+            if(!reference.Contains(triple))
+            {
+                result.Add(triple);
+            }
+        }
+
+        return [.. result];
+    }
+
+    //Evolves the per-permutation sorted runs by one batch: the
+    //insertions and deletions are sorted per permutation (they are
+    //batch-sized), then each existing run is walked once in a
+    //three-way merge.
+    private static EncodedTriple[][] MergePerOrder(
+        EncodedTriple[][] oldRuns,
+        EncodedTriple[] insertions,
+        EncodedTriple[] deletions)
     {
         EncodedTriple[][] runs = new EncodedTriple[Permutations.Length][];
 
-        if(triples.Count == 0)
-        {
-            for(int i = 0; i < Permutations.Length; i++)
-            {
-                runs[i] = EmptyTriples;
-            }
-
-            return runs;
-        }
-
         for(int i = 0; i < Permutations.Length; i++)
         {
-            EncodedTriple[] run = [.. triples];
+            byte position0 = Permutations[i][0];
+            byte position1 = Permutations[i][1];
+            byte position2 = Permutations[i][2];
 
-            ColumnarSearch.SortByPermutation(run, Permutations[i][0], Permutations[i][1], Permutations[i][2]);
-            runs[i] = run;
+            //The shared batch arrays are re-sorted per permutation;
+            //copies keep one permutation's sort from disturbing the
+            //next.
+            EncodedTriple[] sortedInsertions = [.. insertions];
+            EncodedTriple[] sortedDeletions = [.. deletions];
+
+            ColumnarSearch.SortByPermutation(sortedInsertions, position0, position1, position2);
+            ColumnarSearch.SortByPermutation(sortedDeletions, position0, position1, position2);
+
+            runs[i] = MergeRun(oldRuns[i], sortedInsertions, sortedDeletions, position0, position1, position2);
         }
 
         return runs;
+    }
+
+    //Produces old − deletions + insertions in one pass over three
+    //runs sorted under the same permutation. A deletion always
+    //names a triple present in the old run, and an insertion never
+    //does, so the result length is exact. Packed keys cover all
+    //three columns, so key equality is triple equality.
+    private static EncodedTriple[] MergeRun(
+        EncodedTriple[] oldRun,
+        EncodedTriple[] insertions,
+        EncodedTriple[] deletions,
+        byte position0,
+        byte position1,
+        byte position2)
+    {
+        int resultLength = oldRun.Length - deletions.Length + insertions.Length;
+
+        if(resultLength == 0)
+        {
+            return EmptyTriples;
+        }
+
+        EncodedTriple[] result = new EncodedTriple[resultLength];
+        int oldIndex = 0;
+        int insertIndex = 0;
+        int deleteIndex = 0;
+        int write = 0;
+
+        while(oldIndex < oldRun.Length)
+        {
+            UInt128 oldKey = ColumnarSearch.PackKey(in oldRun[oldIndex], position0, position1, position2);
+
+            if(deleteIndex < deletions.Length
+                && ColumnarSearch.PackKey(in deletions[deleteIndex], position0, position1, position2) == oldKey)
+            {
+                oldIndex++;
+                deleteIndex++;
+
+                continue;
+            }
+
+            if(insertIndex < insertions.Length
+                && ColumnarSearch.PackKey(in insertions[insertIndex], position0, position1, position2) < oldKey)
+            {
+                result[write++] = insertions[insertIndex++];
+
+                continue;
+            }
+
+            result[write++] = oldRun[oldIndex++];
+        }
+
+        while(insertIndex < insertions.Length)
+        {
+            result[write++] = insertions[insertIndex++];
+        }
+
+        Debug.Assert(write == resultLength, "Merge must consume every insertion and deletion exactly once.");
+        Debug.Assert(deleteIndex == deletions.Length, "Every deletion must match a triple in the old run.");
+
+        return result;
     }
 
     /// <summary>
