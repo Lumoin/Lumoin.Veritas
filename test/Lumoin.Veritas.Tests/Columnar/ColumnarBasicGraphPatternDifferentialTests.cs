@@ -77,6 +77,12 @@ internal sealed class ColumnarBasicGraphPatternDifferentialTests
                     .GetAwaiter()
                     .GetResult();
 
+                //The property loop builds one store per iteration;
+                //deterministic disposal returns the pool slabs so
+                //ten thousand iterations stay flat in memory
+                //instead of racing the garbage collector.
+                using NodeStore nodeStore = store.Snapshot.Store;
+
                 ColumnarTripleIndex columnar = ColumnarTripleIndex.Build(triples);
                 ColumnarBasicGraphPatternEvaluator evaluator = new(columnar, bgp, Planners.FirstOccurrence(bgp), VeritasClock.System);
 

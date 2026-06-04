@@ -90,6 +90,12 @@ internal sealed class ColumnarTriejoinIteratorDifferentialTests
                     .GetAwaiter()
                     .GetResult();
 
+                //The property loop builds one store per iteration;
+                //deterministic disposal returns the pool slabs so
+                //ten thousand iterations stay flat in memory
+                //instead of racing the garbage collector.
+                using NodeStore nodeStore = store.Snapshot.Store;
+
                 ColumnarTripleIndex columnar = ColumnarTripleIndex.Build(triples);
 
                 using TriejoinIterator hypertrieIterator = new(store.Snapshot, pattern, variableOrder, TimeProvider.System);
