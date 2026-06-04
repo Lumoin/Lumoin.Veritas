@@ -1,8 +1,10 @@
 # Decision record — pluggable WCOJ index/join machinery via delegate seams
 
-Status: **proposed / exploratory (2026-05-31)**. Records the design direction and the seam shape
-so the reasoning survives; to be validated by the Phase-1 refactor (below), which must be
-behaviour-identical. Scope: generalizing the worst-case-optimal-join (WCOJ) machinery so
+Status: **decided 2026-06-04, by measurement: no abstraction inside the join loop.** The Phase-1
+extraction was implemented as a delegate bundle, measured at **−11–22% on the hot query path**, and
+reverted; the revised decision and the numbers are recorded below. Backends integrate at the
+evaluation boundary (`store.Query`), where a seam is crossed once per query instead of several
+times per solution row. Originally proposed/exploratory 2026-05-31. Scope: generalizing the worst-case-optimal-join (WCOJ) machinery so
 alternative indexing/join schemes can be hosted and *measured* against the current hypertrie,
 without committing to any one of them. Companion to
 [`sparql-join-and-triple-term-matching.md`](sparql-join-and-triple-term-matching.md), which set the
@@ -64,33 +66,62 @@ The five systems attack different layers, so the engine needs four extension poi
 - **Seam D — parallel partition + cost-model planner** (HoneyComb): HyperCube share/order planning +
   a lock-free, read-only-snapshot task fan-out. **Composes A and B as delegate arguments.**
 
-## Decision — express the seams as delegates (record-of-delegates bundles), not interfaces
+## Decision (revised 2026-06-04, by measurement) — no abstraction inside the join loop
 
-Consistent with the codebase idiom (`GraphMatchOps` is a `readonly record struct` of delegates;
-randomness/identity/blank-node/hash flow through `Veritas*`/`HashDelegate` seams —
-[`project_veritas_injection_seams`], [`feedback_hotpath_sync_behind_delegates`]). A backend is a
-value, a bundle of delegates; the driver is generic over the cursor type and composes them.
+The in-driver seam was implemented as the codebase-idiomatic record-of-delegates bundle
+(`WcojBackend<TIndex, TCursor>`: per-pattern cursor factory, `Intersect`/`Descend`/`Ascend`
+step ops, cursor state probes, lifecycle) with the driver generic over `TCursor`, and measured
+against the concrete baseline on identical hardware (Ryzen 9 7950X, .NET 10):
 
-```csharp
-// TCursor = the backend's cursor state (our TriejoinIterator, a CLTJ/Sonic/CoCo cursor).
-// Generic over TCursor so the JIT monomorphizes the hot loop (the templates' free inlining,
-// recovered by generic specialization rather than per-call interface dispatch).
-public readonly record struct WcojBackend<TIndex, TCursor>(
-    BuildIndexDelegate<TIndex>           Build,        // (triples, hash) -> TIndex        [once]
-    OpenCursorsDelegate<TIndex, TCursor> OpenCursors,  // (index, patterns, order) -> TCursor[]
-    IntersectDelegate<TCursor>           Intersect,    // (cursors sharing the var) -> TermId?  [HOT]
-    DescendDelegate<TCursor>             Descend,      // (cursors, key) -> void                [HOT]
-    AscendDelegate<TCursor>              Ascend,       // (cursors) -> void                     [HOT]
-    WeightDelegate<TCursor>              Weight,       // (in cursor) -> long   (VEO metric)
-    IntersectionKind                     Kind);        // Sorted (merge) | Hashed (scan-smaller-probe)
-```
+| Instrument | Concrete driver | Delegate-bundle driver | Drift |
+|---|---|---|---|
+| BDN SinglePattern 1k/10k/100k subjects | 403 μs / 4.10 ms / 43.4 ms | 454 μs / 4.57 ms / 48.9 ms | +11.5…12.6% |
+| BDN TwoPatternJoin 1k/10k/100k | 566 μs / 6.58 ms / 84.1 ms | 683 μs / 7.25 ms / 87.0 ms | +20.8 / +10.2 / +3.4% |
+| BDN Triangle 1k/10k/100k | 1.09 ms / 13.7 ms / 218 ms | 1.29 ms / 15.2 ms / 222.6 ms | +17.8 / +10.9 / +1.9% |
+| Soak, single-pattern rows/s (10k subjects) | 5.97M rows/s | 4.76M rows/s | −20.3% |
+| Soak, triangle queries/s (10k subjects) | 64.0 q/s | 49.8 q/s | −22.2% |
+| Allocations (all BDN cells) | — | byte-identical | 0 |
 
-**Granularity is the design crux** (cursors are stateful, and the leapfrog inner loop calls
-`seek/key` very hot). The swappable delegates are the *cursor factory* and the *per-variable-step*
-ops (`Intersect`/`Descend`/`Ascend`), each doing real work; the *per-seek micro-ops* stay concrete
-*inside* each backend's `Intersect`. That is the [`feedback_hotpath_sync_behind_delegates`] sweet
-spot — the per-item fn behind the delegate amortizes the indirect call, and we never pay a delegate
-per seek.
+dotnet-trace stacks (`tempdocs/wcoj-{baseline,delegates}.nettrace`) attribute the cost to three
+stacked mechanisms, all per **solution row** (the driver crosses the seam ~6–8× per row: planner
+snapshot, ascend, intersect, probes, descend, reseed probes):
+
+1. **Delegate indirection is opaque to inlining** — `LeapfrogIntersection.TryFindNextCommonKey`
+   and the `Ascend`/`Descend` wrappers appear as standalone frames in the delegate trace and are
+   absent in the baseline, where the JIT folds them into the driver's state machine.
+2. **Lost downstream optimization** — the baseline's `AtEnd`/`Key`/`CurrentVariable` reads are
+   inlined property getters on a sealed class (field loads, registerized, CSE'd); behind a
+   delegate each read is a call boundary.
+3. **Shared-generic tax** — with a class-typed `TCursor` the runtime compiles one `__Canon`-shared
+   body; `new TCursor[]` / `List<TCursor>` in `TryDescend`/`TryAdvance` then pay runtime
+   generic-dictionary lookups per row. The trace shows the driver running as `__Canon` code.
+
+The only zero-cost route .NET offers for a *shared* driver is a **struct-constrained generic
+backend** (`where TBackend : struct, IWcojBackend<…>`), which forces full per-backend
+specialization — devirtualized, inlined, no `__Canon`; the interface exists only at compile time
+as the constraint vocabulary, and no interface dispatch survives at runtime. That route remains
+viable. It was not adopted now because there is no second backend to share the driver with yet —
+the concrete loop is the zero-risk option and gives identical performance — so the abstraction
+waits for the first real second backend to justify it. The decision:
+
+- **The hot loop stays concrete.** `BasicGraphPatternEvaluator`, `TriejoinIterator`,
+  `LeapfrogIntersection`, `Planner` remain exactly as they are.
+- **A backend is a whole unit — index + cursors + driver — and the seam is the evaluation
+  boundary** (`store.Query(...)`-shaped), crossed once per query. This is the pattern the
+  benchmarks already use to compare `InMemoryGraphStore` vs `HypertrieGraphStore`; an alternative
+  scheme (Sonic/CoCo/CLTJ-style) lands as a peer store/evaluator and is measured end-to-end at
+  that surface, build cost included.
+- **The semi-naive reasoner's delta-joins** (one body atom over a delta index, the rest over the
+  full index — see [`owl-inference-seams.md`](owl-inference-seams.md)) become a dedicated
+  evaluator variant over the concrete cursor machinery, not a parameter of a shared driver.
+- **The instrument is kept**: `WcojQuerySoak` (`--profile-wcoj-query`) measures the join driver's
+  rows/s and queries/s in-process for sampling profilers, alongside the BDN grid.
+
+**Granularity is the design crux, now with a measured boundary.** Delegate seams remain right
+where they are crossed once per item with real work behind them
+([`feedback_hotpath_sync_behind_delegates`] — hashing a value, matching a whole pattern, executing
+a whole query). A seam crossed several times per solution row with property-read-sized work behind
+it costs ~10–20% of the hottest path; that altitude is below the delegate line.
 
 **Higher-order composition** (delegates that take delegates) is where it earns its keep — exactly
 the three places one piece must vary without rewriting the rest:
@@ -121,32 +152,35 @@ its per-variable hashes route straight through `VeritasRandomness`.
 compares `InMemoryGraphStore` vs `HypertrieGraphStore` build over a triple-count grid (triples
 generated once in `GlobalSetup`); `QueryBenchmark`/`MatchBySubjectsBenchmark` cover query time; the
 allocation tracker gives GC bytes/collections; `Program.cs` `--profile-*` entrypoints give
-dotnet-trace/PerfView CPU stacks; `Workbench/HypertrieSoak` gives steady-state GC. The seam slots in
-as a BenchmarkDotNet `[Params]` axis over `WcojBackend`, so "does this backend win" is answerable
-end-to-end. Mirror HoneyComb's methodology: a `cores` axis (scalability 1→N), the WCOJ query-shape
+dotnet-trace/PerfView CPU stacks; `WcojQuerySoak` (`--profile-wcoj-query`) gives the join driver's
+rows/s and queries/s in-process; `Workbench/HypertrieSoak` gives steady-state GC. A new backend
+compares the way `BuildBenchmark` already compares the two stores — as a peer store/evaluator
+measured at the query surface — so "does this backend win" is answerable end-to-end. Mirror
+HoneyComb's methodology: a `cores` axis (scalability 1→N), the WCOJ query-shape
 grid (triangle / 4-loop / 4-clique / Loomis-Whitney), the share/order ablation, and **including
 index-build time in the measurement** — over our BIM-/DPP-shaped workloads
 ([`project_scale_performance_target`]), against a *healthy* hypertrie baseline.
 
 ## Phased plan
 
-1. **Extract the delegate seam** from the current hypertrie path (`ITrie`-shaped delegates out of
-   `TriejoinIterator` / `LeapfrogIntersection` / `Planner`) — pure refactor, behaviour-identical,
-   guarded by the green conformance harness + `BasicGraphPatternJoinDifferentialPropertyTests`.
-2. **Make `BuildBenchmark`/`QueryBenchmark` backend-parametric** over `WcojBackend`. With the
-   hypertrie as the only backend, its numbers must match the pre-refactor baseline — the benchmark
-   *is* the regression guard for the abstraction overhead (build/query/GC drift ≈ 0).
-3. **Add one alternative backend** — start with a Sonic-style hash-trie (per-query build) or the
-   CoCo columnar sorted-array (one parallel sort; SIMD-amenable), and let the existing
-   build/query/soak + GC/CPU diagnosers decide its worth on real-shaped data.
-4. **Later, separately measured**: SieveJoin pre-pass (Seam C); HoneyComb parallel layer (Seam D);
-   Diamond adaptive driver (Seam B).
+1. ~~Extract the delegate seam~~ — **done and reverted by measurement (2026-06-04)**: the
+   extraction was behaviour-identical (full suite + differential property tests green) but cost
+   11–22% on the hot path; the numbers and trace analysis are in the Decision section above.
+2. **Baseline captured** (2026-06-04, `tempdocs/baseline-bdn`): the BDN grid + `WcojQuerySoak`
+   rows/s numbers above are the reference any future backend or driver change measures against.
+3. **Add one alternative backend as a peer store/evaluator** — start with a Sonic-style hash-trie
+   (per-query build) or the CoCo columnar sorted-array (one parallel sort; SIMD-amenable), measured
+   end-to-end at the query surface with build cost included.
+4. **Later, separately measured**: SieveJoin pre-pass (Seam C — a pre-pass composes at the query
+   boundary, not per row); HoneyComb parallel layer (Seam D); Diamond adaptive driver (Seam B).
 
 ## Caveats and non-goals
 
-- **Generics vs templates.** Delegates cost the free inlining C++ templates get. Mitigation: generic
-  `TCursor` + coarse seam granularity (above); a specific backend may become a sealed-generic
-  specialization if its hot loop ever needs it. Not pre-optimized.
+- **Generics vs templates — measured.** Delegates cost the inlining C++ templates get, and with a
+  class-typed cursor the shared-generic (`__Canon`) body adds dictionary lookups per row. The one
+  .NET mechanism that recovers template-grade codegen is the struct-constrained generic (above) —
+  held in reserve until a second backend exists to share the driver with. Until then: concrete hot
+  loop, seams at the evaluation boundary.
 - **Static-rebuild vs updatable store.** Sonic / HoneyComb (and CoCo) are static, in-memory, rebuilt
   per query-order, **non-updatable** — the opposite of our journaled/`EditSession` mutable store.
   So Seam D (and a Sonic/CoCo backend) is an **analytical execution mode over a frozen

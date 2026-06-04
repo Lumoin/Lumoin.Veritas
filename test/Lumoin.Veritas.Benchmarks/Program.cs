@@ -64,6 +64,16 @@ internal static class Program
             return;
         }
 
+        //WCOJ query soak: loops the QueryBenchmark shapes in the
+        //host process so a sampling profiler sees the join driver's
+        //real stacks.
+        if(args.Length > 0 && args[0] == "--profile-wcoj-query")
+        {
+            WcojQuerySoak.RunQuerySoakAsync(10_000, System.TimeSpan.FromSeconds(15)).GetAwaiter().GetResult();
+
+            return;
+        }
+
         //Property-path soak entrypoints. Each cell builds a fresh
         //store, runs three repetitions per path shape, and prints
         //min/median/max wall-clock plus allocation, GC, and peak
