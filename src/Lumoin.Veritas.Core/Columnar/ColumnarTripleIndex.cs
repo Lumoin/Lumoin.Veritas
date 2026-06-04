@@ -137,6 +137,15 @@ public sealed class ColumnarTripleIndex
     /// <param name="removals">Triples to remove. Triples absent from the merged view are ignored.</param>
     /// <returns>The new index; this one is unchanged.</returns>
     /// <exception cref="ArgumentNullException">A required argument is <c>null</c>.</exception>
+    /// <remarks>
+    /// One application costs O(batch · log batch + accumulated
+    /// delta): only the incoming batch is sorted, and each
+    /// accumulated per-permutation run is evolved by a single
+    /// linear merge pass. A sustained stream of small commits
+    /// therefore stays linear in the accumulated delta between
+    /// compactions — the write-rate contract insert-heavy graph
+    /// workloads rely on.
+    /// </remarks>
     public ColumnarTripleIndex Apply(IEnumerable<EncodedTriple> additions, IEnumerable<EncodedTriple> removals)
     {
         ArgumentNullException.ThrowIfNull(additions);
@@ -182,9 +191,11 @@ public sealed class ColumnarTripleIndex
         }
 
         //Evolve the per-order runs by linear merge: only this
-        //batch's net effect is sorted (small), and each accumulated
-        //run is walked once — O(batch log batch + accumulated) per
-        //Apply instead of re-sorting the whole accumulated delta.
+        //batch's net effect is sorted (batch-sized), and each
+        //accumulated run is walked once. This bounds one Apply at
+        //O(batch log batch + accumulated delta), keeping sustained
+        //small-commit streams linear — never quadratic — in the
+        //accumulated delta between compactions.
         EncodedTriple[] addedInsertions = CollectMissingFrom(newAdded, addedSet);
         EncodedTriple[] addedDeletions = CollectMissingFrom(addedSet, newAdded);
         EncodedTriple[] removedInsertions = CollectMissingFrom(newRemoved, removedSet);
