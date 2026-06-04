@@ -34,16 +34,25 @@ internal static class WcojQuerySoak
     {
         EncodedTriple[] triples = SyntheticGraph.GenerateSocial(subjectCount, seed: 42);
 
+        long heapBeforeHypertrie = GC.GetTotalMemory(forceFullCollection: true);
         Stopwatch hypertrieBuild = Stopwatch.StartNew();
         HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(triples, VeritasHashing.Default).ConfigureAwait(false);
         hypertrieBuild.Stop();
+        long heapAfterHypertrie = GC.GetTotalMemory(forceFullCollection: true);
 
         Stopwatch columnarBuild = Stopwatch.StartNew();
         ColumnarTripleIndex columnar = ColumnarTripleIndex.Build(triples);
         columnarBuild.Stop();
+        long heapAfterColumnar = GC.GetTotalMemory(forceFullCollection: true);
+
+        double hypertrieBytes = heapAfterHypertrie - heapBeforeHypertrie;
+        double columnarBytes = heapAfterColumnar - heapAfterHypertrie;
 
         Console.WriteLine($"WCOJ query soak: {subjectCount} subjects, {triples.Length} triples, {duration.TotalSeconds:F0}s per shape.");
         Console.WriteLine($"Build: hypertrie {hypertrieBuild.Elapsed.TotalMilliseconds:F1} ms, columnar {columnarBuild.Elapsed.TotalMilliseconds:F1} ms.");
+        Console.WriteLine(
+            $"Heap residency: hypertrie {hypertrieBytes / (1024 * 1024):F1} MB ({hypertrieBytes / triples.Length:F0} B/triple), "
+            + $"columnar {columnarBytes / (1024 * 1024):F1} MB ({columnarBytes / triples.Length:F0} B/triple).");
 
         VariableRegistry singleRegistry = new();
         Variable singleS = singleRegistry.GetOrAdd("s");
