@@ -15,7 +15,10 @@ namespace Lumoin.Veritas.Owl;
 /// Forward-chaining RDFS materialization: derives the rdfs2
 /// (domain), rdfs3 (range), rdfs5/rdfs7 (subproperty transitivity
 /// and inheritance), and rdfs9/rdfs11 (subclass transitivity and
-/// type inheritance) consequences of a triple set, to fixpoint.
+/// type inheritance) consequences of a triple set, to fixpoint —
+/// plus, when the regime vocabulary terms are supplied, the
+/// finite axiomatic rules (rdf1, axiomatic class/property typing,
+/// rdfs6, rdfs8, rdfs10, rdfs12, rdfs13).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -31,11 +34,20 @@ namespace Lumoin.Veritas.Owl;
 /// round processes only the previous round's delta.
 /// </para>
 /// <para>
-/// <b>Scope.</b> The axiomatic-triple and reflexivity rules
-/// (rdfs4a/4b, rdfs6, rdfs8, rdfs10, rdfs12, rdfs13) and literal
-/// generalisation (rdfs1) are not derived here; they enter with
-/// the W3C entailment-regime conformance wiring, which fixes their
-/// finite-answer semantics.
+/// <b>Scope.</b> The base profile — only the five schema terms
+/// supplied — derives the schema-driven rules and nothing else.
+/// Supplying the regime terms (<c>rdf:Property</c>,
+/// <c>rdfs:Class</c>, …) additionally derives the finite axiomatic
+/// rules per SPARQL 1.1 entailment-regime semantics: rdf1 typing
+/// of predicates, axiomatic class/property typing of schema-
+/// statement subjects and objects, and the reflexivity and
+/// subsumption rules rdfs6/rdfs8/rdfs10/rdfs12/rdfs13 keyed off
+/// those typings. The everything-is-a-resource rules (rdfs4a/4b)
+/// are deliberately not materialised: their conclusions grow with
+/// the instance data (two per triple), require literal-kind
+/// knowledge this term-id-level reasoner does not have, and no
+/// finite-answer regime query observes them except by naming
+/// <c>rdfs:Resource</c> directly.
 /// </para>
 /// <para>
 /// <b>Provenance.</b> The derived set never includes base triples,
@@ -91,7 +103,10 @@ public static class RdfsMaterialization
         HashSet<EncodedTriple> derived = [];
         RdfsSchema schema = RdfsSchema.Extract(context.All, terms);
 
-        if(schema.IsEmpty)
+        //The axiomatic rules derive from bare statements (rdf1 types
+        //every predicate), so an empty schema only short-circuits the
+        //base profile.
+        if(schema.IsEmpty && !HasAxiomaticRules(terms))
         {
             return derived;
         }
@@ -235,11 +250,26 @@ public static class RdfsMaterialization
             Emit(RdfsRuleKind.Rdfs3Range, in triple, EncodedTriple.FromEncoded(@object.Encoded, terms.Type.Encoded, rangeTypes[i].Encoded), context);
         }
 
+        //rdf1: any statement types its predicate as an rdf:Property.
+        if(terms.Property != TermId.None)
+        {
+            Emit(RdfsRuleKind.Rdf1PropertyTyping, in triple, EncodedTriple.FromEncoded(predicate.Encoded, terms.Type.Encoded, terms.Property.Encoded), context);
+        }
+
         //rdfs9 on type statements; rdfs11/rdfs5 close the schema
-        //statements themselves.
+        //statements themselves. The axiomatic typings mirror the
+        //domains and ranges the RDFS axiomatic schema declares for
+        //the vocabulary properties.
         if(predicate == terms.Type)
         {
             EmitTypeExpansion(in triple, subject, @object, schema, context);
+
+            if(terms.Class != TermId.None)
+            {
+                Emit(RdfsRuleKind.RdfsAxiomaticTyping, in triple, EncodedTriple.FromEncoded(@object.Encoded, terms.Type.Encoded, terms.Class.Encoded), context);
+            }
+
+            EmitVocabularyTypeConsequences(in triple, subject, @object, terms, context);
         }
         else if(predicate == terms.SubClassOf)
         {
@@ -249,6 +279,9 @@ public static class RdfsMaterialization
             {
                 Emit(RdfsRuleKind.Rdfs11SubClassTransitivity, in triple, EncodedTriple.FromEncoded(subject.Encoded, terms.SubClassOf.Encoded, superClasses[i].Encoded), context);
             }
+
+            EmitAxiomaticTyping(in triple, subject, terms.Class, terms, context);
+            EmitAxiomaticTyping(in triple, @object, terms.Class, terms, context);
         }
         else if(predicate == terms.SubPropertyOf)
         {
@@ -258,7 +291,75 @@ public static class RdfsMaterialization
             {
                 Emit(RdfsRuleKind.Rdfs5SubPropertyTransitivity, in triple, EncodedTriple.FromEncoded(subject.Encoded, terms.SubPropertyOf.Encoded, superOfTarget[i].Encoded), context);
             }
+
+            EmitAxiomaticTyping(in triple, subject, terms.Property, terms, context);
+            EmitAxiomaticTyping(in triple, @object, terms.Property, terms, context);
         }
+        else if(predicate == terms.Domain || predicate == terms.Range)
+        {
+            EmitAxiomaticTyping(in triple, subject, terms.Property, terms, context);
+            EmitAxiomaticTyping(in triple, @object, terms.Class, terms, context);
+        }
+    }
+
+    //The reflexivity and subsumption rules keyed off a vocabulary
+    //typing: rdfs6 on rdf:Property, rdfs8 and rdfs10 on rdfs:Class,
+    //rdfs12 on rdfs:ContainerMembershipProperty, rdfs13 on
+    //rdfs:Datatype. Each fires only when its terms are supplied.
+    private static void EmitVocabularyTypeConsequences(
+        in EncodedTriple premise,
+        TermId instance,
+        TermId @class,
+        RdfsVocabularyTerms terms,
+        MaterializationContext context)
+    {
+        if(@class == terms.Property && terms.Property != TermId.None)
+        {
+            Emit(RdfsRuleKind.Rdfs6SubPropertyReflexivity, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.SubPropertyOf.Encoded, instance.Encoded), context);
+        }
+        else if(@class == terms.Class && terms.Class != TermId.None)
+        {
+            Emit(RdfsRuleKind.Rdfs10SubClassReflexivity, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.SubClassOf.Encoded, instance.Encoded), context);
+
+            if(terms.Resource != TermId.None)
+            {
+                Emit(RdfsRuleKind.Rdfs8ResourceSubsumption, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.SubClassOf.Encoded, terms.Resource.Encoded), context);
+            }
+        }
+        else if(@class == terms.ContainerMembershipProperty && terms.ContainerMembershipProperty != TermId.None && terms.Member != TermId.None)
+        {
+            Emit(RdfsRuleKind.Rdfs12ContainerMembership, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.SubPropertyOf.Encoded, terms.Member.Encoded), context);
+        }
+        else if(@class == terms.Datatype && terms.Datatype != TermId.None && terms.Literal != TermId.None)
+        {
+            Emit(RdfsRuleKind.Rdfs13DatatypeLiteral, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.SubClassOf.Encoded, terms.Literal.Encoded), context);
+        }
+    }
+
+    //Types a schema-statement participant with the class the RDFS
+    //axiomatic schema gives it; a None class (term not supplied)
+    //disables the typing.
+    private static void EmitAxiomaticTyping(
+        in EncodedTriple premise,
+        TermId instance,
+        TermId @class,
+        RdfsVocabularyTerms terms,
+        MaterializationContext context)
+    {
+        if(@class != TermId.None)
+        {
+            Emit(RdfsRuleKind.RdfsAxiomaticTyping, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.Type.Encoded, @class.Encoded), context);
+        }
+    }
+
+    //Whether any axiomatic rule is enabled — the rules that derive
+    //from bare statements rather than from extracted schema.
+    private static bool HasAxiomaticRules(in RdfsVocabularyTerms terms)
+    {
+        return terms.Property != TermId.None
+            || terms.Class != TermId.None
+            || terms.ContainerMembershipProperty != TermId.None
+            || terms.Datatype != TermId.None;
     }
 
     //rdfs9 through the subclass closure: an instance of a class is

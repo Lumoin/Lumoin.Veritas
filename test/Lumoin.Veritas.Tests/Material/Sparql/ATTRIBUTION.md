@@ -40,6 +40,10 @@ Query-evaluation suites — the complete set the upstream
 - `sparql/sparql12/grouping/` → `Material/Sparql/sparql12-grouping/` (renamed to avoid the sparql11 `grouping` collision)
 - `sparql/sparql12/rdf11/` → `Material/Sparql/sparql12-rdf11/`
 - `sparql/sparql12/lang-basedir/` → `Material/Sparql/lang-basedir/`
+- `sparql/sparql11/entailment/` → `Material/Sparql/entailment/` (snapshotted 2026-06-05,
+  same pinned commit) — the SPARQL 1.1 Entailment Regimes suite. SPARQL 1.2 republished
+  the query/update/protocol/results specs but not Entailment Regimes, so this is the
+  current (and only) W3C entailment corpus.
 
 Licensed under the dual W3C Test Suite licence and W3C 3-clause
 BSD licence per the upstream `LICENSE.md`:
@@ -92,7 +96,12 @@ Deferred:
   remain for update tests whose fixtures need RDF/XML, and for the generically-typed
   (`mf:NegativeSyntaxTest11`) update-syntax entries the query-syntax runner leaves
   inconclusive.
-- Evaluation suites that need the quad/dataset backend (`GRAPH`/`FROM NAMED`),
-  federation (`SERVICE`), entailment regimes, or RDF/XML data are not yet
-  vendored or are skipped structurally. `construct`/`describe`, `service`,
-  `entailment`, `csv-tsv-res`, and `json-res` remain unvendored.
+- The entailment suite runs through `W3cSparqlEvalTests.RunEntailment`: a test whose
+  action lists the RDF, RDFS, or D regime evaluates over the finite RDFS closure
+  (`Lumoin.Veritas.Owl.RdfsMaterialization` with the regime vocabulary terms — the
+  expected result holds under every listed regime, so any implemented one suffices);
+  tests offering only OWL Direct Semantics, OWL RDF-Based Semantics, or RIF Core are
+  reported inconclusive (30 of 70 entries).
+- `service` remains unvendored: its tests require live SPARQL endpoints, exercised
+  instead by the dual-transport SERVICE harness in
+  `Sparql/Federation/SparqlFederationTests`.

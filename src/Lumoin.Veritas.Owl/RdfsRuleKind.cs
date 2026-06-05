@@ -26,4 +26,32 @@ public enum RdfsRuleKind
 
     /// <summary>rdfs11 — subclass transitivity over schema statements.</summary>
     Rdfs11SubClassTransitivity = 5,
+
+    /// <summary>rdf1 — the predicate of any statement is an <c>rdf:Property</c>.</summary>
+    Rdf1PropertyTyping = 6,
+
+    /// <summary>
+    /// rdfs2/rdfs3 over the RDF(S) axiomatic schema — the domains and
+    /// ranges of the vocabulary properties type the subjects and
+    /// objects of <c>rdf:type</c>, <c>rdfs:subClassOf</c>,
+    /// <c>rdfs:subPropertyOf</c>, <c>rdfs:domain</c>, and
+    /// <c>rdfs:range</c> statements as <c>rdfs:Class</c> /
+    /// <c>rdf:Property</c>.
+    /// </summary>
+    RdfsAxiomaticTyping = 7,
+
+    /// <summary>rdfs6 — every <c>rdf:Property</c> is a subproperty of itself.</summary>
+    Rdfs6SubPropertyReflexivity = 8,
+
+    /// <summary>rdfs8 — every <c>rdfs:Class</c> is a subclass of <c>rdfs:Resource</c>.</summary>
+    Rdfs8ResourceSubsumption = 9,
+
+    /// <summary>rdfs10 — every <c>rdfs:Class</c> is a subclass of itself.</summary>
+    Rdfs10SubClassReflexivity = 10,
+
+    /// <summary>rdfs12 — every <c>rdfs:ContainerMembershipProperty</c> is a subproperty of <c>rdfs:member</c>.</summary>
+    Rdfs12ContainerMembership = 11,
+
+    /// <summary>rdfs13 — every <c>rdfs:Datatype</c> is a subclass of <c>rdfs:Literal</c>.</summary>
+    Rdfs13DatatypeLiteral = 12,
 }

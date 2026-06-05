@@ -156,6 +156,18 @@ internal sealed class W3cSparqlEvalTests
     [W3cManifestData("Sparql", "lang-basedir")]
     public Task RunLangBaseDirection(W3cTestCase testCase) => RunAndAssertAsync(testCase);
 
+    /// <summary>
+    /// Runs one W3C SPARQL 1.1 entailment-regime evaluation test. A test whose action lists the RDF, RDFS, or D
+    /// regime evaluates over the finite RDFS closure (the expected result holds under every listed regime, so
+    /// any implemented one suffices); a test offering only OWL Direct Semantics, OWL RDF-Based Semantics, or
+    /// RIF Core is reported inconclusive.
+    /// </summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    /// <returns>The asynchronous test operation.</returns>
+    [TestMethod]
+    [W3cManifestData("Sparql", "entailment")]
+    public Task RunEntailment(W3cTestCase testCase) => RunAndAssertAsync(testCase);
+
     /// <summary>Runs one W3C SPARQL 1.1 JSON results-format test (the expected result is a <c>.srj</c> serialization).</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     /// <returns>The asynchronous test operation.</returns>

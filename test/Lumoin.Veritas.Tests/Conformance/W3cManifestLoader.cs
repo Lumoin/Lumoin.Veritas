@@ -49,6 +49,7 @@ internal static class W3cManifestLoader
     private const string ShtNamespace = "http://www.w3.org/ns/shacl-test#";
     private const string QtNamespace = "http://www.w3.org/2001/sw/DataAccess/tests/test-query#";
     private const string UtNamespace = "http://www.w3.org/2009/sparql/tests/test-update#";
+    private const string SdNamespace = "http://www.w3.org/ns/sparql-service-description#";
 
     /// <summary>
     /// Loads a manifest synchronously, suitable for use from
@@ -517,6 +518,7 @@ internal static class W3cManifestLoader
         //Each qt:graphData is one named graph; its file resolves like qt:data, and the runner keys it by its own
         //file IRI (the IRI a query's GRAPH <file> resolves to).
         List<string> graphDataPaths = [];
+        List<string> entailmentRegimes = [];
         if(actionProperties is not null)
         {
             foreach(string graphDataTerm in FindObjects(actionProperties, QtNamespace + "graphData"))
@@ -525,6 +527,13 @@ internal static class W3cManifestLoader
                 {
                     graphDataPaths.Add(graphDataPath);
                 }
+            }
+
+            //sd:entailmentRegime is a single regime IRI or an RDF list of them; the expected result holds under
+            //each listed regime, so the runner may evaluate under any one it implements.
+            foreach(string regimeTerm in ResolveListOrDirect(FindObjects(actionProperties, SdNamespace + "entailmentRegime"), bySubject))
+            {
+                entailmentRegimes.Add(StripIriPrefix(regimeTerm));
             }
         }
 
@@ -540,7 +549,8 @@ internal static class W3cManifestLoader
             ExpectedPath: expectedPath,
             OriginManifest: originManifest,
             QueryDataPath: dataPath,
-            GraphDataPaths: graphDataPaths);
+            GraphDataPaths: graphDataPaths,
+            EntailmentRegimes: entailmentRegimes.Count > 0 ? entailmentRegimes : null);
     }
 
     /// <summary>

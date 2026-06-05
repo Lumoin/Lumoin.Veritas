@@ -10,6 +10,8 @@ using Lumoin.Veritas.Core.Hypertrie;
 using Lumoin.Veritas.Core.Hypertrie.AccessControl;
 using Lumoin.Veritas.Json;
 using Lumoin.Veritas.NQuads;
+using Lumoin.Veritas.Owl;
+using Lumoin.Veritas.Rdf;
 using Lumoin.Veritas.Sparql.Algebra;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
@@ -351,6 +353,20 @@ internal static class W3cSparqlEvalRunner
             //A graph (default or named) is in a format this harness cannot read (RDF/XML, TriG) or is malformed:
             //the test cannot be set up, so it is skipped structurally rather than reported as an engine failure.
             return new W3cOutcome(W3cOutcomeStatus.Skipped, $"Could not load a graph (unsupported format or malformed): {ex.Message}");
+        }
+
+        //An entailment test evaluates over the regime's entailed graph, and its expected result holds under
+        //each regime the action lists — so evaluating under any one implemented regime suffices. The RDF, RDFS,
+        //and D regimes evaluate over the finite RDFS closure (axiomatic rules included); a test offering only
+        //OWL Direct Semantics, OWL RDF-Based Semantics, or RIF skips.
+        if(testCase.EntailmentRegimes is { Count: > 0 } regimes)
+        {
+            if(!HasImplementedRegime(regimes))
+            {
+                return new W3cOutcome(W3cOutcomeStatus.Skipped, $"Entailment regime(s) not implemented: {string.Join(", ", regimes)}.");
+            }
+
+            data = ExpandRegimeClosure(data);
         }
 
         //IRI()/URI() resolve a relative argument against the query's effective base — the last in-query BASE, else
@@ -857,6 +873,82 @@ internal static class W3cSparqlEvalRunner
         }
 
         return namedGraphs;
+    }
+
+    /// <summary>The entailment-regime IRIs the harness implements — the regimes whose answers the finite RDFS closure produces.</summary>
+    private static string[] ImplementedEntailmentRegimes { get; } =
+    [
+        "http://www.w3.org/ns/entailment/RDF",
+        "http://www.w3.org/ns/entailment/RDFS",
+        "http://www.w3.org/ns/entailment/D",
+    ];
+
+    /// <summary>Returns whether any of the test's declared regimes is one the harness implements.</summary>
+    /// <param name="regimes">The declared regime IRIs.</param>
+    /// <returns><see langword="true"/> when at least one declared regime is implemented.</returns>
+    private static bool HasImplementedRegime(IReadOnlyList<string> regimes)
+    {
+        foreach(string regime in regimes)
+        {
+            foreach(string implemented in ImplementedEntailmentRegimes)
+            {
+                if(string.Equals(regime, implemented, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Expands a data graph to its finite RDFS-regime closure: the schema-driven rules plus the axiomatic
+    /// rules (rdf1, axiomatic typing, rdfs6/8/10/12/13), which together produce the RDF/RDFS/D-regime answers
+    /// the W3C entailment suite expects. A derived conclusion whose subject is a literal (a range typing of a
+    /// literal object) is not an RDF triple and is dropped.
+    /// </summary>
+    /// <param name="data">The base data triples.</param>
+    /// <returns>The base triples plus the derived closure.</returns>
+    private static List<DataTriple> ExpandRegimeClosure(List<DataTriple> data)
+    {
+        TermDictionary dictionary = new();
+        List<EncodedTriple> encoded = new(data.Count);
+        foreach(DataTriple triple in data)
+        {
+            encoded.Add(EncodedTriple.FromEncoded(
+                dictionary.GetOrAdd(triple.Subject).Encoded,
+                dictionary.GetOrAdd(triple.Predicate).Encoded,
+                dictionary.GetOrAdd(triple.Object).Encoded));
+        }
+
+        RdfsVocabularyTerms terms = new(
+            Type: dictionary.GetOrAdd(new NamedNode(Vocabulary.Rdf.Type)),
+            SubClassOf: dictionary.GetOrAdd(new NamedNode(RdfVocabulary.Rdfs.SubClassOf)),
+            SubPropertyOf: dictionary.GetOrAdd(new NamedNode(RdfVocabulary.Rdfs.SubPropertyOf)),
+            Domain: dictionary.GetOrAdd(new NamedNode(RdfVocabulary.Rdfs.Domain)),
+            Range: dictionary.GetOrAdd(new NamedNode(RdfVocabulary.Rdfs.Range)),
+            Property: dictionary.GetOrAdd(new NamedNode(RdfVocabulary.Rdf.Property)),
+            Class: dictionary.GetOrAdd(new NamedNode(RdfVocabulary.Rdfs.Class)),
+            Resource: dictionary.GetOrAdd(new NamedNode(RdfVocabulary.Rdfs.Resource)),
+            ContainerMembershipProperty: dictionary.GetOrAdd(new NamedNode(RdfVocabulary.Rdfs.ContainerMembershipProperty)),
+            Member: dictionary.GetOrAdd(new NamedNode(RdfVocabulary.Rdfs.Member)),
+            Datatype: dictionary.GetOrAdd(new NamedNode(RdfVocabulary.Rdfs.Datatype)),
+            Literal: dictionary.GetOrAdd(new NamedNode(RdfVocabulary.Rdfs.LiteralClass)));
+
+        List<DataTriple> expanded = [.. data];
+        foreach(EncodedTriple derived in RdfsMaterialization.MaterializeToFixpoint(encoded, terms))
+        {
+            RdfTerm subject = dictionary.Resolve(derived.Subject);
+            if(subject is Literal)
+            {
+                continue;
+            }
+
+            expanded.Add(new DataTriple(subject, dictionary.Resolve(derived.Predicate), dictionary.Resolve(derived.Object)));
+        }
+
+        return expanded;
     }
 
     /// <summary>Describes the first error-severity diagnostic for a failure message.</summary>
