@@ -65,7 +65,19 @@ public static class RdfXmlReader
         try
         {
             using MemoryStreamLike stream = new(source);
-            XmlReaderSettings settings = new() { DtdProcessing = DtdProcessing.Ignore, XmlResolver = null };
+
+            //RDF/XML documents in the wild abbreviate namespace IRIs through DOCTYPE
+            //internal-subset entities (the W3C OWL corpus and 2000s-era ontologies do),
+            //so the internal subset is parsed. External resolution stays off — a null
+            //resolver blocks XXE and external-subset fetches — and the expansion budget
+            //bounds entity amplification.
+            XmlReaderSettings settings = new()
+            {
+                DtdProcessing = DtdProcessing.Parse,
+                XmlResolver = null,
+                MaxCharactersFromEntities = 1_000_000
+            };
+
             using XmlReader reader = XmlReader.Create(stream, settings);
             document = XDocument.Load(reader, LoadOptions.None);
         }

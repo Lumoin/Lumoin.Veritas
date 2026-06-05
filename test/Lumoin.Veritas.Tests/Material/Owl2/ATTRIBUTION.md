@@ -10,9 +10,9 @@ case format and conformance conditions are defined by
 Original paths within the archive:
 
 - `approved/*.rdf` → `Material/Owl2/approved/` — test cases with
-  `test:status Test:Approved` (710 test cases in `all.rdf`).
+  `test:status Test:Approved` (355 test cases in `all.rdf`).
 - `proposed/*.rdf` → `Material/Owl2/proposed/` — proposed-status test cases
-  (172 test cases in `all.rdf`).
+  (86 test cases in `all.rdf`).
 
 Each slice file (`profile-EL.rdf`, `profile-QL.rdf`, `profile-RL.rdf`,
 `syntax-dl.rdf`, `semantics-direct.rdf`, `type-consistency.rdf`,
@@ -32,12 +32,15 @@ positive syntactic membership (EL/QL/RL, DL/FULL); per the conformance
 document every test doubles as a profile-identification test, with absence of
 a profile marker meaning the ontology is NOT in that profile.
 
-Approved-arm census (2026-06-05): 710 test cases — 355 ProfileIdentification,
-237 Consistency, 118 Inconsistency, 143 PositiveEntailment,
-9 NegativeEntailment; profile markers EL 67 / QL 45 / RL 70; semantics
-DIRECT 355 / RDF-BASED 351; premise syntax rdfXml 670 / functional 120
-(functional-syntax-only tests require an OWL functional-syntax reader or are
-documented skips).
+Approved-arm census (2026-06-05): 355 test cases, every one typed
+`ProfileIdentificationTest` (= 1,065 profile verdicts across EL/QL/RL: 182
+positive markers — EL 67 / QL 45 / RL 70 — and 883 negatives by absence);
+additional types on the same tests: 237 Consistency, 118 Inconsistency,
+143 PositiveEntailment, 9 NegativeEntailment. Premise documents: 335
+`rdfXmlPremiseOntology`, 60 `fsPremiseOntology` (normative syntax RDFXML 355 /
+FUNCTIONAL 60; functional-syntax-only tests require an OWL functional-syntax
+reader or are documented skips), 3 `rdfXmlInputOntology`, 3 imports-bearing
+tests (`test:importedOntology`).
 
 Licensed under the W3C Software and Document licence / W3C Test Suite licence
 terms applicable to the OWL WG test repository. Copyright © W3C® and the test

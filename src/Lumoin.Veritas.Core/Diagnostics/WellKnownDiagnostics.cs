@@ -483,4 +483,41 @@ public static class WellKnownDiagnostics
         /// <remarks>Parser-internal bound (see the parser's <c>MaxDiagnostics</c> option), not a grammar production.</remarks>
         public static Utf8String ExcessDiagnostics { get; } = new("SP9999"u8.ToArray());
     }
+
+    /// <summary>
+    /// OWL structural-mapping diagnostics (<c>OW</c> prefix), emitted when an
+    /// RDF graph is mapped to OWL 2 axioms.
+    /// </summary>
+    /// <remarks>
+    /// The mapping follows <see href="https://www.w3.org/TR/owl2-mapping-to-rdf/">OWL 2 Mapping to
+    /// RDF Graphs</see> in reverse (graph → structural form). Diagnostics carry the offending
+    /// triple in the message; the mapping has no source spans because it starts from parsed quads.
+    /// </remarks>
+    [SuppressMessage("Design", "CA1034:Nested types should not be visible", Justification = "WellKnownDiagnostics.Owl.X is the intended usage pattern.")]
+    public static class Owl
+    {
+        /// <summary>An RDF collection in an OWL structure was malformed — a node lacked <c>rdf:first</c>/<c>rdf:rest</c>, or the chain cycled before reaching <c>rdf:nil</c>.</summary>
+        /// <remarks>Mapping of <c>SEQ</c> list patterns. See <see href="https://www.w3.org/TR/owl2-mapping-to-rdf/#Mapping_from_RDF_Graphs_to_the_Structural_Specification">OWL 2 Mapping to RDF §3</see>.</remarks>
+        public static Utf8String MalformedList { get; } = new("OW0001"u8.ToArray());
+
+        /// <summary>An <c>owl:Restriction</c> node lacked <c>owl:onProperty</c>, lacked a restriction-defining predicate, or combined incompatible ones.</summary>
+        /// <remarks>Mapping of class expressions, restriction patterns. See <see href="https://www.w3.org/TR/owl2-mapping-to-rdf/#Parsing_of_Expressions">OWL 2 Mapping to RDF §3.2.4</see>.</remarks>
+        public static Utf8String MalformedRestriction { get; } = new("OW0002"u8.ToArray());
+
+        /// <summary>A node in class-expression position is neither a named class nor a recognisable class-expression structure.</summary>
+        /// <remarks>Mapping of class expressions. See <see href="https://www.w3.org/TR/owl2-mapping-to-rdf/#Parsing_of_Expressions">OWL 2 Mapping to RDF §3.2.4</see>.</remarks>
+        public static Utf8String MalformedClassExpression { get; } = new("OW0003"u8.ToArray());
+
+        /// <summary>A property occurs in an assertion without a declaration that fixes its kind; it is mapped as an annotation assertion.</summary>
+        /// <remarks>Declaration-driven disambiguation. See <see href="https://www.w3.org/TR/owl2-mapping-to-rdf/#Mapping_from_RDF_Graphs_to_the_Structural_Specification">OWL 2 Mapping to RDF §3 (Table 5 typing)</see>.</remarks>
+        public static Utf8String UndeclaredProperty { get; } = new("OW0004"u8.ToArray());
+
+        /// <summary>A reified axiom structure (<c>owl:AllDisjointClasses</c>, <c>owl:NegativePropertyAssertion</c>, …) lacked a required member predicate.</summary>
+        /// <remarks>Mapping of axiom reification patterns. See <see href="https://www.w3.org/TR/owl2-mapping-to-rdf/#Parsing_of_Axioms">OWL 2 Mapping to RDF §3.2.5</see>.</remarks>
+        public static Utf8String MalformedAxiomStructure { get; } = new("OW0005"u8.ToArray());
+
+        /// <summary>The graph used an OWL construct this mapper does not yet parse; the construct's triples are left unmapped.</summary>
+        /// <remarks>Mapper coverage bound, not a grammar production; the message names the construct.</remarks>
+        public static Utf8String UnsupportedConstruct { get; } = new("OW0006"u8.ToArray());
+    }
 }
