@@ -91,6 +91,17 @@ internal static class WcojQuerySoak
         await RunShapeAsync("columnar  SinglePattern", () => QueryColumnar(columnar, singlePattern), duration).ConfigureAwait(false);
         await RunShapeAsync("hypertrie ThreePatternTriangle", () => store.Query(trianglePattern, TimeProvider.System), duration).ConfigureAwait(false);
         await RunShapeAsync("columnar  ThreePatternTriangle", () => QueryColumnar(columnar, trianglePattern), duration).ConfigureAwait(false);
+
+        int processorCount = Environment.ProcessorCount;
+
+        await RunShapeAsync(
+            "columnar  ThreePatternTriangle x8",
+            () => ColumnarHyperCube.Query(columnar, trianglePattern, degreeOfParallelism: 8, TimeProvider.System),
+            duration).ConfigureAwait(false);
+        await RunShapeAsync(
+            $"columnar  ThreePatternTriangle x{processorCount}",
+            () => ColumnarHyperCube.Query(columnar, trianglePattern, processorCount, TimeProvider.System),
+            duration).ConfigureAwait(false);
     }
 
     private static System.Collections.Generic.IAsyncEnumerable<Solution> QueryColumnar(ColumnarTripleIndex index, BasicGraphPattern pattern)

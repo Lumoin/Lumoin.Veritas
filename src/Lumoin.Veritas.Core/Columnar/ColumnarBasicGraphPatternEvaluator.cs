@@ -51,6 +51,12 @@ public sealed class ColumnarBasicGraphPatternEvaluator
 
     private readonly Planner planner;
 
+    /// <summary>The HyperCube cell this evaluator owns; the unpartitioned default accepts every key. Parallel execution runs one evaluator per cell over the shared immutable index.</summary>
+    private HyperCubeCell Cell { get; }
+
+    /// <summary>The query's variables in global order, for mapping a descend target to its cell-filter index. Linear scan — variable counts are small.</summary>
+    private IReadOnlyList<Variable> GlobalVariables { get; }
+
     private readonly AccessControlDelegate? accessControl;
 
     private readonly AccessContext? accessContext;
@@ -81,6 +87,7 @@ public sealed class ColumnarBasicGraphPatternEvaluator
     /// <param name="accessContext">Caller-supplied access context, threaded into every access-control consultation. Required when <paramref name="accessControl"/> is non-<c>null</c>; ignored when <c>null</c>.</param>
     /// <param name="traceHandler">Optional trace handler for query-execution events.</param>
     /// <param name="correlationId">Correlation id stamped on every emitted trace event.</param>
+    /// <param name="cell">The HyperCube cell this evaluator owns under parallel execution; the default accepts every key.</param>
     /// <exception cref="ArgumentNullException">A required argument is <c>null</c>.</exception>
     /// <exception cref="ArgumentException">An access-control delegate is supplied without an access context.</exception>
     public ColumnarBasicGraphPatternEvaluator(
@@ -91,7 +98,8 @@ public sealed class ColumnarBasicGraphPatternEvaluator
         AccessControlDelegate? accessControl = null,
         AccessContext? accessContext = null,
         TraceHandler<QueryTraceEvent>? traceHandler = null,
-        Guid correlationId = default)
+        Guid correlationId = default,
+        HyperCubeCell cell = default)
     {
         ArgumentNullException.ThrowIfNull(index);
         ArgumentNullException.ThrowIfNull(query);
@@ -111,6 +119,8 @@ public sealed class ColumnarBasicGraphPatternEvaluator
         this.accessContext = accessContext;
         this.traceHandler = traceHandler;
         this.correlationId = correlationId;
+        Cell = cell;
+        GlobalVariables = query.Variables;
     }
 
     /// <summary>
@@ -276,12 +286,57 @@ public sealed class ColumnarBasicGraphPatternEvaluator
         }
     }
 
+    //Finds the next common key for `variable` that this evaluator's
+    //cell accepts, advancing every participant past rejected keys.
+    //With the unpartitioned default cell this is plain leapfrog
+    //plus one branch per result.
+    private bool TryFindAcceptedCommonKey(
+        IReadOnlyList<ColumnarTriejoinIterator> participants,
+        Variable variable,
+        CancellationToken cancellationToken,
+        out TermId commonKey)
+    {
+        int variableIndex = GlobalIndexOf(variable);
+
+        while(ColumnarLeapfrogIntersection.TryFindNextCommonKey(participants, out commonKey, cancellationToken))
+        {
+            if(Cell.Accepts(variableIndex, commonKey.Encoded))
+            {
+                return true;
+            }
+
+            //Another cell owns this key; every participant steps
+            //past it and the leapfrog resumes.
+            for(int i = 0; i < participants.Count; i++)
+            {
+                participants[i].Next();
+            }
+        }
+
+        return false;
+    }
+
+    //The variable's index in the query's global variable order —
+    //the coordinate axis its cell filter partitions.
+    private int GlobalIndexOf(Variable variable)
+    {
+        for(int i = 0; i < GlobalVariables.Count; i++)
+        {
+            if(GlobalVariables[i] == variable)
+            {
+                return i;
+            }
+        }
+
+        throw new InvalidOperationException($"Variable id {variable.Id} is not in the query's variable order.");
+    }
+
     //Pops the topmost open frame, advances its iterators past
     //their current keys, and tries to find the next common key at
     //the now-current level. Returns true when a new common key was
     //found and the frame was re-pushed; returns false when every
     //frame has been unwound (no more solutions).
-    private static bool TryAdvance(
+    private bool TryAdvance(
         ColumnarTriejoinIterator[] iterators,
         List<VariableBinding> bindings,
         List<ColumnarTriejoinIterator[]> openFrames,
@@ -296,8 +351,13 @@ public sealed class ColumnarBasicGraphPatternEvaluator
             //Up out of the level the frame represents and discard
             //its binding, then advance every participant past its
             //current key so the next leapfrog finds the next
-            //candidate.
-            for(int i = 0; i < frame.Length; i++)
+            //candidate. The level's variable is read after the
+            //rewind, while the frame is positioned on it.
+            frame[0].Up();
+            Variable frameVariable = frame[0].CurrentVariable;
+            frame[0].Next();
+
+            for(int i = 1; i < frame.Length; i++)
             {
                 frame[i].Up();
                 frame[i].Next();
@@ -305,8 +365,8 @@ public sealed class ColumnarBasicGraphPatternEvaluator
 
             bindings.RemoveAt(bindings.Count - 1);
 
-            //Try to find the next common key at this level.
-            if(ColumnarLeapfrogIntersection.TryFindNextCommonKey(frame, out TermId commonKey, cancellationToken))
+            //Try to find the next accepted common key at this level.
+            if(TryFindAcceptedCommonKey(frame, frameVariable, cancellationToken, out TermId commonKey))
             {
                 //Re-open every participant on the new common key
                 //and push the frame back. The level was popped from
@@ -373,11 +433,12 @@ public sealed class ColumnarBasicGraphPatternEvaluator
 
     //Attempts to descend by binding `target`. Identifies which
     //iterators participate (those whose CurrentVariable equals
-    //target), runs leapfrog to find a common key, opens each
-    //participant on that key, and pushes a frame. Returns true on
-    //success; false when no common key exists at this variable
-    //(in which case the iterators are not advanced).
-    private static bool TryDescend(
+    //target), runs the cell-filtered leapfrog to find a common key,
+    //opens each participant on that key, and pushes a frame.
+    //Returns true on success; false when no accepted common key
+    //exists at this variable (in which case the iterators are not
+    //advanced past the level).
+    private bool TryDescend(
         ColumnarTriejoinIterator[] iterators,
         Variable target,
         List<VariableBinding> bindings,
@@ -413,7 +474,7 @@ public sealed class ColumnarBasicGraphPatternEvaluator
             return false;
         }
 
-        if(!ColumnarLeapfrogIntersection.TryFindNextCommonKey(participants, out TermId commonKey, cancellationToken))
+        if(!TryFindAcceptedCommonKey(participants, target, cancellationToken, out TermId commonKey))
         {
             return false;
         }

@@ -300,7 +300,7 @@ public sealed class QueryEngineRendezvous
         }
     }
 
-    private static IAsyncEnumerable<Solution> QueryColumnar(
+    private IAsyncEnumerable<Solution> QueryColumnar(
         ColumnarTripleIndex view,
         BasicGraphPattern query,
         Planner? planner,
@@ -311,17 +311,19 @@ public sealed class QueryEngineRendezvous
         Guid correlationId,
         CancellationToken cancellationToken)
     {
-        ColumnarBasicGraphPatternEvaluator evaluator = new(
+        //ColumnarHyperCube degrades to the sequential evaluator at a
+        //degree of parallelism of one.
+        return ColumnarHyperCube.Query(
             view,
             query,
-            planner ?? Planners.FirstOccurrence(query),
+            policy.DegreeOfParallelism,
             timeProvider,
+            planner,
             accessControl,
             accessContext,
             traceHandler,
-            correlationId);
-
-        return evaluator.EvaluateAsync(cancellationToken);
+            correlationId,
+            cancellationToken);
     }
 
     private void EmitEngineSelected(
