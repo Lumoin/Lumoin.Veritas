@@ -1,8 +1,12 @@
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using CsCheck;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Encoding;
+using Lumoin.Veritas.Core.Hypertrie;
+using Lumoin.Veritas.Core.Hypertrie.Storage;
 using Lumoin.Veritas.Owl;
 
 namespace Lumoin.Veritas.Tests.Owl;
@@ -65,7 +69,7 @@ internal sealed class RdfsMaterializationTests
             T(20, Type.Encoded, 10),
         ];
 
-        HashSet<EncodedTriple> derived = [.. RdfsMaterialization.MaterializeToFixpoint(triples, Terms, TestContext.CancellationToken)];
+        HashSet<EncodedTriple> derived = [.. RdfsMaterialization.MaterializeToFixpoint(triples, Terms, cancellationToken: TestContext.CancellationToken)];
 
         HashSet<EncodedTriple> expected =
         [
@@ -88,7 +92,7 @@ internal sealed class RdfsMaterializationTests
             T(20, 10, 21),
         ];
 
-        HashSet<EncodedTriple> derived = [.. RdfsMaterialization.MaterializeToFixpoint(triples, Terms, TestContext.CancellationToken)];
+        HashSet<EncodedTriple> derived = [.. RdfsMaterialization.MaterializeToFixpoint(triples, Terms, cancellationToken: TestContext.CancellationToken)];
 
         HashSet<EncodedTriple> expected =
         [
@@ -113,7 +117,7 @@ internal sealed class RdfsMaterializationTests
             T(20, 10, 21),
         ];
 
-        HashSet<EncodedTriple> derived = [.. RdfsMaterialization.MaterializeToFixpoint(triples, Terms, TestContext.CancellationToken)];
+        HashSet<EncodedTriple> derived = [.. RdfsMaterialization.MaterializeToFixpoint(triples, Terms, cancellationToken: TestContext.CancellationToken)];
 
         HashSet<EncodedTriple> expected =
         [
@@ -143,7 +147,7 @@ internal sealed class RdfsMaterializationTests
             T(20, Type.Encoded, 10),
         ];
 
-        HashSet<EncodedTriple> derived = [.. RdfsMaterialization.MaterializeToFixpoint(triples, Terms, TestContext.CancellationToken)];
+        HashSet<EncodedTriple> derived = [.. RdfsMaterialization.MaterializeToFixpoint(triples, Terms, cancellationToken: TestContext.CancellationToken)];
 
         Assert.Contains(T(20, Type.Encoded, 11), derived, "Cycle member 11 must type the instance.");
     }
@@ -159,7 +163,7 @@ internal sealed class RdfsMaterializationTests
             T(20, Type.Encoded, 30),
         ];
 
-        HashSet<EncodedTriple> derived = [.. RdfsMaterialization.MaterializeToFixpoint(triples, Terms, TestContext.CancellationToken)];
+        HashSet<EncodedTriple> derived = [.. RdfsMaterialization.MaterializeToFixpoint(triples, Terms, cancellationToken: TestContext.CancellationToken)];
 
         Assert.Contains(T(30, SubClassOf.Encoded, 31), derived, "rdfs7 must lift the instance triple into a subClassOf statement.");
         Assert.Contains(T(20, Type.Encoded, 31), derived, "The derived subclass edge must feed rdfs9 after schema re-extraction.");
@@ -175,7 +179,7 @@ internal sealed class RdfsMaterializationTests
             T(21, 10, 22),
         ];
 
-        IReadOnlyCollection<EncodedTriple> derived = RdfsMaterialization.MaterializeToFixpoint(triples, Terms, TestContext.CancellationToken);
+        IReadOnlyCollection<EncodedTriple> derived = RdfsMaterialization.MaterializeToFixpoint(triples, Terms, cancellationToken: TestContext.CancellationToken);
 
         Assert.IsEmpty(derived);
     }
@@ -194,13 +198,70 @@ internal sealed class RdfsMaterializationTests
                 .Select(static r => EncodedTriple.FromEncoded((uint)r[0], (uint)r[1], (uint)r[2]))
                 .Distinct()];
 
-            HashSet<EncodedTriple> actual = [.. RdfsMaterialization.MaterializeToFixpoint(triples, Terms, TestContext.CancellationToken)];
+            HashSet<EncodedTriple> actual = [.. RdfsMaterialization.MaterializeToFixpoint(triples, Terms, cancellationToken: TestContext.CancellationToken)];
             HashSet<EncodedTriple> expected = NaiveFixpoint(triples);
 
             Assert.IsTrue(
                 expected.SetEquals(actual),
                 $"Materializer and naive fixpoint disagree over {triples.Length} triples: {Describe(expected, actual)}");
         }, iter: Iterations);
+    }
+
+    /// <summary>Every derivation announces its rule, premise, and conclusion on the inference trace stream.</summary>
+    [TestMethod]
+    public void DerivationsAnnounceRulePremiseAndConclusion()
+    {
+        EncodedTriple typeTriple = T(20, Type.Encoded, 10);
+        EncodedTriple[] triples =
+        [
+            T(10, SubClassOf.Encoded, 11),
+            typeTriple,
+        ];
+
+        List<InferenceTraceEvent> events = [];
+
+        RdfsMaterialization.MaterializeToFixpoint(
+            triples,
+            Terms,
+            (in InferenceTraceEvent evt) => events.Add(evt),
+            VeritasClock.System,
+            cancellationToken: TestContext.CancellationToken);
+
+        Assert.HasCount(1, events);
+        Assert.AreEqual(RdfsRuleKind.Rdfs9TypeInheritance, events[0].Rule);
+        Assert.AreEqual(typeTriple, events[0].Premise);
+        Assert.AreEqual(T(20, Type.Encoded, 11), events[0].Conclusion);
+        Assert.AreEqual(1L, events[0].SequenceNumber);
+    }
+
+    /// <summary>The commit helper writes exactly the derived triples through an edit session; the new store answers with them and the original is untouched.</summary>
+    [TestMethod]
+    public async Task MaterializeAndCommitWritesDerivedTriplesToANewSnapshot()
+    {
+        EncodedTriple[] triples =
+        [
+            T(10, SubClassOf.Encoded, 11),
+            T(20, Type.Encoded, 10),
+        ];
+
+        HypertrieGraphStore store = await HypertrieGraphStore
+            .BuildAsync(triples, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+
+        (HypertrieGraphStore materialized, int derivedCount) = await RdfsMaterialization
+            .MaterializeAndCommitAsync(store, Terms, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(1, derivedCount);
+        Assert.AreEqual(2, store.Count, "The base store must be untouched.");
+        Assert.AreEqual(3, materialized.Count, "The committed store carries base plus derived triples.");
+
+        bool derivedPresent = false;
+
+        foreach(EncodedTriple triple in materialized.Match(TermId.FromEncoded(20), Type, TermId.FromEncoded(11)))
+        {
+            derivedPresent = true;
+        }
+
+        Assert.IsTrue(derivedPresent, "The derived type statement must be queryable in the committed store.");
     }
 
     private static EncodedTriple T(uint subject, uint predicate, uint @object)

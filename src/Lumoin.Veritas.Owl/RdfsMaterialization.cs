@@ -1,8 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Encoding;
+using Lumoin.Veritas.Core.Hypertrie;
+using Lumoin.Veritas.Core.Hypertrie.Editing;
+using Lumoin.Veritas.Core.Hypertrie.Storage;
 
 namespace Lumoin.Veritas.Owl;
 
@@ -33,10 +38,13 @@ namespace Lumoin.Veritas.Owl;
 /// finite-answer semantics.
 /// </para>
 /// <para>
-/// <b>Provenance.</b> The returned set contains only the derived
-/// triples — never base triples — so a caller commits it through
-/// its own <c>EditSession</c> and the journal entry's additions
-/// list is exactly the inferred knowledge of this run.
+/// <b>Provenance.</b> The derived set never includes base triples,
+/// so committing it through an <c>EditSession</c> makes the journal
+/// entry's additions exactly the inferred knowledge of the run —
+/// which <see cref="MaterializeAndCommitAsync"/> does — and each
+/// derivation step is announced as an
+/// <see cref="InferenceTraceEvent"/> when a trace handler is
+/// supplied, sharing the run's correlation id.
 /// </para>
 /// </remarks>
 public static class RdfsMaterialization
@@ -48,20 +56,40 @@ public static class RdfsMaterialization
     /// </summary>
     /// <param name="triples">The base triples, schema statements included.</param>
     /// <param name="terms">The resolved vocabulary term identifiers.</param>
+    /// <param name="traceHandler">Optional handler receiving one <see cref="InferenceTraceEvent"/> per derivation.</param>
+    /// <param name="timeProvider">Clock used to stamp Ticks on emitted trace events. Required when <paramref name="traceHandler"/> is non-<c>null</c>; ignored otherwise.</param>
+    /// <param name="correlationId">Correlation id stamped on emitted trace events.</param>
     /// <param name="cancellationToken">A token that aborts derivation between triples.</param>
     /// <returns>The set of triples entailed but not present in the base.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="triples"/> is <c>null</c>.</exception>
+    /// <exception cref="ArgumentException">A trace handler is supplied without a time provider.</exception>
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
     public static IReadOnlyCollection<EncodedTriple> MaterializeToFixpoint(
         IEnumerable<EncodedTriple> triples,
         RdfsVocabularyTerms terms,
+        TraceHandler<InferenceTraceEvent>? traceHandler = null,
+        TimeProvider? timeProvider = null,
+        Guid correlationId = default,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(triples);
 
-        HashSet<EncodedTriple> all = [.. triples];
+        if(traceHandler is not null && timeProvider is null)
+        {
+            throw new ArgumentException("A time provider must be supplied when a trace handler is configured.", nameof(timeProvider));
+        }
+
+        MaterializationContext context = new()
+        {
+            All = [.. triples],
+            Terms = terms,
+            TraceHandler = traceHandler,
+            TimeProvider = timeProvider,
+            CorrelationId = correlationId,
+        };
+
         HashSet<EncodedTriple> derived = [];
-        RdfsSchema schema = RdfsSchema.Extract(all, terms);
+        RdfsSchema schema = RdfsSchema.Extract(context.All, terms);
 
         if(schema.IsEmpty)
         {
@@ -70,43 +98,93 @@ public static class RdfsMaterialization
 
         //The round's input is materialised to an array because the
         //accumulating set mutates while the round runs.
-        EncodedTriple[] worklist = [.. all];
-        List<EncodedTriple> delta = [];
+        EncodedTriple[] worklist = [.. context.All];
 
         while(true)
         {
-            delta.Clear();
-
-            bool schemaTouched = false;
+            context.Delta.Clear();
+            context.SchemaTouched = false;
 
             for(int i = 0; i < worklist.Length; i++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                DeriveInto(worklist[i], schema, all, delta, ref schemaTouched);
+                DeriveInto(worklist[i], schema, context);
             }
 
-            if(delta.Count == 0)
+            if(context.Delta.Count == 0)
             {
                 return derived;
             }
 
-            for(int i = 0; i < delta.Count; i++)
+            for(int i = 0; i < context.Delta.Count; i++)
             {
-                derived.Add(delta[i]);
+                derived.Add(context.Delta[i]);
             }
 
-            if(schemaTouched)
+            if(context.SchemaTouched)
             {
                 //New schema statements change the closures; rebuild
                 //and reprocess everything against the wider schema.
-                schema = RdfsSchema.Extract(all, terms);
-                worklist = [.. all];
+                schema = RdfsSchema.Extract(context.All, terms);
+                worklist = [.. context.All];
             }
             else
             {
-                worklist = [.. delta];
+                worklist = [.. context.Delta];
             }
+        }
+    }
+
+    /// <summary>
+    /// Derives the RDFS consequences of <paramref name="store"/>'s
+    /// triples and commits them through an
+    /// <see cref="EditSession"/>, so the journal entry's additions
+    /// are exactly the inferred knowledge of this run. A run that
+    /// derives nothing returns the store unchanged with no commit.
+    /// </summary>
+    /// <param name="store">The store to materialize over; its snapshot is the base the session branches from.</param>
+    /// <param name="terms">The resolved vocabulary term identifiers.</param>
+    /// <param name="traceHandler">Optional handler receiving one <see cref="InferenceTraceEvent"/> per derivation.</param>
+    /// <param name="timeProvider">Clock used to stamp Ticks on emitted trace events. Required when <paramref name="traceHandler"/> is non-<c>null</c>; ignored otherwise.</param>
+    /// <param name="correlationId">Correlation id stamped on emitted trace events.</param>
+    /// <param name="cancellationToken">A token that aborts derivation and the commit.</param>
+    /// <returns>The store over the post-commit snapshot (the input store when nothing was derived) and the number of derived triples.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="store"/> is <c>null</c>.</exception>
+    /// <exception cref="ArgumentException">A trace handler is supplied without a time provider.</exception>
+    /// <exception cref="EditSessionConcurrencyException">Another session committed against the store's journal first.</exception>
+    /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
+    public static async ValueTask<(HypertrieGraphStore Store, int DerivedCount)> MaterializeAndCommitAsync(
+        HypertrieGraphStore store,
+        RdfsVocabularyTerms terms,
+        TraceHandler<InferenceTraceEvent>? traceHandler = null,
+        TimeProvider? timeProvider = null,
+        Guid correlationId = default,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+
+        IReadOnlyCollection<EncodedTriple> derived = MaterializeToFixpoint(
+            store.Match(TermId.None, TermId.None, TermId.None),
+            terms,
+            traceHandler,
+            timeProvider,
+            correlationId,
+            cancellationToken);
+
+        if(derived.Count == 0)
+        {
+            return (store, 0);
+        }
+
+        EditSession session = await store.Snapshot.Store.OpenEditSessionAsync(store.Snapshot, cancellationToken).ConfigureAwait(false);
+
+        await using(session.ConfigureAwait(false))
+        {
+            session.AddRange(derived);
+            HypertrieSnapshot committed = await session.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+            return (HypertrieGraphStore.FromSnapshot(committed), derived.Count);
         }
     }
 
@@ -116,9 +194,7 @@ public static class RdfsMaterialization
     private static void DeriveInto(
         in EncodedTriple triple,
         RdfsSchema schema,
-        HashSet<EncodedTriple> all,
-        List<EncodedTriple> delta,
-        ref bool schemaTouched)
+        MaterializationContext context)
     {
         RdfsVocabularyTerms terms = schema.Terms;
         TermId subject = triple.Subject;
@@ -134,11 +210,11 @@ public static class RdfsMaterialization
         {
             TermId super = superProperties[i];
 
-            Emit(EncodedTriple.FromEncoded(subject.Encoded, super.Encoded, @object.Encoded), terms, all, delta, ref schemaTouched);
+            Emit(RdfsRuleKind.Rdfs7SubPropertyInheritance, in triple, EncodedTriple.FromEncoded(subject.Encoded, super.Encoded, @object.Encoded), context);
 
             if(super == terms.Type)
             {
-                EmitTypeExpansion(subject, @object, schema, all, delta, ref schemaTouched);
+                EmitTypeExpansion(in triple, subject, @object, schema, context);
             }
         }
 
@@ -149,21 +225,21 @@ public static class RdfsMaterialization
 
         for(int i = 0; i < domainTypes.Count; i++)
         {
-            Emit(EncodedTriple.FromEncoded(subject.Encoded, terms.Type.Encoded, domainTypes[i].Encoded), terms, all, delta, ref schemaTouched);
+            Emit(RdfsRuleKind.Rdfs2Domain, in triple, EncodedTriple.FromEncoded(subject.Encoded, terms.Type.Encoded, domainTypes[i].Encoded), context);
         }
 
         IReadOnlyList<TermId> rangeTypes = schema.RangeTypesOf(predicate);
 
         for(int i = 0; i < rangeTypes.Count; i++)
         {
-            Emit(EncodedTriple.FromEncoded(@object.Encoded, terms.Type.Encoded, rangeTypes[i].Encoded), terms, all, delta, ref schemaTouched);
+            Emit(RdfsRuleKind.Rdfs3Range, in triple, EncodedTriple.FromEncoded(@object.Encoded, terms.Type.Encoded, rangeTypes[i].Encoded), context);
         }
 
         //rdfs9 on type statements; rdfs11/rdfs5 close the schema
         //statements themselves.
         if(predicate == terms.Type)
         {
-            EmitTypeExpansion(subject, @object, schema, all, delta, ref schemaTouched);
+            EmitTypeExpansion(in triple, subject, @object, schema, context);
         }
         else if(predicate == terms.SubClassOf)
         {
@@ -171,7 +247,7 @@ public static class RdfsMaterialization
 
             for(int i = 0; i < superClasses.Count; i++)
             {
-                Emit(EncodedTriple.FromEncoded(subject.Encoded, terms.SubClassOf.Encoded, superClasses[i].Encoded), terms, all, delta, ref schemaTouched);
+                Emit(RdfsRuleKind.Rdfs11SubClassTransitivity, in triple, EncodedTriple.FromEncoded(subject.Encoded, terms.SubClassOf.Encoded, superClasses[i].Encoded), context);
             }
         }
         else if(predicate == terms.SubPropertyOf)
@@ -180,7 +256,7 @@ public static class RdfsMaterialization
 
             for(int i = 0; i < superOfTarget.Count; i++)
             {
-                Emit(EncodedTriple.FromEncoded(subject.Encoded, terms.SubPropertyOf.Encoded, superOfTarget[i].Encoded), terms, all, delta, ref schemaTouched);
+                Emit(RdfsRuleKind.Rdfs5SubPropertyTransitivity, in triple, EncodedTriple.FromEncoded(subject.Encoded, terms.SubPropertyOf.Encoded, superOfTarget[i].Encoded), context);
             }
         }
     }
@@ -188,41 +264,83 @@ public static class RdfsMaterialization
     //rdfs9 through the subclass closure: an instance of a class is
     //an instance of every strict superclass.
     private static void EmitTypeExpansion(
+        in EncodedTriple premise,
         TermId instance,
         TermId @class,
         RdfsSchema schema,
-        HashSet<EncodedTriple> all,
-        List<EncodedTriple> delta,
-        ref bool schemaTouched)
+        MaterializationContext context)
     {
         RdfsVocabularyTerms terms = schema.Terms;
         IReadOnlyList<TermId> superClasses = schema.SuperClassesOf(@class);
 
         for(int i = 0; i < superClasses.Count; i++)
         {
-            Emit(EncodedTriple.FromEncoded(instance.Encoded, terms.Type.Encoded, superClasses[i].Encoded), terms, all, delta, ref schemaTouched);
+            Emit(RdfsRuleKind.Rdfs9TypeInheritance, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.Type.Encoded, superClasses[i].Encoded), context);
         }
     }
 
     private static void Emit(
+        RdfsRuleKind rule,
+        in EncodedTriple premise,
         EncodedTriple candidate,
-        RdfsVocabularyTerms terms,
-        HashSet<EncodedTriple> all,
-        List<EncodedTriple> delta,
-        ref bool schemaTouched)
+        MaterializationContext context)
     {
-        if(!all.Add(candidate))
+        if(!context.All.Add(candidate))
         {
             return;
         }
 
-        delta.Add(candidate);
+        context.Delta.Add(candidate);
 
         TermId predicate = candidate.Predicate;
+        RdfsVocabularyTerms terms = context.Terms;
 
         if(predicate == terms.SubClassOf || predicate == terms.SubPropertyOf || predicate == terms.Domain || predicate == terms.Range)
         {
-            schemaTouched = true;
+            context.SchemaTouched = true;
         }
+
+        if(context.TraceHandler is not null)
+        {
+            InferenceTraceEvent evt = new(
+                ++context.TraceSequence,
+                context.TimeProvider!.GetUtcNow().UtcTicks,
+                context.CorrelationId,
+                rule,
+                premise,
+                candidate);
+
+            context.TraceHandler(in evt);
+        }
+    }
+
+    //The per-run mutable state one materialization threads through
+    //its derivation calls: the accumulating set, the round delta,
+    //and the trace wiring.
+    private sealed class MaterializationContext
+    {
+        /// <summary>Every triple seen so far — base plus derived.</summary>
+        public required HashSet<EncodedTriple> All { get; init; }
+
+        /// <summary>The current round's newly derived triples.</summary>
+        public List<EncodedTriple> Delta { get; } = [];
+
+        /// <summary>The vocabulary term identifiers, for schema-touch detection.</summary>
+        public required RdfsVocabularyTerms Terms { get; init; }
+
+        /// <summary>The trace handler, or <c>null</c> for no tracing.</summary>
+        public TraceHandler<InferenceTraceEvent>? TraceHandler { get; init; }
+
+        /// <summary>Clock for trace timestamps; non-<c>null</c> whenever <see cref="TraceHandler"/> is.</summary>
+        public TimeProvider? TimeProvider { get; init; }
+
+        /// <summary>The run's correlation id.</summary>
+        public Guid CorrelationId { get; init; }
+
+        /// <summary>Whether the current round derived a schema statement, forcing re-extraction.</summary>
+        public bool SchemaTouched;
+
+        /// <summary>The trace stream's sequence counter.</summary>
+        public long TraceSequence;
     }
 }
