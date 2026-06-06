@@ -13,12 +13,12 @@ namespace Lumoin.Veritas.Xml;
 /// its document, so the in-scope namespaces it inherits from ancestors have to be materialised onto it.
 /// </para>
 /// <para>
-/// There is no single universally-agreed serialisation: the W3C RDF/XML test corpus (and mainstream toolkits such as
-/// raptor / rdflib) hoist the in-scope namespaces in <b>document declaration order</b>, whereas W3C Canonical XML 1.0
-/// sorts namespace declarations lexicographically by prefix. This delegate is the seam that selects between them —
-/// <see cref="XmlLiteralCanonicalizers.DocumentOrder"/> for RDF-toolkit interop and conformance,
+/// There is no single universally-agreed serialisation: the W3C RDF/XML test corpus hoists the in-scope namespaces
+/// in <b>document declaration order</b>, whereas W3C Canonical XML 1.0 sorts namespace declarations lexicographically
+/// by prefix. This delegate is the seam that selects between them —
+/// <see cref="XmlLiteralCanonicalizers.DocumentOrder"/> for conformance,
 /// <see cref="XmlLiteralCanonicalizers.Canonical"/> for strict Canonical XML 1.0 — and is the compatibility knob for
-/// matching any other implementation's XML-literal form.
+/// matching a peer's XML-literal form.
 /// </para>
 /// </remarks>
 /// <param name="literalProperty">The <c>rdf:parseType="Literal"</c> property element whose child content is the literal.</param>

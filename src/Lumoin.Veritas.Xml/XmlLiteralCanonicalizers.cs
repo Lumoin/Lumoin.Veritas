@@ -17,8 +17,8 @@ namespace Lumoin.Veritas.Xml;
 /// Both hoist the in-scope namespaces an XML literal inherits from its ancestors onto the detached fragment and
 /// expand empty elements; they differ only in the order of the hoisted namespace declarations —
 /// <see cref="DocumentOrder"/> keeps source declaration order, <see cref="Canonical"/> sorts lexicographically by
-/// prefix per Canonical XML 1.0. Selecting between them (or supplying a third) is how the reader matches another
-/// implementation's XML-literal form.
+/// prefix per Canonical XML 1.0. Selecting between them (or supplying a third) is how the reader matches a peer's
+/// XML-literal form.
 /// </remarks>
 public static class XmlLiteralCanonicalizers
 {
@@ -26,7 +26,7 @@ public static class XmlLiteralCanonicalizers
 
     /// <summary>
     /// Gets the canonicalizer that hoists in-scope namespaces in <b>document declaration order</b> (the form the W3C
-    /// RDF/XML test corpus and toolkits such as raptor / rdflib emit). This is the reader's default.
+    /// RDF/XML test corpus carries). This is the reader's default.
     /// </summary>
     public static XmlLiteralCanonicalizer DocumentOrder { get; } = SerializeDocumentOrder;
 

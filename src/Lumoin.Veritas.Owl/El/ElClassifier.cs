@@ -9,8 +9,7 @@ namespace Lumoin.Veritas.Owl.El;
 /// <summary>
 /// Consequence-based OWL 2 EL classification: normalizes the TBox to the
 /// EL normal forms and saturates the completion rules to fixpoint,
-/// producing the subclass closure over named classes — the
-/// polynomial-time procedure of the CEL/ELK lineage.
+/// producing the subclass closure over named classes in polynomial time.
 /// </summary>
 /// <remarks>
 /// <para>
