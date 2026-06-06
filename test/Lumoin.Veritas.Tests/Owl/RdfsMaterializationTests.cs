@@ -228,8 +228,9 @@ internal sealed class RdfsMaterializationTests
             cancellationToken: TestContext.CancellationToken);
 
         Assert.HasCount(1, events);
-        Assert.AreEqual(RdfsRuleKind.Rdfs9TypeInheritance, events[0].Rule);
-        Assert.AreEqual(typeTriple, events[0].Premise);
+        Assert.AreEqual(EntailmentRules.Rdfs9, events[0].Rule);
+        Assert.HasCount(1, events[0].Premises);
+        Assert.AreEqual(typeTriple, events[0].Premises[0]);
         Assert.AreEqual(T(20, Type.Encoded, 11), events[0].Conclusion);
         Assert.AreEqual(1L, events[0].SequenceNumber);
     }

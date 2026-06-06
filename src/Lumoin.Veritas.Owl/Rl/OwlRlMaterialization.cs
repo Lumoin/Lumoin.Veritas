@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Immutable;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie;
 using Lumoin.Veritas.Core.Hypertrie.Editing;
@@ -16,11 +18,13 @@ namespace Lumoin.Veritas.Owl.Rl;
 /// <param name="DerivedCount">The number of triples the rules derived and committed.</param>
 /// <param name="IsConsistent">Whether the closure completed without deriving a contradiction.</param>
 /// <param name="InconsistencyRule">The falsity rule that fired, or <c>null</c> when consistent.</param>
+/// <param name="InconsistencyPremises">The triples the falsity rule matched; empty when consistent.</param>
 public readonly record struct OwlRlMaterializationResult(
     HypertrieGraphStore Store,
     int DerivedCount,
     bool IsConsistent,
-    string? InconsistencyRule);
+    string? InconsistencyRule,
+    ImmutableArray<EncodedTriple> InconsistencyPremises);
 
 /// <summary>
 /// Materializes the OWL 2 RL closure of a store's triples and commits the
@@ -40,15 +44,22 @@ public static class OwlRlMaterialization
     /// <param name="store">The store to materialize over; its snapshot is the base the session branches from.</param>
     /// <param name="terms">The resolved RL vocabulary.</param>
     /// <param name="datatypeOracle">The datatype oracle for the <c>dt-*</c> falsities; <see cref="OwlRlDatatypeOracle.None"/> disables them.</param>
+    /// <param name="traceHandler">Optional handler receiving one <see cref="InferenceTraceEvent"/> per derivation, premises included.</param>
+    /// <param name="timeProvider">Clock used to stamp Ticks on emitted trace events. Required when <paramref name="traceHandler"/> is non-<c>null</c>; ignored otherwise.</param>
+    /// <param name="correlationId">Correlation id stamped on emitted trace events.</param>
     /// <param name="cancellationToken">A token that aborts derivation and the commit.</param>
-    /// <returns>The post-commit store, the derivation count, and the consistency verdict.</returns>
+    /// <returns>The post-commit store, the derivation count, and the consistency verdict with the falsity's premises.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="store"/> or <paramref name="terms"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">A trace handler is supplied without a time provider.</exception>
     /// <exception cref="EditSessionConcurrencyException">Another session committed against the store's journal first.</exception>
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
     public static async ValueTask<OwlRlMaterializationResult> MaterializeAndCommitAsync(
         HypertrieGraphStore store,
         OwlRlTerms terms,
         OwlRlDatatypeOracle datatypeOracle = default,
+        TraceHandler<InferenceTraceEvent>? traceHandler = null,
+        TimeProvider? timeProvider = null,
+        Guid correlationId = default,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(store);
@@ -58,11 +69,14 @@ public static class OwlRlMaterialization
             store.Match(TermId.None, TermId.None, TermId.None),
             terms,
             datatypeOracle,
+            traceHandler,
+            timeProvider,
+            correlationId,
             cancellationToken);
 
         if(!closure.IsConsistent || closure.Derived.Count == 0)
         {
-            return new OwlRlMaterializationResult(store, DerivedCount: 0, closure.IsConsistent, closure.InconsistencyRule);
+            return new OwlRlMaterializationResult(store, DerivedCount: 0, closure.IsConsistent, closure.InconsistencyRule, closure.InconsistencyPremises);
         }
 
         EditSession session = await store.Snapshot.Store.OpenEditSessionAsync(store.Snapshot, cancellationToken).ConfigureAwait(false);
@@ -76,7 +90,8 @@ public static class OwlRlMaterialization
                 HypertrieGraphStore.FromSnapshot(committed),
                 closure.Derived.Count,
                 IsConsistent: true,
-                InconsistencyRule: null);
+                InconsistencyRule: null,
+                InconsistencyPremises: []);
         }
     }
 }

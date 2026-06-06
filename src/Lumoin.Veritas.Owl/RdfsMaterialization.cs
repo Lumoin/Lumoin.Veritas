@@ -225,7 +225,7 @@ public static class RdfsMaterialization
         {
             TermId super = superProperties[i];
 
-            Emit(RdfsRuleKind.Rdfs7SubPropertyInheritance, in triple, EncodedTriple.FromEncoded(subject.Encoded, super.Encoded, @object.Encoded), context);
+            Emit(EntailmentRules.Rdfs7, in triple, EncodedTriple.FromEncoded(subject.Encoded, super.Encoded, @object.Encoded), context);
 
             if(super == terms.Type)
             {
@@ -240,20 +240,20 @@ public static class RdfsMaterialization
 
         for(int i = 0; i < domainTypes.Count; i++)
         {
-            Emit(RdfsRuleKind.Rdfs2Domain, in triple, EncodedTriple.FromEncoded(subject.Encoded, terms.Type.Encoded, domainTypes[i].Encoded), context);
+            Emit(EntailmentRules.Rdfs2, in triple, EncodedTriple.FromEncoded(subject.Encoded, terms.Type.Encoded, domainTypes[i].Encoded), context);
         }
 
         IReadOnlyList<TermId> rangeTypes = schema.RangeTypesOf(predicate);
 
         for(int i = 0; i < rangeTypes.Count; i++)
         {
-            Emit(RdfsRuleKind.Rdfs3Range, in triple, EncodedTriple.FromEncoded(@object.Encoded, terms.Type.Encoded, rangeTypes[i].Encoded), context);
+            Emit(EntailmentRules.Rdfs3, in triple, EncodedTriple.FromEncoded(@object.Encoded, terms.Type.Encoded, rangeTypes[i].Encoded), context);
         }
 
         //rdf1: any statement types its predicate as an rdf:Property.
         if(terms.Property != TermId.None)
         {
-            Emit(RdfsRuleKind.Rdf1PropertyTyping, in triple, EncodedTriple.FromEncoded(predicate.Encoded, terms.Type.Encoded, terms.Property.Encoded), context);
+            Emit(EntailmentRules.Rdf1, in triple, EncodedTriple.FromEncoded(predicate.Encoded, terms.Type.Encoded, terms.Property.Encoded), context);
         }
 
         //rdfs9 on type statements; rdfs11/rdfs5 close the schema
@@ -266,7 +266,7 @@ public static class RdfsMaterialization
 
             if(terms.Class != TermId.None)
             {
-                Emit(RdfsRuleKind.RdfsAxiomaticTyping, in triple, EncodedTriple.FromEncoded(@object.Encoded, terms.Type.Encoded, terms.Class.Encoded), context);
+                Emit(EntailmentRules.AxiomaticTyping, in triple, EncodedTriple.FromEncoded(@object.Encoded, terms.Type.Encoded, terms.Class.Encoded), context);
             }
 
             EmitVocabularyTypeConsequences(in triple, subject, @object, terms, context);
@@ -277,7 +277,7 @@ public static class RdfsMaterialization
 
             for(int i = 0; i < superClasses.Count; i++)
             {
-                Emit(RdfsRuleKind.Rdfs11SubClassTransitivity, in triple, EncodedTriple.FromEncoded(subject.Encoded, terms.SubClassOf.Encoded, superClasses[i].Encoded), context);
+                Emit(EntailmentRules.Rdfs11, in triple, EncodedTriple.FromEncoded(subject.Encoded, terms.SubClassOf.Encoded, superClasses[i].Encoded), context);
             }
 
             EmitAxiomaticTyping(in triple, subject, terms.Class, terms, context);
@@ -289,7 +289,7 @@ public static class RdfsMaterialization
 
             for(int i = 0; i < superOfTarget.Count; i++)
             {
-                Emit(RdfsRuleKind.Rdfs5SubPropertyTransitivity, in triple, EncodedTriple.FromEncoded(subject.Encoded, terms.SubPropertyOf.Encoded, superOfTarget[i].Encoded), context);
+                Emit(EntailmentRules.Rdfs5, in triple, EncodedTriple.FromEncoded(subject.Encoded, terms.SubPropertyOf.Encoded, superOfTarget[i].Encoded), context);
             }
 
             EmitAxiomaticTyping(in triple, subject, terms.Property, terms, context);
@@ -315,24 +315,24 @@ public static class RdfsMaterialization
     {
         if(@class == terms.Property && terms.Property != TermId.None)
         {
-            Emit(RdfsRuleKind.Rdfs6SubPropertyReflexivity, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.SubPropertyOf.Encoded, instance.Encoded), context);
+            Emit(EntailmentRules.Rdfs6, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.SubPropertyOf.Encoded, instance.Encoded), context);
         }
         else if(@class == terms.Class && terms.Class != TermId.None)
         {
-            Emit(RdfsRuleKind.Rdfs10SubClassReflexivity, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.SubClassOf.Encoded, instance.Encoded), context);
+            Emit(EntailmentRules.Rdfs10, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.SubClassOf.Encoded, instance.Encoded), context);
 
             if(terms.Resource != TermId.None)
             {
-                Emit(RdfsRuleKind.Rdfs8ResourceSubsumption, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.SubClassOf.Encoded, terms.Resource.Encoded), context);
+                Emit(EntailmentRules.Rdfs8, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.SubClassOf.Encoded, terms.Resource.Encoded), context);
             }
         }
         else if(@class == terms.ContainerMembershipProperty && terms.ContainerMembershipProperty != TermId.None && terms.Member != TermId.None)
         {
-            Emit(RdfsRuleKind.Rdfs12ContainerMembership, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.SubPropertyOf.Encoded, terms.Member.Encoded), context);
+            Emit(EntailmentRules.Rdfs12, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.SubPropertyOf.Encoded, terms.Member.Encoded), context);
         }
         else if(@class == terms.Datatype && terms.Datatype != TermId.None && terms.Literal != TermId.None)
         {
-            Emit(RdfsRuleKind.Rdfs13DatatypeLiteral, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.SubClassOf.Encoded, terms.Literal.Encoded), context);
+            Emit(EntailmentRules.Rdfs13, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.SubClassOf.Encoded, terms.Literal.Encoded), context);
         }
     }
 
@@ -348,7 +348,7 @@ public static class RdfsMaterialization
     {
         if(@class != TermId.None)
         {
-            Emit(RdfsRuleKind.RdfsAxiomaticTyping, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.Type.Encoded, @class.Encoded), context);
+            Emit(EntailmentRules.AxiomaticTyping, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.Type.Encoded, @class.Encoded), context);
         }
     }
 
@@ -376,12 +376,12 @@ public static class RdfsMaterialization
 
         for(int i = 0; i < superClasses.Count; i++)
         {
-            Emit(RdfsRuleKind.Rdfs9TypeInheritance, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.Type.Encoded, superClasses[i].Encoded), context);
+            Emit(EntailmentRules.Rdfs9, in premise, EncodedTriple.FromEncoded(instance.Encoded, terms.Type.Encoded, superClasses[i].Encoded), context);
         }
     }
 
     private static void Emit(
-        RdfsRuleKind rule,
+        string rule,
         in EncodedTriple premise,
         EncodedTriple candidate,
         MaterializationContext context)
@@ -408,7 +408,7 @@ public static class RdfsMaterialization
                 context.TimeProvider!.GetUtcNow().UtcTicks,
                 context.CorrelationId,
                 rule,
-                premise,
+                [premise],
                 candidate);
 
             context.TraceHandler(in evt);

@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Threading;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Encoding;
 
 namespace Lumoin.Veritas.Owl.Rl;
@@ -22,17 +24,22 @@ public sealed class OwlRlResult
     /// <summary>The falsity rule that fired, or <c>null</c> when consistent.</summary>
     public string? InconsistencyRule { get; }
 
+    /// <summary>The triples the falsity rule matched — why the closure is inconsistent; empty when consistent.</summary>
+    public ImmutableArray<EncodedTriple> InconsistencyPremises { get; }
+
     /// <summary>
     /// Initialises the result.
     /// </summary>
     /// <param name="derived">The derived triples.</param>
     /// <param name="isConsistent">Whether no contradiction was derived.</param>
     /// <param name="inconsistencyRule">The falsity rule that fired, or <c>null</c>.</param>
-    public OwlRlResult(IReadOnlyCollection<EncodedTriple> derived, bool isConsistent, string? inconsistencyRule)
+    /// <param name="inconsistencyPremises">The triples the falsity rule matched; empty when consistent.</param>
+    public OwlRlResult(IReadOnlyCollection<EncodedTriple> derived, bool isConsistent, string? inconsistencyRule, ImmutableArray<EncodedTriple> inconsistencyPremises)
     {
         Derived = derived;
         IsConsistent = isConsistent;
         InconsistencyRule = inconsistencyRule;
+        InconsistencyPremises = inconsistencyPremises;
     }
 }
 
@@ -73,20 +80,38 @@ public static class OwlRlClosure
     /// closure cannot inspect literal values itself;
     /// <see cref="OwlRlDatatypeOracle.None"/> disables both checks.
     /// </param>
+    /// <param name="traceHandler">Optional handler receiving one <see cref="InferenceTraceEvent"/> per derivation, premises included.</param>
+    /// <param name="timeProvider">Clock used to stamp Ticks on emitted trace events. Required when <paramref name="traceHandler"/> is non-<c>null</c>; ignored otherwise.</param>
+    /// <param name="correlationId">Correlation id stamped on emitted trace events.</param>
     /// <param name="cancellationToken">A token that aborts derivation between rounds.</param>
-    /// <returns>The derived triples and the consistency verdict.</returns>
+    /// <returns>The derived triples and the consistency verdict, with the falsity's premises when inconsistent.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="triples"/> or <paramref name="terms"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">A trace handler is supplied without a time provider.</exception>
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
     public static OwlRlResult Compute(
         IEnumerable<EncodedTriple> triples,
         OwlRlTerms terms,
         OwlRlDatatypeOracle datatypeOracle = default,
+        TraceHandler<InferenceTraceEvent>? traceHandler = null,
+        TimeProvider? timeProvider = null,
+        Guid correlationId = default,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(triples);
         ArgumentNullException.ThrowIfNull(terms);
 
-        ClosureContext context = new(triples, terms, datatypeOracle.LiteralsKnownDistinct is null ? OwlRlDatatypeOracle.None : datatypeOracle);
+        if(traceHandler is not null && timeProvider is null)
+        {
+            throw new ArgumentException("A time provider must be supplied when a trace handler is configured.", nameof(timeProvider));
+        }
+
+        ClosureContext context = new(
+            triples,
+            terms,
+            datatypeOracle.LiteralsKnownDistinct is null ? OwlRlDatatypeOracle.None : datatypeOracle,
+            traceHandler,
+            timeProvider,
+            correlationId);
 
         while(true)
         {
@@ -101,7 +126,7 @@ public static class OwlRlClosure
             }
         }
 
-        return new OwlRlResult(context.Derived, context.InconsistencyRule is null, context.InconsistencyRule);
+        return new OwlRlResult(context.Derived, context.InconsistencyRule is null, context.InconsistencyRule, context.InconsistencyPremises);
     }
 
     //The per-run state: the accumulating triple set, the per-round indexes,
@@ -124,6 +149,21 @@ public static class OwlRlClosure
         /// <summary>The falsity rule that fired, or <c>null</c>.</summary>
         public string? InconsistencyRule { get; private set; }
 
+        /// <summary>The triples the falsity rule matched; empty while consistent.</summary>
+        public ImmutableArray<EncodedTriple> InconsistencyPremises { get; private set; } = [];
+
+        /// <summary>The trace handler, or <c>null</c> for no tracing.</summary>
+        private TraceHandler<InferenceTraceEvent>? TraceHandler { get; }
+
+        /// <summary>Clock for trace timestamps; non-<c>null</c> whenever <see cref="TraceHandler"/> is.</summary>
+        private TimeProvider? TimeProvider { get; }
+
+        /// <summary>The run's correlation id.</summary>
+        private Guid CorrelationId { get; }
+
+        /// <summary>Monotonic sequence for emitted trace events.</summary>
+        private long TraceSequence { get; set; }
+
         /// <summary>Per-predicate (subject, object) pairs.</summary>
         private Dictionary<TermId, List<(TermId Subject, TermId Object)>> ByPredicate { get; } = [];
 
@@ -139,10 +179,19 @@ public static class OwlRlClosure
         /// <summary>The datatype oracle for the <c>dt-*</c> falsities.</summary>
         private OwlRlDatatypeOracle DatatypeOracle { get; }
 
-        public ClosureContext(IEnumerable<EncodedTriple> triples, OwlRlTerms terms, OwlRlDatatypeOracle datatypeOracle)
+        public ClosureContext(
+            IEnumerable<EncodedTriple> triples,
+            OwlRlTerms terms,
+            OwlRlDatatypeOracle datatypeOracle,
+            TraceHandler<InferenceTraceEvent>? traceHandler,
+            TimeProvider? timeProvider,
+            Guid correlationId)
         {
             Terms = terms;
             DatatypeOracle = datatypeOracle;
+            TraceHandler = traceHandler;
+            TimeProvider = timeProvider;
+            CorrelationId = correlationId;
             foreach(EncodedTriple triple in triples)
             {
                 All.Add(triple);
@@ -271,19 +320,21 @@ public static class OwlRlClosure
 
             foreach((TermId x, TermId y) in sameAs)
             {
+                EncodedTriple same = Fact(x, Terms.SameAs, y);
+
                 //eq-sym.
-                Add(y, Terms.SameAs, x);
+                Add(y, Terms.SameAs, x, EntailmentRules.EqSym, [same]);
 
                 //eq-trans.
                 foreach(TermId z in ObjectsOf(y, Terms.SameAs))
                 {
-                    Add(x, Terms.SameAs, z);
+                    Add(x, Terms.SameAs, z, EntailmentRules.EqTrans, [same, Fact(y, Terms.SameAs, z)]);
                 }
 
                 //eq-diff1.
                 if(ObjectsOf(x, Terms.DifferentFrom).Contains(y))
                 {
-                    Inconsistent("eq-diff1");
+                    Inconsistent(EntailmentRules.EqDiff1, [same, Fact(x, Terms.DifferentFrom, y)]);
 
                     return;
                 }
@@ -292,7 +343,7 @@ public static class OwlRlClosure
                 //literals denoting distinct data values contradicts.
                 if(x != y && DatatypeOracle.LiteralsKnownDistinct(x, y))
                 {
-                    Inconsistent("dt-diff");
+                    Inconsistent(EntailmentRules.DtDiff, [same]);
 
                     return;
                 }
@@ -308,17 +359,17 @@ public static class OwlRlClosure
                 {
                     if(triple.Subject == x)
                     {
-                        Add(y, triple.Predicate.Encoded, triple.Object.Encoded);
+                        Add(y, triple.Predicate, triple.Object, EntailmentRules.EqRepS, [same, triple]);
                     }
 
                     if(triple.Predicate == x)
                     {
-                        Add(triple.Subject.Encoded, y, triple.Object.Encoded);
+                        Add(triple.Subject, y, triple.Object, EntailmentRules.EqRepP, [same, triple]);
                     }
 
                     if(triple.Object == x)
                     {
-                        Add(triple.Subject.Encoded, triple.Predicate.Encoded, y);
+                        Add(triple.Subject, triple.Predicate, y, EntailmentRules.EqRepO, [same, triple]);
                     }
                 }
             }
@@ -326,7 +377,7 @@ public static class OwlRlClosure
             //Difference is symmetric.
             foreach((TermId x, TermId y) in Pairs(Terms.DifferentFrom))
             {
-                Add(y, Terms.DifferentFrom, x);
+                Add(y, Terms.DifferentFrom, x, EntailmentRules.DifferentFromSymmetry, [Fact(x, Terms.DifferentFrom, y)]);
             }
 
             //eq-diff2 / eq-diff3: two sameAs members of an owl:AllDifferent
@@ -344,13 +395,21 @@ public static class OwlRlClosure
                     continue;
                 }
 
+                EncodedTriple allDifferent = Fact(node, Terms.Type, Terms.AllDifferent);
                 for(int i = 0; i < members.Count; i++)
                 {
                     for(int j = i + 1; j < members.Count; j++)
                     {
-                        if(members[i] == members[j] || ObjectsOf(members[i], Terms.SameAs).Contains(members[j]))
+                        if(members[i] == members[j])
                         {
-                            Inconsistent("eq-diff2");
+                            Inconsistent(EntailmentRules.EqDiff2, [allDifferent]);
+
+                            return;
+                        }
+
+                        if(ObjectsOf(members[i], Terms.SameAs).Contains(members[j]))
+                        {
+                            Inconsistent(EntailmentRules.EqDiff2, [allDifferent, Fact(members[i], Terms.SameAs, members[j])]);
 
                             return;
                         }
@@ -366,41 +425,47 @@ public static class OwlRlClosure
             //prp-dom / prp-rng.
             foreach((TermId p, TermId c) in Pairs(Terms.Domain))
             {
-                foreach((TermId x, TermId _) in Pairs(p))
+                EncodedTriple domain = Fact(p, Terms.Domain, c);
+                foreach((TermId x, TermId y) in Pairs(p))
                 {
-                    Add(x, Terms.Type, c);
+                    Add(x, Terms.Type, c, EntailmentRules.PrpDom, [domain, Fact(x, p, y)]);
                 }
             }
 
             foreach((TermId p, TermId c) in Pairs(Terms.Range))
             {
-                foreach((TermId _, TermId y) in Pairs(p))
+                EncodedTriple range = Fact(p, Terms.Range, c);
+                foreach((TermId x, TermId y) in Pairs(p))
                 {
                     //dt-not-type: a literal value outside the range
                     //datatype's value space contradicts.
                     if(DatatypeOracle.LiteralOutsideDatatype(y, c))
                     {
-                        Inconsistent("dt-not-type");
+                        Inconsistent(EntailmentRules.DtNotType, [range, Fact(x, p, y)]);
 
                         return;
                     }
 
-                    Add(y, Terms.Type, c);
+                    Add(y, Terms.Type, c, EntailmentRules.PrpRng, [range, Fact(x, p, y)]);
                 }
             }
 
             //The characteristic rules key off type statements.
             foreach((TermId p, TermId characteristic) in Pairs(Terms.Type))
             {
+                EncodedTriple typing = Fact(p, Terms.Type, characteristic);
+
                 if(characteristic == Terms.FunctionalProperty)
                 {
                     //prp-fp.
-                    ForEachSamePredicatePair(p, bySubject: true, (first, second) => Add(first, Terms.SameAs, second));
+                    ForEachSamePredicatePair(p, bySubject: true, (key, first, second) =>
+                        Add(first, Terms.SameAs, second, EntailmentRules.PrpFp, [typing, Fact(key, p, first), Fact(key, p, second)]));
                 }
                 else if(characteristic == Terms.InverseFunctionalProperty)
                 {
                     //prp-ifp.
-                    ForEachSamePredicatePair(p, bySubject: false, (first, second) => Add(first, Terms.SameAs, second));
+                    ForEachSamePredicatePair(p, bySubject: false, (key, first, second) =>
+                        Add(first, Terms.SameAs, second, EntailmentRules.PrpIfp, [typing, Fact(first, p, key), Fact(second, p, key)]));
                 }
                 else if(characteristic == Terms.IrreflexiveProperty)
                 {
@@ -409,7 +474,7 @@ public static class OwlRlClosure
                     {
                         if(x == y)
                         {
-                            Inconsistent("prp-irp");
+                            Inconsistent(EntailmentRules.PrpIrp, [typing, Fact(x, p, x)]);
 
                             return;
                         }
@@ -420,7 +485,7 @@ public static class OwlRlClosure
                     //prp-symp.
                     foreach((TermId x, TermId y) in Pairs(p))
                     {
-                        Add(y, p, x);
+                        Add(y, p, x, EntailmentRules.PrpSymp, [typing, Fact(x, p, y)]);
                     }
                 }
                 else if(characteristic == Terms.AsymmetricProperty)
@@ -430,7 +495,7 @@ public static class OwlRlClosure
                     {
                         if(ObjectsOf(y, p).Contains(x))
                         {
-                            Inconsistent("prp-asyp");
+                            Inconsistent(EntailmentRules.PrpAsyp, [typing, Fact(x, p, y), Fact(y, p, x)]);
 
                             return;
                         }
@@ -443,7 +508,7 @@ public static class OwlRlClosure
                     {
                         foreach(TermId z in ObjectsOf(y, p))
                         {
-                            Add(x, p, z);
+                            Add(x, p, z, EntailmentRules.PrpTrp, [typing, Fact(x, p, y), Fact(y, p, z)]);
                         }
                     }
                 }
@@ -454,7 +519,7 @@ public static class OwlRlClosure
                     {
                         foreach(TermId x in individuals)
                         {
-                            Add(x, p, x);
+                            Add(x, p, x, EntailmentRules.ReflexiveInstantiation, [typing, Fact(x, Terms.Type, Terms.NamedIndividual)]);
                         }
                     }
                 }
@@ -463,9 +528,10 @@ public static class OwlRlClosure
             //prp-spo1.
             foreach((TermId p1, TermId p2) in Pairs(Terms.SubPropertyOf))
             {
+                EncodedTriple subProperty = Fact(p1, Terms.SubPropertyOf, p2);
                 foreach((TermId x, TermId y) in Pairs(p1))
                 {
-                    Add(x, p2, y);
+                    Add(x, p2, y, EntailmentRules.PrpSpo1, [subProperty, Fact(x, p1, y)]);
                 }
             }
 
@@ -477,57 +543,62 @@ public static class OwlRlClosure
                     continue;
                 }
 
+                EncodedTriple chainAxiom = Fact(p, Terms.PropertyChainAxiom, listHead);
+
                 //Walk the chain link by link, extending the frontier of
-                //(start, current) pairs.
-                List<(TermId Start, TermId Current)> frontier = [];
+                //(start, current) pairs; each pair carries the hop triples
+                //it traversed, so the conclusion's provenance is complete.
+                List<(TermId Start, TermId Current, List<EncodedTriple> Hops)> frontier = [];
                 foreach((TermId start, TermId next) in Pairs(chain[0]))
                 {
-                    frontier.Add((start, next));
+                    frontier.Add((start, next, [Fact(start, chain[0], next)]));
                 }
 
                 for(int i = 1; i < chain.Count && frontier.Count > 0; i++)
                 {
-                    List<(TermId Start, TermId Current)> extended = [];
-                    foreach((TermId start, TermId current) in frontier)
+                    List<(TermId Start, TermId Current, List<EncodedTriple> Hops)> extended = [];
+                    foreach((TermId start, TermId current, List<EncodedTriple> hops) in frontier)
                     {
                         foreach(TermId next in ObjectsOf(current, chain[i]))
                         {
-                            extended.Add((start, next));
+                            extended.Add((start, next, [.. hops, Fact(current, chain[i], next)]));
                         }
                     }
 
                     frontier = extended;
                 }
 
-                foreach((TermId start, TermId end) in frontier)
+                foreach((TermId start, TermId end, List<EncodedTriple> hops) in frontier)
                 {
-                    Add(start, p, end);
+                    Add(start, p, end, EntailmentRules.PrpSpo2, [chainAxiom, .. hops]);
                 }
             }
 
             //prp-eqp1 / prp-eqp2.
             foreach((TermId p1, TermId p2) in Pairs(Terms.EquivalentProperty))
             {
+                EncodedTriple equivalent = Fact(p1, Terms.EquivalentProperty, p2);
                 foreach((TermId x, TermId y) in Pairs(p1))
                 {
-                    Add(x, p2, y);
+                    Add(x, p2, y, EntailmentRules.PrpEqp1, [equivalent, Fact(x, p1, y)]);
                 }
 
                 foreach((TermId x, TermId y) in Pairs(p2))
                 {
-                    Add(x, p1, y);
+                    Add(x, p1, y, EntailmentRules.PrpEqp2, [equivalent, Fact(x, p2, y)]);
                 }
             }
 
             //prp-pdw; property disjointness is symmetric.
             foreach((TermId p1, TermId p2) in Pairs(Terms.PropertyDisjointWith))
             {
-                Add(p2, Terms.PropertyDisjointWith, p1);
+                EncodedTriple disjoint = Fact(p1, Terms.PropertyDisjointWith, p2);
+                Add(p2, Terms.PropertyDisjointWith, p1, EntailmentRules.PrpPdw, [disjoint]);
                 foreach((TermId x, TermId y) in Pairs(p1))
                 {
                     if(ObjectsOf(x, p2).Contains(y))
                     {
-                        Inconsistent("prp-pdw");
+                        Inconsistent(EntailmentRules.PrpPdw, [disjoint, Fact(x, p1, y), Fact(x, p2, y)]);
 
                         return;
                     }
@@ -543,16 +614,17 @@ public static class OwlRlClosure
                     continue;
                 }
 
+                EncodedTriple allDisjoint = Fact(node, Terms.Type, Terms.AllDisjointProperties);
                 for(int i = 0; i < members.Count; i++)
                 {
                     for(int j = i + 1; j < members.Count; j++)
                     {
-                        Add(members[i], Terms.PropertyDisjointWith, members[j]);
+                        Add(members[i], Terms.PropertyDisjointWith, members[j], EntailmentRules.PrpAdp, [allDisjoint]);
                         foreach((TermId x, TermId y) in Pairs(members[i]))
                         {
                             if(ObjectsOf(x, members[j]).Contains(y))
                             {
-                                Inconsistent("prp-adp");
+                                Inconsistent(EntailmentRules.PrpAdp, [allDisjoint, Fact(x, members[i], y), Fact(x, members[j], y)]);
 
                                 return;
                             }
@@ -564,14 +636,15 @@ public static class OwlRlClosure
             //prp-inv1 / prp-inv2.
             foreach((TermId p1, TermId p2) in Pairs(Terms.InverseOf))
             {
+                EncodedTriple inverse = Fact(p1, Terms.InverseOf, p2);
                 foreach((TermId x, TermId y) in Pairs(p1))
                 {
-                    Add(y, p2, x);
+                    Add(y, p2, x, EntailmentRules.PrpInv1, [inverse, Fact(x, p1, y)]);
                 }
 
                 foreach((TermId x, TermId y) in Pairs(p2))
                 {
-                    Add(y, p1, x);
+                    Add(y, p1, x, EntailmentRules.PrpInv2, [inverse, Fact(x, p2, y)]);
                 }
             }
 
@@ -584,24 +657,31 @@ public static class OwlRlClosure
                     continue;
                 }
 
+                EncodedTriple hasKey = Fact(c, Terms.HasKey, listHead);
                 for(int i = 0; i < instances.Count; i++)
                 {
                     for(int j = i + 1; j < instances.Count; j++)
                     {
+                        //The premises accumulate one shared-value witness
+                        //pair per key property.
+                        List<EncodedTriple> premises = [hasKey, Fact(instances[i], Terms.Type, c), Fact(instances[j], Terms.Type, c)];
                         bool sharesAll = true;
                         foreach(TermId key in keys)
                         {
-                            if(!ShareValue(instances[i], instances[j], key))
+                            if(!TryGetSharedValue(instances[i], instances[j], key, out TermId value))
                             {
                                 sharesAll = false;
 
                                 break;
                             }
+
+                            premises.Add(Fact(instances[i], key, value));
+                            premises.Add(Fact(instances[j], key, value));
                         }
 
                         if(sharesAll)
                         {
-                            Add(instances[i], Terms.SameAs, instances[j]);
+                            Add(instances[i], Terms.SameAs, instances[j], EntailmentRules.PrpKey, [.. premises]);
                         }
                     }
                 }
@@ -621,7 +701,7 @@ public static class OwlRlClosure
 
                 if(source is TermId s && property is TermId p && target is TermId t && ObjectsOf(s, p).Contains(t))
                 {
-                    Inconsistent("prp-npa");
+                    Inconsistent(EntailmentRules.PrpNpa, [Fact(node, Terms.Type, Terms.NegativePropertyAssertion), Fact(s, p, t)]);
 
                     return;
                 }
@@ -633,9 +713,9 @@ public static class OwlRlClosure
         private void FireClasses()
         {
             //cls-nothing2.
-            if(InstancesOf.ContainsKey(Terms.Nothing))
+            if(InstancesOf.TryGetValue(Terms.Nothing, out List<TermId>? nothings) && nothings.Count > 0)
             {
-                Inconsistent("cls-nothing2");
+                Inconsistent(EntailmentRules.ClsNothing2, [Fact(nothings[0], Terms.Type, Terms.Nothing)]);
 
                 return;
             }
@@ -647,6 +727,8 @@ public static class OwlRlClosure
                 {
                     continue;
                 }
+
+                EncodedTriple intersection = Fact(c, Terms.IntersectionOf, listHead);
 
                 if(InstancesOf.TryGetValue(members[0], out List<TermId>? candidates))
                 {
@@ -665,7 +747,13 @@ public static class OwlRlClosure
 
                         if(inAll)
                         {
-                            Add(x, Terms.Type, c);
+                            List<EncodedTriple> premises = [intersection];
+                            foreach(TermId member in members)
+                            {
+                                premises.Add(Fact(x, Terms.Type, member));
+                            }
+
+                            Add(x, Terms.Type, c, EntailmentRules.ClsInt1, [.. premises]);
                         }
                     }
                 }
@@ -676,7 +764,7 @@ public static class OwlRlClosure
                     {
                         foreach(TermId member in members)
                         {
-                            Add(x, Terms.Type, member);
+                            Add(x, Terms.Type, member, EntailmentRules.ClsInt2, [intersection, Fact(x, Terms.Type, c)]);
                         }
                     }
                 }
@@ -690,13 +778,14 @@ public static class OwlRlClosure
                     continue;
                 }
 
+                EncodedTriple union = Fact(c, Terms.UnionOf, listHead);
                 foreach(TermId member in members)
                 {
                     if(InstancesOf.TryGetValue(member, out List<TermId>? instances))
                     {
                         foreach(TermId x in instances)
                         {
-                            Add(x, Terms.Type, c);
+                            Add(x, Terms.Type, c, EntailmentRules.ClsUni, [union, Fact(x, Terms.Type, member)]);
                         }
                     }
                 }
@@ -711,7 +800,7 @@ public static class OwlRlClosure
                     {
                         if(HasType(x, c2))
                         {
-                            Inconsistent("cls-com");
+                            Inconsistent(EntailmentRules.ClsCom, [Fact(c1, Terms.ComplementOf, c2), Fact(x, Terms.Type, c1), Fact(x, Terms.Type, c2)]);
 
                             return;
                         }
@@ -722,14 +811,21 @@ public static class OwlRlClosure
             //The restriction rules key off owl:onProperty.
             foreach((TermId x, TermId p) in Pairs(Terms.OnProperty))
             {
+                EncodedTriple onProperty = Fact(x, Terms.OnProperty, p);
+
                 //cls-svf1 / cls-svf2.
                 if(SingleObjectOf(x, Terms.SomeValuesFrom) is TermId someFiller)
                 {
+                    EncodedTriple someValues = Fact(x, Terms.SomeValuesFrom, someFiller);
                     foreach((TermId u, TermId v) in Pairs(p))
                     {
-                        if(someFiller == Terms.Thing || HasType(v, someFiller))
+                        if(someFiller == Terms.Thing)
                         {
-                            Add(u, Terms.Type, x);
+                            Add(u, Terms.Type, x, EntailmentRules.ClsSvf2, [onProperty, someValues, Fact(u, p, v)]);
+                        }
+                        else if(HasType(v, someFiller))
+                        {
+                            Add(u, Terms.Type, x, EntailmentRules.ClsSvf1, [onProperty, someValues, Fact(u, p, v), Fact(v, Terms.Type, someFiller)]);
                         }
                     }
                 }
@@ -737,18 +833,19 @@ public static class OwlRlClosure
                 //cls-avf.
                 if(SingleObjectOf(x, Terms.AllValuesFrom) is TermId allFiller && InstancesOf.TryGetValue(x, out List<TermId>? avfInstances))
                 {
+                    EncodedTriple allValues = Fact(x, Terms.AllValuesFrom, allFiller);
                     foreach(TermId u in avfInstances)
                     {
                         foreach(TermId v in ObjectsOf(u, p))
                         {
                             if(DatatypeOracle.LiteralOutsideDatatype(v, allFiller))
                             {
-                                Inconsistent("dt-not-type");
+                                Inconsistent(EntailmentRules.DtNotType, [onProperty, allValues, Fact(u, Terms.Type, x), Fact(u, p, v)]);
 
                                 return;
                             }
 
-                            Add(v, Terms.Type, allFiller);
+                            Add(v, Terms.Type, allFiller, EntailmentRules.ClsAvf, [onProperty, allValues, Fact(u, Terms.Type, x), Fact(u, p, v)]);
                         }
                     }
                 }
@@ -756,11 +853,12 @@ public static class OwlRlClosure
                 //cls-hv1 / cls-hv2.
                 if(SingleObjectOf(x, Terms.HasValue) is TermId value)
                 {
+                    EncodedTriple hasValue = Fact(x, Terms.HasValue, value);
                     if(InstancesOf.TryGetValue(x, out List<TermId>? hvInstances))
                     {
                         foreach(TermId u in hvInstances)
                         {
-                            Add(u, p, value);
+                            Add(u, p, value, EntailmentRules.ClsHv1, [onProperty, hasValue, Fact(u, Terms.Type, x)]);
                         }
                     }
 
@@ -768,7 +866,7 @@ public static class OwlRlClosure
                     {
                         if(v == value)
                         {
-                            Add(u, Terms.Type, x);
+                            Add(u, Terms.Type, x, EntailmentRules.ClsHv2, [onProperty, hasValue, Fact(u, p, value)]);
                         }
                     }
                 }
@@ -776,9 +874,10 @@ public static class OwlRlClosure
                 //cls-maxc1 / cls-maxc2.
                 if(SingleObjectOf(x, Terms.MaxCardinality) is TermId bound)
                 {
-                    if(Terms.ZeroBounds.Contains(bound) && AnyInstanceHasEdge(x, p))
+                    EncodedTriple maxCardinality = Fact(x, Terms.MaxCardinality, bound);
+                    if(Terms.ZeroBounds.Contains(bound) && TryFindInstanceEdge(x, p, out TermId edgeSubject, out TermId edgeObject))
                     {
-                        Inconsistent("cls-maxc1");
+                        Inconsistent(EntailmentRules.ClsMaxc1, [onProperty, maxCardinality, Fact(edgeSubject, Terms.Type, x), Fact(edgeSubject, p, edgeObject)]);
 
                         return;
                     }
@@ -787,7 +886,7 @@ public static class OwlRlClosure
                     {
                         foreach(TermId u in maxcInstances)
                         {
-                            EquateAllPairs(ObjectsOf(u, p));
+                            EquateAllPairs(ObjectsOf(u, p), EntailmentRules.ClsMaxc2, u, p, [onProperty, maxCardinality, Fact(u, Terms.Type, x)]);
                         }
                     }
                 }
@@ -795,6 +894,7 @@ public static class OwlRlClosure
                 //cls-maxqc1–4.
                 if(SingleObjectOf(x, Terms.MaxQualifiedCardinality) is TermId qualifiedBound)
                 {
+                    EncodedTriple maxQualified = Fact(x, Terms.MaxQualifiedCardinality, qualifiedBound);
                     TermId filler = SingleObjectOf(x, Terms.OnClass) ?? Terms.Thing;
 
                     if(Terms.ZeroBounds.Contains(qualifiedBound) && InstancesOf.TryGetValue(x, out List<TermId>? maxqcInstances))
@@ -803,9 +903,16 @@ public static class OwlRlClosure
                         {
                             foreach(TermId y in ObjectsOf(u, p))
                             {
-                                if(filler == Terms.Thing || HasType(y, filler))
+                                if(filler == Terms.Thing)
                                 {
-                                    Inconsistent("cls-maxqc1");
+                                    Inconsistent(EntailmentRules.ClsMaxqc1, [onProperty, maxQualified, Fact(u, Terms.Type, x), Fact(u, p, y)]);
+
+                                    return;
+                                }
+
+                                if(HasType(y, filler))
+                                {
+                                    Inconsistent(EntailmentRules.ClsMaxqc1, [onProperty, maxQualified, Fact(u, Terms.Type, x), Fact(u, p, y), Fact(y, Terms.Type, filler)]);
 
                                     return;
                                 }
@@ -826,7 +933,7 @@ public static class OwlRlClosure
                                 }
                             }
 
-                            EquateAllPairs(qualified);
+                            EquateAllPairs(qualified, EntailmentRules.ClsMaxqc4, u, p, [onProperty, maxQualified, Fact(u, Terms.Type, x)]);
                         }
                     }
                 }
@@ -837,9 +944,10 @@ public static class OwlRlClosure
             {
                 if(ListOf(listHead) is List<TermId> members)
                 {
+                    EncodedTriple oneOf = Fact(c, Terms.OneOf, listHead);
                     foreach(TermId member in members)
                     {
-                        Add(member, Terms.Type, c);
+                        Add(member, Terms.Type, c, EntailmentRules.ClsOo, [oneOf]);
                     }
                 }
             }
@@ -854,9 +962,10 @@ public static class OwlRlClosure
             {
                 if(InstancesOf.TryGetValue(c1, out List<TermId>? instances))
                 {
+                    EncodedTriple subClass = Fact(c1, Terms.SubClassOf, c2);
                     foreach(TermId x in instances)
                     {
-                        Add(x, Terms.Type, c2);
+                        Add(x, Terms.Type, c2, EntailmentRules.CaxSco, [subClass, Fact(x, Terms.Type, c1)]);
                     }
                 }
             }
@@ -864,11 +973,12 @@ public static class OwlRlClosure
             //cax-eqc1 / cax-eqc2.
             foreach((TermId c1, TermId c2) in Pairs(Terms.EquivalentClass))
             {
+                EncodedTriple equivalent = Fact(c1, Terms.EquivalentClass, c2);
                 if(InstancesOf.TryGetValue(c1, out List<TermId>? forward))
                 {
                     foreach(TermId x in forward)
                     {
-                        Add(x, Terms.Type, c2);
+                        Add(x, Terms.Type, c2, EntailmentRules.CaxEqc1, [equivalent, Fact(x, Terms.Type, c1)]);
                     }
                 }
 
@@ -876,7 +986,7 @@ public static class OwlRlClosure
                 {
                     foreach(TermId x in backward)
                     {
-                        Add(x, Terms.Type, c1);
+                        Add(x, Terms.Type, c1, EntailmentRules.CaxEqc2, [equivalent, Fact(x, Terms.Type, c2)]);
                     }
                 }
             }
@@ -884,14 +994,15 @@ public static class OwlRlClosure
             //cax-dw; class disjointness is symmetric.
             foreach((TermId c1, TermId c2) in Pairs(Terms.DisjointWith))
             {
-                Add(c2, Terms.DisjointWith, c1);
+                EncodedTriple disjoint = Fact(c1, Terms.DisjointWith, c2);
+                Add(c2, Terms.DisjointWith, c1, EntailmentRules.CaxDw, [disjoint]);
                 if(InstancesOf.TryGetValue(c1, out List<TermId>? instances))
                 {
                     foreach(TermId x in instances)
                     {
                         if(HasType(x, c2))
                         {
-                            Inconsistent("cax-dw");
+                            Inconsistent(EntailmentRules.CaxDw, [disjoint, Fact(x, Terms.Type, c1), Fact(x, Terms.Type, c2)]);
 
                             return;
                         }
@@ -908,11 +1019,12 @@ public static class OwlRlClosure
                     continue;
                 }
 
+                EncodedTriple allDisjoint = Fact(node, Terms.Type, Terms.AllDisjointClasses);
                 for(int i = 0; i < members.Count; i++)
                 {
                     for(int j = i + 1; j < members.Count; j++)
                     {
-                        Add(members[i], Terms.DisjointWith, members[j]);
+                        Add(members[i], Terms.DisjointWith, members[j], EntailmentRules.CaxAdc, [allDisjoint]);
                     }
 
                     if(!InstancesOf.TryGetValue(members[i], out List<TermId>? instances))
@@ -931,7 +1043,7 @@ public static class OwlRlClosure
                         {
                             if(HasType(x, members[j]))
                             {
-                                Inconsistent("cax-adc");
+                                Inconsistent(EntailmentRules.CaxAdc, [allDisjoint, Fact(x, Terms.Type, members[i]), Fact(x, Terms.Type, members[j])]);
 
                                 return;
                             }
@@ -951,84 +1063,92 @@ public static class OwlRlClosure
             {
                 foreach(TermId c in classes)
                 {
-                    Add(c, Terms.SubClassOf, c);
-                    Add(c, Terms.EquivalentClass, c);
-                    Add(c, Terms.SubClassOf, Terms.Thing);
-                    Add(Terms.Nothing, Terms.SubClassOf, c);
+                    EncodedTriple declaration = Fact(c, Terms.Type, Terms.ClassTerm);
+                    Add(c, Terms.SubClassOf, c, EntailmentRules.ScmCls, [declaration]);
+                    Add(c, Terms.EquivalentClass, c, EntailmentRules.ScmCls, [declaration]);
+                    Add(c, Terms.SubClassOf, Terms.Thing, EntailmentRules.ScmCls, [declaration]);
+                    Add(Terms.Nothing, Terms.SubClassOf, c, EntailmentRules.ScmCls, [declaration]);
                 }
             }
 
             //scm-sco / scm-eqc2.
             foreach((TermId c1, TermId c2) in Pairs(Terms.SubClassOf))
             {
+                EncodedTriple subClass = Fact(c1, Terms.SubClassOf, c2);
                 foreach(TermId c3 in ObjectsOf(c2, Terms.SubClassOf))
                 {
-                    Add(c1, Terms.SubClassOf, c3);
+                    Add(c1, Terms.SubClassOf, c3, EntailmentRules.ScmSco, [subClass, Fact(c2, Terms.SubClassOf, c3)]);
                 }
 
                 if(ObjectsOf(c2, Terms.SubClassOf).Contains(c1))
                 {
-                    Add(c1, Terms.EquivalentClass, c2);
+                    Add(c1, Terms.EquivalentClass, c2, EntailmentRules.ScmEqc2, [subClass, Fact(c2, Terms.SubClassOf, c1)]);
                 }
             }
 
             //scm-eqc1; equivalence is symmetric.
             foreach((TermId c1, TermId c2) in Pairs(Terms.EquivalentClass))
             {
-                Add(c2, Terms.EquivalentClass, c1);
-                Add(c1, Terms.SubClassOf, c2);
-                Add(c2, Terms.SubClassOf, c1);
+                EncodedTriple equivalent = Fact(c1, Terms.EquivalentClass, c2);
+                Add(c2, Terms.EquivalentClass, c1, EntailmentRules.ScmEqc1, [equivalent]);
+                Add(c1, Terms.SubClassOf, c2, EntailmentRules.ScmEqc1, [equivalent]);
+                Add(c2, Terms.SubClassOf, c1, EntailmentRules.ScmEqc1, [equivalent]);
             }
 
             //scm-spo / scm-eqp1 / scm-eqp2.
             foreach((TermId p1, TermId p2) in Pairs(Terms.SubPropertyOf))
             {
+                EncodedTriple subProperty = Fact(p1, Terms.SubPropertyOf, p2);
                 foreach(TermId p3 in ObjectsOf(p2, Terms.SubPropertyOf))
                 {
-                    Add(p1, Terms.SubPropertyOf, p3);
+                    Add(p1, Terms.SubPropertyOf, p3, EntailmentRules.ScmSpo, [subProperty, Fact(p2, Terms.SubPropertyOf, p3)]);
                 }
 
                 if(ObjectsOf(p2, Terms.SubPropertyOf).Contains(p1))
                 {
-                    Add(p1, Terms.EquivalentProperty, p2);
+                    Add(p1, Terms.EquivalentProperty, p2, EntailmentRules.ScmEqp2, [subProperty, Fact(p2, Terms.SubPropertyOf, p1)]);
                 }
             }
 
             foreach((TermId p1, TermId p2) in Pairs(Terms.EquivalentProperty))
             {
-                Add(p2, Terms.EquivalentProperty, p1);
-                Add(p1, Terms.SubPropertyOf, p2);
-                Add(p2, Terms.SubPropertyOf, p1);
+                EncodedTriple equivalent = Fact(p1, Terms.EquivalentProperty, p2);
+                Add(p2, Terms.EquivalentProperty, p1, EntailmentRules.ScmEqp1, [equivalent]);
+                Add(p1, Terms.SubPropertyOf, p2, EntailmentRules.ScmEqp1, [equivalent]);
+                Add(p2, Terms.SubPropertyOf, p1, EntailmentRules.ScmEqp1, [equivalent]);
             }
 
             //scm-dom1 / scm-dom2.
             foreach((TermId p, TermId c1) in Pairs(Terms.Domain))
             {
+                EncodedTriple domain = Fact(p, Terms.Domain, c1);
                 foreach(TermId c2 in ObjectsOf(c1, Terms.SubClassOf))
                 {
-                    Add(p, Terms.Domain, c2);
+                    Add(p, Terms.Domain, c2, EntailmentRules.ScmDom1, [domain, Fact(c1, Terms.SubClassOf, c2)]);
                 }
             }
 
             foreach((TermId p1, TermId p2) in Pairs(Terms.SubPropertyOf))
             {
+                EncodedTriple subProperty = Fact(p1, Terms.SubPropertyOf, p2);
                 foreach(TermId c in ObjectsOf(p2, Terms.Domain))
                 {
-                    Add(p1, Terms.Domain, c);
+                    Add(p1, Terms.Domain, c, EntailmentRules.ScmDom2, [subProperty, Fact(p2, Terms.Domain, c)]);
                 }
 
                 foreach(TermId c in ObjectsOf(p2, Terms.Range))
                 {
-                    Add(p1, Terms.Range, c);
+                    Add(p1, Terms.Range, c, EntailmentRules.ScmRng2, [subProperty, Fact(p2, Terms.Range, c)]);
                 }
             }
 
             //scm-rng1.
             foreach((TermId p, TermId c1) in Pairs(Terms.Range))
             {
+                EncodedTriple range = Fact(p, Terms.Range, c1);
                 foreach(TermId c2 in ObjectsOf(c1, Terms.SubClassOf))
                 {
-                    Add(p, Terms.Range, c2);
+                    Add(p, Terms.Range, c2, EntailmentRules.ScmRng1, [range, Fact(c1, Terms.SubClassOf, c2)]);
                 }
             }
 
@@ -1037,9 +1157,10 @@ public static class OwlRlClosure
             {
                 if(ListOf(listHead) is List<TermId> members)
                 {
+                    EncodedTriple intersection = Fact(c, Terms.IntersectionOf, listHead);
                     foreach(TermId member in members)
                     {
-                        Add(c, Terms.SubClassOf, member);
+                        Add(c, Terms.SubClassOf, member, EntailmentRules.ScmInt, [intersection]);
                     }
                 }
             }
@@ -1048,9 +1169,10 @@ public static class OwlRlClosure
             {
                 if(ListOf(listHead) is List<TermId> members)
                 {
+                    EncodedTriple union = Fact(c, Terms.UnionOf, listHead);
                     foreach(TermId member in members)
                     {
-                        Add(member, Terms.SubClassOf, c);
+                        Add(member, Terms.SubClassOf, c, EntailmentRules.ScmUni, [union]);
                     }
                 }
             }
@@ -1080,25 +1202,35 @@ public static class OwlRlClosure
             return TypesOf.TryGetValue(instance, out HashSet<TermId>? types) && types.Contains(type);
         }
 
-        private bool AnyInstanceHasEdge(TermId restriction, TermId property)
+        //Finds one instance of the restriction with an edge of the
+        //property — the witness pair a max-0 falsity reports.
+        private bool TryFindInstanceEdge(TermId restriction, TermId property, out TermId subject, out TermId @object)
         {
-            if(!InstancesOf.TryGetValue(restriction, out List<TermId>? instances))
+            if(InstancesOf.TryGetValue(restriction, out List<TermId>? instances))
             {
-                return false;
-            }
-
-            foreach(TermId u in instances)
-            {
-                if(ObjectsOf(u, property).Count > 0)
+                foreach(TermId u in instances)
                 {
-                    return true;
+                    List<TermId> objects = ObjectsOf(u, property);
+                    if(objects.Count > 0)
+                    {
+                        subject = u;
+                        @object = objects[0];
+
+                        return true;
+                    }
                 }
             }
+
+            subject = default;
+            @object = default;
 
             return false;
         }
 
-        private void EquateAllPairs(List<TermId> values)
+        //Equates every pair of values an instance reaches over the
+        //property — the max-1 cardinality conclusion. The shared premises
+        //carry the restriction; the per-pair edges complete them.
+        private void EquateAllPairs(List<TermId> values, string rule, TermId instance, TermId property, scoped ReadOnlySpan<EncodedTriple> shared)
         {
             for(int i = 0; i < values.Count; i++)
             {
@@ -1106,23 +1238,29 @@ public static class OwlRlClosure
                 {
                     if(values[i] != values[j])
                     {
-                        Add(values[i], Terms.SameAs, values[j]);
+                        Add(values[i], Terms.SameAs, values[j], rule, [.. shared, Fact(instance, property, values[i]), Fact(instance, property, values[j])]);
                     }
                 }
             }
         }
 
-        private bool ShareValue(TermId first, TermId second, TermId property)
+        //Finds one value both individuals reach over the property — the
+        //shared-key witness prp-key reports.
+        private bool TryGetSharedValue(TermId first, TermId second, TermId property, out TermId value)
         {
             List<TermId> firstValues = ObjectsOf(first, property);
             List<TermId> secondValues = ObjectsOf(second, property);
-            foreach(TermId value in firstValues)
+            foreach(TermId candidate in firstValues)
             {
-                if(secondValues.Contains(value))
+                if(secondValues.Contains(candidate))
                 {
+                    value = candidate;
+
                     return true;
                 }
             }
+
+            value = default;
 
             return false;
         }
@@ -1162,8 +1300,9 @@ public static class OwlRlClosure
 
         //Fires the functional/inverse-functional pairing: for every two
         //triples of the property sharing a subject (or object), the other
-        //ends equate.
-        private void ForEachSamePredicatePair(TermId property, bool bySubject, Action<TermId, TermId> equate)
+        //ends equate; the callback receives the shared key so it can name
+        //its premises.
+        private void ForEachSamePredicatePair(TermId property, bool bySubject, Action<TermId, TermId, TermId> equate)
         {
             Dictionary<TermId, List<TermId>> groups = [];
             foreach((TermId s, TermId o) in Pairs(property))
@@ -1188,45 +1327,65 @@ public static class OwlRlClosure
                     {
                         if(values[i] != values[j])
                         {
-                            equate(values[i], values[j]);
+                            equate(group.Key, values[i], values[j]);
                         }
                     }
                 }
             }
         }
 
-        private void Add(TermId subject, TermId predicate, TermId @object)
+        /// <summary>Builds the encoded triple of three term ids — the shape every premise and conclusion takes.</summary>
+        /// <param name="subject">The subject term.</param>
+        /// <param name="predicate">The predicate term.</param>
+        /// <param name="object">The object term.</param>
+        /// <returns>The encoded triple.</returns>
+        private static EncodedTriple Fact(TermId subject, TermId predicate, TermId @object)
         {
-            Add(subject.Encoded, predicate.Encoded, @object.Encoded);
+            return EncodedTriple.FromEncoded(subject.Encoded, predicate.Encoded, @object.Encoded);
         }
 
-        private void Add(TermId subject, uint predicate, uint @object)
+        /// <summary>
+        /// Records one derivation: the rule, the premises it matched, and
+        /// the concluded triple. The derivation record is the API — the
+        /// trace handler observes it; a conclusion already present derives
+        /// nothing and emits nothing.
+        /// </summary>
+        /// <param name="subject">The conclusion's subject.</param>
+        /// <param name="predicate">The conclusion's predicate.</param>
+        /// <param name="object">The conclusion's object.</param>
+        /// <param name="rule">The rule that fired — a name from <see cref="EntailmentRules"/>.</param>
+        /// <param name="premises">The triples the rule matched.</param>
+        private void Add(TermId subject, TermId predicate, TermId @object, string rule, scoped ReadOnlySpan<EncodedTriple> premises)
         {
-            Add(subject.Encoded, predicate, @object);
-        }
-
-        private void Add(uint subject, TermId predicate, uint @object)
-        {
-            Add(subject, predicate.Encoded, @object);
-        }
-
-        private void Add(uint subject, uint predicate, TermId @object)
-        {
-            Add(subject, predicate, @object.Encoded);
-        }
-
-        private void Add(uint subject, uint predicate, uint @object)
-        {
-            EncodedTriple triple = EncodedTriple.FromEncoded(subject, predicate, @object);
-            if(!All.Contains(triple))
+            EncodedTriple conclusion = Fact(subject, predicate, @object);
+            if(All.Contains(conclusion))
             {
-                Pending.Add(triple);
+                return;
+            }
+
+            Pending.Add(conclusion);
+
+            if(TraceHandler is { } handler)
+            {
+                InferenceTraceEvent evt = new(
+                    ++TraceSequence,
+                    TimeProvider!.GetUtcNow().UtcTicks,
+                    CorrelationId,
+                    rule,
+                    [.. premises],
+                    conclusion);
+
+                handler(in evt);
             }
         }
 
-        private void Inconsistent(string rule)
+        /// <summary>Records the falsity that fired and the triples it matched.</summary>
+        /// <param name="rule">The falsity rule — a name from <see cref="EntailmentRules"/>.</param>
+        /// <param name="premises">The triples the falsity matched.</param>
+        private void Inconsistent(string rule, scoped ReadOnlySpan<EncodedTriple> premises)
         {
             InconsistencyRule = rule;
+            InconsistencyPremises = [.. premises];
         }
     }
 }

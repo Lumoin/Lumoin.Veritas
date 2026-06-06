@@ -114,7 +114,7 @@ internal sealed class W3cOwl2RlTests
         List<EncodedTriple> encoded = Encode(premiseQuads, dictionary);
         OwlRlTerms terms = new(dictionary);
 
-        OwlRlResult result = OwlRlClosure.Compute(encoded, terms, DatatypeOracle(dictionary), TestContext.CancellationToken);
+        OwlRlResult result = OwlRlClosure.Compute(encoded, terms, DatatypeOracle(dictionary), cancellationToken: TestContext.CancellationToken);
 
         bool isKnownGap = KnownGaps.Contains(testCase.Identifier);
 
