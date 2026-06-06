@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Rdf;
 
@@ -83,14 +84,17 @@ public static class OwlStructuralToRdf
 
         private NamedNode XsdNonNegativeInteger { get; } = new(Vocabulary.Xsd.NonNegativeInteger);
 
-        public void Emit(RdfTerm subject, NamedNode predicate, RdfTerm @object)
+        public Quad Emit(RdfTerm subject, NamedNode predicate, RdfTerm @object)
         {
-            Quads.Add(new Quad(subject, predicate, @object, Graph: null));
+            Quad quad = new(subject, predicate, @object, Graph: null);
+            Quads.Add(quad);
+
+            return quad;
         }
 
-        private void Emit(RdfTerm subject, Utf8String predicate, RdfTerm @object)
+        private Quad Emit(RdfTerm subject, Utf8String predicate, RdfTerm @object)
         {
-            Emit(subject, new NamedNode(predicate), @object);
+            return Emit(subject, new NamedNode(predicate), @object);
         }
 
         /// <summary>Mints a fresh blank node.</summary>
@@ -100,265 +104,212 @@ public static class OwlStructuralToRdf
             return new BlankNode(Utf8String.FromString($"owlmap{NextBlank++}"));
         }
 
-        /// <summary>Serialises one axiom.</summary>
+        //The annotation anchor one axiom's serialisation hands back: the
+        //root triple an owl:Axiom block reifies, or the reification node
+        //(AllDisjoint*, NegativePropertyAssertion, AllDifferent) that
+        //carries annotations directly.
+        private readonly record struct EmitResult(Quad? RootTriple, RdfTerm? AnnotationNode);
+
+        /// <summary>Serialises one axiom, its annotations included: a triple-form axiom's annotations reify through an <c>owl:Axiom</c> block, a node-form axiom carries them on its node.</summary>
+        /// <param name="axiom">The axiom to serialise.</param>
         public void EmitAxiom(OwlAxiom axiom)
         {
-            switch(axiom)
+            EmitResult anchor = EmitAxiomCore(axiom);
+            if(axiom.Annotations.Length == 0)
             {
-                case OwlDeclarationAxiom declaration:
-                {
-                    Utf8String kind = declaration.Kind switch
-                    {
-                        OwlEntityKind.Class => OwlVocabulary.ClassTerm,
-                        OwlEntityKind.Datatype => RdfVocabulary.Rdfs.Datatype,
-                        OwlEntityKind.ObjectProperty => OwlVocabulary.ObjectPropertyTerm,
-                        OwlEntityKind.DataProperty => OwlVocabulary.DatatypeProperty,
-                        OwlEntityKind.AnnotationProperty => OwlVocabulary.AnnotationPropertyTerm,
-                        _ => OwlVocabulary.NamedIndividual
-                    };
+                return;
+            }
 
-                    Emit(declaration.Entity, RdfType, new NamedNode(kind));
-                    break;
-                }
-                case OwlSubClassOfAxiom subClass:
-                {
-                    Emit(ClassNode(subClass.SubClass), RdfsSubClassOf, ClassNode(subClass.SuperClass));
-                    break;
-                }
-                case OwlEquivalentClassesAxiom equivalent:
-                {
-                    Emit(ClassNode(equivalent.First), OwlVocabulary.EquivalentClass, ClassNode(equivalent.Second));
-                    break;
-                }
-                case OwlDisjointClassesAxiom { Operands.Count: 2 } disjointPair:
-                {
-                    Emit(ClassNode(disjointPair.Operands[0]), OwlVocabulary.DisjointWith, ClassNode(disjointPair.Operands[1]));
-                    break;
-                }
-                case OwlDisjointClassesAxiom disjoint:
-                {
-                    BlankNode node = Fresh();
-                    Emit(node, RdfType, new NamedNode(OwlVocabulary.AllDisjointClasses));
-                    Emit(node, OwlVocabulary.Members, EmitList(ClassNodeList(disjoint.Operands)));
-                    break;
-                }
-                case OwlDisjointUnionAxiom disjointUnion:
-                {
-                    Emit(disjointUnion.Class, OwlVocabulary.DisjointUnionOf, EmitList(ClassNodeList(disjointUnion.Operands)));
-                    break;
-                }
-                case OwlSubObjectPropertyOfAxiom subProperty:
-                {
-                    Emit(PropertyNode(subProperty.SubProperty), RdfsSubPropertyOf, PropertyNode(subProperty.SuperProperty));
-                    break;
-                }
-                case OwlPropertyChainAxiom chain:
-                {
-                    List<RdfTerm> links = [];
-                    foreach(OwlObjectPropertyExpression link in chain.Chain)
-                    {
-                        links.Add(PropertyNode(link));
-                    }
+            if(anchor.AnnotationNode is RdfTerm node)
+            {
+                EmitAnnotations(node, axiom.Annotations);
+            }
+            else if(anchor.RootTriple is Quad root)
+            {
+                BlankNode reification = Fresh();
+                Emit(reification, RdfType, new NamedNode(OwlVocabulary.AxiomTerm));
+                Emit(reification, OwlVocabulary.AnnotatedSource, root.Subject);
+                Emit(reification, OwlVocabulary.AnnotatedProperty, root.Predicate);
+                Emit(reification, OwlVocabulary.AnnotatedTarget, root.Object);
+                EmitAnnotations(reification, axiom.Annotations);
+            }
+        }
 
-                    Emit(PropertyNode(chain.SuperProperty), OwlVocabulary.PropertyChainAxiom, EmitList(links));
-                    break;
-                }
-                case OwlEquivalentObjectPropertiesAxiom equivalentProperties:
-                {
-                    Emit(PropertyNode(equivalentProperties.First), OwlVocabulary.EquivalentProperty, PropertyNode(equivalentProperties.Second));
-                    break;
-                }
-                case OwlDisjointObjectPropertiesAxiom { Operands.Count: 2 } disjointPropertyPair:
-                {
-                    Emit(PropertyNode(disjointPropertyPair.Operands[0]), OwlVocabulary.PropertyDisjointWith, PropertyNode(disjointPropertyPair.Operands[1]));
-                    break;
-                }
-                case OwlDisjointObjectPropertiesAxiom disjointProperties:
-                {
-                    BlankNode node = Fresh();
-                    Emit(node, RdfType, new NamedNode(OwlVocabulary.AllDisjointProperties));
-                    List<RdfTerm> members = [];
-                    foreach(OwlObjectPropertyExpression property in disjointProperties.Operands)
-                    {
-                        members.Add(PropertyNode(property));
-                    }
+        //Annotations on annotations reify through owl:Annotation blocks;
+        //the walk is an explicit stack, no recursion.
+        private void EmitAnnotations(RdfTerm node, ImmutableArray<OwlAnnotation> annotations)
+        {
+            Stack<(RdfTerm Node, OwlAnnotation Annotation)> work = new();
+            for(int i = annotations.Length - 1; i >= 0; i--)
+            {
+                work.Push((node, annotations[i]));
+            }
 
-                    Emit(node, OwlVocabulary.Members, EmitList(members));
-                    break;
-                }
-                case OwlInverseObjectPropertiesAxiom inverse:
-                {
-                    Emit(PropertyNode(inverse.First), OwlVocabulary.InverseOf, PropertyNode(inverse.Second));
-                    break;
-                }
-                case OwlObjectPropertyDomainAxiom domain:
-                {
-                    Emit(PropertyNode(domain.Property), RdfsDomain, ClassNode(domain.Domain));
-                    break;
-                }
-                case OwlObjectPropertyRangeAxiom range:
-                {
-                    Emit(PropertyNode(range.Property), RdfsRange, ClassNode(range.Range));
-                    break;
-                }
-                case OwlObjectPropertyCharacteristicAxiom characteristic:
-                {
-                    Utf8String kind = characteristic.Characteristic switch
-                    {
-                        OwlPropertyCharacteristic.Functional => OwlVocabulary.FunctionalProperty,
-                        OwlPropertyCharacteristic.InverseFunctional => OwlVocabulary.InverseFunctionalProperty,
-                        OwlPropertyCharacteristic.Transitive => OwlVocabulary.TransitiveProperty,
-                        OwlPropertyCharacteristic.Symmetric => OwlVocabulary.SymmetricProperty,
-                        OwlPropertyCharacteristic.Asymmetric => OwlVocabulary.AsymmetricProperty,
-                        OwlPropertyCharacteristic.Reflexive => OwlVocabulary.ReflexiveProperty,
-                        _ => OwlVocabulary.IrreflexiveProperty
-                    };
+            while(work.Count > 0)
+            {
+                (RdfTerm parent, OwlAnnotation annotation) = work.Pop();
+                Emit(parent, annotation.Property, annotation.Value);
 
-                    Emit(PropertyNode(characteristic.Property), RdfType, new NamedNode(kind));
-                    break;
-                }
-                case OwlSubDataPropertyOfAxiom subDataProperty:
+                if(annotation.Annotations.Length == 0)
                 {
-                    Emit(subDataProperty.SubProperty, RdfsSubPropertyOf, subDataProperty.SuperProperty);
-                    break;
+                    continue;
                 }
-                case OwlEquivalentDataPropertiesAxiom equivalentDataProperties:
-                {
-                    Emit(equivalentDataProperties.First, OwlVocabulary.EquivalentProperty, equivalentDataProperties.Second);
-                    break;
-                }
-                case OwlDisjointDataPropertiesAxiom { Operands.Count: 2 } disjointDataPair:
-                {
-                    Emit(disjointDataPair.Operands[0], OwlVocabulary.PropertyDisjointWith, disjointDataPair.Operands[1]);
-                    break;
-                }
-                case OwlDisjointDataPropertiesAxiom disjointDataProperties:
-                {
-                    BlankNode node = Fresh();
-                    Emit(node, RdfType, new NamedNode(OwlVocabulary.AllDisjointProperties));
-                    List<RdfTerm> members = [.. disjointDataProperties.Operands];
-                    Emit(node, OwlVocabulary.Members, EmitList(members));
-                    break;
-                }
-                case OwlDataPropertyDomainAxiom dataDomain:
-                {
-                    Emit(dataDomain.Property, RdfsDomain, ClassNode(dataDomain.Domain));
-                    break;
-                }
-                case OwlDataPropertyRangeAxiom dataRange:
-                {
-                    Emit(dataRange.Property, RdfsRange, RangeNode(dataRange.Range));
-                    break;
-                }
-                case OwlFunctionalDataPropertyAxiom functionalData:
-                {
-                    Emit(functionalData.Property, RdfType, new NamedNode(OwlVocabulary.FunctionalProperty));
-                    break;
-                }
-                case OwlDatatypeDefinitionAxiom definition:
-                {
-                    Emit(definition.Datatype, OwlVocabulary.EquivalentClass, RangeNode(definition.Range));
-                    break;
-                }
-                case OwlHasKeyAxiom hasKey:
-                {
-                    List<RdfTerm> keys = [];
-                    foreach(OwlObjectPropertyExpression objectKey in hasKey.ObjectProperties)
-                    {
-                        keys.Add(PropertyNode(objectKey));
-                    }
 
-                    foreach(NamedNode dataKey in hasKey.DataProperties)
-                    {
-                        keys.Add(dataKey);
-                    }
-
-                    Emit(ClassNode(hasKey.Class), OwlVocabulary.HasKey, EmitList(keys));
-                    break;
-                }
-                case OwlClassAssertionAxiom assertion:
+                BlankNode reification = Fresh();
+                Emit(reification, RdfType, new NamedNode(OwlVocabulary.AnnotationTerm));
+                Emit(reification, OwlVocabulary.AnnotatedSource, parent);
+                Emit(reification, OwlVocabulary.AnnotatedProperty, annotation.Property);
+                Emit(reification, OwlVocabulary.AnnotatedTarget, annotation.Value);
+                for(int i = annotation.Annotations.Length - 1; i >= 0; i--)
                 {
-                    Emit(assertion.Individual, RdfType, ClassNode(assertion.Class));
-                    break;
-                }
-                case OwlObjectPropertyAssertionAxiom objectAssertion:
-                {
-                    Emit(objectAssertion.Source, objectAssertion.Property, objectAssertion.Target);
-                    break;
-                }
-                case OwlNegativeObjectPropertyAssertionAxiom negativeObject:
-                {
-                    BlankNode node = Fresh();
-                    Emit(node, RdfType, new NamedNode(OwlVocabulary.NegativePropertyAssertion));
-                    Emit(node, OwlVocabulary.SourceIndividual, negativeObject.Source);
-                    Emit(node, OwlVocabulary.AssertionProperty, PropertyNode(negativeObject.Property));
-                    Emit(node, OwlVocabulary.TargetIndividual, negativeObject.Target);
-                    break;
-                }
-                case OwlDataPropertyAssertionAxiom dataAssertion:
-                {
-                    Emit(dataAssertion.Source, dataAssertion.Property, dataAssertion.Target);
-                    break;
-                }
-                case OwlNegativeDataPropertyAssertionAxiom negativeData:
-                {
-                    BlankNode node = Fresh();
-                    Emit(node, RdfType, new NamedNode(OwlVocabulary.NegativePropertyAssertion));
-                    Emit(node, OwlVocabulary.SourceIndividual, negativeData.Source);
-                    Emit(node, OwlVocabulary.AssertionProperty, negativeData.Property);
-                    Emit(node, OwlVocabulary.TargetValue, negativeData.Target);
-                    break;
-                }
-                case OwlSameIndividualAxiom same:
-                {
-                    Emit(same.First, OwlVocabulary.SameAs, same.Second);
-                    break;
-                }
-                case OwlDifferentIndividualsAxiom different:
-                {
-                    for(int i = 0; i < different.Individuals.Count; i++)
-                    {
-                        for(int j = i + 1; j < different.Individuals.Count; j++)
-                        {
-                            Emit(different.Individuals[i], OwlVocabulary.DifferentFrom, different.Individuals[j]);
-                        }
-                    }
-
-                    break;
-                }
-                case OwlAnnotationAssertionAxiom annotation:
-                {
-                    Emit(annotation.Subject, annotation.Property, annotation.Value);
-                    break;
-                }
-                case OwlSubAnnotationPropertyOfAxiom subAnnotation:
-                {
-                    Emit(subAnnotation.SubProperty, RdfsSubPropertyOf, subAnnotation.SuperProperty);
-                    break;
-                }
-                case OwlAnnotationPropertyDomainAxiom annotationDomain:
-                {
-                    Emit(annotationDomain.Property, RdfsDomain, annotationDomain.Domain);
-                    break;
-                }
-                case OwlAnnotationPropertyRangeAxiom annotationRange:
-                {
-                    Emit(annotationRange.Property, RdfsRange, annotationRange.Range);
-                    break;
-                }
-                case OwlImportAxiom import:
-                {
-                    Emit(Fresh(), new NamedNode(OwlVocabulary.Imports), import.Imported);
-                    break;
-                }
-                default:
-                {
-                    break;
+                    work.Push((reification, annotation.Annotations[i]));
                 }
             }
         }
 
-        //----- Expression serialisation -----
+        private EmitResult EmitAxiomCore(OwlAxiom axiom)
+        {
+            return axiom switch
+            {
+                OwlDeclarationAxiom declaration => Root(Emit(declaration.Entity, RdfType, new NamedNode(DeclarationKindClass(declaration.Kind)))),
+                OwlSubClassOfAxiom subClass => Root(Emit(ClassNode(subClass.SubClass), RdfsSubClassOf, ClassNode(subClass.SuperClass))),
+                OwlEquivalentClassesAxiom equivalent => Root(Emit(ClassNode(equivalent.First), OwlVocabulary.EquivalentClass, ClassNode(equivalent.Second))),
+                OwlDisjointClassesAxiom { Operands.Count: 2 } disjointPair => Root(Emit(ClassNode(disjointPair.Operands[0]), OwlVocabulary.DisjointWith, ClassNode(disjointPair.Operands[1]))),
+                OwlDisjointClassesAxiom disjoint => Node(EmitMemberedNode(OwlVocabulary.AllDisjointClasses, ClassNodeList(disjoint.Operands))),
+                OwlDisjointUnionAxiom disjointUnion => Root(Emit(disjointUnion.Class, OwlVocabulary.DisjointUnionOf, EmitList(ClassNodeList(disjointUnion.Operands)))),
+                OwlSubObjectPropertyOfAxiom subProperty => Root(Emit(PropertyNode(subProperty.SubProperty), RdfsSubPropertyOf, PropertyNode(subProperty.SuperProperty))),
+                OwlPropertyChainAxiom chain => Root(Emit(PropertyNode(chain.SuperProperty), OwlVocabulary.PropertyChainAxiom, EmitList(PropertyNodeList(chain.Chain)))),
+                OwlEquivalentObjectPropertiesAxiom equivalentProperties => Root(Emit(PropertyNode(equivalentProperties.First), OwlVocabulary.EquivalentProperty, PropertyNode(equivalentProperties.Second))),
+                OwlDisjointObjectPropertiesAxiom { Operands.Count: 2 } disjointPropertyPair => Root(Emit(PropertyNode(disjointPropertyPair.Operands[0]), OwlVocabulary.PropertyDisjointWith, PropertyNode(disjointPropertyPair.Operands[1]))),
+                OwlDisjointObjectPropertiesAxiom disjointProperties => Node(EmitMemberedNode(OwlVocabulary.AllDisjointProperties, PropertyNodeList(disjointProperties.Operands))),
+                OwlInverseObjectPropertiesAxiom inverse => Root(Emit(PropertyNode(inverse.First), OwlVocabulary.InverseOf, PropertyNode(inverse.Second))),
+                OwlObjectPropertyDomainAxiom domain => Root(Emit(PropertyNode(domain.Property), RdfsDomain, ClassNode(domain.Domain))),
+                OwlObjectPropertyRangeAxiom range => Root(Emit(PropertyNode(range.Property), RdfsRange, ClassNode(range.Range))),
+                OwlObjectPropertyCharacteristicAxiom characteristic => Root(Emit(PropertyNode(characteristic.Property), RdfType, new NamedNode(CharacteristicClass(characteristic.Characteristic)))),
+                OwlSubDataPropertyOfAxiom subDataProperty => Root(Emit(subDataProperty.SubProperty, RdfsSubPropertyOf, subDataProperty.SuperProperty)),
+                OwlEquivalentDataPropertiesAxiom equivalentDataProperties => Root(Emit(equivalentDataProperties.First, OwlVocabulary.EquivalentProperty, equivalentDataProperties.Second)),
+                OwlDisjointDataPropertiesAxiom { Operands.Count: 2 } disjointDataPair => Root(Emit(disjointDataPair.Operands[0], OwlVocabulary.PropertyDisjointWith, disjointDataPair.Operands[1])),
+                OwlDisjointDataPropertiesAxiom disjointDataProperties => Node(EmitMemberedNode(OwlVocabulary.AllDisjointProperties, [.. disjointDataProperties.Operands])),
+                OwlDataPropertyDomainAxiom dataDomain => Root(Emit(dataDomain.Property, RdfsDomain, ClassNode(dataDomain.Domain))),
+                OwlDataPropertyRangeAxiom dataRange => Root(Emit(dataRange.Property, RdfsRange, RangeNode(dataRange.Range))),
+                OwlFunctionalDataPropertyAxiom functionalData => Root(Emit(functionalData.Property, RdfType, new NamedNode(OwlVocabulary.FunctionalProperty))),
+                OwlDatatypeDefinitionAxiom definition => Root(Emit(definition.Datatype, OwlVocabulary.EquivalentClass, RangeNode(definition.Range))),
+                OwlHasKeyAxiom hasKey => Root(Emit(ClassNode(hasKey.Class), OwlVocabulary.HasKey, EmitList(KeyNodeList(hasKey)))),
+                OwlClassAssertionAxiom assertion => Root(Emit(assertion.Individual, RdfType, ClassNode(assertion.Class))),
+                OwlObjectPropertyAssertionAxiom objectAssertion => Root(Emit(objectAssertion.Source, objectAssertion.Property, objectAssertion.Target)),
+                OwlNegativeObjectPropertyAssertionAxiom negativeObject => Node(EmitNegativeAssertion(negativeObject.Source, PropertyNode(negativeObject.Property), OwlVocabulary.TargetIndividual, negativeObject.Target)),
+                OwlDataPropertyAssertionAxiom dataAssertion => Root(Emit(dataAssertion.Source, dataAssertion.Property, dataAssertion.Target)),
+                OwlNegativeDataPropertyAssertionAxiom negativeData => Node(EmitNegativeAssertion(negativeData.Source, negativeData.Property, OwlVocabulary.TargetValue, negativeData.Target)),
+                OwlSameIndividualAxiom same => Root(Emit(same.First, OwlVocabulary.SameAs, same.Second)),
+                OwlDifferentIndividualsAxiom { Individuals.Count: 2 } differentPair => Root(Emit(differentPair.Individuals[0], OwlVocabulary.DifferentFrom, differentPair.Individuals[1])),
+                OwlDifferentIndividualsAxiom different => EmitNaryDifferent(different),
+                OwlAnnotationAssertionAxiom annotation => Root(Emit(annotation.Subject, annotation.Property, annotation.Value)),
+                OwlSubAnnotationPropertyOfAxiom subAnnotation => Root(Emit(subAnnotation.SubProperty, RdfsSubPropertyOf, subAnnotation.SuperProperty)),
+                OwlAnnotationPropertyDomainAxiom annotationDomain => Root(Emit(annotationDomain.Property, RdfsDomain, annotationDomain.Domain)),
+                OwlAnnotationPropertyRangeAxiom annotationRange => Root(Emit(annotationRange.Property, RdfsRange, annotationRange.Range)),
+                OwlImportAxiom import => Root(Emit(Fresh(), new NamedNode(OwlVocabulary.Imports), import.Imported)),
+                _ => default
+            };
+        }
+
+        private static EmitResult Root(Quad triple)
+        {
+            return new EmitResult(triple, null);
+        }
+
+        private static EmitResult Node(RdfTerm node)
+        {
+            return new EmitResult(null, node);
+        }
+
+        private static Utf8String DeclarationKindClass(OwlEntityKind kind)
+        {
+            return kind switch
+            {
+                OwlEntityKind.Class => OwlVocabulary.ClassTerm,
+                OwlEntityKind.Datatype => RdfVocabulary.Rdfs.Datatype,
+                OwlEntityKind.ObjectProperty => OwlVocabulary.ObjectPropertyTerm,
+                OwlEntityKind.DataProperty => OwlVocabulary.DatatypeProperty,
+                OwlEntityKind.AnnotationProperty => OwlVocabulary.AnnotationPropertyTerm,
+                _ => OwlVocabulary.NamedIndividual
+            };
+        }
+
+        private static Utf8String CharacteristicClass(OwlPropertyCharacteristic characteristic)
+        {
+            return characteristic switch
+            {
+                OwlPropertyCharacteristic.Functional => OwlVocabulary.FunctionalProperty,
+                OwlPropertyCharacteristic.InverseFunctional => OwlVocabulary.InverseFunctionalProperty,
+                OwlPropertyCharacteristic.Transitive => OwlVocabulary.TransitiveProperty,
+                OwlPropertyCharacteristic.Symmetric => OwlVocabulary.SymmetricProperty,
+                OwlPropertyCharacteristic.Asymmetric => OwlVocabulary.AsymmetricProperty,
+                OwlPropertyCharacteristic.Reflexive => OwlVocabulary.ReflexiveProperty,
+                _ => OwlVocabulary.IrreflexiveProperty
+            };
+        }
+
+        //A reified members node: the AllDisjointClasses/AllDisjointProperties form.
+        private BlankNode EmitMemberedNode(Utf8String typeClass, List<RdfTerm> members)
+        {
+            BlankNode node = Fresh();
+            Emit(node, RdfType, new NamedNode(typeClass));
+            Emit(node, OwlVocabulary.Members, EmitList(members));
+
+            return node;
+        }
+
+        private BlankNode EmitNegativeAssertion(RdfTerm source, RdfTerm property, Utf8String targetPredicate, RdfTerm target)
+        {
+            BlankNode node = Fresh();
+            Emit(node, RdfType, new NamedNode(OwlVocabulary.NegativePropertyAssertion));
+            Emit(node, OwlVocabulary.SourceIndividual, source);
+            Emit(node, OwlVocabulary.AssertionProperty, property);
+            Emit(node, targetPredicate, target);
+
+            return node;
+        }
+
+        private EmitResult EmitNaryDifferent(OwlDifferentIndividualsAxiom different)
+        {
+            for(int i = 0; i < different.Individuals.Count; i++)
+            {
+                for(int j = i + 1; j < different.Individuals.Count; j++)
+                {
+                    Emit(different.Individuals[i], OwlVocabulary.DifferentFrom, different.Individuals[j]);
+                }
+            }
+
+            //An annotated n-ary difference additionally serialises the
+            //owl:AllDifferent node the annotations live on.
+            return different.Annotations.Length == 0
+                ? default
+                : Node(EmitMemberedNode(OwlVocabulary.AllDifferent, [.. different.Individuals]));
+        }
+
+        private List<RdfTerm> PropertyNodeList(IReadOnlyList<OwlObjectPropertyExpression> properties)
+        {
+            List<RdfTerm> nodes = new(properties.Count);
+            foreach(OwlObjectPropertyExpression property in properties)
+            {
+                nodes.Add(PropertyNode(property));
+            }
+
+            return nodes;
+        }
+
+        private List<RdfTerm> KeyNodeList(OwlHasKeyAxiom hasKey)
+        {
+            List<RdfTerm> keys = PropertyNodeList(hasKey.ObjectProperties);
+            foreach(NamedNode dataKey in hasKey.DataProperties)
+            {
+                keys.Add(dataKey);
+            }
+
+            return keys;
+        }
+
+        //Expression serialisation.
 
         /// <summary>The node a class expression denotes — the IRI for a reference, a structured blank node otherwise. Nested expressions walk post-order with an explicit stack.</summary>
         private RdfTerm ClassNode(OwlClassExpression root)

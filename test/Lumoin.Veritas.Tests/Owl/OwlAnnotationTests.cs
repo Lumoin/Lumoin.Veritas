@@ -160,6 +160,36 @@ internal sealed class OwlAnnotationTests
         Assert.AreEqual("meta", ((Literal)subClass.Annotations[0].Annotations[0].Value).Value.ToString());
     }
 
+    [TestMethod]
+    public void AnnotationsRoundTripThroughTheForwardMapping()
+    {
+        const string Document = """
+            Prefix( : = <http://example.org/> )
+            Prefix( rdfs: = <http://www.w3.org/2000/01/rdf-schema#> )
+            Ontology( <http://example.org/o>
+              Declaration( Class( :A ) )
+              Declaration( Class( :B ) )
+              SubClassOf( Annotation( Annotation( rdfs:label "meta" ) rdfs:comment "stated" ) :A :B )
+            )
+            """;
+
+        OwlOntologyDocument read = OwlFunctionalSyntaxReader.Read(Document);
+        Assert.IsFalse(read.Diagnostics.HasErrors);
+
+        //Forward to triples and back: the owl:Axiom block the emitter wrote
+        //reattaches through the reverse mapping, nesting included.
+        List<Quad> quads = OwlStructuralToRdf.ToQuads(read);
+        OwlOntologyDocument mapped = OwlRdfMapper.Map(quads);
+
+        Assert.IsFalse(mapped.Diagnostics.HasErrors);
+        OwlSubClassOfAxiom? subClass = FindSubClassOf(mapped);
+        Assert.IsNotNull(subClass);
+        Assert.HasCount(1, subClass.Annotations);
+        Assert.AreEqual("stated", ((Literal)subClass.Annotations[0].Value).Value.ToString());
+        Assert.HasCount(1, subClass.Annotations[0].Annotations);
+        Assert.AreEqual("meta", ((Literal)subClass.Annotations[0].Annotations[0].Value).Value.ToString());
+    }
+
     private static OwlSubClassOfAxiom? FindSubClassOf(OwlOntologyDocument document)
     {
         foreach(OwlAxiom axiom in document.Axioms)
