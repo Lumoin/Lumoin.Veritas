@@ -40,9 +40,11 @@ internal sealed class W3cOwl2ProfileTests
     /// <summary>
     /// Corpus contradictions recorded as known gaps, self-correcting: a run
     /// fails if a listed test starts passing. <c>WebOnt-I4.6-004</c>'s
-    /// non-conclusion (<c>SameIndividual</c> over two declared class names)
-    /// is structurally identical to <c>WebOnt-sameAs-001</c>'s premise, yet
-    /// the corpus marks the former RL-only and the latter EL+RL. The
+    /// non-conclusion and <c>WebOnt-I4.6-003</c>'s premise
+    /// (<c>owl:sameAs</c>/<c>SameIndividual</c> over two declared class
+    /// names) are structurally identical to <c>WebOnt-sameAs-001</c>'s
+    /// premise, yet the corpus marks those two RL-only and the latter
+    /// EL+RL. The
     /// functional-syntax datatype family (<c>*-integer-filler</c>,
     /// <c>functionality-clash</c>) uses only profile-legal constructs
     /// (<c>DataHasValue</c>/<c>DataAllValuesFrom</c> over <c>xsd:integer</c>,
@@ -52,6 +54,7 @@ internal sealed class W3cOwl2ProfileTests
     /// </summary>
     private static HashSet<string> KnownGaps { get; } =
     [
+        "WebOnt-I4.6-003",
         "WebOnt-I4.6-004",
         "consistent-integer-filler",
         "inconsistent-integer-filler",
@@ -63,6 +66,15 @@ internal sealed class W3cOwl2ProfileTests
     [TestMethod]
     [Owl2ManifestData("approved", "all.rdf")]
     public void RunApproved(Owl2TestCase testCase)
+    {
+        RunAndAssert(testCase);
+    }
+
+    /// <summary>Runs one proposed-status OWL 2 test case as a profile-identification test.</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    [TestMethod]
+    [Owl2ManifestData("proposed", "all.rdf")]
+    public void RunProposed(Owl2TestCase testCase)
     {
         RunAndAssert(testCase);
     }

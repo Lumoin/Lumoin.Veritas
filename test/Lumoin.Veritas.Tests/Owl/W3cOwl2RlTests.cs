@@ -31,7 +31,10 @@ internal sealed class W3cOwl2RlTests
     /// <summary>
     /// Tests whose conclusions lie beyond the RL/RDF rules calculus,
     /// recorded as self-correcting known gaps: TBox-axiom conclusions
-    /// (<c>chain2trans1</c>), complement-class conclusions requiring
+    /// (<c>chain2trans1</c> and its dual
+    /// <c>New-Feature-ObjectPropertyChain-BJP-002</c>, which concludes a
+    /// <c>propertyChainAxiom</c> structure from transitivity),
+    /// complement-class conclusions requiring
     /// contrapositive reasoning (the DisjointClasses/DisjointProperties/QCR
     /// families, <c>fp/ifp-differentFrom</c>), and tautological
     /// class-expression-existence conclusions (<c>I5.26-010</c>,
@@ -47,6 +50,7 @@ internal sealed class W3cOwl2RlTests
         "New-Feature-DisjointDataProperties-002",
         "New-Feature-DisjointObjectProperties-001",
         "New-Feature-DisjointObjectProperties-002",
+        "New-Feature-ObjectPropertyChain-BJP-002",
         "New-Feature-ObjectQCR-002",
         "WebOnt-I5.26-010",
         "WebOnt-I5.5-005",
@@ -61,6 +65,20 @@ internal sealed class W3cOwl2RlTests
     [TestMethod]
     [Owl2ManifestData("approved", "all.rdf")]
     public void RunApproved(Owl2TestCase testCase)
+    {
+        RunAndAssert(testCase);
+    }
+
+    /// <summary>Runs one proposed-status, RL-marked OWL 2 test case through the RL closure.</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    [TestMethod]
+    [Owl2ManifestData("proposed", "all.rdf")]
+    public void RunProposed(Owl2TestCase testCase)
+    {
+        RunAndAssert(testCase);
+    }
+
+    private void RunAndAssert(Owl2TestCase testCase)
     {
         ArgumentNullException.ThrowIfNull(testCase);
 
