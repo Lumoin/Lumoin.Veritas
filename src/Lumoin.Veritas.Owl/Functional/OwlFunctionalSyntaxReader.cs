@@ -25,9 +25,11 @@ namespace Lumoin.Veritas.Owl.Functional;
 /// so arbitrarily nested class expressions never touch the call stack.
 /// </para>
 /// <para>
-/// Axiom and ontology annotations are recognised and consumed; they carry
-/// no logical content for the profile and rule consumers this front-end
-/// serves. Anonymous individuals (<c>_:label</c>) map to blank nodes.
+/// Axiom-frame annotations attach to the axioms they annotate, nesting
+/// included; ontology annotations surface as annotation assertions on the
+/// ontology IRI. Anonymous individuals (<c>_:label</c>) map to blank
+/// nodes. Diagnostics carry source spans: the offending token's extent
+/// for lexical errors, the converting node's extent for structural ones.
 /// </para>
 /// </remarks>
 public static class OwlFunctionalSyntaxReader
@@ -42,10 +44,11 @@ public static class OwlFunctionalSyntaxReader
     {
         ArgumentNullException.ThrowIfNull(text);
 
+        SourceMap map = new(text);
         ReaderContext context = new();
 
-        List<Token> tokens = Tokenize(text, context.Diagnostics);
-        SExpr root = BuildTree(tokens, context.Diagnostics);
+        List<Token> tokens = Tokenize(text, map, context.Diagnostics);
+        SExpr root = BuildTree(tokens, map, context.Diagnostics);
         context.ConvertDocument(root);
 
         return new OwlOntologyDocument(
@@ -57,6 +60,86 @@ public static class OwlFunctionalSyntaxReader
             context.DeclaredDataProperties,
             context.DeclaredAnnotationProperties,
             context.DeclaredDatatypes);
+    }
+
+    //Maps character offsets of the input string to source spans: UTF-8
+    //byte offsets via a cumulative-length table, lines and code-point
+    //columns via the line-start table.
+    private sealed class SourceMap
+    {
+        /// <summary>Cumulative UTF-8 byte length before each character index; one entry past the end.</summary>
+        private int[] CumulativeBytes { get; }
+
+        /// <summary>The character index each line starts at.</summary>
+        private List<int> LineStarts { get; } = [0];
+
+        public SourceMap(string text)
+        {
+            CumulativeBytes = new int[text.Length + 1];
+            int bytes = 0;
+            for(int i = 0; i < text.Length; i++)
+            {
+                CumulativeBytes[i] = bytes;
+                char c = text[i];
+
+                //The character's UTF-8 width; each half of a surrogate
+                //pair contributes two of the pair's four bytes.
+                bytes += c switch
+                {
+                    <= '\u007F' => 1,
+                    <= '\u07FF' => 2,
+                    _ when char.IsSurrogate(c) => 2,
+                    _ => 3
+                };
+
+                if(c == '\n')
+                {
+                    LineStarts.Add(i + 1);
+                }
+            }
+
+            CumulativeBytes[text.Length] = bytes;
+        }
+
+        /// <summary>Builds the span for a half-open character range.</summary>
+        /// <param name="startChar">The inclusive start character index.</param>
+        /// <param name="endChar">The exclusive end character index.</param>
+        /// <returns>The span in byte and line-column form.</returns>
+        public SourceSpan Span(int startChar, int endChar)
+        {
+            (int startLine, int startColumn) = Locate(startChar);
+            (int endLine, int endColumn) = Locate(endChar);
+
+            return new SourceSpan(CumulativeBytes[startChar], CumulativeBytes[endChar], startLine, startColumn, endLine, endColumn);
+        }
+
+        /// <summary>
+        /// Locates a character offset as a zero-based line and column: a
+        /// binary search over <see cref="LineStarts"/> for the last line
+        /// starting at or before the offset; the column is the distance
+        /// from that line's start.
+        /// </summary>
+        /// <param name="charOffset">The character offset to locate.</param>
+        /// <returns>The zero-based line index and column.</returns>
+        private (int Line, int Column) Locate(int charOffset)
+        {
+            int low = 0;
+            int high = LineStarts.Count - 1;
+            while(low < high)
+            {
+                int middle = (low + high + 1) / 2;
+                if(LineStarts[middle] <= charOffset)
+                {
+                    low = middle;
+                }
+                else
+                {
+                    high = middle - 1;
+                }
+            }
+
+            return (low, charOffset - LineStarts[low]);
+        }
     }
 
     //Tokenizer.
@@ -73,9 +156,9 @@ public static class OwlFunctionalSyntaxReader
         Number = 7,
     }
 
-    private readonly record struct Token(TokenKind Kind, string Text, string? LiteralDatatype, string? LiteralLanguage);
+    private readonly record struct Token(TokenKind Kind, string Text, string? LiteralDatatype, string? LiteralLanguage, int Start, int End);
 
-    private static List<Token> Tokenize(string text, DiagnosticBag diagnostics)
+    private static List<Token> Tokenize(string text, SourceMap map, DiagnosticBag diagnostics)
     {
         List<Token> tokens = [];
         int i = 0;
@@ -103,7 +186,7 @@ public static class OwlFunctionalSyntaxReader
 
             if(c == '(')
             {
-                tokens.Add(new Token(TokenKind.Open, "(", null, null));
+                tokens.Add(new Token(TokenKind.Open, "(", null, null, i, i + 1));
                 i++;
 
                 continue;
@@ -111,7 +194,7 @@ public static class OwlFunctionalSyntaxReader
 
             if(c == ')')
             {
-                tokens.Add(new Token(TokenKind.Close, ")", null, null));
+                tokens.Add(new Token(TokenKind.Close, ")", null, null, i, i + 1));
                 i++;
 
                 continue;
@@ -119,7 +202,7 @@ public static class OwlFunctionalSyntaxReader
 
             if(c == '=')
             {
-                tokens.Add(new Token(TokenKind.Equals, "=", null, null));
+                tokens.Add(new Token(TokenKind.Equals, "=", null, null, i, i + 1));
                 i++;
 
                 continue;
@@ -130,12 +213,12 @@ public static class OwlFunctionalSyntaxReader
                 int end = text.IndexOf('>', i + 1);
                 if(end < 0)
                 {
-                    Report(diagnostics, "Unterminated IRI reference.");
+                    Report(diagnostics, "Unterminated IRI reference.", map.Span(i, text.Length));
 
                     return tokens;
                 }
 
-                tokens.Add(new Token(TokenKind.Iri, text[(i + 1)..end], null, null));
+                tokens.Add(new Token(TokenKind.Iri, text[(i + 1)..end], null, null, i, end + 1));
                 i = end + 1;
 
                 continue;
@@ -143,6 +226,7 @@ public static class OwlFunctionalSyntaxReader
 
             if(c == '"')
             {
+                int literalStart = i;
                 StringBuilder value = new();
                 i++;
                 while(i < text.Length && text[i] != '"')
@@ -168,7 +252,7 @@ public static class OwlFunctionalSyntaxReader
 
                 if(i == text.Length)
                 {
-                    Report(diagnostics, "Unterminated string literal.");
+                    Report(diagnostics, "Unterminated string literal.", map.Span(literalStart, text.Length));
 
                     return tokens;
                 }
@@ -180,7 +264,7 @@ public static class OwlFunctionalSyntaxReader
                 if(i + 1 < text.Length && text[i] == '^' && text[i + 1] == '^')
                 {
                     i += 2;
-                    (datatype, i) = ReadNameOrIri(text, i, diagnostics);
+                    (datatype, i) = ReadNameOrIri(text, i, map, diagnostics);
                 }
                 else if(i < text.Length && text[i] == '@')
                 {
@@ -194,7 +278,7 @@ public static class OwlFunctionalSyntaxReader
                     language = text[start..i];
                 }
 
-                tokens.Add(new Token(TokenKind.Literal, value.ToString(), datatype, language));
+                tokens.Add(new Token(TokenKind.Literal, value.ToString(), datatype, language, literalStart, i));
 
                 continue;
             }
@@ -208,7 +292,7 @@ public static class OwlFunctionalSyntaxReader
                     end++;
                 }
 
-                tokens.Add(new Token(TokenKind.BlankNode, text[start..end], null, null));
+                tokens.Add(new Token(TokenKind.BlankNode, text[start..end], null, null, start - 2, end));
                 i = end;
 
                 continue;
@@ -222,7 +306,7 @@ public static class OwlFunctionalSyntaxReader
                     i++;
                 }
 
-                tokens.Add(new Token(TokenKind.Number, text[start..i], null, null));
+                tokens.Add(new Token(TokenKind.Number, text[start..i], null, null, start, i));
 
                 continue;
             }
@@ -235,26 +319,26 @@ public static class OwlFunctionalSyntaxReader
                     i++;
                 }
 
-                tokens.Add(new Token(TokenKind.Name, text[start..i], null, null));
+                tokens.Add(new Token(TokenKind.Name, text[start..i], null, null, start, i));
 
                 continue;
             }
 
-            Report(diagnostics, $"Unexpected character '{c}'.");
+            Report(diagnostics, $"Unexpected character '{c}'.", map.Span(i, i + 1));
             i++;
         }
 
         return tokens;
     }
 
-    private static (string Value, int Next) ReadNameOrIri(string text, int i, DiagnosticBag diagnostics)
+    private static (string Value, int Next) ReadNameOrIri(string text, int i, SourceMap map, DiagnosticBag diagnostics)
     {
         if(i < text.Length && text[i] == '<')
         {
             int end = text.IndexOf('>', i + 1);
             if(end < 0)
             {
-                Report(diagnostics, "Unterminated datatype IRI.");
+                Report(diagnostics, "Unterminated datatype IRI.", map.Span(i, text.Length));
 
                 return (string.Empty, text.Length);
             }
@@ -294,24 +378,32 @@ public static class OwlFunctionalSyntaxReader
         /// <summary>Whether this node is an atom.</summary>
         public bool IsAtom { get; init; }
 
+        /// <summary>The node's source extent: the atom's token, or the run from the group's head to its closing parenthesis.</summary>
+        public SourceSpan Span { get; set; }
+
+        /// <summary>The character offset the group's span starts at, held until the closing parenthesis fixes the end.</summary>
+        public int SpanStart { get; init; }
+
         /// <summary>The group's children, in document order.</summary>
         public List<SExpr> Children { get; } = [];
     }
 
-    private static SExpr BuildTree(List<Token> tokens, DiagnosticBag diagnostics)
+    private static SExpr BuildTree(List<Token> tokens, SourceMap map, DiagnosticBag diagnostics)
     {
         SExpr root = new() { Head = null };
         Stack<SExpr> open = new();
         open.Push(root);
 
+        int lastEnd = 0;
         int i = 0;
         while(i < tokens.Count)
         {
             Token token = tokens[i];
+            lastEnd = token.End;
 
             if(token.Kind == TokenKind.Name && i + 1 < tokens.Count && tokens[i + 1].Kind == TokenKind.Open)
             {
-                SExpr group = new() { Head = token.Text };
+                SExpr group = new() { Head = token.Text, SpanStart = token.Start };
                 open.Peek().Children.Add(group);
                 open.Push(group);
                 i += 2;
@@ -321,7 +413,7 @@ public static class OwlFunctionalSyntaxReader
 
             if(token.Kind == TokenKind.Open)
             {
-                SExpr group = new() { Head = null };
+                SExpr group = new() { Head = null, SpanStart = token.Start };
                 open.Peek().Children.Add(group);
                 open.Push(group);
                 i++;
@@ -333,11 +425,12 @@ public static class OwlFunctionalSyntaxReader
             {
                 if(open.Count == 1)
                 {
-                    Report(diagnostics, "Unbalanced ')'.");
+                    Report(diagnostics, "Unbalanced ')'.", map.Span(token.Start, token.End));
                 }
                 else
                 {
-                    open.Pop();
+                    SExpr closed = open.Pop();
+                    closed.Span = map.Span(closed.SpanStart, token.End);
                 }
 
                 i++;
@@ -345,24 +438,27 @@ public static class OwlFunctionalSyntaxReader
                 continue;
             }
 
-            open.Peek().Children.Add(new SExpr { IsAtom = true, Atom = token });
+            open.Peek().Children.Add(new SExpr { IsAtom = true, Atom = token, Span = map.Span(token.Start, token.End) });
             i++;
         }
 
-        if(open.Count != 1)
+        //Unterminated groups span to the last token seen.
+        while(open.Count > 1)
         {
-            Report(diagnostics, "Unbalanced '(' at end of document.");
+            SExpr unterminated = open.Pop();
+            unterminated.Span = map.Span(unterminated.SpanStart, lastEnd);
+            Report(diagnostics, "Unbalanced '(' at end of document.", unterminated.Span);
         }
 
         return root;
     }
 
-    private static void Report(DiagnosticBag diagnostics, string message)
+    private static void Report(DiagnosticBag diagnostics, string message, SourceSpan span)
     {
         diagnostics.Add(new Diagnostic(
             WellKnownDiagnostics.Owl.MalformedAxiomStructure,
             DiagnosticSeverity.Error,
-            default(SourceSpan),
+            span,
             Utf8String.FromString(message)));
     }
 
@@ -375,6 +471,9 @@ public static class OwlFunctionalSyntaxReader
     private sealed class ReaderContext
     {
         public DiagnosticBag Diagnostics { get; } = new();
+
+        /// <summary>The source extent of the node currently converting — the span every conversion diagnostic carries.</summary>
+        private SourceSpan CurrentSpan { get; set; }
 
         public ImmutableArray<OwlAxiom>.Builder Axioms { get; } = ImmutableArray.CreateBuilder<OwlAxiom>();
 
@@ -433,6 +532,8 @@ public static class OwlFunctionalSyntaxReader
             bool headerDone = false;
             foreach(SExpr child in ontology.Children)
             {
+                CurrentSpan = child.Span;
+
                 //The leading bare IRIs are the ontology IRI and version IRI.
                 if(!headerDone && child.IsAtom && child.Atom.Kind == TokenKind.Iri)
                 {
@@ -474,7 +575,7 @@ public static class OwlFunctionalSyntaxReader
                     Diagnostics.Add(new Diagnostic(
                         WellKnownDiagnostics.Owl.MalformedAxiomStructure,
                         DiagnosticSeverity.Error,
-                        default(SourceSpan),
+                        CurrentSpan,
                         Utf8String.FromString("A bare group is not an axiom.")));
 
                     continue;
@@ -504,6 +605,7 @@ public static class OwlFunctionalSyntaxReader
 
                 if(node.IsAtom)
                 {
+                    CurrentSpan = node.Span;
                     Converted[node] = ConvertAtom(node.Atom);
                     work.Pop();
 
@@ -525,6 +627,7 @@ public static class OwlFunctionalSyntaxReader
                     continue;
                 }
 
+                CurrentSpan = node.Span;
                 Converted[node] = ConstructValue(node);
                 work.Pop();
             }
@@ -552,7 +655,7 @@ public static class OwlFunctionalSyntaxReader
                 Diagnostics.Add(new Diagnostic(
                     WellKnownDiagnostics.Owl.MalformedAxiomStructure,
                     DiagnosticSeverity.Error,
-                    default(SourceSpan),
+                    CurrentSpan,
                     Utf8String.FromString($"Unresolvable name '{name}'.")));
 
                 return null;
@@ -569,7 +672,7 @@ public static class OwlFunctionalSyntaxReader
             Diagnostics.Add(new Diagnostic(
                 WellKnownDiagnostics.Owl.MalformedAxiomStructure,
                 DiagnosticSeverity.Error,
-                default(SourceSpan),
+                CurrentSpan,
                 Utf8String.FromString($"Undeclared prefix '{prefix}:'.")));
 
             return null;
@@ -794,6 +897,8 @@ public static class OwlFunctionalSyntaxReader
         //subtree is converted.
         private void ConvertAxiom(SExpr node)
         {
+            CurrentSpan = node.Span;
+
             if(Converted[node] is DeclarationValue || node.Head is null)
             {
                 //A bare Class(:A) at axiom position would be malformed; the
@@ -1046,7 +1151,7 @@ public static class OwlFunctionalSyntaxReader
                     Diagnostics.Add(new Diagnostic(
                         WellKnownDiagnostics.Owl.UnsupportedConstruct,
                         DiagnosticSeverity.Error,
-                        default(SourceSpan),
+                        CurrentSpan,
                         Utf8String.FromString($"Unrecognised axiom constructor '{node.Head}'.")));
                     break;
                 }
@@ -1105,7 +1210,7 @@ public static class OwlFunctionalSyntaxReader
             Diagnostics.Add(new Diagnostic(
                 WellKnownDiagnostics.Owl.MalformedAxiomStructure,
                 DiagnosticSeverity.Error,
-                default(SourceSpan),
+                CurrentSpan,
                 Utf8String.FromString("An IRI was expected.")));
 
             return Utf8String.FromString("urn:veritas:invalid");
@@ -1125,7 +1230,7 @@ public static class OwlFunctionalSyntaxReader
                 Diagnostics.Add(new Diagnostic(
                     WellKnownDiagnostics.Owl.MalformedClassExpression,
                     DiagnosticSeverity.Error,
-                    default(SourceSpan),
+                    CurrentSpan,
                     Utf8String.FromString("A class expression was expected.")));
 
                 return new OwlClassReference(new NamedNode(Utf8String.FromString("urn:veritas:invalid")));
@@ -1168,7 +1273,7 @@ public static class OwlFunctionalSyntaxReader
                 Diagnostics.Add(new Diagnostic(
                     WellKnownDiagnostics.Owl.MalformedAxiomStructure,
                     DiagnosticSeverity.Error,
-                    default(SourceSpan),
+                    CurrentSpan,
                     Utf8String.FromString("An object property expression was expected.")));
 
                 return new OwlObjectPropertyReference(new NamedNode(Utf8String.FromString("urn:veritas:invalid")));
@@ -1194,7 +1299,7 @@ public static class OwlFunctionalSyntaxReader
                 Diagnostics.Add(new Diagnostic(
                     WellKnownDiagnostics.Owl.MalformedClassExpression,
                     DiagnosticSeverity.Error,
-                    default(SourceSpan),
+                    CurrentSpan,
                     Utf8String.FromString("A data range was expected.")));
 
                 return new OwlDatatypeReference(new NamedNode(Utf8String.FromString("urn:veritas:invalid")));
@@ -1215,7 +1320,7 @@ public static class OwlFunctionalSyntaxReader
                 Diagnostics.Add(new Diagnostic(
                     WellKnownDiagnostics.Owl.MalformedAxiomStructure,
                     DiagnosticSeverity.Error,
-                    default(SourceSpan),
+                    CurrentSpan,
                     Utf8String.FromString("An individual was expected.")));
 
                 return new NamedNode(Utf8String.FromString("urn:veritas:invalid"));
