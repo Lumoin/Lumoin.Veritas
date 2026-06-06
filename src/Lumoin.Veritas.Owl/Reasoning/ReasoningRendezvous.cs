@@ -68,16 +68,32 @@ public sealed record ReasoningResult(
 /// with the write-path integration.
 /// </para>
 /// </remarks>
-[DebuggerDisplay("ReasoningRendezvous Delegate={descriptionLogic is not null}")]
+[DebuggerDisplay("ReasoningRendezvous Delegate={DescriptionLogic is not null}")]
 public sealed class ReasoningRendezvous
 {
-    private readonly ReasoningPolicy policy;
+    /// <summary>The selection policy.</summary>
+    private ReasoningPolicy Policy { get; }
 
-    private readonly DescriptionLogicDelegate? descriptionLogic;
+    /// <summary>The external SROIQ(D) reasoner seam, or <c>null</c>.</summary>
+    private DescriptionLogicDelegate? DescriptionLogic { get; }
 
     //Sequence-number counter for trace events emitted by this rendezvous.
     //A field because Interlocked requires a ref parameter.
     private long traceSequence;
+
+    /// <summary>
+    /// The store generation the cached classification describes: the store
+    /// reference is the generation marker, exactly as the join rendezvous
+    /// keys its columnar view. A commit produces a new store instance and
+    /// the next request rebuilds. Swapped under <see cref="ClassificationLock"/>.
+    /// </summary>
+    private HypertrieGraphStore? ClassifiedStore { get; set; }
+
+    /// <summary>The cached EL classification for <see cref="ClassifiedStore"/>.</summary>
+    private El.ElClassification? Classification { get; set; }
+
+    /// <summary>Guards the (<see cref="ClassifiedStore"/>, <see cref="Classification"/>) pair.</summary>
+    private object ClassificationLock { get; } = new();
 
     /// <summary>
     /// Constructs a rendezvous with the given policy and an optional
@@ -87,8 +103,8 @@ public sealed class ReasoningRendezvous
     /// <param name="descriptionLogic">The external SROIQ(D) reasoner seam, or <c>null</c> — beyond-ceiling modules are then reported, never silently dropped.</param>
     public ReasoningRendezvous(ReasoningPolicy policy, DescriptionLogicDelegate? descriptionLogic = null)
     {
-        this.policy = policy;
-        this.descriptionLogic = descriptionLogic;
+        Policy = policy;
+        DescriptionLogic = descriptionLogic;
     }
 
     /// <summary>
@@ -129,7 +145,7 @@ public sealed class ReasoningRendezvous
         OwlOntologyDocument document = OwlRdfMapper.Map(quads);
         OwlProfileReport report = OwlProfileChecker.Check(document);
 
-        bool rdfsShaped = policy.PreferRdfsWhenSufficient && IsRdfsShaped(document);
+        bool rdfsShaped = Policy.PreferRdfsWhenSufficient && IsRdfsShaped(document);
         bool withinRl = report.IsIn(OwlProfiles.Rl);
 
         ReasoningStrategy strategy;
@@ -175,11 +191,11 @@ public sealed class ReasoningRendezvous
             {
                 module = ExtractBeyondRlModule(document, report);
 
-                if(descriptionLogic is not null && policy.DelegateBeyondRl)
+                if(DescriptionLogic is not null && Policy.DelegateBeyondRl)
                 {
                     strategy = ReasoningStrategy.DescriptionLogicDelegate;
                     reason = ReasoningSelectionReason.BeyondRlDelegated;
-                    verdict = await descriptionLogic(module, cancellationToken).ConfigureAwait(false);
+                    verdict = await DescriptionLogic(module, cancellationToken).ConfigureAwait(false);
                     isConsistent = isConsistent && verdict.IsConsistent;
                 }
                 else
@@ -208,6 +224,84 @@ public sealed class ReasoningRendezvous
         return new ReasoningResult(
             resultStore, derivedCount, isConsistent, inconsistencyRule,
             strategy, reason, report.Memberships, module, verdict);
+    }
+
+    /// <summary>
+    /// The EL classification of the store's TBox — Strategy E: TBox
+    /// preprocessing whose subclass closure feeds planner statistics and
+    /// query-time expansion, never materialized triples. Built once per
+    /// store generation (the store reference is the generation marker) and
+    /// reused until a commit produces a successor; every call announces
+    /// <see cref="ReasoningSelectionReason.ElClassificationBuilt"/> or
+    /// <see cref="ReasoningSelectionReason.ElClassificationReused"/>.
+    /// </summary>
+    /// <param name="store">The store whose content classifies.</param>
+    /// <param name="dictionary">The term dictionary the store's triples were encoded with.</param>
+    /// <param name="traceHandler">Optional handler receiving the <see cref="ReasoningTraceEvent"/>.</param>
+    /// <param name="timeProvider">Clock for trace timestamps and cost measurement. Required when <paramref name="traceHandler"/> is non-<c>null</c>.</param>
+    /// <param name="correlationId">Correlation id stamped on emitted trace events.</param>
+    /// <param name="cancellationToken">A token that aborts classification.</param>
+    /// <returns>The classification for this store generation.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="store"/> or <paramref name="dictionary"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">A trace handler is supplied without a time provider.</exception>
+    /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
+    public El.ElClassification Classify(
+        HypertrieGraphStore store,
+        TermDictionary dictionary,
+        TraceHandler<ReasoningTraceEvent>? traceHandler = null,
+        TimeProvider? timeProvider = null,
+        Guid correlationId = default,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(dictionary);
+
+        if(traceHandler is not null && timeProvider is null)
+        {
+            throw new ArgumentException("A time provider must be supplied when a trace handler is configured.", nameof(timeProvider));
+        }
+
+        long startTicks = timeProvider?.GetUtcNow().UtcTicks ?? 0;
+
+        El.ElClassification? existing;
+        lock(ClassificationLock)
+        {
+            existing = ReferenceEquals(ClassifiedStore, store) ? Classification : null;
+        }
+
+        bool isBuilt = existing is null;
+        if(existing is null)
+        {
+            OwlOntologyDocument document = OwlRdfMapper.Map(DecodeStore(store, dictionary));
+            existing = El.ElClassifier.Classify(document, cancellationToken);
+
+            lock(ClassificationLock)
+            {
+                //A racing request may have classified the same generation
+                //first; either result is correct for it, so the later
+                //writer simply wins.
+                ClassifiedStore = store;
+                Classification = existing;
+            }
+        }
+
+        if(traceHandler is not null)
+        {
+            long elapsedMilliseconds = (timeProvider!.GetUtcNow().UtcTicks - startTicks) / TimeSpan.TicksPerMillisecond;
+            ReasoningTraceEvent traceEvent = new(
+                Interlocked.Increment(ref traceSequence),
+                timeProvider.GetUtcNow().UtcTicks,
+                correlationId,
+                ReasoningStrategy.ElClassification,
+                isBuilt ? ReasoningSelectionReason.ElClassificationBuilt : ReasoningSelectionReason.ElClassificationReused,
+                BeyondRlAxiomCount: existing.UnsupportedConstructs.Count,
+                DerivedCount: 0,
+                isBuilt ? elapsedMilliseconds : 0);
+
+            traceHandler(in traceEvent);
+        }
+
+        return existing;
     }
 
     //Decodes the store's triples back to term form for the structural

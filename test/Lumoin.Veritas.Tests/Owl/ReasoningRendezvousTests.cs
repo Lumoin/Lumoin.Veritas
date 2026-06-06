@@ -146,6 +146,41 @@ internal sealed class ReasoningRendezvousTests
         Assert.IsTrue(result.IsConsistent);
     }
 
+    /// <summary>Strategy E: the first classification request pays the build, the second reuses the same generation's result, and the closure's inverted index answers expansion.</summary>
+    [TestMethod]
+    public async Task ClassificationBuildsThenReuses()
+    {
+        TermDictionary dictionary = new();
+        TermId type = Mint(dictionary, Vocabulary.Rdf.Type.ToString());
+        TermId subClassOf = Mint(dictionary, RdfVocabulary.Rdfs.SubClassOf.ToString());
+        TermId owlClass = Mint(dictionary, "http://www.w3.org/2002/07/owl#Class");
+        TermId car = Mint(dictionary, Example + "Car");
+        TermId vehicle = Mint(dictionary, Example + "Vehicle");
+
+        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(
+            [
+                Triple(car, type, owlClass),
+                Triple(vehicle, type, owlClass),
+                Triple(car, subClassOf, vehicle),
+            ],
+            VeritasHashing.Default,
+            TestContext.CancellationToken).ConfigureAwait(false);
+
+        ReasoningRendezvous rendezvous = new(ReasoningPolicy.Default);
+        List<ReasoningTraceEvent> events = [];
+
+        Lumoin.Veritas.Owl.El.ElClassification first = rendezvous.Classify(
+            store, dictionary, Collect(events), TimeProvider.System, cancellationToken: TestContext.CancellationToken);
+        Lumoin.Veritas.Owl.El.ElClassification second = rendezvous.Classify(
+            store, dictionary, Collect(events), TimeProvider.System, cancellationToken: TestContext.CancellationToken);
+
+        Assert.AreSame(first, second, "The same store generation reuses the classification.");
+        Assert.HasCount(2, events);
+        Assert.AreEqual(ReasoningSelectionReason.ElClassificationBuilt, events[0].Reason);
+        Assert.AreEqual(ReasoningSelectionReason.ElClassificationReused, events[1].Reason);
+        Assert.Contains(Utf8String.FromString(Example + "Car"), first.SubsumeesOf(Utf8String.FromString(Example + "Vehicle")), "The inverted index answers type-pattern expansion.");
+    }
+
     //A TBox with a union on the superclass side — outside the RL grammar:
     //c1 ⊑ (a ∪ b).
     private async Task<(HypertrieGraphStore Store, TermId C1)> BuildBeyondRlStoreAsync(TermDictionary dictionary)

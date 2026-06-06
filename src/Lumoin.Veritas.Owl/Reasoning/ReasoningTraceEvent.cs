@@ -15,6 +15,9 @@ public enum ReasoningStrategy
 
     /// <summary>SROIQ(D)-hard modules handed to the external description-logic delegate.</summary>
     DescriptionLogicDelegate = 2,
+
+    /// <summary>The EL classifier — TBox preprocessing feeding planner statistics and query-time expansion, never materialized triples.</summary>
+    ElClassification = 3,
 }
 
 /// <summary>Why the rendezvous selected the strategy it did — the expressiveness rungs.</summary>
@@ -31,6 +34,12 @@ public enum ReasoningSelectionReason
 
     /// <summary>The TBox exceeds RL and no description-logic delegate is wired; the exceeding axioms are reported, never silently dropped.</summary>
     BeyondRlReported = 3,
+
+    /// <summary>The EL classification was computed for this store generation — the request paid the build, which consumers amortise.</summary>
+    ElClassificationBuilt = 4,
+
+    /// <summary>The EL classification for this store generation already existed and was reused at zero cost.</summary>
+    ElClassificationReused = 5,
 }
 
 /// <summary>
