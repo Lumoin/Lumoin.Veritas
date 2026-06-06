@@ -26,9 +26,10 @@ namespace Lumoin.Veritas.Tests.Owl;
 /// profile claims, so only their positive direction (vacuously empty) binds.
 /// </para>
 /// <para>
-/// Honest skips: functional-syntax-only tests (no OWL functional-syntax
-/// reader yet) and imports-bearing tests (the harness supplies no imported
-/// ontologies).
+/// Documents arrive as RDF/XML through the RDF mapping or as functional
+/// syntax read directly into structural form; <c>owl:imports</c> references
+/// resolve against the test's supplied ontologies, so the checked unit is
+/// the axiom closure.
 /// </para>
 /// </remarks>
 [TestClass]
@@ -82,11 +83,6 @@ internal sealed class W3cOwl2ProfileTests
     private static void RunAndAssert(Owl2TestCase testCase)
     {
         ArgumentNullException.ThrowIfNull(testCase);
-
-        if(testCase.HasImports)
-        {
-            Assert.Inconclusive("Imports-bearing test; the harness supplies no imported ontologies.");
-        }
 
         //Check every document of the test; the per-profile verdict for the
         //TEST is the conjunction over its documents. RDF/XML documents map
@@ -178,13 +174,16 @@ internal sealed class W3cOwl2ProfileTests
     private static OwlOntologyDocument MapDocument(Owl2TestCase testCase, string document, OwlOntologyDocument? declarationContext)
     {
         DiagnosticBag parseDiagnostics = new();
-        IReadOnlyList<Quad> quads = RdfXmlReader.Read(Encoding.UTF8.GetBytes(document), parseDiagnostics, baseIri: testCase.Uri.AbsoluteUri);
+        List<Quad> quads = [.. RdfXmlReader.Read(Encoding.UTF8.GetBytes(document), parseDiagnostics, baseIri: testCase.Uri.AbsoluteUri)];
         if(parseDiagnostics.HasErrors)
         {
             Assert.Inconclusive("A test document did not parse as RDF/XML; the test cannot be set up.");
         }
 
-        return OwlRdfMapper.Map(quads, declarationContext);
+        //Profile membership is a property of the ontology's axiom closure
+        //(Profiles §2), so the document's owl:imports resolve against the
+        //test's supplied ontologies before mapping.
+        return OwlRdfMapper.Map(Owl2ImportResolver.Expand(testCase, quads), declarationContext);
     }
 
     private static OwlOntologyDocument ReadFunctional(string document)

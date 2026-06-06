@@ -63,13 +63,13 @@ internal static class Owl2ManifestLoader
         ImmutableArray<Owl2TestCase>.Builder builder = ImmutableArray.CreateBuilder<Owl2TestCase>(testSubjects.Count);
         foreach(string subject in testSubjects)
         {
-            builder.Add(BuildTestCase(subject, bySubject[subject]));
+            builder.Add(BuildTestCase(subject, bySubject[subject], bySubject));
         }
 
         return builder.ToImmutable();
     }
 
-    private static Owl2TestCase BuildTestCase(string subjectKey, List<Quad> properties)
+    private static Owl2TestCase BuildTestCase(string subjectKey, List<Quad> properties, Dictionary<string, List<Quad>> bySubject)
     {
         HashSet<string> kinds = [];
         HashSet<string> profiles = [];
@@ -120,7 +120,41 @@ internal static class Owl2ManifestLoader
             FunctionalPremise: StringValue(properties, "fsPremiseOntology"),
             FunctionalConclusion: StringValue(properties, "fsConclusionOntology"),
             FunctionalNonConclusion: StringValue(properties, "fsNonConclusionOntology"),
-            HasImports: HasPredicate(properties, TestNamespace + "importedOntology"));
+            Imports: BuildImports(properties, bySubject));
+    }
+
+    private static List<Owl2ImportedOntology> BuildImports(List<Quad> properties, Dictionary<string, List<Quad>> bySubject)
+    {
+        List<Owl2ImportedOntology> imports = [];
+        foreach(Quad quad in properties)
+        {
+            if(quad.Predicate.Iri.ToString() != TestNamespace + "importedOntology" || quad.Object is not NamedNode reference)
+            {
+                continue;
+            }
+
+            //The referenced node is a sibling in the same manifest carrying
+            //the resolvable ontology IRI and the inline document; the
+            //manifest is trusted infrastructure, so a dangling reference
+            //fails loudly.
+            if(!bySubject.TryGetValue("i:" + reference.Iri.ToString(), out List<Quad>? importedProperties))
+            {
+                throw new InvalidOperationException($"The manifest declares imported ontology '{reference.Iri}' but carries no node for it.");
+            }
+
+            string? iri = ResourceValue(importedProperties, "importedOntologyIRI");
+            if(iri is null)
+            {
+                throw new InvalidOperationException($"Imported ontology node '{reference.Iri}' declares no test:importedOntologyIRI.");
+            }
+
+            imports.Add(new Owl2ImportedOntology(
+                iri,
+                RdfXml: StringValue(importedProperties, "rdfXmlInputOntology"),
+                Functional: StringValue(importedProperties, "fsInputOntology")));
+        }
+
+        return imports;
     }
 
     private static Dictionary<string, List<Quad>> IndexBySubject(List<Quad> quads)
@@ -162,17 +196,18 @@ internal static class Owl2ManifestLoader
         return false;
     }
 
-    private static bool HasPredicate(List<Quad> properties, string predicateIri)
+    private static string? ResourceValue(List<Quad> properties, string localName)
     {
+        string predicateIri = TestNamespace + localName;
         foreach(Quad quad in properties)
         {
-            if(quad.Predicate.Iri.ToString() == predicateIri)
+            if(quad.Predicate.Iri.ToString() == predicateIri && quad.Object is NamedNode named)
             {
-                return true;
+                return named.Iri.ToString();
             }
         }
 
-        return false;
+        return null;
     }
 
     private static string? StringValue(List<Quad> properties, string localName)

@@ -5,6 +5,16 @@ using System.Diagnostics;
 namespace Lumoin.Veritas.Tests.Conformance;
 
 /// <summary>
+/// One imported ontology a test case supplies inline: the manifests carry the
+/// document under a sibling node keyed by the ontology IRI that an
+/// <c>owl:imports</c> triple in a test document resolves against.
+/// </summary>
+/// <param name="Iri">The ontology IRI (<c>test:importedOntologyIRI</c>) the import resolves by.</param>
+/// <param name="RdfXml">The ontology document as inline RDF/XML, or <c>null</c>.</param>
+/// <param name="Functional">The ontology document in OWL functional syntax, or <c>null</c>.</param>
+internal sealed record Owl2ImportedOntology(string Iri, string? RdfXml, string? Functional);
+
+/// <summary>
 /// One W3C OWL 2 conformance test case as declared in the test-ontology
 /// manifests (<c>http://www.w3.org/2007/OWL/testOntology#</c>). Unlike the
 /// RDF/SPARQL suites, the ontology documents under test are carried
@@ -34,7 +44,7 @@ namespace Lumoin.Veritas.Tests.Conformance;
 /// <param name="FunctionalPremise">The premise ontology document in OWL functional syntax, or <c>null</c>.</param>
 /// <param name="FunctionalConclusion">The conclusion ontology document in OWL functional syntax, or <c>null</c>.</param>
 /// <param name="FunctionalNonConclusion">The non-conclusion ontology document in OWL functional syntax, or <c>null</c>.</param>
-/// <param name="HasImports">Whether the test declares imported ontologies (<c>test:importedOntology</c>), which the harness must supply.</param>
+/// <param name="Imports">The imported ontologies the test supplies (<c>test:importedOntology</c>), resolvable by IRI when a document's <c>owl:imports</c> references them.</param>
 [DebuggerDisplay("Owl2TestCase {Identifier,nq}")]
 internal sealed record Owl2TestCase(
     Uri Uri,
@@ -51,7 +61,7 @@ internal sealed record Owl2TestCase(
     string? FunctionalPremise,
     string? FunctionalConclusion,
     string? FunctionalNonConclusion,
-    bool HasImports)
+    IReadOnlyList<Owl2ImportedOntology> Imports)
 {
     /// <summary>The RDF/XML documents the test asserts profile membership over: premise, conclusion, non-conclusion, and input, in that order, skipping absent ones.</summary>
     public IEnumerable<string> RdfXmlDocuments

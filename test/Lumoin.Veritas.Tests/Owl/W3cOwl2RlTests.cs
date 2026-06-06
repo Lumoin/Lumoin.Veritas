@@ -19,8 +19,9 @@ namespace Lumoin.Veritas.Tests.Owl;
 /// <remarks>
 /// Only tests whose documents the corpus marks as RL run here — for those,
 /// the RL rules are the complete calculus the conformance document
-/// prescribes. Honest skips: non-RL tests, functional-syntax-only tests,
-/// and imports-bearing tests.
+/// prescribes. The premise's <c>owl:imports</c> resolve against the test's
+/// supplied ontologies, so the reasoned-over unit is the imports closure.
+/// Honest skips: non-RL tests and Direct-semantics-only entailment tests.
 /// </remarks>
 [TestClass]
 internal sealed class W3cOwl2RlTests
@@ -87,11 +88,6 @@ internal sealed class W3cOwl2RlTests
             Assert.Inconclusive("Not an RL-marked test; the RL rules make no completeness claim.");
         }
 
-        if(testCase.HasImports)
-        {
-            Assert.Inconclusive("Imports-bearing test; the harness supplies no imported ontologies.");
-        }
-
         //The closure implements the RDF-Based rules calculus; entailment
         //tests stated for Direct semantics only (annotation conclusions are
         //disregarded there) measure a different reasoner.
@@ -108,6 +104,11 @@ internal sealed class W3cOwl2RlTests
 
             return;
         }
+
+        //The reasoned-over unit is the premise's imports closure: its
+        //owl:imports resolve against the test's supplied ontologies, and a
+        //supplied ontology the premise never imports contributes nothing.
+        premiseQuads = Owl2ImportResolver.Expand(testCase, premiseQuads);
 
         TermDictionary dictionary = new();
         List<EncodedTriple> encoded = Encode(premiseQuads, dictionary);
