@@ -84,6 +84,12 @@ public sealed class SparqlQueryEngine
 
     private readonly AccessContext? accessContext;
 
+    /// <summary>The query-time type-expansion seam, or <c>null</c> for no expansion.</summary>
+    private TypeExpansionDelegate? TypeExpansion { get; }
+
+    /// <summary>The <c>rdf:type</c> predicate node the expansion seam keys off.</summary>
+    private static NamedNode RdfTypeNode { get; } = new(Vocabulary.Rdf.Type);
+
     /// <summary>Constructs an engine over an already-built dataset (default graph + named graphs) and the term dictionary that encoded it.</summary>
     /// <param name="dataset">The dataset the query evaluates against; its graphs are all encoded by <paramref name="dictionary"/>.</param>
     /// <param name="dictionary">The term dictionary that encoded <paramref name="dataset"/>; query constants are resolved against it.</param>
@@ -91,8 +97,9 @@ public sealed class SparqlQueryEngine
     /// <param name="serviceClient">The transport a <c>SERVICE</c> federation step uses; <see langword="null"/> means a non-silent <c>SERVICE</c> raises <see cref="NotSupportedException"/>.</param>
     /// <param name="accessControl">The access-control policy consulted per candidate triple of every local graph read; <see langword="null"/> allows every triple at zero cost.</param>
     /// <param name="accessContext">The opaque "who is asking" context handed to <paramref name="accessControl"/> and forwarded to the <c>SERVICE</c>/<c>FROM</c>/<c>LOAD</c> IO seams; <see langword="null"/> when the evaluation carries no access context. Required when <paramref name="accessControl"/> is non-<see langword="null"/>.</param>
+    /// <param name="typeExpansion">The query-time type-expansion seam — Seam Q: a bound <c>rdf:type</c> pattern evaluates once per expansion class and the solutions union; <see langword="null"/> leaves patterns unexpanded.</param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public SparqlQueryEngine(SparqlDataset dataset, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null)
+    public SparqlQueryEngine(SparqlDataset dataset, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null, TypeExpansionDelegate? typeExpansion = null)
     {
         ArgumentNullException.ThrowIfNull(dataset);
         ArgumentNullException.ThrowIfNull(dictionary);
@@ -103,6 +110,7 @@ public sealed class SparqlQueryEngine
         this.serviceClient = serviceClient;
         this.accessControl = accessControl;
         this.accessContext = accessContext;
+        TypeExpansion = typeExpansion;
     }
 
     /// <summary>Constructs an engine over a single default graph and no named graphs — the common case where the query has no <c>GRAPH</c> form.</summary>
@@ -112,9 +120,10 @@ public sealed class SparqlQueryEngine
     /// <param name="serviceClient">The transport a <c>SERVICE</c> federation step uses; <see langword="null"/> means a non-silent <c>SERVICE</c> raises <see cref="NotSupportedException"/>.</param>
     /// <param name="accessControl">The access-control policy consulted per candidate triple; <see langword="null"/> allows every triple.</param>
     /// <param name="accessContext">The opaque "who is asking" context; <see langword="null"/> when none.</param>
+    /// <param name="typeExpansion">The query-time type-expansion seam; <see langword="null"/> leaves patterns unexpanded.</param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public SparqlQueryEngine(HypertrieGraphStore store, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null)
-        : this(SparqlDataset.FromDefaultGraph(store), dictionary, expressionContext, serviceClient, accessControl, accessContext)
+    public SparqlQueryEngine(HypertrieGraphStore store, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null, TypeExpansionDelegate? typeExpansion = null)
+        : this(SparqlDataset.FromDefaultGraph(store), dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion)
     {
     }
 
@@ -130,14 +139,14 @@ public sealed class SparqlQueryEngine
     /// <param name="cancellationToken">A token that aborts the build.</param>
     /// <returns>An engine ready to evaluate queries against the graph.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="triples"/> is <see langword="null"/>.</exception>
-    public static async ValueTask<SparqlQueryEngine> BuildAsync(IEnumerable<DataTriple> triples, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null, CancellationToken cancellationToken = default)
+    public static async ValueTask<SparqlQueryEngine> BuildAsync(IEnumerable<DataTriple> triples, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null, TypeExpansionDelegate? typeExpansion = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(triples);
 
         TermDictionary dictionary = new();
         HypertrieGraphStore store = await EncodeGraphAsync(triples, dictionary, cancellationToken).ConfigureAwait(false);
 
-        return new SparqlQueryEngine(store, dictionary, expressionContext, serviceClient, accessControl, accessContext);
+        return new SparqlQueryEngine(store, dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion);
     }
 
     /// <summary>
@@ -161,6 +170,7 @@ public sealed class SparqlQueryEngine
         SparqlClient? serviceClient = null,
         AccessControlDelegate? accessControl = null,
         AccessContext? accessContext = null,
+        TypeExpansionDelegate? typeExpansion = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(defaultGraph);
@@ -176,7 +186,7 @@ public sealed class SparqlQueryEngine
             named[graphName] = await EncodeGraphAsync(triples, dictionary, cancellationToken).ConfigureAwait(false);
         }
 
-        return new SparqlQueryEngine(new SparqlDataset(defaultStore, named), dictionary, expressionContext, serviceClient, accessControl, accessContext);
+        return new SparqlQueryEngine(new SparqlDataset(defaultStore, named), dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion);
     }
 
     /// <summary>Encodes a graph's triples into <paramref name="dictionary"/> and indexes them into a fresh hypertrie store.</summary>
@@ -260,7 +270,7 @@ public sealed class SparqlQueryEngine
             named.Add((new NamedNode(fromNamed.Value), triples));
         }
 
-        return await BuildDatasetAsync(defaultGraph, named, expressionContext, serviceClient, accessControl, accessContext, cancellationToken).ConfigureAwait(false);
+        return await BuildDatasetAsync(defaultGraph, named, expressionContext, serviceClient, accessControl, accessContext, TypeExpansion, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -842,36 +852,159 @@ public sealed class SparqlQueryEngine
             return true;
         }
 
+        //Seam Q: a bound rdf:type pattern expands to its closure classes —
+        //the BGP evaluates once per combination of per-pattern expansion
+        //classes and the solutions union, deduplicated across variants
+        //(an instance typed under two expansion classes matches twice).
+        List<(int PatternIndex, List<TermId> Alternatives)> typeExpansions = ComputeTypeExpansions(patterns);
+
         List<SparqlSolution> solutions = [];
-        IAsyncEnumerable<Solution> backendSolutions = rendezvous is not null
-            ? rendezvous.Query(graphStore, query, TimeProvider.System, accessControl: accessControl, accessContext: accessContext, cancellationToken: cancellationToken)
-            : graphStore.Query(query, TimeProvider.System, accessControl: accessControl, accessContext: accessContext, cancellationToken: cancellationToken);
+        HashSet<string>? seenAcrossVariants = typeExpansions.Count > 0 ? [] : null;
 
-        await foreach(Solution solution in backendSolutions.ConfigureAwait(false))
+        async ValueTask EvaluateVariantAsync(BasicGraphPattern variant)
         {
-            if(selfJoinEqualities.Count > 0 && !SelfJoinHolds(solution, selfJoinEqualities))
-            {
-                continue;
-            }
+            IAsyncEnumerable<Solution> backendSolutions = rendezvous is not null
+                ? rendezvous.Query(graphStore, variant, TimeProvider.System, accessControl: accessControl, accessContext: accessContext, cancellationToken: cancellationToken)
+                : graphStore.Query(variant, TimeProvider.System, accessControl: accessControl, accessContext: accessContext, cancellationToken: cancellationToken);
 
-            if(!hasTripleTermMatches)
+            await foreach(Solution solution in backendSolutions.ConfigureAwait(false))
             {
-                solutions.Add(Decode(solution, toSparql));
+                if(selfJoinEqualities.Count > 0 && !SelfJoinHolds(solution, selfJoinEqualities))
+                {
+                    continue;
+                }
 
-                continue;
-            }
+                if(seenAcrossVariants is not null && !seenAcrossVariants.Add(SolutionKey(solution)))
+                {
+                    continue;
+                }
 
-            //Destructure each variable-bearing triple-term position: resolve the matched triple-term value and unify
-            //its components against the solution (binding fresh component variables, checking already-bound ones).
-            //A non-triple-term value or a component mismatch drops the solution.
-            List<VariableBinding> bindings = [.. solution.Bindings];
-            if(TryApplyTripleTermMatches(tripleTermMatches, bindings))
-            {
-                solutions.Add(DecodeBindings(bindings, toSparql));
+                if(!hasTripleTermMatches)
+                {
+                    solutions.Add(Decode(solution, toSparql));
+
+                    continue;
+                }
+
+                //Destructure each variable-bearing triple-term position: resolve the matched triple-term value and unify
+                //its components against the solution (binding fresh component variables, checking already-bound ones).
+                //A non-triple-term value or a component mismatch drops the solution.
+                List<VariableBinding> bindings = [.. solution.Bindings];
+                if(TryApplyTripleTermMatches(tripleTermMatches, bindings))
+                {
+                    solutions.Add(DecodeBindings(bindings, toSparql));
+                }
             }
         }
 
-        return solutions;
+        if(typeExpansions.Count == 0)
+        {
+            await EvaluateVariantAsync(query).ConfigureAwait(false);
+
+            return solutions;
+        }
+
+        //The cartesian product over the per-pattern alternatives, walked
+        //with explicit counters.
+        int[] cursors = new int[typeExpansions.Count];
+
+        while(true)
+        {
+            List<EncodedTriplePattern> variantPatterns = [.. patterns];
+            for(int i = 0; i < typeExpansions.Count; i++)
+            {
+                (int patternIndex, List<TermId> alternatives) = typeExpansions[i];
+                EncodedTriplePattern original = variantPatterns[patternIndex];
+                variantPatterns[patternIndex] = new EncodedTriplePattern(original.Subject, original.Predicate, PatternPosition.Bound(alternatives[cursors[i]]));
+            }
+
+            await EvaluateVariantAsync(new BasicGraphPattern(variantPatterns, registry)).ConfigureAwait(false);
+
+            int advance = typeExpansions.Count - 1;
+            while(advance >= 0 && ++cursors[advance] == typeExpansions[advance].Alternatives.Count)
+            {
+                cursors[advance] = 0;
+                advance--;
+            }
+
+            if(advance < 0)
+            {
+                return solutions;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The Seam Q expansion plan: for each pattern whose predicate is a
+    /// bound <c>rdf:type</c> and whose object is a bound named class, the
+    /// expansion classes that exist in this engine's dictionary (an absent
+    /// class can match nothing). The delegate is consulted once per such
+    /// pattern; an expansion of one class leaves the pattern alone.
+    /// </summary>
+    /// <param name="patterns">The encoded patterns.</param>
+    /// <returns>The per-pattern alternative lists; empty when nothing expands.</returns>
+    private List<(int PatternIndex, List<TermId> Alternatives)> ComputeTypeExpansions(List<EncodedTriplePattern> patterns)
+    {
+        List<(int PatternIndex, List<TermId> Alternatives)> expansions = [];
+        if(TypeExpansion is null)
+        {
+            return expansions;
+        }
+
+        TermId rdfType = dictionary.GetIdOrDefault(RdfTypeNode);
+        if(rdfType == TermId.None)
+        {
+            return expansions;
+        }
+
+        for(int i = 0; i < patterns.Count; i++)
+        {
+            EncodedTriplePattern pattern = patterns[i];
+            if(!pattern.Predicate.IsBound || pattern.Predicate.BoundTerm != rdfType || !pattern.Object.IsBound)
+            {
+                continue;
+            }
+
+            if(dictionary.Resolve(pattern.Object.BoundTerm) is not NamedNode boundClass)
+            {
+                continue;
+            }
+
+            List<TermId> alternatives = [];
+            foreach(Utf8String expansionIri in TypeExpansion(boundClass.Iri))
+            {
+                TermId expanded = expansionIri == boundClass.Iri
+                    ? pattern.Object.BoundTerm
+                    : dictionary.GetIdOrDefault(new NamedNode(expansionIri));
+                if(expanded != TermId.None && !alternatives.Contains(expanded))
+                {
+                    alternatives.Add(expanded);
+                }
+            }
+
+            if(alternatives.Count > 1)
+            {
+                expansions.Add((i, alternatives));
+            }
+        }
+
+        return expansions;
+    }
+
+    /// <summary>A deterministic identity key for a backend solution, for deduplication across expansion variants.</summary>
+    /// <param name="solution">The backend solution.</param>
+    /// <returns>The order-insensitive binding key.</returns>
+    private static string SolutionKey(Solution solution)
+    {
+        List<string> parts = new(solution.Bindings.Count);
+        foreach(VariableBinding binding in solution.Bindings)
+        {
+            parts.Add($"{binding.Variable}={binding.Value.Encoded}");
+        }
+
+        parts.Sort(StringComparer.Ordinal);
+
+        return string.Join("|", parts);
     }
 
     /// <summary>
