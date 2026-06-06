@@ -205,7 +205,7 @@ public sealed class QueryEngineRendezvous
                 query, timeProvider, planner, accessControl, accessContext, traceHandler, effectiveCorrelationId, identifiers, cancellationToken);
         }
 
-        bool qualifies = query.Patterns.Count >= policy.MinimumPatternsForColumnar;
+        bool qualifies = query.Patterns.Count >= policy.MinimumPatternsForColumnar && IsColumnarCapable(query);
 
         if(qualifies && currentView is null && policy.BuildViewOnDemand)
         {
@@ -260,6 +260,32 @@ public sealed class QueryEngineRendezvous
             effectiveCorrelationId,
             identifiers,
             cancellationToken);
+    }
+
+    /// <summary>
+    /// Whether the columnar driver can evaluate every pattern of the
+    /// query: a pattern binding the same variable at two of its own
+    /// positions (a per-pattern self-join, <c>?x :q ?x</c>) needs the
+    /// hypertrie driver's synthetic-key descent and stays on the
+    /// system of record.
+    /// </summary>
+    /// <param name="query">The basic graph pattern.</param>
+    /// <returns><see langword="true"/> when every pattern is columnar-evaluable.</returns>
+    private static bool IsColumnarCapable(BasicGraphPattern query)
+    {
+        foreach(TriplePattern pattern in query.Patterns)
+        {
+            bool subjectPredicate = pattern.Subject.IsVariable && pattern.Predicate.IsVariable && pattern.Subject.Variable == pattern.Predicate.Variable;
+            bool subjectObject = pattern.Subject.IsVariable && pattern.Object.IsVariable && pattern.Subject.Variable == pattern.Object.Variable;
+            bool predicateObject = pattern.Predicate.IsVariable && pattern.Object.IsVariable && pattern.Predicate.Variable == pattern.Object.Variable;
+
+            if(subjectPredicate || subjectObject || predicateObject)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>

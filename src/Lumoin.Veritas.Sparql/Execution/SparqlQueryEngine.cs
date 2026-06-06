@@ -769,6 +769,12 @@ public sealed class SparqlQueryEngine
         //overwhelmingly common case of no variable-bearing triple terms, so the common path below stays untouched.
         List<TripleTermMatch> tripleTermMatches = [];
 
+        //A variable repeated within ONE pattern (?x :q ?x) is a per-pattern
+        //self-join the join drivers evaluate over distinct positions; the
+        //repeat is rewritten to a fresh internal variable equated after the
+        //join. The '#' prefix cannot collide with a SPARQL variable name.
+        List<(Variable Original, Variable Fresh)> selfJoinEqualities = [];
+
         foreach(AstTriplePattern triple in bgp.Patterns)
         {
             //A constant absent from the data graph can never match, so the whole BGP yields nothing.
@@ -779,11 +785,63 @@ public sealed class SparqlQueryEngine
                 return [];
             }
 
+            if(predicate.IsVariable && subject.IsVariable && predicate.Variable == subject.Variable)
+            {
+                predicate = PatternPosition.OfVariable(FreshSelfJoinVariable(registry, selfJoinEqualities, predicate.Variable));
+            }
+
+            if(@object.IsVariable && subject.IsVariable && @object.Variable == subject.Variable)
+            {
+                @object = PatternPosition.OfVariable(FreshSelfJoinVariable(registry, selfJoinEqualities, @object.Variable));
+            }
+            else if(@object.IsVariable && predicate.IsVariable && @object.Variable == predicate.Variable)
+            {
+                @object = PatternPosition.OfVariable(FreshSelfJoinVariable(registry, selfJoinEqualities, @object.Variable));
+            }
+
             patterns.Add(new EncodedTriplePattern(subject, predicate, @object));
         }
 
         BasicGraphPattern query = new(patterns, registry);
         bool hasTripleTermMatches = tripleTermMatches.Count > 0;
+
+        //Registers the internal stand-in for a repeated variable and records the equality the post-join filter checks.
+        static Variable FreshSelfJoinVariable(VariableRegistry registry, List<(Variable Original, Variable Fresh)> equalities, Variable original)
+        {
+            Variable fresh = registry.GetOrAdd($"#self{equalities.Count}");
+            equalities.Add((original, fresh));
+
+            return fresh;
+        }
+
+        //Whether every recorded self-join equality holds in the solution: both variables bound to the same term.
+        static bool SelfJoinHolds(Solution solution, List<(Variable Original, Variable Fresh)> equalities)
+        {
+            foreach((Variable original, Variable fresh) in equalities)
+            {
+                TermId originalValue = TermId.None;
+                TermId freshValue = TermId.None;
+                foreach(VariableBinding binding in solution.Bindings)
+                {
+                    if(binding.Variable == original)
+                    {
+                        originalValue = binding.Value;
+                    }
+                    else if(binding.Variable == fresh)
+                    {
+                        freshValue = binding.Value;
+                    }
+                }
+
+                if(originalValue != freshValue || originalValue == TermId.None)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
         List<SparqlSolution> solutions = [];
         IAsyncEnumerable<Solution> backendSolutions = rendezvous is not null
             ? rendezvous.Query(graphStore, query, TimeProvider.System, accessControl: accessControl, accessContext: accessContext, cancellationToken: cancellationToken)
@@ -791,6 +849,11 @@ public sealed class SparqlQueryEngine
 
         await foreach(Solution solution in backendSolutions.ConfigureAwait(false))
         {
+            if(selfJoinEqualities.Count > 0 && !SelfJoinHolds(solution, selfJoinEqualities))
+            {
+                continue;
+            }
+
             if(!hasTripleTermMatches)
             {
                 solutions.Add(Decode(solution, toSparql));

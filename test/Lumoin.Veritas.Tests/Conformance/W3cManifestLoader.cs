@@ -519,6 +519,7 @@ internal static class W3cManifestLoader
         //file IRI (the IRI a query's GRAPH <file> resolves to).
         List<string> graphDataPaths = [];
         List<string> entailmentRegimes = [];
+        List<string> entailmentProfiles = [];
         if(actionProperties is not null)
         {
             foreach(string graphDataTerm in FindObjects(actionProperties, QtNamespace + "graphData"))
@@ -535,6 +536,14 @@ internal static class W3cManifestLoader
             {
                 entailmentRegimes.Add(StripIriPrefix(regimeTerm));
             }
+
+            //sd:EntailmentProfile lists the OWL 2 profiles whose reasoners the test sanctions — the regimes
+            //specification conditions the OWL RDF-Based regime on a profile, so a pr:RL-annotated test is
+            //answerable by the RL rules calculus.
+            foreach(string profileTerm in ResolveListOrDirect(FindObjects(actionProperties, SdNamespace + "EntailmentProfile"), bySubject))
+            {
+                entailmentProfiles.Add(StripIriPrefix(profileTerm));
+            }
         }
 
         Uri testUri = TryBuildAbsoluteUri(entry) ?? new Uri(manifestUri, "#" + entry);
@@ -550,7 +559,8 @@ internal static class W3cManifestLoader
             OriginManifest: originManifest,
             QueryDataPath: dataPath,
             GraphDataPaths: graphDataPaths,
-            EntailmentRegimes: entailmentRegimes.Count > 0 ? entailmentRegimes : null);
+            EntailmentRegimes: entailmentRegimes.Count > 0 ? entailmentRegimes : null,
+            EntailmentProfiles: entailmentProfiles.Count > 0 ? entailmentProfiles : null);
     }
 
     /// <summary>

@@ -357,16 +357,22 @@ internal static class W3cSparqlEvalRunner
 
         //An entailment test evaluates over the regime's entailed graph, and its expected result holds under
         //each regime the action lists — so evaluating under any one implemented regime suffices. The RDF, RDFS,
-        //and D regimes evaluate over the finite RDFS closure (axiomatic rules included); a test offering only
-        //OWL Direct Semantics, OWL RDF-Based Semantics, or RIF skips.
+        //and D regimes evaluate over the finite RDFS closure (axiomatic rules included); an OWL RDF-Based test
+        //whose sd:EntailmentProfile sanctions pr:RL additionally composes the RL rules closure (the regimes
+        //specification conditions the OWL RDF-Based regime on a profile). A test offering only OWL Direct
+        //Semantics, an unsanctioned OWL RDF-Based, or RIF skips.
         if(testCase.EntailmentRegimes is { Count: > 0 } regimes)
         {
-            if(!HasImplementedRegime(regimes))
+            bool rlSanctioned = ContainsIri(regimes, "http://www.w3.org/ns/entailment/OWL-RDF-Based")
+                && testCase.EntailmentProfiles is { } profiles
+                && ContainsIri(profiles, "http://www.w3.org/ns/owl-profile/RL");
+
+            if(!HasImplementedRegime(regimes) && !rlSanctioned)
             {
                 return new W3cOutcome(W3cOutcomeStatus.Skipped, $"Entailment regime(s) not implemented: {string.Join(", ", regimes)}.");
             }
 
-            data = ExpandRegimeClosure(data);
+            data = ExpandRegimeClosure(data, includeRlClosure: rlSanctioned);
         }
 
         //IRI()/URI() resolve a relative argument against the query's effective base — the last in-query BASE, else
@@ -902,15 +908,34 @@ internal static class W3cSparqlEvalRunner
         return false;
     }
 
+    /// <summary>Whether the IRI list contains the given IRI by ordinal comparison.</summary>
+    /// <param name="iris">The IRI list.</param>
+    /// <param name="iri">The IRI to find.</param>
+    /// <returns><see langword="true"/> when present.</returns>
+    private static bool ContainsIri(IReadOnlyList<string> iris, string iri)
+    {
+        foreach(string candidate in iris)
+        {
+            if(string.Equals(candidate, iri, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>
     /// Expands a data graph to its finite RDFS-regime closure: the schema-driven rules plus the axiomatic
     /// rules (rdf1, axiomatic typing, rdfs6/8/10/12/13), which together produce the RDF/RDFS/D-regime answers
-    /// the W3C entailment suite expects. A derived conclusion whose subject is a literal (a range typing of a
-    /// literal object) is not an RDF triple and is dropped.
+    /// the W3C entailment suite expects. With <paramref name="includeRlClosure"/> the OWL 2 RL/RDF rules run
+    /// over the same encoding, producing the pr:RL-sanctioned OWL RDF-Based answers. A derived conclusion
+    /// whose subject is a literal (a range typing of a literal object) is not an RDF triple and is dropped.
     /// </summary>
     /// <param name="data">The base data triples.</param>
+    /// <param name="includeRlClosure">Whether to compose the OWL 2 RL rules closure over the RDFS closure.</param>
     /// <returns>The base triples plus the derived closure.</returns>
-    private static List<DataTriple> ExpandRegimeClosure(List<DataTriple> data)
+    private static List<DataTriple> ExpandRegimeClosure(List<DataTriple> data, bool includeRlClosure = false)
     {
         TermDictionary dictionary = new();
         List<EncodedTriple> encoded = new(data.Count);
@@ -936,9 +961,24 @@ internal static class W3cSparqlEvalRunner
             Datatype: dictionary.GetOrAdd(new NamedNode(RdfVocabulary.Rdfs.Datatype)),
             Literal: dictionary.GetOrAdd(new NamedNode(RdfVocabulary.Rdfs.LiteralClass)));
 
-        List<DataTriple> expanded = [.. data];
-        foreach(EncodedTriple derived in RdfsMaterialization.MaterializeToFixpoint(encoded, terms))
+        HashSet<EncodedTriple> closure = [.. encoded];
+        closure.UnionWith(RdfsMaterialization.MaterializeToFixpoint(encoded, terms));
+
+        if(includeRlClosure)
         {
+            Lumoin.Veritas.Owl.Rl.OwlRlTerms rlTerms = new(dictionary);
+            closure.UnionWith(Lumoin.Veritas.Owl.Rl.OwlRlClosure.Compute(closure, rlTerms).Derived);
+        }
+
+        List<DataTriple> expanded = [.. data];
+        HashSet<EncodedTriple> baseSet = [.. encoded];
+        foreach(EncodedTriple derived in closure)
+        {
+            if(baseSet.Contains(derived))
+            {
+                continue;
+            }
+
             RdfTerm subject = dictionary.Resolve(derived.Subject);
             if(subject is Literal)
             {
