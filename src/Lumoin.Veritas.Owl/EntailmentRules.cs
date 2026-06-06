@@ -216,6 +216,14 @@ public static class EntailmentRules
     /// <summary>dt-not-type — a literal outside its asserted datatype's value space contradicts.</summary>
     public const string DtNotType = "dt-not-type";
 
+    /// <summary>
+    /// Extension beyond the §4.3 tables: two ranges confine a property's
+    /// values to the intersection of their value spaces, so every
+    /// datatype-map space containing that intersection is a range too —
+    /// the value-space arithmetic D-entailment adds over the minimal rules.
+    /// </summary>
+    public const string DtRangeIntersection = "dt-range-intersection";
+
     //OWL 2 RL/RDF rules, Table 9 (schema).
 
     /// <summary>scm-cls — every declared class is its own sub- and equivalent class, below <c>owl:Thing</c> and above <c>owl:Nothing</c>.</summary>

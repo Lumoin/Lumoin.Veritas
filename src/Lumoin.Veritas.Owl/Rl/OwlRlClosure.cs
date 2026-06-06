@@ -450,6 +450,52 @@ public static class OwlRlClosure
                 }
             }
 
+            //dt-range-intersection (extension beyond the §4.3 tables): two
+            //ranges confine the property's values to the intersection of
+            //their value spaces, so every datatype-map space containing
+            //that intersection is a range too. The oracle owns the
+            //interval algebra; unknown pairs answer empty and derive
+            //nothing.
+            Dictionary<TermId, List<TermId>> rangesByProperty = [];
+            foreach((TermId p, TermId d) in Pairs(Terms.Range))
+            {
+                if(!rangesByProperty.TryGetValue(p, out List<TermId>? datatypes))
+                {
+                    datatypes = [];
+                    rangesByProperty[p] = datatypes;
+                }
+
+                datatypes.Add(d);
+            }
+
+            foreach(KeyValuePair<TermId, List<TermId>> propertyRanges in rangesByProperty)
+            {
+                List<TermId> datatypes = propertyRanges.Value;
+                for(int i = 0; i < datatypes.Count; i++)
+                {
+                    for(int j = i + 1; j < datatypes.Count; j++)
+                    {
+                        if(datatypes[i] == datatypes[j])
+                        {
+                            continue;
+                        }
+
+                        foreach(TermId superset in DatatypeOracle.RangeIntersectionSupersets(datatypes[i], datatypes[j]))
+                        {
+                            if(superset != datatypes[i] && superset != datatypes[j])
+                            {
+                                Add(
+                                    propertyRanges.Key,
+                                    Terms.Range,
+                                    superset,
+                                    EntailmentRules.DtRangeIntersection,
+                                    [Fact(propertyRanges.Key, Terms.Range, datatypes[i]), Fact(propertyRanges.Key, Terms.Range, datatypes[j])]);
+                            }
+                        }
+                    }
+                }
+            }
+
             //The characteristic rules key off type statements.
             foreach((TermId p, TermId characteristic) in Pairs(Terms.Type))
             {

@@ -176,7 +176,11 @@ public sealed class ReasoningRendezvous
         {
             strategy = ReasoningStrategy.Rl;
             OwlRlMaterializationResult rl = await OwlRlMaterialization
-                .MaterializeAndCommitAsync(store, new OwlRlTerms(dictionary), cancellationToken: cancellationToken).ConfigureAwait(false);
+                .MaterializeAndCommitAsync(
+                    store,
+                    new OwlRlTerms(dictionary),
+                    OwlRlDatatypeOracles.FromDictionary(dictionary),
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
 
             resultStore = rl.Store;
             derivedCount = rl.DerivedCount;

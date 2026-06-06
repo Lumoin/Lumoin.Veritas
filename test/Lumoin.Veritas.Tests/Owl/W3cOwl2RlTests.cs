@@ -57,8 +57,6 @@ internal sealed class W3cOwl2RlTests
         "WebOnt-I5.5-005",
         "owl2-rl-rules-fp-differentFrom",
         "owl2-rl-rules-ifp-differentFrom",
-        "WebOnt-I5.8-008",
-        "WebOnt-I5.8-009",
     ];
 
     /// <summary>Runs one approved-status, RL-marked OWL 2 test case through the RL closure.</summary>
@@ -114,7 +112,7 @@ internal sealed class W3cOwl2RlTests
         List<EncodedTriple> encoded = Encode(premiseQuads, dictionary);
         OwlRlTerms terms = new(dictionary);
 
-        OwlRlResult result = OwlRlClosure.Compute(encoded, terms, DatatypeOracle(dictionary), cancellationToken: TestContext.CancellationToken);
+        OwlRlResult result = OwlRlClosure.Compute(encoded, terms, OwlRlDatatypeOracles.FromDictionary(dictionary), cancellationToken: TestContext.CancellationToken);
 
         bool isKnownGap = KnownGaps.Contains(testCase.Identifier);
 
@@ -194,83 +192,6 @@ internal sealed class W3cOwl2RlTests
         }
 
         Assert.Inconclusive("Beyond the RL/RDF rules calculus; see KnownGaps.");
-    }
-
-    /// <summary>
-    /// The datatype oracle: distinctness from same-datatype lexical
-    /// inequality or disjoint value-space families, and membership
-    /// violations from a literal whose family differs from the target
-    /// datatype's. Numeric canonicalisation across numeric datatypes is not
-    /// attempted — those pairs stay unknown, which is sound.
-    /// </summary>
-    /// <param name="dictionary">The dictionary the closure's term ids resolve through.</param>
-    /// <returns>The oracle pair.</returns>
-    private static OwlRlDatatypeOracle DatatypeOracle(TermDictionary dictionary)
-    {
-        return new OwlRlDatatypeOracle(
-            (first, second) =>
-            {
-                if(dictionary.Resolve(first) is not Literal firstLiteral || dictionary.Resolve(second) is not Literal secondLiteral
-                    || firstLiteral.Language is not null || secondLiteral.Language is not null)
-                {
-                    return false;
-                }
-
-                if(firstLiteral.Datatype.Equals(secondLiteral.Datatype))
-                {
-                    return !firstLiteral.Value.Equals(secondLiteral.Value);
-                }
-
-                DatatypeFamily firstFamily = FamilyOf(firstLiteral.Datatype.Iri.ToString());
-                DatatypeFamily secondFamily = FamilyOf(secondLiteral.Datatype.Iri.ToString());
-
-                return firstFamily != DatatypeFamily.Unknown && secondFamily != DatatypeFamily.Unknown && firstFamily != secondFamily;
-            },
-            (literalId, datatypeId) =>
-            {
-                if(dictionary.Resolve(literalId) is not Literal literal || literal.Language is not null
-                    || dictionary.Resolve(datatypeId) is not NamedNode datatype)
-                {
-                    return false;
-                }
-
-                DatatypeFamily literalFamily = FamilyOf(literal.Datatype.Iri.ToString());
-                DatatypeFamily targetFamily = FamilyOf(datatype.Iri.ToString());
-
-                return literalFamily != DatatypeFamily.Unknown && targetFamily != DatatypeFamily.Unknown && literalFamily != targetFamily;
-            });
-    }
-
-    /// <summary>The disjoint value-space families the oracle distinguishes.</summary>
-    private enum DatatypeFamily
-    {
-        Unknown = 0,
-        Text = 1,
-        Numeric = 2,
-        Boolean = 3,
-        Temporal = 4,
-    }
-
-    private static DatatypeFamily FamilyOf(string datatypeIri)
-    {
-        const string xsd = "http://www.w3.org/2001/XMLSchema#";
-        if(!datatypeIri.StartsWith(xsd, StringComparison.Ordinal))
-        {
-            return datatypeIri is "http://www.w3.org/2002/07/owl#real" or "http://www.w3.org/2002/07/owl#rational"
-                ? DatatypeFamily.Numeric
-                : DatatypeFamily.Unknown;
-        }
-
-        return datatypeIri[xsd.Length..] switch
-        {
-            "string" or "normalizedString" or "token" or "language" or "Name" or "NCName" or "NMTOKEN" => DatatypeFamily.Text,
-            "decimal" or "integer" or "nonNegativeInteger" or "nonPositiveInteger" or "positiveInteger" or "negativeInteger"
-                or "long" or "int" or "short" or "byte" or "unsignedLong" or "unsignedInt" or "unsignedShort" or "unsignedByte"
-                or "double" or "float" => DatatypeFamily.Numeric,
-            "boolean" => DatatypeFamily.Boolean,
-            "dateTime" or "dateTimeStamp" or "date" or "time" => DatatypeFamily.Temporal,
-            _ => DatatypeFamily.Unknown
-        };
     }
 
     private static List<Quad> ParseDocument(Owl2TestCase testCase, string document)
