@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Diagnostics;
 using Lumoin.Veritas.Core;
 
@@ -13,6 +14,22 @@ public abstract record OwlAxiom
 {
     /// <summary>The graph triple this axiom was mapped from — the axiom's root triple, not its whole structural extent.</summary>
     public required Quad Origin { get; init; }
+
+    /// <summary>The axiom's annotations: functional-syntax axiom-frame annotations, or RDF <c>owl:Axiom</c> reification annotations.</summary>
+    public ImmutableArray<OwlAnnotation> Annotations { get; init; } = [];
+}
+
+/// <summary>
+/// One annotation carried by an axiom, by an ontology header, or — nested —
+/// by another annotation.
+/// </summary>
+/// <param name="Property">The annotation property node.</param>
+/// <param name="Value">The annotation value: an IRI node, an anonymous individual, or a literal.</param>
+[DebuggerDisplay("Annotation {Property}")]
+public sealed record OwlAnnotation(NamedNode Property, RdfTerm Value)
+{
+    /// <summary>The annotations on this annotation itself, when nested.</summary>
+    public ImmutableArray<OwlAnnotation> Annotations { get; init; } = [];
 }
 
 /// <summary>The kind of entity a declaration introduces.</summary>

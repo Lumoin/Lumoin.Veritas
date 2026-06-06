@@ -59,6 +59,7 @@ public static class OwlRdfMapper
         context.CollectDeclarations();
         context.MapAxiomRoots();
         context.MapRemainingAssertions();
+        context.AttachAnnotations();
 
         return new OwlOntologyDocument(
             context.Axioms.ToImmutable(),
@@ -580,10 +581,10 @@ public static class OwlRdfMapper
             if(iri == OwlVocabulary.AxiomTerm || iri == OwlVocabulary.AnnotationTerm)
             {
                 //Annotated-axiom reification: the annotated triple is asserted
-                //separately and maps through the normal passes; the reification
-                //node itself is structure.
+                //separately and maps through the normal passes; the node's own
+                //annotation triples attach to the matching axiom afterwards.
                 Consume(quad);
-                ConsumeSubjectTriples(quad.Subject);
+                CollectReification(quad.Subject, annotatesAnnotation: iri == OwlVocabulary.AnnotationTerm);
 
                 return;
             }
@@ -1495,6 +1496,159 @@ public static class OwlRdfMapper
             }
 
             return null;
+        }
+
+        //One owl:Axiom / owl:Annotation reification block, held until the
+        //attachment pass: the annotated triple's terms and the node's own
+        //annotation triples.
+        private sealed record PendingReification(
+            RdfTerm Node,
+            bool AnnotatesAnnotation,
+            RdfTerm? Source,
+            RdfTerm? Property,
+            RdfTerm? Target,
+            List<OwlAnnotation> Direct);
+
+        /// <summary>The reification blocks awaiting the attachment pass.</summary>
+        private List<PendingReification> PendingReifications { get; } = [];
+
+        private void CollectReification(RdfTerm node, bool annotatesAnnotation)
+        {
+            RdfTerm? source = null;
+            RdfTerm? property = null;
+            RdfTerm? target = null;
+            List<OwlAnnotation> direct = [];
+
+            if(BySubject.TryGetValue(node, out List<Quad>? triples))
+            {
+                foreach(Quad triple in triples)
+                {
+                    Consume(triple);
+                    Utf8String predicate = triple.Predicate.Iri;
+                    if(predicate == OwlVocabulary.AnnotatedSource)
+                    {
+                        source = triple.Object;
+                    }
+                    else if(predicate == OwlVocabulary.AnnotatedProperty)
+                    {
+                        property = triple.Object;
+                    }
+                    else if(predicate == OwlVocabulary.AnnotatedTarget)
+                    {
+                        target = triple.Object;
+                    }
+                    else if(predicate != RdfTypeIri)
+                    {
+                        direct.Add(new OwlAnnotation(triple.Predicate, triple.Object));
+                    }
+                }
+            }
+
+            PendingReifications.Add(new PendingReification(node, annotatesAnnotation, source, property, target, direct));
+        }
+
+        /// <summary>
+        /// Attaches the collected reification blocks: nested
+        /// <c>owl:Annotation</c> blocks fold into the annotation they
+        /// annotate, leaf-first, so arbitrary nesting resolves without
+        /// recursion; the <c>owl:Axiom</c> blocks then attach to every axiom
+        /// whose origin is the annotated triple (a pairwise expansion shares
+        /// its origin).
+        /// </summary>
+        public void AttachAnnotations()
+        {
+            if(PendingReifications.Count == 0)
+            {
+                return;
+            }
+
+            Dictionary<RdfTerm, PendingReification> byNode = [];
+            List<PendingReification> pendingNested = [];
+            foreach(PendingReification reification in PendingReifications)
+            {
+                byNode[reification.Node] = reification;
+                if(reification.AnnotatesAnnotation)
+                {
+                    pendingNested.Add(reification);
+                }
+            }
+
+            bool attachedAny = true;
+            while(attachedAny && pendingNested.Count > 0)
+            {
+                attachedAny = false;
+                for(int i = pendingNested.Count - 1; i >= 0; i--)
+                {
+                    PendingReification candidate = pendingNested[i];
+
+                    //A block attaches once no remaining block annotates IT,
+                    //so the deepest blocks fold first.
+                    bool isAnnotated = false;
+                    foreach(PendingReification other in pendingNested)
+                    {
+                        if(!ReferenceEquals(other, candidate) && Equals(other.Source, candidate.Node))
+                        {
+                            isAnnotated = true;
+
+                            break;
+                        }
+                    }
+
+                    if(isAnnotated)
+                    {
+                        continue;
+                    }
+
+                    if(candidate.Source is RdfTerm parentNode
+                        && byNode.TryGetValue(parentNode, out PendingReification? parent)
+                        && candidate.Property is NamedNode annotatedProperty)
+                    {
+                        for(int j = 0; j < parent.Direct.Count; j++)
+                        {
+                            OwlAnnotation entry = parent.Direct[j];
+                            if(entry.Property == annotatedProperty && Equals(entry.Value, candidate.Target))
+                            {
+                                parent.Direct[j] = entry with { Annotations = entry.Annotations.AddRange(candidate.Direct) };
+
+                                break;
+                            }
+                        }
+                    }
+
+                    pendingNested.RemoveAt(i);
+                    attachedAny = true;
+                }
+            }
+
+            Dictionary<(RdfTerm Subject, RdfTerm Predicate, RdfTerm Object), List<OwlAnnotation>> byTriple = [];
+            foreach(PendingReification reification in PendingReifications)
+            {
+                if(reification.AnnotatesAnnotation
+                    || reification.Source is not RdfTerm source
+                    || reification.Property is not RdfTerm property
+                    || reification.Target is not RdfTerm target)
+                {
+                    continue;
+                }
+
+                if(!byTriple.TryGetValue((source, property, target), out List<OwlAnnotation>? annotations))
+                {
+                    annotations = [];
+                    byTriple[(source, property, target)] = annotations;
+                }
+
+                annotations.AddRange(reification.Direct);
+            }
+
+            for(int i = 0; i < Axioms.Count; i++)
+            {
+                OwlAxiom axiom = Axioms[i];
+                if(byTriple.TryGetValue((axiom.Origin.Subject, axiom.Origin.Predicate, axiom.Origin.Object), out List<OwlAnnotation>? annotations)
+                    && annotations.Count > 0)
+                {
+                    Axioms[i] = axiom with { Annotations = axiom.Annotations.AddRange(annotations) };
+                }
+            }
         }
 
         private void Consume(Quad quad)

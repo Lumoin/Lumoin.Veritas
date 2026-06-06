@@ -371,11 +371,6 @@ public static class OwlFunctionalSyntaxReader
     //A declaration constructor's payload: the entity kind plus the IRI.
     private sealed record DeclarationValue(OwlEntityKind Kind, Utf8String Iri);
 
-    //A consumed annotation, carrying no logical content.
-    private sealed class AnnotationValue
-    {
-        public static AnnotationValue Instance { get; } = new();
-    }
 
     private sealed class ReaderContext
     {
@@ -457,6 +452,20 @@ public static class OwlFunctionalSyntaxReader
 
                 if(child.Head == "Annotation")
                 {
+                    //An ontology annotation surfaces as an annotation
+                    //assertion on the ontology IRI — the same triple the RDF
+                    //mapping carries it as. An anonymous ontology has no
+                    //subject to carry it, so the annotation is consumed.
+                    ConvertSubtree(child);
+                    if(OntologyIri is NamedNode ontologyIri && Converted[child] is OwlAnnotation ontologyAnnotation)
+                    {
+                        Axioms.Add(new OwlAnnotationAssertionAxiom(ontologyIri, ontologyAnnotation.Property, ontologyAnnotation.Value)
+                        {
+                            Origin = Origin,
+                            Annotations = ontologyAnnotation.Annotations
+                        });
+                    }
+
                     continue;
                 }
 
@@ -590,11 +599,7 @@ public static class OwlFunctionalSyntaxReader
             List<object?> children = new(node.Children.Count);
             foreach(SExpr child in node.Children)
             {
-                object? value = Converted[child];
-                if(value is not AnnotationValue)
-                {
-                    children.Add(value);
-                }
+                children.Add(Converted[child]);
             }
 
             switch(node.Head)
@@ -605,7 +610,26 @@ public static class OwlFunctionalSyntaxReader
                 }
                 case "Annotation":
                 {
-                    return AnnotationValue.Instance;
+                    //An annotation frame: optional nested annotations, then
+                    //the annotation property and the value.
+                    ImmutableArray<OwlAnnotation>.Builder? nested = null;
+                    List<object?> parts = new(children.Count);
+                    foreach(object? childValue in children)
+                    {
+                        if(childValue is OwlAnnotation nestedAnnotation)
+                        {
+                            nested ??= ImmutableArray.CreateBuilder<OwlAnnotation>();
+                            nested.Add(nestedAnnotation);
+                        }
+                        else
+                        {
+                            parts.Add(childValue);
+                        }
+                    }
+
+                    return parts is [Utf8String annotationProperty, var annotationValue]
+                        ? new OwlAnnotation(new NamedNode(annotationProperty), AsAnnotationValue(annotationValue)) { Annotations = nested?.ToImmutable() ?? [] }
+                        : null;
                 }
                 case "Class" when children is [Utf8String classIri]:
                 {
@@ -777,7 +801,27 @@ public static class OwlFunctionalSyntaxReader
                 return;
             }
 
-            List<object?> children = Converted[node] is List<object?> converted ? converted : [Converted[node]];
+            List<object?> raw = Converted[node] is List<object?> converted ? converted : [Converted[node]];
+
+            //Axiom-frame annotations precede the logical arguments; they
+            //attach to every axiom the frame produces (a pairwise expansion
+            //carries the frame's annotations on each pair).
+            ImmutableArray<OwlAnnotation>.Builder? annotations = null;
+            List<object?> children = new(raw.Count);
+            foreach(object? value in raw)
+            {
+                if(value is OwlAnnotation annotation)
+                {
+                    annotations ??= ImmutableArray.CreateBuilder<OwlAnnotation>();
+                    annotations.Add(annotation);
+                }
+                else
+                {
+                    children.Add(value);
+                }
+            }
+
+            int firstAxiom = Axioms.Count;
 
             switch(node.Head)
             {
@@ -1005,6 +1049,15 @@ public static class OwlFunctionalSyntaxReader
                         default(SourceSpan),
                         Utf8String.FromString($"Unrecognised axiom constructor '{node.Head}'.")));
                     break;
+                }
+            }
+
+            if(annotations is not null)
+            {
+                ImmutableArray<OwlAnnotation> attached = annotations.ToImmutable();
+                for(int i = firstAxiom; i < Axioms.Count; i++)
+                {
+                    Axioms[i] = Axioms[i] with { Annotations = attached };
                 }
             }
         }

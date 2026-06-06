@@ -4,8 +4,7 @@
 
 **An integrated .NET stack for RDF: graph storage, canonicalization, JSON-LD processing, SHACL validation, OWL reasoning, and SKOS vocabularies.**
 
-![Main build workflow](https://github.com/lumoin/Veritas/actions/workflows/main.yml/badge.svg)
-[![Mutation testing badge](https://img.shields.io/endpoint?style=for-the-badge&url=https%3A%2F%2Fbadge-api.stryker-mutator.io%2Fgithub.com%2Flumoin%2FVeritas%2Fmain)](https://dashboard.stryker-mutator.io/reports/github.com/lumoin/Veritas/main)
+![Main build workflow](https://github.com/Lumoin/Lumoin.Veritas/actions/workflows/main.yml/badge.svg)
 
 ---
 
@@ -100,21 +99,17 @@ Press **.** on the repository page to open the codebase in VS Code web editor fo
 
 ## Vulnerability disclosure
 
-For secure disclosure of security vulnerabilities, please see the [security policy](.github/SECURITY.md).
+Please report suspected security vulnerabilities privately through [GitHub security advisories](https://github.com/Lumoin/Lumoin.Veritas/security/advisories), not through public issues.
 
 ## Contributing
 
-Please read the [contribution guidelines](.github/contributing.md) for technical details.
+Open issues for bugs, suggestions, or improvements, or create pull requests. Especially welcome:
 
-### Ways to contribute
-
-- Open issues for bugs, suggestions, or improvements.
-- Create pull requests following the contribution guidelines.
-- Add tests, especially those using the W3C test suites for RDF Dataset Canonicalization, JSON-LD, N-Quads, and SHACL for cross-checking.
-- Expand OWL 2 RL coverage and add additional OWL 2 profiles.
-- Add SPARQL query support on top of the graph computation layer.
-- Add additional RDF syntaxes (Turtle, TriG, RDF/XML).
-- Improve indexing strategies and storage backends.
+- Tests using the W3C test suites for RDF Dataset Canonicalization, JSON-LD, N-Quads, and SHACL for cross-checking.
+- Expanded OWL 2 RL coverage and additional OWL 2 profiles.
+- SPARQL query support on top of the graph computation layer.
+- Additional RDF syntaxes (Turtle, TriG, RDF/XML).
+- Improved indexing strategies and storage backends.
 
 ## License
 
