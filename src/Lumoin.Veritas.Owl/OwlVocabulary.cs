@@ -33,6 +33,7 @@ public static class OwlVocabulary
     private static byte[] OntologyBytes { get; } = "http://www.w3.org/2002/07/owl#Ontology"u8.ToArray();
     private static byte[] ClassTermBytes { get; } = "http://www.w3.org/2002/07/owl#Class"u8.ToArray();
     private static byte[] RestrictionBytes { get; } = "http://www.w3.org/2002/07/owl#Restriction"u8.ToArray();
+    private static byte[] DataRangeBytes { get; } = "http://www.w3.org/2002/07/owl#DataRange"u8.ToArray();
     private static byte[] ThingBytes { get; } = "http://www.w3.org/2002/07/owl#Thing"u8.ToArray();
     private static byte[] NothingBytes { get; } = "http://www.w3.org/2002/07/owl#Nothing"u8.ToArray();
     private static byte[] NamedIndividualBytes { get; } = "http://www.w3.org/2002/07/owl#NamedIndividual"u8.ToArray();
@@ -126,6 +127,9 @@ public static class OwlVocabulary
 
     /// <summary>The <c>owl:Restriction</c> class.</summary>
     public static Utf8String Restriction { get; } = new(RestrictionBytes);
+
+    /// <summary>The <c>owl:DataRange</c> class — the OWL 1 spelling of data-range structure, read like <c>rdfs:Datatype</c>.</summary>
+    public static Utf8String DataRange { get; } = new(DataRangeBytes);
 
     /// <summary>The <c>owl:Thing</c> class — the universal class.</summary>
     public static Utf8String Thing { get; } = new(ThingBytes);

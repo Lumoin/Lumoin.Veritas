@@ -43,65 +43,10 @@ public static class OwlProfileChecker
     }
 
     /// <summary>The datatypes OWL 2 EL and QL admit (Profiles §2.4 / §3.3 — the shared list whose value spaces are infinite or trivial).</summary>
-    private static HashSet<Utf8String> ElQlDatatypes { get; } =
-    [
-        OwlVocabulary.Real,
-        OwlVocabulary.Rational,
-        RdfVocabulary.Rdfs.LiteralClass,
-        Iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral"),
-        Vocabulary.Rdf.XmlLiteral,
-        Vocabulary.Xsd.Decimal,
-        Vocabulary.Xsd.Integer,
-        Vocabulary.Xsd.NonNegativeInteger,
-        Vocabulary.Xsd.String,
-        Vocabulary.Xsd.NormalizedString,
-        Vocabulary.Xsd.Token,
-        Iri("http://www.w3.org/2001/XMLSchema#Name"),
-        Iri("http://www.w3.org/2001/XMLSchema#NCName"),
-        Iri("http://www.w3.org/2001/XMLSchema#NMTOKEN"),
-        Vocabulary.Xsd.HexBinary,
-        Vocabulary.Xsd.Base64Binary,
-        Vocabulary.Xsd.AnyUri,
-        Vocabulary.Xsd.DateTime,
-        Vocabulary.Xsd.DateTimeStamp,
-    ];
+    private static IReadOnlySet<Utf8String> ElQlDatatypes { get; } = OwlDatatypeMap.ElQl;
 
     /// <summary>The datatypes OWL 2 RL admits (Profiles §4.3 — the full datatype map except <c>owl:real</c> and <c>owl:rational</c>).</summary>
-    private static HashSet<Utf8String> RlDatatypes { get; } =
-    [
-        RdfVocabulary.Rdfs.LiteralClass,
-        Iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral"),
-        Vocabulary.Rdf.XmlLiteral,
-        Vocabulary.Xsd.Decimal,
-        Vocabulary.Xsd.Integer,
-        Vocabulary.Xsd.NonNegativeInteger,
-        Vocabulary.Xsd.NonPositiveInteger,
-        Vocabulary.Xsd.PositiveInteger,
-        Vocabulary.Xsd.NegativeInteger,
-        Vocabulary.Xsd.Long,
-        Vocabulary.Xsd.Int,
-        Vocabulary.Xsd.Short,
-        Vocabulary.Xsd.ByteValue,
-        Vocabulary.Xsd.UnsignedLong,
-        Vocabulary.Xsd.UnsignedInt,
-        Vocabulary.Xsd.UnsignedShort,
-        Vocabulary.Xsd.UnsignedByte,
-        Vocabulary.Xsd.Double,
-        Vocabulary.Xsd.Float,
-        Vocabulary.Xsd.Boolean,
-        Vocabulary.Xsd.String,
-        Vocabulary.Xsd.NormalizedString,
-        Vocabulary.Xsd.Token,
-        Iri("http://www.w3.org/2001/XMLSchema#language"),
-        Iri("http://www.w3.org/2001/XMLSchema#Name"),
-        Iri("http://www.w3.org/2001/XMLSchema#NCName"),
-        Iri("http://www.w3.org/2001/XMLSchema#NMTOKEN"),
-        Vocabulary.Xsd.HexBinary,
-        Vocabulary.Xsd.Base64Binary,
-        Vocabulary.Xsd.AnyUri,
-        Vocabulary.Xsd.DateTime,
-        Vocabulary.Xsd.DateTimeStamp,
-    ];
+    private static IReadOnlySet<Utf8String> RlDatatypes { get; } = OwlDatatypeMap.Rl;
 
     /// <summary>
     /// Checks the document against all three profiles.
@@ -953,8 +898,4 @@ public static class OwlProfileChecker
         return "(unspecified mapping error)";
     }
 
-    private static Utf8String Iri(string value)
-    {
-        return Utf8String.FromString(value);
-    }
 }

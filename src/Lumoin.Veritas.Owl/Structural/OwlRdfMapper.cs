@@ -176,8 +176,18 @@ public static class OwlRdfMapper
                 {
                     DeclaredClasses.Add(subject.Iri);
                 }
-                else if(iri == OwlVocabulary.ObjectPropertyTerm)
+                else if(iri == OwlVocabulary.ObjectPropertyTerm
+                    || iri == OwlVocabulary.InverseFunctionalProperty
+                    || iri == OwlVocabulary.TransitiveProperty
+                    || iri == OwlVocabulary.SymmetricProperty
+                    || iri == OwlVocabulary.AsymmetricProperty
+                    || iri == OwlVocabulary.ReflexiveProperty
+                    || iri == OwlVocabulary.IrreflexiveProperty)
                 {
+                    //The object-property characteristics type their subject
+                    //as an object property (Mapping to RDF Graphs Table 11);
+                    //owl:FunctionalProperty stays out — it admits either
+                    //property kind and disambiguates nothing.
                     DeclaredObjectProperties.Add(subject.Iri);
                 }
                 else if(iri == OwlVocabulary.DatatypeProperty)
@@ -578,9 +588,21 @@ public static class OwlRdfMapper
                 return;
             }
 
-            if(iri == OwlVocabulary.Restriction || iri == RdfVocabulary.Rdf.List)
+            if(iri == OwlVocabulary.Restriction || iri == OwlVocabulary.DataRange || iri == RdfVocabulary.Rdf.List)
             {
-                //Expression structure; consumed when its using axiom resolves.
+                //Expression structure (owl:DataRange is the OWL 1 spelling
+                //of rdfs:Datatype structure); consumed when its using axiom
+                //resolves.
+                return;
+            }
+
+            if(iri == RdfVocabulary.Rdfs.Class)
+            {
+                //An optional rdfs:Class typing alongside owl:Class or
+                //owl:Restriction adds nothing; it is consumed without an
+                //axiom, so an entity typed ONLY rdfs:Class stays undeclared.
+                Consume(quad);
+
                 return;
             }
 
@@ -867,18 +889,30 @@ public static class OwlRdfMapper
                 bool allResolved = true;
                 foreach(RdfTerm child in children)
                 {
-                    if(!ClassExpressionCache.ContainsKey(child))
+                    if(ClassExpressionCache.ContainsKey(child))
                     {
-                        allResolved = false;
-                        if(!inProgress.Add(child))
-                        {
-                            Report(WellKnownDiagnostics.Owl.MalformedClassExpression, $"Cyclic class expression structure near {Describe(origin)}.");
-                            ClassExpressionCache[child] = null;
-                        }
-                        else
-                        {
-                            work.Push(child);
-                        }
+                        continue;
+                    }
+
+                    //A named child is a leaf reference and resolves at
+                    //discovery: the same name may appear at several depths
+                    //of one expression without being a structural cycle.
+                    if(child is NamedNode namedChild)
+                    {
+                        ClassExpressionCache[child] = new OwlClassReference(namedChild);
+
+                        continue;
+                    }
+
+                    allResolved = false;
+                    if(!inProgress.Add(child))
+                    {
+                        Report(WellKnownDiagnostics.Owl.MalformedClassExpression, $"Cyclic class expression structure near {Describe(origin)}.");
+                        ClassExpressionCache[child] = null;
+                    }
+                    else
+                    {
+                        work.Push(child);
                     }
                 }
 

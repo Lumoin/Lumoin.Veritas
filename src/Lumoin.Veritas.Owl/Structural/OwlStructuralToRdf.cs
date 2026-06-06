@@ -33,10 +33,10 @@ public static class OwlStructuralToRdf
 
         WriterContext context = new();
 
-        if(document.OntologyIri is NamedNode ontology)
-        {
-            context.Emit(ontology, context.RdfType, context.OwlOntology);
-        }
+        //An anonymous ontology maps to a blank-node header (Mapping to RDF
+        //Graphs §3.1) — every ontology document carries the header triple.
+        RdfTerm ontologyNode = document.OntologyIri is NamedNode ontology ? ontology : context.Fresh();
+        context.Emit(ontologyNode, context.RdfType, context.OwlOntology);
 
         foreach(OwlAxiom axiom in document.Axioms)
         {
@@ -93,7 +93,9 @@ public static class OwlStructuralToRdf
             Emit(subject, new NamedNode(predicate), @object);
         }
 
-        private BlankNode Fresh()
+        /// <summary>Mints a fresh blank node.</summary>
+        /// <returns>The blank node.</returns>
+        public BlankNode Fresh()
         {
             return new BlankNode(Utf8String.FromString($"owlmap{NextBlank++}"));
         }
