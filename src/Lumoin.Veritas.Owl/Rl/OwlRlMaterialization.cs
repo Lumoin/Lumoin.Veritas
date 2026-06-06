@@ -39,7 +39,7 @@ public static class OwlRlMaterialization
     /// </summary>
     /// <param name="store">The store to materialize over; its snapshot is the base the session branches from.</param>
     /// <param name="terms">The resolved RL vocabulary.</param>
-    /// <param name="literalsKnownDistinct">The datatype oracle for the <c>dt-*</c> falsity, or <see langword="null"/> to disable.</param>
+    /// <param name="datatypeOracle">The datatype oracle for the <c>dt-*</c> falsities; <see cref="OwlRlDatatypeOracle.None"/> disables them.</param>
     /// <param name="cancellationToken">A token that aborts derivation and the commit.</param>
     /// <returns>The post-commit store, the derivation count, and the consistency verdict.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="store"/> or <paramref name="terms"/> is <see langword="null"/>.</exception>
@@ -48,7 +48,7 @@ public static class OwlRlMaterialization
     public static async ValueTask<OwlRlMaterializationResult> MaterializeAndCommitAsync(
         HypertrieGraphStore store,
         OwlRlTerms terms,
-        Func<TermId, TermId, bool>? literalsKnownDistinct = null,
+        OwlRlDatatypeOracle datatypeOracle = default,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(store);
@@ -57,7 +57,7 @@ public static class OwlRlMaterialization
         OwlRlResult closure = OwlRlClosure.Compute(
             store.Match(TermId.None, TermId.None, TermId.None),
             terms,
-            literalsKnownDistinct,
+            datatypeOracle,
             cancellationToken);
 
         if(!closure.IsConsistent || closure.Derived.Count == 0)

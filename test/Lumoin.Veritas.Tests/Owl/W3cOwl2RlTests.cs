@@ -69,21 +69,9 @@ internal sealed class W3cOwl2RlTests
             Assert.Inconclusive("Not an RL-marked test; the RL rules make no completeness claim.");
         }
 
-        if(!testCase.IsRdfXmlReadable)
-        {
-            Assert.Inconclusive("Functional-syntax-only test; the OWL functional-syntax reader is not built.");
-        }
-
         if(testCase.HasImports)
         {
             Assert.Inconclusive("Imports-bearing test; the harness supplies no imported ontologies.");
-        }
-
-        if(testCase.RdfXmlPremise is not string premise)
-        {
-            Assert.Inconclusive("The test declares no RDF/XML premise document.");
-
-            return;
         }
 
         //The closure implements the RDF-Based rules calculus; entailment
@@ -95,12 +83,19 @@ internal sealed class W3cOwl2RlTests
             Assert.Inconclusive("Direct-semantics-only entailment test; the RL/RDF rules implement the RDF-Based calculus.");
         }
 
-        List<Quad> premiseQuads = ParseDocument(testCase, premise);
+        List<Quad>? maybePremise = LoadQuads(testCase, testCase.RdfXmlPremise, testCase.FunctionalPremise);
+        if(maybePremise is not List<Quad> premiseQuads)
+        {
+            Assert.Inconclusive("The test declares no premise document in a syntax the harness reads.");
+
+            return;
+        }
+
         TermDictionary dictionary = new();
         List<EncodedTriple> encoded = Encode(premiseQuads, dictionary);
         OwlRlTerms terms = new(dictionary);
 
-        OwlRlResult result = OwlRlClosure.Compute(encoded, terms, LiteralsKnownDistinct(dictionary), TestContext.CancellationToken);
+        OwlRlResult result = OwlRlClosure.Compute(encoded, terms, DatatypeOracle(dictionary), TestContext.CancellationToken);
 
         bool isKnownGap = KnownGaps.Contains(testCase.Identifier);
 
@@ -124,27 +119,50 @@ internal sealed class W3cOwl2RlTests
         //Entailment: the conclusion graph embeds into the closure (positive)
         //or must not (negative). The closure is the premise plus everything
         //derived, decoded back to terms.
-        if(testCase.Kinds.Contains("PositiveEntailmentTest") && testCase.RdfXmlConclusion is string conclusion)
+        if(testCase.Kinds.Contains("PositiveEntailmentTest")
+            && LoadQuads(testCase, testCase.RdfXmlConclusion, testCase.FunctionalConclusion) is List<Quad> conclusionQuads)
         {
+            List<Quad> closure = DecodeUnion(premiseQuads, result, dictionary);
+
             if(isKnownGap)
             {
-                List<Quad> gapClosure = DecodeUnion(premiseQuads, result, dictionary);
-                AssertKnownGap(testCase, holds: Embeds(ParseDocument(testCase, conclusion), gapClosure));
+                AssertKnownGap(testCase, holds: Embeds(conclusionQuads, closure));
             }
-
-            List<Quad> closure = DecodeUnion(premiseQuads, result, dictionary);
-            List<Quad> conclusionQuads = ParseDocument(testCase, conclusion);
 
             Assert.IsTrue(Embeds(conclusionQuads, closure), $"{testCase.Identifier}: the conclusion does not embed into the RL closure.");
         }
 
-        if(testCase.Kinds.Contains("NegativeEntailmentTest") && testCase.RdfXmlNonConclusion is string nonConclusion)
+        if(testCase.Kinds.Contains("NegativeEntailmentTest")
+            && LoadQuads(testCase, testCase.RdfXmlNonConclusion, testCase.FunctionalNonConclusion) is List<Quad> nonConclusionQuads)
         {
             List<Quad> closure = DecodeUnion(premiseQuads, result, dictionary);
-            List<Quad> nonConclusionQuads = ParseDocument(testCase, nonConclusion);
 
             Assert.IsFalse(Embeds(nonConclusionQuads, closure), $"{testCase.Identifier}: the non-conclusion embeds into the RL closure but must not.");
         }
+    }
+
+    //Loads a document role as triples: RDF/XML parses directly; functional
+    //syntax reads into structural form and serialises through the forward
+    //RDF mapping. Null when the role has no readable document.
+    private static List<Quad>? LoadQuads(Owl2TestCase testCase, string? rdfXml, string? functional)
+    {
+        if(rdfXml is string xml)
+        {
+            return ParseDocument(testCase, xml);
+        }
+
+        if(functional is string text)
+        {
+            Lumoin.Veritas.Owl.Structural.OwlOntologyDocument document = Lumoin.Veritas.Owl.Functional.OwlFunctionalSyntaxReader.Read(text);
+            if(document.Diagnostics.HasErrors)
+            {
+                Assert.Inconclusive("A test document did not parse as functional syntax; the test cannot be set up.");
+            }
+
+            return Lumoin.Veritas.Owl.Structural.OwlStructuralToRdf.ToQuads(document);
+        }
+
+        return null;
     }
 
     //A known-gap test reports inconclusive while the gap holds and fails
@@ -160,26 +178,79 @@ internal sealed class W3cOwl2RlTests
     }
 
     /// <summary>
-    /// The datatype oracle: two literals with the same datatype and
-    /// different lexical forms denote distinct values for the datatypes
-    /// whose lexical-to-value mapping is injective (strings); numeric
-    /// canonicalisation is not attempted here.
+    /// The datatype oracle: distinctness from same-datatype lexical
+    /// inequality or disjoint value-space families, and membership
+    /// violations from a literal whose family differs from the target
+    /// datatype's. Numeric canonicalisation across numeric datatypes is not
+    /// attempted — those pairs stay unknown, which is sound.
     /// </summary>
     /// <param name="dictionary">The dictionary the closure's term ids resolve through.</param>
-    /// <returns>The distinctness predicate.</returns>
-    private static Func<TermId, TermId, bool> LiteralsKnownDistinct(TermDictionary dictionary)
+    /// <returns>The oracle pair.</returns>
+    private static OwlRlDatatypeOracle DatatypeOracle(TermDictionary dictionary)
     {
-        return (first, second) =>
-        {
-            if(dictionary.Resolve(first) is not Literal firstLiteral || dictionary.Resolve(second) is not Literal secondLiteral)
+        return new OwlRlDatatypeOracle(
+            (first, second) =>
             {
-                return false;
-            }
+                if(dictionary.Resolve(first) is not Literal firstLiteral || dictionary.Resolve(second) is not Literal secondLiteral
+                    || firstLiteral.Language is not null || secondLiteral.Language is not null)
+                {
+                    return false;
+                }
 
-            return firstLiteral.Datatype.Equals(secondLiteral.Datatype)
-                && firstLiteral.Language is null
-                && secondLiteral.Language is null
-                && !firstLiteral.Value.Equals(secondLiteral.Value);
+                if(firstLiteral.Datatype.Equals(secondLiteral.Datatype))
+                {
+                    return !firstLiteral.Value.Equals(secondLiteral.Value);
+                }
+
+                DatatypeFamily firstFamily = FamilyOf(firstLiteral.Datatype.Iri.ToString());
+                DatatypeFamily secondFamily = FamilyOf(secondLiteral.Datatype.Iri.ToString());
+
+                return firstFamily != DatatypeFamily.Unknown && secondFamily != DatatypeFamily.Unknown && firstFamily != secondFamily;
+            },
+            (literalId, datatypeId) =>
+            {
+                if(dictionary.Resolve(literalId) is not Literal literal || literal.Language is not null
+                    || dictionary.Resolve(datatypeId) is not NamedNode datatype)
+                {
+                    return false;
+                }
+
+                DatatypeFamily literalFamily = FamilyOf(literal.Datatype.Iri.ToString());
+                DatatypeFamily targetFamily = FamilyOf(datatype.Iri.ToString());
+
+                return literalFamily != DatatypeFamily.Unknown && targetFamily != DatatypeFamily.Unknown && literalFamily != targetFamily;
+            });
+    }
+
+    /// <summary>The disjoint value-space families the oracle distinguishes.</summary>
+    private enum DatatypeFamily
+    {
+        Unknown = 0,
+        Text = 1,
+        Numeric = 2,
+        Boolean = 3,
+        Temporal = 4,
+    }
+
+    private static DatatypeFamily FamilyOf(string datatypeIri)
+    {
+        const string xsd = "http://www.w3.org/2001/XMLSchema#";
+        if(!datatypeIri.StartsWith(xsd, StringComparison.Ordinal))
+        {
+            return datatypeIri is "http://www.w3.org/2002/07/owl#real" or "http://www.w3.org/2002/07/owl#rational"
+                ? DatatypeFamily.Numeric
+                : DatatypeFamily.Unknown;
+        }
+
+        return datatypeIri[xsd.Length..] switch
+        {
+            "string" or "normalizedString" or "token" or "language" or "Name" or "NCName" or "NMTOKEN" => DatatypeFamily.Text,
+            "decimal" or "integer" or "nonNegativeInteger" or "nonPositiveInteger" or "positiveInteger" or "negativeInteger"
+                or "long" or "int" or "short" or "byte" or "unsignedLong" or "unsignedInt" or "unsignedShort" or "unsignedByte"
+                or "double" or "float" => DatatypeFamily.Numeric,
+            "boolean" => DatatypeFamily.Boolean,
+            "dateTime" or "dateTimeStamp" or "date" or "time" => DatatypeFamily.Temporal,
+            _ => DatatypeFamily.Unknown
         };
     }
 

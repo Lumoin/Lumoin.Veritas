@@ -52,10 +52,11 @@ public sealed class OwlRlResult
 /// optimisation, to be adopted against measured fixpoint workloads.
 /// </para>
 /// <para>
-/// The datatype rules (<c>dt-*</c>) are not evaluated: value-space
-/// reasoning composes with the SPARQL datatype machinery at a later stage,
-/// and a closure over a graph with ill-typed literals simply derives no
-/// contradiction from them.
+/// The datatype (<c>dt-*</c>) falsities fire through the
+/// <see cref="OwlRlDatatypeOracle"/>: literal distinctness under
+/// <c>owl:sameAs</c>, and value-space membership under range and
+/// universal-restriction typing. The oracle owns the value semantics; the
+/// closure itself never inspects a literal.
 /// </para>
 /// </remarks>
 public static class OwlRlClosure
@@ -65,12 +66,12 @@ public static class OwlRlClosure
     /// </summary>
     /// <param name="triples">The base triples, schema statements included.</param>
     /// <param name="terms">The resolved RL vocabulary.</param>
-    /// <param name="literalsKnownDistinct">
-    /// The datatype oracle for the <c>dt-*</c> falsity: returns
-    /// <see langword="true"/> when the two terms are literals known to denote
-    /// distinct data values, so an <c>owl:sameAs</c> between them is a
-    /// contradiction. <see langword="null"/> disables the check — the
-    /// term-id-level closure cannot inspect literal values itself.
+    /// <param name="datatypeOracle">
+    /// The datatype oracle for the <c>dt-*</c> falsities — literal
+    /// distinctness under <c>owl:sameAs</c> and value-space membership
+    /// under range and universal-restriction typing. The term-id-level
+    /// closure cannot inspect literal values itself;
+    /// <see cref="OwlRlDatatypeOracle.None"/> disables both checks.
     /// </param>
     /// <param name="cancellationToken">A token that aborts derivation between rounds.</param>
     /// <returns>The derived triples and the consistency verdict.</returns>
@@ -79,13 +80,13 @@ public static class OwlRlClosure
     public static OwlRlResult Compute(
         IEnumerable<EncodedTriple> triples,
         OwlRlTerms terms,
-        Func<TermId, TermId, bool>? literalsKnownDistinct = null,
+        OwlRlDatatypeOracle datatypeOracle = default,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(triples);
         ArgumentNullException.ThrowIfNull(terms);
 
-        ClosureContext context = new(triples, terms, literalsKnownDistinct);
+        ClosureContext context = new(triples, terms, datatypeOracle.LiteralsKnownDistinct is null ? OwlRlDatatypeOracle.None : datatypeOracle);
 
         while(true)
         {
@@ -135,13 +136,13 @@ public static class OwlRlClosure
         /// <summary>Type → its instances.</summary>
         private Dictionary<TermId, List<TermId>> InstancesOf { get; } = [];
 
-        /// <summary>The datatype oracle for literal-distinctness, or <c>null</c>.</summary>
-        private Func<TermId, TermId, bool>? LiteralsKnownDistinct { get; }
+        /// <summary>The datatype oracle for the <c>dt-*</c> falsities.</summary>
+        private OwlRlDatatypeOracle DatatypeOracle { get; }
 
-        public ClosureContext(IEnumerable<EncodedTriple> triples, OwlRlTerms terms, Func<TermId, TermId, bool>? literalsKnownDistinct)
+        public ClosureContext(IEnumerable<EncodedTriple> triples, OwlRlTerms terms, OwlRlDatatypeOracle datatypeOracle)
         {
             Terms = terms;
-            LiteralsKnownDistinct = literalsKnownDistinct;
+            DatatypeOracle = datatypeOracle;
             foreach(EncodedTriple triple in triples)
             {
                 All.Add(triple);
@@ -289,7 +290,7 @@ public static class OwlRlClosure
 
                 //dt-* falsity through the datatype oracle: sameAs between
                 //literals denoting distinct data values contradicts.
-                if(x != y && LiteralsKnownDistinct is not null && LiteralsKnownDistinct(x, y))
+                if(x != y && DatatypeOracle.LiteralsKnownDistinct(x, y))
                 {
                     Inconsistent("dt-diff");
 
@@ -375,6 +376,15 @@ public static class OwlRlClosure
             {
                 foreach((TermId _, TermId y) in Pairs(p))
                 {
+                    //dt-not-type: a literal value outside the range
+                    //datatype's value space contradicts.
+                    if(DatatypeOracle.LiteralOutsideDatatype(y, c))
+                    {
+                        Inconsistent("dt-not-type");
+
+                        return;
+                    }
+
                     Add(y, Terms.Type, c);
                 }
             }
@@ -731,6 +741,13 @@ public static class OwlRlClosure
                     {
                         foreach(TermId v in ObjectsOf(u, p))
                         {
+                            if(DatatypeOracle.LiteralOutsideDatatype(v, allFiller))
+                            {
+                                Inconsistent("dt-not-type");
+
+                                return;
+                            }
+
                             Add(v, Terms.Type, allFiller);
                         }
                     }

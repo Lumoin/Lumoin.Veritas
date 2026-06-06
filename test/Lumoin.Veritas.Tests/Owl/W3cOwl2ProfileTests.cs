@@ -38,14 +38,25 @@ internal sealed class W3cOwl2ProfileTests
     public TestContext TestContext { get; set; } = null!;
 
     /// <summary>
-    /// Corpus contradictions recorded as known gaps. <c>WebOnt-I4.6-004</c>'s
+    /// Corpus contradictions recorded as known gaps, self-correcting: a run
+    /// fails if a listed test starts passing. <c>WebOnt-I4.6-004</c>'s
     /// non-conclusion (<c>SameIndividual</c> over two declared class names)
     /// is structurally identical to <c>WebOnt-sameAs-001</c>'s premise, yet
-    /// the corpus marks the former RL-only and the latter EL+RL — no
-    /// construct-level grammar can satisfy both. The gap is self-correcting:
-    /// a run fails if a listed test starts passing.
+    /// the corpus marks the former RL-only and the latter EL+RL. The
+    /// functional-syntax datatype family (<c>*-integer-filler</c>,
+    /// <c>functionality-clash</c>) uses only profile-legal constructs
+    /// (<c>DataHasValue</c>/<c>DataAllValuesFrom</c> over <c>xsd:integer</c>,
+    /// <c>FunctionalDataProperty</c>) yet carries withheld markers — the
+    /// curators appear to track datatype-reasoning expectations rather than
+    /// the published grammars there.
     /// </summary>
-    private static HashSet<string> KnownGaps { get; } = ["WebOnt-I4.6-004"];
+    private static HashSet<string> KnownGaps { get; } =
+    [
+        "WebOnt-I4.6-004",
+        "consistent-integer-filler",
+        "inconsistent-integer-filler",
+        "functionality-clash",
+    ];
 
     /// <summary>Runs one approved-status OWL 2 test case as a profile-identification test.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
@@ -60,20 +71,16 @@ internal sealed class W3cOwl2ProfileTests
     {
         ArgumentNullException.ThrowIfNull(testCase);
 
-        if(!testCase.IsRdfXmlReadable)
-        {
-            Assert.Inconclusive("Functional-syntax-only test; the OWL functional-syntax reader is not built.");
-        }
-
         if(testCase.HasImports)
         {
             Assert.Inconclusive("Imports-bearing test; the harness supplies no imported ontologies.");
         }
 
         //Check every document of the test; the per-profile verdict for the
-        //TEST is the conjunction over its documents. A conclusion (or
-        //non-conclusion) document is interpreted in the premise's context and
-        //inherits its declarations.
+        //TEST is the conjunction over its documents. RDF/XML documents map
+        //through the RDF mapping (a conclusion inherits the premise's
+        //declarations); a functional-syntax document is self-describing and
+        //reads directly into structural form.
         List<OwlProfileReport> reports = [];
         OwlOntologyDocument? premiseDocument = null;
 
@@ -82,20 +89,38 @@ internal sealed class W3cOwl2ProfileTests
             premiseDocument = MapDocument(testCase, premise, declarationContext: null);
             reports.Add(OwlProfileChecker.Check(premiseDocument));
         }
+        else if(testCase.FunctionalPremise is string functionalPremise)
+        {
+            premiseDocument = ReadFunctional(functionalPremise);
+            reports.Add(OwlProfileChecker.Check(premiseDocument));
+        }
 
         if(testCase.RdfXmlConclusion is string conclusion)
         {
             reports.Add(OwlProfileChecker.Check(MapDocument(testCase, conclusion, premiseDocument)));
+        }
+        else if(testCase.FunctionalConclusion is string functionalConclusion)
+        {
+            reports.Add(OwlProfileChecker.Check(ReadFunctional(functionalConclusion)));
         }
 
         if(testCase.RdfXmlNonConclusion is string nonConclusion)
         {
             reports.Add(OwlProfileChecker.Check(MapDocument(testCase, nonConclusion, premiseDocument)));
         }
+        else if(testCase.FunctionalNonConclusion is string functionalNonConclusion)
+        {
+            reports.Add(OwlProfileChecker.Check(ReadFunctional(functionalNonConclusion)));
+        }
 
         if(testCase.RdfXmlInput is string input)
         {
             reports.Add(OwlProfileChecker.Check(MapDocument(testCase, input, declarationContext: null)));
+        }
+
+        if(reports.Count == 0)
+        {
+            Assert.Inconclusive("The test declares no document in a syntax the harness reads.");
         }
 
         if(KnownGaps.Contains(testCase.Identifier))
@@ -148,6 +173,17 @@ internal sealed class W3cOwl2ProfileTests
         }
 
         return OwlRdfMapper.Map(quads, declarationContext);
+    }
+
+    private static OwlOntologyDocument ReadFunctional(string document)
+    {
+        OwlOntologyDocument read = Lumoin.Veritas.Owl.Functional.OwlFunctionalSyntaxReader.Read(document);
+        if(read.Diagnostics.HasErrors)
+        {
+            Assert.Inconclusive("A test document did not parse as functional syntax; the test cannot be set up.");
+        }
+
+        return read;
     }
 
     private static void AssertProfile(Owl2TestCase testCase, List<OwlProfileReport> reports, string marker, OwlProfiles profile)
