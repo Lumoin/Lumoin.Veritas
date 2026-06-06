@@ -59,7 +59,7 @@ public static class OwlFunctionalSyntaxReader
             context.DeclaredDatatypes);
     }
 
-    //----- Tokenizer -----
+    //Tokenizer.
 
     private enum TokenKind
     {
@@ -281,7 +281,7 @@ public static class OwlFunctionalSyntaxReader
         return char.IsLetterOrDigit(c) || c == '_' || c == '-' || c == '.';
     }
 
-    //----- S-expression tree -----
+    //S-expression tree.
 
     private sealed class SExpr
     {
@@ -366,7 +366,7 @@ public static class OwlFunctionalSyntaxReader
             Utf8String.FromString(message)));
     }
 
-    //----- Conversion -----
+    //Conversion.
 
     //A declaration constructor's payload: the entity kind plus the IRI.
     private sealed record DeclarationValue(OwlEntityKind Kind, Utf8String Iri);
@@ -1093,7 +1093,7 @@ public static class OwlFunctionalSyntaxReader
             }
         }
 
-        //----- Coercions: atoms resolve per the requesting context -----
+        //Coercions: atoms resolve per the requesting context.
 
         private Utf8String AsIri(object? value)
         {

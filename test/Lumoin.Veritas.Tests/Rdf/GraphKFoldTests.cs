@@ -20,11 +20,9 @@ internal sealed class GraphKFoldTests
     private int algebraInvocationCount;
     private readonly Dictionary<TermId, int> invocationsByNode = [];
 
-    //----------------------------------------------------------------------
     //Algebra 1: Sum-of-subtree. Count this node as 1 plus the sum of all
     //children's results. Always forces every child. Semantically equivalent
     //to a plain GraphFold.
-    //----------------------------------------------------------------------
     private IEnumerator<ForceRequest> SumAllChildrenAlgebra(
         TermId nodeId,
         ReadOnlyMemory<EncodedTriple> outgoingTriples,
@@ -87,11 +85,9 @@ internal sealed class GraphKFoldTests
         Assert.AreEqual(1, algebraInvocationCount);
     }
 
-    //----------------------------------------------------------------------
     //Algebra 2: Short-circuits at the first "positive" child. Leaf nodes
     //return their own id as the value; parents return 1 if any subtree has
     //a positive leaf, else 0.
-    //----------------------------------------------------------------------
     private IEnumerator<ForceRequest> AnyPositiveAlgebra(
         TermId nodeId,
         ReadOnlyMemory<EncodedTriple> outgoingTriples,
@@ -144,9 +140,7 @@ internal sealed class GraphKFoldTests
         Assert.AreEqual(2, algebraInvocationCount);
     }
 
-    //----------------------------------------------------------------------
     //Algebra 3: Per-node invocation counting to verify shared-child dedup.
-    //----------------------------------------------------------------------
     private IEnumerator<ForceRequest> RecordInvocationAlgebra(
         TermId nodeId,
         ReadOnlyMemory<EncodedTriple> outgoingTriples,
@@ -194,10 +188,8 @@ internal sealed class GraphKFoldTests
         Assert.AreEqual(1, invocationsByNode[TermId.FromEncoded(13)]);
     }
 
-    //----------------------------------------------------------------------
     //Algebra 4: Force-through cycle. Should trip recursion detection.
     //Marked static — touches no instance state (CA1822).
-    //----------------------------------------------------------------------
     private static IEnumerator<ForceRequest> ForceAllAlgebra(
         TermId nodeId,
         ReadOnlyMemory<EncodedTriple> outgoingTriples,
@@ -237,9 +229,7 @@ internal sealed class GraphKFoldTests
         Assert.Contains("recursion", ex.Message, System.StringComparison.OrdinalIgnoreCase);
     }
 
-    //----------------------------------------------------------------------
     //Algebra 5: Skip request. Marked static — touches no instance state (CA1822).
-    //----------------------------------------------------------------------
     private static IEnumerator<ForceRequest> YieldsSkipAlgebra(
         TermId nodeId,
         ReadOnlyMemory<EncodedTriple> outgoingTriples,

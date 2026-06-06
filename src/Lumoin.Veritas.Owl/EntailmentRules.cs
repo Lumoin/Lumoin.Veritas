@@ -18,7 +18,7 @@ namespace Lumoin.Veritas.Owl;
 /// </remarks>
 public static class EntailmentRules
 {
-    //----- RDFS entailment patterns -----
+    //RDFS entailment patterns.
 
     /// <summary>rdf1 — the predicate of any statement is an <c>rdf:Property</c>.</summary>
     public const string Rdf1 = "rdf1";
@@ -59,7 +59,7 @@ public static class EntailmentRules
     /// <summary>The rdfs2/rdfs3 consequences of the RDF(S) axiomatic schema — vocabulary domains and ranges typing the subjects and objects of schema statements.</summary>
     public const string AxiomaticTyping = "axiomatic-typing";
 
-    //----- OWL 2 RL/RDF rules, Table 4 (equality) -----
+    //OWL 2 RL/RDF rules, Table 4 (equality).
 
     /// <summary>eq-sym — <c>owl:sameAs</c> is symmetric.</summary>
     public const string EqSym = "eq-sym";
@@ -85,7 +85,7 @@ public static class EntailmentRules
     /// <summary>Implementation completion: <c>owl:differentFrom</c> is materialised symmetrically for the eq-diff checks.</summary>
     public const string DifferentFromSymmetry = "different-from-symmetry";
 
-    //----- OWL 2 RL/RDF rules, Table 5 (properties) -----
+    //OWL 2 RL/RDF rules, Table 5 (properties).
 
     /// <summary>prp-dom — a property's domain types its subjects.</summary>
     public const string PrpDom = "prp-dom";
@@ -144,7 +144,7 @@ public static class EntailmentRules
     /// <summary>prp-npa1/prp-npa2 — a negative property assertion with the asserted statement contradicts.</summary>
     public const string PrpNpa = "prp-npa";
 
-    //----- OWL 2 RL/RDF rules, Table 6 (classes) -----
+    //OWL 2 RL/RDF rules, Table 6 (classes).
 
     /// <summary>cls-nothing2 — an instance of <c>owl:Nothing</c> contradicts.</summary>
     public const string ClsNothing2 = "cls-nothing2";
@@ -191,7 +191,7 @@ public static class EntailmentRules
     /// <summary>cls-oo — every member of an enumeration is an instance of it.</summary>
     public const string ClsOo = "cls-oo";
 
-    //----- OWL 2 RL/RDF rules, Table 7 (class axioms) -----
+    //OWL 2 RL/RDF rules, Table 7 (class axioms).
 
     /// <summary>cax-sco — an instance of a subclass is an instance of the superclass.</summary>
     public const string CaxSco = "cax-sco";
@@ -208,7 +208,7 @@ public static class EntailmentRules
     /// <summary>cax-adc — pairwise disjointness of an <c>owl:AllDisjointClasses</c> list, statements and contradiction both.</summary>
     public const string CaxAdc = "cax-adc";
 
-    //----- OWL 2 RL/RDF rules, Table 8 (datatypes) -----
+    //OWL 2 RL/RDF rules, Table 8 (datatypes).
 
     /// <summary>dt-diff — <c>owl:sameAs</c> between literals denoting distinct data values contradicts.</summary>
     public const string DtDiff = "dt-diff";
@@ -216,7 +216,7 @@ public static class EntailmentRules
     /// <summary>dt-not-type — a literal outside its asserted datatype's value space contradicts.</summary>
     public const string DtNotType = "dt-not-type";
 
-    //----- OWL 2 RL/RDF rules, Table 9 (schema) -----
+    //OWL 2 RL/RDF rules, Table 9 (schema).
 
     /// <summary>scm-cls — every declared class is its own sub- and equivalent class, below <c>owl:Thing</c> and above <c>owl:Nothing</c>.</summary>
     public const string ScmCls = "scm-cls";

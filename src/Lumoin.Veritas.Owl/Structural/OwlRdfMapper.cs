@@ -843,7 +843,7 @@ public static class OwlRdfMapper
             }
         }
 
-        //----- Expression resolution -----
+        //Expression resolution.
 
         /// <summary>Resolves a node to a class expression with an explicit work stack (class expressions nest arbitrarily; no call-stack recursion).</summary>
         private OwlClassExpression? ResolveClassExpression(RdfTerm root, Quad origin)
@@ -1362,7 +1362,7 @@ public static class OwlRdfMapper
             return null;
         }
 
-        //----- Shared helpers -----
+        //Shared helpers.
 
         private List<OwlClassExpression> ResolveCached(List<RdfTerm> nodes)
         {

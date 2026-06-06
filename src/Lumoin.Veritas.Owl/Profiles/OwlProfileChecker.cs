@@ -101,7 +101,7 @@ public static class OwlProfileChecker
         return new OwlProfileReport(memberships, violations);
     }
 
-    //----- EL (Profiles §2): a positionally uniform expression grammar; the
+    //EL (Profiles §2): a positionally uniform expression grammar; the
     //axiom set excludes everything inverse-flavoured, universal, cardinal,
     //and disjunctive.
 
@@ -358,7 +358,7 @@ public static class OwlProfileChecker
         }
     }
 
-    //----- QL (Profiles §3): a sub/super positional grammar without
+    //QL (Profiles §3): a sub/super positional grammar without
     //existence-creating constructs on the left; the axiom set excludes
     //equality, keys, chains, transitivity, and functionality.
 
@@ -580,7 +580,7 @@ public static class OwlProfileChecker
         }
     }
 
-    //----- RL (Profiles §4): three positional grammars (sub, super,
+    //RL (Profiles §4): three positional grammars (sub, super,
     //equivalence); owl:Thing is excluded as a class expression; the axiom
     //set excludes reflexivity, disjoint unions, and datatype definitions.
 
@@ -865,7 +865,7 @@ public static class OwlProfileChecker
         }
     }
 
-    //----- Cross-profile individual restrictions: anonymous individuals are
+    //Cross-profile individual restrictions: anonymous individuals are
     //admissible everywhere as rolled-up existentials (objects of property
     //assertions), but a FREE-FLOATING anonymous node typed with a built-in
     //class (owl:Thing, owl:NamedIndividual) — never the target of an object

@@ -146,7 +146,7 @@ public static class OwlDlChecker
         return new OwlDlReport(violations.Count == 0, violations);
     }
 
-    //----- Graph-level preconditions.
+    //Graph-level preconditions.
 
     private static void CheckOntologyHeader(IReadOnlyList<Quad> quads, List<OwlDlViolation> violations)
     {
@@ -213,7 +213,7 @@ public static class OwlDlChecker
         }
     }
 
-    //----- The axiom walk.
+    //The axiom walk.
 
     /// <summary>The mutable state one document walk accumulates.</summary>
     private sealed class WalkState
@@ -595,7 +595,7 @@ public static class OwlDlChecker
         }
     }
 
-    //----- Expression walks (explicit stacks).
+    //Expression walks (explicit stacks).
 
     private static void WalkClass(OwlClassExpression expression, Quad origin, WalkState state)
     {
@@ -792,7 +792,7 @@ public static class OwlDlChecker
         }
     }
 
-    //----- Entity checks.
+    //Entity checks.
 
     private static void CheckClassReference(NamedNode node, Quad origin, WalkState state)
     {
@@ -911,7 +911,7 @@ public static class OwlDlChecker
         }
     }
 
-    //----- Global restrictions.
+    //Global restrictions.
 
     private static HashSet<Utf8String> PropagateNonSimple(WalkState state)
     {

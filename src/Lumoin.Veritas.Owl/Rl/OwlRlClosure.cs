@@ -312,7 +312,7 @@ public static class OwlRlClosure
             return grew;
         }
 
-        //----- eq-* (Table 4) -----
+        //eq-* (Table 4).
 
         private void FireEquality()
         {
@@ -418,7 +418,7 @@ public static class OwlRlClosure
             }
         }
 
-        //----- prp-* (Table 5) -----
+        //prp-* (Table 5).
 
         private void FireProperties()
         {
@@ -708,7 +708,7 @@ public static class OwlRlClosure
             }
         }
 
-        //----- cls-* (Table 6) -----
+        //cls-* (Table 6).
 
         private void FireClasses()
         {
@@ -953,7 +953,7 @@ public static class OwlRlClosure
             }
         }
 
-        //----- cax-* (Table 7) -----
+        //cax-* (Table 7).
 
         private void FireClassAxioms()
         {
@@ -1053,7 +1053,7 @@ public static class OwlRlClosure
             }
         }
 
-        //----- scm-* (Table 9) -----
+        //scm-* (Table 9).
 
         private void FireSchema()
         {
@@ -1178,7 +1178,7 @@ public static class OwlRlClosure
             }
         }
 
-        //----- Shared helpers -----
+        //Shared helpers.
 
         private List<(TermId Subject, TermId Object)> Pairs(TermId predicate)
         {

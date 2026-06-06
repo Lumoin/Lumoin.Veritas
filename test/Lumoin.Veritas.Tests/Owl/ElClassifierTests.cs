@@ -126,7 +126,7 @@ internal sealed class ElClassifierTests
         Assert.IsNotEmpty(result.UnsupportedConstructs);
     }
 
-    //----- Construction helpers -----
+    //Construction helpers.
 
     private static Quad Origin { get; } = new(
         new NamedNode(Utf8String.FromString(Example + "s")),

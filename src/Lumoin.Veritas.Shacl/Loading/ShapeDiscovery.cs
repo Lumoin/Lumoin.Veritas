@@ -95,12 +95,10 @@ internal static class ShapeDiscovery
     {
         Dictionary<TermId, ShapeBuilder> builders = [];
 
-        //---------------------------------------------------------------
         //Rule 1: sh:path — subject is a property shape.
         //Do this first; subsequent rules must know whether a term is
         //already known to be a property shape so the classification
         //doesn't flip.
-        //---------------------------------------------------------------
         await foreach(EncodedTriple triple in shapeGraphMatch(TermId.None, shaclCoreIds.Path, TermId.None, cancellationToken).ConfigureAwait(false))
         {
             TermId subject = triple.Subject;
@@ -110,9 +108,7 @@ internal static class ShapeDiscovery
             }
         }
 
-        //---------------------------------------------------------------
         //Rule 2: rdf:type sh:{NodeShape,PropertyShape,Shape,ShapeClass}.
-        //---------------------------------------------------------------
         foreach(IriId shapeClass in new[]
         {
             shaclCoreIds.NodeShapeClass,
@@ -138,12 +134,10 @@ internal static class ShapeDiscovery
             }
         }
 
-        //---------------------------------------------------------------
         //Rule 3: subject of any target predicate.
         //A term that carries a target is a shape. Kind is determined by
         //whether it also carries sh:path (handled above) — otherwise it
         //defaults to node shape here.
-        //---------------------------------------------------------------
         foreach(IriId targetPredicate in shaclCoreIds.TargetPredicates)
         {
             await foreach(EncodedTriple triple in shapeGraphMatch(TermId.None, targetPredicate, TermId.None, cancellationToken).ConfigureAwait(false))
@@ -156,11 +150,9 @@ internal static class ShapeDiscovery
             }
         }
 
-        //---------------------------------------------------------------
         //Rule 4: subject of any constraint parameter.
         //A term carrying any sh:minCount, sh:datatype, ... is a shape.
         //Kind: node shape unless already known as property shape.
-        //---------------------------------------------------------------
         foreach(IriId constraintPredicate in shaclConstraintIds)
         {
             await foreach(EncodedTriple triple in shapeGraphMatch(TermId.None, constraintPredicate, TermId.None, cancellationToken).ConfigureAwait(false))
@@ -173,7 +165,6 @@ internal static class ShapeDiscovery
             }
         }
 
-        //---------------------------------------------------------------
         //Rule 5: object of a shape-referencing predicate.
         //sh:property — object is a property shape.
         //sh:node/sh:not/sh:reifierShape/sh:memberShape — object is a shape
@@ -186,7 +177,6 @@ internal static class ShapeDiscovery
         //happens in ShapePopulation, which can add builders to the
         //dictionary when it encounters a previously-unknown shape-list
         //member.
-        //---------------------------------------------------------------
         await foreach(EncodedTriple triple in shapeGraphMatch(TermId.None, shaclCoreIds.PropertyPredicate, TermId.None, cancellationToken).ConfigureAwait(false))
         {
             TermId objectTerm = triple.Object;

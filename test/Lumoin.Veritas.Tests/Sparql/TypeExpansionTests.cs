@@ -122,7 +122,7 @@ internal sealed class TypeExpansionTests
         Assert.HasCount(1, solutions, "Only the directly-typed Vehicle instance answers.");
     }
 
-    //----- Harness -----
+    //Harness.
 
     //:a type :Car; :b type :Vehicle.
     private static List<DataTriple> Data()

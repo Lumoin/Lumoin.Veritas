@@ -128,7 +128,7 @@ public static class ElClassifier
 
         private readonly record struct WorkItem(bool IsEdge, int Subject, int Atom, int Role, int Target);
 
-        //----- Normalization -----
+        //Normalization.
 
         /// <summary>Reduces the document's interpreted axioms to the EL normal forms.</summary>
         public void Normalize(OwlOntologyDocument document)
@@ -422,7 +422,7 @@ public static class ElClassifier
             }
         }
 
-        //----- Saturation -----
+        //Saturation.
 
         /// <summary>Saturates the completion rules to fixpoint over the work queue.</summary>
         public void Saturate(CancellationToken cancellationToken)
@@ -591,7 +591,7 @@ public static class ElClassifier
             }
         }
 
-        //----- Result -----
+        //Result.
 
         /// <summary>Projects the saturation onto the user-named classes.</summary>
         public ElClassification BuildResult()
@@ -631,7 +631,7 @@ public static class ElClassifier
             return new ElClassification(result, unsatisfiable, Unsupported);
         }
 
-        //----- Interning and index helpers -----
+        //Interning and index helpers.
 
         private OwlClassReference AtomReference(int atom)
         {

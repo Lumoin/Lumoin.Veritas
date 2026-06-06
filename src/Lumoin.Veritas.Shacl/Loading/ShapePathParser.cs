@@ -168,10 +168,8 @@ internal static class ShapePathParser
             $"Blank-node sh:path value {pathTerm} carries no path-operator predicate.");
     }
 
-    //-------------------------------------------------------------------
     //Sequence path — the blank node is an RDF list head; each member is a
     //sub-path.
-    //-------------------------------------------------------------------
     private static async Task<PropertyPath> ParseSequencePathAsync(
         TermId listHead,
         StorageDelegates.MatchTriplesAsync shapeGraphMatch,
@@ -192,9 +190,7 @@ internal static class ShapePathParser
         return new SequencePath(steps);
     }
 
-    //-------------------------------------------------------------------
     //Walk an RDF list of paths; parse each member as a path.
-    //-------------------------------------------------------------------
     private static async Task<ImmutableArray<PropertyPath>> ParsePathListAsync(
         TermId listHead,
         StorageDelegates.MatchTriplesAsync shapeGraphMatch,
