@@ -129,15 +129,17 @@ existing SPARQL conformance gates:
   lands.
 - Derived triples live **in the same graph** as the base (an entailment regime answers over the
   entailed graph); provenance lives in the journal and the trace bus, not in the data. This keeps
-  the per-graph composed dataset design ([`project_graph_dataset_backend`]) orthogonal, and the
-  deferred quad/order-4 dataset-index question is revisited with reasoner workloads as planned.
+  the per-graph composed dataset design orthogonal (named graphs are per-graph 3-position stores
+  composed by `SparqlDataset`, not a depth-4 quad index), and the deferred quad/order-4
+  dataset-index question is revisited with reasoner workloads as planned.
 
 ## Caveats and non-goals
 
 - **No DL reasoner.** OWL 2 RL is the ceiling for this design; DS/EL/QL profiles and tableau-style
   reasoning are explicitly out of scope.
 - **Fixpoint cost is the build cost.** Materialization rides the hypertrie's edit/commit path; the
-  hypertrie construction constraint ([`project_wcoj_construction_cost`]) applies in full, and the
+  hypertrie construction constraint applies in full (build memory and speed are hard limits —
+  avoid per-triple build-time structures), and the
   reasoner benchmarks (derivation throughput, fixpoint rounds, build-cost delta) are the
   measurement, per plan phase 5.
 - **D-entailment** reuses the SPARQL datatype machinery for value-space identity; no second

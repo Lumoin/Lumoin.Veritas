@@ -82,7 +82,8 @@ against the concrete baseline on identical hardware (Ryzen 9 7950X, .NET 10):
 | Soak, triangle queries/s (10k subjects) | 64.0 q/s | 49.8 q/s | −22.2% |
 | Allocations (all BDN cells) | — | byte-identical | 0 |
 
-dotnet-trace stacks (`tempdocs/wcoj-{baseline,delegates}.nettrace`) attribute the cost to three
+dotnet-trace stacks of the two builds (captured under `WcojQuerySoak --profile-wcoj-query`;
+local artifacts, reproducible from that instrument) attribute the cost to three
 stacked mechanisms, all per **solution row** (the driver crosses the seam ~6–8× per row: planner
 snapshot, ascend, intersect, probes, descend, reseed probes):
 
@@ -119,8 +120,7 @@ waits for the first real second backend to justify it. The decision:
 
 **Granularity is the design crux, now with a measured boundary.** Delegate seams remain right
 where they are crossed once per item with real work behind them
-([`feedback_hotpath_sync_behind_delegates`] — hashing a value, matching a whole pattern, executing
-a whole query). A seam crossed several times per solution row with property-read-sized work behind
+(hashing a value, matching a whole pattern, executing a whole query). A seam crossed several times per solution row with property-read-sized work behind
 it costs ~10–20% of the hottest path; that altitude is below the delegate line.
 
 **Higher-order composition** (delegates that take delegates) is where it earns its keep — exactly
@@ -159,15 +159,15 @@ measured at the query surface — so "does this backend win" is answerable end-t
 HoneyComb's methodology: a `cores` axis (scalability 1→N), the WCOJ query-shape
 grid (triangle / 4-loop / 4-clique / Loomis-Whitney), the share/order ablation, and **including
 index-build time in the measurement** — over our BIM-/DPP-shaped workloads
-([`project_scale_performance_target`]), against a *healthy* hypertrie baseline.
+(city-scale IFC, digital product passports, supply chains), against a *healthy* hypertrie baseline.
 
 ## Phased plan
 
 1. ~~Extract the delegate seam~~ — **done and reverted by measurement (2026-06-04)**: the
    extraction was behaviour-identical (full suite + differential property tests green) but cost
    11–22% on the hot path; the numbers and trace analysis are in the Decision section above.
-2. **Baseline captured** (2026-06-04, `tempdocs/baseline-bdn`): the BDN grid + `WcojQuerySoak`
-   rows/s numbers above are the reference any future backend or driver change measures against.
+2. **Baseline captured** (2026-06-04): the BDN grid + `WcojQuerySoak` rows/s numbers in the
+   Decision section above are the reference any future backend or driver change measures against.
 3. **Add one alternative backend as a peer store/evaluator** — start with a Sonic-style hash-trie
    (per-query build) or the CoCo columnar sorted-array (one parallel sort; SIMD-amenable), measured
    end-to-end at the query surface with build cost included.
@@ -188,13 +188,15 @@ index-build time in the measurement** — over our BIM-/DPP-shaped workloads
   part of the seam contract (`IsUpdatable`, and "build per query" vs "persistent" lifetimes).
 - **Diamond and HoneyComb are larger lifts** (an adaptive plan algebra; a parallel partitioner + a
   pessimistic cost model) — treat Seam A (index) + Seam C (filter) as the near-term, low-risk wins.
-- This dovetails with the deferred quad/order-4 **dataset** optimization, which we tied to the OWL
-  reasoner work ([`project_graph_dataset_backend`]).
+- This dovetails with the deferred quad/order-4 **dataset** optimization (named graphs stay
+  per-graph 3-position stores composed by the dataset), which we tied to the OWL reasoner work.
 
 ## References
 
-In `tempdocs/` (user-provided): `compatctltj-s00778-025-00945-5.pdf` (CLTJ),
-`sonic-join-3-paper-44.pdf` (Sonic), `diamond-p3215-birler.pdf` (Diamond),
-`SieveJoin_*.pdf`, `honeycomb-3725307.pdf` (HoneyComb, ACM DOI 10.1145/3725307), and the CLTJ C++
-reference at `tempdocs/cltj-master/` (`include/query/ltj_iterator_lite.hpp`,
-`include/query/ltj_algorithm.hpp`, `include/veo/`).
+- **CLTJ** — compact leapfrog triejoin over succinct tries (DOI 10.1007/s00778-025-00945-5), and
+  the authors' C++ reference implementation (`ltj_iterator_lite.hpp`, `ltj_algorithm.hpp`, and the
+  `veo/` variable-elimination-order module).
+- **Sonic** — hash-trie WCOJ backend built per query.
+- **Diamond** — adaptive join processing (Birler et al.).
+- **SieveJoin** — a filtering pre-pass composed before the join.
+- **HoneyComb** — parallel WCOJ partitioning (ACM DOI 10.1145/3725307).

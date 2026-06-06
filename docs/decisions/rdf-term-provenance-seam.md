@@ -2,9 +2,10 @@
 
 Status: **proposed (2026-06-03)**. Supersedes the earlier "provenance seam, consumer-blocked" framing
 of this record, which was wrong: the consumer API already exists in `..\Verifiable`, and Veritas
-already exposes every primitive it needs. Companion to the access/identity seam
-([memory `project_access_identity_seam`]) and the JSON family layering
-([memory `project_json_family_layering`]).
+already exposes every primitive it needs. Companion concerns: the planned access/identity seam
+(`AccessControlDelegate` with an opaque `AccessContext` threaded through the read paths) and the
+JSON family layering (`Lumoin.Veritas.Json` is the STJ-free value model; `Json.Stj` is the only
+System.Text.Json engine; `JsonLd` layers on the model).
 
 ## Context
 
@@ -40,14 +41,14 @@ Every piece `CanonicalizationDelegate` needs is already public and conformance-t
    conformant.)
 2. **Quads → canonical N-Quads + label map** — `RdfCanonicalizer.CanonicalizeWithMap(quads, hash)`
    (`src/Lumoin.Veritas.Canonicalization/`) → `RdfCanonicalizationResult(string Canonical,
-   IReadOnlyDictionary<string,string> IssuedIdentifiers)`. (RDFC-1.0 is conformant, automorphism gap
-   resolved — [memory `project_rdfc_automorphism_gap`].) `IssuedIdentifiers` is exactly the
+   IReadOnlyDictionary<string,string> IssuedIdentifiers)`. (RDFC-1.0 is conformant against the vendored
+   W3C rdf-canon suite, the §4.8.2 automorphism branch included.) `IssuedIdentifiers` is exactly the
    blank-node **label map** ecdsa-sd needs to join the reduced vs full canonicalizations.
 
 So `RdfCanonicalizationResult` maps one-to-one onto `CanonicalizationResult`
 (`Canonical → CanonicalForm`, `IssuedIdentifiers → LabelMap`), and `hash` is the SHA-256 seam
-(`SHA256.HashData`; the hot-path sync-behind-delegate discipline — [memory
-`feedback_hotpath_sync_behind_delegates`]). The only adapter work is two small mappings: invert
+(`SHA256.HashData`; per-item hot-path functions stay synchronous behind
+swappable delegate seams; async crypto belongs at boundaries, not value-level hashing). The only adapter work is two small mappings: invert
 `IssuedIdentifiers` (Veritas returns original→canonical; the seam documents canonical→original) and
 reconcile the `"_:"` prefix convention, and bridge Verifiable's `ContextResolverDelegate (Uri→string)`
 to Veritas's `ContextResolverDelegate`.
