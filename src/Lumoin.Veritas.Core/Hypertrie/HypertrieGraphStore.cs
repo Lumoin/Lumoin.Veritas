@@ -371,6 +371,7 @@ public sealed class HypertrieGraphStore
     /// <param name="query">The basic graph pattern.</param>
     /// <param name="timeProvider">Clock used to stamp Ticks on emitted trace events. Pass <see cref="TimeProvider.System"/> in production; tests pinning trace timing pass a <c>FakeTimeProvider</c>.</param>
     /// <param name="planner">The planner to use, or <c>null</c> to use <see cref="Planners.FirstOccurrence"/>.</param>
+    /// <param name="cardinalities">A-priori per-class upper bounds handed to the planner on every consultation, or <c>null</c> when none are known.</param>
     /// <param name="accessControl">Optional access-control policy. <c>null</c> treats every candidate as allowed.</param>
     /// <param name="accessContext">Caller-supplied access context. Required when <paramref name="accessControl"/> is non-<c>null</c>.</param>
     /// <param name="traceHandler">Optional trace handler for query-execution events.</param>
@@ -383,6 +384,7 @@ public sealed class HypertrieGraphStore
         BasicGraphPattern query,
         TimeProvider timeProvider,
         Planner? planner = null,
+        AprioriCardinalities? cardinalities = null,
         AccessControlDelegate? accessControl = null,
         AccessContext? accessContext = null,
         TraceHandler<QueryTraceEvent>? traceHandler = null,
@@ -403,6 +405,7 @@ public sealed class HypertrieGraphStore
             query,
             effectivePlanner,
             timeProvider,
+            cardinalities,
             accessControl,
             accessContext,
             traceHandler,

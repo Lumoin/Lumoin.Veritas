@@ -92,7 +92,13 @@ public sealed class ReasoningRendezvous
     /// <summary>The cached EL classification for <see cref="ClassifiedStore"/>.</summary>
     private El.ElClassification? Classification { get; set; }
 
-    /// <summary>Guards the (<see cref="ClassifiedStore"/>, <see cref="Classification"/>) pair.</summary>
+    /// <summary>The store generation the cached planner statistics describe; the same reference-as-generation-marker scheme as <see cref="ClassifiedStore"/>.</summary>
+    private HypertrieGraphStore? StatisticsStore { get; set; }
+
+    /// <summary>The cached planner statistics for <see cref="StatisticsStore"/>.</summary>
+    private Core.Hypertrie.Planning.AprioriCardinalities? Statistics { get; set; }
+
+    /// <summary>Guards the cached per-generation pairs: (<see cref="ClassifiedStore"/>, <see cref="Classification"/>) and (<see cref="StatisticsStore"/>, <see cref="Statistics"/>).</summary>
     private object ClassificationLock { get; } = new();
 
     /// <summary>
@@ -303,6 +309,60 @@ public sealed class ReasoningRendezvous
                 isBuilt ? elapsedMilliseconds : 0);
 
             traceHandler(in traceEvent);
+        }
+
+        return existing;
+    }
+
+    /// <summary>
+    /// The planner's a-priori cardinality statistics for the store's
+    /// generation — the Strategy E feed into the join layer's
+    /// <c>PlannerContext</c>: subclass closure × per-class asserted
+    /// extent counts, computed by <see cref="El.ElPlannerStatistics"/>
+    /// over the same cached classification <see cref="Classify"/>
+    /// maintains. Built once per store generation and reused until a
+    /// commit produces a successor.
+    /// </summary>
+    /// <param name="store">The store whose content the statistics describe.</param>
+    /// <param name="dictionary">The term dictionary the store's triples were encoded with.</param>
+    /// <param name="traceHandler">Optional handler receiving the classification's <see cref="ReasoningTraceEvent"/>.</param>
+    /// <param name="timeProvider">Clock for trace timestamps and cost measurement. Required when <paramref name="traceHandler"/> is non-<c>null</c>.</param>
+    /// <param name="correlationId">Correlation id stamped on emitted trace events.</param>
+    /// <param name="cancellationToken">A token that aborts classification and the statistics sweep.</param>
+    /// <returns>The statistics for this store generation.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="store"/> or <paramref name="dictionary"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">A trace handler is supplied without a time provider.</exception>
+    /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
+    public Core.Hypertrie.Planning.AprioriCardinalities PlannerStatistics(
+        HypertrieGraphStore store,
+        TermDictionary dictionary,
+        TraceHandler<ReasoningTraceEvent>? traceHandler = null,
+        TimeProvider? timeProvider = null,
+        Guid correlationId = default,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(dictionary);
+
+        Core.Hypertrie.Planning.AprioriCardinalities? existing;
+        lock(ClassificationLock)
+        {
+            existing = ReferenceEquals(StatisticsStore, store) ? Statistics : null;
+        }
+
+        if(existing is null)
+        {
+            El.ElClassification classification = Classify(store, dictionary, traceHandler, timeProvider, correlationId, cancellationToken);
+            existing = El.ElPlannerStatistics.Build(classification, store, dictionary);
+
+            lock(ClassificationLock)
+            {
+                //A racing request may have built statistics for the
+                //same generation first; either result is correct for
+                //it, so the later writer simply wins.
+                StatisticsStore = store;
+                Statistics = existing;
+            }
         }
 
         return existing;

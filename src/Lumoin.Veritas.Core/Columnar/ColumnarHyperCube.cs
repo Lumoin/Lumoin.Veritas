@@ -54,6 +54,7 @@ public static class ColumnarHyperCube
     /// <param name="degreeOfParallelism">The number of cells to run concurrently; one runs sequentially.</param>
     /// <param name="timeProvider">Clock used to stamp Ticks on emitted trace events.</param>
     /// <param name="planner">The planner to use, or <c>null</c> to use <see cref="Planners.FirstOccurrence"/>.</param>
+    /// <param name="cardinalities">A-priori per-class upper bounds handed to every cell's planner, or <c>null</c> when none are known.</param>
     /// <param name="accessControl">Optional access-control policy, consulted by every cell; the delegate must tolerate concurrent calls.</param>
     /// <param name="accessContext">Caller-supplied access context. Required when <paramref name="accessControl"/> is non-<c>null</c>.</param>
     /// <param name="traceHandler">Optional trace handler; cells emit their own driver-level events under the shared correlation id, and the handler must tolerate concurrent calls.</param>
@@ -68,6 +69,7 @@ public static class ColumnarHyperCube
         int degreeOfParallelism,
         TimeProvider timeProvider,
         Planner? planner = null,
+        AprioriCardinalities? cardinalities = null,
         AccessControlDelegate? accessControl = null,
         AccessContext? accessContext = null,
         TraceHandler<QueryTraceEvent>? traceHandler = null,
@@ -83,14 +85,14 @@ public static class ColumnarHyperCube
         {
             ColumnarBasicGraphPatternEvaluator sequential = new(
                 index, query, planner ?? Planners.FirstOccurrence(query), timeProvider,
-                accessControl, accessContext, traceHandler, correlationId);
+                cardinalities, accessControl, accessContext, traceHandler, correlationId);
 
             return sequential.EvaluateAsync(cancellationToken);
         }
 
         return QueryCore(
             index, query, degreeOfParallelism, timeProvider,
-            planner, accessControl, accessContext, traceHandler, correlationId, cancellationToken);
+            planner, cardinalities, accessControl, accessContext, traceHandler, correlationId, cancellationToken);
     }
 
     private static async IAsyncEnumerable<Solution> QueryCore(
@@ -99,6 +101,7 @@ public static class ColumnarHyperCube
         int degreeOfParallelism,
         TimeProvider timeProvider,
         Planner? planner,
+        AprioriCardinalities? cardinalities,
         AccessControlDelegate? accessControl,
         AccessContext? accessContext,
         TraceHandler<QueryTraceEvent>? traceHandler,
@@ -114,7 +117,7 @@ public static class ColumnarHyperCube
 
         Task workers = RunCellsAsync(
             index, query, shares, timeProvider,
-            planner, accessControl, accessContext, traceHandler, correlationId,
+            planner, cardinalities, accessControl, accessContext, traceHandler, correlationId,
             channel.Writer, cancellationToken);
 
         await foreach(Solution solution in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
@@ -136,6 +139,7 @@ public static class ColumnarHyperCube
         int[] shares,
         TimeProvider timeProvider,
         Planner? planner,
+        AprioriCardinalities? cardinalities,
         AccessControlDelegate? accessControl,
         AccessContext? accessContext,
         TraceHandler<QueryTraceEvent>? traceHandler,
@@ -162,7 +166,7 @@ public static class ColumnarHyperCube
                 {
                     ColumnarBasicGraphPatternEvaluator evaluator = new(
                         index, query, planner ?? Planners.FirstOccurrence(query), timeProvider,
-                        accessControl, accessContext, traceHandler, correlationId, cell);
+                        cardinalities, accessControl, accessContext, traceHandler, correlationId, cell);
 
                     await foreach(Solution solution in evaluator.EvaluateAsync(cancellationToken).ConfigureAwait(false))
                     {

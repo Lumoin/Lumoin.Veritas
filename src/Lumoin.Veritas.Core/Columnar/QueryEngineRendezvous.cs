@@ -121,6 +121,7 @@ public sealed class QueryEngineRendezvous
     /// <param name="query">The basic graph pattern.</param>
     /// <param name="timeProvider">Clock used to stamp Ticks on emitted trace events.</param>
     /// <param name="planner">The planner to use, or <c>null</c> to use <see cref="Planners.FirstOccurrence"/>.</param>
+    /// <param name="cardinalities">A-priori per-class upper bounds handed to the planner on every consultation, or <c>null</c> when none are known.</param>
     /// <param name="accessControl">Optional access-control policy. <c>null</c> treats every candidate as allowed.</param>
     /// <param name="accessContext">Caller-supplied access context. Required when <paramref name="accessControl"/> is non-<c>null</c>.</param>
     /// <param name="traceHandler">Optional trace handler for query-execution events, including the selection event.</param>
@@ -133,6 +134,7 @@ public sealed class QueryEngineRendezvous
         BasicGraphPattern query,
         TimeProvider timeProvider,
         Planner? planner = null,
+        AprioriCardinalities? cardinalities = null,
         AccessControlDelegate? accessControl = null,
         AccessContext? accessContext = null,
         TraceHandler<QueryTraceEvent>? traceHandler = null,
@@ -140,7 +142,7 @@ public sealed class QueryEngineRendezvous
         IdentifierDelegate? identifiers = null,
         CancellationToken cancellationToken = default)
     {
-        return Query(pinnedStore: null, query, timeProvider, planner, accessControl, accessContext, traceHandler, correlationId, identifiers, cancellationToken);
+        return Query(pinnedStore: null, query, timeProvider, planner, cardinalities, accessControl, accessContext, traceHandler, correlationId, identifiers, cancellationToken);
     }
 
     /// <summary>
@@ -156,6 +158,7 @@ public sealed class QueryEngineRendezvous
     /// <param name="query">The basic graph pattern.</param>
     /// <param name="timeProvider">Clock used to stamp Ticks on emitted trace events.</param>
     /// <param name="planner">The planner to use, or <c>null</c> to use <see cref="Planners.FirstOccurrence"/>.</param>
+    /// <param name="cardinalities">A-priori per-class upper bounds handed to the planner on every consultation, or <c>null</c> when none are known.</param>
     /// <param name="accessControl">Optional access-control policy. <c>null</c> treats every candidate as allowed.</param>
     /// <param name="accessContext">Caller-supplied access context. Required when <paramref name="accessControl"/> is non-<c>null</c>.</param>
     /// <param name="traceHandler">Optional trace handler for query-execution events, including the selection event.</param>
@@ -169,6 +172,7 @@ public sealed class QueryEngineRendezvous
         BasicGraphPattern query,
         TimeProvider timeProvider,
         Planner? planner = null,
+        AprioriCardinalities? cardinalities = null,
         AccessControlDelegate? accessControl = null,
         AccessContext? accessContext = null,
         TraceHandler<QueryTraceEvent>? traceHandler = null,
@@ -202,7 +206,7 @@ public sealed class QueryEngineRendezvous
                 QueryEngineKind.Hypertrie, EngineSelectionReason.SnapshotSuperseded, pinnedStore.Count, buildMilliseconds: 0);
 
             return pinnedStore.Query(
-                query, timeProvider, planner, accessControl, accessContext, traceHandler, effectiveCorrelationId, identifiers, cancellationToken);
+                query, timeProvider, planner, cardinalities, accessControl, accessContext, traceHandler, effectiveCorrelationId, identifiers, cancellationToken);
         }
 
         bool qualifies = query.Patterns.Count >= policy.MinimumPatternsForColumnar && IsColumnarCapable(query);
@@ -223,7 +227,7 @@ public sealed class QueryEngineRendezvous
                     timeProvider, traceHandler, effectiveCorrelationId,
                     QueryEngineKind.Columnar, reason, currentView.TripleCount, buildMilliseconds);
 
-                return QueryColumnar(currentView, query, planner, timeProvider, accessControl, accessContext, traceHandler, effectiveCorrelationId, cancellationToken);
+                return QueryColumnar(currentView, query, planner, cardinalities, timeProvider, accessControl, accessContext, traceHandler, effectiveCorrelationId, cancellationToken);
             }
 
             //A commit advanced the rendezvous past the generation
@@ -234,7 +238,7 @@ public sealed class QueryEngineRendezvous
                 QueryEngineKind.Hypertrie, EngineSelectionReason.SnapshotSuperseded, currentStore.Count, buildMilliseconds: 0);
 
             return currentStore.Query(
-                query, timeProvider, planner, accessControl, accessContext, traceHandler, effectiveCorrelationId, identifiers, cancellationToken);
+                query, timeProvider, planner, cardinalities, accessControl, accessContext, traceHandler, effectiveCorrelationId, identifiers, cancellationToken);
         }
 
         if(qualifies && currentView is not null)
@@ -243,7 +247,7 @@ public sealed class QueryEngineRendezvous
                 timeProvider, traceHandler, effectiveCorrelationId,
                 QueryEngineKind.Columnar, EngineSelectionReason.ViewReused, currentView.TripleCount, buildMilliseconds: 0);
 
-            return QueryColumnar(currentView, query, planner, timeProvider, accessControl, accessContext, traceHandler, effectiveCorrelationId, cancellationToken);
+            return QueryColumnar(currentView, query, planner, cardinalities, timeProvider, accessControl, accessContext, traceHandler, effectiveCorrelationId, cancellationToken);
         }
 
         EmitEngineSelected(
@@ -254,6 +258,7 @@ public sealed class QueryEngineRendezvous
             query,
             timeProvider,
             planner,
+            cardinalities,
             accessControl,
             accessContext,
             traceHandler,
@@ -330,6 +335,7 @@ public sealed class QueryEngineRendezvous
         ColumnarTripleIndex view,
         BasicGraphPattern query,
         Planner? planner,
+        AprioriCardinalities? cardinalities,
         TimeProvider timeProvider,
         AccessControlDelegate? accessControl,
         AccessContext? accessContext,
@@ -345,6 +351,7 @@ public sealed class QueryEngineRendezvous
             policy.DegreeOfParallelism,
             timeProvider,
             planner,
+            cardinalities,
             accessControl,
             accessContext,
             traceHandler,

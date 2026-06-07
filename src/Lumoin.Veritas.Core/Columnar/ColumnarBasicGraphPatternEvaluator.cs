@@ -51,6 +51,9 @@ public sealed class ColumnarBasicGraphPatternEvaluator
 
     private readonly Planner planner;
 
+    /// <summary>A-priori per-class upper bounds for the planner, or <c>null</c> when the caller supplied none. Stable for the index's generation; handed to the planner unchanged on every consultation.</summary>
+    private AprioriCardinalities? Cardinalities { get; }
+
     /// <summary>The HyperCube cell this evaluator owns; the unpartitioned default accepts every key. Parallel execution runs one evaluator per cell over the shared immutable index.</summary>
     private HyperCubeCell Cell { get; }
 
@@ -83,6 +86,7 @@ public sealed class ColumnarBasicGraphPatternEvaluator
     /// <param name="query">The basic graph pattern.</param>
     /// <param name="planner">The variable-elimination planner.</param>
     /// <param name="timeProvider">Clock used to stamp Ticks on emitted trace events. Pass <see cref="TimeProvider.System"/> in production; tests pinning trace timing pass a <c>FakeTimeProvider</c>.</param>
+    /// <param name="cardinalities">A-priori per-class upper bounds handed to the planner on every consultation, or <c>null</c> when none are known.</param>
     /// <param name="accessControl">Optional access-control policy. <c>null</c> treats every candidate as allowed.</param>
     /// <param name="accessContext">Caller-supplied access context, threaded into every access-control consultation. Required when <paramref name="accessControl"/> is non-<c>null</c>; ignored when <c>null</c>.</param>
     /// <param name="traceHandler">Optional trace handler for query-execution events.</param>
@@ -95,6 +99,7 @@ public sealed class ColumnarBasicGraphPatternEvaluator
         BasicGraphPattern query,
         Planner planner,
         TimeProvider timeProvider,
+        AprioriCardinalities? cardinalities = null,
         AccessControlDelegate? accessControl = null,
         AccessContext? accessContext = null,
         TraceHandler<QueryTraceEvent>? traceHandler = null,
@@ -114,6 +119,7 @@ public sealed class ColumnarBasicGraphPatternEvaluator
         this.index = index;
         this.query = query;
         this.planner = planner;
+        Cardinalities = cardinalities;
         this.timeProvider = timeProvider;
         this.accessControl = accessControl;
         this.accessContext = accessContext;
@@ -654,7 +660,7 @@ public sealed class ColumnarBasicGraphPatternEvaluator
                 DescendedLevels: iterator.DescendedLevels);
         }
 
-        return new PlannerContext(query, bindings, iteratorSnapshots, recentDenials);
+        return new PlannerContext(query, bindings, iteratorSnapshots, recentDenials, Cardinalities);
     }
 
     //Projects the global first-occurrence variable order onto a
