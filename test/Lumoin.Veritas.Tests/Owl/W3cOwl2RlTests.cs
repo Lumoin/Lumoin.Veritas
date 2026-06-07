@@ -4,6 +4,7 @@ using System.Text;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Encoding;
+using Lumoin.Veritas.Owl;
 using Lumoin.Veritas.Owl.Rl;
 using Lumoin.Veritas.Tests.Conformance;
 using Lumoin.Veritas.Xml;
@@ -31,21 +32,20 @@ internal sealed class W3cOwl2RlTests
 
     /// <summary>
     /// Tests whose conclusions lie beyond the RL/RDF rules calculus,
-    /// recorded as self-correcting known gaps. Two clusters: complement
-    /// conclusions requiring contrapositive reasoning (the
+    /// recorded as self-correcting known gaps. One cluster remains:
+    /// complement conclusions requiring contrapositive reasoning (the
     /// DisjointClasses/DisjointProperties/QCR families,
     /// <c>fp/ifp-differentFrom</c>) — the rules are complete for
     /// assertional consequences only (Profiles §4.3, Theorem PR1); a
-    /// refutation core over the locality module is the planned closer —
-    /// and comprehension-principle conclusions (<c>I5.26-010</c>,
-    /// <c>I5.5-005</c>: a class-expression node entailed to exist by no
-    /// asserted axiom), which the OWL 2 RDF-Based Semantics carries only
-    /// in its informative comprehension-conditions appendix, so deriving
-    /// them would claim more than the normative semantics does. The
-    /// trans⇄chain pair (<c>chain2trans1</c> and its dual
-    /// <c>New-Feature-ObjectPropertyChain-BJP-002</c>) closed via the
-    /// <c>chain-trans</c>/<c>trans-chain</c> extension rules. A run fails
-    /// if a listed test starts passing.
+    /// refutation core over the locality module is the planned closer.
+    /// The trans⇄chain pair closed via the
+    /// <c>chain-trans</c>/<c>trans-chain</c> extension rules, and the
+    /// comprehension pair (<c>I5.26-010</c>, <c>I5.5-005</c>) via the
+    /// entailment check's
+    /// <see cref="OwlComprehension.InformativeConditions"/> mode — the
+    /// closure never materialises comprehension; the checker grants
+    /// pure-existence expression scaffolds exactly. A run fails if a
+    /// listed test starts passing.
     /// </summary>
     private static HashSet<string> KnownGaps { get; } =
     [
@@ -55,8 +55,6 @@ internal sealed class W3cOwl2RlTests
         "New-Feature-DisjointObjectProperties-001",
         "New-Feature-DisjointObjectProperties-002",
         "New-Feature-ObjectQCR-002",
-        "WebOnt-I5.26-010",
-        "WebOnt-I5.5-005",
         "owl2-rl-rules-fp-differentFrom",
         "owl2-rl-rules-ifp-differentFrom",
     ];
@@ -137,7 +135,9 @@ internal sealed class W3cOwl2RlTests
 
         //Entailment: the conclusion graph embeds into the closure (positive)
         //or must not (negative). The closure is the premise plus everything
-        //derived, decoded back to terms.
+        //derived, decoded back to terms. The comprehension mode matches the
+        //corpus's WebOnt heritage: pure-existence expression scaffolds are
+        //granted by the checker, never materialised by the closure.
         if(testCase.Kinds.Contains("PositiveEntailmentTest")
             && LoadQuads(testCase, testCase.RdfXmlConclusion, testCase.FunctionalConclusion) is List<Quad> conclusionQuads)
         {
@@ -145,10 +145,12 @@ internal sealed class W3cOwl2RlTests
 
             if(isKnownGap)
             {
-                AssertKnownGap(testCase, holds: Embeds(conclusionQuads, closure));
+                AssertKnownGap(testCase, holds: OwlGraphEntailment.Embeds(conclusionQuads, closure, OwlComprehension.InformativeConditions));
             }
 
-            Assert.IsTrue(Embeds(conclusionQuads, closure), $"{testCase.Identifier}: the conclusion does not embed into the RL closure.");
+            Assert.IsTrue(
+                OwlGraphEntailment.Embeds(conclusionQuads, closure, OwlComprehension.InformativeConditions),
+                $"{testCase.Identifier}: the conclusion does not embed into the RL closure.");
         }
 
         if(testCase.Kinds.Contains("NegativeEntailmentTest")
@@ -156,7 +158,9 @@ internal sealed class W3cOwl2RlTests
         {
             List<Quad> closure = DecodeUnion(premiseQuads, result, dictionary);
 
-            Assert.IsFalse(Embeds(nonConclusionQuads, closure), $"{testCase.Identifier}: the non-conclusion embeds into the RL closure but must not.");
+            Assert.IsFalse(
+                OwlGraphEntailment.Embeds(nonConclusionQuads, closure, OwlComprehension.InformativeConditions),
+                $"{testCase.Identifier}: the non-conclusion embeds into the RL closure but must not.");
         }
     }
 
@@ -237,113 +241,4 @@ internal sealed class W3cOwl2RlTests
         return closure;
     }
 
-    /// <summary>
-    /// Whether <paramref name="pattern"/> embeds into <paramref name="data"/>
-    /// by subgraph homomorphism: blank nodes bind existentially and
-    /// consistently, named nodes and literals match by value. Iterative
-    /// backtracking over an explicit frame stack.
-    /// </summary>
-    /// <param name="pattern">The graph to embed (the conclusion).</param>
-    /// <param name="data">The graph embedded into (the closure).</param>
-    /// <returns><see langword="true"/> when an embedding exists.</returns>
-    private static bool Embeds(List<Quad> pattern, List<Quad> data)
-    {
-        if(pattern.Count == 0)
-        {
-            return true;
-        }
-
-        Dictionary<Utf8String, RdfTerm> bindings = [];
-        List<List<Utf8String>> boundAt = [];
-        int[] candidate = new int[pattern.Count];
-        int level = 0;
-
-        while(true)
-        {
-            if(level == pattern.Count)
-            {
-                return true;
-            }
-
-            if(boundAt.Count == level)
-            {
-                boundAt.Add([]);
-            }
-
-            bool advanced = false;
-            for(int i = candidate[level]; i < data.Count; i++)
-            {
-                List<Utf8String> newlyBound = boundAt[level];
-                if(Matches(pattern[level], data[i], bindings, newlyBound))
-                {
-                    candidate[level] = i + 1;
-                    level++;
-                    advanced = true;
-
-                    break;
-                }
-            }
-
-            if(advanced)
-            {
-                continue;
-            }
-
-            //Exhausted this level: undo its bindings and backtrack.
-            candidate[level] = 0;
-            level--;
-            if(level < 0)
-            {
-                return false;
-            }
-
-            foreach(Utf8String label in boundAt[level])
-            {
-                bindings.Remove(label);
-            }
-
-            boundAt[level].Clear();
-        }
-    }
-
-    //Tries to match one pattern triple against one data triple under the
-    //current bindings; records the labels this match newly bound so the
-    //caller can undo them on backtrack.
-    private static bool Matches(Quad pattern, Quad data, Dictionary<Utf8String, RdfTerm> bindings, List<Utf8String> newlyBound)
-    {
-        int rollback = newlyBound.Count;
-
-        if(MatchTerm(pattern.Subject, data.Subject, bindings, newlyBound)
-            && MatchTerm(pattern.Predicate, data.Predicate, bindings, newlyBound)
-            && MatchTerm(pattern.Object, data.Object, bindings, newlyBound))
-        {
-            return true;
-        }
-
-        for(int i = newlyBound.Count - 1; i >= rollback; i--)
-        {
-            bindings.Remove(newlyBound[i]);
-            newlyBound.RemoveAt(i);
-        }
-
-        return false;
-    }
-
-    private static bool MatchTerm(RdfTerm pattern, RdfTerm data, Dictionary<Utf8String, RdfTerm> bindings, List<Utf8String> newlyBound)
-    {
-        if(pattern is BlankNode blank)
-        {
-            if(bindings.TryGetValue(blank.Label, out RdfTerm? bound))
-            {
-                return bound.Equals(data);
-            }
-
-            bindings[blank.Label] = data;
-            newlyBound.Add(blank.Label);
-
-            return true;
-        }
-
-        return pattern.Equals(data);
-    }
 }
