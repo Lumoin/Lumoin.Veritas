@@ -557,6 +557,18 @@ public static class OwlRlClosure
                             Add(x, p, z, EntailmentRules.PrpTrp, [typing, Fact(x, p, y), Fact(y, p, z)]);
                         }
                     }
+
+                    //trans-chain: transitivity states exactly the chain
+                    //p ∘ p ⊑ p, so the structure materialises — on
+                    //deterministic list nodes, the same ones every round,
+                    //which keeps the fixpoint idempotent.
+                    TermId head = Terms.TransitivityChainNode(p, 0);
+                    TermId tail = Terms.TransitivityChainNode(p, 1);
+                    Add(p, Terms.PropertyChainAxiom, head, EntailmentRules.TransitivityChain, [typing]);
+                    Add(head, Terms.First, p, EntailmentRules.TransitivityChain, [typing]);
+                    Add(head, Terms.Rest, tail, EntailmentRules.TransitivityChain, [typing]);
+                    Add(tail, Terms.First, p, EntailmentRules.TransitivityChain, [typing]);
+                    Add(tail, Terms.Rest, Terms.Nil, EntailmentRules.TransitivityChain, [typing]);
                 }
                 else if(characteristic == Terms.ReflexiveProperty)
                 {
@@ -590,6 +602,28 @@ public static class OwlRlClosure
                 }
 
                 EncodedTriple chainAxiom = Fact(p, Terms.PropertyChainAxiom, listHead);
+
+                //chain-trans: a chain p ∘ p ⊑ p is exactly transitivity,
+                //so the typing materialises; the premises carry the full
+                //list structure the conclusion reads from.
+                if(chain.Count == 2 && chain[0] == p && chain[1] == p)
+                {
+                    List<EncodedTriple> structure = [chainAxiom];
+                    TermId node = listHead;
+                    for(int i = 0; i < chain.Count; i++)
+                    {
+                        structure.Add(Fact(node, Terms.First, chain[i]));
+                        foreach(TermId rest in ObjectsOf(node, Terms.Rest))
+                        {
+                            structure.Add(Fact(node, Terms.Rest, rest));
+                            node = rest;
+
+                            break;
+                        }
+                    }
+
+                    Add(p, Terms.Type, Terms.TransitiveProperty, EntailmentRules.ChainTransitivity, [.. structure]);
+                }
 
                 //Walk the chain link by link, extending the frontier of
                 //(start, current) pairs; each pair carries the hop triples

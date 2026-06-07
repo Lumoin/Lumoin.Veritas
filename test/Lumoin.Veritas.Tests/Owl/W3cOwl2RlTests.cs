@@ -31,27 +31,29 @@ internal sealed class W3cOwl2RlTests
 
     /// <summary>
     /// Tests whose conclusions lie beyond the RL/RDF rules calculus,
-    /// recorded as self-correcting known gaps: TBox-axiom conclusions
-    /// (<c>chain2trans1</c> and its dual
-    /// <c>New-Feature-ObjectPropertyChain-BJP-002</c>, which concludes a
-    /// <c>propertyChainAxiom</c> structure from transitivity),
-    /// complement-class conclusions requiring
-    /// contrapositive reasoning (the DisjointClasses/DisjointProperties/QCR
-    /// families, <c>fp/ifp-differentFrom</c>), and tautological
-    /// class-expression-existence conclusions (<c>I5.26-010</c>,
-    /// <c>I5.5-005</c>). The rules are complete for assertional consequences
-    /// only (Profiles §4.3, Theorem PR1); a run fails if a listed test
-    /// starts passing.
+    /// recorded as self-correcting known gaps. Two clusters: complement
+    /// conclusions requiring contrapositive reasoning (the
+    /// DisjointClasses/DisjointProperties/QCR families,
+    /// <c>fp/ifp-differentFrom</c>) — the rules are complete for
+    /// assertional consequences only (Profiles §4.3, Theorem PR1); a
+    /// refutation core over the locality module is the planned closer —
+    /// and comprehension-principle conclusions (<c>I5.26-010</c>,
+    /// <c>I5.5-005</c>: a class-expression node entailed to exist by no
+    /// asserted axiom), which the OWL 2 RDF-Based Semantics carries only
+    /// in its informative comprehension-conditions appendix, so deriving
+    /// them would claim more than the normative semantics does. The
+    /// trans⇄chain pair (<c>chain2trans1</c> and its dual
+    /// <c>New-Feature-ObjectPropertyChain-BJP-002</c>) closed via the
+    /// <c>chain-trans</c>/<c>trans-chain</c> extension rules. A run fails
+    /// if a listed test starts passing.
     /// </summary>
     private static HashSet<string> KnownGaps { get; } =
     [
-        "chain2trans1",
         "DisjointClasses-001",
         "DisjointClasses-003",
         "New-Feature-DisjointDataProperties-002",
         "New-Feature-DisjointObjectProperties-001",
         "New-Feature-DisjointObjectProperties-002",
-        "New-Feature-ObjectPropertyChain-BJP-002",
         "New-Feature-ObjectQCR-002",
         "WebOnt-I5.26-010",
         "WebOnt-I5.5-005",

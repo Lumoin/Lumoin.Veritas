@@ -179,6 +179,24 @@ public sealed class OwlRlTerms
     /// </summary>
     public IReadOnlyList<(TermId SubType, TermId SuperType)> DatatypeHierarchy { get; }
 
+    /// <summary>The dictionary the vocabulary resolved through; the extension rules mint their deterministic structure nodes with it.</summary>
+    private TermDictionary Dictionary { get; }
+
+    /// <summary>
+    /// The deterministic list node at <paramref name="position"/> of the
+    /// <c>trans-chain</c> extension structure for
+    /// <paramref name="property"/>. Content-derived labels make the
+    /// derivation idempotent across rounds — the same property always
+    /// yields the same nodes, so the fixpoint terminates.
+    /// </summary>
+    /// <param name="property">The transitive property the chain is for.</param>
+    /// <param name="position">The zero-based position in the two-link chain list.</param>
+    /// <returns>The minted node identifier.</returns>
+    internal TermId TransitivityChainNode(TermId property, int position)
+    {
+        return Dictionary.GetOrAdd((RdfTerm)new BlankNode(Utf8String.FromString($"rl-trans-chain-{property.Encoded}-{position}")));
+    }
+
     /// <summary>
     /// Resolves the full RL vocabulary through the dictionary.
     /// </summary>
@@ -188,6 +206,7 @@ public sealed class OwlRlTerms
     {
         ArgumentNullException.ThrowIfNull(dictionary);
 
+        Dictionary = dictionary;
         Type = dictionary.GetOrAdd(new NamedNode(Vocabulary.Rdf.Type));
         First = dictionary.GetOrAdd(new NamedNode(RdfVocabulary.Rdf.First));
         Rest = dictionary.GetOrAdd(new NamedNode(RdfVocabulary.Rdf.Rest));

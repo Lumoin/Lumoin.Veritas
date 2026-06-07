@@ -224,6 +224,21 @@ public static class EntailmentRules
     /// </summary>
     public const string DtRangeIntersection = "dt-range-intersection";
 
+    /// <summary>
+    /// Extension beyond the §4.3 tables: a property chain
+    /// <c>p ∘ p ⊑ p</c> states exactly transitivity, so the
+    /// <c>owl:TransitiveProperty</c> typing materialises from the chain.
+    /// </summary>
+    public const string ChainTransitivity = "chain-trans";
+
+    /// <summary>
+    /// Extension beyond the §4.3 tables: transitivity states exactly the
+    /// chain <c>p ∘ p ⊑ p</c>, so the chain structure materialises from
+    /// the typing — on deterministic list nodes, keeping the fixpoint
+    /// idempotent.
+    /// </summary>
+    public const string TransitivityChain = "trans-chain";
+
     //OWL 2 RL/RDF rules, Table 9 (schema).
 
     /// <summary>scm-cls — every declared class is its own sub- and equivalent class, below <c>owl:Thing</c> and above <c>owl:Nothing</c>.</summary>
