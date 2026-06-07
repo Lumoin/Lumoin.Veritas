@@ -93,6 +93,37 @@ internal sealed class SparqlUpdateExecutorTests
     }
 
     [TestMethod]
+    public async Task ModifyWhereEvaluatesServiceThroughTheFederationSeam()
+    {
+        using Utf8StringPool pool = new();
+        MutableSparqlDataset dataset = await EmptyDatasetAsync().ConfigureAwait(false);
+
+        //The remote endpoint: a self-contained engine reached through
+        //the in-process transport — the same seam an HTTP transport
+        //implements.
+        SparqlQueryEngine remote = await SparqlQueryEngine.BuildAsync(
+            [new DataTriple(new NamedNode(Utf8String.FromString("urn:remote-s")), new NamedNode(Utf8String.FromString("urn:remote-p")), new NamedNode(Utf8String.FromString("urn:remote-o")))],
+            cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+        Federation.SparqlTestEndpoint endpoint = new("remote", remote);
+        SparqlClient serviceClient = new((_, query, _, cancellationToken) => endpoint.ExecuteAsync(query, cancellationToken));
+
+        SparqlUpdateRequest request = ParseAndNormalize(
+            "INSERT { ?s ?p ?o } WHERE { SERVICE <http://remote.example/sparql> { ?s ?p ?o } }",
+            pool);
+        await SparqlUpdateExecutor.ExecuteAsync(
+            request,
+            dataset,
+            SparqlExpressionContext.CreateDefault(),
+            serviceClient: serviceClient,
+            cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+
+        List<Quad> quads = DumpQuads(dataset);
+        Assert.HasCount(1, quads);
+        Assert.AreEqual("urn:remote-s", ((NamedNode)quads[0].Subject).Iri.ToString());
+        Assert.AreEqual("urn:remote-o", ((NamedNode)quads[0].Object).Iri.ToString());
+    }
+
+    [TestMethod]
     public async Task InsertDataAddsToDefaultGraph()
     {
         using Utf8StringPool pool = new();

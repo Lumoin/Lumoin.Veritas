@@ -48,13 +48,15 @@ public static class SparqlUpdateExecutor
     /// <param name="dataset">The mutable dataset to apply the operations to.</param>
     /// <param name="context">The expression context the modify <c>WHERE</c> evaluation consumes.</param>
     /// <param name="graphSource">The resolver that <c>LOAD</c> fetches a source document's triples through; <see langword="null"/> makes a non-<c>SILENT</c> <c>LOAD</c> raise <see cref="NotSupportedException"/>.</param>
-    /// <param name="accessContext">The opaque access context forwarded to <paramref name="graphSource"/> so a <c>LOAD</c> across a trust boundary can authorize the fetch; <see langword="null"/> when none.</param>
+    /// <param name="serviceClient">The transport a <c>SERVICE</c> step inside a modify's <c>WHERE</c> uses; <see langword="null"/> means a non-silent <c>SERVICE</c> raises <see cref="NotSupportedException"/>.</param>
+    /// <param name="accessControl">The access-control policy the modify <c>WHERE</c> evaluation consults per candidate triple; <see langword="null"/> allows every triple.</param>
+    /// <param name="accessContext">The opaque access context forwarded to <paramref name="graphSource"/>, <paramref name="serviceClient"/>, and <paramref name="accessControl"/>; <see langword="null"/> when none.</param>
     /// <param name="cancellationToken">A token that aborts execution.</param>
     /// <returns>The asynchronous execution.</returns>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
     /// <exception cref="NotSupportedException">A non-<c>SILENT</c> <c>LOAD</c> was reached with no <paramref name="graphSource"/>.</exception>
     /// <exception cref="EditSessionConcurrencyException">Another request committed concurrently; retry against the new state.</exception>
-    public static async Task ExecuteAsync(SparqlUpdateRequest request, MutableSparqlDataset dataset, SparqlExpressionContext context, GraphSourceResolver? graphSource = null, AccessContext? accessContext = null, CancellationToken cancellationToken = default)
+    public static async Task ExecuteAsync(SparqlUpdateRequest request, MutableSparqlDataset dataset, SparqlExpressionContext context, GraphSourceResolver? graphSource = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(dataset);
@@ -68,7 +70,7 @@ public static class SparqlUpdateExecutor
         {
             for(int operationScope = 0; operationScope < request.Operations.Count; operationScope++)
             {
-                await ApplyAsync(request.Operations[operationScope], session, context, graphSource, accessContext, operationScope, cancellationToken).ConfigureAwait(false);
+                await ApplyAsync(request.Operations[operationScope], session, context, graphSource, serviceClient, accessControl, accessContext, operationScope, cancellationToken).ConfigureAwait(false);
             }
 
             await session.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -84,17 +86,19 @@ public static class SparqlUpdateExecutor
     /// <param name="session">The open dataset edit session.</param>
     /// <param name="context">The expression context.</param>
     /// <param name="graphSource">The <c>LOAD</c> source resolver, or <see langword="null"/>.</param>
-    /// <param name="accessContext">The opaque access context forwarded to <c>LOAD</c>'s resolver, or <see langword="null"/>.</param>
+    /// <param name="serviceClient">The <c>SERVICE</c> transport for modify <c>WHERE</c> evaluation, or <see langword="null"/>.</param>
+    /// <param name="accessControl">The access-control policy for modify <c>WHERE</c> evaluation, or <see langword="null"/>.</param>
+    /// <param name="accessContext">The opaque access context forwarded to the seams, or <see langword="null"/>.</param>
     /// <param name="operationScope">The operation's index, scoping its blank-node instantiation.</param>
     /// <param name="cancellationToken">A token that aborts execution.</param>
     /// <returns>The asynchronous application.</returns>
-    private static Task ApplyAsync(UpdateOperation operation, DatasetEditSession session, SparqlExpressionContext context, GraphSourceResolver? graphSource, AccessContext? accessContext, int operationScope, CancellationToken cancellationToken)
+    private static Task ApplyAsync(UpdateOperation operation, DatasetEditSession session, SparqlExpressionContext context, GraphSourceResolver? graphSource, SparqlClient? serviceClient, AccessControlDelegate? accessControl, AccessContext? accessContext, int operationScope, CancellationToken cancellationToken)
         => operation switch
         {
             InsertDataOperation insert => ApplyDataAsync(insert.Data, session, add: true, operationScope, cancellationToken),
             DeleteDataOperation delete => ApplyDataAsync(delete.Data, session, add: false, operationScope, cancellationToken),
-            DeleteWhereOperation deleteWhere => ApplyModifyAsync(deleteWhere.Pattern, insert: null, QuadsToWhere(deleteWhere.Pattern), withGraph: null, session.Snapshot(), session, context, operationScope, cancellationToken),
-            ModifyOperation modify => ApplyModifyOperationAsync(modify, session, context, operationScope, cancellationToken),
+            DeleteWhereOperation deleteWhere => ApplyModifyAsync(deleteWhere.Pattern, insert: null, QuadsToWhere(deleteWhere.Pattern), withGraph: null, session.Snapshot(), session, context, serviceClient, accessControl, accessContext, operationScope, cancellationToken),
+            ModifyOperation modify => ApplyModifyOperationAsync(modify, session, context, serviceClient, accessControl, accessContext, operationScope, cancellationToken),
             ClearOperation clear => ClearTargetsAsync(clear.Target, session, dropNamed: false, cancellationToken),
             DropOperation drop => ClearTargetsAsync(drop.Target, session, dropNamed: true, cancellationToken),
             CreateOperation create => ApplyCreateAsync(create, session, cancellationToken),
@@ -134,17 +138,20 @@ public static class SparqlUpdateExecutor
     /// <param name="modify">The modify operation.</param>
     /// <param name="session">The open session.</param>
     /// <param name="context">The expression context.</param>
+    /// <param name="serviceClient">The <c>SERVICE</c> transport for the WHERE evaluation, or <see langword="null"/>.</param>
+    /// <param name="accessControl">The access-control policy for the WHERE evaluation, or <see langword="null"/>.</param>
+    /// <param name="accessContext">The opaque access context, or <see langword="null"/>.</param>
     /// <param name="operationScope">The operation's index, scoping its blank-node instantiation.</param>
     /// <param name="cancellationToken">A token that aborts execution.</param>
     /// <returns>The asynchronous application.</returns>
-    private static async Task ApplyModifyOperationAsync(ModifyOperation modify, DatasetEditSession session, SparqlExpressionContext context, int operationScope, CancellationToken cancellationToken)
+    private static async Task ApplyModifyOperationAsync(ModifyOperation modify, DatasetEditSession session, SparqlExpressionContext context, SparqlClient? serviceClient, AccessControlDelegate? accessControl, AccessContext? accessContext, int operationScope, CancellationToken cancellationToken)
     {
         //USING / USING NAMED override the query dataset the WHERE matches; otherwise WITH names the WHERE's default
         //graph; otherwise the WHERE sees the whole working state. WITH also retargets unqualified template triples.
         SparqlDataset whereDataset = await BuildWhereDatasetAsync(modify, session, cancellationToken).ConfigureAwait(false);
         RdfTerm? withGraph = modify.With is IriRef with ? new NamedNode(with.Value) : null;
 
-        await ApplyModifyAsync(modify.Delete, modify.Insert, modify.Where, withGraph, whereDataset, session, context, operationScope, cancellationToken).ConfigureAwait(false);
+        await ApplyModifyAsync(modify.Delete, modify.Insert, modify.Where, withGraph, whereDataset, session, context, serviceClient, accessControl, accessContext, operationScope, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Evaluates the <c>WHERE</c> against <paramref name="whereDataset"/>, then applies the delete and insert templates per solution (delete-before-insert), retargeting unqualified triples to <paramref name="withGraph"/> when present.</summary>
@@ -155,13 +162,17 @@ public static class SparqlUpdateExecutor
     /// <param name="whereDataset">The dataset the WHERE matches against.</param>
     /// <param name="session">The open session the deltas stage into.</param>
     /// <param name="context">The expression context.</param>
+    /// <param name="serviceClient">The <c>SERVICE</c> transport for the WHERE evaluation, or <see langword="null"/>.</param>
+    /// <param name="accessControl">The access-control policy for the WHERE evaluation, or <see langword="null"/>.</param>
+    /// <param name="accessContext">The opaque access context, or <see langword="null"/>.</param>
     /// <param name="operationScope">The operation's index, scoping its blank-node instantiation.</param>
     /// <param name="cancellationToken">A token that aborts execution.</param>
     /// <returns>The asynchronous application.</returns>
-    private static async Task ApplyModifyAsync(Quads? delete, Quads? insert, GroupGraphPattern where, RdfTerm? withGraph, SparqlDataset whereDataset, DatasetEditSession session, SparqlExpressionContext context, int operationScope, CancellationToken cancellationToken)
+    private static async Task ApplyModifyAsync(Quads? delete, Quads? insert, GroupGraphPattern where, RdfTerm? withGraph, SparqlDataset whereDataset, DatasetEditSession session, SparqlExpressionContext context, SparqlClient? serviceClient, AccessControlDelegate? accessControl, AccessContext? accessContext, int operationScope, CancellationToken cancellationToken)
     {
-        //Evaluate WHERE against the pre-operation working state, through the engine's public surface.
-        SparqlQueryEngine engine = new(whereDataset, session.Dictionary, context);
+        //Evaluate WHERE against the pre-operation working state, through the engine's public surface — the same
+        //federation, access-control, and access-context seams a standalone query gets.
+        SparqlQueryEngine engine = new(whereDataset, session.Dictionary, context, serviceClient, accessControl, accessContext);
         AlgebraOperator algebra = SparqlTranslator.Translate(WrapAsSelect(where));
         IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, cancellationToken).ConfigureAwait(false);
 
