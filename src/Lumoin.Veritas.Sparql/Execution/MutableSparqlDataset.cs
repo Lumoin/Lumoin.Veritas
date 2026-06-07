@@ -150,6 +150,16 @@ public sealed class MutableSparqlDataset
     /// </summary>
     public QueryEngineRendezvous DefaultGraphRendezvous { get; }
 
+    /// <summary>
+    /// The long-lived rendezvous for the named graphs: one shared
+    /// columnar graph set per committed generation, materialised
+    /// lazily and dropped when a commit changes any named graph.
+    /// Snapshots carry their <see cref="DatasetState"/> as the
+    /// generation token; open sessions carry a never-matching token
+    /// so mid-request reads always answer on the working stores.
+    /// </summary>
+    public GraphSetRendezvous NamedGraphRendezvous { get; }
+
     /// <summary>Constructs the dataset over its initial committed state. Called by <see cref="CreateAsync"/>; consumers do not call this directly.</summary>
     /// <param name="dictionary">The shared term dictionary.</param>
     /// <param name="arena">The shared node arena.</param>
@@ -172,6 +182,28 @@ public sealed class MutableSparqlDataset
         JournalRead = journalRead;
         Current = initial;
         DefaultGraphRendezvous = new QueryEngineRendezvous(initial.DefaultGraph, QueryEnginePolicy.Default);
+        NamedGraphRendezvous = new GraphSetRendezvous(initial, () => CollectGraphSetSource(initial), QueryEnginePolicy.Default);
+    }
+
+    /// <summary>
+    /// A generation's lazy graph-set build source: every named
+    /// graph's triples, read through the state's minted views.
+    /// </summary>
+    /// <param name="state">The committed state the set describes.</param>
+    /// <returns>The named graphs' triples keyed by graph id.</returns>
+    private static Dictionary<TermId, IEnumerable<EncodedTriple>> CollectGraphSetSource(DatasetState state)
+    {
+        Dictionary<TermId, IEnumerable<EncodedTriple>> graphs = new(state.Directory.Count);
+        foreach(TermId graph in state.Directory.Keys)
+        {
+            HypertrieGraphStore? store = state.ResolveNamed(graph);
+            if(store is not null)
+            {
+                graphs[graph] = store.Match(TermId.None, TermId.None, TermId.None);
+            }
+        }
+
+        return graphs;
     }
 
     /// <summary>
@@ -326,7 +358,7 @@ public sealed class MutableSparqlDataset
     {
         DatasetState state = CurrentState();
 
-        return new SparqlDataset(state.DefaultGraph, [.. state.Directory.Keys], state.ResolveNamed, DefaultGraphRendezvous);
+        return new SparqlDataset(state.DefaultGraph, [.. state.Directory.Keys], state.ResolveNamed, DefaultGraphRendezvous, NamedGraphRendezvous, state);
     }
 
     /// <summary>Whether the committed state has a named graph for a graph name. Never mints a store.</summary>
@@ -414,7 +446,8 @@ public sealed class MutableSparqlDataset
         DatasetState state,
         bool defaultGraphChanged,
         IReadOnlyCollection<EncodedTriple> defaultAdditions,
-        IReadOnlyCollection<EncodedTriple> defaultRemovals)
+        IReadOnlyCollection<EncodedTriple> defaultRemovals,
+        bool namedGraphsChanged)
     {
         lock(StateLock)
         {
@@ -424,6 +457,14 @@ public sealed class MutableSparqlDataset
         if(defaultGraphChanged)
         {
             DefaultGraphRendezvous.Advance(state.DefaultGraph, defaultAdditions, defaultRemovals);
+        }
+
+        if(namedGraphsChanged)
+        {
+            //The shared graph set described the previous generation;
+            //drop it and rebuild lazily from the new state on the
+            //next qualifying named-graph join.
+            NamedGraphRendezvous.Advance(state, () => CollectGraphSetSource(state));
         }
     }
 

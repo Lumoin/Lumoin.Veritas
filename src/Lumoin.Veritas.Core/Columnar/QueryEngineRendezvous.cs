@@ -297,7 +297,7 @@ public sealed class QueryEngineRendezvous
     /// </summary>
     /// <param name="query">The basic graph pattern.</param>
     /// <returns><see langword="true"/> when every pattern is columnar-evaluable.</returns>
-    private static bool IsColumnarCapable(BasicGraphPattern query)
+    internal static bool IsColumnarCapable(BasicGraphPattern query)
     {
         foreach(TriplePattern pattern in query.Patterns)
         {

@@ -566,10 +566,12 @@ public sealed class SparqlQueryEngine
         {
             //Default-graph patterns route through the engine
             //rendezvous, which pins this snapshot's store; named
-            //graphs query their store directly.
+            //graphs route through the graph-set rendezvous — the
+            //shared columnar arena over all named graphs — with the
+            //same pinned-store fallback discipline.
             QueryEngineRendezvous? rendezvous = graph.IsNone ? dataset.DefaultGraphRendezvous : null;
 
-            return await EvaluateBgpAsync(bgp, graphStore, rendezvous, cancellationToken).ConfigureAwait(false);
+            return await EvaluateBgpAsync(bgp, graphStore, rendezvous, graph, cancellationToken).ConfigureAwait(false);
         }
 
         if(op is Path pathOperator)
@@ -775,7 +777,7 @@ public sealed class SparqlQueryEngine
     /// <param name="graphStore">The active graph's store.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The BGP's solution sequence; empty when a constant in the pattern is absent from the active graph.</returns>
-    private async ValueTask<IReadOnlyList<SparqlSolution>> EvaluateBgpAsync(Bgp bgp, HypertrieGraphStore graphStore, QueryEngineRendezvous? rendezvous, CancellationToken cancellationToken)
+    private async ValueTask<IReadOnlyList<SparqlSolution>> EvaluateBgpAsync(Bgp bgp, HypertrieGraphStore graphStore, QueryEngineRendezvous? rendezvous, TermId activeGraph, CancellationToken cancellationToken)
     {
         VariableRegistry registry = new();
         Dictionary<SparqlVariable, Variable> toBackend = [];
@@ -879,7 +881,11 @@ public sealed class SparqlQueryEngine
         {
             IAsyncEnumerable<Solution> backendSolutions = rendezvous is not null
                 ? rendezvous.Query(graphStore, variant, TimeProvider.System, accessControl: accessControl, accessContext: accessContext, cancellationToken: cancellationToken)
-                : graphStore.Query(variant, TimeProvider.System, accessControl: accessControl, accessContext: accessContext, cancellationToken: cancellationToken);
+                : !activeGraph.IsNone
+                    ? dataset.NamedGraphRendezvous.Query(
+                        dataset.NamedGraphGeneration, activeGraph, graphStore, variant, TimeProvider.System,
+                        accessControl: accessControl, accessContext: accessContext, cancellationToken: cancellationToken)
+                    : graphStore.Query(variant, TimeProvider.System, accessControl: accessControl, accessContext: accessContext, cancellationToken: cancellationToken);
 
             await foreach(Solution solution in backendSolutions.ConfigureAwait(false))
             {

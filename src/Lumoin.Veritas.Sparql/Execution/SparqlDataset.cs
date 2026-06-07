@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie;
@@ -51,6 +52,18 @@ public sealed class SparqlDataset
     /// <summary>The graph names of the named graphs — the domain a <c>GRAPH ?g</c> form ranges over.</summary>
     public IReadOnlyList<TermId> GraphNames { get; }
 
+    /// <summary>
+    /// The rendezvous named-graph basic graph patterns route
+    /// through — the shared columnar graph set's routing point.
+    /// Self-owned (lazy, generation = this dataset) unless the
+    /// long-lived one of a mutable dataset is supplied, whose
+    /// derived set then persists across snapshots.
+    /// </summary>
+    public GraphSetRendezvous NamedGraphRendezvous { get; }
+
+    /// <summary>The generation token this dataset's named-graph reads carry to <see cref="NamedGraphRendezvous"/>; a rendezvous that advanced past it answers on the pinned per-graph store.</summary>
+    public object NamedGraphGeneration { get; }
+
     /// <summary>Constructs a dataset from its default graph and its named graphs, with a fresh engine rendezvous for the default graph.</summary>
     /// <param name="defaultGraph">The default graph.</param>
     /// <param name="namedGraphs">The named graphs keyed by graph-name term id; encoded by the same dictionary as <paramref name="defaultGraph"/>.</param>
@@ -80,6 +93,8 @@ public sealed class SparqlDataset
         graphNameSet = [.. materialized.Keys];
         GraphNames = [.. materialized.Keys];
         resolveNamed = graph => materialized.TryGetValue(graph, out HypertrieGraphStore? store) ? store : null;
+        NamedGraphGeneration = this;
+        NamedGraphRendezvous = new GraphSetRendezvous(this, CollectNamedTriples, QueryEnginePolicy.Default);
     }
 
     /// <summary>Constructs a dataset whose named graphs resolve through a delegate — the graph-directory form: stores mint on demand, existence checks never mint.</summary>
@@ -92,7 +107,9 @@ public sealed class SparqlDataset
         HypertrieGraphStore defaultGraph,
         IReadOnlyCollection<TermId> graphNames,
         Func<TermId, HypertrieGraphStore?> resolveNamedGraph,
-        QueryEngineRendezvous defaultGraphRendezvous)
+        QueryEngineRendezvous defaultGraphRendezvous,
+        GraphSetRendezvous? namedGraphRendezvous = null,
+        object? namedGraphGeneration = null)
     {
         ArgumentNullException.ThrowIfNull(defaultGraph);
         ArgumentNullException.ThrowIfNull(graphNames);
@@ -104,6 +121,30 @@ public sealed class SparqlDataset
         graphNameSet = [.. graphNames];
         GraphNames = [.. graphNameSet];
         resolveNamed = resolveNamedGraph;
+        NamedGraphGeneration = namedGraphGeneration ?? this;
+        NamedGraphRendezvous = namedGraphRendezvous ?? new GraphSetRendezvous(NamedGraphGeneration, CollectNamedTriples, QueryEnginePolicy.Default);
+    }
+
+    /// <summary>
+    /// The self-owned rendezvous's lazy build source: every named
+    /// graph's triples, enumerated through the resolver. Consulted
+    /// at most once per dataset, on the first qualifying
+    /// named-graph join.
+    /// </summary>
+    /// <returns>The named graphs' triples keyed by graph id.</returns>
+    private Dictionary<TermId, IEnumerable<EncodedTriple>> CollectNamedTriples()
+    {
+        Dictionary<TermId, IEnumerable<EncodedTriple>> graphs = new(graphNameSet.Count);
+        foreach(TermId graph in graphNameSet)
+        {
+            HypertrieGraphStore? store = resolveNamed(graph);
+            if(store is not null)
+            {
+                graphs[graph] = store.Match(TermId.None, TermId.None, TermId.None);
+            }
+        }
+
+        return graphs;
     }
 
     /// <summary>Builds a dataset with only a default graph and no named graphs — the common single-graph case.</summary>

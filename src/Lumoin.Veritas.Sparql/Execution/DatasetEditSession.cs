@@ -169,7 +169,12 @@ public sealed class DatasetEditSession: IAsyncDisposable
     {
         ThrowIfNotOpen();
 
-        return new SparqlDataset(DefaultGraph, [.. WorkingDirectory.Keys], ResolveWorking, Dataset.DefaultGraphRendezvous);
+        //The session itself is the generation token: it never
+        //matches the shared graph-set rendezvous's committed
+        //generations, so mid-request named-graph reads always
+        //answer on the WORKING stores — the set describes the base
+        //state, which §3.1.3 forbids a later operation to see.
+        return new SparqlDataset(DefaultGraph, [.. WorkingDirectory.Keys], ResolveWorking, Dataset.DefaultGraphRendezvous, Dataset.NamedGraphRendezvous, this);
     }
 
     /// <summary>Produces a working-state view with a substituted default graph (the <c>WITH</c> graph of a modify's <c>WHERE</c>).</summary>
@@ -181,7 +186,7 @@ public sealed class DatasetEditSession: IAsyncDisposable
         ArgumentNullException.ThrowIfNull(defaultGraph);
         ThrowIfNotOpen();
 
-        return new SparqlDataset(defaultGraph, [.. WorkingDirectory.Keys], ResolveWorking, Dataset.DefaultGraphRendezvous);
+        return new SparqlDataset(defaultGraph, [.. WorkingDirectory.Keys], ResolveWorking, Dataset.DefaultGraphRendezvous, Dataset.NamedGraphRendezvous, this);
     }
 
     /// <summary>
@@ -363,6 +368,17 @@ public sealed class DatasetEditSession: IAsyncDisposable
 
         bool defaultChanged = Scratch.TryGetValue(TermId.None, out GraphScratch? defaultScratch)
             && (defaultScratch.Added.Count > 0 || defaultScratch.Removed.Count > 0);
+        bool namedChanged = false;
+        foreach(DatasetGraphTransition transition in transitions)
+        {
+            if(!transition.Graph.IsNone)
+            {
+                namedChanged = true;
+
+                break;
+            }
+        }
+
         List<NodeHandle> roots = new(WorkingDirectory.Count);
         foreach(GraphDirectoryEntry entry in WorkingDirectory.Values)
         {
@@ -380,7 +396,8 @@ public sealed class DatasetEditSession: IAsyncDisposable
             newState,
             defaultChanged,
             defaultChanged ? defaultScratch!.Added : [],
-            defaultChanged ? defaultScratch!.Removed : []);
+            defaultChanged ? defaultScratch!.Removed : [],
+            namedChanged);
         TransitionToCommitted();
 
         return new SparqlDataset(newState.DefaultGraph, [.. WorkingDirectory.Keys], newState.ResolveNamed, Dataset.DefaultGraphRendezvous);
