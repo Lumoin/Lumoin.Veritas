@@ -232,26 +232,32 @@ public sealed class ColumnarTripleIndex
     }
 
     //Walks the subject-predicate-object base order reconstructing
-    //its triples; the delta is not applied.
+    //its triples; the delta is not applied. The walk is sequential,
+    //so the per-column readers decode each block exactly once.
     private IEnumerable<EncodedTriple> EnumerateBaseTriples()
     {
         ColumnarOrder spo = orders[0];
+        BlockPackedColumnReader values0 = new(spo.ValuesColumnAt(0));
+        BlockPackedColumnReader offsets0 = new(spo.OffsetsColumnAt(0));
+        BlockPackedColumnReader values1 = new(spo.ValuesColumnAt(1));
+        BlockPackedColumnReader offsets1 = new(spo.OffsetsColumnAt(1));
+        BlockPackedColumnReader values2 = new(spo.ValuesColumnAt(2));
 
-        for(int i = 0; i < spo.Level0Values.Length; i++)
+        for(int i = 0; i < values0.Length; i++)
         {
-            uint subject = spo.Level0Values[i];
-            int level1Start = (int)spo.Level0Offsets[i];
-            int level1End = (int)spo.Level0Offsets[i + 1];
+            uint subject = values0.ValueAt(i);
+            int level1Start = (int)offsets0.ValueAt(i);
+            int level1End = (int)offsets0.ValueAt(i + 1);
 
             for(int j = level1Start; j < level1End; j++)
             {
-                uint predicate = spo.Level1Values[j];
-                int level2Start = (int)spo.Level1Offsets[j];
-                int level2End = (int)spo.Level1Offsets[j + 1];
+                uint predicate = values1.ValueAt(j);
+                int level2Start = (int)offsets1.ValueAt(j);
+                int level2End = (int)offsets1.ValueAt(j + 1);
 
                 for(int k = level2Start; k < level2End; k++)
                 {
-                    yield return EncodedTriple.FromEncoded(subject, predicate, spo.Level2Values[k]);
+                    yield return EncodedTriple.FromEncoded(subject, predicate, values2.ValueAt(k));
                 }
             }
         }
@@ -476,30 +482,37 @@ public sealed class ColumnarTripleIndex
     }
 
     //Tests the immutable base alone: three lower-bound searches
-    //down the subject-predicate-object permutation.
+    //down the subject-predicate-object permutation, over one
+    //stack-held block scratch — a cold one-shot descent that
+    //allocates nothing.
     private bool ContainsBase(EncodedTriple triple)
     {
         ColumnarOrder spo = orders[0];
         Span<uint> keys = [triple.Subject.Encoded, triple.Predicate.Encoded, triple.Object.Encoded];
+        Span<uint> scratch = stackalloc uint[BlockPackedColumn.BlockLength];
 
         int lo = 0;
-        int hi = spo.ValuesAt(0).Length;
+        int hi = spo.ValuesLengthAt(0);
 
         for(int level = 0; level < 3; level++)
         {
-            ReadOnlySpan<uint> values = spo.ValuesAt(level);
-            int found = ColumnarSearch.LowerBound(values, lo, hi, keys[level]);
+            //The scratch is shared across columns, so the cache slot
+            //resets whenever the column changes hands.
+            BlockPackedColumn values = spo.ValuesColumnAt(level);
+            int cachedBlock = -1;
+            int found = values.LowerBound(lo, hi, keys[level], scratch, ref cachedBlock);
 
-            if(found >= hi || values[found] != keys[level])
+            if(found >= hi || values.ValueAt(found, scratch, ref cachedBlock) != keys[level])
             {
                 return false;
             }
 
             if(level < 2)
             {
-                ReadOnlySpan<uint> offsets = spo.OffsetsAt(level);
-                lo = (int)offsets[found];
-                hi = (int)offsets[found + 1];
+                BlockPackedColumn offsets = spo.OffsetsColumnAt(level);
+                cachedBlock = -1;
+                lo = (int)offsets.ValueAt(found, scratch, ref cachedBlock);
+                hi = (int)offsets.ValueAt(found + 1, scratch, ref cachedBlock);
             }
         }
 

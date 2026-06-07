@@ -100,6 +100,13 @@ public sealed class ColumnarTriejoinIterator
     //CSR level for variable level v is boundCount + v.
     private readonly int boundCount;
 
+    //Per-level column readers, created on first touch; each owns a
+    //one-block decode scratch, and the iterator's descent locality
+    //keeps most touches on the cached block.
+    private readonly BlockPackedColumnReader?[] valueReaders = new BlockPackedColumnReader?[3];
+
+    private readonly BlockPackedColumnReader?[] offsetReaders = new BlockPackedColumnReader?[2];
+
     //Frames for the presented variable levels. Frames[0] is the
     //post-bound frontier; a leaf open does not push, so
     //frameCount == DescendedLevels + 1 in the normal state and
@@ -261,7 +268,7 @@ public sealed class ColumnarTriejoinIterator
         ReadOnlySpan<EncodedTriple> removed = index.RemovedAt(permutationIndex);
 
         int baseLo = 0;
-        int baseHi = order.ValuesAt(0).Length;
+        int baseHi = order.ValuesLengthAt(0);
         int addLo = 0;
         int addHi = added.Length;
         int remLo = 0;
@@ -272,9 +279,9 @@ public sealed class ColumnarTriejoinIterator
             uint boundValue = pattern.At(descent[level]).BoundTerm.Encoded;
             byte column = DescentPositionAt(level);
 
-            ReadOnlySpan<uint> values = order.ValuesAt(level);
-            int found = ColumnarSearch.LowerBound(values, baseLo, baseHi, boundValue);
-            bool baseFound = found < baseHi && values[found] == boundValue;
+            BlockPackedColumnReader values = ValueReaderAt(level);
+            int found = values.LowerBound(baseLo, baseHi, boundValue);
+            bool baseFound = found < baseHi && values.ValueAt(found) == boundValue;
 
             int addChildLo = ColumnarSearch.LowerBoundByColumn(added, addLo, addHi, column, boundValue);
             int addChildHi = ColumnarSearch.UpperBoundByColumn(added, addChildLo, addHi, column, boundValue);
@@ -306,9 +313,9 @@ public sealed class ColumnarTriejoinIterator
 
             if(baseFound)
             {
-                ReadOnlySpan<uint> offsets = order.OffsetsAt(level);
-                baseLo = (int)offsets[found];
-                baseHi = (int)offsets[found + 1];
+                BlockPackedColumnReader offsets = OffsetReaderAt(level);
+                baseLo = (int)offsets.ValueAt(found);
+                baseHi = (int)offsets.ValueAt(found + 1);
             }
             else
             {
@@ -385,12 +392,12 @@ public sealed class ColumnarTriejoinIterator
         byte column = DescentPositionAt(level);
         uint rawValue = value.Encoded;
 
-        ReadOnlySpan<uint> values = order.ValuesAt(level);
+        BlockPackedColumnReader values = ValueReaderAt(level);
         ReadOnlySpan<EncodedTriple> added = index.AddedAt(permutationIndex);
         ReadOnlySpan<EncodedTriple> removed = index.RemovedAt(permutationIndex);
 
-        int found = ColumnarSearch.LowerBound(values, frame.BaseLo, frame.BaseHi, rawValue);
-        bool baseFound = found < frame.BaseHi && values[found] == rawValue;
+        int found = values.LowerBound(frame.BaseLo, frame.BaseHi, rawValue);
+        bool baseFound = found < frame.BaseHi && values.ValueAt(found) == rawValue;
 
         int addChildLo = ColumnarSearch.LowerBoundByColumn(added, frame.AddLo, frame.AddHi, column, rawValue);
         int addChildHi = ColumnarSearch.UpperBoundByColumn(added, addChildLo, frame.AddHi, column, rawValue);
@@ -420,9 +427,9 @@ public sealed class ColumnarTriejoinIterator
 
         if(baseFound)
         {
-            ReadOnlySpan<uint> offsets = order.OffsetsAt(level);
-            childBaseLo = (int)offsets[found];
-            childBaseHi = (int)offsets[found + 1];
+            BlockPackedColumnReader offsets = OffsetReaderAt(level);
+            childBaseLo = (int)offsets.ValueAt(found);
+            childBaseHi = (int)offsets.ValueAt(found + 1);
         }
 
         frames[frameCount] = new LevelFrame
@@ -507,7 +514,7 @@ public sealed class ColumnarTriejoinIterator
         int level = boundCount + frameCount - 1;
         uint key = CurrentKeyOf(in frame, level);
 
-        if(frame.BasePos < frame.BaseHi && order.ValuesAt(level)[frame.BasePos] == key)
+        if(frame.BasePos < frame.BaseHi && ValueReaderAt(level).ValueAt(frame.BasePos) == key)
         {
             frame.BasePos++;
         }
@@ -542,7 +549,7 @@ public sealed class ColumnarTriejoinIterator
         ref LevelFrame frame = ref frames[frameCount - 1];
         int level = boundCount + frameCount - 1;
 
-        frame.BasePos = ColumnarSearch.LowerBound(order.ValuesAt(level), frame.BasePos, frame.BaseHi, target.Encoded);
+        frame.BasePos = ValueReaderAt(level).LowerBound(frame.BasePos, frame.BaseHi, target.Encoded);
 
         if(frame.AddPos < frame.AddHi)
         {
@@ -558,7 +565,7 @@ public sealed class ColumnarTriejoinIterator
     private uint CurrentKeyOf(in LevelFrame frame, int level)
     {
         uint baseKey = frame.BasePos < frame.BaseHi
-            ? order.ValuesAt(level)[frame.BasePos]
+            ? ValueReaderAt(level).ValueAt(frame.BasePos)
             : uint.MaxValue;
         uint addKey = frame.AddPos < frame.AddHi
             ? ColumnarSearch.ColumnAt(in index.AddedAt(permutationIndex)[frame.AddPos], DescentPositionAt(level))
@@ -579,14 +586,14 @@ public sealed class ColumnarTriejoinIterator
             return;
         }
 
-        ReadOnlySpan<uint> values = order.ValuesAt(level);
+        BlockPackedColumnReader values = ValueReaderAt(level);
         ReadOnlySpan<EncodedTriple> added = index.AddedAt(permutationIndex);
         ReadOnlySpan<EncodedTriple> removed = index.RemovedAt(permutationIndex);
         byte column = DescentPositionAt(level);
 
         while(frame.BasePos < frame.BaseHi)
         {
-            uint baseKey = values[frame.BasePos];
+            uint baseKey = values.ValueAt(frame.BasePos);
 
             if(frame.AddPos < frame.AddHi
                 && ColumnarSearch.ColumnAt(in added[frame.AddPos], column) <= baseKey)
@@ -621,15 +628,33 @@ public sealed class ColumnarTriejoinIterator
 
         if(level == 1)
         {
-            ReadOnlySpan<uint> offsets = order.OffsetsAt(1);
+            BlockPackedColumnReader offsets = OffsetReaderAt(1);
 
-            return (int)(offsets[absoluteIndex + 1] - offsets[absoluteIndex]);
+            return (int)(offsets.ValueAt(absoluteIndex + 1) - offsets.ValueAt(absoluteIndex));
         }
 
-        ReadOnlySpan<uint> level0Offsets = order.OffsetsAt(0);
-        ReadOnlySpan<uint> level1Offsets = order.OffsetsAt(1);
+        BlockPackedColumnReader level0Offsets = OffsetReaderAt(0);
+        BlockPackedColumnReader level1Offsets = OffsetReaderAt(1);
+        int childLo = (int)level0Offsets.ValueAt(absoluteIndex);
+        int childHi = (int)level0Offsets.ValueAt(absoluteIndex + 1);
 
-        return (int)(level1Offsets[(int)level0Offsets[absoluteIndex + 1]] - level1Offsets[(int)level0Offsets[absoluteIndex]]);
+        return (int)(level1Offsets.ValueAt(childHi) - level1Offsets.ValueAt(childLo));
+    }
+
+    /// <summary>Looks up or creates the reader over the given level's value column.</summary>
+    /// <param name="level">The descent level; 0, 1, or 2.</param>
+    /// <returns>The reader.</returns>
+    private BlockPackedColumnReader ValueReaderAt(int level)
+    {
+        return valueReaders[level] ??= new BlockPackedColumnReader(order.ValuesColumnAt(level));
+    }
+
+    /// <summary>Looks up or creates the reader over the given level's offset column.</summary>
+    /// <param name="level">The descent level; 0 or 1.</param>
+    /// <returns>The reader.</returns>
+    private BlockPackedColumnReader OffsetReaderAt(int level)
+    {
+        return offsetReaders[level] ??= new BlockPackedColumnReader(order.OffsetsColumnAt(level));
     }
 
     //The RDF position the given CSR level orders by.

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using Lumoin.Veritas.Core.Encoding;
 
 namespace Lumoin.Veritas.Core.Columnar;
@@ -9,7 +10,10 @@ namespace Lumoin.Veritas.Core.Columnar;
 /// One permutation's three-level compressed-sparse column set
 /// inside a <see cref="ColumnarTripleIndex"/>: distinct sorted
 /// values per level, with offset columns demarcating each parent
-/// value's group in the next level.
+/// value's group in the next level. Every column is stored
+/// block-packed (<see cref="BlockPackedColumn"/>): zigzag-delta
+/// bit-packed lanes with patched exceptions, decoded one block at
+/// a time through per-cursor readers.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -24,22 +28,22 @@ namespace Lumoin.Veritas.Core.Columnar;
 [DebuggerDisplay("ColumnarOrder L0={level0Values.Length} L1={level1Values.Length} L2={level2Values.Length}")]
 public sealed class ColumnarOrder
 {
-    private readonly uint[] level0Values;
+    private readonly BlockPackedColumn level0Values;
 
-    private readonly uint[] level0Offsets;
+    private readonly BlockPackedColumn level0Offsets;
 
-    private readonly uint[] level1Values;
+    private readonly BlockPackedColumn level1Values;
 
-    private readonly uint[] level1Offsets;
+    private readonly BlockPackedColumn level1Offsets;
 
-    private readonly uint[] level2Values;
+    private readonly BlockPackedColumn level2Values;
 
     private ColumnarOrder(
-        uint[] level0Values,
-        uint[] level0Offsets,
-        uint[] level1Values,
-        uint[] level1Offsets,
-        uint[] level2Values)
+        BlockPackedColumn level0Values,
+        BlockPackedColumn level0Offsets,
+        BlockPackedColumn level1Values,
+        BlockPackedColumn level1Offsets,
+        BlockPackedColumn level2Values)
     {
         this.level0Values = level0Values;
         this.level0Offsets = level0Offsets;
@@ -48,27 +52,12 @@ public sealed class ColumnarOrder
         this.level2Values = level2Values;
     }
 
-    /// <summary>The distinct first-position values, ascending.</summary>
-    public ReadOnlySpan<uint> Level0Values => level0Values;
-
-    /// <summary>Exclusive-end offsets from level 0 into <see cref="Level1Values"/>; one entry more than <see cref="Level0Values"/>.</summary>
-    public ReadOnlySpan<uint> Level0Offsets => level0Offsets;
-
-    /// <summary>The second-position values, ascending within each level-0 group.</summary>
-    public ReadOnlySpan<uint> Level1Values => level1Values;
-
-    /// <summary>Exclusive-end offsets from level 1 into <see cref="Level2Values"/>; one entry more than <see cref="Level1Values"/>.</summary>
-    public ReadOnlySpan<uint> Level1Offsets => level1Offsets;
-
-    /// <summary>The third-position values, ascending within each level-1 group.</summary>
-    public ReadOnlySpan<uint> Level2Values => level2Values;
-
     /// <summary>
-    /// Returns the value column at the given descent level.
+    /// Returns the packed value column at the given descent level.
     /// </summary>
     /// <param name="level">The descent level; 0, 1, or 2.</param>
-    /// <returns>The level's value column.</returns>
-    public ReadOnlySpan<uint> ValuesAt(int level)
+    /// <returns>The level's packed value column.</returns>
+    public BlockPackedColumn ValuesColumnAt(int level)
     {
         return level switch
         {
@@ -80,13 +69,13 @@ public sealed class ColumnarOrder
     }
 
     /// <summary>
-    /// Returns the offset column from the given descent level into
-    /// the next level. Levels 0 and 1 carry offsets; level 2 is the
-    /// deepest.
+    /// Returns the packed offset column from the given descent
+    /// level into the next level. Levels 0 and 1 carry offsets;
+    /// level 2 is the deepest.
     /// </summary>
     /// <param name="level">The descent level; 0 or 1.</param>
-    /// <returns>The level's exclusive-end offset column.</returns>
-    public ReadOnlySpan<uint> OffsetsAt(int level)
+    /// <returns>The level's packed exclusive-end offset column.</returns>
+    public BlockPackedColumn OffsetsColumnAt(int level)
     {
         return level switch
         {
@@ -96,9 +85,25 @@ public sealed class ColumnarOrder
         };
     }
 
+    /// <summary>The number of values in the value column at the given level.</summary>
+    /// <param name="level">The descent level; 0, 1, or 2.</param>
+    /// <returns>The value column's length.</returns>
+    public int ValuesLengthAt(int level)
+    {
+        return ValuesColumnAt(level).Length;
+    }
+
+    /// <summary>The packed size in bytes across all five columns — the number the soak ladder tracks.</summary>
+    public long PackedByteCount =>
+        level0Values.PackedByteCount
+        + level0Offsets.PackedByteCount
+        + level1Values.PackedByteCount
+        + level1Offsets.PackedByteCount
+        + level2Values.PackedByteCount;
+
     //Builds one permutation's column set: sorts the working array
-    //by its packed 96-bit permutation keys, then emits all five
-    //columns in a single pass over the sorted run.
+    //by its packed 96-bit permutation keys, emits all five columns
+    //in a single pass over the sorted run, then block-packs each.
     internal static ColumnarOrder Build(EncodedTriple[] working, byte[] permutation)
     {
         byte position0 = permutation[0];
@@ -139,7 +144,12 @@ public sealed class ColumnarOrder
         offsets0.Add((uint)values1.Count);
         offsets1.Add((uint)values2.Count);
 
-        return new ColumnarOrder([.. values0], [.. offsets0], [.. values1], [.. offsets1], [.. values2]);
+        return new ColumnarOrder(
+            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(values0)),
+            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(offsets0)),
+            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(values1)),
+            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(offsets1)),
+            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(values2)));
     }
 
     private static uint KeyAt(in EncodedTriple triple, byte position)
