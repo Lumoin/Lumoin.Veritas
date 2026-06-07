@@ -233,33 +233,48 @@ public sealed class ColumnarTriejoinIterator
         openedValues = new uint[variableOrder.Count];
         frames = new LevelFrame[3];
 
-        //Compose the descent sequence: bound positions in S/P/O
-        //order, then the variable positions in level order.
-        Span<byte> descent = stackalloc byte[3];
-        int descentLength = 0;
+        //Select a materialised permutation whose prefix covers the
+        //bound positions and whose tail presents the variables in
+        //the requested order. The descent then follows the
+        //permutation itself — bound constants apply in ITS prefix
+        //order, which is equivalent (each bound level narrows
+        //independently) and is what lets the three-rotation mode
+        //serve bound sets the subject-predicate-object prefix order
+        //could not.
+        Span<byte> boundPositions = stackalloc byte[3];
+        int boundLength = 0;
 
         for(int rdfPosition = 0; rdfPosition < 3; rdfPosition++)
         {
             if(pattern.At(rdfPosition).IsBound)
             {
-                descent[descentLength++] = (byte)rdfPosition;
+                boundPositions[boundLength++] = (byte)rdfPosition;
             }
         }
 
-        boundCount = descentLength;
+        boundCount = boundLength;
 
+        Span<byte> variablePositions = stackalloc byte[3];
         for(int level = 0; level < variableOrder.Count; level++)
         {
-            descent[descentLength++] = (byte)PositionOfVariable(pattern, variableOrder[level]);
+            variablePositions[level] = (byte)PositionOfVariable(pattern, variableOrder[level]);
         }
 
-        permutationIndex = ColumnarTripleIndex.PermutationIndexFor(descent[..descentLength]);
+        if(!index.TrySelectPermutation(boundPositions[..boundLength], variablePositions[..variableOrder.Count], out permutationIndex))
+        {
+            throw new ArgumentException(
+                $"No materialised permutation under {index.OrderSetMode} serves this pattern's bound set with the requested variable order; plan orders through ColumnarRotationPlanner.",
+                nameof(variableOrder));
+        }
+
         order = index.OrderAt(permutationIndex);
 
-        ReadOnlySpan<byte> positions = ColumnarTripleIndex.PermutationAt(permutationIndex);
-        descentPosition0 = positions[0];
-        descentPosition1 = positions[1];
-        descentPosition2 = positions[2];
+        //The selected permutation IS the descent sequence; the
+        //bound-descent loop below indexes it directly.
+        ReadOnlySpan<byte> descent = ColumnarTripleIndex.PermutationAt(permutationIndex);
+        descentPosition0 = descent[0];
+        descentPosition1 = descent[1];
+        descentPosition2 = descent[2];
 
         //Apply the bound prefix: narrow the base slice and both
         //delta runs level by level. A level whose net triple count

@@ -48,11 +48,20 @@ internal static class WcojQuerySoak
         double hypertrieBytes = heapAfterHypertrie - heapBeforeHypertrie;
         double columnarBytes = heapAfterColumnar - heapAfterHypertrie;
 
+        //The three-rotation memory profile, measured alongside: the
+        //index is built and dropped — only its residency is read.
+        ColumnarTripleIndex rotations = ColumnarTripleIndex.Build(triples, ColumnarOrderSetMode.ThreeRotations);
+        long heapAfterRotations = GC.GetTotalMemory(forceFullCollection: true);
+        double rotationBytes = heapAfterRotations - heapAfterColumnar;
+        GC.KeepAlive(rotations);
+        rotations = null!;
+
         Console.WriteLine($"WCOJ query soak: {subjectCount} subjects, {triples.Length} triples, {duration.TotalSeconds:F0}s per shape.");
         Console.WriteLine($"Build: hypertrie {hypertrieBuild.Elapsed.TotalMilliseconds:F1} ms, columnar {columnarBuild.Elapsed.TotalMilliseconds:F1} ms.");
         Console.WriteLine(
             $"Heap residency: hypertrie {hypertrieBytes / (1024 * 1024):F1} MB ({hypertrieBytes / triples.Length:F0} B/triple), "
-            + $"columnar {columnarBytes / (1024 * 1024):F1} MB ({columnarBytes / triples.Length:F0} B/triple).");
+            + $"columnar {columnarBytes / (1024 * 1024):F1} MB ({columnarBytes / triples.Length:F0} B/triple), "
+            + $"three-rotation {rotationBytes / (1024 * 1024):F1} MB ({rotationBytes / triples.Length:F0} B/triple).");
 
         VariableRegistry singleRegistry = new();
         Variable singleS = singleRegistry.GetOrAdd("s");

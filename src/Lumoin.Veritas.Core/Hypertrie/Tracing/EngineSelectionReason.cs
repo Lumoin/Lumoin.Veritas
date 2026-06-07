@@ -21,4 +21,7 @@ public enum EngineSelectionReason
 
     /// <summary>The query pinned a store the rendezvous has advanced past — a snapshot taken before a later commit — so it ran on that pinned store directly, preserving snapshot isolation.</summary>
     SnapshotSuperseded = 3,
+
+    /// <summary>The query's join shape is rotation-incompatible with the policy's reduced columnar order set (a cyclic shape under three rotations), so it ran on the system of record, which carries every order.</summary>
+    RotationIncompatible = 4,
 }

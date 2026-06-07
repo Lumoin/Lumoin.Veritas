@@ -209,7 +209,28 @@ public sealed class QueryEngineRendezvous
                 query, timeProvider, planner, cardinalities, accessControl, accessContext, traceHandler, effectiveCorrelationId, identifiers, cancellationToken);
         }
 
-        bool qualifies = query.Patterns.Count >= policy.MinimumPatternsForColumnar && IsColumnarCapable(query);
+        bool shapeQualifies = query.Patterns.Count >= policy.MinimumPatternsForColumnar && IsColumnarCapable(query);
+
+        //A rotation-incompatible join (a cyclic shape under a
+        //three-rotation view — see ColumnarRotationPlanner) is
+        //checked against the POLICY's mode before any view exists,
+        //so it never triggers a build it cannot use, and its
+        //fallback is announced distinctly for the feedback join.
+        bool rotationCompatible = shapeQualifies
+            && (policy.OrderSetMode == ColumnarOrderSetMode.AllSixOrders
+                || ColumnarRotationPlanner.TryPlanGlobalOrder(policy.OrderSetMode, query) is not null);
+
+        if(shapeQualifies && !rotationCompatible)
+        {
+            EmitEngineSelected(
+                timeProvider, traceHandler, effectiveCorrelationId,
+                QueryEngineKind.Hypertrie, EngineSelectionReason.RotationIncompatible, currentStore.Count, buildMilliseconds: 0);
+
+            return currentStore.Query(
+                query, timeProvider, planner, cardinalities, accessControl, accessContext, traceHandler, effectiveCorrelationId, identifiers, cancellationToken);
+        }
+
+        bool qualifies = shapeQualifies && rotationCompatible;
 
         if(qualifies && currentView is null && policy.BuildViewOnDemand)
         {
@@ -322,7 +343,7 @@ public sealed class QueryEngineRendezvous
             }
 
             Stopwatch stopwatch = Stopwatch.StartNew();
-            ColumnarTripleIndex view = ColumnarTripleIndex.Build(store.Match(TermId.None, TermId.None, TermId.None));
+            ColumnarTripleIndex view = ColumnarTripleIndex.Build(store.Match(TermId.None, TermId.None, TermId.None), policy.OrderSetMode);
             stopwatch.Stop();
 
             columnarView = view;

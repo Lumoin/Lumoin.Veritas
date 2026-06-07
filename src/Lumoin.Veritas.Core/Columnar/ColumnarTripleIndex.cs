@@ -63,7 +63,9 @@ public sealed class ColumnarTripleIndex
 
     private static readonly EncodedTriple[] EmptyTriples = [];
 
-    private readonly ColumnarOrder[] orders;
+    //Materialised orders by permutation index; null = not built
+    //under this index's order-set mode.
+    private readonly ColumnarOrder?[] orders;
 
     //The accumulated delta over the immutable base: additions and
     //removals as canonical sets (for membership and Apply
@@ -83,8 +85,12 @@ public sealed class ColumnarTripleIndex
     /// <summary>The number of distinct triples the merged view contains — the base count net of the accumulated delta.</summary>
     public int TripleCount => baseTripleCount - removedSet.Count + addedSet.Count;
 
+    /// <summary>Which permutation set this index materialises.</summary>
+    public ColumnarOrderSetMode OrderSetMode { get; }
+
     private ColumnarTripleIndex(
-        ColumnarOrder[] orders,
+        ColumnarOrder?[] orders,
+        ColumnarOrderSetMode orderSetMode,
         int baseTripleCount,
         HashSet<EncodedTriple> addedSet,
         HashSet<EncodedTriple> removedSet,
@@ -92,6 +98,7 @@ public sealed class ColumnarTripleIndex
         EncodedTriple[][] removedByOrder)
     {
         this.orders = orders;
+        OrderSetMode = orderSetMode;
         this.baseTripleCount = baseTripleCount;
         this.addedSet = addedSet;
         this.removedSet = removedSet;
@@ -105,24 +112,109 @@ public sealed class ColumnarTripleIndex
     /// <see cref="TripleCount"/> is the distinct count.
     /// </summary>
     /// <param name="triples">The triples to index.</param>
+    /// <param name="orderSetMode">Which permutation set to materialise; see <see cref="ColumnarOrderSetMode"/> for the trade.</param>
     /// <returns>The constructed index.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="triples"/> is <c>null</c>.</exception>
-    public static ColumnarTripleIndex Build(IEnumerable<EncodedTriple> triples)
+    public static ColumnarTripleIndex Build(IEnumerable<EncodedTriple> triples, ColumnarOrderSetMode orderSetMode = ColumnarOrderSetMode.AllSixOrders)
     {
         ArgumentNullException.ThrowIfNull(triples);
 
         HashSet<EncodedTriple> distinct = [.. triples];
         EncodedTriple[] working = [.. distinct];
-        ColumnarOrder[] orders = new ColumnarOrder[Permutations.Length];
+        ColumnarOrder?[] orders = new ColumnarOrder?[Permutations.Length];
 
         for(int i = 0; i < Permutations.Length; i++)
         {
-            orders[i] = ColumnarOrder.Build(working, Permutations[i]);
+            if(IsPermutationInMode(i, orderSetMode))
+            {
+                orders[i] = ColumnarOrder.Build(working, Permutations[i]);
+            }
         }
 
         EncodedTriple[][] emptyRuns = [EmptyTriples, EmptyTriples, EmptyTriples, EmptyTriples, EmptyTriples, EmptyTriples];
 
-        return new ColumnarTripleIndex(orders, working.Length, [], [], emptyRuns, emptyRuns);
+        return new ColumnarTripleIndex(orders, orderSetMode, working.Length, [], [], emptyRuns, emptyRuns);
+    }
+
+    /// <summary>Whether the permutation at <paramref name="permutationIndex"/> belongs to <paramref name="mode"/>'s set: the rotations are SPO, POS, and OSP.</summary>
+    /// <param name="permutationIndex">A permutation index in [0, 6).</param>
+    /// <param name="mode">The order-set mode.</param>
+    /// <returns><c>true</c> when the permutation is materialised under the mode.</returns>
+    internal static bool IsPermutationInMode(int permutationIndex, ColumnarOrderSetMode mode)
+    {
+        if(mode == ColumnarOrderSetMode.AllSixOrders)
+        {
+            return true;
+        }
+
+        //The cyclic rotations of (S, P, O): SPO = [0,1,2], POS =
+        //[1,2,0], OSP = [2,0,1] — permutation indices 0, 3, and 4.
+        return permutationIndex is 0 or 3 or 4;
+    }
+
+    /// <summary>Whether the permutation at <paramref name="permutationIndex"/> is materialised in this index.</summary>
+    /// <param name="permutationIndex">A permutation index in [0, 6).</param>
+    /// <returns><c>true</c> when <see cref="OrderAt"/> can serve it.</returns>
+    public bool IsPermutationAvailable(int permutationIndex)
+    {
+        return orders[permutationIndex] is not null;
+    }
+
+    /// <summary>
+    /// Selects a materialised permutation whose prefix is exactly
+    /// the bound positions (in the permutation's own order) and
+    /// whose tail is exactly the variable positions in the given
+    /// sequence. Under <see cref="ColumnarOrderSetMode.AllSixOrders"/>
+    /// this always succeeds; under three rotations it succeeds
+    /// exactly when the requested variable sequence is
+    /// rotation-compatible (<see cref="ColumnarRotationPlanner"/>
+    /// chooses global orders that make it so).
+    /// </summary>
+    /// <param name="boundPositions">The pattern's bound RDF positions, as a set in any order.</param>
+    /// <param name="variablePositionsInOrder">The pattern's variable RDF positions, in the required descent sequence.</param>
+    /// <param name="permutationIndex">Receives the selected permutation index.</param>
+    /// <returns><c>true</c> when a materialised permutation serves the shape.</returns>
+    public bool TrySelectPermutation(ReadOnlySpan<byte> boundPositions, ReadOnlySpan<byte> variablePositionsInOrder, out int permutationIndex)
+    {
+        int boundCount = boundPositions.Length;
+
+        for(int i = 0; i < Permutations.Length; i++)
+        {
+            if(orders[i] is null)
+            {
+                continue;
+            }
+
+            byte[] permutation = Permutations[i];
+            bool matches = true;
+
+            //The prefix must cover the bound positions as a SET —
+            //the descent applies them one constant at a time, so
+            //their order within the prefix is the permutation's own.
+            for(int j = 0; j < boundCount && matches; j++)
+            {
+                matches = boundPositions.IndexOf(permutation[j]) >= 0;
+            }
+
+            //The tail must equal the variable sequence exactly: the
+            //iterator presents variables in the permutation's level
+            //order.
+            for(int j = 0; j < variablePositionsInOrder.Length && matches; j++)
+            {
+                matches = permutation[boundCount + j] == variablePositionsInOrder[j];
+            }
+
+            if(matches)
+            {
+                permutationIndex = i;
+
+                return true;
+            }
+        }
+
+        permutationIndex = -1;
+
+        return false;
     }
 
     /// <summary>
@@ -187,7 +279,7 @@ public sealed class ColumnarTripleIndex
             merged.ExceptWith(newRemoved);
             merged.UnionWith(newAdded);
 
-            return Build(merged);
+            return Build(merged, OrderSetMode);
         }
 
         //Evolve the per-order runs by linear merge: only this
@@ -203,11 +295,12 @@ public sealed class ColumnarTripleIndex
 
         return new ColumnarTripleIndex(
             orders,
+            OrderSetMode,
             baseTripleCount,
             newAdded,
             newRemoved,
-            MergePerOrder(addedByOrder, addedInsertions, addedDeletions),
-            MergePerOrder(removedByOrder, removedInsertions, removedDeletions));
+            MergePerOrder(addedByOrder, addedInsertions, addedDeletions, orders),
+            MergePerOrder(removedByOrder, removedInsertions, removedDeletions, orders));
     }
 
     /// <summary>
@@ -236,7 +329,8 @@ public sealed class ColumnarTripleIndex
     //so the per-column readers decode each block exactly once.
     private IEnumerable<EncodedTriple> EnumerateBaseTriples()
     {
-        ColumnarOrder spo = orders[0];
+        //SPO is materialised under every order-set mode.
+        ColumnarOrder spo = orders[0]!;
         BlockPackedColumnReader values0 = new(spo.ValuesColumnAt(0));
         BlockPackedColumnReader offsets0 = new(spo.OffsetsColumnAt(0));
         BlockPackedColumnReader values1 = new(spo.ValuesColumnAt(1));
@@ -288,12 +382,22 @@ public sealed class ColumnarTripleIndex
     private static EncodedTriple[][] MergePerOrder(
         EncodedTriple[][] oldRuns,
         EncodedTriple[] insertions,
-        EncodedTriple[] deletions)
+        EncodedTriple[] deletions,
+        ColumnarOrder?[] orders)
     {
         EncodedTriple[][] runs = new EncodedTriple[Permutations.Length][];
 
         for(int i = 0; i < Permutations.Length; i++)
         {
+            //Unmaterialised permutations never serve cursors, so
+            //their runs stay empty rather than paying the merge.
+            if(orders[i] is null)
+            {
+                runs[i] = EmptyTriples;
+
+                continue;
+            }
+
             byte position0 = Permutations[i][0];
             byte position1 = Permutations[i][1];
             byte position2 = Permutations[i][2];
@@ -437,11 +541,13 @@ public sealed class ColumnarTripleIndex
     /// <summary>
     /// Returns the columnar order at the given permutation index.
     /// </summary>
-    /// <param name="permutationIndex">A permutation index in [0, 6), from <see cref="PermutationIndexFor"/>.</param>
+    /// <param name="permutationIndex">A permutation index in [0, 6), from <see cref="PermutationIndexFor"/> or <see cref="TrySelectPermutation"/>.</param>
     /// <returns>The order's column set.</returns>
+    /// <exception cref="InvalidOperationException">The permutation is not materialised under this index's <see cref="OrderSetMode"/>.</exception>
     public ColumnarOrder OrderAt(int permutationIndex)
     {
-        return orders[permutationIndex];
+        return orders[permutationIndex]
+            ?? throw new InvalidOperationException($"Permutation {permutationIndex} is not materialised under {OrderSetMode}; select through TrySelectPermutation.");
     }
 
     /// <summary>
@@ -487,7 +593,8 @@ public sealed class ColumnarTripleIndex
     //allocates nothing.
     private bool ContainsBase(EncodedTriple triple)
     {
-        ColumnarOrder spo = orders[0];
+        //SPO is materialised under every order-set mode.
+        ColumnarOrder spo = orders[0]!;
         Span<uint> keys = [triple.Subject.Encoded, triple.Predicate.Encoded, triple.Object.Encoded];
         Span<uint> scratch = stackalloc uint[BlockPackedColumn.BlockLength];
 

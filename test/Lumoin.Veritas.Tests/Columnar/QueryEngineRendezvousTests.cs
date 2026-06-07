@@ -73,7 +73,7 @@ internal sealed class QueryEngineRendezvousTests
     {
         (QueryEngineRendezvous rendezvous, VariableRegistry registry) = await CreateRendezvousAsync().ConfigureAwait(false);
         (QueryEngineRendezvous recordOnly, VariableRegistry recordRegistry) = await CreateRendezvousAsync(
-            new QueryEnginePolicy(MinimumPatternsForColumnar: int.MaxValue, BuildViewOnDemand: false, DegreeOfParallelism: 1)).ConfigureAwait(false);
+            new QueryEnginePolicy(MinimumPatternsForColumnar: int.MaxValue, BuildViewOnDemand: false, DegreeOfParallelism: 1, OrderSetMode: ColumnarOrderSetMode.AllSixOrders)).ConfigureAwait(false);
 
         List<Solution> columnarSolutions = await Drain(rendezvous.Query(
             TwoPatternJoin(registry), VeritasClock.System, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);

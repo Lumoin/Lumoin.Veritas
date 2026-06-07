@@ -118,7 +118,6 @@ public sealed class ColumnarBasicGraphPatternEvaluator
 
         this.index = index;
         this.query = query;
-        this.planner = planner;
         Cardinalities = cardinalities;
         this.timeProvider = timeProvider;
         this.accessControl = accessControl;
@@ -127,6 +126,47 @@ public sealed class ColumnarBasicGraphPatternEvaluator
         this.correlationId = correlationId;
         Cell = cell;
         GlobalVariables = query.Variables;
+        IteratorGlobalOrder = ColumnarRotationPlanner.TryPlanGlobalOrder(index, query)
+            ?? throw new ArgumentException(
+                "The query's shape is rotation-incompatible with this index's order set; consult CanEvaluate and route through the system of record.",
+                nameof(query));
+
+        //Under a reduced order set the iterators commit to the
+        //rotation-compatible order at construction, collapsing the
+        //planner's dynamic choice space to exactly that order; the
+        //supplied planner is substituted accordingly. Under all six
+        //orders the plan IS the query's first-occurrence list and
+        //the supplied planner keeps its freedom.
+        this.planner = ReferenceEquals(IteratorGlobalOrder, query.Variables)
+            ? planner
+            : Planners.FixedOrder(IteratorGlobalOrder);
+    }
+
+    /// <summary>
+    /// The global variable order iterators are constructed on: the
+    /// query's first-occurrence order under all six permutations,
+    /// or the rotation-compatible order under three. Distinct from
+    /// <see cref="GlobalVariables"/>, which keys HyperCube cell
+    /// filters by position and must match the cell constructor's
+    /// list regardless of elimination order.
+    /// </summary>
+    private IReadOnlyList<Variable> IteratorGlobalOrder { get; }
+
+    /// <summary>
+    /// Whether <paramref name="query"/> is answerable on
+    /// <paramref name="index"/> — always under
+    /// <see cref="ColumnarOrderSetMode.AllSixOrders"/>; under three
+    /// rotations, exactly when a rotation-compatible global
+    /// variable order exists (<see cref="ColumnarRotationPlanner"/>).
+    /// Callers route rotation-incompatible queries to the system of
+    /// record.
+    /// </summary>
+    /// <param name="index">The index.</param>
+    /// <param name="query">The basic graph pattern.</param>
+    /// <returns><see langword="true"/> when this evaluator can answer the query.</returns>
+    public static bool CanEvaluate(ColumnarTripleIndex index, BasicGraphPattern query)
+    {
+        return ColumnarRotationPlanner.TryPlanGlobalOrder(index, query) is not null;
     }
 
     /// <summary>
@@ -179,15 +219,18 @@ public sealed class ColumnarBasicGraphPatternEvaluator
         }
 
         //Build iterators. Each iterator's variable order is the
-        //projection of the BGP's first-occurrence variable order
-        //onto that pattern's variable set.
+        //projection of the planned global order onto that pattern's
+        //variable set — the first-occurrence order under all six
+        //permutations, or the rotation-compatible order the planner
+        //found under three (see ColumnarRotationPlanner; a query no
+        //order serves was already rejected at construction).
         ColumnarTriejoinIterator[] iterators = new ColumnarTriejoinIterator[variablePatternIndices.Count];
 
         for(int i = 0; i < variablePatternIndices.Count; i++)
         {
             int patternIndex = variablePatternIndices[i];
             TriplePattern pattern = query.Patterns[patternIndex];
-            Variable[] perIteratorOrder = ProjectGlobalOrderOntoPattern(query.Variables, pattern);
+            Variable[] perIteratorOrder = ProjectGlobalOrderOntoPattern(IteratorGlobalOrder, pattern);
 
             iterators[i] = new ColumnarTriejoinIterator(index, pattern, perIteratorOrder);
         }
