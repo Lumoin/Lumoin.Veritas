@@ -130,67 +130,55 @@ public static class SolutionBatchJoin
         List<int> probeCarryColumns,
         List<Variable> outputSchema)
     {
-        //Materialise the build side column-wise and index its rows
-        //by packed key.
-        List<uint>[] buildColumns = new List<uint>[buildSchema.Count];
-        for(int i = 0; i < buildColumns.Length; i++)
-        {
-            buildColumns[i] = [];
-        }
+        int probeKey0 = probeKeyColumns[0];
+        int probeKey1 = probeKeyColumns.Count > 1 ? probeKeyColumns[1] : -1;
+        int buildColumnCount = buildSchema.Count;
 
-        Dictionary<ulong, List<int>> table = [];
+        SolutionBatchHashTable table = SolutionBatchHashTable.Build(
+            build, buildColumnCount, buildKeyColumns[0], buildKeyColumns.Count > 1 ? buildKeyColumns[1] : -1);
 
-        foreach(SolutionBatch batch in build)
-        {
-            for(int row = 0; row < batch.Count; row++)
-            {
-                int rowId = buildColumns[0].Count;
-                for(int column = 0; column < buildColumns.Length; column++)
-                {
-                    buildColumns[column].Add(batch.ColumnOf(column)[row]);
-                }
-
-                ulong key = PackKey(
-                    buildColumns[buildKeyColumns[0]][rowId],
-                    buildKeyColumns.Count > 1 ? buildColumns[buildKeyColumns[1]][rowId] : 0);
-
-                if(!table.TryGetValue(key, out List<int>? rows))
-                {
-                    rows = [];
-                    table[key] = rows;
-                }
-
-                rows.Add(rowId);
-            }
-        }
-
-        //Stream the probes; matches fan out into output batches.
+        //Stream the probes; chain-walk each match into output
+        //batches. Probe keys precompute contiguously per batch so
+        //the pack is one tight pass the JIT can keep in registers.
         SolutionBatch output = new(outputSchema);
         int outputRows = 0;
+        JoinKey[] probeKeys = new JoinKey[SolutionBatch.BatchLength];
 
         foreach(SolutionBatch batch in probe)
         {
-            for(int row = 0; row < batch.Count; row++)
+            int count = batch.Count;
+            ReadOnlySpan<uint> key0Column = batch.ColumnOf(probeKey0);
+            ReadOnlySpan<uint> key1Column = probeKey1 >= 0 ? batch.ColumnOf(probeKey1) : default;
+
+            if(probeKey1 >= 0)
             {
-                ulong key = PackKey(
-                    batch.ColumnOf(probeKeyColumns[0])[row],
-                    probeKeyColumns.Count > 1 ? batch.ColumnOf(probeKeyColumns[1])[row] : 0);
-
-                if(!table.TryGetValue(key, out List<int>? matches))
+                for(int row = 0; row < count; row++)
                 {
-                    continue;
+                    probeKeys[row] = JoinKey.Pack(key0Column[row], key1Column[row]);
                 }
-
-                foreach(int buildRow in matches)
+            }
+            else
+            {
+                for(int row = 0; row < count; row++)
                 {
-                    for(int column = 0; column < buildColumns.Length; column++)
+                    probeKeys[row] = JoinKey.Pack(key0Column[row], 0);
+                }
+            }
+
+            for(int row = 0; row < count; row++)
+            {
+                int matchRow = table.FirstMatch(probeKeys[row]);
+
+                while(matchRow >= 0)
+                {
+                    for(int column = 0; column < buildColumnCount; column++)
                     {
-                        output.ColumnSpan(column)[outputRows] = buildColumns[column][buildRow];
+                        output.ColumnSpan(column)[outputRows] = table.ValueAt(column, matchRow);
                     }
 
                     for(int carry = 0; carry < probeCarryColumns.Count; carry++)
                     {
-                        output.ColumnSpan(buildColumns.Length + carry)[outputRows] = batch.ColumnOf(probeCarryColumns[carry])[row];
+                        output.ColumnSpan(buildColumnCount + carry)[outputRows] = batch.ColumnOf(probeCarryColumns[carry])[row];
                     }
 
                     outputRows++;
@@ -204,6 +192,8 @@ public static class SolutionBatchJoin
                         output = new SolutionBatch(outputSchema);
                         outputRows = 0;
                     }
+
+                    matchRow = table.NextMatch(matchRow);
                 }
             }
         }
@@ -214,15 +204,6 @@ public static class SolutionBatchJoin
 
             yield return output;
         }
-    }
-
-    /// <summary>Packs one or two join values into the table key.</summary>
-    /// <param name="first">The first join value.</param>
-    /// <param name="second">The second join value, or zero for single-variable keys.</param>
-    /// <returns>The packed key.</returns>
-    private static ulong PackKey(uint first, uint second)
-    {
-        return ((ulong)first << 32) | second;
     }
 
     /// <summary>Whether the schema contains the variable.</summary>
