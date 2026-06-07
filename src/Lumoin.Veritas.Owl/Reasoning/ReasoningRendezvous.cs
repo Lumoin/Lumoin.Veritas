@@ -61,11 +61,15 @@ public sealed record ReasoningResult(
 /// surface's contract.
 /// </para>
 /// <para>
-/// <b>Floor detection.</b> Per request in this version: the store's triples
-/// map to structural form and check against the profile grammars. The
-/// per-commit cached floor (invalidated by TBox-touching commits, the way
-/// the join rendezvous's <c>Advance</c> keeps its view in step) arrives
-/// with the write-path integration.
+/// <b>Floor detection.</b> Per commit, not per request: the store's triples
+/// map to structural form and check against the profile grammars once per
+/// store generation, and the resulting <see cref="ReasoningFloor"/> is
+/// cached with the store reference as the generation marker. The write
+/// path keeps the cache in step through <see cref="Advance"/>, the way the
+/// join rendezvous's <c>Advance</c> keeps its columnar view in step: an
+/// assertion-only commit carries the floor and the EL classification to
+/// the new generation, anything touching schema vocabulary invalidates
+/// them, and the planner statistics rebuild whenever extents change.
 /// </para>
 /// </remarks>
 [DebuggerDisplay("ReasoningRendezvous Delegate={DescriptionLogic is not null}")]
@@ -98,7 +102,13 @@ public sealed class ReasoningRendezvous
     /// <summary>The cached planner statistics for <see cref="StatisticsStore"/>.</summary>
     private Core.Hypertrie.Planning.AprioriCardinalities? Statistics { get; set; }
 
-    /// <summary>Guards the cached per-generation pairs: (<see cref="ClassifiedStore"/>, <see cref="Classification"/>) and (<see cref="StatisticsStore"/>, <see cref="Statistics"/>).</summary>
+    /// <summary>The store generation the cached floor describes; the same reference-as-generation-marker scheme as <see cref="ClassifiedStore"/>.</summary>
+    private HypertrieGraphStore? FloorStore { get; set; }
+
+    /// <summary>The cached expressiveness floor for <see cref="FloorStore"/>.</summary>
+    private ReasoningFloor? Floor { get; set; }
+
+    /// <summary>Guards the cached per-generation pairs: (<see cref="ClassifiedStore"/>, <see cref="Classification"/>), (<see cref="StatisticsStore"/>, <see cref="Statistics"/>), and (<see cref="FloorStore"/>, <see cref="Floor"/>).</summary>
     private object ClassificationLock { get; } = new();
 
     /// <summary>
@@ -146,13 +156,10 @@ public sealed class ReasoningRendezvous
 
         long startTicks = timeProvider?.GetUtcNow().UtcTicks ?? 0;
 
-        //Floor detection: structural mapping plus the profile grammars.
-        List<Quad> quads = DecodeStore(store, dictionary);
-        OwlOntologyDocument document = OwlRdfMapper.Map(quads);
-        OwlProfileReport report = OwlProfileChecker.Check(document);
+        ReasoningFloor floor = DetectFloor(store, dictionary);
 
-        bool rdfsShaped = Policy.PreferRdfsWhenSufficient && IsRdfsShaped(document);
-        bool withinRl = report.IsIn(OwlProfiles.Rl);
+        bool rdfsShaped = Policy.PreferRdfsWhenSufficient && floor.IsRdfsShaped;
+        bool withinRl = floor.IsWithinRl;
 
         ReasoningStrategy strategy;
         ReasoningSelectionReason reason;
@@ -199,13 +206,13 @@ public sealed class ReasoningRendezvous
             }
             else
             {
-                module = ExtractBeyondRlModule(document, report);
+                module = floor.Module;
 
                 if(DescriptionLogic is not null && Policy.DelegateBeyondRl)
                 {
                     strategy = ReasoningStrategy.DescriptionLogicDelegate;
                     reason = ReasoningSelectionReason.BeyondRlDelegated;
-                    verdict = await DescriptionLogic(module, cancellationToken).ConfigureAwait(false);
+                    verdict = await DescriptionLogic(module!, cancellationToken).ConfigureAwait(false);
                     isConsistent = isConsistent && verdict.IsConsistent;
                 }
                 else
@@ -233,7 +240,7 @@ public sealed class ReasoningRendezvous
 
         return new ReasoningResult(
             resultStore, derivedCount, isConsistent, inconsistencyRule,
-            strategy, reason, report.Memberships, module, verdict);
+            strategy, reason, floor.Memberships, module, verdict);
     }
 
     /// <summary>
@@ -368,8 +375,193 @@ public sealed class ReasoningRendezvous
         return existing;
     }
 
-    //Decodes the store's triples back to term form for the structural
-    //mapping; the dictionary is the one the triples were encoded with.
+    /// <summary>
+    /// The cached expressiveness floor for the store's generation, or
+    /// <c>null</c> when no detection has run against it — the
+    /// observability window onto the per-commit cache, paralleling what
+    /// the trace bus announces.
+    /// </summary>
+    /// <param name="store">The store generation to look up.</param>
+    /// <returns>The cached floor, or <c>null</c>.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="store"/> is <see langword="null"/>.</exception>
+    public ReasoningFloor? FloorFor(HypertrieGraphStore store)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+
+        lock(ClassificationLock)
+        {
+            return ReferenceEquals(FloorStore, store) ? Floor : null;
+        }
+    }
+
+    /// <summary>
+    /// Keeps the per-generation caches in step with a commit, the
+    /// reasoning analog of the join rendezvous's <c>Advance</c>. An
+    /// assertion-only delta — plain individual assertions touching no
+    /// schema vocabulary — cannot move the expressiveness floor or the
+    /// TBox-only classification, so both carry to the new generation;
+    /// anything else invalidates them for re-detection at the next
+    /// request. The planner statistics never carry: assertions change the
+    /// extent counts they sum, and they rebuild cheaply from the carried
+    /// classification.
+    /// </summary>
+    /// <remarks>
+    /// The contract mirrors the join rendezvous: commits arrive in order
+    /// from the single write path, so the caches this instance holds
+    /// always describe the pre-commit generation when a delta arrives.
+    /// </remarks>
+    /// <param name="newStore">The post-commit store generation.</param>
+    /// <param name="additions">The triples the commit added.</param>
+    /// <param name="removals">The triples the commit removed.</param>
+    /// <param name="dictionary">The term dictionary the delta's triples were encoded with.</param>
+    /// <exception cref="ArgumentNullException">An argument is <see langword="null"/>.</exception>
+    public void Advance(
+        HypertrieGraphStore newStore,
+        IReadOnlyCollection<EncodedTriple> additions,
+        IReadOnlyCollection<EncodedTriple> removals,
+        TermDictionary dictionary)
+    {
+        ArgumentNullException.ThrowIfNull(newStore);
+        ArgumentNullException.ThrowIfNull(additions);
+        ArgumentNullException.ThrowIfNull(removals);
+        ArgumentNullException.ThrowIfNull(dictionary);
+
+        bool assertionOnly = IsAssertionOnly(additions, dictionary) && IsAssertionOnly(removals, dictionary);
+
+        lock(ClassificationLock)
+        {
+            if(assertionOnly)
+            {
+                ClassifiedStore = Classification is null ? null : newStore;
+                FloorStore = Floor is null ? null : newStore;
+            }
+            else
+            {
+                ClassifiedStore = null;
+                Classification = null;
+                FloorStore = null;
+                Floor = null;
+            }
+
+            StatisticsStore = null;
+            Statistics = null;
+        }
+    }
+
+    /// <summary>
+    /// The cached per-generation floor detection: structural mapping plus
+    /// the profile grammars, run once per store generation; the module is
+    /// extracted at detection so the cache carries everything selection
+    /// reads without holding the decoded document.
+    /// </summary>
+    /// <param name="store">The store generation to detect.</param>
+    /// <param name="dictionary">The term dictionary the store's triples were encoded with.</param>
+    /// <returns>The floor for the generation.</returns>
+    private ReasoningFloor DetectFloor(HypertrieGraphStore store, TermDictionary dictionary)
+    {
+        ReasoningFloor? existing;
+        lock(ClassificationLock)
+        {
+            existing = ReferenceEquals(FloorStore, store) ? Floor : null;
+        }
+
+        if(existing is null)
+        {
+            List<Quad> quads = DecodeStore(store, dictionary);
+            OwlOntologyDocument document = OwlRdfMapper.Map(quads);
+            OwlProfileReport report = OwlProfileChecker.Check(document);
+            bool withinRl = report.IsIn(OwlProfiles.Rl);
+
+            existing = new ReasoningFloor(
+                report.Memberships,
+                IsRdfsShaped(document),
+                withinRl,
+                withinRl ? null : ExtractBeyondRlModule(document, report));
+
+            lock(ClassificationLock)
+            {
+                //A racing request may have detected the same generation
+                //first; either result is correct for it, so the later
+                //writer simply wins.
+                FloorStore = store;
+                Floor = existing;
+            }
+        }
+
+        return existing;
+    }
+
+    /// <summary>
+    /// Whether every triple of the delta is a plain individual assertion:
+    /// no term in the reserved RDF/RDFS/OWL namespaces anywhere, and a
+    /// class-membership object that is a named, non-reserved class. Such
+    /// triples map to assertion axioms within every profile grammar and
+    /// the RDFS shape, so they cannot move the floor; everything else is
+    /// treated as schema-touching — conservative, never unsound.
+    /// </summary>
+    /// <param name="delta">The commit's added or removed triples.</param>
+    /// <param name="dictionary">The term dictionary the delta's triples were encoded with.</param>
+    /// <returns><see langword="true"/> when no triple can carry schema structure.</returns>
+    private static bool IsAssertionOnly(IReadOnlyCollection<EncodedTriple> delta, TermDictionary dictionary)
+    {
+        foreach(EncodedTriple triple in delta)
+        {
+            if(dictionary.Resolve(triple.Subject) is NamedNode subject && IsReservedVocabulary(subject.Iri))
+            {
+                return false;
+            }
+
+            if(dictionary.Resolve(triple.Predicate) is not NamedNode predicate)
+            {
+                return false;
+            }
+
+            if(predicate.Iri.Equals(Vocabulary.Rdf.Type))
+            {
+                if(dictionary.Resolve(triple.Object) is not NamedNode typeObject || IsReservedVocabulary(typeObject.Iri))
+                {
+                    return false;
+                }
+            }
+            else if(IsReservedVocabulary(predicate.Iri) || (dictionary.Resolve(triple.Object) is NamedNode objectNode && IsReservedVocabulary(objectNode.Iri)))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Whether the IRI lives in the <c>rdf:</c>, <c>rdfs:</c>, or
+    /// <c>owl:</c> namespace — the vocabulary whose triples can carry
+    /// schema structure.
+    /// </summary>
+    /// <param name="iri">The IRI to test.</param>
+    /// <returns><see langword="true"/> for a reserved-namespace IRI.</returns>
+    private static bool IsReservedVocabulary(Utf8String iri)
+    {
+        ReadOnlySpan<byte> span = iri.Span;
+
+        return span.StartsWith(RdfNamespace.Span) || span.StartsWith(RdfsNamespace.Span) || span.StartsWith(OwlNamespace.Span);
+    }
+
+    /// <summary>The <c>rdf:</c> namespace prefix in UTF-8 form for the reserved-vocabulary scan.</summary>
+    private static Utf8String RdfNamespace { get; } = Utf8String.FromString(Rdf.RdfVocabulary.Rdf.Namespace);
+
+    /// <summary>The <c>rdfs:</c> namespace prefix in UTF-8 form for the reserved-vocabulary scan.</summary>
+    private static Utf8String RdfsNamespace { get; } = Utf8String.FromString(Rdf.RdfVocabulary.Rdfs.Namespace);
+
+    /// <summary>The <c>owl:</c> namespace prefix in UTF-8 form for the reserved-vocabulary scan.</summary>
+    private static Utf8String OwlNamespace { get; } = Utf8String.FromString(OwlVocabulary.Namespace);
+
+    /// <summary>
+    /// Decodes the store's triples back to term form for the structural
+    /// mapping; the dictionary is the one the triples were encoded with.
+    /// </summary>
+    /// <param name="store">The store to decode.</param>
+    /// <param name="dictionary">The term dictionary the store's triples were encoded with.</param>
+    /// <returns>The decoded quads.</returns>
     private static List<Quad> DecodeStore(HypertrieGraphStore store, TermDictionary dictionary)
     {
         List<Quad> quads = [];
@@ -384,10 +576,14 @@ public sealed class ReasoningRendezvous
         return quads;
     }
 
-    //Whether every axiom stays within the RDFS vocabulary the streaming
-    //pass handles: named-term hierarchies, domains/ranges, declarations,
-    //and assertions. Anything else — characteristics, equivalences,
-    //expressions, equality — needs the RL closure.
+    /// <summary>
+    /// Whether every axiom stays within the RDFS vocabulary the streaming
+    /// pass handles: named-term hierarchies, domains/ranges, declarations,
+    /// and assertions. Anything else — characteristics, equivalences,
+    /// expressions, equality — needs the RL closure.
+    /// </summary>
+    /// <param name="document">The mapped ontology document.</param>
+    /// <returns><see langword="true"/> when the RDFS streaming pass covers the content.</returns>
     private static bool IsRdfsShaped(OwlOntologyDocument document)
     {
         foreach(OwlAxiom axiom in document.Axioms)
@@ -422,10 +618,15 @@ public sealed class ReasoningRendezvous
         return true;
     }
 
-    //The beyond-ceiling module: the axioms whose origins the RL grammar
-    //flagged. Syntactic-locality module extraction — pulling in the
-    //axioms a flagged axiom's entities depend on — is the planned
-    //refinement; the violating set is the sound starting point.
+    /// <summary>
+    /// The beyond-ceiling module: the axioms whose origins the RL grammar
+    /// flagged. Syntactic-locality module extraction — pulling in the
+    /// axioms a flagged axiom's entities depend on — is the planned
+    /// refinement; the violating set is the sound starting point.
+    /// </summary>
+    /// <param name="document">The mapped ontology document.</param>
+    /// <param name="report">The profile report whose RL findings anchor the module.</param>
+    /// <returns>The module of flagged axioms and their findings.</returns>
     private static ReasoningModule ExtractBeyondRlModule(OwlOntologyDocument document, OwlProfileReport report)
     {
         List<OwlProfileViolation> rlViolations = [];

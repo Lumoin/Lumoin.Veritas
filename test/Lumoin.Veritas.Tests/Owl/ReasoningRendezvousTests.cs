@@ -181,6 +181,124 @@ internal sealed class ReasoningRendezvousTests
         Assert.Contains(Utf8String.FromString(Example + "Car"), first.SubsumeesOf(Utf8String.FromString(Example + "Vehicle")), "The inverted index answers type-pattern expansion.");
     }
 
+    /// <summary>Floor detection runs once per store generation and is visible through <see cref="ReasoningRendezvous.FloorFor"/>.</summary>
+    [TestMethod]
+    public async Task FloorDetectsOncePerGeneration()
+    {
+        TermDictionary dictionary = new();
+        TermId type = Mint(dictionary, Vocabulary.Rdf.Type.ToString());
+        TermId subClassOf = Mint(dictionary, RdfVocabulary.Rdfs.SubClassOf.ToString());
+        TermId owlClass = Mint(dictionary, "http://www.w3.org/2002/07/owl#Class");
+        TermId car = Mint(dictionary, Example + "Car");
+        TermId vehicle = Mint(dictionary, Example + "Vehicle");
+
+        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(
+            [
+                Triple(car, type, owlClass),
+                Triple(vehicle, type, owlClass),
+                Triple(car, subClassOf, vehicle),
+            ],
+            VeritasHashing.Default,
+            TestContext.CancellationToken).ConfigureAwait(false);
+
+        ReasoningRendezvous rendezvous = new(ReasoningPolicy.Default);
+
+        Assert.IsNull(rendezvous.FloorFor(store), "No detection has run yet.");
+
+        await rendezvous.MaterializeAsync(store, dictionary, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+
+        ReasoningFloor? floor = rendezvous.FloorFor(store);
+        Assert.IsNotNull(floor);
+        Assert.IsTrue(floor.IsRdfsShaped);
+        Assert.IsTrue(floor.IsWithinRl);
+        Assert.IsNull(floor.Module);
+    }
+
+    /// <summary>An assertion-only commit carries the floor and the classification to the new generation; the statistics never carry.</summary>
+    [TestMethod]
+    public async Task AssertionOnlyAdvanceCarriesFloorAndClassification()
+    {
+        TermDictionary dictionary = new();
+        TermId type = Mint(dictionary, Vocabulary.Rdf.Type.ToString());
+        TermId subClassOf = Mint(dictionary, RdfVocabulary.Rdfs.SubClassOf.ToString());
+        TermId owlClass = Mint(dictionary, "http://www.w3.org/2002/07/owl#Class");
+        TermId car = Mint(dictionary, Example + "Car");
+        TermId vehicle = Mint(dictionary, Example + "Vehicle");
+        TermId myCar = Mint(dictionary, Example + "myCar");
+
+        EncodedTriple[] schema =
+        [
+            Triple(car, type, owlClass),
+            Triple(vehicle, type, owlClass),
+            Triple(car, subClassOf, vehicle),
+        ];
+
+        HypertrieGraphStore first = await HypertrieGraphStore.BuildAsync(schema, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+        HypertrieGraphStore second = await HypertrieGraphStore.BuildAsync(
+            [.. schema, Triple(myCar, type, car)],
+            VeritasHashing.Default,
+            TestContext.CancellationToken).ConfigureAwait(false);
+
+        ReasoningRendezvous rendezvous = new(ReasoningPolicy.Default);
+        List<ReasoningTraceEvent> events = [];
+
+        await rendezvous.MaterializeAsync(first, dictionary, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+        ReasoningFloor? detected = rendezvous.FloorFor(first);
+        Lumoin.Veritas.Owl.El.ElClassification classification = rendezvous.Classify(
+            first, dictionary, Collect(events), TimeProvider.System, cancellationToken: TestContext.CancellationToken);
+
+        rendezvous.Advance(second, [Triple(myCar, type, car)], [], dictionary);
+
+        Assert.AreSame(detected, rendezvous.FloorFor(second), "The floor carries to the new generation.");
+        Assert.IsNull(rendezvous.FloorFor(first), "The cache describes one generation at a time.");
+        Assert.AreSame(classification, rendezvous.Classify(
+            second, dictionary, Collect(events), TimeProvider.System, cancellationToken: TestContext.CancellationToken),
+            "The TBox-only classification carries with it.");
+        Assert.AreEqual(ReasoningSelectionReason.ElClassificationBuilt, events[0].Reason);
+        Assert.AreEqual(ReasoningSelectionReason.ElClassificationReused, events[1].Reason, "The carried classification answers the new generation without a rebuild.");
+    }
+
+    /// <summary>A commit touching schema vocabulary invalidates the floor and the classification for re-detection.</summary>
+    [TestMethod]
+    public async Task SchemaTouchingAdvanceInvalidates()
+    {
+        TermDictionary dictionary = new();
+        TermId type = Mint(dictionary, Vocabulary.Rdf.Type.ToString());
+        TermId subClassOf = Mint(dictionary, RdfVocabulary.Rdfs.SubClassOf.ToString());
+        TermId owlClass = Mint(dictionary, "http://www.w3.org/2002/07/owl#Class");
+        TermId car = Mint(dictionary, Example + "Car");
+        TermId vehicle = Mint(dictionary, Example + "Vehicle");
+        TermId machine = Mint(dictionary, Example + "Machine");
+
+        EncodedTriple[] schema =
+        [
+            Triple(car, type, owlClass),
+            Triple(vehicle, type, owlClass),
+            Triple(car, subClassOf, vehicle),
+        ];
+
+        HypertrieGraphStore first = await HypertrieGraphStore.BuildAsync(schema, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+        HypertrieGraphStore second = await HypertrieGraphStore.BuildAsync(
+            [.. schema, Triple(machine, type, owlClass), Triple(vehicle, subClassOf, machine)],
+            VeritasHashing.Default,
+            TestContext.CancellationToken).ConfigureAwait(false);
+
+        ReasoningRendezvous rendezvous = new(ReasoningPolicy.Default);
+        List<ReasoningTraceEvent> events = [];
+
+        await rendezvous.MaterializeAsync(first, dictionary, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+        rendezvous.Classify(first, dictionary, Collect(events), TimeProvider.System, cancellationToken: TestContext.CancellationToken);
+
+        rendezvous.Advance(second, [Triple(machine, type, owlClass), Triple(vehicle, subClassOf, machine)], [], dictionary);
+
+        Assert.IsNull(rendezvous.FloorFor(second), "Schema vocabulary in the delta invalidates the floor.");
+        Assert.IsNull(rendezvous.FloorFor(first));
+
+        rendezvous.Classify(second, dictionary, Collect(events), TimeProvider.System, cancellationToken: TestContext.CancellationToken);
+
+        Assert.AreEqual(ReasoningSelectionReason.ElClassificationBuilt, events[1].Reason, "The new generation classifies afresh.");
+    }
+
     //A TBox with a union on the superclass side — outside the RL grammar:
     //c1 ⊑ (a ∪ b).
     private async Task<(HypertrieGraphStore Store, TermId C1)> BuildBeyondRlStoreAsync(TermDictionary dictionary)

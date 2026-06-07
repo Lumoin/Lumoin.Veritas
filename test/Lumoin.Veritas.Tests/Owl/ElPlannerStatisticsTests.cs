@@ -161,9 +161,47 @@ internal sealed class ElPlannerStatisticsTests
         }
     }
 
-    //The shared fixture: Car ⊑ Vehicle, Bicycle ⊑ Vehicle; two Cars, one
-    //Vehicle, one Boat (a class the TBox never mentions), no Bicycles.
-    private async Task<HypertrieGraphStore> BuildVehicleStoreAsync(TermDictionary dictionary, Terms terms)
+    /// <summary>An assertion-only advance rebuilds the statistics with the new extents from the carried classification — no re-classification.</summary>
+    [TestMethod]
+    public async Task StatisticsRebuildAcrossAssertionOnlyAdvance()
+    {
+        TermDictionary dictionary = new();
+        Terms terms = new(dictionary);
+        TermId car3 = Mint(dictionary, Example + "car3");
+        EncodedTriple addition = Triple(car3, terms.Type, terms.Car);
+
+        HypertrieGraphStore first = await BuildVehicleStoreAsync(dictionary, terms).ConfigureAwait(false);
+        HypertrieGraphStore second = await BuildVehicleStoreAsync(dictionary, terms, addition).ConfigureAwait(false);
+
+        ReasoningRendezvous rendezvous = new(ReasoningPolicy.Default);
+        List<ReasoningTraceEvent> events = [];
+
+        AprioriCardinalities before = rendezvous.PlannerStatistics(
+            first, dictionary, Collect(events), TimeProvider.System, cancellationToken: TestContext.CancellationToken);
+
+        rendezvous.Advance(second, [addition], [], dictionary);
+
+        AprioriCardinalities after = rendezvous.PlannerStatistics(
+            second, dictionary, Collect(events), TimeProvider.System, cancellationToken: TestContext.CancellationToken);
+
+        Assert.AreNotSame(before, after, "Assertions change the extents the bounds sum; the statistics never carry.");
+        Assert.IsTrue(after.TryGetUpperBound(terms.Vehicle, out long vehicleBound));
+        Assert.AreEqual(4, vehicleBound, "The new Car instance raises Vehicle's bound: 1 + 3.");
+        Assert.HasCount(2, events);
+        Assert.AreEqual(ReasoningSelectionReason.ElClassificationBuilt, events[0].Reason);
+        Assert.AreEqual(ReasoningSelectionReason.ElClassificationReused, events[1].Reason, "The rebuild reuses the carried classification.");
+    }
+
+    /// <summary>
+    /// Builds the shared fixture: Car ⊑ Vehicle, Bicycle ⊑ Vehicle; two
+    /// Cars, one Vehicle, one Boat (a class the TBox never mentions), no
+    /// Bicycles — plus whatever assertion-delta triples a test appends.
+    /// </summary>
+    /// <param name="dictionary">The dictionary the triples encode with.</param>
+    /// <param name="terms">The shared identifiers.</param>
+    /// <param name="extras">Assertion-delta triples appended to the fixture.</param>
+    /// <returns>The built store.</returns>
+    private async Task<HypertrieGraphStore> BuildVehicleStoreAsync(TermDictionary dictionary, Terms terms, params EncodedTriple[] extras)
     {
         TermId car1 = Mint(dictionary, Example + "car1");
         TermId car2 = Mint(dictionary, Example + "car2");
@@ -181,13 +219,18 @@ internal sealed class ElPlannerStatisticsTests
                 Triple(car2, terms.Type, terms.Car),
                 Triple(van, terms.Type, terms.Vehicle),
                 Triple(dinghy, terms.Type, terms.Boat),
+                .. extras,
             ],
             VeritasHashing.Default,
             TestContext.CancellationToken).ConfigureAwait(false);
     }
 
-    //A one-pattern query ?x rdf:type Vehicle, enough to drive planner
-    //consultations through either driver.
+    /// <summary>
+    /// A one-pattern query <c>?x rdf:type Vehicle</c>, enough to drive
+    /// planner consultations through either driver.
+    /// </summary>
+    /// <param name="terms">The shared identifiers.</param>
+    /// <returns>The pattern and its variable.</returns>
     private static (BasicGraphPattern Query, Variable X) VehicleQuery(Terms terms)
     {
         VariableRegistry registry = new();
@@ -200,9 +243,14 @@ internal sealed class ElPlannerStatisticsTests
         return (new BasicGraphPattern([pattern], registry), x);
     }
 
-    //Wraps the default first-occurrence decisions, recording the
-    //cardinalities each consultation carried. The sink is locked because
-    //the columnar driver consults from concurrent cells.
+    /// <summary>
+    /// Wraps the default first-occurrence decisions, recording the
+    /// cardinalities each consultation carried. The sink is locked because
+    /// the columnar driver consults from concurrent cells.
+    /// </summary>
+    /// <param name="bgp">The query the inner planner walks.</param>
+    /// <param name="seen">The sink receiving each consultation's cardinalities.</param>
+    /// <returns>The recording planner.</returns>
     private static Planner RecordingPlanner(BasicGraphPattern bgp, List<AprioriCardinalities?> seen)
     {
         Planner inner = Planners.FirstOccurrence(bgp);
