@@ -214,7 +214,7 @@ internal static class W3cSparqlEvalRunner
         return named;
     }
 
-    /// <summary>Builds a mutable dataset by encoding the initial default and named graphs into one shared dictionary and journal-backed graph stores.</summary>
+    /// <summary>Builds a mutable dataset by encoding the initial default and named graphs into one shared dictionary, all graphs over one shared arena and one dataset journal.</summary>
     /// <param name="defaultTriples">The default-graph triples.</param>
     /// <param name="namedGraphs">The named graphs as (name, triples) pairs.</param>
     /// <param name="cancellationToken">A token to cancel the build.</param>
@@ -225,15 +225,13 @@ internal static class W3cSparqlEvalRunner
         CancellationToken cancellationToken)
     {
         TermDictionary dictionary = new();
-        HypertrieGraphStore defaultGraph = await MutableSparqlDataset.BuildGraphAsync(Encode(defaultTriples, dictionary), cancellationToken).ConfigureAwait(false);
-
-        Dictionary<TermId, HypertrieGraphStore> named = [];
+        Dictionary<TermId, IReadOnlyList<EncodedTriple>> named = [];
         foreach((RdfTerm name, IEnumerable<DataTriple> triples) in namedGraphs)
         {
-            named[dictionary.GetOrAdd(name)] = await MutableSparqlDataset.BuildGraphAsync(Encode(triples, dictionary), cancellationToken).ConfigureAwait(false);
+            named[dictionary.GetOrAdd(name)] = Encode(triples, dictionary);
         }
 
-        return new MutableSparqlDataset(dictionary, defaultGraph, named);
+        return await MutableSparqlDataset.CreateAsync(dictionary, Encode(defaultTriples, dictionary), named, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Encodes triples into the shared dictionary as encoded triples.</summary>

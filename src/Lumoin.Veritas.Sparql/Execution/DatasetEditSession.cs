@@ -1,0 +1,574 @@
+using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Diagnostics;
+using System.Threading;
+using System.Threading.Tasks;
+using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Encoding;
+using Lumoin.Veritas.Core.Hypertrie;
+using Lumoin.Veritas.Core.Hypertrie.Editing;
+using Lumoin.Veritas.Core.Hypertrie.Storage;
+using Lumoin.Veritas.Core.Threading;
+
+namespace Lumoin.Veritas.Sparql.Execution;
+
+/// <summary>
+/// One open transaction over a <see cref="MutableSparqlDataset"/>:
+/// stages per-graph deltas and structural changes (create, drop,
+/// replace) against a private working state, then commits them as
+/// ONE <see cref="DatasetJournalEntry"/> — every touched graph
+/// transitions atomically or not at all. A SPARQL Update request
+/// maps to one session, which is what makes the request a
+/// transaction.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>Working state.</b> Each mutating call applies immediately to
+/// the session's working stores (so a later operation in the same
+/// request reads the earlier ones' effects through
+/// <see cref="Snapshot"/>), while the published dataset stays at
+/// the pre-request state until <see cref="CommitAsync"/>. The
+/// journal entry records the NET per-graph delta between the base
+/// and the final working state — a triple added and removed inside
+/// one session does not appear.
+/// </para>
+/// <para>
+/// <b>Optimistic concurrency.</b> The commit appends under the
+/// dataset journal's head-CAS; when another session committed
+/// first, <see cref="CommitAsync"/> raises
+/// <see cref="EditSessionConcurrencyException"/> and the caller
+/// retries the whole request against the new state. Intermediate
+/// working stores the session abandons become sweepable through
+/// the arena's weak snapshot registry.
+/// </para>
+/// <para>
+/// <b>Lifecycle.</b> Open → Committed on successful commit;
+/// Open → Disposed or Committed → Disposed on dispose. Disposing
+/// an uncommitted session writes a best-effort
+/// <see cref="EditSessionEntryKind.Abandoned"/> entry, mirroring
+/// the per-store <see cref="EditSession"/> contract. The session
+/// holds the arena's shared mutation gate for its lifetime, so
+/// sweeps wait for open sessions.
+/// </para>
+/// </remarks>
+[DebuggerDisplay("DatasetEditSession Id={Id} State={CurrentStateName}")]
+public sealed class DatasetEditSession: IAsyncDisposable
+{
+    //State machine values; encoded as int so Interlocked.CompareExchange applies.
+    private const int StateOpen = 0;
+
+    private const int StateCommitted = 1;
+
+    private const int StateDisposed = 2;
+
+    //Naked field: Interlocked/Volatile primitives require ref semantics.
+    private int state = StateOpen;
+
+    /// <summary>Per-graph net-delta scratch: the additions and removals relative to the BASE state, folded across every operation of the session.</summary>
+    private sealed class GraphScratch
+    {
+        /// <summary>Triples in the working graph that are not in the base graph.</summary>
+        public HashSet<EncodedTriple> Added { get; } = [];
+
+        /// <summary>Triples in the base graph that are not in the working graph.</summary>
+        public HashSet<EncodedTriple> Removed { get; } = [];
+    }
+
+    /// <summary>The dataset the session commits into.</summary>
+    private MutableSparqlDataset Dataset { get; }
+
+    /// <summary>The committed state the session branched from.</summary>
+    private MutableSparqlDataset.DatasetState BaseState { get; }
+
+    /// <summary>The arena's shared mutation-gate scope, held for the session's lifetime.</summary>
+    private SharedScope Scope { get; }
+
+    /// <summary>The session's working default-graph store.</summary>
+    public HypertrieGraphStore DefaultGraph { get; private set; }
+
+    /// <summary>The session's working named-graph stores. A private copy of the base map, mutated freely.</summary>
+    private Dictionary<TermId, HypertrieGraphStore> NamedGraphs { get; }
+
+    /// <summary>The net deltas per touched graph, keyed by graph term id (<see cref="TermId.None"/> = the default graph).</summary>
+    private Dictionary<TermId, GraphScratch> Scratch { get; } = [];
+
+    /// <summary>The session's opaque identifier; identifies its lifecycle entries in the dataset journal.</summary>
+    public SessionId Id { get; }
+
+    /// <summary>Diagnostic projection of the state machine for the debugger display.</summary>
+    private string CurrentStateName => Volatile.Read(ref state) switch
+    {
+        StateOpen => "Open",
+        StateCommitted => "Committed",
+        StateDisposed => "Disposed",
+        _ => "Unknown",
+    };
+
+    /// <summary>Constructs an open session. Called by <see cref="MutableSparqlDataset.OpenSessionAsync"/>; consumers do not call this directly.</summary>
+    /// <param name="dataset">The dataset the session commits into.</param>
+    /// <param name="baseState">The committed state the session branches from.</param>
+    /// <param name="scope">The arena's shared mutation-gate scope, owned by the session from here on.</param>
+    /// <param name="id">The session's opaque identifier.</param>
+    internal DatasetEditSession(
+        MutableSparqlDataset dataset,
+        MutableSparqlDataset.DatasetState baseState,
+        SharedScope scope,
+        SessionId id)
+    {
+        Dataset = dataset;
+        BaseState = baseState;
+        Scope = scope;
+        Id = id;
+        DefaultGraph = baseState.DefaultGraph;
+        NamedGraphs = new Dictionary<TermId, HypertrieGraphStore>(baseState.NamedGraphs);
+    }
+
+    /// <summary>The dataset's shared term dictionary, for encoding update terms.</summary>
+    public TermDictionary Dictionary => Dataset.Dictionary;
+
+    /// <summary>The graph-name term ids of the working named graphs.</summary>
+    public IReadOnlyCollection<TermId> NamedGraphNames => NamedGraphs.Keys;
+
+    /// <summary>Whether the working state has a named graph for a graph name.</summary>
+    /// <param name="name">The graph-name term id.</param>
+    /// <returns><see langword="true"/> when the named graph exists.</returns>
+    public bool ContainsNamedGraph(TermId name)
+    {
+        return NamedGraphs.ContainsKey(name);
+    }
+
+    /// <summary>Looks up the working store for a named graph.</summary>
+    /// <param name="name">The graph-name term id.</param>
+    /// <param name="store">Receives the store on success.</param>
+    /// <returns><see langword="true"/> when the named graph exists.</returns>
+    public bool TryGetNamedGraph(TermId name, out HypertrieGraphStore? store)
+    {
+        return NamedGraphs.TryGetValue(name, out store);
+    }
+
+    /// <summary>
+    /// Produces a read-only <see cref="SparqlDataset"/> over the
+    /// session's WORKING state, so a later operation's
+    /// <c>WHERE</c> sees the earlier operations' effects
+    /// (SPARQL Update §3.1.3) while outside readers keep the
+    /// pre-request state.
+    /// </summary>
+    /// <returns>The working-state dataset view.</returns>
+    public SparqlDataset Snapshot()
+    {
+        ThrowIfNotOpen();
+
+        return new SparqlDataset(DefaultGraph, NamedGraphs, Dataset.DefaultGraphRendezvous);
+    }
+
+    /// <summary>Produces a working-state view with a substituted default graph (the <c>WITH</c> graph of a modify's <c>WHERE</c>).</summary>
+    /// <param name="defaultGraph">The default-graph store the view uses.</param>
+    /// <returns>The dataset view.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="defaultGraph"/> is <see langword="null"/>.</exception>
+    public SparqlDataset SnapshotWithDefault(HypertrieGraphStore defaultGraph)
+    {
+        ArgumentNullException.ThrowIfNull(defaultGraph);
+        ThrowIfNotOpen();
+
+        return new SparqlDataset(defaultGraph, NamedGraphs, Dataset.DefaultGraphRendezvous);
+    }
+
+    /// <summary>
+    /// Applies a triple delta to one graph of the working state. An
+    /// absent named graph springs into existence when the delta
+    /// carries additions (SPARQL Update §3.1.1); a delta of only
+    /// removals against an absent graph is a no-op.
+    /// </summary>
+    /// <param name="graph">The graph to edit: a named graph's term id, or <see cref="TermId.None"/> for the default graph.</param>
+    /// <param name="additions">The triples to add; already-present triples are tolerated.</param>
+    /// <param name="removals">The triples to remove; already-absent triples are tolerated.</param>
+    /// <param name="cancellationToken">A token that aborts the application.</param>
+    /// <returns>The asynchronous application.</returns>
+    /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
+    /// <exception cref="InvalidOperationException">The session is not open.</exception>
+    public async ValueTask ApplyDeltaAsync(
+        TermId graph,
+        IReadOnlyCollection<EncodedTriple> additions,
+        IReadOnlyCollection<EncodedTriple> removals,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(additions);
+        ArgumentNullException.ThrowIfNull(removals);
+        ThrowIfNotOpen();
+        cancellationToken.ThrowIfCancellationRequested();
+
+        HypertrieGraphStore? store = graph.IsNone
+            ? DefaultGraph
+            : NamedGraphs.TryGetValue(graph, out HypertrieGraphStore? existing) ? existing : null;
+
+        if(store is null)
+        {
+            if(additions.Count == 0)
+            {
+                return;
+            }
+
+            store = await HypertrieGraphStore.BuildAsync([], Dataset.Arena, Dataset.Pools, cancellationToken).ConfigureAwait(false);
+            NamedGraphs[graph] = store;
+        }
+
+        ApplyDeltaResult delta = HypertrieOpsPatching.ApplyDelta(store.Snapshot, additions, removals, Dataset.Arena, Dataset.Pools);
+        if(delta.EffectiveAdditions.Count == 0 && delta.EffectiveRemovals.Count == 0)
+        {
+            return;
+        }
+
+        //Constructing the snapshot registers it with the arena;
+        //that happens under the mutation gate the session holds, so
+        //a concurrent sweep cannot run between intern and
+        //registration. The store acquires its own reference, so the
+        //creator reference releases at the end of this scope.
+        using HypertrieSnapshot snapshot = new(Dataset.Arena, delta.Root, delta.Id);
+        HypertrieGraphStore updated = HypertrieGraphStore.FromSnapshot(snapshot);
+        if(graph.IsNone)
+        {
+            DefaultGraph = updated;
+        }
+        else
+        {
+            NamedGraphs[graph] = updated;
+        }
+
+        FoldDelta(ScratchFor(graph), delta.EffectiveAdditions, delta.EffectiveRemovals);
+    }
+
+    /// <summary>Replaces a graph's content wholesale (<c>COPY</c>/<c>MOVE</c>/<c>CLEAR</c> semantics): the graph's working content becomes exactly <paramref name="triples"/>. An absent named graph is created, even for empty replacement content.</summary>
+    /// <param name="graph">The graph to replace: a named graph's term id (created when absent), or <see cref="TermId.None"/> for the default graph.</param>
+    /// <param name="triples">The replacement content; empty clears the graph.</param>
+    /// <param name="cancellationToken">A token that aborts the application.</param>
+    /// <returns>The asynchronous application.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="triples"/> is <see langword="null"/>.</exception>
+    /// <exception cref="InvalidOperationException">The session is not open.</exception>
+    public async ValueTask ReplaceGraphAsync(
+        TermId graph,
+        IReadOnlyCollection<EncodedTriple> triples,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(triples);
+        ThrowIfNotOpen();
+
+        if(!graph.IsNone && !NamedGraphs.ContainsKey(graph))
+        {
+            await CreateGraphAsync(graph, cancellationToken).ConfigureAwait(false);
+        }
+
+        HypertrieGraphStore store = graph.IsNone ? DefaultGraph : NamedGraphs[graph];
+        List<EncodedTriple> currentTriples = MutableSparqlDataset.CollectAllTriples(store);
+
+        await ApplyDeltaAsync(graph, triples, currentTriples, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Creates an empty named graph in the working state (<c>CREATE GRAPH</c>); an existing graph is left unchanged.</summary>
+    /// <param name="graph">The graph-name term id.</param>
+    /// <param name="cancellationToken">A token that aborts the build.</param>
+    /// <returns>The asynchronous application.</returns>
+    /// <exception cref="ArgumentException"><paramref name="graph"/> is <see cref="TermId.None"/> — the default graph always exists.</exception>
+    /// <exception cref="InvalidOperationException">The session is not open.</exception>
+    public async ValueTask CreateGraphAsync(TermId graph, CancellationToken cancellationToken = default)
+    {
+        ThrowIfNotOpen();
+
+        if(graph.IsNone)
+        {
+            throw new ArgumentException("The default graph always exists and cannot be created.", nameof(graph));
+        }
+
+        if(NamedGraphs.ContainsKey(graph))
+        {
+            return;
+        }
+
+        NamedGraphs[graph] = await HypertrieGraphStore.BuildAsync([], Dataset.Arena, Dataset.Pools, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Drops a named graph from the working state (<c>DROP
+    /// GRAPH</c>); an absent graph is a no-op. The net-delta
+    /// scratch first folds in the removal of the graph's working
+    /// content, so a later re-creation in the same session yields a
+    /// correct net transition against the base.
+    /// </summary>
+    /// <param name="graph">The graph-name term id.</param>
+    /// <exception cref="ArgumentException"><paramref name="graph"/> is <see cref="TermId.None"/> — clear the default graph via <see cref="ReplaceGraphAsync"/> instead.</exception>
+    /// <exception cref="InvalidOperationException">The session is not open.</exception>
+    public void DropGraph(TermId graph)
+    {
+        ThrowIfNotOpen();
+
+        if(graph.IsNone)
+        {
+            throw new ArgumentException("The default graph always exists and cannot be dropped.", nameof(graph));
+        }
+
+        if(!NamedGraphs.TryGetValue(graph, out HypertrieGraphStore? store))
+        {
+            return;
+        }
+
+        FoldDelta(ScratchFor(graph), [], MutableSparqlDataset.CollectAllTriples(store));
+        NamedGraphs.Remove(graph);
+    }
+
+    /// <summary>
+    /// Commits the session's accumulated transitions as one
+    /// <see cref="DatasetJournalEntry"/> and publishes the new
+    /// dataset state. Transitions the session to Committed;
+    /// subsequent mutating calls throw.
+    /// </summary>
+    /// <param name="cancellationToken">A token that aborts the commit.</param>
+    /// <returns>The committed read-only dataset snapshot. When nothing effectively changed, the pre-request snapshot — no journal entry is written.</returns>
+    /// <exception cref="InvalidOperationException">The session is not open.</exception>
+    /// <exception cref="EditSessionConcurrencyException">Another session committed first; the dataset journal's head moved past the session's base. Retry the whole request against the new state.</exception>
+    public async ValueTask<SparqlDataset> CommitAsync(CancellationToken cancellationToken = default)
+    {
+        ThrowIfNotOpen();
+        cancellationToken.ThrowIfCancellationRequested();
+
+        ImmutableArray<DatasetGraphTransition> transitions = ComputeTransitions();
+        if(transitions.IsEmpty)
+        {
+            TransitionToCommitted();
+
+            return Dataset.Snapshot();
+        }
+
+        NodeIdentifier childStateId = MutableSparqlDataset.ComputeStateId(Dataset.Arena.Hash, DefaultGraph, NamedGraphs);
+        DatasetJournalEntry committedEntry = DatasetJournalEntry.Committed(
+            Dataset.Arena.Hash,
+            parentId: BaseState.StateId,
+            childId: childStateId,
+            sessionId: Id,
+            transitions: transitions);
+
+        //The append is the linearisation point: it succeeds only
+        //when this session's base is still the head, so the
+        //subsequent publish cannot race another publisher.
+        await Dataset.JournalAppend(committedEntry, BaseState.StateId, cancellationToken).ConfigureAwait(false);
+
+        bool defaultChanged = Scratch.TryGetValue(TermId.None, out GraphScratch? defaultScratch)
+            && (defaultScratch.Added.Count > 0 || defaultScratch.Removed.Count > 0);
+        MutableSparqlDataset.DatasetState newState = new(DefaultGraph, NamedGraphs, childStateId);
+        Dataset.Publish(
+            newState,
+            defaultChanged,
+            defaultChanged ? defaultScratch!.Added : [],
+            defaultChanged ? defaultScratch!.Removed : []);
+        TransitionToCommitted();
+
+        return new SparqlDataset(newState.DefaultGraph, newState.NamedGraphs, Dataset.DefaultGraphRendezvous);
+    }
+
+    /// <summary>
+    /// Releases the session's resources. An uncommitted session
+    /// records a best-effort
+    /// <see cref="EditSessionEntryKind.Abandoned"/> entry — a
+    /// failure there is swallowed, mirroring the per-store
+    /// <see cref="EditSession"/> contract. Always releases the
+    /// arena's shared scope.
+    /// </summary>
+    /// <returns>The asynchronous disposal.</returns>
+    public async ValueTask DisposeAsync()
+    {
+        int previous = Interlocked.Exchange(ref state, StateDisposed);
+        if(previous == StateDisposed)
+        {
+            return;
+        }
+
+        try
+        {
+            if(previous == StateOpen)
+            {
+                DatasetJournalEntry abandonedEntry = DatasetJournalEntry.Abandoned(BaseState.StateId, Id);
+
+                try
+                {
+                    await Dataset.JournalAppend(abandonedEntry, BaseState.StateId, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch(EditSessionConcurrencyException)
+                {
+                    //Head moved before the abandon could be
+                    //recorded. The Started entry written at open
+                    //plus the absence of a Committed entry against
+                    //this SessionId is the recoverable signal.
+                }
+                catch(InvalidOperationException)
+                {
+                    //Defensive against journal implementations that
+                    //surface state-violation errors during shutdown.
+                }
+            }
+        }
+        finally
+        {
+            await Scope.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Looks up or creates the net-delta scratch for a graph.</summary>
+    /// <param name="graph">The graph term id; <see cref="TermId.None"/> for the default graph.</param>
+    /// <returns>The scratch.</returns>
+    private GraphScratch ScratchFor(TermId graph)
+    {
+        if(!Scratch.TryGetValue(graph, out GraphScratch? scratch))
+        {
+            scratch = new GraphScratch();
+            Scratch[graph] = scratch;
+        }
+
+        return scratch;
+    }
+
+    /// <summary>
+    /// Folds one operation's EFFECTIVE delta into a graph's net
+    /// scratch, maintaining the invariants added = working∖base and
+    /// removed = base∖working: re-adding a removed triple cancels
+    /// the removal, removing an added triple cancels the addition.
+    /// </summary>
+    /// <param name="scratch">The graph's scratch.</param>
+    /// <param name="effectiveAdditions">Triples this operation actually added to the working graph.</param>
+    /// <param name="effectiveRemovals">Triples this operation actually removed from the working graph.</param>
+    private static void FoldDelta(
+        GraphScratch scratch,
+        IReadOnlyList<EncodedTriple> effectiveAdditions,
+        IReadOnlyList<EncodedTriple> effectiveRemovals)
+    {
+        foreach(EncodedTriple triple in effectiveAdditions)
+        {
+            if(!scratch.Removed.Remove(triple))
+            {
+                scratch.Added.Add(triple);
+            }
+        }
+
+        foreach(EncodedTriple triple in effectiveRemovals)
+        {
+            if(!scratch.Added.Remove(triple))
+            {
+                scratch.Removed.Add(triple);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Computes the per-graph transitions between the base state
+    /// and the working state: a mutate transition where both sides
+    /// exist and the root moved, a create where only the working
+    /// side exists, a drop where only the base side exists.
+    /// Deterministically ordered by graph id, the default graph
+    /// first.
+    /// </summary>
+    /// <returns>The transitions; empty when nothing effectively changed.</returns>
+    private ImmutableArray<DatasetGraphTransition> ComputeTransitions()
+    {
+        List<DatasetGraphTransition> transitions = [];
+
+        if(DefaultGraph.Snapshot.Id != BaseState.DefaultGraph.Snapshot.Id)
+        {
+            GraphScratch scratch = ScratchFor(TermId.None);
+            transitions.Add(new DatasetGraphTransition(
+                TermId.None,
+                ParentRoot: BaseState.DefaultGraph.Snapshot.Id,
+                ChildRoot: DefaultGraph.Snapshot.Id,
+                Additions: [.. scratch.Added],
+                Removals: [.. scratch.Removed]));
+        }
+
+        SortedSet<uint> graphIds = [];
+        foreach(TermId graph in BaseState.NamedGraphs.Keys)
+        {
+            graphIds.Add(graph.Encoded);
+        }
+
+        foreach(TermId graph in NamedGraphs.Keys)
+        {
+            graphIds.Add(graph.Encoded);
+        }
+
+        foreach(uint encoded in graphIds)
+        {
+            TermId graph = TermId.FromEncoded(encoded);
+            bool inBase = BaseState.NamedGraphs.TryGetValue(graph, out HypertrieGraphStore? baseStore);
+            bool inWorking = NamedGraphs.TryGetValue(graph, out HypertrieGraphStore? workingStore);
+
+            if(inBase && inWorking)
+            {
+                if(baseStore!.Snapshot.Id == workingStore!.Snapshot.Id)
+                {
+                    continue;
+                }
+
+                GraphScratch scratch = ScratchFor(graph);
+                transitions.Add(new DatasetGraphTransition(
+                    graph,
+                    ParentRoot: baseStore.Snapshot.Id,
+                    ChildRoot: workingStore.Snapshot.Id,
+                    Additions: [.. scratch.Added],
+                    Removals: [.. scratch.Removed]));
+
+                continue;
+            }
+
+            if(inBase)
+            {
+                //A drop discards the graph wholesale; the parent
+                //root identifies what was discarded and the deltas
+                //stay empty.
+                transitions.Add(new DatasetGraphTransition(
+                    graph,
+                    ParentRoot: baseStore!.Snapshot.Id,
+                    ChildRoot: null,
+                    Additions: [],
+                    Removals: []));
+
+                continue;
+            }
+
+            if(inWorking)
+            {
+                GraphScratch scratch = ScratchFor(graph);
+                transitions.Add(new DatasetGraphTransition(
+                    graph,
+                    ParentRoot: null,
+                    ChildRoot: workingStore!.Snapshot.Id,
+                    Additions: [.. scratch.Added],
+                    Removals: []));
+            }
+        }
+
+        return [.. transitions];
+    }
+
+    /// <summary>Throws when the session is not open.</summary>
+    private void ThrowIfNotOpen()
+    {
+        int observed = Volatile.Read(ref state);
+        if(observed != StateOpen)
+        {
+            throw new InvalidOperationException(
+                observed switch
+                {
+                    StateCommitted => "The dataset edit session has already been committed.",
+                    StateDisposed => "The dataset edit session has been disposed.",
+                    _ => "The dataset edit session is not in an open state.",
+                });
+        }
+    }
+
+    /// <summary>Moves the state machine from Open to Committed, exactly once.</summary>
+    /// <exception cref="InvalidOperationException">The session was disposed concurrently with the commit.</exception>
+    private void TransitionToCommitted()
+    {
+        int previous = Interlocked.CompareExchange(ref state, StateCommitted, StateOpen);
+        if(previous != StateOpen)
+        {
+            throw new InvalidOperationException("The dataset edit session was disposed concurrently with the commit.");
+        }
+    }
+}

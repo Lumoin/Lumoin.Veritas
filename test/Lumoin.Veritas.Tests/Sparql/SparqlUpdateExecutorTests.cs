@@ -40,9 +40,7 @@ internal sealed class SparqlUpdateExecutorTests
     /// <returns>The dataset.</returns>
     private static async Task<MutableSparqlDataset> EmptyDatasetAsync()
     {
-        HypertrieGraphStore defaultGraph = await MutableSparqlDataset.BuildGraphAsync([]).ConfigureAwait(false);
-
-        return new MutableSparqlDataset(new TermDictionary(), defaultGraph, new Dictionary<TermId, HypertrieGraphStore>());
+        return await MutableSparqlDataset.CreateAsync(new TermDictionary(), []).ConfigureAwait(false);
     }
 
     /// <summary>Reads the dataset's current quads (default graph + named graphs).</summary>

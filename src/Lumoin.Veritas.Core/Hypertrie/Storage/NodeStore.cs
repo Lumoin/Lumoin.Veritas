@@ -564,7 +564,7 @@ public sealed class NodeStore: IDisposable
     /// </summary>
     /// <param name="resource">The resource to dispose alongside this store.</param>
     /// <exception cref="ArgumentNullException"><paramref name="resource"/> is <c>null</c>.</exception>
-    internal void AttachToLifetime(IDisposable resource)
+    public void AttachToLifetime(IDisposable resource)
     {
         ArgumentNullException.ThrowIfNull(resource);
 
@@ -619,11 +619,14 @@ public sealed class NodeStore: IDisposable
     /// holders may run concurrently. Builds and edit-session
     /// commits hold this scope while they mutate the intern
     /// table; sweeps wait for the scope to release before
-    /// claiming the gate exclusively.
+    /// claiming the gate exclusively. Consumers composing many
+    /// logical stores over one arena (dataset edit sessions) hold
+    /// this scope across their build/patch sequences so snapshot
+    /// construction and a concurrent sweep cannot interleave.
     /// </summary>
     /// <param name="cancellationToken">A token that aborts the wait.</param>
     /// <returns>A scope handle whose disposal releases the shared hold.</returns>
-    internal ValueTask<SharedScope> EnterSharedScopeAsync(CancellationToken cancellationToken)
+    public ValueTask<SharedScope> EnterSharedScopeAsync(CancellationToken cancellationToken)
         => MutationGate.EnterSharedAsync(cancellationToken);
 
     /// <summary>
