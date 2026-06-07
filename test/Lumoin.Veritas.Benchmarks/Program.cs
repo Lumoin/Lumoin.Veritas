@@ -154,6 +154,17 @@ internal static class Program
             return;
         }
 
+        //The 3B diagnostic: how much of a query's cost is the
+        //row-materialization (BGP flatten/decode + Merge) that a
+        //column-major batch substrate would remove - a full two-hop
+        //join vs the same join filtered to a tiny output.
+        if(args.Length > 0 && args[0] == "--profile-sparql-pipeline")
+        {
+            SparqlPipelineSoak.RunSparqlPipelineSoak();
+
+            return;
+        }
+
         //The index-arity bounding probe: per-graph store composition vs
         //one merged store, build and query, over a graph-count ladder.
         if(args.Length > 0 && args[0] == "--profile-graph-fanout")
