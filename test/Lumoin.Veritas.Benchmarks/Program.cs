@@ -135,6 +135,15 @@ internal static class Program
             return;
         }
 
+        //The owl:sameAs ladder: eq-* rule materialization vs union-find
+        //canonicalization, with a differential check at the small rung.
+        if(args.Length > 0 && args[0] == "--profile-owl-sameas")
+        {
+            OwlSameAsSoak.RunSameAsSoak();
+
+            return;
+        }
+
         BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
     }
 }

@@ -295,6 +295,13 @@
           "Lumoin.Veritas.Core": "[0.0.0, )"
         }
       },
+      "lumoin.veritas.owl": {
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Veritas.Core": "[0.0.0, )",
+          "Lumoin.Veritas.Rdf": "[0.0.0, )"
+        }
+      },
       "lumoin.veritas.rdf": {
         "type": "Project",
         "dependencies": {
