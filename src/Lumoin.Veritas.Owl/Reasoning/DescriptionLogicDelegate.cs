@@ -20,16 +20,25 @@ public sealed record ReasoningModule(
     IReadOnlyList<Profiles.OwlProfileViolation> Violations);
 
 /// <summary>
-/// An external reasoner's verdict over a module: consistency and any
-/// module-local subsumptions, which fold back into the closures the
-/// planner reads.
+/// A reasoner's verdict over a module: consistency and any module-local
+/// subsumptions, which fold back into the closures the planner reads.
 /// </summary>
-/// <param name="IsConsistent">Whether the module is consistent.</param>
+/// <param name="IsConsistent">Whether the module is consistent — relative to the deciding calculus when <see cref="UnsupportedConstructs"/> is non-empty.</param>
 /// <param name="Subsumptions">Module-local subsumptions between named classes, as (subclass, superclass) pairs.</param>
 [DebuggerDisplay("ModuleVerdict Consistent={IsConsistent} Subsumptions={Subsumptions.Count}")]
 public sealed record ModuleVerdict(
     bool IsConsistent,
-    IReadOnlyList<(NamedNode SubClass, NamedNode SuperClass)> Subsumptions);
+    IReadOnlyList<(NamedNode SubClass, NamedNode SuperClass)> Subsumptions)
+{
+    /// <summary>
+    /// The module axioms beyond the deciding calculus, named — never
+    /// silently dropped. A non-empty list scopes
+    /// <see cref="IsConsistent"/> to the supported fragment: an
+    /// inconsistency found there condemns the whole module, while a
+    /// consistency claim says nothing about the unsupported remainder.
+    /// </summary>
+    public IReadOnlyList<string> UnsupportedConstructs { get; init; } = [];
+}
 
 /// <summary>
 /// The seam an external SROIQ(D) reasoner plugs into: the engine builds no

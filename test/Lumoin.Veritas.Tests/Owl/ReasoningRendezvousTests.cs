@@ -181,6 +181,25 @@ internal sealed class ReasoningRendezvousTests
         Assert.Contains(Utf8String.FromString(Example + "Car"), first.SubsumeesOf(Utf8String.FromString(Example + "Vehicle")), "The inverted index answers type-pattern expansion.");
     }
 
+    /// <summary>The in-library ALC default decides the beyond-ceiling module in-engine: the seam no longer requires an external reasoner for the ALC(H) fragment.</summary>
+    [TestMethod]
+    public async Task AlcDefaultDelegateDecidesTheBeyondRlModule()
+    {
+        TermDictionary dictionary = new();
+        (HypertrieGraphStore store, _) = await BuildBeyondRlStoreAsync(dictionary).ConfigureAwait(false);
+
+        ReasoningRendezvous rendezvous = new(ReasoningPolicy.Default, AlcModuleReasoner.CreateDelegate());
+
+        ReasoningResult result = await rendezvous.MaterializeAsync(
+            store, dictionary, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(ReasoningStrategy.DescriptionLogicDelegate, result.Strategy);
+        Assert.AreEqual(ReasoningSelectionReason.BeyondRlDelegated, result.Reason);
+        Assert.IsNotNull(result.ModuleVerdict);
+        Assert.IsTrue(result.IsConsistent, "c1 ⊑ a ∪ b is satisfiable.");
+        Assert.IsEmpty(result.ModuleVerdict.UnsupportedConstructs, "The union module sits inside ALC(H).");
+    }
+
     /// <summary>Floor detection runs once per store generation and is visible through <see cref="ReasoningRendezvous.FloorFor"/>.</summary>
     [TestMethod]
     public async Task FloorDetectsOncePerGeneration()
