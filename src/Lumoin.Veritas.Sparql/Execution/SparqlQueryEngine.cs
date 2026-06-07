@@ -1972,11 +1972,54 @@ public sealed class SparqlQueryEngine
         return builder.ToImmutable();
     }
 
-    /// <summary>Joins two solution sequences (§18.6 Join): the merge of every pair of compatible solutions, one from each side.</summary>
+    /// <summary>
+    /// Joins two solution sequences (§18.6 Join): the merge of every pair of compatible solutions, one from each
+    /// side. Takes a hash join keyed on the shared variables (O(n+m)) when one or two variables are shared and
+    /// every row binds them; otherwise (a wider or empty shared set, or partial bindings) falls back to the
+    /// nested-loop compatibility merge.
+    /// </summary>
     /// <param name="left">The left solution sequence.</param>
     /// <param name="right">The right solution sequence.</param>
     /// <returns>The joined solution sequence.</returns>
     private static List<SparqlSolution> JoinSolutions(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right)
+    {
+        if(left.Count == 0 || right.Count == 0)
+        {
+            return [];
+        }
+
+        SparqlVariable[] joinVariables = SharedVariables(left, right);
+        if(!IsHashJoinEligible(joinVariables, left, right))
+        {
+            return NestedLoopJoinSolutions(left, right);
+        }
+
+        //Build the smaller side so the in-memory index stays the cheaper of the two; roles (which side is "left"
+        //for Merge) are preserved regardless of which is physically built, since shared variables agree and the
+        //merged binding set is the same union either way.
+        bool buildLeft = left.Count <= right.Count;
+        IReadOnlyList<SparqlSolution> buildSide = buildLeft ? left : right;
+        IReadOnlyList<SparqlSolution> probeSide = buildLeft ? right : left;
+
+        SolutionHashJoinIndex index = SolutionHashJoinIndex.Build(buildSide, joinVariables);
+        List<SparqlSolution> joined = [];
+        foreach(SparqlSolution probe in probeSide)
+        {
+            for(int rowId = index.FirstMatch(probe); rowId >= 0; rowId = index.NextMatch(rowId))
+            {
+                SparqlSolution build = index.RowAt(rowId);
+                joined.Add(buildLeft ? Merge(build, probe) : Merge(probe, build));
+            }
+        }
+
+        return joined;
+    }
+
+    /// <summary>The nested-loop join (§18.6 Join) used when the shared-variable hash join does not apply: the merge of every pair of compatible solutions.</summary>
+    /// <param name="left">The left solution sequence.</param>
+    /// <param name="right">The right solution sequence.</param>
+    /// <returns>The joined solution sequence.</returns>
+    private static List<SparqlSolution> NestedLoopJoinSolutions(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right)
     {
         List<SparqlSolution> joined = [];
         foreach(SparqlSolution outer in left)
@@ -2016,6 +2059,45 @@ public sealed class SparqlQueryEngine
     /// <param name="right">The right (subtracting) solution sequence.</param>
     /// <returns>The left solutions that survive the subtraction.</returns>
     private static List<SparqlSolution> MinusSolutions(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right)
+    {
+        if(left.Count == 0)
+        {
+            return [];
+        }
+
+        SparqlVariable[] joinVariables = SharedVariables(left, right);
+
+        //No variable is shared with any right solution, so the disjoint-domain exception keeps every left solution.
+        if(joinVariables.Length == 0)
+        {
+            return [.. left];
+        }
+
+        if(!IsHashJoinEligible(joinVariables, left, right))
+        {
+            return NestedLoopMinusSolutions(left, right);
+        }
+
+        //In the fast path every left/right pair shares exactly the join variables (both sides bind them all), so a
+        //left solution is subtracted precisely when some right solution carries the same join-variable values.
+        SolutionHashJoinIndex index = SolutionHashJoinIndex.Build(right, joinVariables);
+        List<SparqlSolution> kept = new(left.Count);
+        foreach(SparqlSolution candidate in left)
+        {
+            if(index.FirstMatch(candidate) < 0)
+            {
+                kept.Add(candidate);
+            }
+        }
+
+        return kept;
+    }
+
+    /// <summary>The nested-loop minus (§18.6 Minus) used when the shared-variable hash join does not apply.</summary>
+    /// <param name="left">The left (kept) solution sequence.</param>
+    /// <param name="right">The right (subtracting) solution sequence.</param>
+    /// <returns>The left solutions that survive the subtraction.</returns>
+    private static List<SparqlSolution> NestedLoopMinusSolutions(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right)
     {
         List<SparqlSolution> kept = new(left.Count);
         foreach(SparqlSolution candidate in left)
@@ -2138,6 +2220,55 @@ public sealed class SparqlQueryEngine
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The left-joined solution sequence.</returns>
     private async ValueTask<IReadOnlyList<SparqlSolution>> LeftJoinSolutionsAsync(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right, ExpressionNode? condition, TermId graph, CancellationToken cancellationToken)
+    {
+        //With no right solutions to extend by, every left solution is kept unchanged.
+        if(right.Count == 0)
+        {
+            return [.. left];
+        }
+
+        SparqlVariable[] joinVariables = SharedVariables(left, right);
+        if(!IsHashJoinEligible(joinVariables, left, right))
+        {
+            return await NestedLoopLeftJoinSolutionsAsync(left, right, condition, graph, cancellationToken).ConfigureAwait(false);
+        }
+
+        //Index the right side on the shared variables; each left solution probes for its compatible extensions
+        //rather than scanning the whole right sequence. The per-pair condition handling is unchanged: a left
+        //solution stays unextended (kept as-is) when no compatible right solution also satisfies the condition.
+        SolutionHashJoinIndex index = SolutionHashJoinIndex.Build(right, joinVariables);
+        List<SparqlSolution> result = [];
+        foreach(SparqlSolution outer in left)
+        {
+            bool extended = false;
+            for(int rowId = index.FirstMatch(outer); rowId >= 0; rowId = index.NextMatch(rowId))
+            {
+                SparqlSolution merged = Merge(outer, index.RowAt(rowId));
+                ExpressionNode? resolved = condition is null ? null : await ResolveExistsAsync(condition, merged, graph, cancellationToken).ConfigureAwait(false);
+                if(resolved is null || SparqlExpressionEvaluator.Satisfies(resolved, merged, expressionContext))
+                {
+                    result.Add(merged);
+                    extended = true;
+                }
+            }
+
+            if(!extended)
+            {
+                result.Add(outer);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>The nested-loop left join (§18.6 LeftJoin) used when the shared-variable hash join does not apply.</summary>
+    /// <param name="left">The required (left) solution sequence.</param>
+    /// <param name="right">The optional (right) solution sequence.</param>
+    /// <param name="condition">The optional join condition (the lifted inner <c>FILTER</c>), or <see langword="null"/> when there is none.</param>
+    /// <param name="graph">The active graph any EXISTS sub-pattern in the condition re-enters in.</param>
+    /// <param name="cancellationToken">A token that aborts evaluation.</param>
+    /// <returns>The left-joined solution sequence.</returns>
+    private async ValueTask<IReadOnlyList<SparqlSolution>> NestedLoopLeftJoinSolutionsAsync(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right, ExpressionNode? condition, TermId graph, CancellationToken cancellationToken)
     {
         List<SparqlSolution> result = [];
         foreach(SparqlSolution outer in left)
@@ -2305,6 +2436,76 @@ public sealed class SparqlQueryEngine
             if(left[i] is RdfTerm leftTerm && !leftTerm.Equals(right[i]))
             {
                 return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Returns the variables shared by two solution sequences (the intersection of their schemas, each schema being
+    /// the union of the variables bound across that side's solutions), in first-appearance order on the right side.
+    /// These are the candidate join variables: a variable bound in only one side can never conflict, so compatibility
+    /// turns entirely on the shared ones.
+    /// </summary>
+    /// <param name="left">The left solution sequence.</param>
+    /// <param name="right">The right solution sequence.</param>
+    /// <returns>The shared variables.</returns>
+    private static SparqlVariable[] SharedVariables(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right)
+    {
+        HashSet<SparqlVariable> leftVariables = [];
+        foreach(SparqlSolution solution in left)
+        {
+            foreach(SparqlBinding binding in solution.Bindings)
+            {
+                leftVariables.Add(binding.Variable);
+            }
+        }
+
+        HashSet<SparqlVariable> added = [];
+        List<SparqlVariable> shared = [];
+        foreach(SparqlSolution solution in right)
+        {
+            foreach(SparqlBinding binding in solution.Bindings)
+            {
+                if(leftVariables.Contains(binding.Variable) && added.Add(binding.Variable))
+                {
+                    shared.Add(binding.Variable);
+                }
+            }
+        }
+
+        return [.. shared];
+    }
+
+    /// <summary>
+    /// Returns whether a hash join keyed on <paramref name="joinVariables"/> applies: the index supports one or two
+    /// join variables, and the keying is sound only when every solution on both sides binds all of them (so equal
+    /// keys exactly capture compatibility). Any other shape routes to the nested-loop fallback.
+    /// </summary>
+    /// <param name="joinVariables">The shared (candidate join) variables.</param>
+    /// <param name="left">The left solution sequence.</param>
+    /// <param name="right">The right solution sequence.</param>
+    /// <returns><see langword="true"/> when the hash join is applicable.</returns>
+    private static bool IsHashJoinEligible(SparqlVariable[] joinVariables, IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right)
+    {
+        return joinVariables.Length is 1 or 2 && AllBind(left, joinVariables) && AllBind(right, joinVariables);
+    }
+
+    /// <summary>Returns whether every solution in a sequence binds all of the given variables.</summary>
+    /// <param name="solutions">The solution sequence.</param>
+    /// <param name="variables">The variables that must each be bound.</param>
+    /// <returns><see langword="true"/> when no solution leaves any of the variables unbound.</returns>
+    private static bool AllBind(IReadOnlyList<SparqlSolution> solutions, SparqlVariable[] variables)
+    {
+        foreach(SparqlSolution solution in solutions)
+        {
+            foreach(SparqlVariable variable in variables)
+            {
+                if(!solution.TryGetValue(variable, out _))
+                {
+                    return false;
+                }
             }
         }
 
