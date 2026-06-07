@@ -43,7 +43,7 @@ internal static class GraphFanOutSoak
     /// <summary>The number of distinct bridge entities the join meets on — fixed across rungs so the join cardinality stays comparable.</summary>
     private const int BridgeCount = 8_192;
 
-    /// <summary>Runs the probe ladder.</summary>
+    /// <summary>Runs the probe ladder: the cross-graph sweep, then the graph-correlated fixtures.</summary>
     public static async Task RunGraphFanOutSoakAsync()
     {
         //One untimed pass absorbs first-touch JIT and allocator warmup so
@@ -54,6 +54,109 @@ internal static class GraphFanOutSoak
         {
             await RunRungAsync(graphCount, report: true).ConfigureAwait(false);
         }
+
+        foreach(int graphCount in (int[])[4, 64, 512, 4096])
+        {
+            await RunCorrelatedRungAsync(graphCount, selectiveEvery: 1).ConfigureAwait(false);
+        }
+
+        //Selective: only every 32nd graph carries q-edges, so composition
+        //pays a per-store visit that mostly finds nothing — the shape
+        //where a quad level's leapfrog seek would skip non-contributing
+        //graphs wholesale.
+        foreach(int graphCount in (int[])[64, 512, 4096])
+        {
+            await RunCorrelatedRungAsync(graphCount, selectiveEvery: 32).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// The graph-correlated fixture: <c>GRAPH ?g { ?x p ?y . ?y q ?z }</c>
+    /// — the same-graph constraint a merged triple store cannot normally
+    /// express. Bridges mint per graph, so the join can only meet inside
+    /// one graph; the merged store's two-pattern WCOJ then computes
+    /// exactly the same rows and stands in for a quad index's
+    /// graph-correlated descent without its fourth-level cost.
+    /// Composition evaluates the two-pattern join once per store.
+    /// </summary>
+    /// <param name="graphCount">The number of named graphs.</param>
+    /// <param name="selectiveEvery">Every how-many-th graph carries q-edges; 1 = every graph joins, larger values make most per-store visits fruitless.</param>
+    private static async Task RunCorrelatedRungAsync(int graphCount, int selectiveEvery)
+    {
+        TermDictionary dictionary = new();
+        TermId p = Mint(dictionary, "p");
+        TermId q = Mint(dictionary, "q");
+
+        int perGraph = TotalTriples / graphCount;
+        List<List<EncodedTriple>> graphs = [];
+        List<EncodedTriple> merged = [];
+        for(int g = 0; g < graphCount; g++)
+        {
+            List<EncodedTriple> triples = new(perGraph);
+            bool contributes = g % selectiveEvery == 0;
+            int bridgesInGraph = Math.Max(1, perGraph / 8);
+            for(int i = 0; i < perGraph; i++)
+            {
+                int entity = (g * perGraph) + i;
+                TermId bridge = Mint(dictionary, $"g{g}b{(i >> 1) % bridgesInGraph}");
+                EncodedTriple triple = (i & 1) == 0
+                    ? EncodedTriple.FromEncoded(Mint(dictionary, $"x{entity}").Encoded, p.Encoded, bridge.Encoded)
+                    : contributes
+                        ? EncodedTriple.FromEncoded(bridge.Encoded, q.Encoded, Mint(dictionary, $"z{entity}").Encoded)
+                        : EncodedTriple.FromEncoded(Mint(dictionary, $"x{entity}").Encoded, p.Encoded, bridge.Encoded);
+                triples.Add(triple);
+                merged.Add(triple);
+            }
+
+            graphs.Add(triples);
+        }
+
+        List<HypertrieGraphStore> stores = [];
+        long composedAllocBefore = GC.GetTotalAllocatedBytes(precise: true);
+        long buildStart = Stopwatch.GetTimestamp();
+        foreach(List<EncodedTriple> triples in graphs)
+        {
+            stores.Add(await HypertrieGraphStore.BuildAsync(triples, VeritasHashing.Default).ConfigureAwait(false));
+        }
+
+        TimeSpan composedBuild = Stopwatch.GetElapsedTime(buildStart);
+        long composedAlloc = GC.GetTotalAllocatedBytes(precise: true) - composedAllocBefore;
+
+        long mergedAllocBefore = GC.GetTotalAllocatedBytes(precise: true);
+        buildStart = Stopwatch.GetTimestamp();
+        HypertrieGraphStore mergedStore = await HypertrieGraphStore.BuildAsync(merged, VeritasHashing.Default).ConfigureAwait(false);
+        TimeSpan mergedBuild = Stopwatch.GetElapsedTime(buildStart);
+        long mergedAlloc = GC.GetTotalAllocatedBytes(precise: true) - mergedAllocBefore;
+
+        //The same-graph two-pattern join: composition runs it per store,
+        //the merged store once over the graph-local bridges.
+        VariableRegistry registry = new();
+        Variable x = registry.GetOrAdd("x");
+        Variable y = registry.GetOrAdd("y");
+        Variable z = registry.GetOrAdd("z");
+        BasicGraphPattern join = new(
+            [
+                new TriplePattern(PatternPosition.OfVariable(x), PatternPosition.Bound(p), PatternPosition.OfVariable(y)),
+                new TriplePattern(PatternPosition.OfVariable(y), PatternPosition.Bound(q), PatternPosition.OfVariable(z)),
+            ],
+            registry);
+
+        long composedStart = Stopwatch.GetTimestamp();
+        long composedRows = 0;
+        foreach(HypertrieGraphStore store in stores)
+        {
+            composedRows += await CountAsync(store, join).ConfigureAwait(false);
+        }
+
+        TimeSpan composedJoin = Stopwatch.GetElapsedTime(composedStart);
+
+        long mergedStart = Stopwatch.GetTimestamp();
+        long mergedRows = await CountAsync(mergedStore, join).ConfigureAwait(false);
+        TimeSpan mergedJoin = Stopwatch.GetElapsedTime(mergedStart);
+
+        Console.WriteLine($"[graph-correlated] graphs={graphCount:N0} perGraph={perGraph:N0} contributing=1/{selectiveEvery}");
+        Console.WriteLine($"[graph-correlated]   build: composed {composedBuild.TotalMilliseconds,8:F1} ms / {composedAlloc / (1024.0 * 1024.0),7:F1} MB  merged {mergedBuild.TotalMilliseconds,8:F1} ms / {mergedAlloc / (1024.0 * 1024.0),7:F1} MB  alloc/triple {composedAlloc / (double)TotalTriples,6:F0}/{mergedAlloc / (double)TotalTriples,6:F0} B");
+        Console.WriteLine($"[graph-correlated]   same-graph join: composed {composedJoin.TotalMilliseconds,8:F1} ms  merged {mergedJoin.TotalMilliseconds,8:F1} ms  ratio x{composedJoin.TotalMilliseconds / Math.Max(mergedJoin.TotalMilliseconds, 0.1):F2}  rows {composedRows:N0}/{mergedRows:N0}");
     }
 
     /// <summary>Generates, measures, and reports one ladder rung.</summary>
