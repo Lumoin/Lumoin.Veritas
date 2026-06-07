@@ -66,36 +66,59 @@ public readonly struct ColumnarKernelBackend: IEquatable<ColumnarKernelBackend>
         ReadOnlySpan<uint> exceptionValues,
         Span<uint> destination);
 
+    /// <summary>
+    /// Decodes one whole frame-of-reference block: unpacks
+    /// <paramref name="destination"/><c>.Length</c> lanes from
+    /// <paramref name="payload"/> and adds
+    /// <paramref name="frameBase"/> to each in wrapping 32-bit
+    /// arithmetic.
+    /// </summary>
+    /// <param name="payload">The packed words.</param>
+    /// <param name="bitWidth">The lane width in bits.</param>
+    /// <param name="frameBase">The block's frame minimum.</param>
+    /// <param name="destination">Receives the decoded block values.</param>
+    public delegate void DecodeFrameDelegate(
+        ReadOnlySpan<ulong> payload,
+        int bitWidth,
+        uint frameBase,
+        Span<uint> destination);
+
     /// <summary>The build-time lane-packing kernel.</summary>
     public PackLanesDelegate Pack { get; }
 
-    /// <summary>The read-time whole-block decode kernel.</summary>
+    /// <summary>The read-time whole-block decode kernel for prefixed-delta blocks.</summary>
     public DecodeBlockDelegate Decode { get; }
+
+    /// <summary>The read-time whole-block decode kernel for frame-of-reference blocks.</summary>
+    public DecodeFrameDelegate DecodeFrame { get; }
 
     /// <summary>The cached best-available backend for this process.</summary>
     public static ColumnarKernelBackend Default => ColumnarKernelBackendSelection.SelectBest();
 
     /// <summary>Constructs a backend bundle from its kernels.</summary>
     /// <param name="pack">The pack kernel.</param>
-    /// <param name="decode">The decode kernel.</param>
+    /// <param name="decode">The prefixed-delta decode kernel.</param>
+    /// <param name="decodeFrame">The frame-of-reference decode kernel.</param>
     /// <exception cref="ArgumentNullException">A kernel is <c>null</c>.</exception>
-    public ColumnarKernelBackend(PackLanesDelegate pack, DecodeBlockDelegate decode)
+    public ColumnarKernelBackend(PackLanesDelegate pack, DecodeBlockDelegate decode, DecodeFrameDelegate decodeFrame)
     {
         ArgumentNullException.ThrowIfNull(pack);
         ArgumentNullException.ThrowIfNull(decode);
+        ArgumentNullException.ThrowIfNull(decodeFrame);
 
         Pack = pack;
         Decode = decode;
+        DecodeFrame = decodeFrame;
     }
 
     /// <inheritdoc/>
-    public bool Equals(ColumnarKernelBackend other) => Pack == other.Pack && Decode == other.Decode;
+    public bool Equals(ColumnarKernelBackend other) => Pack == other.Pack && Decode == other.Decode && DecodeFrame == other.DecodeFrame;
 
     /// <inheritdoc/>
     public override bool Equals(object? obj) => obj is ColumnarKernelBackend other && Equals(other);
 
     /// <inheritdoc/>
-    public override int GetHashCode() => HashCode.Combine(Pack, Decode);
+    public override int GetHashCode() => HashCode.Combine(Pack, Decode, DecodeFrame);
 
     /// <inheritdoc/>
     public static bool operator ==(ColumnarKernelBackend left, ColumnarKernelBackend right) => left.Equals(right);

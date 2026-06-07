@@ -31,14 +31,23 @@ internal sealed class BlockPackedColumnTests
         return decoded;
     }
 
-    /// <summary>Asserts a value sequence round-trips through the codec.</summary>
+    /// <summary>Asserts a value sequence round-trips through the codec, in BOTH encoding modes and through both whole-block decode and pointwise reads.</summary>
     /// <param name="values">The source values.</param>
     private static void AssertRoundTrips(uint[] values)
     {
-        BlockPackedColumn column = BlockPackedColumn.Build(values);
+        foreach(BlockPackedColumnMode mode in (BlockPackedColumnMode[])[BlockPackedColumnMode.PrefixedDeltas, BlockPackedColumnMode.FrameOfReference])
+        {
+            BlockPackedColumn column = BlockPackedColumn.Build(values, mode);
 
-        Assert.AreEqual(values.Length, column.Length);
-        CollectionAssert.AreEqual(values, DecodeAll(column));
+            Assert.AreEqual(values.Length, column.Length);
+            CollectionAssert.AreEqual(values, DecodeAll(column));
+
+            BlockPackedColumnReader reader = new(column);
+            for(int i = 0; i < values.Length; i++)
+            {
+                Assert.AreEqual(values[i], reader.ValueAt(i));
+            }
+        }
     }
 
     /// <summary>A deterministic 64-bit mixer standing in for randomness — entropy seams stay untouched in tests too.</summary>
@@ -220,7 +229,8 @@ internal sealed class BlockPackedColumnTests
             {
                 decodeCalls++;
                 portable.Decode(payload, width, anchor, exceptionPositions, exceptionValues, destination);
-            });
+            },
+            portable.DecodeFrame);
 
         const int FullBlockCount = 2;
         const int TailLength = 100;
@@ -233,7 +243,7 @@ internal sealed class BlockPackedColumnTests
             values[i] = (uint)i * Stride;
         }
 
-        BlockPackedColumn column = BlockPackedColumn.Build(values, counting);
+        BlockPackedColumn column = BlockPackedColumn.Build(values, BlockPackedColumnMode.PrefixedDeltas, counting);
         Assert.AreEqual(ExpectedBlocks, packCalls);
 
         CollectionAssert.AreEqual(values, DecodeAll(column));
@@ -284,10 +294,61 @@ internal sealed class BlockPackedColumnTests
 
         foreach(ColumnarKernelBackend backend in backends)
         {
-            BlockPackedColumn column = BlockPackedColumn.Build(values, backend);
+            foreach(BlockPackedColumnMode mode in (BlockPackedColumnMode[])[BlockPackedColumnMode.PrefixedDeltas, BlockPackedColumnMode.FrameOfReference])
+            {
+                BlockPackedColumn column = BlockPackedColumn.Build(values, mode, backend);
 
-            Assert.AreEqual(values.Length, column.Length);
-            CollectionAssert.AreEqual(values, DecodeAll(column));
+                Assert.AreEqual(values.Length, column.Length);
+                CollectionAssert.AreEqual(values, DecodeAll(column));
+            }
+        }
+    }
+
+    [TestMethod]
+    public void LowerBoundAgreesWithTheLinearReferenceInBothModes()
+    {
+        //Grouped ascending runs spanning many blocks, searched per
+        //group range — the iterator's exact usage. Every block-
+        //boundary alignment of [lo, hi) and every in/under/over
+        //target lands exactly where a linear scan lands.
+        const int GroupCount = 200;
+        const int GroupSize = 37;
+        const uint InGroupStride = 5;
+        const ulong MixerSeed = 4_321;
+
+        uint[] values = new uint[GroupCount * GroupSize];
+        ulong state = MixerSeed;
+        for(int group = 0; group < GroupCount; group++)
+        {
+            state = Mix(state);
+            uint start = (uint)(state % 100_000);
+            for(int i = 0; i < GroupSize; i++)
+            {
+                values[(group * GroupSize) + i] = start + ((uint)i * InGroupStride);
+            }
+        }
+
+        foreach(BlockPackedColumnMode mode in (BlockPackedColumnMode[])[BlockPackedColumnMode.PrefixedDeltas, BlockPackedColumnMode.FrameOfReference])
+        {
+            BlockPackedColumn column = BlockPackedColumn.Build(values, mode);
+            BlockPackedColumnReader reader = new(column);
+
+            for(int group = 0; group < GroupCount; group++)
+            {
+                int lo = group * GroupSize;
+                int hi = lo + GroupSize;
+
+                foreach(uint target in (uint[])[values[lo], values[hi - 1], values[lo + (GroupSize / 2)] + 1, values[lo] - 1, values[hi - 1] + 1])
+                {
+                    int expected = lo;
+                    while(expected < hi && values[expected] < target)
+                    {
+                        expected++;
+                    }
+
+                    Assert.AreEqual(expected, reader.LowerBound(lo, hi, target));
+                }
+            }
         }
     }
 }

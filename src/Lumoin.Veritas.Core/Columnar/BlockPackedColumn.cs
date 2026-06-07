@@ -6,49 +6,51 @@ using System.Numerics;
 namespace Lumoin.Veritas.Core.Columnar;
 
 /// <summary>
-/// A <c>uint</c> column stored as fixed-size blocks of
-/// zigzag-delta, bit-packed lanes with patched exceptions — the
-/// succinct layout's in-memory codec. Each block records its first
-/// value raw (the ANCHOR), packs the zigzagged successive deltas at
-/// one per-block bit width, and stores deltas wider than that as
-/// (position, value) exception pairs. Block metadata lives in
-/// parallel arrays — struct-of-arrays, never per-block objects.
+/// A <c>uint</c> column stored as fixed-size blocks of bit-packed
+/// lanes — the succinct layout's in-memory codec, with the
+/// encoding chosen per column by access pattern
+/// (<see cref="BlockPackedColumnMode"/>): prefixed zigzag deltas
+/// with patched exceptions for pointwise-with-locality columns, or
+/// frame-of-reference lanes for the value columns joins seek over.
+/// Block metadata lives in parallel arrays — struct-of-arrays,
+/// never per-block objects.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Why this shape.</b> The columnar index's value columns are
+/// <b>Prefixed deltas.</b> The columnar index's value columns are
 /// sorted within parent groups, so successive deltas are small —
 /// except at group boundaries, where the value can drop and the
 /// delta turns negative and large. Zigzag encoding makes negative
-/// deltas cheap to represent; exception patching keeps one
-/// boundary outlier from inflating the whole block's bit width.
-/// Offset columns are strictly monotone (deltas = group sizes) and
-/// ride the same codec.
+/// deltas cheap; exception patching keeps one boundary outlier from
+/// inflating the block's width. Deltas are computed in wrapping
+/// 32-bit arithmetic and reinterpreted as signed for zigzag, so the
+/// full <c>uint</c> range round-trips losslessly. Per block, the
+/// chosen width minimises
+/// <c>blockLength·width + exceptions(width)·48</c> bits; ties
+/// prefer the larger width (fewer patches). Reading a single value
+/// requires decoding its whole block — consumers go through
+/// <see cref="ValueAt"/>'s scratch-and-cache protocol.
 /// </para>
 /// <para>
-/// <b>Delta arithmetic.</b> Deltas are computed in wrapping
-/// 32-bit arithmetic and reinterpreted as signed for zigzag, so
-/// the full <c>uint</c> range round-trips losslessly: decode adds
-/// the un-zigzagged delta back with wrapping addition.
+/// <b>Frame of reference.</b> Lanes are <c>value − blockMinimum</c>
+/// at the block's span width, no exceptions (the width covers the
+/// span by construction). Wider than deltas on boundary-crossing
+/// blocks, but every lane is independently readable:
+/// <see cref="ValueAt"/> is one shift-or, and an in-block seek is a
+/// handful of lane probes instead of a block decode — the measured
+/// fix for seek-heavy worst-case-optimal descents.
 /// </para>
 /// <para>
-/// <b>Width selection.</b> Per block, the width minimising
-/// <c>blockLength·width + exceptions(width)·48</c> bits (an
-/// exception costs a 16-bit position plus a 32-bit value); ties
-/// prefer the larger width, trading bits for fewer patches on the
-/// decode path.
-/// </para>
-/// <para>
-/// <b>Random access.</b> The column does not decode per element:
-/// consumers decode whole blocks into a scratch buffer through
-/// <see cref="DecodeBlock"/> and cache the last-decoded block —
-/// descent locality makes consecutive touches hit the cache. The
-/// raw <see cref="Anchors"/> are exposed for block-skipping seeks:
-/// within a sorted range, the anchors of fully-interior blocks are
-/// themselves sorted.
+/// <b>Seeks.</b> <see cref="Anchors"/> carries each block's FIRST
+/// value in both modes: within a strictly-ascending query range,
+/// the anchors of fully-interior blocks are themselves ascending,
+/// so <see cref="LowerBound"/> binary-searches the anchors to pick
+/// the single block that can contain the bound and finishes inside
+/// it (decode-and-scan under prefixed deltas, lane probes under
+/// frame of reference).
 /// </para>
 /// </remarks>
-[DebuggerDisplay("BlockPackedColumn Length={Length} Blocks={BlockCount} PackedBytes={PackedByteCount}")]
+[DebuggerDisplay("BlockPackedColumn Mode={Mode} Length={Length} Blocks={BlockCount} PackedBytes={PackedByteCount}")]
 public sealed class BlockPackedColumn
 {
     /// <summary>The block length as a shift: blocks hold 2^10 = 1,024 values.</summary>
@@ -70,6 +72,8 @@ public sealed class BlockPackedColumn
 
     private readonly uint[] anchors;
 
+    private readonly uint[] frameBases;
+
     private readonly byte[] widths;
 
     private readonly int[] exceptionStarts;
@@ -81,13 +85,16 @@ public sealed class BlockPackedColumn
     /// <summary>The kernel bundle decoding this column's blocks.</summary>
     private ColumnarKernelBackend Backend { get; }
 
+    /// <summary>The encoding this column's blocks use.</summary>
+    public BlockPackedColumnMode Mode { get; }
+
     /// <summary>The number of values in the column.</summary>
     public int Length { get; }
 
     /// <summary>The number of blocks; <c>ceil(Length / 1024)</c>.</summary>
     public int BlockCount => anchors.Length;
 
-    /// <summary>The per-block anchor values — each block's first decoded value, raw. Within a sorted range, anchors of fully-interior blocks are sorted; seeks scan these to pick the one block to decode.</summary>
+    /// <summary>The per-block first values, raw, in every mode. Within a sorted range, anchors of fully-interior blocks are sorted; seeks scan these to pick the one block to finish in.</summary>
     public ReadOnlySpan<uint> Anchors => anchors;
 
     /// <summary>The packed size in bytes across payload, metadata, and exception arrays — the number the soak ladder tracks.</summary>
@@ -95,6 +102,7 @@ public sealed class BlockPackedColumn
         (payload.Length * sizeof(ulong))
         + (payloadStarts.Length * sizeof(int))
         + (anchors.Length * sizeof(uint))
+        + (frameBases.Length * sizeof(uint))
         + widths.Length
         + (exceptionStarts.Length * sizeof(int))
         + (exceptionPositions.Length * sizeof(ushort))
@@ -102,20 +110,24 @@ public sealed class BlockPackedColumn
 
     private BlockPackedColumn(
         ColumnarKernelBackend backend,
+        BlockPackedColumnMode mode,
         int length,
         ulong[] payload,
         int[] payloadStarts,
         uint[] anchors,
+        uint[] frameBases,
         byte[] widths,
         int[] exceptionStarts,
         ushort[] exceptionPositions,
         uint[] exceptionValues)
     {
         Backend = backend;
+        Mode = mode;
         Length = length;
         this.payload = payload;
         this.payloadStarts = payloadStarts;
         this.anchors = anchors;
+        this.frameBases = frameBases;
         this.widths = widths;
         this.exceptionStarts = exceptionStarts;
         this.exceptionPositions = exceptionPositions;
@@ -133,9 +145,7 @@ public sealed class BlockPackedColumn
     }
 
     /// <summary>
-    /// Decodes one whole block into
-    /// <paramref name="destination"/>: unpack the bit lanes, patch
-    /// the exceptions, un-zigzag, and prefix-sum from the anchor.
+    /// Decodes one whole block into <paramref name="destination"/>.
     /// </summary>
     /// <param name="blockIndex">The block to decode.</param>
     /// <param name="destination">Receives the block's values; at least <see cref="BlockLengthOf"/> long, of which exactly that many entries are written.</param>
@@ -155,6 +165,14 @@ public sealed class BlockPackedColumn
         Span<uint> block = destination[..count];
         int width = widths[blockIndex];
         ReadOnlySpan<ulong> blockPayload = payload.AsSpan(payloadStarts[blockIndex], payloadStarts[blockIndex + 1] - payloadStarts[blockIndex]);
+
+        if(Mode == BlockPackedColumnMode.FrameOfReference)
+        {
+            Backend.DecodeFrame(blockPayload, width, frameBases[blockIndex], block);
+
+            return;
+        }
+
         int exceptionStart = exceptionStarts[blockIndex];
         int exceptionCount = exceptionStarts[blockIndex + 1] - exceptionStart;
 
@@ -168,11 +186,13 @@ public sealed class BlockPackedColumn
     }
 
     /// <summary>
-    /// Reads the value at <paramref name="index"/> through a
-    /// caller-held scratch and cache slot, decoding the block on a
-    /// cache miss. <see cref="BlockPackedColumnReader"/> wraps this
-    /// with owned state; cold one-shot descents pass a stack
-    /// scratch and a local cache slot.
+    /// Reads the value at <paramref name="index"/>. Under frame of
+    /// reference this is one lane probe and the scratch is
+    /// untouched; under prefixed deltas the value's block decodes
+    /// into the caller-held scratch on a cache miss.
+    /// <see cref="BlockPackedColumnReader"/> wraps this with owned
+    /// state; cold one-shot descents pass a stack scratch and a
+    /// local cache slot.
     /// </summary>
     /// <param name="index">The column index.</param>
     /// <param name="scratch">The one-block decode scratch; at least <see cref="BlockLength"/> long.</param>
@@ -181,6 +201,11 @@ public sealed class BlockPackedColumn
     public uint ValueAt(int index, Span<uint> scratch, ref int cachedBlock)
     {
         int block = index >> BlockShift;
+
+        if(Mode == BlockPackedColumnMode.FrameOfReference)
+        {
+            return frameBases[block] + LaneAt(block, index & BlockMask);
+        }
 
         if(block != cachedBlock)
         {
@@ -205,7 +230,7 @@ public sealed class BlockPackedColumn
     /// <param name="lo">The range's inclusive start.</param>
     /// <param name="hi">The range's exclusive end.</param>
     /// <param name="target">The sought value.</param>
-    /// <param name="scratch">The one-block decode scratch; at least <see cref="BlockLength"/> long.</param>
+    /// <param name="scratch">The one-block decode scratch; at least <see cref="BlockLength"/> long. Untouched under frame of reference.</param>
     /// <param name="cachedBlock">The caller's cache slot, updated as blocks decode.</param>
     /// <returns>The lower-bound index.</returns>
     public int LowerBound(int lo, int hi, uint target, Span<uint> scratch, ref int cachedBlock)
@@ -220,7 +245,7 @@ public sealed class BlockPackedColumn
 
         if(blockLo == blockHi)
         {
-            return ScanBlock(blockLo, lo, hi, target, scratch, ref cachedBlock);
+            return FinishInBlock(blockLo, lo, hi, target, scratch, ref cachedBlock);
         }
 
         //Interior blocks (blockLo+1 .. blockHi) start inside the
@@ -253,14 +278,14 @@ public sealed class BlockPackedColumn
             //inside the edge block's range portion, or exactly at
             //the first interior block's start.
             int edgeEnd = Math.Min(hi, (blockLo + 1) << BlockShift);
-            int found = ScanBlock(blockLo, lo, edgeEnd, target, scratch, ref cachedBlock);
+            int found = FinishInBlock(blockLo, lo, edgeEnd, target, scratch, ref cachedBlock);
 
             return found < edgeEnd ? found : edgeEnd;
         }
 
         int blockStart = candidate << BlockShift;
         int blockEnd = Math.Min(hi, (candidate + 1) << BlockShift);
-        int inBlock = ScanBlock(candidate, blockStart, blockEnd, target, scratch, ref cachedBlock);
+        int inBlock = FinishInBlock(candidate, blockStart, blockEnd, target, scratch, ref cachedBlock);
 
         if(inBlock < blockEnd)
         {
@@ -274,16 +299,43 @@ public sealed class BlockPackedColumn
         return blockEnd;
     }
 
-    /// <summary>Lower-bound scan within one block over the absolute index range <c>[lo, hi)</c>, both inside the block.</summary>
-    /// <param name="block">The block to scan.</param>
+    /// <summary>Finishes a lower-bound inside one block over the absolute index range <c>[lo, hi)</c>: decode-and-scan under prefixed deltas, lane probes under frame of reference.</summary>
+    /// <param name="block">The block to finish in.</param>
     /// <param name="lo">The absolute inclusive start.</param>
     /// <param name="hi">The absolute exclusive end.</param>
     /// <param name="target">The sought value.</param>
     /// <param name="scratch">The one-block decode scratch.</param>
     /// <param name="cachedBlock">The caller's cache slot.</param>
     /// <returns>The absolute lower-bound index, or <paramref name="hi"/>.</returns>
-    private int ScanBlock(int block, int lo, int hi, uint target, Span<uint> scratch, ref int cachedBlock)
+    private int FinishInBlock(int block, int lo, int hi, uint target, Span<uint> scratch, ref int cachedBlock)
     {
+        if(Mode == BlockPackedColumnMode.FrameOfReference)
+        {
+            //The frame base bounds every lane from below: when even
+            //base + lane ceiling cannot reach the target the probes
+            //collapse immediately, and the binary search costs
+            //log2(range) single-lane reads.
+            uint frameBase = frameBases[block];
+            int low = lo;
+            int high = hi;
+
+            while(low < high)
+            {
+                int mid = low + ((high - low) >> 1);
+
+                if(frameBase + LaneAt(block, mid & BlockMask) < target)
+                {
+                    low = mid + 1;
+                }
+                else
+                {
+                    high = mid;
+                }
+            }
+
+            return low;
+        }
+
         if(block != cachedBlock)
         {
             DecodeBlock(block, scratch);
@@ -296,19 +348,50 @@ public sealed class BlockPackedColumn
         return blockStart + relative;
     }
 
+    /// <summary>Reads one bit lane raw — layout arithmetic, not a kernel: a lane spans at most two payload words.</summary>
+    /// <param name="blockIndex">The block.</param>
+    /// <param name="lane">The in-block lane position.</param>
+    /// <returns>The lane's packed value.</returns>
+    private uint LaneAt(int blockIndex, int lane)
+    {
+        int width = widths[blockIndex];
+        if(width == 0)
+        {
+            return 0;
+        }
+
+        ulong mask = width == 32 ? uint.MaxValue : (1UL << width) - 1;
+        long bitOffset = (long)lane * width;
+        int word = payloadStarts[blockIndex] + (int)(bitOffset >> 6);
+        int shift = (int)(bitOffset & 63);
+
+        ulong laneBits = payload[word] >> shift;
+        if(shift + width > 64)
+        {
+            laneBits |= payload[word + 1] << (64 - shift);
+        }
+
+        return (uint)(laneBits & mask);
+    }
+
     /// <summary>
     /// Packs <paramref name="values"/> into a block-compressed
     /// column.
     /// </summary>
     /// <param name="values">The column values, in column order.</param>
+    /// <param name="mode">The encoding to use; see <see cref="BlockPackedColumnMode"/> for the trade.</param>
     /// <param name="backendOption">The kernel bundle to pack with (and later decode with); <see langword="null"/> uses <see cref="ColumnarKernelBackend.Default"/>.</param>
     /// <returns>The packed column.</returns>
-    public static BlockPackedColumn Build(ReadOnlySpan<uint> values, ColumnarKernelBackend? backendOption = null)
+    public static BlockPackedColumn Build(
+        ReadOnlySpan<uint> values,
+        BlockPackedColumnMode mode = BlockPackedColumnMode.PrefixedDeltas,
+        ColumnarKernelBackend? backendOption = null)
     {
         ColumnarKernelBackend backend = backendOption ?? ColumnarKernelBackend.Default;
 
         int blockCount = (values.Length + BlockLength - 1) >> BlockShift;
         uint[] anchors = new uint[blockCount];
+        uint[] frameBases = mode == BlockPackedColumnMode.FrameOfReference ? new uint[blockCount] : [];
         byte[] widths = new byte[blockCount];
         int[] payloadStarts = new int[blockCount + 1];
         int[] exceptionStarts = new int[blockCount + 1];
@@ -316,7 +399,7 @@ public sealed class BlockPackedColumn
         List<ushort> exceptionPositions = [];
         List<uint> exceptionValues = [];
 
-        Span<uint> zigzags = stackalloc uint[BlockLength];
+        Span<uint> lanes = stackalloc uint[BlockLength];
         Span<int> bitLengthHistogram = stackalloc int[33];
 
         for(int blockIndex = 0; blockIndex < blockCount; blockIndex++)
@@ -327,63 +410,86 @@ public sealed class BlockPackedColumn
 
             anchors[blockIndex] = block[0];
 
-            //Zigzag the wrapping successive deltas; lane 0 is the
-            //anchor's zero delta.
-            bitLengthHistogram.Clear();
-            zigzags[0] = 0;
-            bitLengthHistogram[0]++;
-            for(int i = 1; i < count; i++)
+            int width;
+            if(mode == BlockPackedColumnMode.FrameOfReference)
             {
-                int delta = unchecked((int)(block[i] - block[i - 1]));
-                uint zigzag = (uint)((delta << 1) ^ (delta >> 31));
-                zigzags[i] = zigzag;
-                bitLengthHistogram[BitLengthOf(zigzag)]++;
-            }
-
-            //Choose the width minimising packed bits + exception
-            //cost; ties prefer the larger width (fewer patches).
-            int width = ChooseWidth(bitLengthHistogram, count);
-            widths[blockIndex] = (byte)width;
-
-            //Record exceptions: lanes whose zigzag value needs more
-            //bits than the chosen width.
-            for(int i = 0; i < count; i++)
-            {
-                if(BitLengthOf(zigzags[i]) > width)
+                //Frame of reference: lanes are value − min at the
+                //span's width; no exceptions by construction.
+                uint minimum = block[0];
+                uint maximum = block[0];
+                for(int i = 1; i < count; i++)
                 {
-                    exceptionPositions.Add((ushort)i);
-                    exceptionValues.Add(zigzags[i]);
+                    minimum = Math.Min(minimum, block[i]);
+                    maximum = Math.Max(maximum, block[i]);
+                }
+
+                frameBases[blockIndex] = minimum;
+                width = BitLengthOf(maximum - minimum);
+                for(int i = 0; i < count; i++)
+                {
+                    lanes[i] = block[i] - minimum;
+                }
+            }
+            else
+            {
+                //Prefixed deltas: zigzag the wrapping successive
+                //deltas; lane 0 is the anchor's zero delta.
+                bitLengthHistogram.Clear();
+                lanes[0] = 0;
+                bitLengthHistogram[0]++;
+                for(int i = 1; i < count; i++)
+                {
+                    int delta = unchecked((int)(block[i] - block[i - 1]));
+                    uint zigzag = (uint)((delta << 1) ^ (delta >> 31));
+                    lanes[i] = zigzag;
+                    bitLengthHistogram[BitLengthOf(zigzag)]++;
+                }
+
+                width = ChooseWidth(bitLengthHistogram, count);
+
+                //Record exceptions: lanes whose zigzag value needs
+                //more bits than the chosen width.
+                for(int i = 0; i < count; i++)
+                {
+                    if(BitLengthOf(lanes[i]) > width)
+                    {
+                        exceptionPositions.Add((ushort)i);
+                        exceptionValues.Add(lanes[i]);
+                    }
                 }
             }
 
+            widths[blockIndex] = (byte)width;
             exceptionStarts[blockIndex + 1] = exceptionPositions.Count;
 
             //Pack the lanes into freshly zeroed words.
             int wordCount = (int)(((long)count * width + 63) >> 6);
             ulong[] blockWords = new ulong[wordCount];
-            backend.Pack(zigzags[..count], width, blockWords);
+            backend.Pack(lanes[..count], width, blockWords);
             payload.AddRange(blockWords);
             payloadStarts[blockIndex + 1] = payload.Count;
         }
 
         return new BlockPackedColumn(
             backend,
+            mode,
             values.Length,
             [.. payload],
             payloadStarts,
             anchors,
+            frameBases,
             widths,
             exceptionStarts,
             [.. exceptionPositions],
             [.. exceptionValues]);
     }
 
-    /// <summary>The number of bits needed to represent <paramref name="zigzag"/>; 0 for 0.</summary>
-    /// <param name="zigzag">The zigzag value.</param>
+    /// <summary>The number of bits needed to represent <paramref name="value"/>; 0 for 0.</summary>
+    /// <param name="value">The value.</param>
     /// <returns>The bit length.</returns>
-    private static int BitLengthOf(uint zigzag)
+    private static int BitLengthOf(uint value)
     {
-        return zigzag == 0 ? 0 : 32 - BitOperations.LeadingZeroCount(zigzag);
+        return value == 0 ? 0 : 32 - BitOperations.LeadingZeroCount(value);
     }
 
     /// <summary>

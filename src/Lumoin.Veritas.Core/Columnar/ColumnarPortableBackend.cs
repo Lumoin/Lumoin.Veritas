@@ -14,7 +14,7 @@ public static class ColumnarPortableBackend
     public static bool IsSupported => true;
 
     /// <summary>The portable backend bundle.</summary>
-    public static ColumnarKernelBackend Backend { get; } = new(PackLanes, DecodeBlock);
+    public static ColumnarKernelBackend Backend { get; } = new(PackLanes, DecodeBlock, DecodeFrameBlock);
 
     /// <summary>The portable pack kernel: shift-or into at most two words per lane.</summary>
     /// <param name="values">The zigzag lane values to pack.</param>
@@ -64,6 +64,24 @@ public static class ColumnarPortableBackend
         UnpackLanes(payload, bitWidth, destination);
         PatchExceptions(exceptionPositions, exceptionValues, destination);
         ReconstructFromDeltas(anchor, destination);
+    }
+
+    /// <summary>The portable frame-of-reference decode kernel: unpack, then add the frame base lane by lane.</summary>
+    /// <param name="payload">The packed words.</param>
+    /// <param name="bitWidth">The lane width in bits.</param>
+    /// <param name="frameBase">The block's frame minimum.</param>
+    /// <param name="destination">Receives the decoded block values.</param>
+    internal static void DecodeFrameBlock(
+        ReadOnlySpan<ulong> payload,
+        int bitWidth,
+        uint frameBase,
+        Span<uint> destination)
+    {
+        UnpackLanes(payload, bitWidth, destination);
+        for(int i = 0; i < destination.Length; i++)
+        {
+            destination[i] = unchecked(destination[i] + frameBase);
+        }
     }
 
     /// <summary>Unpacks consecutive bit lanes; the inverse of <see cref="PackLanes"/>.</summary>

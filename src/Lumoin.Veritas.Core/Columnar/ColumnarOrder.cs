@@ -144,12 +144,17 @@ public sealed class ColumnarOrder
         offsets0.Add((uint)values1.Count);
         offsets1.Add((uint)values2.Count);
 
+        //Value columns are what worst-case-optimal descents SEEK
+        //over: frame of reference keeps every lane independently
+        //probeable. Offset columns are read pointwise with descent
+        //locality: prefixed deltas pack their group-size deltas
+        //densest and the reader's block cache absorbs the decodes.
         return new ColumnarOrder(
-            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(values0)),
-            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(offsets0)),
-            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(values1)),
-            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(offsets1)),
-            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(values2)));
+            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(values0), BlockPackedColumnMode.FrameOfReference),
+            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(offsets0), BlockPackedColumnMode.PrefixedDeltas),
+            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(values1), BlockPackedColumnMode.FrameOfReference),
+            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(offsets1), BlockPackedColumnMode.PrefixedDeltas),
+            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(values2), BlockPackedColumnMode.FrameOfReference));
     }
 
     private static uint KeyAt(in EncodedTriple triple, byte position)

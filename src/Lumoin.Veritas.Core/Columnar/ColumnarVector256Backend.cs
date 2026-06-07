@@ -16,7 +16,7 @@ public static class ColumnarVector256Backend
     /// <summary>Whether 256-bit vector acceleration is available on this machine.</summary>
     public static bool IsSupported => Vector256.IsHardwareAccelerated;
 
-    private static ColumnarKernelBackend Cached { get; } = new(ColumnarPortableBackend.PackLanes, DecodeBlock);
+    private static ColumnarKernelBackend Cached { get; } = new(ColumnarPortableBackend.PackLanes, DecodeBlock, DecodeFrameBlock);
 
     //Lane-shift permutations and their shifted-in-zero masks for
     //the in-register scan: step k adds, to every lane i ≥ k, the
@@ -56,6 +56,32 @@ public static class ColumnarVector256Backend
         ColumnarPortableBackend.UnpackLanes(payload, bitWidth, destination);
         ColumnarPortableBackend.PatchExceptions(exceptionPositions, exceptionValues, destination);
         ReconstructFromDeltas(anchor, destination);
+    }
+
+    /// <summary>The frame-of-reference decode kernel: portable unpack, then a vectorised broadcast add of the frame base.</summary>
+    /// <param name="payload">The packed words.</param>
+    /// <param name="bitWidth">The lane width in bits.</param>
+    /// <param name="frameBase">The block's frame minimum.</param>
+    /// <param name="destination">Receives the decoded block values.</param>
+    private static void DecodeFrameBlock(
+        ReadOnlySpan<ulong> payload,
+        int bitWidth,
+        uint frameBase,
+        Span<uint> destination)
+    {
+        ColumnarPortableBackend.UnpackLanes(payload, bitWidth, destination);
+
+        Vector256<uint> baseVector = Vector256.Create(frameBase);
+        int i = 0;
+        for(; i + Vector256<uint>.Count <= destination.Length; i += Vector256<uint>.Count)
+        {
+            (Vector256.Create(destination.Slice(i, Vector256<uint>.Count)) + baseVector).CopyTo(destination.Slice(i, Vector256<uint>.Count));
+        }
+
+        for(; i < destination.Length; i++)
+        {
+            destination[i] = unchecked(destination[i] + frameBase);
+        }
     }
 
     /// <summary>
