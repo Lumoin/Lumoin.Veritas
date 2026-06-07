@@ -67,6 +67,13 @@ public sealed class ColumnarTripleIndex
     //under this index's order-set mode.
     private readonly ColumnarOrder?[] orders;
 
+    //Per-order level-0 (start, end) bounds when this index is a
+    //GRAPH VIEW over a shared graph-set's concatenated columns;
+    //null = the whole columns (a standalone index). Offsets in the
+    //shared columns are absolute, so the level-0 slice plus the
+    //ordinary descent covers exactly the view's graph.
+    private readonly (int Start, int End)[]? level0Bounds;
+
     //The accumulated delta over the immutable base: additions and
     //removals as canonical sets (for membership and Apply
     //normalisation) plus per-permutation sorted runs (for the merge
@@ -95,7 +102,8 @@ public sealed class ColumnarTripleIndex
         HashSet<EncodedTriple> addedSet,
         HashSet<EncodedTriple> removedSet,
         EncodedTriple[][] addedByOrder,
-        EncodedTriple[][] removedByOrder)
+        EncodedTriple[][] removedByOrder,
+        (int Start, int End)[]? level0Bounds = null)
     {
         this.orders = orders;
         OrderSetMode = orderSetMode;
@@ -104,6 +112,44 @@ public sealed class ColumnarTripleIndex
         this.removedSet = removedSet;
         this.addedByOrder = addedByOrder;
         this.removedByOrder = removedByOrder;
+        this.level0Bounds = level0Bounds;
+    }
+
+    /// <summary>
+    /// Constructs a graph view over a graph-set's shared orders:
+    /// the given level-0 ranges slice each order to one graph, the
+    /// delta starts empty, and the view is immutable —
+    /// <see cref="Apply"/> on a view compacts into a standalone
+    /// per-graph index rather than evolving the shared columns.
+    /// Called by <see cref="ColumnarGraphSetIndex.GetView"/>;
+    /// consumers do not call this directly.
+    /// </summary>
+    /// <param name="orders">The shared materialised orders.</param>
+    /// <param name="orderSetMode">The shared order-set mode.</param>
+    /// <param name="tripleCount">The graph's triple count.</param>
+    /// <param name="level0Bounds">Per-order level-0 (start, end) ranges of the graph's run.</param>
+    /// <returns>The view.</returns>
+    internal static ColumnarTripleIndex CreateView(
+        ColumnarOrder?[] orders,
+        ColumnarOrderSetMode orderSetMode,
+        int tripleCount,
+        (int Start, int End)[] level0Bounds)
+    {
+        EncodedTriple[][] emptyRuns = [EmptyTriples, EmptyTriples, EmptyTriples, EmptyTriples, EmptyTriples, EmptyTriples];
+
+        return new ColumnarTripleIndex(orders, orderSetMode, tripleCount, [], [], emptyRuns, emptyRuns, level0Bounds);
+    }
+
+    /// <summary>
+    /// The level-0 slice this index descends from in the given
+    /// order: the whole column for a standalone index, the graph's
+    /// run for a view.
+    /// </summary>
+    /// <param name="permutationIndex">A materialised permutation index.</param>
+    /// <returns>The level-0 (start, end) range.</returns>
+    internal (int Start, int End) Level0BoundsAt(int permutationIndex)
+    {
+        return level0Bounds?[permutationIndex] ?? (0, OrderAt(permutationIndex).ValuesLengthAt(0));
     }
 
     /// <summary>
@@ -329,15 +375,18 @@ public sealed class ColumnarTripleIndex
     //so the per-column readers decode each block exactly once.
     private IEnumerable<EncodedTriple> EnumerateBaseTriples()
     {
-        //SPO is materialised under every order-set mode.
+        //SPO is materialised under every order-set mode; a view
+        //walks its level-0 slice and the absolute offsets keep the
+        //deeper levels inside the view's graph.
         ColumnarOrder spo = orders[0]!;
+        (int level0Start, int level0End) = Level0BoundsAt(0);
         BlockPackedColumnReader values0 = new(spo.ValuesColumnAt(0));
         BlockPackedColumnReader offsets0 = new(spo.OffsetsColumnAt(0));
         BlockPackedColumnReader values1 = new(spo.ValuesColumnAt(1));
         BlockPackedColumnReader offsets1 = new(spo.OffsetsColumnAt(1));
         BlockPackedColumnReader values2 = new(spo.ValuesColumnAt(2));
 
-        for(int i = 0; i < values0.Length; i++)
+        for(int i = level0Start; i < level0End; i++)
         {
             uint subject = values0.ValueAt(i);
             int level1Start = (int)offsets0.ValueAt(i);
@@ -593,13 +642,13 @@ public sealed class ColumnarTripleIndex
     //allocates nothing.
     private bool ContainsBase(EncodedTriple triple)
     {
-        //SPO is materialised under every order-set mode.
+        //SPO is materialised under every order-set mode; a view's
+        //descent starts from its level-0 slice.
         ColumnarOrder spo = orders[0]!;
         Span<uint> keys = [triple.Subject.Encoded, triple.Predicate.Encoded, triple.Object.Encoded];
         Span<uint> scratch = stackalloc uint[BlockPackedColumn.BlockLength];
 
-        int lo = 0;
-        int hi = spo.ValuesLengthAt(0);
+        (int lo, int hi) = Level0BoundsAt(0);
 
         for(int level = 0; level < 3; level++)
         {

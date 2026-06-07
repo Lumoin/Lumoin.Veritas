@@ -106,39 +106,67 @@ public sealed class ColumnarOrder
     //in a single pass over the sorted run, then block-packs each.
     internal static ColumnarOrder Build(EncodedTriple[] working, byte[] permutation)
     {
+        return BuildConcatenated([working], permutation, level0Ranges: null);
+    }
+
+    //Builds one permutation's column set over a SEQUENCE of triple
+    //runs — the graph-major concatenation: each run sorts and emits
+    //independently (group boundaries never merge across runs, even
+    //when adjacent runs share level values), offsets land at
+    //absolute positions in the shared columns, and each run's
+    //level-0 range is reported so a per-run view needs nothing
+    //else. With one run this is the plain single-graph build.
+    internal static ColumnarOrder BuildConcatenated(
+        IReadOnlyList<EncodedTriple[]> runs,
+        byte[] permutation,
+        (int Start, int End)[]? level0Ranges)
+    {
         byte position0 = permutation[0];
         byte position1 = permutation[1];
         byte position2 = permutation[2];
-
-        ColumnarSearch.SortByPermutation(working, position0, position1, position2);
 
         List<uint> values0 = [];
         List<uint> offsets0 = [];
         List<uint> values1 = [];
         List<uint> offsets1 = [];
-        List<uint> values2 = new(working.Length);
+        List<uint> values2 = [];
 
-        for(int i = 0; i < working.Length; i++)
+        for(int run = 0; run < runs.Count; run++)
         {
-            uint key0 = KeyAt(working[i], position0);
-            uint key1 = KeyAt(working[i], position1);
-            uint key2 = KeyAt(working[i], position2);
+            EncodedTriple[] working = runs[run];
+            ColumnarSearch.SortByPermutation(working, position0, position1, position2);
 
-            bool newGroup0 = values0.Count == 0 || values0[^1] != key0;
+            int level0Start = values0.Count;
+            bool firstOfRun = true;
 
-            if(newGroup0)
+            for(int i = 0; i < working.Length; i++)
             {
-                values0.Add(key0);
-                offsets0.Add((uint)values1.Count);
+                uint key0 = KeyAt(working[i], position0);
+                uint key1 = KeyAt(working[i], position1);
+                uint key2 = KeyAt(working[i], position2);
+
+                bool newGroup0 = firstOfRun || values0[^1] != key0;
+                firstOfRun = false;
+
+                if(newGroup0)
+                {
+                    values0.Add(key0);
+                    offsets0.Add((uint)values1.Count);
+                }
+
+                if(newGroup0 || values1[^1] != key1)
+                {
+                    values1.Add(key1);
+                    offsets1.Add((uint)values2.Count);
+                }
+
+                values2.Add(key2);
             }
 
-            if(newGroup0 || values1[^1] != key1)
+            if(level0Ranges is not null)
             {
-                values1.Add(key1);
-                offsets1.Add((uint)values2.Count);
+                level0Ranges[run] = (level0Start, values0.Count);
             }
-
-            values2.Add(key2);
         }
 
         offsets0.Add((uint)values1.Count);

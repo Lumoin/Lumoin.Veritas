@@ -282,8 +282,7 @@ public sealed class ColumnarTriejoinIterator
         ReadOnlySpan<EncodedTriple> added = index.AddedAt(permutationIndex);
         ReadOnlySpan<EncodedTriple> removed = index.RemovedAt(permutationIndex);
 
-        int baseLo = 0;
-        int baseHi = order.ValuesLengthAt(0);
+        (int baseLo, int baseHi) = index.Level0BoundsAt(permutationIndex);
         int addLo = 0;
         int addHi = added.Length;
         int remLo = 0;
