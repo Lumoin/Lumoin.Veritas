@@ -144,7 +144,7 @@ public sealed class SparqlQueryEngine
         ArgumentNullException.ThrowIfNull(triples);
 
         TermDictionary dictionary = new();
-        HypertrieGraphStore store = await EncodeGraphAsync(triples, dictionary, cancellationToken).ConfigureAwait(false);
+        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(Encode(triples, dictionary), VeritasHashing.Default, cancellationToken).ConfigureAwait(false);
 
         return new SparqlQueryEngine(store, dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion);
     }
@@ -176,25 +176,39 @@ public sealed class SparqlQueryEngine
         ArgumentNullException.ThrowIfNull(defaultGraph);
         ArgumentNullException.ThrowIfNull(namedGraphs);
 
+        //Every graph of the dataset encodes into one dictionary and
+        //builds through one shared node arena: the per-store fixed
+        //cost (pool slabs, intern table, pair-arena segments) is paid
+        //once for the family, and identical subtrees across graphs
+        //intern to one canonical instance.
         TermDictionary dictionary = new();
-        HypertrieGraphStore defaultStore = await EncodeGraphAsync(defaultGraph, dictionary, cancellationToken).ConfigureAwait(false);
+        List<IEnumerable<EncodedTriple>> encodedGraphs = new(namedGraphs.Count + 1)
+        {
+            Encode(defaultGraph, dictionary),
+        };
 
-        Dictionary<TermId, HypertrieGraphStore> named = new(namedGraphs.Count);
+        List<TermId> graphNames = new(namedGraphs.Count);
         foreach((RdfTerm name, IEnumerable<DataTriple> triples) in namedGraphs)
         {
-            TermId graphName = dictionary.GetOrAdd(name);
-            named[graphName] = await EncodeGraphAsync(triples, dictionary, cancellationToken).ConfigureAwait(false);
+            graphNames.Add(dictionary.GetOrAdd(name));
+            encodedGraphs.Add(Encode(triples, dictionary));
         }
 
-        return new SparqlQueryEngine(new SparqlDataset(defaultStore, named), dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion);
+        IReadOnlyList<HypertrieGraphStore> stores = await HypertrieGraphStore.BuildSharedAsync(encodedGraphs, VeritasHashing.Default, cancellationToken).ConfigureAwait(false);
+        Dictionary<TermId, HypertrieGraphStore> named = new(namedGraphs.Count);
+        for(int i = 0; i < graphNames.Count; i++)
+        {
+            named[graphNames[i]] = stores[i + 1];
+        }
+
+        return new SparqlQueryEngine(new SparqlDataset(stores[0], named), dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion);
     }
 
-    /// <summary>Encodes a graph's triples into <paramref name="dictionary"/> and indexes them into a fresh hypertrie store.</summary>
+    /// <summary>Encodes a graph's triples into <paramref name="dictionary"/>.</summary>
     /// <param name="triples">The graph's triples.</param>
     /// <param name="dictionary">The shared term dictionary every graph in the dataset encodes into.</param>
-    /// <param name="cancellationToken">A token that aborts the build.</param>
-    /// <returns>The indexed graph store.</returns>
-    private static async ValueTask<HypertrieGraphStore> EncodeGraphAsync(IEnumerable<DataTriple> triples, TermDictionary dictionary, CancellationToken cancellationToken)
+    /// <returns>The encoded triples.</returns>
+    private static List<EncodedTriple> Encode(IEnumerable<DataTriple> triples, TermDictionary dictionary)
     {
         List<EncodedTriple> encoded = [];
         foreach(DataTriple triple in triples)
@@ -205,7 +219,7 @@ public sealed class SparqlQueryEngine
             encoded.Add(EncodedTriple.FromEncoded(subject, predicate, @object));
         }
 
-        return await HypertrieGraphStore.BuildAsync(encoded, VeritasHashing.Default, cancellationToken).ConfigureAwait(false);
+        return encoded;
     }
 
     /// <summary>

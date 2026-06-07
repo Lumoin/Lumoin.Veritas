@@ -143,6 +143,80 @@ internal sealed class HypertrieGraphStoreTests
     }
 
     [TestMethod]
+    public async Task BuildSharedReturnsIsolatedPositionallyMatchingStores()
+    {
+        //Three graphs through one arena: distinct content, overlapping
+        //content (shares the 10-11-12 subtree with graph 0), and empty.
+        List<EncodedTriple> first = [EncodedTriple.FromEncoded(10, 11, 12), EncodedTriple.FromEncoded(13, 14, 15)];
+        List<EncodedTriple> second = [EncodedTriple.FromEncoded(10, 11, 12), EncodedTriple.FromEncoded(16, 17, 18)];
+        List<EncodedTriple> third = [];
+
+        IReadOnlyList<HypertrieGraphStore> stores = await HypertrieGraphStore.BuildSharedAsync(
+            [first, second, third], VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(3, stores);
+        Assert.AreEqual(2, stores[0].Count);
+        Assert.AreEqual(2, stores[1].Count);
+        Assert.AreEqual(0, stores[2].Count);
+
+        //Graph isolation: content interned in the shared arena never
+        //leaks across roots — each store matches exactly its own set.
+        CollectionAssert.AreEquivalent(first, Collect(stores[0].Match(TermId.None, TermId.None, TermId.None)));
+        CollectionAssert.AreEquivalent(second, Collect(stores[1].Match(TermId.None, TermId.None, TermId.None)));
+        Assert.HasCount(0, Collect(stores[2].Match(TermId.None, TermId.None, TermId.None)));
+        Assert.HasCount(0, Collect(stores[0].Match(TermId.FromEncoded(16), TermId.None, TermId.None)));
+        Assert.HasCount(1, Collect(stores[1].Match(TermId.FromEncoded(10), TermId.None, TermId.None)));
+    }
+
+    [TestMethod]
+    public async Task BuildSharedIdenticalGraphsShareOneCanonicalRoot()
+    {
+        List<EncodedTriple> triples = [EncodedTriple.FromEncoded(10, 11, 12), EncodedTriple.FromEncoded(10, 13, 14)];
+
+        IReadOnlyList<HypertrieGraphStore> stores = await HypertrieGraphStore.BuildSharedAsync(
+            [triples, triples], VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //Identical content interns to the same canonical root; both
+        //stores answer independently over it.
+        Assert.AreEqual(stores[0].Snapshot.Id, stores[1].Snapshot.Id);
+        CollectionAssert.AreEquivalent(
+            Collect(stores[0].Match(TermId.None, TermId.None, TermId.None)),
+            Collect(stores[1].Match(TermId.None, TermId.None, TermId.None)));
+    }
+
+    [TestMethod]
+    public async Task BuildSharedMatchesIsolatedBuildsTripleForTriple()
+    {
+        //Differential gate: the family build answers exactly what
+        //per-store isolated builds answer, graph by graph.
+        List<List<EncodedTriple>> graphs = [];
+        for(int g = 0; g < 8; g++)
+        {
+            List<EncodedTriple> triples = [];
+            for(int i = 0; i < 24; i++)
+            {
+                uint entity = (uint)((g * 24) + i + 10);
+                triples.Add(EncodedTriple.FromEncoded(entity, (uint)(11 + (i % 3)), entity + 1_000));
+            }
+
+            graphs.Add(triples);
+        }
+
+        IReadOnlyList<HypertrieGraphStore> shared = await HypertrieGraphStore.BuildSharedAsync(
+            graphs, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+
+        for(int g = 0; g < graphs.Count; g++)
+        {
+            HypertrieGraphStore isolated = await HypertrieGraphStore.BuildAsync(graphs[g], VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+
+            Assert.AreEqual(isolated.Count, shared[g].Count);
+            CollectionAssert.AreEquivalent(
+                Collect(isolated.Match(TermId.None, TermId.None, TermId.None)),
+                Collect(shared[g].Match(TermId.None, TermId.None, TermId.None)));
+        }
+    }
+
+    [TestMethod]
     public async Task MatchByAllThreePositionsReturnsSingleTriple()
     {
         HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(

@@ -160,6 +160,70 @@ public sealed class HypertrieGraphStore
     }
 
     /// <summary>
+    /// Builds one graph store per element of
+    /// <paramref name="graphs"/>, all interning through ONE shared
+    /// <see cref="NodeStore"/> and renting from ONE shared pools
+    /// bundle — many logical graph tries, one physical arena. The
+    /// stores are returned in input order, each holding its own
+    /// snapshot pinning its own root.
+    /// </summary>
+    /// <remarks>
+    /// This is the dataset-composition build path. Isolated builds
+    /// pay a fixed per-store cost (pool slab inventory, intern
+    /// table, pair-arena segment granularity) that dominates
+    /// resident memory once graphs number in the thousands; the
+    /// shared arena pays it once for the whole family, and
+    /// identical subtrees across graphs intern to one canonical
+    /// instance. The arena stays reachable while any returned
+    /// store's snapshot is.
+    /// </remarks>
+    /// <param name="graphs">The graphs to index, one triple sequence per graph; an empty sequence produces an empty store.</param>
+    /// <param name="hash">The hashing bundle used to derive node identities.</param>
+    /// <param name="cancellationToken">A token that aborts the builds at any per-step check.</param>
+    /// <returns>The constructed stores, positionally matching <paramref name="graphs"/>.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="graphs"/> or <paramref name="hash"/> is <c>null</c>.</exception>
+    public static async ValueTask<IReadOnlyList<HypertrieGraphStore>> BuildSharedAsync(
+        IReadOnlyList<IEnumerable<EncodedTriple>> graphs,
+        VeritasHash hash,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(graphs);
+        ArgumentNullException.ThrowIfNull(hash);
+
+        //Ownership-transfer pattern (CA2000), as in the single-graph
+        //overload: the arena is owned here until every build has
+        //completed, at which point the returned stores' snapshots
+        //collectively keep it alive. A failure midway orphans the
+        //arena and the finally block disposes it, releasing the
+        //slab inventory the partial builds accumulated.
+        NodeStore? store = null;
+        BuildPools pools = BuildPools.CreateDefault();
+
+        try
+        {
+            store = new NodeStore(hash, pools.NodePool);
+            store.AttachToLifetime(pools.NodePool);
+            store.AttachToLifetime(pools.KeyPool);
+            store.AttachToLifetime(pools.ChildPool);
+            store.AttachToLifetime(pools.PermutationPool);
+
+            HypertrieGraphStore[] stores = new HypertrieGraphStore[graphs.Count];
+            for(int i = 0; i < graphs.Count; i++)
+            {
+                stores[i] = await BuildAsync(graphs[i], store, pools, cancellationToken).ConfigureAwait(false);
+            }
+
+            store = null;
+
+            return stores;
+        }
+        finally
+        {
+            store?.Dispose();
+        }
+    }
+
+    /// <summary>
     /// Builds a new <see cref="HypertrieGraphStore"/> from the
     /// given triples, interning every node it produces through
     /// <paramref name="store"/>. The same store may be reused
