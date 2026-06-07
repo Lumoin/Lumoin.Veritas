@@ -1,7 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Threading;
+using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Encoding;
+using Lumoin.Veritas.Core.Hypertrie;
+using Lumoin.Veritas.Core.Hypertrie.Execution;
+using Lumoin.Veritas.Core.Hypertrie.Query;
 using Lumoin.Veritas.Rdf;
 
 namespace Lumoin.Veritas.Owl;
@@ -74,6 +80,133 @@ public static class OwlGraphEntailment
             : conclusion;
 
         return EmbedsCore(pattern, closure);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="conclusion"/> embeds into the store — the
+    /// same question as <see cref="Embeds"/>, answered by the join engine:
+    /// a conclusion graph with existential blanks is a basic graph pattern
+    /// with variables, and an embedding exists exactly when the pattern
+    /// has a solution. The first solution short-circuits, the ASK
+    /// semantics.
+    /// </summary>
+    /// <remarks>
+    /// A constant term the dictionary has never seen cannot match and
+    /// answers <see langword="false"/> immediately. A conclusion triple
+    /// using one blank in two of its own positions is a per-pattern
+    /// self-join the trie driver rejects; such conclusions fall back to
+    /// the list-scan embedding over the decoded store — correct, and rare
+    /// enough that the fallback is the design.
+    /// </remarks>
+    /// <param name="conclusion">The graph to embed.</param>
+    /// <param name="store">The store embedded into — typically the materialized closure.</param>
+    /// <param name="dictionary">The term dictionary the store's triples were encoded with.</param>
+    /// <param name="timeProvider">Clock for the join engine's trace timestamps. Pass <see cref="TimeProvider.System"/> in production.</param>
+    /// <param name="comprehension">How to read the comprehension conditions.</param>
+    /// <param name="cancellationToken">A token that aborts evaluation.</param>
+    /// <returns><see langword="true"/> when an embedding exists.</returns>
+    /// <exception cref="ArgumentNullException">An argument is <see langword="null"/>.</exception>
+    /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
+    public static async ValueTask<bool> EmbedsAsync(
+        IReadOnlyList<Quad> conclusion,
+        HypertrieGraphStore store,
+        TermDictionary dictionary,
+        TimeProvider timeProvider,
+        OwlComprehension comprehension = OwlComprehension.None,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(conclusion);
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(dictionary);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+
+        IReadOnlyList<Quad> pattern = comprehension == OwlComprehension.InformativeConditions
+            ? WithoutComprehensionScaffolds(conclusion)
+            : conclusion;
+
+        if(pattern.Count == 0)
+        {
+            return true;
+        }
+
+        VariableRegistry registry = new();
+        List<TriplePattern> patterns = [];
+        bool selfJoin = false;
+        foreach(Quad quad in pattern)
+        {
+            if(!TryMapPosition(quad.Subject, registry, dictionary, out PatternPosition subject)
+                || !TryMapPosition(quad.Predicate, registry, dictionary, out PatternPosition predicate)
+                || !TryMapPosition(quad.Object, registry, dictionary, out PatternPosition @object))
+            {
+                //A constant the store's dictionary never minted matches
+                //nothing.
+                return false;
+            }
+
+            selfJoin |= SharesAVariable(subject, predicate) || SharesAVariable(subject, @object) || SharesAVariable(predicate, @object);
+            patterns.Add(new TriplePattern(subject, predicate, @object));
+        }
+
+        if(selfJoin)
+        {
+            return Embeds(pattern, DecodeStore(store, dictionary), OwlComprehension.None);
+        }
+
+        BasicGraphPattern query = new(patterns, registry);
+        await foreach(Solution _ in store.Query(query, timeProvider, cancellationToken: cancellationToken).ConfigureAwait(false))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>Maps one conclusion term to a pattern position: blanks become variables, constants encode through the dictionary.</summary>
+    /// <param name="term">The conclusion term.</param>
+    /// <param name="registry">The variable registry blanks register in.</param>
+    /// <param name="dictionary">The store's term dictionary.</param>
+    /// <param name="position">The mapped position.</param>
+    /// <returns><see langword="false"/> when a constant is absent from the dictionary and the pattern cannot match.</returns>
+    private static bool TryMapPosition(RdfTerm term, VariableRegistry registry, TermDictionary dictionary, out PatternPosition position)
+    {
+        if(term is BlankNode blank)
+        {
+            position = PatternPosition.OfVariable(registry.GetOrAdd(blank.Label.ToString()));
+
+            return true;
+        }
+
+        TermId id = dictionary.GetIdOrDefault(term);
+        position = PatternPosition.Bound(id);
+
+        return id != TermId.None;
+    }
+
+    /// <summary>Whether two positions carry the same variable — the per-pattern self-join the trie driver rejects.</summary>
+    /// <param name="left">The first position.</param>
+    /// <param name="right">The second position.</param>
+    /// <returns><see langword="true"/> when both are the same variable.</returns>
+    private static bool SharesAVariable(PatternPosition left, PatternPosition right)
+    {
+        return left.IsVariable && right.IsVariable && left.Variable == right.Variable;
+    }
+
+    /// <summary>Decodes the store back to quads for the list-scan fallback.</summary>
+    /// <param name="store">The store to decode.</param>
+    /// <param name="dictionary">The store's term dictionary.</param>
+    /// <returns>The decoded graph.</returns>
+    private static List<Quad> DecodeStore(HypertrieGraphStore store, TermDictionary dictionary)
+    {
+        List<Quad> quads = [];
+        foreach(EncodedTriple triple in store.Match(TermId.None, TermId.None, TermId.None))
+        {
+            if(dictionary.Resolve(triple.Predicate) is NamedNode predicate)
+            {
+                quads.Add(new Quad(dictionary.Resolve(triple.Subject), predicate, dictionary.Resolve(triple.Object), Graph: null));
+            }
+        }
+
+        return quads;
     }
 
     /// <summary>The role a blank node plays inside a candidate scaffold walk.</summary>
