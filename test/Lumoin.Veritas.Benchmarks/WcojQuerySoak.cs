@@ -111,6 +111,36 @@ internal static class WcojQuerySoak
             $"columnar  ThreePatternTriangle x{processorCount}",
             () => ColumnarHyperCube.Query(columnar, trianglePattern, processorCount, TimeProvider.System),
             duration).ConfigureAwait(false);
+
+        //The acyclic shape the join leg targets: ?x knows ?y . ?y
+        //livesIn ?city — a chain, GYO-acyclic, the batched
+        //scan-and-hash pipeline's home. Leapfrog vs batched, same
+        //answers, on the same columnar view.
+        VariableRegistry chainRegistry = new();
+        Variable chainX = chainRegistry.GetOrAdd("x");
+        Variable chainY = chainRegistry.GetOrAdd("y");
+        Variable chainCity = chainRegistry.GetOrAdd("city");
+
+        TriplePattern chainKnows = new(
+            PatternPosition.OfVariable(chainX),
+            PatternPosition.Bound(TermId.FromEncoded(SyntheticGraph.KnowsPredicate)),
+            PatternPosition.OfVariable(chainY));
+
+        TriplePattern chainLives = new(
+            PatternPosition.OfVariable(chainY),
+            PatternPosition.Bound(TermId.FromEncoded(SyntheticGraph.LivesInPredicate)),
+            PatternPosition.OfVariable(chainCity));
+
+        BasicGraphPattern chainPattern = new([chainKnows, chainLives], chainRegistry);
+        ColumnarBatchPlan? chainPlan = ColumnarBatchPipeline.TryPlan(columnar, chainPattern);
+
+        await RunShapeAsync("columnar  AcyclicChain leapfrog", () => QueryColumnar(columnar, chainPattern), duration).ConfigureAwait(false);
+        await RunShapeAsync(
+            chainPlan is null ? "columnar  AcyclicChain batched(UNPLANNED)" : "columnar  AcyclicChain batched",
+            () => chainPlan is null
+                ? QueryColumnar(columnar, chainPattern)
+                : SolutionBatch.FlattenAsync(ColumnarBatchPipeline.Run(columnar, chainPlan)),
+            duration).ConfigureAwait(false);
     }
 
     private static System.Collections.Generic.IAsyncEnumerable<Solution> QueryColumnar(ColumnarTripleIndex index, BasicGraphPattern pattern)

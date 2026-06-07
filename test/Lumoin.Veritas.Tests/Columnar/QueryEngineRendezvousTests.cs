@@ -46,7 +46,7 @@ internal sealed class QueryEngineRendezvousTests
         Assert.HasCount(4, solutions);
     }
 
-    /// <summary>The first join query builds the view (reporting its cost), the second reuses it.</summary>
+    /// <summary>The first join query builds the view (reporting its cost), the second reuses it; the acyclic two-pattern shape takes the batched pipeline under the default policy, and the build/reuse reasons flow through it unchanged.</summary>
     [TestMethod]
     public async Task JoinQueryBuildsThenReusesTheView()
     {
@@ -59,9 +59,9 @@ internal sealed class QueryEngineRendezvousTests
         await Drain(rendezvous.Query(query, VeritasClock.System, traceHandler: handler, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
 
         Assert.HasCount(2, selections);
-        Assert.AreEqual(QueryEngineKind.Columnar, selections[0].Engine);
+        Assert.AreEqual(QueryEngineKind.ColumnarBatched, selections[0].Engine);
         Assert.AreEqual(EngineSelectionReason.ViewBuilt, selections[0].SelectionReason);
-        Assert.AreEqual(QueryEngineKind.Columnar, selections[1].Engine);
+        Assert.AreEqual(QueryEngineKind.ColumnarBatched, selections[1].Engine);
         Assert.AreEqual(EngineSelectionReason.ViewReused, selections[1].SelectionReason);
         Assert.AreEqual(0L, selections[1].Value, "A reused view reports zero build cost.");
         Assert.AreEqual(4, selections[1].Count, "The selection event carries the engine's triple count.");

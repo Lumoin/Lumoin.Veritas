@@ -11,4 +11,7 @@ public enum QueryEngineKind
 
     /// <summary>The columnar worst-case-optimal join engine — a derived read-optimised view.</summary>
     Columnar = 1,
+
+    /// <summary>The columnar batched scan-and-hash pipeline — the acyclic-shape half of the join hybrid, over the same derived view.</summary>
+    ColumnarBatched = 2,
 }

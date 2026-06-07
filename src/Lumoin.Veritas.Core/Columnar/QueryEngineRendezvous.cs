@@ -244,6 +244,14 @@ public sealed class QueryEngineRendezvous
                     ? EngineSelectionReason.ViewBuilt
                     : EngineSelectionReason.ViewReused;
 
+                IAsyncEnumerable<Solution>? batched = TryQueryBatched(
+                    currentView, query, reason, buildMilliseconds, timeProvider, accessControl, traceHandler, effectiveCorrelationId, cancellationToken);
+
+                if(batched is not null)
+                {
+                    return batched;
+                }
+
                 EmitEngineSelected(
                     timeProvider, traceHandler, effectiveCorrelationId,
                     QueryEngineKind.Columnar, reason, currentView.TripleCount, buildMilliseconds);
@@ -264,6 +272,14 @@ public sealed class QueryEngineRendezvous
 
         if(qualifies && currentView is not null)
         {
+            IAsyncEnumerable<Solution>? batched = TryQueryBatched(
+                currentView, query, EngineSelectionReason.ViewReused, buildMilliseconds: 0, timeProvider, accessControl, traceHandler, effectiveCorrelationId, cancellationToken);
+
+            if(batched is not null)
+            {
+                return batched;
+            }
+
             EmitEngineSelected(
                 timeProvider, traceHandler, effectiveCorrelationId,
                 QueryEngineKind.Columnar, EngineSelectionReason.ViewReused, currentView.TripleCount, buildMilliseconds: 0);
@@ -350,6 +366,53 @@ public sealed class QueryEngineRendezvous
 
             return (view, true, stopwatch.ElapsedMilliseconds);
         }
+    }
+
+    /// <summary>
+    /// Routes a qualifying query to the batched scan-and-hash
+    /// pipeline when the policy opts in, no per-candidate access
+    /// control is wired (the batched path has no consultation
+    /// point), and the shape plans acyclic — or returns
+    /// <c>null</c> for the leapfrog path.
+    /// </summary>
+    /// <param name="view">The columnar view.</param>
+    /// <param name="query">The basic graph pattern.</param>
+    /// <param name="reason">The view-acquisition reason the selection event carries.</param>
+    /// <param name="buildMilliseconds">The view build cost paid by this query, when any.</param>
+    /// <param name="timeProvider">Clock for trace events.</param>
+    /// <param name="accessControl">The access-control policy; non-<c>null</c> disqualifies the batched path.</param>
+    /// <param name="traceHandler">Optional trace handler.</param>
+    /// <param name="correlationId">The correlation id.</param>
+    /// <param name="cancellationToken">Cancellation token threaded into the flattening.</param>
+    /// <returns>The batched solution stream, or <c>null</c>.</returns>
+    private IAsyncEnumerable<Solution>? TryQueryBatched(
+        ColumnarTripleIndex view,
+        BasicGraphPattern query,
+        EngineSelectionReason reason,
+        long buildMilliseconds,
+        TimeProvider timeProvider,
+        AccessControlDelegate? accessControl,
+        TraceHandler<QueryTraceEvent>? traceHandler,
+        Guid correlationId,
+        CancellationToken cancellationToken)
+    {
+        if(!policy.PreferBatchedForAcyclic || accessControl is not null)
+        {
+            return null;
+        }
+
+        ColumnarBatchPlan? plan = ColumnarBatchPipeline.TryPlan(view, query);
+
+        if(plan is null)
+        {
+            return null;
+        }
+
+        EmitEngineSelected(
+            timeProvider, traceHandler, correlationId,
+            QueryEngineKind.ColumnarBatched, reason, view.TripleCount, buildMilliseconds);
+
+        return SolutionBatch.FlattenAsync(ColumnarBatchPipeline.Run(view, plan), cancellationToken);
     }
 
     private IAsyncEnumerable<Solution> QueryColumnar(

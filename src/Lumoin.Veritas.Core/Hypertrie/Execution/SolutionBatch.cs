@@ -93,4 +93,37 @@ public sealed class SolutionBatch
             bindings.Add(new VariableBinding(Schema[i], TermId.FromEncoded(columns[i][row])));
         }
     }
+
+    /// <summary>
+    /// The boundary adapter: flattens a batch stream into the
+    /// per-row <see cref="Solution"/> sequence the row-oriented
+    /// consumers expect. The batched pipeline's wins live BEFORE
+    /// this point; the conversion happens exactly once.
+    /// </summary>
+    /// <param name="batches">The batch stream.</param>
+    /// <param name="cancellationToken">A token that aborts the flattening.</param>
+    /// <returns>The solutions, row by row.</returns>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Style",
+        "CS1998:Async method lacks await operators",
+        Justification = "Yield-only async iterator over a synchronous batch stream; the async shape matches the engine surfaces that consume it.")]
+    public static async IAsyncEnumerable<Solution> FlattenAsync(
+        IEnumerable<SolutionBatch> batches,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] System.Threading.CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(batches);
+
+        foreach(SolutionBatch batch in batches)
+        {
+            for(int row = 0; row < batch.Count; row++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                List<VariableBinding> bindings = new(batch.Schema.Count);
+                batch.CopyRowTo(row, bindings);
+
+                yield return new Solution(bindings);
+            }
+        }
+    }
 }
