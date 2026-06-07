@@ -92,6 +92,9 @@ public sealed class ColumnarTripleIndex
     /// <summary>The number of distinct triples the merged view contains — the base count net of the accumulated delta.</summary>
     public int TripleCount => baseTripleCount - removedSet.Count + addedSet.Count;
 
+    /// <summary>Whether an accumulated delta sits over the base — the distinction between the batch scan's direct CSR walk and its merged fallback.</summary>
+    public bool HasDelta => addedSet.Count != 0 || removedSet.Count != 0;
+
     /// <summary>Which permutation set this index materialises.</summary>
     public ColumnarOrderSetMode OrderSetMode { get; }
 
