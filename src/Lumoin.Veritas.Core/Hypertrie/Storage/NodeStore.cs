@@ -3,6 +3,7 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core.Hypertrie.Editing;
@@ -132,7 +133,18 @@ public sealed class NodeStore: IDisposable
     //TryAdd / TryUpdate operations cover correctness.
     private ConcurrentDictionary<NodeIdentifier, ChainEntry> Storage { get; } = new();
 
-    private HashSet<HypertrieSnapshot> AcquiredSnapshots { get; } = [];
+    //The registry of live snapshots — the sweep's root set. Weakly
+    //keyed: a snapshot that is explicitly released (reference count
+    //reaching zero) deregisters deterministically, and a snapshot
+    //whose holder was dropped without releasing becomes sweepable
+    //once the collector reclaims it. The weak keying is what makes
+    //many logical stores over one shared arena safe to supersede by
+    //simply dropping the reference — reachability is liveness.
+    //The marker is a shared sentinel; the value must never
+    //reference the key, or the entry would pin it.
+    private ConditionalWeakTable<HypertrieSnapshot, object> AcquiredSnapshots { get; } = new();
+
+    private static object SnapshotMarker { get; } = new();
 
     //The shared/exclusive gate. Builds and edit sessions take
     //shared; sweeps take exclusive.
@@ -226,16 +238,21 @@ public sealed class NodeStore: IDisposable
     /// <summary>
     /// The number of <see cref="HypertrieSnapshot"/> instances
     /// currently holding a reference to this store. Diagnostic
-    /// only; consumers should not synchronise on this value.
+    /// only; consumers should not synchronise on this value — the
+    /// weak registry means the count also shrinks when collected
+    /// snapshots vanish.
     /// </summary>
     public int AcquiredSnapshotCount
     {
         get
         {
-            lock(AcquiredSnapshots)
+            int count = 0;
+            foreach(KeyValuePair<HypertrieSnapshot, object> _ in AcquiredSnapshots)
             {
-                return AcquiredSnapshots.Count;
+                count++;
             }
+
+            return count;
         }
     }
 
@@ -566,10 +583,7 @@ public sealed class NodeStore: IDisposable
     {
         ArgumentNullException.ThrowIfNull(snapshot);
 
-        lock(AcquiredSnapshots)
-        {
-            AcquiredSnapshots.Add(snapshot);
-        }
+        AcquiredSnapshots.Add(snapshot, SnapshotMarker);
     }
 
     /// <summary>
@@ -583,10 +597,7 @@ public sealed class NodeStore: IDisposable
     {
         ArgumentNullException.ThrowIfNull(snapshot);
 
-        lock(AcquiredSnapshots)
-        {
-            AcquiredSnapshots.Remove(snapshot);
-        }
+        AcquiredSnapshots.Remove(snapshot);
     }
 
     /// <summary>
@@ -600,10 +611,7 @@ public sealed class NodeStore: IDisposable
     {
         ArgumentNullException.ThrowIfNull(snapshot);
 
-        lock(AcquiredSnapshots)
-        {
-            return AcquiredSnapshots.Contains(snapshot);
-        }
+        return AcquiredSnapshots.TryGetValue(snapshot, out _);
     }
 
     /// <summary>
@@ -699,10 +707,15 @@ public sealed class NodeStore: IDisposable
         ExclusiveScope scope = await EnterExclusiveScopeAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            HypertrieSnapshot[] live;
-            lock(AcquiredSnapshots)
+            //The weak registry yields only snapshots still alive: an
+            //explicitly released snapshot deregistered itself, and a
+            //dropped-without-release snapshot disappears once the
+            //collector reclaims it — superseded logical stores over a
+            //shared arena become sweepable by unreachability alone.
+            List<HypertrieSnapshot> live = [];
+            foreach((HypertrieSnapshot snapshot, object _) in AcquiredSnapshots)
             {
-                live = [.. AcquiredSnapshots];
+                live.Add(snapshot);
             }
 
             HashSet<NodeHandle> reachable = [];

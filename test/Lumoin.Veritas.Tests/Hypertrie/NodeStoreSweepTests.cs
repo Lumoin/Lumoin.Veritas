@@ -172,6 +172,46 @@ internal sealed class NodeStoreSweepTests
     }
 
     [TestMethod]
+    public async Task SweepEvictsSnapshotDroppedWithoutRelease()
+    {
+        using NodeStore store = new(VeritasHashing.Default);
+
+        //A logical store superseded by simply dropping the reference
+        //(no explicit release) — the shared-arena supersede pattern.
+        //The weak snapshot registry must let the collector reclaim
+        //it, after which the sweep evicts its nodes.
+        int countBefore = await BuildAndDropAsync(store, TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.IsGreaterThan(0, countBefore);
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        SweepResult result = await store.SweepAsync(TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(countBefore, result.NodesEvicted);
+        Assert.AreEqual(0, store.Count);
+        Assert.AreEqual(0, store.AcquiredSnapshotCount);
+    }
+
+    /// <summary>
+    /// Builds a graph store in the arena and drops the reference on
+    /// return. A separate non-inlined method so the test frame holds
+    /// no live reference to the store or its snapshot afterwards.
+    /// </summary>
+    /// <param name="store">The shared arena.</param>
+    /// <param name="cancellationToken">The test cancellation token.</param>
+    /// <returns>The arena's node count with the build live.</returns>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static async Task<int> BuildAndDropAsync(NodeStore store, CancellationToken cancellationToken)
+    {
+        HypertrieGraphStore graphStore = await HypertrieGraphStore.BuildAsync(SampleTriples, store, cancellationToken).ConfigureAwait(false);
+        Assert.IsNotNull(graphStore.Snapshot);
+
+        return store.Count;
+    }
+
+    [TestMethod]
     public void DisposingStoreIsIdempotent()
     {
         NodeStore store = new(VeritasHashing.Default);
