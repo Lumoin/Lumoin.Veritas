@@ -153,6 +153,15 @@ internal static class Program
             return;
         }
 
+        //The layout-spike fixtures the bounding probe left open:
+        //resident per-store memory and the ?g-joins-with-data shape.
+        if(args.Length > 0 && args[0] == "--profile-graph-spike")
+        {
+            GraphFanOutSoak.RunGraphSpikeSoakAsync().GetAwaiter().GetResult();
+
+            return;
+        }
+
         BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
     }
 }

@@ -71,6 +71,291 @@ internal static class GraphFanOutSoak
     }
 
     /// <summary>
+    /// Runs the layout-spike fixtures the bounding probe left open:
+    /// resident (live-heap, not allocated) per-store memory across the
+    /// graph-count ladder, and the <c>?g</c>-joins-with-data shape where
+    /// the graph IRI itself joins against graph metadata.
+    /// </summary>
+    public static async Task RunGraphSpikeSoakAsync()
+    {
+        //Warmup pass for the same reason as the main ladder.
+        await RunResidentRungAsync(64, report: false).ConfigureAwait(false);
+
+        foreach(int graphCount in (int[])[64, 1024, 4096, 16384, 65536])
+        {
+            await RunResidentRungAsync(graphCount, report: true).ConfigureAwait(false);
+        }
+
+        await RunGraphJoinsDataRungAsync(64, hotEvery: 1, report: false).ConfigureAwait(false);
+
+        foreach(int graphCount in (int[])[64, 512, 4096])
+        {
+            await RunGraphJoinsDataRungAsync(graphCount, hotEvery: 1).ConfigureAwait(false);
+        }
+
+        //Selective: only every 32nd graph carries the hot metadata rank,
+        //so the metadata pattern prunes the graph set before any data
+        //store is touched — composition's dataset map acting as the
+        //graph-level index.
+        foreach(int graphCount in (int[])[64, 512, 4096])
+        {
+            await RunGraphJoinsDataRungAsync(graphCount, hotEvery: 32).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Measures resident per-store memory: the live GC heap delta with
+    /// all stores held, three ways — isolated composition (a NodeStore
+    /// and pools bundle per graph, today's dataset shape), shared-arena
+    /// composition (one NodeStore and one pools bundle interning every
+    /// graph's nodes, each graph keeping its own root snapshot — the
+    /// existing multi-build seam), and one merged store. The shared
+    /// dictionary and the source triples are in the baseline, so each
+    /// delta is the store structures alone.
+    /// </summary>
+    /// <param name="graphCount">The number of named graphs the constant triple total partitions into.</param>
+    /// <param name="report">Whether to print; the warmup pass runs silent.</param>
+    private static async Task RunResidentRungAsync(int graphCount, bool report)
+    {
+        TermDictionary dictionary = new();
+        TermId p = Mint(dictionary, "p");
+
+        int perGraph = TotalTriples / graphCount;
+        List<EncodedTriple[]> graphs = [];
+        EncodedTriple[] merged = new EncodedTriple[perGraph * graphCount];
+        for(int g = 0; g < graphCount; g++)
+        {
+            EncodedTriple[] triples = new EncodedTriple[perGraph];
+            for(int i = 0; i < perGraph; i++)
+            {
+                int entity = (g * perGraph) + i;
+                triples[i] = EncodedTriple.FromEncoded(
+                    Mint(dictionary, $"x{entity}").Encoded,
+                    p.Encoded,
+                    Mint(dictionary, $"y{(entity >> 1) % BridgeCount}").Encoded);
+                merged[entity] = triples[i];
+            }
+
+            graphs.Add(triples);
+        }
+
+        long heapBase = MeasureLiveHeap();
+        List<HypertrieGraphStore> stores = new(graphCount);
+        foreach(EncodedTriple[] triples in graphs)
+        {
+            stores.Add(await HypertrieGraphStore.BuildAsync(triples, VeritasHashing.Default).ConfigureAwait(false));
+        }
+
+        long composedResident = MeasureLiveHeap() - heapBase;
+
+        //Drop the composed stores before each subsequent variant so
+        //every delta is measured against the same base set.
+        stores.Clear();
+        stores = null!;
+
+        //Shared-arena composition: one NodeStore interns every graph's
+        //nodes, one pools bundle serves every build, each graph keeps
+        //its own root snapshot — the logical/physical split the layout
+        //spike asks about, on the seam that already exists.
+        long heapShared = MeasureLiveHeap();
+        BuildPools sharedPools = BuildPools.CreateDefault();
+        long sharedResident;
+        using(NodeStore arena = new(VeritasHashing.Default, sharedPools.NodePool))
+        {
+            List<HypertrieGraphStore> arenaStores = new(graphCount);
+            foreach(EncodedTriple[] triples in graphs)
+            {
+                arenaStores.Add(await HypertrieGraphStore.BuildAsync(triples, arena, sharedPools).ConfigureAwait(false));
+            }
+
+            sharedResident = MeasureLiveHeap() - heapShared;
+            if(arenaStores[0].Count != perGraph)
+            {
+                Console.WriteLine($"[graph-resident]   WARNING: shared-arena store count {arenaStores[0].Count:N0} != {perGraph:N0}");
+            }
+
+            arenaStores.Clear();
+        }
+
+        long heapBetween = MeasureLiveHeap();
+        HypertrieGraphStore mergedStore = await HypertrieGraphStore.BuildAsync(merged, VeritasHashing.Default).ConfigureAwait(false);
+        long mergedResident = MeasureLiveHeap() - heapBetween;
+
+        //The source arrays sit in every baseline; keeping them (and the
+        //merged store) reachable past the last measurement stops the
+        //collector from skewing a delta by reclaiming them early.
+        GC.KeepAlive(graphs);
+        GC.KeepAlive(merged);
+        GC.KeepAlive(mergedStore);
+        GC.KeepAlive(dictionary);
+
+        if(report)
+        {
+            double isolatedOverhead = (composedResident - mergedResident) / (double)graphCount;
+            double sharedOverhead = (sharedResident - mergedResident) / (double)graphCount;
+            Console.WriteLine($"[graph-resident] graphs={graphCount:N0} perGraph={perGraph:N0}");
+            Console.WriteLine($"[graph-resident]   live heap: isolated {composedResident / (1024.0 * 1024.0),8:F1} MB ({composedResident / (double)TotalTriples,7:F0} B/triple)  shared-arena {sharedResident / (1024.0 * 1024.0),8:F1} MB ({sharedResident / (double)TotalTriples,7:F0} B/triple)  merged {mergedResident / (1024.0 * 1024.0),8:F1} MB ({mergedResident / (double)TotalTriples,7:F0} B/triple)");
+            Console.WriteLine($"[graph-resident]   per-store overhead: isolated {isolatedOverhead,9:F0} B  shared-arena {sharedOverhead,9:F0} B");
+        }
+    }
+
+    /// <summary>
+    /// The <c>?g</c>-joins-with-data fixture: <c>?g :rank :hot .
+    /// GRAPH ?g { ?x :p ?y }</c> — the graph IRI is a subject in the
+    /// default graph and a graph name at once. Three plans: composition
+    /// binding <c>?g</c> from metadata first and touching only selected
+    /// stores (the dataset map as graph index); composition sweeping all
+    /// stores and joining metadata after; and a merged stand-in for the
+    /// quad descent, graph membership reified as one
+    /// <c>?x :in ?g</c> triple per data triple (the bias: it doubles the
+    /// stand-in's triple count, roughly what a fourth level costs).
+    /// </summary>
+    /// <param name="graphCount">The number of named graphs.</param>
+    /// <param name="hotEvery">Every how-many-th graph carries the hot metadata rank the query selects.</param>
+    /// <param name="report">Whether to print; the warmup pass runs silent.</param>
+    private static async Task RunGraphJoinsDataRungAsync(int graphCount, int hotEvery, bool report = true)
+    {
+        TermDictionary dictionary = new();
+        TermId p = Mint(dictionary, "p");
+        TermId rank = Mint(dictionary, "rank");
+        TermId inGraph = Mint(dictionary, "in");
+        TermId hot = Mint(dictionary, "hot");
+        TermId cold = Mint(dictionary, "cold");
+
+        int perGraph = TotalTriples / graphCount;
+        List<EncodedTriple> metadata = new(graphCount);
+        List<List<EncodedTriple>> graphs = [];
+        List<EncodedTriple> merged = [];
+        Dictionary<TermId, int> storeByGraph = new(graphCount);
+        for(int g = 0; g < graphCount; g++)
+        {
+            TermId graphIri = Mint(dictionary, $"graph{g}");
+            storeByGraph[graphIri] = g;
+            bool isHot = g % hotEvery == 0;
+            EncodedTriple meta = EncodedTriple.FromEncoded(graphIri.Encoded, rank.Encoded, (isHot ? hot : cold).Encoded);
+            metadata.Add(meta);
+            merged.Add(meta);
+
+            List<EncodedTriple> triples = new(perGraph);
+            for(int i = 0; i < perGraph; i++)
+            {
+                int entity = (g * perGraph) + i;
+                TermId x = Mint(dictionary, $"x{entity}");
+                triples.Add(EncodedTriple.FromEncoded(x.Encoded, p.Encoded, Mint(dictionary, $"y{entity}").Encoded));
+                merged.Add(triples[i]);
+                merged.Add(EncodedTriple.FromEncoded(x.Encoded, inGraph.Encoded, graphIri.Encoded));
+            }
+
+            graphs.Add(triples);
+        }
+
+        HypertrieGraphStore metadataStore = await HypertrieGraphStore.BuildAsync(metadata, VeritasHashing.Default).ConfigureAwait(false);
+        List<HypertrieGraphStore> stores = [];
+        foreach(List<EncodedTriple> triples in graphs)
+        {
+            stores.Add(await HypertrieGraphStore.BuildAsync(triples, VeritasHashing.Default).ConfigureAwait(false));
+        }
+
+        HypertrieGraphStore mergedStore = await HypertrieGraphStore.BuildAsync(merged, VeritasHashing.Default).ConfigureAwait(false);
+
+        //The metadata pattern selecting the hot graphs and the data
+        //pattern inside each.
+        VariableRegistry metaRegistry = new();
+        Variable gVar = metaRegistry.GetOrAdd("g");
+        BasicGraphPattern hotGraphs = new(
+            [new TriplePattern(PatternPosition.OfVariable(gVar), PatternPosition.Bound(rank), PatternPosition.Bound(hot))],
+            metaRegistry);
+
+        VariableRegistry dataRegistry = new();
+        Variable x2 = dataRegistry.GetOrAdd("x");
+        Variable y2 = dataRegistry.GetOrAdd("y");
+        BasicGraphPattern data = new(
+            [new TriplePattern(PatternPosition.OfVariable(x2), PatternPosition.Bound(p), PatternPosition.OfVariable(y2))],
+            dataRegistry);
+
+        //Plan 1 — bind-first composition: metadata selects the graphs,
+        //the dataset map turns each binding into its store, only those
+        //stores are evaluated.
+        long bindFirstStart = Stopwatch.GetTimestamp();
+        long bindFirstRows = 0;
+        await foreach(Solution solution in metadataStore.Query(hotGraphs, TimeProvider.System).ConfigureAwait(false))
+        {
+            if(solution.TryGetValue(gVar, out TermId graphIri) && storeByGraph.TryGetValue(graphIri, out int storeIndex))
+            {
+                bindFirstRows += await CountAsync(stores[storeIndex], data).ConfigureAwait(false);
+            }
+        }
+
+        TimeSpan bindFirstElapsed = Stopwatch.GetElapsedTime(bindFirstStart);
+
+        //Plan 2 — sweep composition: every store is evaluated, each
+        //row's graph checked against the hot set after the fact.
+        long sweepStart = Stopwatch.GetTimestamp();
+        HashSet<TermId> hotSet = [];
+        await foreach(Solution solution in metadataStore.Query(hotGraphs, TimeProvider.System).ConfigureAwait(false))
+        {
+            if(solution.TryGetValue(gVar, out TermId graphIri))
+            {
+                hotSet.Add(graphIri);
+            }
+        }
+
+        long sweepRows = 0;
+        for(int g = 0; g < stores.Count; g++)
+        {
+            TermId graphIri = Mint(dictionary, $"graph{g}");
+            bool selected = hotSet.Contains(graphIri);
+            await foreach(Solution _ in stores[g].Query(data, TimeProvider.System).ConfigureAwait(false))
+            {
+                if(selected)
+                {
+                    sweepRows++;
+                }
+            }
+        }
+
+        TimeSpan sweepElapsed = Stopwatch.GetElapsedTime(sweepStart);
+
+        //Plan 3 — the merged stand-in: one three-pattern WCOJ with ?g
+        //leapfrogging between the metadata subjects and the membership
+        //objects.
+        VariableRegistry joinRegistry = new();
+        Variable jg = joinRegistry.GetOrAdd("g");
+        Variable jx = joinRegistry.GetOrAdd("x");
+        Variable jy = joinRegistry.GetOrAdd("y");
+        BasicGraphPattern quadJoin = new(
+            [
+                new TriplePattern(PatternPosition.OfVariable(jg), PatternPosition.Bound(rank), PatternPosition.Bound(hot)),
+                new TriplePattern(PatternPosition.OfVariable(jx), PatternPosition.Bound(inGraph), PatternPosition.OfVariable(jg)),
+                new TriplePattern(PatternPosition.OfVariable(jx), PatternPosition.Bound(p), PatternPosition.OfVariable(jy)),
+            ],
+            joinRegistry);
+
+        long mergedStart = Stopwatch.GetTimestamp();
+        long mergedRows = await CountAsync(mergedStore, quadJoin).ConfigureAwait(false);
+        TimeSpan mergedElapsed = Stopwatch.GetElapsedTime(mergedStart);
+
+        if(report)
+        {
+            Console.WriteLine($"[graph-joins-data] graphs={graphCount:N0} perGraph={perGraph:N0} hot=1/{hotEvery}");
+            Console.WriteLine($"[graph-joins-data]   bind-first {bindFirstElapsed.TotalMilliseconds,8:F1} ms  sweep {sweepElapsed.TotalMilliseconds,8:F1} ms  merged-WCOJ {mergedElapsed.TotalMilliseconds,8:F1} ms  rows {bindFirstRows:N0}/{sweepRows:N0}/{mergedRows:N0}");
+        }
+    }
+
+    /// <summary>
+    /// Measures the live GC heap after forcing a full collection, so
+    /// deltas reflect resident structures rather than build churn.
+    /// </summary>
+    /// <returns>The live heap size in bytes.</returns>
+    private static long MeasureLiveHeap()
+    {
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+
+        return GC.GetTotalMemory(forceFullCollection: true);
+    }
+
+    /// <summary>
     /// The graph-correlated fixture: <c>GRAPH ?g { ?x p ?y . ?y q ?z }</c>
     /// — the same-graph constraint a merged triple store cannot normally
     /// express. Bridges mint per graph, so the join can only meet inside
