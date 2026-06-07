@@ -31,33 +31,23 @@ internal sealed class W3cOwl2RlTests
     public TestContext TestContext { get; set; } = null!;
 
     /// <summary>
-    /// Tests whose conclusions lie beyond the RL/RDF rules calculus,
-    /// recorded as self-correcting known gaps. One cluster remains:
-    /// complement conclusions requiring contrapositive reasoning (the
-    /// DisjointClasses/DisjointProperties/QCR families,
-    /// <c>fp/ifp-differentFrom</c>) — the rules are complete for
-    /// assertional consequences only (Profiles §4.3, Theorem PR1); a
-    /// refutation core over the locality module is the planned closer.
-    /// The trans⇄chain pair closed via the
-    /// <c>chain-trans</c>/<c>trans-chain</c> extension rules, and the
+    /// Tests whose conclusions lie beyond the entailment surface, recorded
+    /// as self-correcting known gaps — currently none. The history of the
+    /// list: the trans⇄chain pair closed via the
+    /// <c>chain-trans</c>/<c>trans-chain</c> extension rules; the
     /// comprehension pair (<c>I5.26-010</c>, <c>I5.5-005</c>) via the
     /// entailment check's
-    /// <see cref="OwlComprehension.InformativeConditions"/> mode — the
+    /// <see cref="OwlComprehension.InformativeConditions"/> mode (the
     /// closure never materialises comprehension; the checker grants
-    /// pure-existence expression scaffolds exactly. A run fails if a
-    /// listed test starts passing.
+    /// pure-existence expression scaffolds exactly); and the
+    /// contrapositive cluster (the DisjointClasses/DisjointProperties/QCR
+    /// families, <c>fp/ifp-differentFrom</c>) via
+    /// <see cref="OwlRlEntailment"/> refutation — the rules are complete
+    /// for assertional consequences only (Profiles §4.3, Theorem PR1), so
+    /// the contrapositive forms refute through the closure instead. A run
+    /// fails if a listed test starts passing.
     /// </summary>
-    private static HashSet<string> KnownGaps { get; } =
-    [
-        "DisjointClasses-001",
-        "DisjointClasses-003",
-        "New-Feature-DisjointDataProperties-002",
-        "New-Feature-DisjointObjectProperties-001",
-        "New-Feature-DisjointObjectProperties-002",
-        "New-Feature-ObjectQCR-002",
-        "owl2-rl-rules-fp-differentFrom",
-        "owl2-rl-rules-ifp-differentFrom",
-    ];
+    private static HashSet<string> KnownGaps { get; } = [];
 
     /// <summary>Runs one approved-status, RL-marked OWL 2 test case through the RL closure.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
@@ -133,34 +123,34 @@ internal sealed class W3cOwl2RlTests
             Assert.IsTrue(result.IsConsistent, $"{testCase.Identifier}: the premise is consistent, but rule {result.InconsistencyRule} fired.");
         }
 
-        //Entailment: the conclusion graph embeds into the closure (positive)
-        //or must not (negative). The closure is the premise plus everything
-        //derived, decoded back to terms. The comprehension mode matches the
+        //Entailment runs through the full surface — embedding over the
+        //closure, refutation for the contrapositive forms — in both
+        //directions, one semantics. The comprehension mode matches the
         //corpus's WebOnt heritage: pure-existence expression scaffolds are
         //granted by the checker, never materialised by the closure.
         if(testCase.Kinds.Contains("PositiveEntailmentTest")
             && LoadQuads(testCase, testCase.RdfXmlConclusion, testCase.FunctionalConclusion) is List<Quad> conclusionQuads)
         {
-            List<Quad> closure = DecodeUnion(premiseQuads, result, dictionary);
+            bool entails = OwlRlEntailment.Entails(
+                premiseQuads, conclusionQuads, dictionary, terms,
+                OwlRlDatatypeOracles.FromDictionary(dictionary), OwlComprehension.InformativeConditions, TestContext.CancellationToken);
 
             if(isKnownGap)
             {
-                AssertKnownGap(testCase, holds: OwlGraphEntailment.Embeds(conclusionQuads, closure, OwlComprehension.InformativeConditions));
+                AssertKnownGap(testCase, holds: entails);
             }
 
-            Assert.IsTrue(
-                OwlGraphEntailment.Embeds(conclusionQuads, closure, OwlComprehension.InformativeConditions),
-                $"{testCase.Identifier}: the conclusion does not embed into the RL closure.");
+            Assert.IsTrue(entails, $"{testCase.Identifier}: the conclusion does not follow from the RL closure.");
         }
 
         if(testCase.Kinds.Contains("NegativeEntailmentTest")
             && LoadQuads(testCase, testCase.RdfXmlNonConclusion, testCase.FunctionalNonConclusion) is List<Quad> nonConclusionQuads)
         {
-            List<Quad> closure = DecodeUnion(premiseQuads, result, dictionary);
-
             Assert.IsFalse(
-                OwlGraphEntailment.Embeds(nonConclusionQuads, closure, OwlComprehension.InformativeConditions),
-                $"{testCase.Identifier}: the non-conclusion embeds into the RL closure but must not.");
+                OwlRlEntailment.Entails(
+                    premiseQuads, nonConclusionQuads, dictionary, terms,
+                    OwlRlDatatypeOracles.FromDictionary(dictionary), OwlComprehension.InformativeConditions, TestContext.CancellationToken),
+                $"{testCase.Identifier}: the non-conclusion follows from the RL closure but must not.");
         }
     }
 
@@ -224,21 +214,6 @@ internal sealed class W3cOwl2RlTests
         }
 
         return encoded;
-    }
-
-    private static List<Quad> DecodeUnion(List<Quad> premiseQuads, OwlRlResult result, TermDictionary dictionary)
-    {
-        List<Quad> closure = [.. premiseQuads];
-        foreach(EncodedTriple triple in result.Derived)
-        {
-            RdfTerm predicate = dictionary.Resolve(triple.Predicate);
-            if(predicate is NamedNode named)
-            {
-                closure.Add(new Quad(dictionary.Resolve(triple.Subject), named, dictionary.Resolve(triple.Object), Graph: null));
-            }
-        }
-
-        return closure;
     }
 
 }
