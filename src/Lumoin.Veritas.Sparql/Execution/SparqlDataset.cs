@@ -8,7 +8,7 @@ namespace Lumoin.Veritas.Sparql.Execution;
 
 /// <summary>
 /// The dataset a query evaluates against (SPARQL 1.2 §13): a single default graph plus zero or more named
-/// graphs, each a separate <see cref="HypertrieGraphStore"/> keyed by its graph-name <see cref="TermId"/>. Every
+/// graphs, each a <see cref="HypertrieGraphStore"/> keyed by its graph-name <see cref="TermId"/>. Every
 /// graph is encoded by ONE shared <see cref="Lumoin.Veritas.Core.TermDictionary"/>, so a <see cref="TermId"/>
 /// denotes the same term in every graph and the executor switches the active graph simply by re-keying which
 /// store its leaf lookups hit.
@@ -20,6 +20,12 @@ namespace Lumoin.Veritas.Sparql.Execution;
 /// worst-case-optimal join construction is untouched, so the large-graph build cost is unaffected.
 /// </para>
 /// <para>
+/// <b>Resolution.</b> Named graphs resolve through a delegate, so a dataset over a graph DIRECTORY (many
+/// logical graphs over one shared arena, stores minted on demand) and a dataset over materialized stores
+/// share one shape; the materialized constructor wraps its dictionary as a resolver. Existence checks go
+/// through the name set and never mint.
+/// </para>
+/// <para>
 /// A <c>GRAPH</c> ranges over the named graphs only; the default graph is never one of them. An IRI that names
 /// no named graph (including <see cref="TermId.None"/>, the value of an IRI absent from the dictionary)
 /// contributes no solutions — never the default graph.
@@ -27,7 +33,9 @@ namespace Lumoin.Veritas.Sparql.Execution;
 /// </remarks>
 public sealed class SparqlDataset
 {
-    private readonly Dictionary<TermId, HypertrieGraphStore> namedGraphs;
+    private readonly HashSet<TermId> graphNameSet;
+
+    private readonly Func<TermId, HypertrieGraphStore?> resolveNamed;
 
     /// <summary>The default graph — the store queried outside any <c>GRAPH</c> form.</summary>
     public HypertrieGraphStore DefaultGraph { get; }
@@ -40,7 +48,7 @@ public sealed class SparqlDataset
     /// </summary>
     public QueryEngineRendezvous DefaultGraphRendezvous { get; }
 
-    /// <summary>The graph names of the named graphs, in insertion order — the domain a <c>GRAPH ?g</c> form ranges over.</summary>
+    /// <summary>The graph names of the named graphs — the domain a <c>GRAPH ?g</c> form ranges over.</summary>
     public IReadOnlyList<TermId> GraphNames { get; }
 
     /// <summary>Constructs a dataset from its default graph and its named graphs, with a fresh engine rendezvous for the default graph.</summary>
@@ -68,8 +76,34 @@ public sealed class SparqlDataset
 
         DefaultGraph = defaultGraph;
         DefaultGraphRendezvous = defaultGraphRendezvous;
-        this.namedGraphs = new Dictionary<TermId, HypertrieGraphStore>(namedGraphs);
-        GraphNames = [.. this.namedGraphs.Keys];
+        Dictionary<TermId, HypertrieGraphStore> materialized = new(namedGraphs);
+        graphNameSet = [.. materialized.Keys];
+        GraphNames = [.. materialized.Keys];
+        resolveNamed = graph => materialized.TryGetValue(graph, out HypertrieGraphStore? store) ? store : null;
+    }
+
+    /// <summary>Constructs a dataset whose named graphs resolve through a delegate — the graph-directory form: stores mint on demand, existence checks never mint.</summary>
+    /// <param name="defaultGraph">The default graph.</param>
+    /// <param name="graphNames">The named graphs' name term ids; copied.</param>
+    /// <param name="resolveNamedGraph">Resolves a graph-name term id to its store, or <see langword="null"/> when the dataset has no such graph. Consulted only for names in <paramref name="graphNames"/>; must be consistent with it.</param>
+    /// <param name="defaultGraphRendezvous">The rendezvous default-graph patterns route through.</param>
+    /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
+    public SparqlDataset(
+        HypertrieGraphStore defaultGraph,
+        IReadOnlyCollection<TermId> graphNames,
+        Func<TermId, HypertrieGraphStore?> resolveNamedGraph,
+        QueryEngineRendezvous defaultGraphRendezvous)
+    {
+        ArgumentNullException.ThrowIfNull(defaultGraph);
+        ArgumentNullException.ThrowIfNull(graphNames);
+        ArgumentNullException.ThrowIfNull(resolveNamedGraph);
+        ArgumentNullException.ThrowIfNull(defaultGraphRendezvous);
+
+        DefaultGraph = defaultGraph;
+        DefaultGraphRendezvous = defaultGraphRendezvous;
+        graphNameSet = [.. graphNames];
+        GraphNames = [.. graphNameSet];
+        resolveNamed = resolveNamedGraph;
     }
 
     /// <summary>Builds a dataset with only a default graph and no named graphs — the common single-graph case.</summary>
@@ -91,7 +125,15 @@ public sealed class SparqlDataset
             return DefaultGraph;
         }
 
-        return namedGraphs.TryGetValue(graph, out HypertrieGraphStore? store) ? store : null;
+        return graphNameSet.Contains(graph) ? resolveNamed(graph) : null;
+    }
+
+    /// <summary>Whether the dataset has a named graph for a graph name. Never mints a store.</summary>
+    /// <param name="graph">The graph-name term id.</param>
+    /// <returns><see langword="true"/> when the named graph exists.</returns>
+    public bool ContainsNamedGraph(TermId graph)
+    {
+        return graphNameSet.Contains(graph);
     }
 
     /// <summary>Looks up the named graph for a graph name.</summary>
@@ -100,6 +142,8 @@ public sealed class SparqlDataset
     /// <returns><see langword="true"/> when the dataset has a named graph for <paramref name="graph"/>.</returns>
     public bool TryGetNamedGraph(TermId graph, out HypertrieGraphStore store)
     {
-        return namedGraphs.TryGetValue(graph, out store!);
+        store = (graphNameSet.Contains(graph) ? resolveNamed(graph) : null)!;
+
+        return store is not null;
     }
 }

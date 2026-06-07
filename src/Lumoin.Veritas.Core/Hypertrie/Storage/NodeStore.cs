@@ -144,6 +144,12 @@ public sealed class NodeStore: IDisposable
     //reference the key, or the entry would pin it.
     private ConditionalWeakTable<HypertrieSnapshot, object> AcquiredSnapshots { get; } = new();
 
+    //The registry of live root-set pins — the sweep's second root
+    //source, one entry per dataset-level snapshot however many
+    //roots it pins. Weakly keyed under the same liveness model as
+    //AcquiredSnapshots.
+    private ConditionalWeakTable<HypertrieRootSetPin, object> PinnedRootSets { get; } = new();
+
     private static object SnapshotMarker { get; } = new();
 
     //The shared/exclusive gate. Builds and edit sessions take
@@ -601,6 +607,49 @@ public sealed class NodeStore: IDisposable
     }
 
     /// <summary>
+    /// Pins a set of roots in one registration — the dataset-level
+    /// counterpart of a <see cref="HypertrieSnapshot"/>. Every
+    /// pinned root stays sweep-reachable until the pin is disposed
+    /// or its holder becomes unreachable.
+    /// </summary>
+    /// <param name="roots">The root handles to pin; copied.</param>
+    /// <returns>The registered pin.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="roots"/> is <c>null</c>.</exception>
+    public HypertrieRootSetPin PinRoots(IReadOnlyCollection<NodeHandle> roots)
+    {
+        ArgumentNullException.ThrowIfNull(roots);
+
+        return new HypertrieRootSetPin(this, [.. roots]);
+    }
+
+    /// <summary>
+    /// Adds <paramref name="pin"/> to the registry of live root-set
+    /// pins. Called by the <see cref="HypertrieRootSetPin"/>
+    /// constructor; consumers do not call this directly.
+    /// </summary>
+    /// <param name="pin">The pin to register.</param>
+    internal void RegisterRootSetPin(HypertrieRootSetPin pin)
+    {
+        ArgumentNullException.ThrowIfNull(pin);
+
+        PinnedRootSets.Add(pin, SnapshotMarker);
+    }
+
+    /// <summary>
+    /// Removes <paramref name="pin"/> from the registry of live
+    /// root-set pins. Called by
+    /// <see cref="HypertrieRootSetPin.Dispose"/>; consumers do not
+    /// call this directly.
+    /// </summary>
+    /// <param name="pin">The pin to deregister.</param>
+    internal void UnregisterRootSetPin(HypertrieRootSetPin pin)
+    {
+        ArgumentNullException.ThrowIfNull(pin);
+
+        PinnedRootSets.Remove(pin);
+    }
+
+    /// <summary>
     /// Returns <c>true</c> when <paramref name="snapshot"/> is
     /// currently in the acquired-snapshots registry.
     /// Diagnostic / tests only.
@@ -710,15 +759,22 @@ public sealed class NodeStore: IDisposable
         ExclusiveScope scope = await EnterExclusiveScopeAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            //The weak registry yields only snapshots still alive: an
-            //explicitly released snapshot deregistered itself, and a
-            //dropped-without-release snapshot disappears once the
-            //collector reclaims it — superseded logical stores over a
-            //shared arena become sweepable by unreachability alone.
+            //The weak registries yield only holders still alive: an
+            //explicitly released snapshot or disposed pin
+            //deregistered itself, and a dropped-without-release one
+            //disappears once the collector reclaims it — superseded
+            //logical stores and dataset states over a shared arena
+            //become sweepable by unreachability alone.
             List<HypertrieSnapshot> live = [];
             foreach((HypertrieSnapshot snapshot, object _) in AcquiredSnapshots)
             {
                 live.Add(snapshot);
+            }
+
+            List<HypertrieRootSetPin> pins = [];
+            foreach((HypertrieRootSetPin pin, object _) in PinnedRootSets)
+            {
+                pins.Add(pin);
             }
 
             HashSet<NodeHandle> reachable = [];
@@ -726,6 +782,14 @@ public sealed class NodeStore: IDisposable
             foreach(HypertrieSnapshot snapshot in live)
             {
                 MarkReachable(snapshot.Root, reachable, cancellationToken);
+            }
+
+            foreach(HypertrieRootSetPin pin in pins)
+            {
+                foreach(NodeHandle root in pin.Roots)
+                {
+                    MarkReachable(root, reachable, cancellationToken);
+                }
             }
 
             return PruneUnreachable(reachable, cancellationToken);

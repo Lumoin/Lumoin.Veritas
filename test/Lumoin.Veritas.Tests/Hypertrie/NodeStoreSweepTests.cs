@@ -212,6 +212,65 @@ internal sealed class NodeStoreSweepTests
     }
 
     [TestMethod]
+    public async Task RootSetPinKeepsRootsAcrossSweepWithoutSnapshots()
+    {
+        using NodeStore store = new(VeritasHashing.Default);
+        HypertrieGraphStore graphStore = await HypertrieGraphStore.BuildAsync(SampleTriples, store, TestContext.CancellationToken).ConfigureAwait(false);
+        int countBefore = store.Count;
+
+        //The pin is the dataset-level snapshot: it alone keeps the
+        //root reachable after the per-store snapshot is released.
+        HypertrieRootSetPin pin = store.PinRoots([graphStore.Snapshot.Root]);
+        graphStore.Snapshot.Dispose();
+
+        SweepResult pinned = await store.SweepAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(0, pinned.NodesEvicted);
+        Assert.AreEqual(countBefore, store.Count);
+
+        pin.Dispose();
+        SweepResult released = await store.SweepAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(countBefore, released.NodesEvicted);
+        Assert.AreEqual(0, store.Count);
+    }
+
+    [TestMethod]
+    public async Task SweepEvictsPinDroppedWithoutDispose()
+    {
+        using NodeStore store = new(VeritasHashing.Default);
+
+        int countBefore = await BuildPinAndDropAsync(store, TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.IsGreaterThan(0, countBefore);
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        SweepResult result = await store.SweepAsync(TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(countBefore, result.NodesEvicted);
+        Assert.AreEqual(0, store.Count);
+    }
+
+    /// <summary>
+    /// Builds a graph, pins its root, releases the snapshot, and
+    /// drops the pin on return. A separate non-inlined method so the
+    /// test frame holds no live reference to the pin afterwards.
+    /// </summary>
+    /// <param name="store">The shared arena.</param>
+    /// <param name="cancellationToken">The test cancellation token.</param>
+    /// <returns>The arena's node count with the pin live.</returns>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static async Task<int> BuildPinAndDropAsync(NodeStore store, CancellationToken cancellationToken)
+    {
+        HypertrieGraphStore graphStore = await HypertrieGraphStore.BuildAsync(SampleTriples, store, cancellationToken).ConfigureAwait(false);
+        HypertrieRootSetPin pin = store.PinRoots([graphStore.Snapshot.Root]);
+        graphStore.Snapshot.Dispose();
+        Assert.IsNotNull(pin.Roots);
+
+        return store.Count;
+    }
+
+    [TestMethod]
     public void DisposingStoreIsIdempotent()
     {
         NodeStore store = new(VeritasHashing.Default);

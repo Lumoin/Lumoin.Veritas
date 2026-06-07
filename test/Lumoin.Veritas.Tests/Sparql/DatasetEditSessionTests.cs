@@ -238,6 +238,50 @@ internal sealed class DatasetEditSessionTests
     }
 
     [TestMethod]
+    public async Task NamedGraphStoresMintLazilyAndMemoizePerState()
+    {
+        InMemoryDatasetJournal journal = new();
+        TermDictionary dictionary = new();
+        MutableSparqlDataset dataset = await CreateEmptyAsync(journal, dictionary).ConfigureAwait(false);
+        TermId graph = Mint(dictionary, "graph");
+
+        DatasetEditSession seed = await dataset.OpenSessionAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        try
+        {
+            await seed.ApplyDeltaAsync(graph, [Triple(dictionary, "s", "p", "o")], [], TestContext.CancellationToken).ConfigureAwait(false);
+            await seed.CommitAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            await seed.DisposeAsync().ConfigureAwait(false);
+        }
+
+        //Two resolutions of the same graph in the same committed
+        //state return the same minted store instance — minting is
+        //memoized per state, not per touch.
+        Assert.IsTrue(dataset.TryGetNamedGraph(graph, out HypertrieGraphStore? first));
+        Assert.IsTrue(dataset.TryGetNamedGraph(graph, out HypertrieGraphStore? second));
+        Assert.AreSame(first, second);
+        Assert.AreEqual(1, first!.Count);
+
+        //The directory survives commits that do not touch the graph,
+        //and the new state mints its own store over the same root.
+        DatasetEditSession other = await dataset.OpenSessionAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        try
+        {
+            await other.ApplyDeltaAsync(TermId.None, [Triple(dictionary, "d", "p", "o")], [], TestContext.CancellationToken).ConfigureAwait(false);
+            await other.CommitAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            await other.DisposeAsync().ConfigureAwait(false);
+        }
+
+        Assert.IsTrue(dataset.TryGetNamedGraph(graph, out HypertrieGraphStore? afterCommit));
+        Assert.AreEqual(first.Snapshot.Id, afterCommit!.Snapshot.Id);
+    }
+
+    [TestMethod]
     public async Task AbandonedSessionLeavesStateUntouchedAndRecordsAbandon()
     {
         InMemoryDatasetJournal journal = new();

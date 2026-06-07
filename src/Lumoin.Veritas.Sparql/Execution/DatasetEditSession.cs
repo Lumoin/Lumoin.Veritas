@@ -24,9 +24,12 @@ namespace Lumoin.Veritas.Sparql.Execution;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Working state.</b> Each mutating call applies immediately to
-/// the session's working stores (so a later operation in the same
-/// request reads the earlier ones' effects through
+/// <b>Working state.</b> The session copies the base state's graph
+/// DIRECTORY (cheap struct entries) and materializes stores only
+/// for the graphs it touches; untouched graphs resolve through the
+/// base state's memoized minting. Each mutating call applies
+/// immediately to the working state (so a later operation in the
+/// same request reads the earlier ones' effects through
 /// <see cref="Snapshot"/>), while the published dataset stays at
 /// the pre-request state until <see cref="CommitAsync"/>. The
 /// journal entry records the NET per-graph delta between the base
@@ -40,7 +43,7 @@ namespace Lumoin.Veritas.Sparql.Execution;
 /// <see cref="EditSessionConcurrencyException"/> and the caller
 /// retries the whole request against the new state. Intermediate
 /// working stores the session abandons become sweepable through
-/// the arena's weak snapshot registry.
+/// the arena's weak registries.
 /// </para>
 /// <para>
 /// <b>Lifecycle.</b> Open → Committed on successful commit;
@@ -87,8 +90,11 @@ public sealed class DatasetEditSession: IAsyncDisposable
     /// <summary>The session's working default-graph store.</summary>
     public HypertrieGraphStore DefaultGraph { get; private set; }
 
-    /// <summary>The session's working named-graph stores. A private copy of the base map, mutated freely.</summary>
-    private Dictionary<TermId, HypertrieGraphStore> NamedGraphs { get; }
+    /// <summary>The session's working named-graph directory. A private copy of the base directory, mutated freely.</summary>
+    private Dictionary<TermId, GraphDirectoryEntry> WorkingDirectory { get; }
+
+    /// <summary>The stores the session has materialized for the graphs it touched; untouched graphs resolve through the base state.</summary>
+    private Dictionary<TermId, HypertrieGraphStore> TouchedStores { get; } = [];
 
     /// <summary>The net deltas per touched graph, keyed by graph term id (<see cref="TermId.None"/> = the default graph).</summary>
     private Dictionary<TermId, GraphScratch> Scratch { get; } = [];
@@ -121,30 +127,32 @@ public sealed class DatasetEditSession: IAsyncDisposable
         Scope = scope;
         Id = id;
         DefaultGraph = baseState.DefaultGraph;
-        NamedGraphs = new Dictionary<TermId, HypertrieGraphStore>(baseState.NamedGraphs);
+        WorkingDirectory = new Dictionary<TermId, GraphDirectoryEntry>(baseState.Directory);
     }
 
     /// <summary>The dataset's shared term dictionary, for encoding update terms.</summary>
     public TermDictionary Dictionary => Dataset.Dictionary;
 
     /// <summary>The graph-name term ids of the working named graphs.</summary>
-    public IReadOnlyCollection<TermId> NamedGraphNames => NamedGraphs.Keys;
+    public IReadOnlyCollection<TermId> NamedGraphNames => WorkingDirectory.Keys;
 
-    /// <summary>Whether the working state has a named graph for a graph name.</summary>
+    /// <summary>Whether the working state has a named graph for a graph name. Never mints a store.</summary>
     /// <param name="name">The graph-name term id.</param>
     /// <returns><see langword="true"/> when the named graph exists.</returns>
     public bool ContainsNamedGraph(TermId name)
     {
-        return NamedGraphs.ContainsKey(name);
+        return WorkingDirectory.ContainsKey(name);
     }
 
-    /// <summary>Looks up the working store for a named graph.</summary>
+    /// <summary>Looks up the working store for a named graph: the session's own store when touched, otherwise the base state's memoized mint.</summary>
     /// <param name="name">The graph-name term id.</param>
     /// <param name="store">Receives the store on success.</param>
     /// <returns><see langword="true"/> when the named graph exists.</returns>
     public bool TryGetNamedGraph(TermId name, out HypertrieGraphStore? store)
     {
-        return NamedGraphs.TryGetValue(name, out store);
+        store = ResolveWorking(name);
+
+        return store is not null;
     }
 
     /// <summary>
@@ -152,14 +160,16 @@ public sealed class DatasetEditSession: IAsyncDisposable
     /// session's WORKING state, so a later operation's
     /// <c>WHERE</c> sees the earlier operations' effects
     /// (SPARQL Update §3.1.3) while outside readers keep the
-    /// pre-request state.
+    /// pre-request state. The view resolves through the session
+    /// live; it is meant for evaluation completed before the next
+    /// mutating call, which is how the executor consumes it.
     /// </summary>
     /// <returns>The working-state dataset view.</returns>
     public SparqlDataset Snapshot()
     {
         ThrowIfNotOpen();
 
-        return new SparqlDataset(DefaultGraph, NamedGraphs, Dataset.DefaultGraphRendezvous);
+        return new SparqlDataset(DefaultGraph, [.. WorkingDirectory.Keys], ResolveWorking, Dataset.DefaultGraphRendezvous);
     }
 
     /// <summary>Produces a working-state view with a substituted default graph (the <c>WITH</c> graph of a modify's <c>WHERE</c>).</summary>
@@ -171,7 +181,7 @@ public sealed class DatasetEditSession: IAsyncDisposable
         ArgumentNullException.ThrowIfNull(defaultGraph);
         ThrowIfNotOpen();
 
-        return new SparqlDataset(defaultGraph, NamedGraphs, Dataset.DefaultGraphRendezvous);
+        return new SparqlDataset(defaultGraph, [.. WorkingDirectory.Keys], ResolveWorking, Dataset.DefaultGraphRendezvous);
     }
 
     /// <summary>
@@ -198,10 +208,7 @@ public sealed class DatasetEditSession: IAsyncDisposable
         ThrowIfNotOpen();
         cancellationToken.ThrowIfCancellationRequested();
 
-        HypertrieGraphStore? store = graph.IsNone
-            ? DefaultGraph
-            : NamedGraphs.TryGetValue(graph, out HypertrieGraphStore? existing) ? existing : null;
-
+        HypertrieGraphStore? store = graph.IsNone ? DefaultGraph : ResolveWorking(graph);
         if(store is null)
         {
             if(additions.Count == 0)
@@ -210,7 +217,7 @@ public sealed class DatasetEditSession: IAsyncDisposable
             }
 
             store = await HypertrieGraphStore.BuildAsync([], Dataset.Arena, Dataset.Pools, cancellationToken).ConfigureAwait(false);
-            NamedGraphs[graph] = store;
+            RecordWorkingStore(graph, store);
         }
 
         ApplyDeltaResult delta = HypertrieOpsPatching.ApplyDelta(store.Snapshot, additions, removals, Dataset.Arena, Dataset.Pools);
@@ -225,14 +232,14 @@ public sealed class DatasetEditSession: IAsyncDisposable
         //registration. The store acquires its own reference, so the
         //creator reference releases at the end of this scope.
         using HypertrieSnapshot snapshot = new(Dataset.Arena, delta.Root, delta.Id);
-        HypertrieGraphStore updated = HypertrieGraphStore.FromSnapshot(snapshot);
+        HypertrieGraphStore updated = HypertrieGraphStore.FromSnapshot(snapshot, store.Count + delta.EffectiveAdditions.Count - delta.EffectiveRemovals.Count);
         if(graph.IsNone)
         {
             DefaultGraph = updated;
         }
         else
         {
-            NamedGraphs[graph] = updated;
+            RecordWorkingStore(graph, updated);
         }
 
         FoldDelta(ScratchFor(graph), delta.EffectiveAdditions, delta.EffectiveRemovals);
@@ -253,12 +260,12 @@ public sealed class DatasetEditSession: IAsyncDisposable
         ArgumentNullException.ThrowIfNull(triples);
         ThrowIfNotOpen();
 
-        if(!graph.IsNone && !NamedGraphs.ContainsKey(graph))
+        if(!graph.IsNone && !WorkingDirectory.ContainsKey(graph))
         {
             await CreateGraphAsync(graph, cancellationToken).ConfigureAwait(false);
         }
 
-        HypertrieGraphStore store = graph.IsNone ? DefaultGraph : NamedGraphs[graph];
+        HypertrieGraphStore store = graph.IsNone ? DefaultGraph : ResolveWorking(graph)!;
         List<EncodedTriple> currentTriples = MutableSparqlDataset.CollectAllTriples(store);
 
         await ApplyDeltaAsync(graph, triples, currentTriples, cancellationToken).ConfigureAwait(false);
@@ -279,12 +286,12 @@ public sealed class DatasetEditSession: IAsyncDisposable
             throw new ArgumentException("The default graph always exists and cannot be created.", nameof(graph));
         }
 
-        if(NamedGraphs.ContainsKey(graph))
+        if(WorkingDirectory.ContainsKey(graph))
         {
             return;
         }
 
-        NamedGraphs[graph] = await HypertrieGraphStore.BuildAsync([], Dataset.Arena, Dataset.Pools, cancellationToken).ConfigureAwait(false);
+        RecordWorkingStore(graph, await HypertrieGraphStore.BuildAsync([], Dataset.Arena, Dataset.Pools, cancellationToken).ConfigureAwait(false));
     }
 
     /// <summary>
@@ -306,20 +313,23 @@ public sealed class DatasetEditSession: IAsyncDisposable
             throw new ArgumentException("The default graph always exists and cannot be dropped.", nameof(graph));
         }
 
-        if(!NamedGraphs.TryGetValue(graph, out HypertrieGraphStore? store))
+        HypertrieGraphStore? store = ResolveWorking(graph);
+        if(store is null)
         {
             return;
         }
 
         FoldDelta(ScratchFor(graph), [], MutableSparqlDataset.CollectAllTriples(store));
-        NamedGraphs.Remove(graph);
+        WorkingDirectory.Remove(graph);
+        TouchedStores.Remove(graph);
     }
 
     /// <summary>
     /// Commits the session's accumulated transitions as one
     /// <see cref="DatasetJournalEntry"/> and publishes the new
-    /// dataset state. Transitions the session to Committed;
-    /// subsequent mutating calls throw.
+    /// dataset state — directory, root-set pin, and the touched
+    /// stores seeding the new state's mint memo. Transitions the
+    /// session to Committed; subsequent mutating calls throw.
     /// </summary>
     /// <param name="cancellationToken">A token that aborts the commit.</param>
     /// <returns>The committed read-only dataset snapshot. When nothing effectively changed, the pre-request snapshot — no journal entry is written.</returns>
@@ -338,7 +348,7 @@ public sealed class DatasetEditSession: IAsyncDisposable
             return Dataset.Snapshot();
         }
 
-        NodeIdentifier childStateId = MutableSparqlDataset.ComputeStateId(Dataset.Arena.Hash, DefaultGraph, NamedGraphs);
+        NodeIdentifier childStateId = MutableSparqlDataset.ComputeStateId(Dataset.Arena.Hash, DefaultGraph, WorkingDirectory);
         DatasetJournalEntry committedEntry = DatasetJournalEntry.Committed(
             Dataset.Arena.Hash,
             parentId: BaseState.StateId,
@@ -353,7 +363,19 @@ public sealed class DatasetEditSession: IAsyncDisposable
 
         bool defaultChanged = Scratch.TryGetValue(TermId.None, out GraphScratch? defaultScratch)
             && (defaultScratch.Added.Count > 0 || defaultScratch.Removed.Count > 0);
-        MutableSparqlDataset.DatasetState newState = new(DefaultGraph, NamedGraphs, childStateId);
+        List<NodeHandle> roots = new(WorkingDirectory.Count);
+        foreach(GraphDirectoryEntry entry in WorkingDirectory.Values)
+        {
+            roots.Add(entry.Root);
+        }
+
+        MutableSparqlDataset.DatasetState newState = new(
+            Dataset.Arena,
+            DefaultGraph,
+            WorkingDirectory,
+            roots.Count > 0 ? Dataset.Arena.PinRoots(roots) : null,
+            childStateId,
+            TouchedStores);
         Dataset.Publish(
             newState,
             defaultChanged,
@@ -361,7 +383,7 @@ public sealed class DatasetEditSession: IAsyncDisposable
             defaultChanged ? defaultScratch!.Removed : []);
         TransitionToCommitted();
 
-        return new SparqlDataset(newState.DefaultGraph, newState.NamedGraphs, Dataset.DefaultGraphRendezvous);
+        return new SparqlDataset(newState.DefaultGraph, [.. WorkingDirectory.Keys], newState.ResolveNamed, Dataset.DefaultGraphRendezvous);
     }
 
     /// <summary>
@@ -409,6 +431,31 @@ public sealed class DatasetEditSession: IAsyncDisposable
         {
             await Scope.DisposeAsync().ConfigureAwait(false);
         }
+    }
+
+    /// <summary>Resolves a named graph in the working state: a touched store, or the base state's memoized mint for an inherited entry.</summary>
+    /// <param name="graph">The graph-name term id.</param>
+    /// <returns>The store, or <see langword="null"/> when the working state has no such graph.</returns>
+    private HypertrieGraphStore? ResolveWorking(TermId graph)
+    {
+        if(TouchedStores.TryGetValue(graph, out HypertrieGraphStore? touched))
+        {
+            return touched;
+        }
+
+        //An untouched directory entry is byte-identical to the base
+        //state's, so the base's mint memo serves it — shared with
+        //published readers of the same state.
+        return WorkingDirectory.ContainsKey(graph) ? BaseState.ResolveNamed(graph) : null;
+    }
+
+    /// <summary>Records a touched graph's new working store and directory entry.</summary>
+    /// <param name="graph">The graph-name term id.</param>
+    /// <param name="store">The new working store.</param>
+    private void RecordWorkingStore(TermId graph, HypertrieGraphStore store)
+    {
+        TouchedStores[graph] = store;
+        WorkingDirectory[graph] = new GraphDirectoryEntry(store.Snapshot.Root, store.Snapshot.Id, store.Count);
     }
 
     /// <summary>Looks up or creates the net-delta scratch for a graph.</summary>
@@ -481,12 +528,12 @@ public sealed class DatasetEditSession: IAsyncDisposable
         }
 
         SortedSet<uint> graphIds = [];
-        foreach(TermId graph in BaseState.NamedGraphs.Keys)
+        foreach(TermId graph in BaseState.Directory.Keys)
         {
             graphIds.Add(graph.Encoded);
         }
 
-        foreach(TermId graph in NamedGraphs.Keys)
+        foreach(TermId graph in WorkingDirectory.Keys)
         {
             graphIds.Add(graph.Encoded);
         }
@@ -494,12 +541,12 @@ public sealed class DatasetEditSession: IAsyncDisposable
         foreach(uint encoded in graphIds)
         {
             TermId graph = TermId.FromEncoded(encoded);
-            bool inBase = BaseState.NamedGraphs.TryGetValue(graph, out HypertrieGraphStore? baseStore);
-            bool inWorking = NamedGraphs.TryGetValue(graph, out HypertrieGraphStore? workingStore);
+            bool inBase = BaseState.Directory.TryGetValue(graph, out GraphDirectoryEntry baseEntry);
+            bool inWorking = WorkingDirectory.TryGetValue(graph, out GraphDirectoryEntry workingEntry);
 
             if(inBase && inWorking)
             {
-                if(baseStore!.Snapshot.Id == workingStore!.Snapshot.Id)
+                if(baseEntry.Id == workingEntry.Id)
                 {
                     continue;
                 }
@@ -507,8 +554,8 @@ public sealed class DatasetEditSession: IAsyncDisposable
                 GraphScratch scratch = ScratchFor(graph);
                 transitions.Add(new DatasetGraphTransition(
                     graph,
-                    ParentRoot: baseStore.Snapshot.Id,
-                    ChildRoot: workingStore.Snapshot.Id,
+                    ParentRoot: baseEntry.Id,
+                    ChildRoot: workingEntry.Id,
                     Additions: [.. scratch.Added],
                     Removals: [.. scratch.Removed]));
 
@@ -522,7 +569,7 @@ public sealed class DatasetEditSession: IAsyncDisposable
                 //stay empty.
                 transitions.Add(new DatasetGraphTransition(
                     graph,
-                    ParentRoot: baseStore!.Snapshot.Id,
+                    ParentRoot: baseEntry.Id,
                     ChildRoot: null,
                     Additions: [],
                     Removals: []));
@@ -536,7 +583,7 @@ public sealed class DatasetEditSession: IAsyncDisposable
                 transitions.Add(new DatasetGraphTransition(
                     graph,
                     ParentRoot: null,
-                    ChildRoot: workingStore!.Snapshot.Id,
+                    ChildRoot: workingEntry.Id,
                     Additions: [.. scratch.Added],
                     Removals: []));
             }

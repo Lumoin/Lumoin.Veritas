@@ -350,6 +350,26 @@ public sealed class HypertrieGraphStore
     }
 
     /// <summary>
+    /// Wraps an existing <see cref="HypertrieSnapshot"/> with a
+    /// KNOWN triple count, skipping the counting enumeration of
+    /// <see cref="FromSnapshot(HypertrieSnapshot)"/>. For callers
+    /// that track counts alongside roots (a dataset's graph
+    /// directory); the count is trusted, not verified.
+    /// </summary>
+    /// <param name="snapshot">The snapshot to wrap; used as-is, no rebuild. The returned store acquires its own reference; the caller still owns and releases its own.</param>
+    /// <param name="count">The snapshot's distinct triple count.</param>
+    /// <returns>A store reading <paramref name="snapshot"/>.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="snapshot"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="count"/> is negative.</exception>
+    public static HypertrieGraphStore FromSnapshot(HypertrieSnapshot snapshot, int count)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+
+        return new HypertrieGraphStore(snapshot.Acquire(), count);
+    }
+
+    /// <summary>
     /// Opens an <see cref="EditSession"/> against this store's
     /// current <see cref="Snapshot"/>. The session holds a fresh
     /// reference to the snapshot for its lifetime; the caller

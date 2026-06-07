@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Threading;
@@ -13,12 +14,11 @@ using Lumoin.Veritas.Core.Hypertrie.Storage;
 namespace Lumoin.Veritas.Sparql.Execution;
 
 /// <summary>
-/// The mutable dataset SPARQL Update operates on: a default graph plus named graphs, every graph a logical
-/// <see cref="HypertrieGraphStore"/> over ONE shared <see cref="NodeStore"/> arena and ONE shared
-/// <see cref="TermDictionary"/>, with all mutation flowing through a single dataset-scoped journal. A
-/// <see cref="DatasetEditSession"/> stages per-graph deltas and commits them as ONE
-/// <see cref="DatasetJournalEntry"/> — an atomic, linearisable transition of the whole dataset, however many
-/// graphs it touches.
+/// The mutable dataset SPARQL Update operates on: a default graph plus named graphs over ONE shared
+/// <see cref="NodeStore"/> arena and ONE shared <see cref="TermDictionary"/>, with all mutation flowing
+/// through a single dataset-scoped journal. A <see cref="DatasetEditSession"/> stages per-graph deltas and
+/// commits them as ONE <see cref="DatasetJournalEntry"/> — an atomic, linearisable transition of the whole
+/// dataset, however many graphs it touches.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -29,9 +29,11 @@ namespace Lumoin.Veritas.Sparql.Execution;
 /// multi-graph update.
 /// </para>
 /// <para>
-/// <b>Memory model.</b> One arena and one pools bundle serve every graph: the per-store fixed cost is paid
-/// once, identical subtrees intern once across graphs, and superseded logical stores become sweepable by
-/// unreachability (the arena's weak snapshot registry).
+/// <b>Memory model.</b> Named graphs live as a GRAPH DIRECTORY — root handle, root identifier, and count
+/// per graph — pinned by one <see cref="HypertrieRootSetPin"/> per committed state (the dataset-level
+/// snapshot). Store objects mint on demand, memoized per state, so an untouched graph costs one directory
+/// entry rather than a store and snapshot object. Superseded states become sweepable by unreachability
+/// (the arena's weak registries).
 /// </para>
 /// <para>
 /// The read-only <see cref="SparqlDataset"/> a query evaluates against is produced on demand by
@@ -42,14 +44,83 @@ namespace Lumoin.Veritas.Sparql.Execution;
 /// </remarks>
 public sealed class MutableSparqlDataset
 {
-    /// <summary>One committed dataset state: the stores and the content-addressed identifier the journal head points at.</summary>
-    /// <param name="DefaultGraph">The default-graph store.</param>
-    /// <param name="NamedGraphs">The named-graph stores keyed by graph-name term id. Treated as immutable once published; sessions copy before mutating.</param>
-    /// <param name="StateId">The dataset state identifier (<see cref="DatasetStateHashing.ComputeStateId"/>).</param>
-    internal sealed record DatasetState(
-        HypertrieGraphStore DefaultGraph,
-        Dictionary<TermId, HypertrieGraphStore> NamedGraphs,
-        NodeIdentifier StateId);
+    /// <summary>
+    /// One committed dataset state: the default-graph store, the
+    /// named-graph directory with its root-set pin, the
+    /// content-addressed state identifier the journal head points
+    /// at, and the per-state memo of on-demand-minted stores.
+    /// </summary>
+    internal sealed class DatasetState
+    {
+        /// <summary>The arena the directory's roots live in; minting resolves through it.</summary>
+        private NodeStore Arena { get; }
+
+        /// <summary>The default-graph store. The default graph is hot on every query path, so it stays a materialized store.</summary>
+        public HypertrieGraphStore DefaultGraph { get; }
+
+        /// <summary>The named-graph directory. Immutable once published; sessions copy before mutating.</summary>
+        public Dictionary<TermId, GraphDirectoryEntry> Directory { get; }
+
+        /// <summary>The root-set pin keeping every directory root sweep-reachable for this state's lifetime; <see langword="null"/> when the directory is empty.</summary>
+        public HypertrieRootSetPin? Pin { get; }
+
+        /// <summary>The dataset state identifier (<see cref="DatasetStateHashing.ComputeStateId"/>).</summary>
+        public NodeIdentifier StateId { get; }
+
+        /// <summary>The stores minted on demand for this state, memoized so a hot graph mints once per commit generation.</summary>
+        private ConcurrentDictionary<TermId, HypertrieGraphStore> Minted { get; }
+
+        /// <summary>Constructs a committed state.</summary>
+        /// <param name="arena">The shared arena.</param>
+        /// <param name="defaultGraph">The default-graph store.</param>
+        /// <param name="directory">The named-graph directory; owned by the state from here on.</param>
+        /// <param name="pin">The root-set pin over the directory's roots, or <see langword="null"/> for an empty directory.</param>
+        /// <param name="stateId">The state identifier.</param>
+        /// <param name="minted">Stores already materialized for this state (a committing session's touched stores), or <see langword="null"/> for none.</param>
+        public DatasetState(
+            NodeStore arena,
+            HypertrieGraphStore defaultGraph,
+            Dictionary<TermId, GraphDirectoryEntry> directory,
+            HypertrieRootSetPin? pin,
+            NodeIdentifier stateId,
+            IEnumerable<KeyValuePair<TermId, HypertrieGraphStore>>? minted = null)
+        {
+            Arena = arena;
+            DefaultGraph = defaultGraph;
+            Directory = directory;
+            Pin = pin;
+            StateId = stateId;
+            Minted = minted is null ? new ConcurrentDictionary<TermId, HypertrieGraphStore>() : new ConcurrentDictionary<TermId, HypertrieGraphStore>(minted);
+        }
+
+        /// <summary>
+        /// Resolves a named graph to a queryable store, minting one
+        /// from the directory entry on first touch. The pin keeps
+        /// the root's nodes reachable regardless of when the minted
+        /// snapshot registers, so minting is sweep-safe without the
+        /// mutation gate.
+        /// </summary>
+        /// <param name="graph">The graph-name term id.</param>
+        /// <returns>The store, or <see langword="null"/> when the state has no such graph.</returns>
+        public HypertrieGraphStore? ResolveNamed(TermId graph)
+        {
+            if(!Directory.TryGetValue(graph, out GraphDirectoryEntry entry))
+            {
+                return null;
+            }
+
+            return Minted.GetOrAdd(graph, static (_, state) =>
+            {
+                //The store acquires its own reference; the creator
+                //reference releases here. A racing duplicate mint
+                //loses the GetOrAdd and its store becomes sweepable
+                //by unreachability.
+                using HypertrieSnapshot snapshot = new(state.Arena, state.Entry.Root, state.Entry.Id);
+
+                return HypertrieGraphStore.FromSnapshot(snapshot, state.Entry.Count);
+            }, (Arena, Entry: entry));
+        }
+    }
 
     /// <summary>The shared term dictionary every graph encodes into; append-only, so inserts intern new terms.</summary>
     public TermDictionary Dictionary { get; }
@@ -156,7 +227,8 @@ public sealed class MutableSparqlDataset
             arena.AttachToLifetime(pools.PermutationPool);
 
             HypertrieGraphStore defaultGraph = await HypertrieGraphStore.BuildAsync(defaultTriples, arena, pools, cancellationToken).ConfigureAwait(false);
-            Dictionary<TermId, HypertrieGraphStore> named = [];
+            Dictionary<TermId, GraphDirectoryEntry> directory = [];
+            List<NodeHandle> roots = [];
             List<DatasetGraphTransition> transitions =
             [
                 //The default graph conceptually always exists: its
@@ -174,8 +246,12 @@ public sealed class MutableSparqlDataset
             {
                 foreach((TermId graphName, IReadOnlyList<EncodedTriple> triples) in namedGraphs)
                 {
+                    //The store object is transient: its root enters
+                    //the directory and the pin below keeps the root
+                    //reachable; the store itself is dropped.
                     HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(triples, arena, pools, cancellationToken).ConfigureAwait(false);
-                    named[graphName] = store;
+                    directory[graphName] = new GraphDirectoryEntry(store.Snapshot.Root, store.Snapshot.Id, store.Count);
+                    roots.Add(store.Snapshot.Root);
                     transitions.Add(new DatasetGraphTransition(
                         graphName,
                         ParentRoot: null,
@@ -185,11 +261,12 @@ public sealed class MutableSparqlDataset
                 }
             }
 
-            NodeIdentifier stateId = ComputeStateId(arena.Hash, defaultGraph, named);
+            HypertrieRootSetPin? pin = roots.Count > 0 ? arena.PinRoots(roots) : null;
+            NodeIdentifier stateId = ComputeStateId(arena.Hash, defaultGraph, directory);
             DatasetJournalEntry initialEntry = DatasetJournalEntry.Initial(arena.Hash, stateId, [.. transitions]);
             await journalAppend(initialEntry, NodeIdentifier.Empty, cancellationToken).ConfigureAwait(false);
 
-            MutableSparqlDataset dataset = new(dictionary, arena, pools, journalAppend, journalRead!, new DatasetState(defaultGraph, named, stateId));
+            MutableSparqlDataset dataset = new(dictionary, arena, pools, journalAppend, journalRead!, new DatasetState(arena, defaultGraph, directory, pin, stateId));
             arena = null;
 
             return dataset;
@@ -207,7 +284,7 @@ public sealed class MutableSparqlDataset
         {
             lock(StateLock)
             {
-                return [.. Current.NamedGraphs.Keys];
+                return [.. Current.Directory.Keys];
             }
         }
     }
@@ -240,38 +317,38 @@ public sealed class MutableSparqlDataset
     /// Produces a read-only <see cref="SparqlDataset"/> over the
     /// current committed state, for building a query engine. The
     /// snapshot is consistent: it can never observe half of a
-    /// multi-graph commit. Default-graph patterns route through
-    /// the long-lived rendezvous, pinning the snapshot's store.
+    /// multi-graph commit. Named graphs mint on demand from the
+    /// state's directory; default-graph patterns route through the
+    /// long-lived rendezvous, pinning the snapshot's store.
     /// </summary>
     /// <returns>The dataset snapshot.</returns>
     public SparqlDataset Snapshot()
     {
         DatasetState state = CurrentState();
 
-        return new SparqlDataset(state.DefaultGraph, state.NamedGraphs, DefaultGraphRendezvous);
+        return new SparqlDataset(state.DefaultGraph, [.. state.Directory.Keys], state.ResolveNamed, DefaultGraphRendezvous);
     }
 
-    /// <summary>Whether the committed state has a named graph for a graph name.</summary>
+    /// <summary>Whether the committed state has a named graph for a graph name. Never mints a store.</summary>
     /// <param name="name">The graph-name term id.</param>
     /// <returns><see langword="true"/> when the named graph exists.</returns>
     public bool ContainsNamedGraph(TermId name)
     {
         lock(StateLock)
         {
-            return Current.NamedGraphs.ContainsKey(name);
+            return Current.Directory.ContainsKey(name);
         }
     }
 
-    /// <summary>Looks up the committed store for a named graph.</summary>
+    /// <summary>Looks up (minting on first touch) the committed store for a named graph.</summary>
     /// <param name="name">The graph-name term id.</param>
     /// <param name="store">Receives the store on success.</param>
     /// <returns><see langword="true"/> when the named graph exists.</returns>
     public bool TryGetNamedGraph(TermId name, out HypertrieGraphStore? store)
     {
-        lock(StateLock)
-        {
-            return Current.NamedGraphs.TryGetValue(name, out store);
-        }
+        store = CurrentState().ResolveNamed(name);
+
+        return store is not null;
     }
 
     /// <summary>
@@ -350,20 +427,20 @@ public sealed class MutableSparqlDataset
         }
     }
 
-    /// <summary>Computes the dataset state identifier for a default store and named map.</summary>
+    /// <summary>Computes the dataset state identifier for a default store and a named-graph directory.</summary>
     /// <param name="hash">The arena's hash function.</param>
     /// <param name="defaultGraph">The default-graph store.</param>
-    /// <param name="namedGraphs">The named-graph stores.</param>
+    /// <param name="directory">The named-graph directory.</param>
     /// <returns>The state identifier.</returns>
     internal static NodeIdentifier ComputeStateId(
         VeritasHash hash,
         HypertrieGraphStore defaultGraph,
-        Dictionary<TermId, HypertrieGraphStore> namedGraphs)
+        Dictionary<TermId, GraphDirectoryEntry> directory)
     {
-        List<KeyValuePair<TermId, NodeIdentifier>> roots = new(namedGraphs.Count);
-        foreach((TermId graph, HypertrieGraphStore store) in namedGraphs)
+        List<KeyValuePair<TermId, NodeIdentifier>> roots = new(directory.Count);
+        foreach((TermId graph, GraphDirectoryEntry entry) in directory)
         {
-            roots.Add(new KeyValuePair<TermId, NodeIdentifier>(graph, store.Snapshot.Id));
+            roots.Add(new KeyValuePair<TermId, NodeIdentifier>(graph, entry.Id));
         }
 
         return DatasetStateHashing.ComputeStateId(hash, defaultGraph.Snapshot.Id, roots);

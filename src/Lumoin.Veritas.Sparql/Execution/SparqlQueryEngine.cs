@@ -414,7 +414,7 @@ public sealed class SparqlQueryEngine
                 //A constant GRAPH ranges over exactly one named graph; descend only when the dataset has it, so a
                 //GRAPH naming an absent graph (or a non-named-graph IRI) contributes nothing — never the default.
                 TermId graphName = GraphNameOf(iri);
-                if(dataset.TryGetNamedGraph(graphName, out _))
+                if(dataset.ContainsNamedGraph(graphName))
                 {
                     work.Push((graphOperator.Input, graphName, Combine: false));
                 }
@@ -457,7 +457,7 @@ public sealed class SparqlQueryEngine
             {
                 TermId graphName = GraphNameOf(iri);
 
-                return dataset.TryGetNamedGraph(graphName, out _) ? results[new ResultKey(graphOperator.Input, graphName)] : [];
+                return dataset.ContainsNamedGraph(graphName) ? results[new ResultKey(graphOperator.Input, graphName)] : [];
             }
 
             case GraphVariableTerm variableTerm:
