@@ -68,6 +68,40 @@ internal sealed class OwlRlCanonicalClosureTests
         Assert.IsTrue(ruleTotal.SetEquals(expanded), $"Expanded canonical closure ({expanded.Count}) must equal the rule-based materialization ({ruleTotal.Count}).");
     }
 
+    /// <summary>A transitive property inside a sameAs clique — vocabulary alignment — still expands to exactly the rule-based materialization, the trans-chain structures of every clique member included.</summary>
+    [TestMethod]
+    public void TransitivePropertyInACliqueMatches()
+    {
+        TermDictionary dictionary = new();
+        OwlRlTerms terms = new(dictionary);
+        TermId p = Mint(dictionary, "p");
+        TermId q = Mint(dictionary, "q");
+        TermId a = Mint(dictionary, "a");
+        TermId b = Mint(dictionary, "b");
+        TermId c = Mint(dictionary, "c");
+
+        //Two aligned vocabularies: q is declared the same property as the
+        //transitive p, and the data uses both names.
+        List<EncodedTriple> triples =
+        [
+            Triple(p, terms.Type, terms.TransitiveProperty),
+            Triple(p, terms.SameAs, q),
+            Triple(a, p, b),
+            Triple(b, q, c),
+        ];
+
+        OwlRlResult ruleBased = OwlRlClosure.Compute(triples, terms, cancellationToken: TestContext.CancellationToken);
+        OwlRlCanonicalResult canonical = OwlRlCanonicalClosure.Compute(triples, terms, cancellationToken: TestContext.CancellationToken);
+
+        Assert.IsTrue(ruleBased.IsConsistent);
+        Assert.IsTrue(canonical.Result.IsConsistent);
+
+        HashSet<EncodedTriple> ruleTotal = [.. triples, .. ruleBased.Derived];
+        HashSet<EncodedTriple> expanded = [.. OwlRlCanonicalClosure.ExpandToMaterialization(canonical, terms)];
+
+        Assert.IsTrue(ruleTotal.SetEquals(expanded), $"Expanded canonical closure ({expanded.Count}) must equal the rule-based materialization ({ruleTotal.Count}) with the per-member trans-chain structures synthesized.");
+    }
+
     /// <summary>The canonical closure materialises no quadratic permutations: its triple count stays below the rule-based one on a clique workload.</summary>
     [TestMethod]
     public void CanonicalFormStaysCompact()

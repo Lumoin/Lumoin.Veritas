@@ -188,6 +188,42 @@ public static class OwlRlCanonicalClosure
             }
         }
 
+        //The trans-chain extension mints its list nodes per property
+        //identifier, so the rule-based closure carries one chain structure
+        //per clique MEMBER of a transitive property (the eq-rep-* rules
+        //replicate the typing onto every member, each minting its own
+        //nodes) while the canonical run carries only the representative's.
+        //The oracle synthesizes the member structures, every clique term
+        //substituted through the property positions exactly as eq-rep-*
+        //would have written them.
+        foreach(EncodedTriple triple in Concatenate(canonicalResult.CanonicalBase, canonicalResult.Result.Derived))
+        {
+            if(triple.Predicate != terms.Type || triple.Object != terms.TransitiveProperty)
+            {
+                continue;
+            }
+
+            IReadOnlyList<TermId> members = equivalence.EquivalentTo(triple.Subject);
+            if(members.Count < 2)
+            {
+                continue;
+            }
+
+            foreach(TermId member in members)
+            {
+                TermId head = terms.TransitivityChainNode(member, 0);
+                TermId tail = terms.TransitivityChainNode(member, 1);
+                full.Add(EncodedTriple.FromEncoded(head.Encoded, terms.Rest.Encoded, tail.Encoded));
+                full.Add(EncodedTriple.FromEncoded(tail.Encoded, terms.Rest.Encoded, terms.Nil.Encoded));
+                foreach(TermId substituted in members)
+                {
+                    full.Add(EncodedTriple.FromEncoded(substituted.Encoded, terms.PropertyChainAxiom.Encoded, head.Encoded));
+                    full.Add(EncodedTriple.FromEncoded(head.Encoded, terms.First.Encoded, substituted.Encoded));
+                    full.Add(EncodedTriple.FromEncoded(tail.Encoded, terms.First.Encoded, substituted.Encoded));
+                }
+            }
+        }
+
         return full;
     }
 
