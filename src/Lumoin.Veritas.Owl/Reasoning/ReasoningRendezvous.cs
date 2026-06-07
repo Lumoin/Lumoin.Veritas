@@ -620,13 +620,13 @@ public sealed class ReasoningRendezvous
 
     /// <summary>
     /// The beyond-ceiling module: the axioms whose origins the RL grammar
-    /// flagged. Syntactic-locality module extraction — pulling in the
-    /// axioms a flagged axiom's entities depend on — is the planned
-    /// refinement; the violating set is the sound starting point.
+    /// flagged, widened to their syntactic ⊥-locality module so the
+    /// external reasoner sees every axiom its verdict over the flagged
+    /// signature depends on.
     /// </summary>
     /// <param name="document">The mapped ontology document.</param>
     /// <param name="report">The profile report whose RL findings anchor the module.</param>
-    /// <returns>The module of flagged axioms and their findings.</returns>
+    /// <returns>The module and its findings.</returns>
     private static ReasoningModule ExtractBeyondRlModule(OwlOntologyDocument document, OwlProfileReport report)
     {
         List<OwlProfileViolation> rlViolations = [];
@@ -643,15 +643,15 @@ public sealed class ReasoningRendezvous
             }
         }
 
-        List<OwlAxiom> axioms = [];
+        List<OwlAxiom> seeds = [];
         foreach(OwlAxiom axiom in document.Axioms)
         {
             if(violatingOrigins.Contains(axiom.Origin))
             {
-                axioms.Add(axiom);
+                seeds.Add(axiom);
             }
         }
 
-        return new ReasoningModule(axioms, rlViolations);
+        return new ReasoningModule(SyntacticLocalityModule.Extract(document, seeds), rlViolations);
     }
 }
