@@ -2162,10 +2162,15 @@ public sealed class SparqlQueryEngine
     /// <returns>The surviving solutions.</returns>
     private async ValueTask<IReadOnlyList<SparqlSolution>> ApplyFilterAsync(Filter filter, IReadOnlyList<SparqlSolution> input, TermId graph, CancellationToken cancellationToken)
     {
+        //EXISTS resolution allocates and re-walks the condition per solution; do it only when the condition carries
+        //one. An EXISTS-free condition evaluates directly against each solution.
+        bool hasExists = ContainsExists(filter.Condition);
         List<SparqlSolution> kept = new(input.Count);
         foreach(SparqlSolution solution in input)
         {
-            ExpressionNode condition = await ResolveExistsAsync(filter.Condition, solution, graph, cancellationToken).ConfigureAwait(false);
+            ExpressionNode condition = hasExists
+                ? await ResolveExistsAsync(filter.Condition, solution, graph, cancellationToken).ConfigureAwait(false)
+                : filter.Condition;
             if(SparqlExpressionEvaluator.Satisfies(condition, solution, expressionContext))
             {
                 kept.Add(solution);
@@ -2183,10 +2188,13 @@ public sealed class SparqlQueryEngine
     /// <returns>The extended solution sequence.</returns>
     private async ValueTask<IReadOnlyList<SparqlSolution>> ApplyExtendAsync(Extend extend, IReadOnlyList<SparqlSolution> input, TermId graph, CancellationToken cancellationToken)
     {
+        bool hasExists = ContainsExists(extend.Expression);
         List<SparqlSolution> extended = new(input.Count);
         foreach(SparqlSolution solution in input)
         {
-            ExpressionNode expression = await ResolveExistsAsync(extend.Expression, solution, graph, cancellationToken).ConfigureAwait(false);
+            ExpressionNode expression = hasExists
+                ? await ResolveExistsAsync(extend.Expression, solution, graph, cancellationToken).ConfigureAwait(false)
+                : extend.Expression;
             if(!SparqlExpressionEvaluator.TryEvaluate(expression, solution, expressionContext, out RdfTerm value))
             {
                 extended.Add(solution);
@@ -2236,6 +2244,7 @@ public sealed class SparqlQueryEngine
         //Index the right side on the shared variables; each left solution probes for its compatible extensions
         //rather than scanning the whole right sequence. The per-pair condition handling is unchanged: a left
         //solution stays unextended (kept as-is) when no compatible right solution also satisfies the condition.
+        bool conditionHasExists = condition is not null && ContainsExists(condition);
         SolutionHashJoinIndex index = SolutionHashJoinIndex.Build(right, joinVariables);
         List<SparqlSolution> result = [];
         foreach(SparqlSolution outer in left)
@@ -2244,7 +2253,9 @@ public sealed class SparqlQueryEngine
             for(int rowId = index.FirstMatch(outer); rowId >= 0; rowId = index.NextMatch(rowId))
             {
                 SparqlSolution merged = Merge(outer, index.RowAt(rowId));
-                ExpressionNode? resolved = condition is null ? null : await ResolveExistsAsync(condition, merged, graph, cancellationToken).ConfigureAwait(false);
+                ExpressionNode? resolved = condition is null ? null
+                    : conditionHasExists ? await ResolveExistsAsync(condition, merged, graph, cancellationToken).ConfigureAwait(false)
+                    : condition;
                 if(resolved is null || SparqlExpressionEvaluator.Satisfies(resolved, merged, expressionContext))
                 {
                     result.Add(merged);
@@ -2270,6 +2281,7 @@ public sealed class SparqlQueryEngine
     /// <returns>The left-joined solution sequence.</returns>
     private async ValueTask<IReadOnlyList<SparqlSolution>> NestedLoopLeftJoinSolutionsAsync(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right, ExpressionNode? condition, TermId graph, CancellationToken cancellationToken)
     {
+        bool conditionHasExists = condition is not null && ContainsExists(condition);
         List<SparqlSolution> result = [];
         foreach(SparqlSolution outer in left)
         {
@@ -2282,7 +2294,9 @@ public sealed class SparqlQueryEngine
                 }
 
                 SparqlSolution merged = Merge(outer, inner);
-                ExpressionNode? resolved = condition is null ? null : await ResolveExistsAsync(condition, merged, graph, cancellationToken).ConfigureAwait(false);
+                ExpressionNode? resolved = condition is null ? null
+                    : conditionHasExists ? await ResolveExistsAsync(condition, merged, graph, cancellationToken).ConfigureAwait(false)
+                    : condition;
                 if(resolved is null || SparqlExpressionEvaluator.Satisfies(resolved, merged, expressionContext))
                 {
                     result.Add(merged);
@@ -2563,6 +2577,22 @@ public sealed class SparqlQueryEngine
         }
 
         return new SparqlSolution(merged);
+    }
+
+    /// <summary>Returns whether an expression carries any <c>EXISTS</c>/<c>NOT EXISTS</c>; checked once per operator so the per-solution resolution (which allocates and re-walks the expression) is skipped when there is nothing to resolve.</summary>
+    /// <param name="expression">The expression to scan.</param>
+    /// <returns><see langword="true"/> when some sub-expression is an <c>EXISTS</c> or <c>NOT EXISTS</c>.</returns>
+    private static bool ContainsExists(ExpressionNode expression)
+    {
+        foreach(ExpressionNode node in ExpressionWalker.Traverse(expression))
+        {
+            if(node is ExistsExpression or NotExistsExpression)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
