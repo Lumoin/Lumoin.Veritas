@@ -212,19 +212,21 @@ internal sealed class SparqlQueryEngineTests
         Assert.AreEqual("1", Cast<Literal>(Value(cityY, "n")).Value.ToString());
     }
 
-    /// <summary>The execution trace reports each operator's strategy: a single-pattern BGP feeding DISTINCT runs columnar end to end, and the side channel records both as columnar with their row shapes.</summary>
+    /// <summary>The execution trace is per-call pluggable: an engine built with no handler still reports this one run's per-operator strategy when a handler is passed to <c>EvaluateAsync</c> — the editor "visualize this query" surface. A single-pattern BGP feeding DISTINCT runs columnar end to end.</summary>
     [TestMethod]
     public async Task ExecutionTraceReportsColumnarOperators()
     {
         List<SparqlExecutionTraceEvent> events = [];
         TraceHandler<SparqlExecutionTraceEvent> handler = (in SparqlExecutionTraceEvent traceEvent) => events.Add(traceEvent);
+
+        //Engine built WITHOUT a handler; the handler is supplied per call.
         SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(
             [new DataTriple(Iri("a"), Iri("knows"), Iri("b")), new DataTriple(Iri("a"), Iri("knows"), Iri("c"))],
-            executionTrace: handler, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+            cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
         using Utf8StringPool pool = new();
 
         AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT DISTINCT ?o WHERE { ?s :knows ?o }", pool);
-        _ = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+        _ = await engine.EvaluateAsync(algebra, handler, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
 
         SparqlExecutionTraceEvent bgp = events.Single(e => e.Operator == SparqlExecutionOperator.Bgp);
         Assert.AreEqual(SparqlExecutionStrategy.Columnar, bgp.Strategy);

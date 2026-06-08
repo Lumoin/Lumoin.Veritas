@@ -245,9 +245,32 @@ public sealed class SparqlQueryEngine
     {
         ArgumentNullException.ThrowIfNull(algebra);
 
+        //No per-call handler: trace through the engine's construction-time handler (if any).
+        SolutionTable result = await EvaluateInGraphAsync(algebra, TermId.None, this.executionTrace, correlationId: default, cancellationToken).ConfigureAwait(false);
+
+        return result.AsRows();
+    }
+
+    /// <summary>
+    /// Evaluates an algebra tree to its solution sequence while emitting this run's per-operator execution trace to
+    /// a <em>per-call</em> handler — the editor "visualize this query" surface: one engine, one query run, its own
+    /// collector, no rebuild. The handler overrides any construction-time handler for this evaluation only.
+    /// </summary>
+    /// <param name="algebra">The translated algebra.</param>
+    /// <param name="executionTrace">The execution-trace handler for this evaluation (which strategy each operator took, with row shapes).</param>
+    /// <param name="correlationId">The correlation id stamped on this evaluation's trace events; <see cref="Guid.Empty"/> leaves them ordered by sequence only. Pass a per-run id to group the events (and to join them with the Core query trace).</param>
+    /// <param name="cancellationToken">A token that aborts evaluation.</param>
+    /// <returns>The materialized solution sequence.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="algebra"/> or <paramref name="executionTrace"/> is <see langword="null"/>.</exception>
+    /// <exception cref="NotSupportedException">The algebra uses an operator this slice does not yet execute.</exception>
+    public async ValueTask<IReadOnlyList<SparqlSolution>> EvaluateAsync(AlgebraOperator algebra, TraceHandler<SparqlExecutionTraceEvent> executionTrace, Guid correlationId = default, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(algebra);
+        ArgumentNullException.ThrowIfNull(executionTrace);
+
         //The single decode boundary: a fully-columnar pipeline carried encoded term ids all the way here, and only
         //the surviving result rows are materialized; a pipeline that hit a row-only operator was already row-backed.
-        SolutionTable result = await EvaluateInGraphAsync(algebra, TermId.None, cancellationToken).ConfigureAwait(false);
+        SolutionTable result = await EvaluateInGraphAsync(algebra, TermId.None, executionTrace, correlationId, cancellationToken).ConfigureAwait(false);
 
         return result.AsRows();
     }
@@ -352,7 +375,7 @@ public sealed class SparqlQueryEngine
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The materialized solution sequence.</returns>
     /// <exception cref="NotSupportedException">The algebra uses an operator this slice does not yet execute.</exception>
-    private async ValueTask<SolutionTable> EvaluateInGraphAsync(AlgebraOperator algebra, TermId activeGraph, CancellationToken cancellationToken)
+    private async ValueTask<SolutionTable> EvaluateInGraphAsync(AlgebraOperator algebra, TermId activeGraph, TraceHandler<SparqlExecutionTraceEvent>? executionTrace, Guid correlationId, CancellationToken cancellationToken)
     {
         GuardSupported(algebra);
 
@@ -370,7 +393,7 @@ public sealed class SparqlQueryEngine
 
         //The per-operator execution trace for this evaluation (no-op when no handler is wired). Evaluation-scoped,
         //never engine state, so its sequence is monotonic within this query without racing a concurrent evaluation.
-        SparqlExecutionTrace trace = new(executionTrace, correlationId: default, TimeProvider.System);
+        SparqlExecutionTrace trace = new(executionTrace, correlationId, TimeProvider.System);
         Stack<(AlgebraOperator Node, TermId Graph, bool Combine)> work = new();
         work.Push((algebra, activeGraph, Combine: false));
 
@@ -3339,7 +3362,10 @@ public sealed class SparqlQueryEngine
         using Utf8StringPool pool = new();
         SparqlQuery normalized = (SparqlQuery)new SparqlNormalizer(pool).Normalize(query);
         AlgebraOperator algebra = SparqlTranslator.Translate(normalized);
-        SolutionTable solutions = await EvaluateInGraphAsync(algebra, graph, cancellationToken).ConfigureAwait(false);
+
+        //An EXISTS sub-evaluation is an internal detail; it reuses the engine's construction-time trace handler (if
+        //any), not a per-call one, and shares no correlation with the outer run.
+        SolutionTable solutions = await EvaluateInGraphAsync(algebra, graph, executionTrace, correlationId: default, cancellationToken).ConfigureAwait(false);
 
         return solutions.Count > 0;
     }
