@@ -200,6 +200,15 @@ internal static class Program
             return;
         }
 
+        //The columnar triple index's resident bits per triple on triangle-dense
+        //data - the storage footprint behind the extreme-triangle representation.
+        if(args.Length > 0 && args[0] == "--profile-triangle-bits")
+        {
+            TriangleMemorySoak.RunTriangleMemorySoak();
+
+            return;
+        }
+
         //The index-arity bounding probe: per-graph store composition vs
         //one merged store, build and query, over a graph-count ladder.
         if(args.Length > 0 && args[0] == "--profile-graph-fanout")
