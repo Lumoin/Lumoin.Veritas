@@ -46,6 +46,30 @@ internal sealed class SparqlQueryEngineTests
         Assert.AreEqual(Ex + "bob", ValueIri(solution, "o"));
     }
 
+    /// <summary>
+    /// Two group graph patterns joined on a shared variable run through the columnar operator-layer join: each
+    /// group is a columnar basic-graph-pattern table, and the join merges them on the shared variable's encoded-id
+    /// column without decoding. The result matches the row-layer join's semantics.
+    /// </summary>
+    [TestMethod]
+    public async Task TwoColumnarGroupsJoinOnSharedVariable()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(("a", "knows", "b"), ("b", "knows", "c")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+
+        //Separate { } groups do not merge into one BGP; the translator joins them, so each side reaches the join
+        //as a columnar BGP table and the columnar hash join (shared ?b) fires.
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { { ?a :knows ?b } { ?b :knows ?c } }", pool);
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //Left ?a :knows ?b binds {(a,b),(b,c)}; right ?b :knows ?c binds {(a,b),(b,c)}. Joining on ?b keeps the
+        //single compatible pair: left ?b=b meets right ?b=b, yielding (?a=a, ?b=b, ?c=c).
+        SparqlSolution solution = solutions.Single();
+        Assert.AreEqual(Ex + "a", ValueIri(solution, "a"));
+        Assert.AreEqual(Ex + "b", ValueIri(solution, "b"));
+        Assert.AreEqual(Ex + "c", ValueIri(solution, "c"));
+    }
+
     /// <summary>A constant-endpoint SERVICE joins the remote endpoint's solutions (returned through the injected transport) with the surrounding pattern.</summary>
     [TestMethod]
     public async Task ServiceJoinsRemoteSolutions()

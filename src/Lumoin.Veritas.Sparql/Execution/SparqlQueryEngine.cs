@@ -706,7 +706,7 @@ public sealed class SparqlQueryEngine
                 try
                 {
                     SparqlResultSet remote = await serviceClient.QueryAsync(new IriRef(endpoint, default), query, accessContext, cancellationToken).ConfigureAwait(false);
-                    joined.AddRange(JoinSolutions(group, remote.Solutions));
+                    joined.AddRange(JoinRows(group, remote.Solutions));
                 }
                 catch(Exception ex) when(service.Silent && ex is not OperationCanceledException)
                 {
@@ -766,7 +766,7 @@ public sealed class SparqlQueryEngine
             //REDUCED permits but does not require duplicate elimination; passing the table through is conformant.
             Reduced reduced => results[new ResultKey(reduced.Input, graph)],
             Slice slice => ApplySlice(slice, results[new ResultKey(slice.Input, graph)]),
-            Join join => SolutionTable.FromRows(JoinSolutions(results[new ResultKey(join.Left, graph)].AsRows(), results[new ResultKey(join.Right, graph)].AsRows())),
+            Join join => JoinSolutions(results[new ResultKey(join.Left, graph)], results[new ResultKey(join.Right, graph)]),
             Union union => UnionSolutions(results[new ResultKey(union.Left, graph)], results[new ResultKey(union.Right, graph)]),
             Minus minus => SolutionTable.FromRows(MinusSolutions(results[new ResultKey(minus.Left, graph)].AsRows(), results[new ResultKey(minus.Right, graph)].AsRows())),
             OrderBy orderBy => SolutionTable.FromRows(ApplyOrderBy(orderBy, results[new ResultKey(orderBy.Input, graph)].AsRows(), context)),
@@ -1640,41 +1640,8 @@ public sealed class SparqlQueryEngine
     private static SolutionTable ApplyProject(Project project, SolutionTable input)
     {
         return input.IsColumnar
-            ? ProjectColumnar(project, input)
+            ? ColumnarOperators.Project(input, project.Variables)
             : SolutionTable.FromRows(ProjectRows(project, input.AsRows()));
-    }
-
-    /// <summary>The columnar form of projection: selects (aliases) the projected variables' columns in projection order, substituting an all-unbound column for a projected variable the input does not carry. No term is decoded.</summary>
-    /// <param name="project">The projection.</param>
-    /// <param name="input">The columnar input table.</param>
-    /// <returns>The projected columnar table.</returns>
-    private static SolutionTable ProjectColumnar(Project project, SolutionTable input)
-    {
-        IReadOnlyList<SparqlVariable> inputSchema = input.Schema;
-        Dictionary<SparqlVariable, int> columnOf = new(inputSchema.Count);
-        for(int i = 0; i < inputSchema.Count; i++)
-        {
-            columnOf[inputSchema[i]] = i;
-        }
-
-        IReadOnlyList<SparqlVariable> projectedSchema = project.Variables;
-        uint[][] projectedColumns = new uint[projectedSchema.Count][];
-        uint[]? unboundColumn = null;
-        for(int i = 0; i < projectedSchema.Count; i++)
-        {
-            if(columnOf.TryGetValue(projectedSchema[i], out int source))
-            {
-                projectedColumns[i] = input.ColumnArray(source);
-
-                continue;
-            }
-
-            //A projected variable the input never bound is unbound in every row; one shared zero column serves them all.
-            unboundColumn ??= new uint[input.Count];
-            projectedColumns[i] = unboundColumn;
-        }
-
-        return SolutionTable.Columnar(projectedSchema, projectedColumns, input.Count, input.Dictionary);
     }
 
     /// <summary>The row form of projection: restricts each solution to the projected variables, in projection order, dropping bindings for variables a solution does not bind.</summary>
@@ -1707,99 +1674,8 @@ public sealed class SparqlQueryEngine
     private static SolutionTable ApplyDistinct(SolutionTable input)
     {
         return input.IsColumnar
-            ? DistinctColumnar(input)
+            ? ColumnarOperators.Distinct(input)
             : SolutionTable.FromRows(DistinctRows(input.AsRows()));
-    }
-
-    /// <summary>The columnar form of duplicate elimination: deduplicates rows by their encoded-id tuple across the schema columns, in first-appearance order, without decoding any term.</summary>
-    /// <param name="input">The columnar input table.</param>
-    /// <returns>The distinct columnar table.</returns>
-    private static SolutionTable DistinctColumnar(SolutionTable input)
-    {
-        int columnCount = input.Schema.Count;
-        uint[][] columns = new uint[columnCount][];
-        for(int i = 0; i < columnCount; i++)
-        {
-            columns[i] = input.ColumnArray(i);
-        }
-
-        List<int> keptRows = new(input.Count);
-        HashSet<int> seen = new(input.Count, new ColumnarRowComparer(columns, columnCount));
-        for(int row = 0; row < input.Count; row++)
-        {
-            if(seen.Add(row))
-            {
-                keptRows.Add(row);
-            }
-        }
-
-        if(keptRows.Count == input.Count)
-        {
-            return input;
-        }
-
-        uint[][] distinctColumns = new uint[columnCount][];
-        for(int column = 0; column < columnCount; column++)
-        {
-            uint[] source = columns[column];
-            uint[] target = new uint[keptRows.Count];
-            for(int i = 0; i < keptRows.Count; i++)
-            {
-                target[i] = source[keptRows[i]];
-            }
-
-            distinctColumns[column] = target;
-        }
-
-        return SolutionTable.Columnar(input.Schema, distinctColumns, keptRows.Count, input.Dictionary);
-    }
-
-    /// <summary>Row identity over a columnar table: two row indices are equal when every column holds the same encoded id, hashing the row's encoded-id tuple. The comparison key is the row index into the shared columns.</summary>
-    private sealed class ColumnarRowComparer : IEqualityComparer<int>
-    {
-        private readonly uint[][] columns;
-
-        private readonly int columnCount;
-
-        /// <summary>Constructs the comparer over the table's columns.</summary>
-        /// <param name="columns">The encoded-id columns, indexed by schema position then row.</param>
-        /// <param name="columnCount">The number of columns (schema width).</param>
-        public ColumnarRowComparer(uint[][] columns, int columnCount)
-        {
-            this.columns = columns;
-            this.columnCount = columnCount;
-        }
-
-        /// <summary>Returns whether two rows hold the same encoded id in every column.</summary>
-        /// <param name="x">The first row index.</param>
-        /// <param name="y">The second row index.</param>
-        /// <returns><see langword="true"/> when the rows are equal across all columns.</returns>
-        public bool Equals(int x, int y)
-        {
-            for(int column = 0; column < columnCount; column++)
-            {
-                if(columns[column][x] != columns[column][y])
-                {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        /// <summary>Hashes a row's encoded-id tuple across the columns.</summary>
-        /// <param name="row">The row index.</param>
-        /// <returns>The row's hash code.</returns>
-        public int GetHashCode(int row)
-        {
-            HashCode hash = new();
-            for(int column = 0; column < columnCount; column++)
-            {
-                hash.Add(columns[column][row]);
-            }
-
-            return hash.ToHashCode();
-        }
     }
 
     /// <summary>The row form of duplicate elimination, comparing the (order-stable, post-projection) binding sequences by value.</summary>
@@ -1827,34 +1703,8 @@ public sealed class SparqlQueryEngine
     private static SolutionTable ApplySlice(Slice slice, SolutionTable input)
     {
         return input.IsColumnar
-            ? SliceColumnar(slice, input)
+            ? ColumnarOperators.Slice(input, slice.Offset, slice.Limit)
             : SolutionTable.FromRows(SliceRows(slice, input.AsRows()));
-    }
-
-    /// <summary>The columnar form of the <c>OFFSET</c>/<c>LIMIT</c> window: copies the windowed row range out of each column, so only the surviving rows are ever decoded downstream. No term is decoded here.</summary>
-    /// <param name="slice">The slice.</param>
-    /// <param name="input">The columnar input table.</param>
-    /// <returns>The windowed columnar table.</returns>
-    private static SolutionTable SliceColumnar(Slice slice, SolutionTable input)
-    {
-        int start = Math.Min(slice.Offset > 0 ? slice.Offset : 0, input.Count);
-        int end = slice.Limit is int limit ? Math.Min(start + Math.Max(limit, 0), input.Count) : input.Count;
-        int windowCount = end - start;
-        if(start == 0 && windowCount == input.Count)
-        {
-            return input;
-        }
-
-        int columnCount = input.Schema.Count;
-        uint[][] windowColumns = new uint[columnCount][];
-        for(int column = 0; column < columnCount; column++)
-        {
-            uint[] target = new uint[windowCount];
-            Array.Copy(input.ColumnArray(column), start, target, 0, windowCount);
-            windowColumns[column] = target;
-        }
-
-        return SolutionTable.Columnar(input.Schema, windowColumns, windowCount, input.Dictionary);
     }
 
     /// <summary>The row form of the <c>OFFSET</c>/<c>LIMIT</c> window over the solution rows.</summary>
@@ -2281,15 +2131,37 @@ public sealed class SparqlQueryEngine
     }
 
     /// <summary>
-    /// Joins two solution sequences (§18.6 Join): the merge of every pair of compatible solutions, one from each
-    /// side. Takes a hash join keyed on the shared variables (O(n+m)) when one or two variables are shared and
-    /// every row binds them; otherwise (a wider or empty shared set, or partial bindings) falls back to the
-    /// nested-loop compatibility merge.
+    /// Joins two result tables (§18.6 Join). When both sides are columnar and share one or two variables that every
+    /// row binds, the join stays columnar — a shared-key hash join over the encoded-id columns, no decode — and
+    /// emits a columnar table; otherwise it bridges to the row form.
+    /// </summary>
+    /// <param name="left">The left table.</param>
+    /// <param name="right">The right table.</param>
+    /// <returns>The joined table.</returns>
+    private static SolutionTable JoinSolutions(SolutionTable left, SolutionTable right)
+    {
+        if(left.Count == 0 || right.Count == 0)
+        {
+            return SolutionTable.Empty;
+        }
+
+        if(left.IsColumnar && right.IsColumnar && ColumnarOperators.TryJoin(left, right, out SolutionTable joined))
+        {
+            return joined;
+        }
+
+        return SolutionTable.FromRows(JoinRows(left.AsRows(), right.AsRows()));
+    }
+
+    /// <summary>
+    /// The row form of join (§18.6 Join): the merge of every pair of compatible solutions, one from each side. A
+    /// hash join keyed on the shared variables (O(n+m)) when one or two variables are shared and every row binds
+    /// them; otherwise (a wider or empty shared set, or partial bindings) the nested-loop compatibility merge.
     /// </summary>
     /// <param name="left">The left solution sequence.</param>
     /// <param name="right">The right solution sequence.</param>
     /// <returns>The joined solution sequence.</returns>
-    private static List<SparqlSolution> JoinSolutions(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right)
+    private static List<SparqlSolution> JoinRows(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right)
     {
         if(left.Count == 0 || right.Count == 0)
         {
@@ -2353,64 +2225,8 @@ public sealed class SparqlQueryEngine
         //Both columnar: stay on the island, building merged columns over the union of the two schemas. A mixed pair
         //(one side already row-backed) materializes through the row form rather than re-encoding the row side.
         return left.IsColumnar && right.IsColumnar
-            ? UnionColumnar(left, right)
+            ? ColumnarOperators.Union(left, right)
             : SolutionTable.FromRows(UnionRows(left.AsRows(), right.AsRows()));
-    }
-
-    /// <summary>The columnar form of union: the schema is the left schema followed by the right-only variables; each output column is filled from the left rows then the right rows, storing <c>0</c> (unbound) where a side lacks the variable. No term is decoded.</summary>
-    /// <param name="left">The columnar left table.</param>
-    /// <param name="right">The columnar right table.</param>
-    /// <returns>The unioned columnar table.</returns>
-    private static SolutionTable UnionColumnar(SolutionTable left, SolutionTable right)
-    {
-        IReadOnlyList<SparqlVariable> leftSchema = left.Schema;
-        IReadOnlyList<SparqlVariable> rightSchema = right.Schema;
-
-        List<SparqlVariable> schema = new(leftSchema.Count + rightSchema.Count);
-        Dictionary<SparqlVariable, int> columnOf = new(leftSchema.Count + rightSchema.Count);
-        foreach(SparqlVariable variable in leftSchema)
-        {
-            columnOf[variable] = schema.Count;
-            schema.Add(variable);
-        }
-
-        foreach(SparqlVariable variable in rightSchema)
-        {
-            if(!columnOf.ContainsKey(variable))
-            {
-                columnOf[variable] = schema.Count;
-                schema.Add(variable);
-            }
-        }
-
-        int total = left.Count + right.Count;
-        uint[][] columns = new uint[schema.Count][];
-        for(int i = 0; i < schema.Count; i++)
-        {
-            columns[i] = new uint[total];
-        }
-
-        CopySideInto(left, columnOf, schema, columns, 0);
-        CopySideInto(right, columnOf, schema, columns, left.Count);
-
-        return SolutionTable.Columnar(schema, columns, total, left.Dictionary);
-    }
-
-    /// <summary>Copies one union side's columns into the merged columns at a row offset, leaving the merged columns the side does not bind at their default <c>0</c> (unbound).</summary>
-    /// <param name="side">The side table (columnar).</param>
-    /// <param name="columnOf">The merged-schema variable-to-column index.</param>
-    /// <param name="mergedSchema">The merged schema (unused beyond documenting the column layout the offsets target).</param>
-    /// <param name="mergedColumns">The merged columns being filled.</param>
-    /// <param name="rowOffset">The first merged-column row this side's rows occupy.</param>
-    private static void CopySideInto(SolutionTable side, Dictionary<SparqlVariable, int> columnOf, List<SparqlVariable> mergedSchema, uint[][] mergedColumns, int rowOffset)
-    {
-        _ = mergedSchema;
-        IReadOnlyList<SparqlVariable> sideSchema = side.Schema;
-        for(int sourceColumn = 0; sourceColumn < sideSchema.Count; sourceColumn++)
-        {
-            int targetColumn = columnOf[sideSchema[sourceColumn]];
-            Array.Copy(side.ColumnArray(sourceColumn), 0, mergedColumns[targetColumn], rowOffset, side.Count);
-        }
     }
 
     /// <summary>The row form of union (§18.6 Union): the multiset of all solutions of either side, left before right.</summary>
