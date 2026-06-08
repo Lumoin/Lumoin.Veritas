@@ -48,6 +48,160 @@ internal static class FactorizationSoak
         //flattening the cubic intermediate the flat pipeline must materialise.
         RunStarConfiguration(subjects: 200, fan: 20);
         RunStarConfiguration(subjects: 100, fan: 30);
+
+        //Multi-level: a chain ?a p1 ?x . ?x p2 ?b . ?b p3 ?c where the ?a arm
+        //is independent of the (?b,?c) sub-tree given ?x, so nesting the ?b
+        //branch keeps the intermediate factorised across the branch-variable
+        //join the flat pipeline would have to materialise.
+        RunChainConfiguration(hubs: 400, fanA: 30, fanB: 15, fanC: 6);
+        RunChainConfiguration(hubs: 300, fanA: 40, fanB: 20, fanC: 5);
+    }
+
+    /// <summary>Builds, verifies, and measures one chain rung: the depth-2 factorised form versus the flat streamed pipeline.</summary>
+    /// <param name="hubs">The distinct <c>?x</c> hub count.</param>
+    /// <param name="fanA">The <c>?a</c> count per hub.</param>
+    /// <param name="fanB">The <c>?b</c> count per hub.</param>
+    /// <param name="fanC">The <c>?c</c> count per <c>?b</c>.</param>
+    private static void RunChainConfiguration(int hubs, int fanA, int fanB, int fanC)
+    {
+        List<EncodedTriple> triples = BuildChainFixture(hubs, fanA, fanB, fanC);
+        ColumnarTripleIndex index = ColumnarTripleIndex.Build(triples);
+
+        VariableRegistry registry = new();
+        TriplePattern r1 = EdgePattern(registry, P1, "a", "x");
+        TriplePattern r2 = EdgePattern(registry, P2, "x", "b");
+        TriplePattern r3 = EdgePattern(registry, P3, "b", "c");
+        IReadOnlyList<Variable> schema1 = ColumnarBatchScan.ScanSchemaOf(index, r1);
+        IReadOnlyList<Variable> schema2 = ColumnarBatchScan.ScanSchemaOf(index, r2);
+        IReadOnlyList<Variable> schema3 = ColumnarBatchScan.ScanSchemaOf(index, r3);
+        Variable branchVariable = registry.GetOrAdd("b");
+
+        //The flat oracle stays on the streamed left-deep join (no semijoin, no star).
+        ColumnarBatchPlan plan = ColumnarBatchPipeline.TryPlan(index, ChainQuery(), useSemijoinReduction: false, useFactorizedStar: false)!;
+
+        long flatExpected = (long)hubs * fanA * fanB * fanC;
+        long tupleExpected = (long)hubs * (fanA + (fanB * fanC));
+        Console.WriteLine($"[factorize-chain] hubs={hubs:N0} fanA={fanA} fanB={fanB} fanC={fanC} | flat~{flatExpected:N0} factorized~{tupleExpected:N0}");
+
+        long flatRows = CountPipelineFlat(index, plan);
+        FactorizedBatch warm = FactorizeChain(index, r1, schema1, r2, schema2, r3, schema3, branchVariable);
+        Console.WriteLine($"[factorize-chain]   flatRows={flatRows:N0} factorizedFlat={warm.FlatRowCount:N0} {(flatRows == warm.FlatRowCount ? "MATCH" : "MISMATCH")} storedTuples={warm.FactorizedTupleCount:N0} nested={warm.HasNestedBranches}");
+        Console.WriteLine($"[factorize-chain]   compression: x{(double)warm.FlatRowCount / Math.Max(warm.FactorizedTupleCount, 1):F1} (rows/tuples)");
+
+        (double flatMs, double flatMiB) = MeasurePipelineFlat(index, plan);
+        (double factorMs, double factorMiB) = MeasureChainFactorized(index, r1, schema1, r2, schema2, r3, schema3, branchVariable);
+
+        Console.WriteLine($"[factorize-chain]   flat:       {flatMs,9:F1} ms  {flatMiB,9:F1} MiB");
+        Console.WriteLine($"[factorize-chain]   factorized: {factorMs,9:F1} ms  {factorMiB,9:F1} MiB");
+        Console.WriteLine($"[factorize-chain]   speedup: x{flatMs / Math.Max(factorMs, 0.01):F1}  alloc: x{flatMiB / Math.Max(factorMiB, 0.01):F1}");
+    }
+
+    /// <summary>Factorises the chain: join the first two arms on <c>?x</c>, then nest the <c>?b</c> branch to attach the <c>?b p3 ?c</c> arm.</summary>
+    /// <param name="index">The index.</param>
+    /// <param name="r1">The first arm pattern.</param>
+    /// <param name="schema1">The first arm's scan schema.</param>
+    /// <param name="r2">The second arm pattern.</param>
+    /// <param name="schema2">The second arm's scan schema.</param>
+    /// <param name="r3">The third arm pattern.</param>
+    /// <param name="schema3">The third arm's scan schema.</param>
+    /// <param name="branchVariable">The <c>?b</c> variable the third arm joins on.</param>
+    /// <returns>The depth-2 factorised chain.</returns>
+    private static FactorizedBatch FactorizeChain(
+        ColumnarTripleIndex index,
+        TriplePattern r1,
+        IReadOnlyList<Variable> schema1,
+        TriplePattern r2,
+        IReadOnlyList<Variable> schema2,
+        TriplePattern r3,
+        IReadOnlyList<Variable> schema3,
+        Variable branchVariable)
+    {
+        FactorizedBatch firstTwo = FactorizedBatchJoin.Join(
+            ColumnarBatchScan.Scan(index, r1), schema1, ColumnarBatchScan.Scan(index, r2), schema2);
+
+        return FactorizedBatchJoin.NestBranch(firstTwo, branchVariable, ColumnarBatchScan.Scan(index, r3), schema3)!;
+    }
+
+    /// <summary>Times and measures the allocations of building the depth-2 factorised chain.</summary>
+    /// <param name="index">The index.</param>
+    /// <param name="r1">The first arm pattern.</param>
+    /// <param name="schema1">The first arm's scan schema.</param>
+    /// <param name="r2">The second arm pattern.</param>
+    /// <param name="schema2">The second arm's scan schema.</param>
+    /// <param name="r3">The third arm pattern.</param>
+    /// <param name="schema3">The third arm's scan schema.</param>
+    /// <param name="branchVariable">The <c>?b</c> variable the third arm joins on.</param>
+    /// <returns>The elapsed milliseconds and allocated mebibytes.</returns>
+    private static (double Milliseconds, double Mebibytes) MeasureChainFactorized(
+        ColumnarTripleIndex index,
+        TriplePattern r1,
+        IReadOnlyList<Variable> schema1,
+        TriplePattern r2,
+        IReadOnlyList<Variable> schema2,
+        TriplePattern r3,
+        IReadOnlyList<Variable> schema3,
+        Variable branchVariable)
+    {
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        long start = Stopwatch.GetTimestamp();
+        FactorizedBatch chain = FactorizeChain(index, r1, schema1, r2, schema2, r3, schema3, branchVariable);
+        _ = chain.FactorizedTupleCount;
+        TimeSpan elapsed = Stopwatch.GetElapsedTime(start);
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        return (elapsed.TotalMilliseconds, allocated / (1024.0 * 1024.0));
+    }
+
+    /// <summary>The chain query <c>?a p1 ?x . ?x p2 ?b . ?b p3 ?c</c> over a fresh registry, for the flat pipeline plan.</summary>
+    /// <returns>The query.</returns>
+    private static BasicGraphPattern ChainQuery()
+    {
+        VariableRegistry registry = new();
+
+        return new BasicGraphPattern(
+            [
+                EdgePattern(registry, P1, "a", "x"),
+                EdgePattern(registry, P2, "x", "b"),
+                EdgePattern(registry, P3, "b", "c"),
+            ],
+            registry);
+    }
+
+    /// <summary>Builds the chain fixture: each hub fans in from <paramref name="fanA"/> subjects, fans out to <paramref name="fanB"/> objects, and each of those carries <paramref name="fanC"/> further objects.</summary>
+    /// <param name="hubs">The distinct <c>?x</c> hub count.</param>
+    /// <param name="fanA">The <c>?a</c> count per hub.</param>
+    /// <param name="fanB">The <c>?b</c> count per hub.</param>
+    /// <param name="fanC">The <c>?c</c> count per <c>?b</c>.</param>
+    /// <returns>The fixture triples.</returns>
+    private static List<EncodedTriple> BuildChainFixture(int hubs, int fanA, int fanB, int fanC)
+    {
+        const uint xBase = 1_000_000;
+        const uint aBase = 2_000_000;
+        const uint bBase = 3_000_000;
+        const uint cBase = 4_000_000;
+
+        List<EncodedTriple> triples = [];
+        for(int xi = 0; xi < hubs; xi++)
+        {
+            uint x = xBase + (uint)xi;
+            for(int ai = 0; ai < fanA; ai++)
+            {
+                triples.Add(EncodedTriple.FromEncoded(aBase + (uint)((xi * 1_000) + ai), P1, x));
+            }
+
+            for(int bi = 0; bi < fanB; bi++)
+            {
+                uint b = bBase + (uint)((xi * 1_000) + bi);
+                triples.Add(EncodedTriple.FromEncoded(x, P2, b));
+
+                for(int ci = 0; ci < fanC; ci++)
+                {
+                    triples.Add(EncodedTriple.FromEncoded(b, P3, cBase + (uint)((((xi * 1_000) + bi) * 100) + ci)));
+                }
+            }
+        }
+
+        return triples;
     }
 
     /// <summary>Builds, verifies, and measures one rung.</summary>
@@ -105,12 +259,12 @@ internal static class FactorizationSoak
         long tupleExpected = (long)subjects * 3 * fan;
         Console.WriteLine($"[factorize-star] subjects={subjects:N0} fan={fan} arms=3 | flat~{flatExpected:N0} factorized~{tupleExpected:N0}");
 
-        long flatRows = CountStarFlat(index, plan);
+        long flatRows = CountPipelineFlat(index, plan);
         FactorizedBatch warm = FactorizeStar(index, p1, schema1, p2, schema2, p3, schema3);
         Console.WriteLine($"[factorize-star]   flatRows={flatRows:N0} factorizedFlat={warm.FlatRowCount:N0} {(flatRows == warm.FlatRowCount ? "MATCH" : "MISMATCH")} storedTuples={warm.FactorizedTupleCount:N0} branches={warm.BranchColumns.Length}");
         Console.WriteLine($"[factorize-star]   compression: x{(double)warm.FlatRowCount / Math.Max(warm.FactorizedTupleCount, 1):F1} (rows/tuples)");
 
-        (double flatMs, double flatMiB) = MeasureStarFlat(index, plan);
+        (double flatMs, double flatMiB) = MeasurePipelineFlat(index, plan);
         (double factorMs, double factorMiB) = MeasureStarFactorized(index, p1, schema1, p2, schema2, p3, schema3);
 
         Console.WriteLine($"[factorize-star]   flat:       {flatMs,9:F1} ms  {flatMiB,9:F1} MiB");
@@ -170,26 +324,26 @@ internal static class FactorizationSoak
         return (elapsed.TotalMilliseconds, allocated / (1024.0 * 1024.0));
     }
 
-    /// <summary>Times and measures the allocations of draining the flat star pipeline.</summary>
+    /// <summary>Times and measures the allocations of draining a flat pipeline plan.</summary>
     /// <param name="index">The index.</param>
-    /// <param name="plan">The star plan.</param>
+    /// <param name="plan">The plan.</param>
     /// <returns>The elapsed milliseconds and allocated mebibytes.</returns>
-    private static (double Milliseconds, double Mebibytes) MeasureStarFlat(ColumnarTripleIndex index, ColumnarBatchPlan plan)
+    private static (double Milliseconds, double Mebibytes) MeasurePipelineFlat(ColumnarTripleIndex index, ColumnarBatchPlan plan)
     {
         long before = GC.GetAllocatedBytesForCurrentThread();
         long start = Stopwatch.GetTimestamp();
-        _ = CountStarFlat(index, plan);
+        _ = CountPipelineFlat(index, plan);
         TimeSpan elapsed = Stopwatch.GetElapsedTime(start);
         long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         return (elapsed.TotalMilliseconds, allocated / (1024.0 * 1024.0));
     }
 
-    /// <summary>Drains the flat star pipeline, returning the materialised row count.</summary>
+    /// <summary>Drains a flat pipeline plan, returning the materialised row count.</summary>
     /// <param name="index">The index.</param>
-    /// <param name="plan">The star plan.</param>
+    /// <param name="plan">The plan.</param>
     /// <returns>The flat row count.</returns>
-    private static long CountStarFlat(ColumnarTripleIndex index, ColumnarBatchPlan plan)
+    private static long CountPipelineFlat(ColumnarTripleIndex index, ColumnarBatchPlan plan)
     {
         long rows = 0;
         foreach(SolutionBatch batch in ColumnarBatchPipeline.Run(index, plan))

@@ -270,6 +270,179 @@ public static class FactorizedBatchJoin
         return extended;
     }
 
+    /// <summary>
+    /// Extends a single-level factorised batch by a pattern that joins on a
+    /// <em>branch</em> variable rather than the group key — the chain step the
+    /// star <see cref="AddBranch"/> cannot take. The branch binding the join
+    /// variable is regrouped into a nested single-level sub-batch keyed on that
+    /// variable, with the probe's matches per value attached as the sub-batch's
+    /// branch, producing the second factorisation level. The result stays
+    /// factorised, so a chain evaluates with no flat product between joins; the
+    /// final flatten expands it.
+    /// </summary>
+    /// <param name="left">The single-level factorised batch to extend; consumed by branch, not flattened.</param>
+    /// <param name="branchVariable">The branch variable the probe joins on; it must be bound by a branch that holds it as its only column.</param>
+    /// <param name="probe">The pattern's matches, joined on <paramref name="branchVariable"/>.</param>
+    /// <param name="probeSchema">The probe's schema, positional against its columns.</param>
+    /// <returns>
+    /// The depth-2 factorised batch over the concatenated schema, or
+    /// <see langword="null"/> when the shape is outside this step: the left
+    /// batch already nests (depth would exceed two), the variable is not a
+    /// single-column branch, or the probe joins on more than that one variable.
+    /// </returns>
+    /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
+    public static FactorizedBatch? NestBranch(
+        FactorizedBatch left,
+        Variable branchVariable,
+        IEnumerable<SolutionBatch> probe,
+        IReadOnlyList<Variable> probeSchema)
+    {
+        ArgumentNullException.ThrowIfNull(left);
+        ArgumentNullException.ThrowIfNull(probe);
+        ArgumentNullException.ThrowIfNull(probeSchema);
+
+        //Depth-2 only: a batch that already nests would push the join two
+        //levels down, which this step does not build.
+        if(left.HasNestedBranches)
+        {
+            return null;
+        }
+
+        int branchColumn = IndexOf(left.Schema, branchVariable);
+        if(branchColumn < 0)
+        {
+            return null;
+        }
+
+        //The variable must be bound by a branch that holds it alone — the chain
+        //case; a multi-column branch is outside this step.
+        int targetBranch = -1;
+        for(int b = 0; b < left.BranchColumns.Length; b++)
+        {
+            if(left.BranchColumns[b].Length == 1 && left.BranchColumns[b][0] == branchColumn)
+            {
+                targetBranch = b;
+
+                break;
+            }
+        }
+
+        if(targetBranch < 0)
+        {
+            return null;
+        }
+
+        //The probe must join on exactly the branch variable: it carries that
+        //variable and otherwise only new columns.
+        int probeKeyColumn = IndexOf(probeSchema, branchVariable);
+        if(probeKeyColumn < 0)
+        {
+            return null;
+        }
+
+        List<int> probeCarryColumns = [];
+        List<Variable> probeOnlyVariables = [];
+        for(int p = 0; p < probeSchema.Count; p++)
+        {
+            if(p == probeKeyColumn)
+            {
+                continue;
+            }
+
+            if(Contains(left.Schema, probeSchema[p]))
+            {
+                return null;
+            }
+
+            probeCarryColumns.Add(p);
+            probeOnlyVariables.Add(probeSchema[p]);
+        }
+
+        //The nested sub-batch binds the branch variable (its key) and the probe's
+        //new columns (one branch). In the parent schema the branch variable keeps
+        //its column and the new variables append after the left schema.
+        List<Variable> outputSchema = [.. left.Schema];
+        int[] nestedBranchColumns = new int[1 + probeCarryColumns.Count];
+        int[] nestedChildColumns = new int[probeCarryColumns.Count];
+        nestedBranchColumns[0] = branchColumn;
+        for(int c = 0; c < probeCarryColumns.Count; c++)
+        {
+            nestedBranchColumns[1 + c] = outputSchema.Count;
+            nestedChildColumns[c] = 1 + c;
+            outputSchema.Add(probeOnlyVariables[c]);
+        }
+
+        List<Variable> nestedSchema = [branchVariable, .. probeOnlyVariables];
+        Dictionary<JoinKey, ProbeBucket> buckets = BuildProbeBuckets(probe, [probeKeyColumn], probeCarryColumns);
+
+        int[][] branchColumnsOut = (int[][])left.BranchColumns.Clone();
+        branchColumnsOut[targetBranch] = nestedBranchColumns;
+
+        List<FactorizedGroup> groups = NestGroups(left, targetBranch, nestedSchema, nestedChildColumns, probeCarryColumns.Count, buckets);
+
+        return new FactorizedBatch(outputSchema, left.KeyColumns, branchColumnsOut, groups);
+    }
+
+    /// <summary>Rebuilds each group with the target branch regrouped into a nested sub-batch keyed on the branch variable; a group whose values all miss the probe drops.</summary>
+    /// <param name="left">The single-level batch being extended.</param>
+    /// <param name="targetBranch">The branch being nested.</param>
+    /// <param name="nestedSchema">The nested sub-batch's schema: the branch variable then the probe's new variables.</param>
+    /// <param name="nestedChildColumns">The nested-schema indices of the probe's new columns — the sub-batch's single branch.</param>
+    /// <param name="probeCarryCount">The probe-only column count.</param>
+    /// <param name="buckets">The probe matches per branch-variable value.</param>
+    /// <returns>The extended groups.</returns>
+    private static List<FactorizedGroup> NestGroups(
+        FactorizedBatch left,
+        int targetBranch,
+        IReadOnlyList<Variable> nestedSchema,
+        int[] nestedChildColumns,
+        int probeCarryCount,
+        Dictionary<JoinKey, ProbeBucket> buckets)
+    {
+        int branchCount = left.BranchColumns.Length;
+        int[][] nestedBranchColumns = [nestedChildColumns];
+
+        List<FactorizedGroup> groups = new(left.Groups.Count);
+        foreach(FactorizedGroup group in left.Groups)
+        {
+            int valueCount = group.BranchRowCounts[targetBranch];
+            uint[] branchVariableValues = group.BranchValues[targetBranch];
+
+            List<FactorizedGroup> nestedGroups = [];
+            for(int row = 0; row < valueCount; row++)
+            {
+                uint branchVariableValue = branchVariableValues[row];
+                if(!buckets.TryGetValue(JoinKey.Pack(branchVariableValue, 0), out ProbeBucket? bucket))
+                {
+                    continue;
+                }
+
+                uint[][] nestedValues = [probeCarryCount == 0 ? [] : [.. bucket.Values]];
+                int[] nestedRowCounts = [bucket.Rows];
+                nestedGroups.Add(new FactorizedGroup([branchVariableValue], nestedValues, nestedRowCounts));
+            }
+
+            if(nestedGroups.Count == 0)
+            {
+                continue;
+            }
+
+            FactorizedBatch nested = new(nestedSchema, [0], nestedBranchColumns, nestedGroups);
+
+            FactorizedBatch?[] nestedBranches = new FactorizedBatch?[branchCount];
+            nestedBranches[targetBranch] = nested;
+
+            uint[][] branchValues = (uint[][])group.BranchValues.Clone();
+            int[] branchRowCounts = (int[])group.BranchRowCounts.Clone();
+            branchValues[targetBranch] = [];
+            branchRowCounts[targetBranch] = 0;
+
+            groups.Add(new FactorizedGroup(group.KeyValues, branchValues, branchRowCounts, nestedBranches));
+        }
+
+        return groups;
+    }
+
     /// <summary>Groups the build stream by key, packing each row's build-only columns into its group's build branch.</summary>
     /// <param name="build">The build stream.</param>
     /// <param name="buildKeyColumns">The build-side key column indices, one or two.</param>

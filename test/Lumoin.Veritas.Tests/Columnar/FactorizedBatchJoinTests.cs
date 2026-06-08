@@ -285,6 +285,126 @@ internal sealed class FactorizedBatchJoinTests
         Assert.IsNull(refused);
     }
 
+    /// <summary>A chain fixture <c>?a p1 ?x . ?x p2 ?b . ?b p3 ?c</c>: each hub fans in from <paramref name="fanA"/> subjects, fans out to <paramref name="fanB"/> objects, and each of those carries <paramref name="fanC"/> further objects.</summary>
+    /// <param name="hubs">The distinct <c>?x</c> hub count.</param>
+    /// <param name="fanA">The <c>?a</c> count per hub.</param>
+    /// <param name="fanB">The <c>?b</c> count per hub.</param>
+    /// <param name="fanC">The <c>?c</c> count per <c>?b</c>.</param>
+    /// <returns>The fixture triples.</returns>
+    private static List<EncodedTriple> ChainFanFixture(int hubs, int fanA, int fanB, int fanC)
+    {
+        const uint xBase = 1_000;
+        const uint aBase = 2_000;
+        const uint bBase = 3_000;
+        const uint cBase = 4_000;
+
+        List<EncodedTriple> triples = [];
+        for(int xi = 0; xi < hubs; xi++)
+        {
+            uint x = xBase + (uint)xi;
+            for(int ai = 0; ai < fanA; ai++)
+            {
+                triples.Add(EncodedTriple.FromEncoded(aBase + (uint)((xi * 100) + ai), P1, x));
+            }
+
+            for(int bi = 0; bi < fanB; bi++)
+            {
+                uint b = bBase + (uint)((xi * 100) + bi);
+                triples.Add(EncodedTriple.FromEncoded(x, P2, b));
+
+                for(int ci = 0; ci < fanC; ci++)
+                {
+                    triples.Add(EncodedTriple.FromEncoded(b, P3, cBase + (uint)((((xi * 100) + bi) * 100) + ci)));
+                }
+            }
+        }
+
+        return triples;
+    }
+
+    /// <summary>The chain query <c>?a p1 ?x . ?x p2 ?b . ?b p3 ?c</c> over a fresh registry, for the flat oracle plan.</summary>
+    /// <param name="registry">The variable registry.</param>
+    /// <returns>The query.</returns>
+    private static BasicGraphPattern ChainQuery(VariableRegistry registry)
+    {
+        return new BasicGraphPattern(
+            [
+                EdgePattern(registry, P1, "a", "x"),
+                EdgePattern(registry, P2, "x", "b"),
+                EdgePattern(registry, P3, "b", "c"),
+            ],
+            registry);
+    }
+
+    [TestMethod]
+    public void NestedChainFlattensToTheFlatPipelineAndCompresses()
+    {
+        const int hubs = 8;
+        const int fanA = 4;
+        const int fanB = 4;
+        const int fanC = 4;
+        List<EncodedTriple> fixture = ChainFanFixture(hubs, fanA, fanB, fanC);
+        ColumnarTripleIndex index = ColumnarTripleIndex.Build(fixture);
+
+        VariableRegistry registry = new();
+        TriplePattern r1 = EdgePattern(registry, P1, "a", "x");
+        TriplePattern r2 = EdgePattern(registry, P2, "x", "b");
+        TriplePattern r3 = EdgePattern(registry, P3, "b", "c");
+        IReadOnlyList<Variable> schema1 = ColumnarBatchScan.ScanSchemaOf(index, r1);
+        IReadOnlyList<Variable> schema2 = ColumnarBatchScan.ScanSchemaOf(index, r2);
+        IReadOnlyList<Variable> schema3 = ColumnarBatchScan.ScanSchemaOf(index, r3);
+
+        //Join the first two arms on ?x, then nest the ?b branch under ?b to
+        //attach the ?b p3 ?c arm — a second factorisation level.
+        FactorizedBatch firstTwo = FactorizedBatchJoin.Join(
+            ColumnarBatchScan.Scan(index, r1), schema1, ColumnarBatchScan.Scan(index, r2), schema2);
+        FactorizedBatch? chain = FactorizedBatchJoin.NestBranch(firstTwo, registry.GetOrAdd("b"), ColumnarBatchScan.Scan(index, r3), schema3);
+
+        Assert.IsNotNull(chain);
+        Assert.IsTrue(chain.HasNestedBranches);
+
+        //The flat streamed pipeline over the same chain is the differential oracle.
+        ColumnarBatchPlan plan = ColumnarBatchPipeline.TryPlan(index, ChainQuery(new VariableRegistry()), useSemijoinReduction: false, useFactorizedStar: false)!;
+        List<string> flatRows = Fingerprints(ColumnarBatchPipeline.Run(index, plan), plan.Schema);
+        List<string> factorizedRows = Fingerprints(chain.Flatten(), chain.Schema);
+
+        Assert.IsGreaterThan(0, flatRows.Count);
+        CollectionAssert.AreEqual(flatRows, factorizedRows);
+
+        //Flat = hubs·fanA·fanB·fanC; stored = hubs·(fanA + fanB·fanC): the ?a
+        //arm independent of the (?b,?c) sub-tree given ?x.
+        Assert.AreEqual(flatRows.Count, (int)chain.FlatRowCount);
+        Assert.AreEqual((long)hubs * fanA * fanB * fanC, chain.FlatRowCount);
+        Assert.AreEqual((long)hubs * (fanA + (fanB * fanC)), chain.FactorizedTupleCount);
+        Assert.IsLessThan(chain.FlatRowCount, chain.FactorizedTupleCount);
+    }
+
+    [TestMethod]
+    public void NestBranchRefusesTheKeyVariableAndAlreadyNestedInput()
+    {
+        List<EncodedTriple> fixture = ChainFanFixture(hubs: 4, fanA: 2, fanB: 2, fanC: 2);
+        ColumnarTripleIndex index = ColumnarTripleIndex.Build(fixture);
+
+        VariableRegistry registry = new();
+        TriplePattern r1 = EdgePattern(registry, P1, "a", "x");
+        TriplePattern r2 = EdgePattern(registry, P2, "x", "b");
+        TriplePattern r3 = EdgePattern(registry, P3, "b", "c");
+        IReadOnlyList<Variable> schema1 = ColumnarBatchScan.ScanSchemaOf(index, r1);
+        IReadOnlyList<Variable> schema2 = ColumnarBatchScan.ScanSchemaOf(index, r2);
+        IReadOnlyList<Variable> schema3 = ColumnarBatchScan.ScanSchemaOf(index, r3);
+
+        FactorizedBatch firstTwo = FactorizedBatchJoin.Join(
+            ColumnarBatchScan.Scan(index, r1), schema1, ColumnarBatchScan.Scan(index, r2), schema2);
+
+        //?x is the group key, not a branch — nesting cannot target it.
+        Assert.IsNull(FactorizedBatchJoin.NestBranch(firstTwo, registry.GetOrAdd("x"), ColumnarBatchScan.Scan(index, r2), schema2));
+
+        //Once nested, a second nesting would exceed depth two and is refused.
+        FactorizedBatch chain = FactorizedBatchJoin.NestBranch(firstTwo, registry.GetOrAdd("b"), ColumnarBatchScan.Scan(index, r3), schema3)!;
+        TriplePattern r4 = EdgePattern(registry, P1, "c", "d");
+        Assert.IsNull(FactorizedBatchJoin.NestBranch(chain, registry.GetOrAdd("c"), ColumnarBatchScan.Scan(index, r4), ColumnarBatchScan.ScanSchemaOf(index, r4)));
+    }
+
     [TestMethod]
     public void FlattenWalksTheCrossProductOfEveryBranch()
     {
