@@ -12,7 +12,7 @@ in "Next".
 
 ## Current state
 
-- Branch `main`, tree clean at commit **`31d2a12`** (factorizing star made opt-in; `112716b` added soak control rungs, `ef037a7` was depth-2 chain factorization, `3a521e0` wired the star into the pipeline, `77249b0` the consume side, `ccbe7f3` the produce side, `08d0db1` the Yannakakis measurement).
+- Branch `main`, tree clean at commit **`b3308cf`** (chain pipeline route, opt-in; `31d2a12` made the star opt-in, `112716b` added soak control rungs, `ef037a7` was depth-2 chain factorization, `3a521e0` wired the star into the pipeline, `77249b0` the consume side, `ccbe7f3` the produce side, `08d0db1` the Yannakakis measurement).
 - Full suite: **8078 total / 0 failed / 548 skipped** (the +8 over the pre-§4.2 count is the new factorized-join tests; the skip count jitters ±2 with the environment-conditional OWL-entailment `Inconclusive` tests). With `PreferFactorizedStar` default-on, the whole corpus routes every star BGP through the factorizing join as the differential oracle.
 - One unrelated working-tree change persists: `generate-local-test-nuget-packages.ps1` (a sister project's edit excluding the AOT CLI from local packaging) — not mine, left uncommitted on purpose.
 - There are local commits not pushed to origin. **Do not `git push`** without explicit owner approval —
@@ -133,13 +133,21 @@ cheap fan-out estimate is derivable from the columnar index's CSR per-level coun
 (`fan²/3`, `(fanA·S)/(fanA+S)`) are the thresholds. Do **not** build the selector ad hoc in the pipeline — it
 is its own increment. (See memory `join-strategy-selection-is-a-future-research-issue`.)
 
-**Next on §4.2 — keep building the opt-in technique catalog:** wire `NestBranch` into `ColumnarBatchPipeline`
-as an opt-in route mirroring the star — detect a chain sub-shape in the plan (`AddBranch` returns `null`
-there today), route `Join` → `NestBranch` → `Flatten` behind a new `PreferFactorizedChain` flag (**default
-off**, like the star), with a pipeline-level differential test as the oracle. Then depth-3+ factorization —
-today `NestBranch` returns `null` on an already-nested input, so a four-pattern chain only factorizes its
-leading joins; lifting that needs the nested-path flatten to handle arbitrary depth via an explicit stack
-rather than the single-level sub-batch shortcut. Keep the hot path concrete.
+- **`b3308cf` — chain pipeline route (opt-in):** `TryPlan(useFactorizedChain)` detects a three-pattern chain
+  (`TryChainNestVariable`: first two join on 1–2 vars, the third shares exactly one variable — a branch, not
+  the key) and records it on `ColumnarBatchPlan.ChainNestVariable`, mutually exclusive with the star. `Run`
+  routes it through `RunFactorizedChain` (`Join` → `NestBranch` → `Flatten`, fall-back to `RunStreaming`).
+  `QueryEnginePolicy.PreferFactorizedChain` gates it, **default off** like the star. Pipeline test agrees with
+  streaming/leapfrog. The opt-in technique catalog is now: streaming, semijoin-reduced, factorized-star,
+  factorized-chain, leapfrog — all built, all tested, selection still manual via the `Prefer*` flags.
+
+**Next on §4.2:** depth-3+ factorization — `NestBranch` returns `null` on an already-nested input, so a
+four-pattern chain factorizes only its leading joins (`TryChainNestVariable` caps at three patterns). Lifting
+this needs the nested-path flatten to handle arbitrary depth via an explicit stack rather than the
+single-level sub-batch shortcut, and `NestBranch` to nest inside an existing nested branch. Then **§4.3 Free
+Join** (the largest item; unifies the binary hash join and the leapfrog WCOJ — depends on the factorized
+representation, now in place). Keep the hot path concrete. The strategy-selection optimizer remains the
+deferred research issue (memory `join-strategy-selection-is-a-future-research-issue`).
 
 ## Recently shipped — Yannakakis semijoin reduction (roadmap item §4.1)
 
