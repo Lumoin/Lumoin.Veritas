@@ -354,6 +354,12 @@ public sealed class SparqlQueryEngine
         //a parsed algebra is a tree (so each operator instance appears once per graph), and a GRAPH form
         //re-evaluates the SAME sub-tree under a different active graph, so the graph is part of the key.
         Dictionary<ResultKey, SolutionTable> results = new(ResultKeyComparer.Instance);
+
+        //One computed-term overlay per evaluation: a columnar Extend encodes its results through it, and every
+        //table descended from that Extend carries the same instance, so two sibling Extends never collide on an
+        //overlay id and the decode at the boundary is unambiguous. Created eagerly (it is an empty pair of
+        //collections) and used only when a columnar Extend runs.
+        ComputedTermOverlay overlay = new(dictionary);
         Stack<(AlgebraOperator Node, TermId Graph, bool Combine)> work = new();
         work.Push((algebra, activeGraph, Combine: false));
 
@@ -369,7 +375,7 @@ public sealed class SparqlQueryEngine
                 {
                     Graph graphNode => CombineGraph(graphNode, graph, results),
                     Join boundJoin when IsServiceBoundJoin(boundJoin) => await CombineServiceBoundJoinAsync(boundJoin, graph, results, cancellationToken).ConfigureAwait(false),
-                    Filter or Extend or LeftJoin => await CombineExpressionOperatorAsync(node, graph, results, cancellationToken).ConfigureAwait(false),
+                    Filter or Extend or LeftJoin => await CombineExpressionOperatorAsync(node, graph, results, overlay, cancellationToken).ConfigureAwait(false),
                     _ => Combine(node, graph, results, expressionContext)
                 };
 
@@ -2321,7 +2327,7 @@ public sealed class SparqlQueryEngine
     /// <param name="results">The map of already-evaluated (operator, graph) keys to their solution sequences.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The operator's solution sequence.</returns>
-    private async ValueTask<SolutionTable> CombineExpressionOperatorAsync(AlgebraOperator op, TermId graph, Dictionary<ResultKey, SolutionTable> results, CancellationToken cancellationToken)
+    private async ValueTask<SolutionTable> CombineExpressionOperatorAsync(AlgebraOperator op, TermId graph, Dictionary<ResultKey, SolutionTable> results, ComputedTermOverlay overlay, CancellationToken cancellationToken)
     {
         switch(op)
         {
@@ -2340,7 +2346,17 @@ public sealed class SparqlQueryEngine
 
             case Extend extend:
             {
-                return SolutionTable.FromRows(await ApplyExtendAsync(extend, results[new ResultKey(extend.Input, graph)].AsRows(), graph, cancellationToken).ConfigureAwait(false));
+                //BIND a computed value as a new column, keeping the table columnar so a following Distinct/Slice/
+                //Filter decodes only survivors. The expression is evaluated per row over the decoded referenced
+                //values; its result is encoded through the overlay (a data id when the term exists, else a
+                //query-local id). An EXISTS-bearing expression re-enters the engine per row and stays on the row path.
+                SolutionTable extendInput = results[new ResultKey(extend.Input, graph)];
+                if(extendInput.IsColumnar && !ContainsExists(extend.Expression) && TryExtendColumnar(extend, extendInput, overlay, out SolutionTable extended))
+                {
+                    return extended;
+                }
+
+                return SolutionTable.FromRows(await ApplyExtendAsync(extend, extendInput.AsRows(), graph, cancellationToken).ConfigureAwait(false));
             }
 
             case LeftJoin leftJoin:
@@ -2412,6 +2428,82 @@ public sealed class SparqlQueryEngine
         result = ColumnarOperators.FilterByTerm(input, columnIndex, termId, comparison.Op == ComparisonOp.Equal);
 
         return true;
+    }
+
+    /// <summary>
+    /// Evaluates a <c>BIND</c>/<c>Extend</c> over a columnar input, appending the computed value as a new encoded
+    /// column and keeping the table columnar. The expression is evaluated per row over the decoded row (an error
+    /// leaves the new cell unbound, matching the row form), and each value is encoded through the overlay (a data
+    /// id when the term exists, else a query-local overlay id). Declines (returns <see langword="false"/>, so the
+    /// caller takes the row path) when the bound variable is already a column, or when the expression constructs a
+    /// blank node — <c>BNODE</c> correlation depends on per-solution identity the row path links across BIND steps,
+    /// which the transient per-row decode here does not carry.
+    /// </summary>
+    /// <param name="extend">The extend operator.</param>
+    /// <param name="input">The columnar input table.</param>
+    /// <param name="overlay">The evaluation's computed-term overlay the result values are encoded through.</param>
+    /// <param name="result">Receives the extended columnar table when the columnar path applies.</param>
+    /// <returns><see langword="true"/> when the extend was evaluated columnar; otherwise <see langword="false"/>.</returns>
+    private bool TryExtendColumnar(Extend extend, SolutionTable input, ComputedTermOverlay overlay, out SolutionTable result)
+    {
+        result = SolutionTable.Empty;
+        IReadOnlyList<SparqlVariable> inputSchema = input.Schema;
+        for(int i = 0; i < inputSchema.Count; i++)
+        {
+            //A BIND introduces a fresh variable; a collision is unusual (and the row path's append semantics differ),
+            //so leave it to the row path.
+            if(inputSchema[i] == extend.Variable)
+            {
+                return false;
+            }
+        }
+
+        if(ContainsBlankNodeConstructor(extend.Expression))
+        {
+            return false;
+        }
+
+        uint[] valueColumn = new uint[input.Count];
+        for(int row = 0; row < input.Count; row++)
+        {
+            //A failed expression leaves the cell at 0 (unbound) — the row form likewise keeps the row with the
+            //variable unbound.
+            if(SparqlExpressionEvaluator.TryEvaluate(extend.Expression, input.DecodeRow(row), expressionContext, out RdfTerm value))
+            {
+                valueColumn[row] = overlay.Encode(value);
+            }
+        }
+
+        List<SparqlVariable> schema = new(inputSchema.Count + 1);
+        schema.AddRange(inputSchema);
+        schema.Add(extend.Variable);
+
+        uint[][] columns = new uint[schema.Count][];
+        for(int column = 0; column < inputSchema.Count; column++)
+        {
+            columns[column] = input.ColumnArray(column);
+        }
+
+        columns[inputSchema.Count] = valueColumn;
+        result = SolutionTable.Columnar(schema, columns, input.Count, input.Dictionary, overlay);
+
+        return true;
+    }
+
+    /// <summary>Whether an expression constructs a blank node (<c>BNODE</c>), whose per-solution correlation the columnar Extend cannot preserve.</summary>
+    /// <param name="expression">The expression to scan.</param>
+    /// <returns><see langword="true"/> when a <c>BNODE</c> built-in appears anywhere in the expression.</returns>
+    private static bool ContainsBlankNodeConstructor(ExpressionNode expression)
+    {
+        foreach(ExpressionNode node in ExpressionWalker.Traverse(expression))
+        {
+            if(node is BuiltInCallExpression { Function: BuiltInFunction.BNode })
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>Keeps the solutions whose <c>FILTER</c> condition has effective boolean value true (§18.6 Filter); an error or non-boolean value drops the solution. Any <c>EXISTS</c>/<c>NOT EXISTS</c> in the condition is resolved per solution first.</summary>

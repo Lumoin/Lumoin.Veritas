@@ -39,6 +39,8 @@ internal sealed class SolutionTable
 
     private readonly TermDictionary? dictionary;
 
+    private readonly ComputedTermOverlay? overlay;
+
     private IReadOnlyList<SparqlSolution>? rows;
 
     /// <summary>Constructs the columnar backing over the given schema and encoded-id columns.</summary>
@@ -46,11 +48,13 @@ internal sealed class SolutionTable
     /// <param name="columns">One encoded-id column per schema variable, each of length <paramref name="count"/>; cell <c>0</c> is unbound.</param>
     /// <param name="count">The committed row count.</param>
     /// <param name="dictionary">The term dictionary the encoded ids decode through at the boundary.</param>
-    private SolutionTable(IReadOnlyList<SparqlVariable> schema, uint[][] columns, int count, TermDictionary dictionary)
+    /// <param name="overlay">The query-scoped overlay holding computed terms whose ids carry the reserved high bit, or <see langword="null"/> when the columns hold only data-dictionary ids.</param>
+    private SolutionTable(IReadOnlyList<SparqlVariable> schema, uint[][] columns, int count, TermDictionary dictionary, ComputedTermOverlay? overlay)
     {
         this.schema = schema;
         this.columns = columns;
         this.dictionary = dictionary;
+        this.overlay = overlay;
         Count = count;
     }
 
@@ -76,6 +80,9 @@ internal sealed class SolutionTable
 
     /// <summary>The term dictionary the columnar backing decodes through; only valid when <see cref="IsColumnar"/>.</summary>
     public TermDictionary Dictionary => dictionary ?? throw new InvalidOperationException("Dictionary is only available on a columnar SolutionTable.");
+
+    /// <summary>The query-scoped overlay holding any computed terms in the columns (ids with the reserved high bit), or <see langword="null"/> when the columns hold only data-dictionary ids. Carried so derived columnar tables decode their computed cells; propagate it onto any columnar table built from this one.</summary>
+    public ComputedTermOverlay? Overlay => overlay;
 
     /// <summary>The encoded-id column for a schema position; only valid when <see cref="IsColumnar"/>. Cell <c>0</c> is unbound.</summary>
     /// <param name="schemaIndex">The variable's position in <see cref="Schema"/>.</param>
@@ -116,14 +123,15 @@ internal sealed class SolutionTable
     /// <param name="columns">One encoded-id column per schema variable, each of length <paramref name="count"/>; cell <c>0</c> is unbound.</param>
     /// <param name="count">The committed row count.</param>
     /// <param name="dictionary">The term dictionary the encoded ids decode through at the boundary.</param>
+    /// <param name="overlay">The query-scoped overlay holding any computed terms (ids with the reserved high bit), or <see langword="null"/> when the columns hold only data-dictionary ids.</param>
     /// <returns>The columnar table.</returns>
-    public static SolutionTable Columnar(IReadOnlyList<SparqlVariable> schema, uint[][] columns, int count, TermDictionary dictionary)
+    public static SolutionTable Columnar(IReadOnlyList<SparqlVariable> schema, uint[][] columns, int count, TermDictionary dictionary, ComputedTermOverlay? overlay = null)
     {
         ArgumentNullException.ThrowIfNull(schema);
         ArgumentNullException.ThrowIfNull(columns);
         ArgumentNullException.ThrowIfNull(dictionary);
 
-        return new SolutionTable(schema, columns, count, dictionary);
+        return new SolutionTable(schema, columns, count, dictionary, overlay);
     }
 
     /// <summary>
@@ -142,21 +150,38 @@ internal sealed class SolutionTable
         List<SparqlSolution> decoded = new(Count);
         for(int row = 0; row < Count; row++)
         {
-            List<SparqlBinding> bindings = new(schema!.Count);
-            for(int column = 0; column < schema.Count; column++)
-            {
-                uint encoded = columns![column][row];
-                if(encoded != 0)
-                {
-                    bindings.Add(new SparqlBinding(schema[column], dictionary!.Resolve(TermId.FromEncoded(encoded))));
-                }
-            }
-
-            decoded.Add(new SparqlSolution(bindings));
+            decoded.Add(DecodeRow(row));
         }
 
         rows = decoded;
 
         return decoded;
+    }
+
+    /// <summary>
+    /// Decodes one columnar row to a solution, skipping its unbound cells — the per-row form <see cref="AsRows"/>
+    /// builds on, exposed so an operator that must evaluate an expression over a row (a columnar <c>Extend</c>) can
+    /// do so without materializing and caching the whole decoded sequence. Only valid when <see cref="IsColumnar"/>.
+    /// </summary>
+    /// <param name="row">The row index; below <see cref="Count"/>.</param>
+    /// <returns>The decoded solution.</returns>
+    public SparqlSolution DecodeRow(int row)
+    {
+        List<SparqlBinding> bindings = new(schema!.Count);
+        for(int column = 0; column < schema.Count; column++)
+        {
+            uint encoded = columns![column][row];
+            if(encoded != 0)
+            {
+                //A computed term carries the overlay's reserved id bit and resolves there; a data id resolves
+                //through the dictionary. The two id ranges never overlap, so the decode is unambiguous.
+                RdfTerm term = overlay is not null && ComputedTermOverlay.IsOverlay(encoded)
+                    ? overlay.Resolve(encoded)
+                    : dictionary!.Resolve(TermId.FromEncoded(encoded));
+                bindings.Add(new SparqlBinding(schema[column], term));
+            }
+        }
+
+        return new SparqlSolution(bindings);
     }
 }

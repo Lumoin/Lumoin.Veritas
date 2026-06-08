@@ -109,6 +109,38 @@ internal sealed class SparqlQueryEngineTests
         Assert.AreEqual(Ex + "y", ValueIri(solution, "o"));
     }
 
+    /// <summary>A columnar <c>BIND(?o AS ?friend)</c> copies the source variable's encoded column — the computed term already exists in the data, so the overlay reuses its data id (canonical reuse) and the new column equals the source.</summary>
+    [TestMethod]
+    public async Task ColumnarBindReusesDataIdForExistingTerm()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(("a", "knows", "b")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?s :knows ?o BIND(?o AS ?friend) }", pool);
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        SparqlSolution solution = solutions.Single();
+        Assert.AreEqual(Ex + "b", ValueIri(solution, "o"));
+        Assert.AreEqual(Ex + "b", ValueIri(solution, "friend"));
+    }
+
+    /// <summary>A columnar <c>BIND</c> producing a term not in the data (a <c>STR</c> string literal) is encoded through the query-scoped overlay; a following <c>DISTINCT</c> dedups those overlay ids and the boundary decodes them back — proving the overlay round-trips through the columnar operators.</summary>
+    [TestMethod]
+    public async Task ColumnarBindDistinctDedupsComputedTermsThroughOverlay()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(("a", "knows", "b"), ("c", "knows", "b"), ("a", "knows", "d")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT DISTINCT ?str WHERE { ?s :knows ?o BIND(STR(?o) AS ?str) }", pool);
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //Objects b, b, d → STR → two distinct strings; the duplicate "…/b" is removed on the overlay id.
+        string[] values = [.. solutions.Select(s => Cast<Literal>(Value(s, "str")).Value.ToString())];
+        Assert.HasCount(2, values);
+        Assert.Contains(Ex + "b", values);
+        Assert.Contains(Ex + "d", values);
+    }
+
     /// <summary>A constant-endpoint SERVICE joins the remote endpoint's solutions (returned through the injected transport) with the surrounding pattern.</summary>
     [TestMethod]
     public async Task ServiceJoinsRemoteSolutions()
@@ -1476,6 +1508,17 @@ internal sealed class SparqlQueryEngineTests
         Assert.IsTrue(solution.TryGetValue(Variable(variableName), out RdfTerm value), $"Expected ?{variableName} to be bound.");
 
         return Cast<NamedNode>(value).Iri.ToString();
+    }
+
+    /// <summary>Returns the bound value of a variable in a solution, asserting it is bound.</summary>
+    /// <param name="solution">The solution.</param>
+    /// <param name="variableName">The variable name (without the marker).</param>
+    /// <returns>The bound term.</returns>
+    private static RdfTerm Value(SparqlSolution solution, string variableName)
+    {
+        Assert.IsTrue(solution.TryGetValue(Variable(variableName), out RdfTerm value), $"Expected ?{variableName} to be bound.");
+
+        return value;
     }
 
     /// <summary>Asserts a value is of the expected type and returns it cast to that type.</summary>

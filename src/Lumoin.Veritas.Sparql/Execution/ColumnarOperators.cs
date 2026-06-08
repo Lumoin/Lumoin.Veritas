@@ -48,7 +48,7 @@ internal static class ColumnarOperators
             projectedColumns[i] = unboundColumn;
         }
 
-        return SolutionTable.Columnar(variables, projectedColumns, input.Count, input.Dictionary);
+        return SolutionTable.Columnar(variables, projectedColumns, input.Count, input.Dictionary, input.Overlay);
     }
 
     /// <summary>Eliminates duplicate rows of a columnar table, comparing the encoded-id tuple across the schema columns, in first-appearance order, without decoding any term.</summary>
@@ -145,7 +145,7 @@ internal static class ColumnarOperators
             gathered[column] = target;
         }
 
-        return SolutionTable.Columnar(input.Schema, gathered, keptRows.Count, input.Dictionary);
+        return SolutionTable.Columnar(input.Schema, gathered, keptRows.Count, input.Dictionary, input.Overlay);
     }
 
     /// <summary>Applies the <c>OFFSET</c>/<c>LIMIT</c> window to a columnar table, copying the windowed row range out of each column so only the surviving rows are ever decoded downstream. No term is decoded.</summary>
@@ -172,7 +172,7 @@ internal static class ColumnarOperators
             windowColumns[column] = target;
         }
 
-        return SolutionTable.Columnar(input.Schema, windowColumns, windowCount, input.Dictionary);
+        return SolutionTable.Columnar(input.Schema, windowColumns, windowCount, input.Dictionary, input.Overlay);
     }
 
     /// <summary>Unions two columnar tables (§18.6 Union): the schema is the left schema followed by the right-only variables, and each output column is filled from the left rows then the right rows, storing <c>0</c> (unbound) where a side lacks the variable. No term is decoded.</summary>
@@ -211,7 +211,7 @@ internal static class ColumnarOperators
         CopySideInto(left, columnOf, columns, 0);
         CopySideInto(right, columnOf, columns, left.Count);
 
-        return SolutionTable.Columnar(schema, columns, total, left.Dictionary);
+        return SolutionTable.Columnar(schema, columns, total, left.Dictionary, left.Overlay ?? right.Overlay);
     }
 
     /// <summary>
@@ -333,7 +333,7 @@ internal static class ColumnarOperators
             frozen[c] = [.. outputColumns[c]];
         }
 
-        result = SolutionTable.Columnar(schema, frozen, count, left.Dictionary);
+        result = SolutionTable.Columnar(schema, frozen, count, left.Dictionary, left.Overlay ?? right.Overlay);
 
         return true;
     }
