@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie;
 using Lumoin.Veritas.Core.Hypertrie.AccessControl;
@@ -87,6 +88,8 @@ public sealed class SparqlQueryEngine
 
     private readonly AccessContext? accessContext;
 
+    private readonly TraceHandler<SparqlExecutionTraceEvent>? executionTrace;
+
     /// <summary>The query-time type-expansion seam, or <c>null</c> for no expansion.</summary>
     private TypeExpansionDelegate? TypeExpansion { get; }
 
@@ -101,8 +104,9 @@ public sealed class SparqlQueryEngine
     /// <param name="accessControl">The access-control policy consulted per candidate triple of every local graph read; <see langword="null"/> allows every triple at zero cost.</param>
     /// <param name="accessContext">The opaque "who is asking" context handed to <paramref name="accessControl"/> and forwarded to the <c>SERVICE</c>/<c>FROM</c>/<c>LOAD</c> IO seams; <see langword="null"/> when the evaluation carries no access context. Required when <paramref name="accessControl"/> is non-<see langword="null"/>.</param>
     /// <param name="typeExpansion">The query-time type-expansion seam — Seam Q: a bound <c>rdf:type</c> pattern evaluates once per expansion class and the solutions union; <see langword="null"/> leaves patterns unexpanded.</param>
+    /// <param name="executionTrace">The per-operator execution-trace handler (which evaluation strategy each operator took, with row shapes), or <see langword="null"/> for no tracing.</param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public SparqlQueryEngine(SparqlDataset dataset, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null, TypeExpansionDelegate? typeExpansion = null)
+    public SparqlQueryEngine(SparqlDataset dataset, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null, TypeExpansionDelegate? typeExpansion = null, TraceHandler<SparqlExecutionTraceEvent>? executionTrace = null)
     {
         ArgumentNullException.ThrowIfNull(dataset);
         ArgumentNullException.ThrowIfNull(dictionary);
@@ -114,6 +118,7 @@ public sealed class SparqlQueryEngine
         this.accessControl = accessControl;
         this.accessContext = accessContext;
         TypeExpansion = typeExpansion;
+        this.executionTrace = executionTrace;
     }
 
     /// <summary>Constructs an engine over a single default graph and no named graphs — the common case where the query has no <c>GRAPH</c> form.</summary>
@@ -124,9 +129,10 @@ public sealed class SparqlQueryEngine
     /// <param name="accessControl">The access-control policy consulted per candidate triple; <see langword="null"/> allows every triple.</param>
     /// <param name="accessContext">The opaque "who is asking" context; <see langword="null"/> when none.</param>
     /// <param name="typeExpansion">The query-time type-expansion seam; <see langword="null"/> leaves patterns unexpanded.</param>
+    /// <param name="executionTrace">The per-operator execution-trace handler, or <see langword="null"/> for no tracing.</param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public SparqlQueryEngine(HypertrieGraphStore store, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null, TypeExpansionDelegate? typeExpansion = null)
-        : this(SparqlDataset.FromDefaultGraph(store), dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion)
+    public SparqlQueryEngine(HypertrieGraphStore store, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null, TypeExpansionDelegate? typeExpansion = null, TraceHandler<SparqlExecutionTraceEvent>? executionTrace = null)
+        : this(SparqlDataset.FromDefaultGraph(store), dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion, executionTrace)
     {
     }
 
@@ -142,14 +148,14 @@ public sealed class SparqlQueryEngine
     /// <param name="cancellationToken">A token that aborts the build.</param>
     /// <returns>An engine ready to evaluate queries against the graph.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="triples"/> is <see langword="null"/>.</exception>
-    public static async ValueTask<SparqlQueryEngine> BuildAsync(IEnumerable<DataTriple> triples, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null, TypeExpansionDelegate? typeExpansion = null, CancellationToken cancellationToken = default)
+    public static async ValueTask<SparqlQueryEngine> BuildAsync(IEnumerable<DataTriple> triples, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null, TypeExpansionDelegate? typeExpansion = null, TraceHandler<SparqlExecutionTraceEvent>? executionTrace = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(triples);
 
         TermDictionary dictionary = new();
         HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(Encode(triples, dictionary), VeritasHashing.Default, cancellationToken).ConfigureAwait(false);
 
-        return new SparqlQueryEngine(store, dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion);
+        return new SparqlQueryEngine(store, dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion, executionTrace);
     }
 
     /// <summary>
@@ -174,6 +180,7 @@ public sealed class SparqlQueryEngine
         AccessControlDelegate? accessControl = null,
         AccessContext? accessContext = null,
         TypeExpansionDelegate? typeExpansion = null,
+        TraceHandler<SparqlExecutionTraceEvent>? executionTrace = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(defaultGraph);
@@ -204,7 +211,7 @@ public sealed class SparqlQueryEngine
             named[graphNames[i]] = stores[i + 1];
         }
 
-        return new SparqlQueryEngine(new SparqlDataset(stores[0], named), dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion);
+        return new SparqlQueryEngine(new SparqlDataset(stores[0], named), dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion, executionTrace);
     }
 
     /// <summary>Encodes a graph's triples into <paramref name="dictionary"/>.</summary>
@@ -291,7 +298,7 @@ public sealed class SparqlQueryEngine
             named.Add((new NamedNode(fromNamed.Value), triples));
         }
 
-        return await BuildDatasetAsync(defaultGraph, named, expressionContext, serviceClient, accessControl, accessContext, TypeExpansion, cancellationToken).ConfigureAwait(false);
+        return await BuildDatasetAsync(defaultGraph, named, expressionContext, serviceClient, accessControl, accessContext, TypeExpansion, executionTrace, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -360,6 +367,10 @@ public sealed class SparqlQueryEngine
         //overlay id and the decode at the boundary is unambiguous. Created eagerly (it is an empty pair of
         //collections) and used only when a columnar Extend runs.
         ComputedTermOverlay overlay = new(dictionary);
+
+        //The per-operator execution trace for this evaluation (no-op when no handler is wired). Evaluation-scoped,
+        //never engine state, so its sequence is monotonic within this query without racing a concurrent evaluation.
+        SparqlExecutionTrace trace = new(executionTrace, correlationId: default, TimeProvider.System);
         Stack<(AlgebraOperator Node, TermId Graph, bool Combine)> work = new();
         work.Push((algebra, activeGraph, Combine: false));
 
@@ -375,8 +386,8 @@ public sealed class SparqlQueryEngine
                 {
                     Graph graphNode => CombineGraph(graphNode, graph, results),
                     Join boundJoin when IsServiceBoundJoin(boundJoin) => await CombineServiceBoundJoinAsync(boundJoin, graph, results, cancellationToken).ConfigureAwait(false),
-                    Filter or Extend or LeftJoin => await CombineExpressionOperatorAsync(node, graph, results, overlay, cancellationToken).ConfigureAwait(false),
-                    _ => Combine(node, graph, results, expressionContext)
+                    Filter or Extend or LeftJoin => await CombineExpressionOperatorAsync(node, graph, results, overlay, trace, cancellationToken).ConfigureAwait(false),
+                    _ => Combine(node, graph, results, expressionContext, trace)
                 };
 
                 continue;
@@ -393,7 +404,19 @@ public sealed class SparqlQueryEngine
             IReadOnlyList<AlgebraOperator> children = node.Children;
             if(children.Count == 0)
             {
-                results[new ResultKey(node, graph)] = await EvaluateLeafAsync(node, graph, cancellationToken).ConfigureAwait(false);
+                SolutionTable leaf = await EvaluateLeafAsync(node, graph, cancellationToken).ConfigureAwait(false);
+                results[new ResultKey(node, graph)] = leaf;
+
+                //The graph-querying leaves carry the only strategy decision worth a trace point; the inline
+                //VALUES / unit / SERVICE leaves are reported by their own surfaces or are not island-relevant.
+                if(node is Bgp)
+                {
+                    trace.Emit(SparqlExecutionOperator.Bgp, leaf, rowsLeft: -1, rowsRight: -1);
+                }
+                else if(node is Path)
+                {
+                    trace.Emit(SparqlExecutionOperator.Path, leaf, rowsLeft: -1, rowsRight: -1);
+                }
             }
             else
             {
@@ -760,9 +783,9 @@ public sealed class SparqlQueryEngine
     /// <param name="results">The map of already-evaluated (operator, graph) keys to their solution sequences.</param>
     /// <param name="context">The seams the expression-gated operators' non-pure functions consume.</param>
     /// <returns>The operator's solution sequence.</returns>
-    private static SolutionTable Combine(AlgebraOperator op, TermId graph, Dictionary<ResultKey, SolutionTable> results, SparqlExpressionContext context)
+    private static SolutionTable Combine(AlgebraOperator op, TermId graph, Dictionary<ResultKey, SolutionTable> results, SparqlExpressionContext context, SparqlExecutionTrace trace)
     {
-        return op switch
+        SolutionTable result = op switch
         {
             //Project / Distinct / Slice / Union stay on the columnar island when their input is columnar (they
             //rearrange encoded-id columns and never decode); the row-only operators bridge through AsRows.
@@ -787,6 +810,39 @@ public sealed class SparqlQueryEngine
             AggregateJoin aggregateJoin => EvaluateAggregateJoin(aggregateJoin, results[new ResultKey(aggregateJoin.Input, graph)], context),
             _ => throw new InvalidOperationException($"Operator '{op.GetType().Name}' has children but no combine rule in the executor.")
         };
+
+        EmitCombineTrace(trace, op, graph, results, result);
+
+        return result;
+    }
+
+    /// <summary>Emits the execution-trace event for a synchronously-combined operator, reading its strategy from the result's backing and its input row shapes from the recorded child results. The structural pass-throughs (REDUCED, ToMultiSet, ToList, Group) carry no strategy decision and are not traced.</summary>
+    /// <param name="trace">The evaluation's trace sink.</param>
+    /// <param name="op">The combined operator.</param>
+    /// <param name="graph">The active graph the operator and its children were evaluated under.</param>
+    /// <param name="results">The recorded per-(operator, graph) results, for reading input row counts.</param>
+    /// <param name="result">The operator's result table.</param>
+    private static void EmitCombineTrace(SparqlExecutionTrace trace, AlgebraOperator op, TermId graph, Dictionary<ResultKey, SolutionTable> results, SolutionTable result)
+    {
+        if(!trace.IsEnabled)
+        {
+            return;
+        }
+
+        int Rows(AlgebraOperator child) => results[new ResultKey(child, graph)].Count;
+
+        switch(op)
+        {
+            case Project project: trace.Emit(SparqlExecutionOperator.Project, result, Rows(project.Input), -1); break;
+            case Distinct distinct: trace.Emit(SparqlExecutionOperator.Distinct, result, Rows(distinct.Input), -1); break;
+            case Slice slice: trace.Emit(SparqlExecutionOperator.Slice, result, Rows(slice.Input), -1); break;
+            case Join join: trace.Emit(SparqlExecutionOperator.Join, result, Rows(join.Left), Rows(join.Right)); break;
+            case Union union: trace.Emit(SparqlExecutionOperator.Union, result, Rows(union.Left), Rows(union.Right)); break;
+            case Minus minus: trace.Emit(SparqlExecutionOperator.Minus, result, Rows(minus.Left), Rows(minus.Right)); break;
+            case OrderBy orderBy: trace.Emit(SparqlExecutionOperator.OrderBy, result, Rows(orderBy.Input), -1); break;
+            case AggregateJoin aggregateJoin: trace.Emit(SparqlExecutionOperator.Aggregate, result, Rows(aggregateJoin.Input), -1); break;
+            default: break;
+        }
     }
 
     /// <summary>Evaluates a basic graph pattern against the active graph: encodes it to the backend, runs the worst-case-optimal join engine over <paramref name="graphStore"/> — through <paramref name="rendezvous"/> when one applies, pinning the store so the engine choice never outruns this snapshot — and decodes each solution.</summary>
@@ -2469,7 +2525,7 @@ public sealed class SparqlQueryEngine
     /// <param name="results">The map of already-evaluated (operator, graph) keys to their solution sequences.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The operator's solution sequence.</returns>
-    private async ValueTask<SolutionTable> CombineExpressionOperatorAsync(AlgebraOperator op, TermId graph, Dictionary<ResultKey, SolutionTable> results, ComputedTermOverlay overlay, CancellationToken cancellationToken)
+    private async ValueTask<SolutionTable> CombineExpressionOperatorAsync(AlgebraOperator op, TermId graph, Dictionary<ResultKey, SolutionTable> results, ComputedTermOverlay overlay, SparqlExecutionTrace trace, CancellationToken cancellationToken)
     {
         switch(op)
         {
@@ -2478,12 +2534,19 @@ public sealed class SparqlQueryEngine
                 //A term-(in)equality against a constant IRI evaluates on the encoded column directly (no decode),
                 //keeping only survivors columnar — the selective FILTER the row path would decode-then-discard.
                 SolutionTable filterInput = results[new ResultKey(filter.Input, graph)];
-                if(filterInput.IsColumnar && TryColumnarTermFilter(filter.Condition, filterInput, out SolutionTable filtered))
+                SolutionTable filtered;
+                if(filterInput.IsColumnar && TryColumnarTermFilter(filter.Condition, filterInput, out SolutionTable columnarFiltered))
                 {
-                    return filtered;
+                    filtered = columnarFiltered;
+                }
+                else
+                {
+                    filtered = SolutionTable.FromRows(await ApplyFilterAsync(filter, filterInput.AsRows(), graph, cancellationToken).ConfigureAwait(false));
                 }
 
-                return SolutionTable.FromRows(await ApplyFilterAsync(filter, filterInput.AsRows(), graph, cancellationToken).ConfigureAwait(false));
+                trace.Emit(SparqlExecutionOperator.Filter, filtered, filterInput.Count, rowsRight: -1);
+
+                return filtered;
             }
 
             case Extend extend:
@@ -2493,12 +2556,19 @@ public sealed class SparqlQueryEngine
                 //values; its result is encoded through the overlay (a data id when the term exists, else a
                 //query-local id). An EXISTS-bearing expression re-enters the engine per row and stays on the row path.
                 SolutionTable extendInput = results[new ResultKey(extend.Input, graph)];
-                if(extendInput.IsColumnar && !ContainsExists(extend.Expression) && TryExtendColumnar(extend, extendInput, overlay, out SolutionTable extended))
+                SolutionTable extended;
+                if(extendInput.IsColumnar && !ContainsExists(extend.Expression) && TryExtendColumnar(extend, extendInput, overlay, out SolutionTable columnarExtended))
                 {
-                    return extended;
+                    extended = columnarExtended;
+                }
+                else
+                {
+                    extended = SolutionTable.FromRows(await ApplyExtendAsync(extend, extendInput.AsRows(), graph, cancellationToken).ConfigureAwait(false));
                 }
 
-                return SolutionTable.FromRows(await ApplyExtendAsync(extend, extendInput.AsRows(), graph, cancellationToken).ConfigureAwait(false));
+                trace.Emit(SparqlExecutionOperator.Extend, extended, extendInput.Count, rowsRight: -1);
+
+                return extended;
             }
 
             case LeftJoin leftJoin:
@@ -2508,12 +2578,19 @@ public sealed class SparqlQueryEngine
                 //and stays on the row path.
                 SolutionTable leftJoinLeft = results[new ResultKey(leftJoin.Left, graph)];
                 SolutionTable leftJoinRight = results[new ResultKey(leftJoin.Right, graph)];
-                if(leftJoin.Condition is null && leftJoinLeft.IsColumnar && leftJoinRight.IsColumnar && ColumnarOperators.TryLeftJoin(leftJoinLeft, leftJoinRight, out SolutionTable leftJoined))
+                SolutionTable leftJoined;
+                if(leftJoin.Condition is null && leftJoinLeft.IsColumnar && leftJoinRight.IsColumnar && ColumnarOperators.TryLeftJoin(leftJoinLeft, leftJoinRight, out SolutionTable columnarLeftJoined))
                 {
-                    return leftJoined;
+                    leftJoined = columnarLeftJoined;
+                }
+                else
+                {
+                    leftJoined = SolutionTable.FromRows(await LeftJoinSolutionsAsync(leftJoinLeft.AsRows(), leftJoinRight.AsRows(), leftJoin.Condition, graph, cancellationToken).ConfigureAwait(false));
                 }
 
-                return SolutionTable.FromRows(await LeftJoinSolutionsAsync(leftJoinLeft.AsRows(), leftJoinRight.AsRows(), leftJoin.Condition, graph, cancellationToken).ConfigureAwait(false));
+                trace.Emit(SparqlExecutionOperator.LeftJoin, leftJoined, leftJoinLeft.Count, leftJoinRight.Count);
+
+                return leftJoined;
             }
 
             default:

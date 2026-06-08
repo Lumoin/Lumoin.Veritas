@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Hypertrie.AccessControl;
 using Lumoin.Veritas.Sparql.Algebra;
 using Lumoin.Veritas.Sparql.Ast;
@@ -209,6 +210,45 @@ internal sealed class SparqlQueryEngineTests
 
         SparqlSolution cityY = solutions.Single(s => ValueIri(s, "city") == Ex + "y");
         Assert.AreEqual("1", Cast<Literal>(Value(cityY, "n")).Value.ToString());
+    }
+
+    /// <summary>The execution trace reports each operator's strategy: a single-pattern BGP feeding DISTINCT runs columnar end to end, and the side channel records both as columnar with their row shapes.</summary>
+    [TestMethod]
+    public async Task ExecutionTraceReportsColumnarOperators()
+    {
+        List<SparqlExecutionTraceEvent> events = [];
+        TraceHandler<SparqlExecutionTraceEvent> handler = (in SparqlExecutionTraceEvent traceEvent) => events.Add(traceEvent);
+        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(
+            [new DataTriple(Iri("a"), Iri("knows"), Iri("b")), new DataTriple(Iri("a"), Iri("knows"), Iri("c"))],
+            executionTrace: handler, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT DISTINCT ?o WHERE { ?s :knows ?o }", pool);
+        _ = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        SparqlExecutionTraceEvent bgp = events.Single(e => e.Operator == SparqlExecutionOperator.Bgp);
+        Assert.AreEqual(SparqlExecutionStrategy.Columnar, bgp.Strategy);
+        SparqlExecutionTraceEvent distinct = events.Single(e => e.Operator == SparqlExecutionOperator.Distinct);
+        Assert.AreEqual(SparqlExecutionStrategy.Columnar, distinct.Strategy);
+        Assert.AreEqual(2, distinct.RowsLeft);
+    }
+
+    /// <summary>A FILTER whose condition is not a term-(in)equality against an IRI bridges to the row form; the execution trace reports that operator's strategy as Row.</summary>
+    [TestMethod]
+    public async Task ExecutionTraceReportsRowBridgeForGeneralFilter()
+    {
+        List<SparqlExecutionTraceEvent> events = [];
+        TraceHandler<SparqlExecutionTraceEvent> handler = (in SparqlExecutionTraceEvent traceEvent) => events.Add(traceEvent);
+        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(
+            [new DataTriple(Iri("a"), Iri("knows"), Iri("b"))],
+            executionTrace: handler, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?s :knows ?o FILTER(isIRI(?o)) }", pool);
+        _ = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        SparqlExecutionTraceEvent filter = events.Single(e => e.Operator == SparqlExecutionOperator.Filter);
+        Assert.AreEqual(SparqlExecutionStrategy.Row, filter.Strategy);
     }
 
     /// <summary>A constant-endpoint SERVICE joins the remote endpoint's solutions (returned through the injected transport) with the surrounding pattern.</summary>
