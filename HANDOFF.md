@@ -12,7 +12,7 @@ in "Next".
 
 ## Current state
 
-- Branch `main`, tree clean at commit **`112716b`** (factorization soak control rungs; `ef037a7` was depth-2 chain factorization, `3a521e0` wired the star into the pipeline, `77249b0` the consume side, `ccbe7f3` the produce side, `08d0db1` the Yannakakis measurement).
+- Branch `main`, tree clean at commit **`31d2a12`** (factorizing star made opt-in; `112716b` added soak control rungs, `ef037a7` was depth-2 chain factorization, `3a521e0` wired the star into the pipeline, `77249b0` the consume side, `ccbe7f3` the produce side, `08d0db1` the Yannakakis measurement).
 - Full suite: **8078 total / 0 failed / 548 skipped** (the +8 over the pre-§4.2 count is the new factorized-join tests; the skip count jitters ±2 with the environment-conditional OWL-entailment `Inconclusive` tests). With `PreferFactorizedStar` default-on, the whole corpus routes every star BGP through the factorizing join as the differential oracle.
 - One unrelated working-tree change persists: `generate-local-test-nuget-packages.ps1` (a sister project's edit excluding the AOT CLI from local packaging) — not mine, left uncommitted on purpose.
 - There are local commits not pushed to origin. **Do not `git push`** without explicit owner approval —
@@ -121,24 +121,25 @@ yet wired into `ColumnarBatchPipeline`**. Shipped in one commit:
   rows and runs ~×0.2–0.7 the speed; the chain needs fan-out on BOTH the independent arm AND the sub-tree
   (one-sided is ×1.0). So this is a **specialized** optimization, not a free win — break-even at star fan≈1.7.
 
-### ⚠ Open decision on §4.2 — the `PreferFactorizedStar` default
+### Decided — factorization is opt-in; strategy selection is a research issue
 
-`PreferFactorizedStar` shipped **default-on** (`3a521e0`), but the measurement above shows a **regression on
-low-fan-out stars** — and the most common real star is the property-table shape (`?s a ?t . ?s label ?l .
-?s name ?n`, ~one value each, fan≈1), exactly the regression case. The corpus stays green (correctness), but
-no-fan stars now pay ~5× time / ~2.5× alloc. Unlike §4.1's semijoin (~3% at no-win, genuinely safe), this
-default is **not** clearly safe. Options to settle before/with the pipeline-wiring step: (a) flip the default
-**off** until a cost model — opt-in for known fan-out workloads; (b) add a **fan-out gate** in the planner so
-only above-break-even shapes route to factorized; (c) leave on, revisit at the cost-model stage. Awaiting
-owner call.
+`PreferFactorizedStar` shipped default-on (`3a521e0`) but the measurement showed it **regresses low-fan-out
+(property-table) stars**. Resolved (`31d2a12`, owner call): **flipped default-off**. Factorization stays a
+built, tested, opt-in technique; **choosing among the join strategies — a cost-based optimizer plus a
+user-force override — is a deferred research issue**, to start once more techniques and self-test code exist.
+The seam already exists in skeleton: `QueryEnginePolicy` (the proto-policy) plus the
+`QueryTraceEventKind.EngineSelected` trace bus ("the feedback an adaptive selection policy learns from"). A
+cheap fan-out estimate is derivable from the columnar index's CSR per-level counts; the measured break-evens
+(`fan²/3`, `(fanA·S)/(fanA+S)`) are the thresholds. Do **not** build the selector ad hoc in the pipeline — it
+is its own increment. (See memory `join-strategy-selection-is-a-future-research-issue`.)
 
-**Next on §4.2:** wire `NestBranch` into `ColumnarBatchPipeline` — detect a chain sub-shape in the plan
-(`AddBranch` returns `null` there today) and route `Join` → `NestBranch` → `Flatten`, with the flatten bridge
-as the corpus-wide oracle — and settle the default/gate question above at the same time (the planner is where
-a fan-out gate would live). Then deeper (depth-3+) factorization — today `NestBranch` returns `null` on an
-already-nested input, so a four-pattern chain only factorizes its first three joins; lifting that needs the
-nested-path flatten to handle arbitrary depth via an explicit stack rather than the single-level sub-batch
-shortcut. Keep the hot path concrete.
+**Next on §4.2 — keep building the opt-in technique catalog:** wire `NestBranch` into `ColumnarBatchPipeline`
+as an opt-in route mirroring the star — detect a chain sub-shape in the plan (`AddBranch` returns `null`
+there today), route `Join` → `NestBranch` → `Flatten` behind a new `PreferFactorizedChain` flag (**default
+off**, like the star), with a pipeline-level differential test as the oracle. Then depth-3+ factorization —
+today `NestBranch` returns `null` on an already-nested input, so a four-pattern chain only factorizes its
+leading joins; lifting that needs the nested-path flatten to handle arbitrary depth via an explicit stack
+rather than the single-level sub-batch shortcut. Keep the hot path concrete.
 
 ## Recently shipped — Yannakakis semijoin reduction (roadmap item §4.1)
 
