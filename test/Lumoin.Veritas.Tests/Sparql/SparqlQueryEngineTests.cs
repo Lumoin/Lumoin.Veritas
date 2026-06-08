@@ -141,6 +141,35 @@ internal sealed class SparqlQueryEngineTests
         Assert.Contains(Ex + "d", values);
     }
 
+    /// <summary>A columnar <c>ORDER BY ?var</c> orders the rows by the key column's term order, decoding only that key column to compare.</summary>
+    [TestMethod]
+    public async Task ColumnarOrderByVariableOrdersRows()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(("a", "knows", "c"), ("a", "knows", "b"), ("a", "knows", "d")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?o WHERE { ?s :knows ?o } ORDER BY ?o", pool);
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //IRIs order by their string, so b < c < d.
+        string[] ordered = [.. solutions.Select(s => ValueIri(s, "o"))];
+        CollectionAssert.AreEqual(new[] { Ex + "b", Ex + "c", Ex + "d" }, ordered);
+    }
+
+    /// <summary>A columnar <c>ORDER BY DESC(?var)</c> followed by <c>LIMIT</c> orders descending and keeps the window — the survivors decode after the sort and slice.</summary>
+    [TestMethod]
+    public async Task ColumnarOrderByDescendingThenLimit()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(("a", "knows", "c"), ("a", "knows", "b"), ("a", "knows", "d")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?o WHERE { ?s :knows ?o } ORDER BY DESC(?o) LIMIT 2", pool);
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        string[] ordered = [.. solutions.Select(s => ValueIri(s, "o"))];
+        CollectionAssert.AreEqual(new[] { Ex + "d", Ex + "c" }, ordered);
+    }
+
     /// <summary>A constant-endpoint SERVICE joins the remote endpoint's solutions (returned through the injected transport) with the surrounding pattern.</summary>
     [TestMethod]
     public async Task ServiceJoinsRemoteSolutions()

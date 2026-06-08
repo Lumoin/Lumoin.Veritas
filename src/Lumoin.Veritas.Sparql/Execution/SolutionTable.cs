@@ -170,18 +170,34 @@ internal sealed class SolutionTable
         List<SparqlBinding> bindings = new(schema!.Count);
         for(int column = 0; column < schema.Count; column++)
         {
-            uint encoded = columns![column][row];
-            if(encoded != 0)
+            if(DecodeCell(column, row) is RdfTerm term)
             {
-                //A computed term carries the overlay's reserved id bit and resolves there; a data id resolves
-                //through the dictionary. The two id ranges never overlap, so the decode is unambiguous.
-                RdfTerm term = overlay is not null && ComputedTermOverlay.IsOverlay(encoded)
-                    ? overlay.Resolve(encoded)
-                    : dictionary!.Resolve(TermId.FromEncoded(encoded));
                 bindings.Add(new SparqlBinding(schema[column], term));
             }
         }
 
         return new SparqlSolution(bindings);
+    }
+
+    /// <summary>
+    /// Decodes one cell to its RDF term, or <see langword="null"/> when the cell is unbound (<c>0</c>). A computed
+    /// term (the overlay's reserved id bit set) resolves through the overlay, a data id through the dictionary; the
+    /// two id ranges never overlap. Only valid when <see cref="IsColumnar"/>. Lets an operator decode just the
+    /// columns it needs (an <c>ORDER BY</c> key) rather than the whole row.
+    /// </summary>
+    /// <param name="schemaIndex">The variable's position in <see cref="Schema"/>.</param>
+    /// <param name="row">The row index; below <see cref="Count"/>.</param>
+    /// <returns>The cell's term, or <see langword="null"/> when unbound.</returns>
+    public RdfTerm? DecodeCell(int schemaIndex, int row)
+    {
+        uint encoded = columns![schemaIndex][row];
+        if(encoded == 0)
+        {
+            return null;
+        }
+
+        return overlay is not null && ComputedTermOverlay.IsOverlay(encoded)
+            ? overlay.Resolve(encoded)
+            : dictionary!.Resolve(TermId.FromEncoded(encoded));
     }
 }

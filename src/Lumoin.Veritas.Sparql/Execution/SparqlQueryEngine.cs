@@ -775,7 +775,7 @@ public sealed class SparqlQueryEngine
             Join join => JoinSolutions(results[new ResultKey(join.Left, graph)], results[new ResultKey(join.Right, graph)]),
             Union union => UnionSolutions(results[new ResultKey(union.Left, graph)], results[new ResultKey(union.Right, graph)]),
             Minus minus => SolutionTable.FromRows(MinusSolutions(results[new ResultKey(minus.Left, graph)].AsRows(), results[new ResultKey(minus.Right, graph)].AsRows())),
-            OrderBy orderBy => SolutionTable.FromRows(ApplyOrderBy(orderBy, results[new ResultKey(orderBy.Input, graph)].AsRows(), context)),
+            OrderBy orderBy => OrderBySolutions(orderBy, results[new ResultKey(orderBy.Input, graph)], context),
 
             //ToMultiSet / ToList are multiset / sequence conversions; with no ORDER BY in scope they pass through.
             ToMultiSet toMultiSet => results[new ResultKey(toMultiSet.Input, graph)],
@@ -1731,6 +1731,125 @@ public sealed class SparqlQueryEngine
         }
 
         return [.. windowed];
+    }
+
+    /// <summary>
+    /// Orders a result table by the <c>ORDER BY</c> conditions (§15.1). When the input is columnar and every
+    /// condition keys on a plain variable, it stays columnar — only the key columns are decoded (for the typed
+    /// compare), the rows are permuted, and the columns are gathered in that order, so a following <c>LIMIT</c>
+    /// decodes only the surviving rows; otherwise it bridges to the row form.
+    /// </summary>
+    /// <param name="orderBy">The order operator.</param>
+    /// <param name="input">The input table.</param>
+    /// <param name="context">The seams the order expressions' non-pure functions consume.</param>
+    /// <returns>The ordered table.</returns>
+    private static SolutionTable OrderBySolutions(OrderBy orderBy, SolutionTable input, SparqlExpressionContext context)
+    {
+        return input.IsColumnar && TryOrderByColumnar(orderBy, input, out SolutionTable ordered)
+            ? ordered
+            : SolutionTable.FromRows(ApplyOrderBy(orderBy, input.AsRows(), context));
+    }
+
+    /// <summary>
+    /// Orders a columnar table when every <c>ORDER BY</c> condition keys on a plain variable: it decodes just those
+    /// key columns to typed values, sorts the row indices by the conditions in priority order (each ascending or
+    /// descending, ties stable on the original index), and gathers every column in that order. Declines (returns
+    /// <see langword="false"/>) when any condition is a non-variable expression, leaving the caller to bridge to
+    /// the row form. No non-key column is decoded.
+    /// </summary>
+    /// <param name="orderBy">The order operator.</param>
+    /// <param name="input">The columnar input table.</param>
+    /// <param name="result">Receives the ordered columnar table when the columnar path applies.</param>
+    /// <returns><see langword="true"/> when ordered columnar; otherwise <see langword="false"/>.</returns>
+    private static bool TryOrderByColumnar(OrderBy orderBy, SolutionTable input, out SolutionTable result)
+    {
+        result = SolutionTable.Empty;
+
+        //Each condition must key on a plain variable; a computed key (?x + ?y, STR(?x), ...) needs per-row
+        //expression evaluation and stays on the row path.
+        int conditionCount = orderBy.Conditions.Count;
+        bool[] descending = new bool[conditionCount];
+        RdfTerm?[][] keys = new RdfTerm?[conditionCount][];
+        IReadOnlyList<SparqlVariable> schema = input.Schema;
+        for(int condition = 0; condition < conditionCount; condition++)
+        {
+            (ExpressionNode expression, bool isDescending) = orderBy.Conditions[condition] switch
+            {
+                OrderAscending ascending => (ascending.Expression, false),
+                OrderDescending descend => (descend.Expression, true),
+                _ => (null!, false)
+            };
+
+            if(expression is not VariableExpression variable)
+            {
+                return false;
+            }
+
+            descending[condition] = isDescending;
+
+            //The key column's decoded values (a variable absent from the schema is unbound in every row, which
+            //orders as the unbound category — equal across all rows, so the stable index tiebreak carries them).
+            RdfTerm?[] keyColumn = new RdfTerm?[input.Count];
+            int columnIndex = -1;
+            for(int i = 0; i < schema.Count; i++)
+            {
+                if(schema[i] == variable.Variable)
+                {
+                    columnIndex = i;
+
+                    break;
+                }
+            }
+
+            if(columnIndex >= 0)
+            {
+                for(int row = 0; row < input.Count; row++)
+                {
+                    keyColumn[row] = input.DecodeCell(columnIndex, row);
+                }
+            }
+
+            keys[condition] = keyColumn;
+        }
+
+        int[] order = new int[input.Count];
+        for(int i = 0; i < order.Length; i++)
+        {
+            order[i] = i;
+        }
+
+        Array.Sort(order, (left, right) =>
+        {
+            for(int condition = 0; condition < conditionCount; condition++)
+            {
+                int comparison = SparqlExpressionEvaluator.CompareForOrdering(keys[condition][left], keys[condition][right]);
+                if(comparison != 0)
+                {
+                    return descending[condition] ? -comparison : comparison;
+                }
+            }
+
+            //A stable tiebreak on the original index keeps ordering deterministic where every key is equal.
+            return left.CompareTo(right);
+        });
+
+        int columnCount = schema.Count;
+        uint[][] orderedColumns = new uint[columnCount][];
+        for(int column = 0; column < columnCount; column++)
+        {
+            uint[] source = input.ColumnArray(column);
+            uint[] target = new uint[order.Length];
+            for(int i = 0; i < order.Length; i++)
+            {
+                target[i] = source[order[i]];
+            }
+
+            orderedColumns[column] = target;
+        }
+
+        result = SolutionTable.Columnar(schema, orderedColumns, input.Count, input.Dictionary, input.Overlay);
+
+        return true;
     }
 
     /// <summary>Orders the solution sequence by the <c>ORDER BY</c> conditions (§15.1), each ascending or descending; ties keep input order (a stable sort by original index).</summary>
