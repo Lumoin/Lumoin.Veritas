@@ -784,7 +784,7 @@ public sealed class SparqlQueryEngine
             //Group leaves the multiset unchanged here; the partitioning into groups happens in the AggregateJoin
             //that wraps it (which reads the Group's keys directly).
             Group group => results[new ResultKey(group.Input, graph)],
-            AggregateJoin aggregateJoin => SolutionTable.FromRows(EvaluateAggregateJoin(aggregateJoin, results[new ResultKey(aggregateJoin.Input, graph)].AsRows(), context)),
+            AggregateJoin aggregateJoin => EvaluateAggregateJoin(aggregateJoin, results[new ResultKey(aggregateJoin.Input, graph)], context),
             _ => throw new InvalidOperationException($"Operator '{op.GetType().Name}' has children but no combine rule in the executor.")
         };
     }
@@ -2818,19 +2818,23 @@ public sealed class SparqlQueryEngine
     }
 
     /// <summary>
-    /// Evaluates an <c>AggregateJoin</c> (§18.5): partitions the input solutions into groups by the wrapped
-    /// <see cref="Group"/>'s keys, then emits one solution per group binding the named grouping keys and each
-    /// aggregate's per-group result. An empty <c>GROUP BY</c> (implicit grouping) always yields exactly one group,
-    /// even over no input solutions, so <c>COUNT(*)</c> over an empty pattern is 0.
+    /// Evaluates an <c>AggregateJoin</c> (§18.5): partitions the input into groups by the wrapped <see cref="Group"/>'s
+    /// keys, then emits one solution per group binding the named grouping keys and each aggregate's per-group result.
+    /// When the input is columnar and every grouping key is a plain variable (one or two of them), the partition runs
+    /// on the encoded key columns in one hash pass; otherwise it bridges to the row partition. An empty <c>GROUP BY</c>
+    /// (implicit grouping) always yields exactly one group, even over no input, so <c>COUNT(*)</c> over an empty
+    /// pattern is 0. The aggregate fold itself decodes each group's members (its math is over RDF terms).
     /// </summary>
     /// <param name="aggregateJoin">The aggregate-join operator (its input is the grouping operator).</param>
-    /// <param name="input">The grouped operand's solutions (the Group passthrough).</param>
+    /// <param name="input">The grouped operand's table (the Group passthrough).</param>
     /// <param name="context">The seams the grouping-key and aggregate expressions' non-pure functions consume.</param>
     /// <returns>One solution per group.</returns>
-    private static List<SparqlSolution> EvaluateAggregateJoin(AggregateJoin aggregateJoin, IReadOnlyList<SparqlSolution> input, SparqlExpressionContext context)
+    private static SolutionTable EvaluateAggregateJoin(AggregateJoin aggregateJoin, SolutionTable input, SparqlExpressionContext context)
     {
         IReadOnlyList<GroupCondition> keys = aggregateJoin.Input is Group group ? group.Keys : [];
-        List<AggregateGroup> groups = Partition(keys, input, context);
+        List<AggregateGroup> groups = input.IsColumnar && TryPartitionColumnar(keys, input, out List<AggregateGroup> columnarGroups)
+            ? columnarGroups
+            : Partition(keys, input.AsRows(), context);
 
         //Implicit grouping (no keys) is always a single group, even with no input rows.
         if(keys.Count == 0 && groups.Count == 0)
@@ -2853,7 +2857,102 @@ public sealed class SparqlQueryEngine
             result.Add(new SparqlSolution(bindings));
         }
 
-        return result;
+        return SolutionTable.FromRows(result);
+    }
+
+    /// <summary>
+    /// Partitions a columnar table into aggregate groups by the grouping keys in one hash pass over the encoded key
+    /// columns — O(n), against the row partition's O(n · groups) scan — keeping first-appearance group order. Each
+    /// group's members are decoded for the aggregate fold (its math is over RDF terms). Applies only when every key
+    /// is a plain variable and there are at most two of them (the packed-key width); returns <see langword="false"/>
+    /// otherwise, leaving the caller to bridge to the row partition.
+    /// </summary>
+    /// <param name="keys">The grouping conditions.</param>
+    /// <param name="input">The columnar input table.</param>
+    /// <param name="groups">Receives the groups (first-appearance order) when the columnar partition applies.</param>
+    /// <returns><see langword="true"/> when partitioned columnar; otherwise <see langword="false"/>.</returns>
+    private static bool TryPartitionColumnar(IReadOnlyList<GroupCondition> keys, SolutionTable input, out List<AggregateGroup> groups)
+    {
+        groups = [];
+        if(keys.Count > 2)
+        {
+            return false;
+        }
+
+        IReadOnlyList<SparqlVariable> schema = input.Schema;
+        SparqlVariable[] keyVariables = new SparqlVariable[keys.Count];
+        int[] keyColumns = new int[keys.Count];
+        for(int i = 0; i < keys.Count; i++)
+        {
+            if(keys[i] is not GroupVariable groupVariable)
+            {
+                return false;
+            }
+
+            keyVariables[i] = groupVariable.Variable;
+            keyColumns[i] = -1;
+            for(int column = 0; column < schema.Count; column++)
+            {
+                if(schema[column] == groupVariable.Variable)
+                {
+                    keyColumns[i] = column;
+
+                    break;
+                }
+            }
+        }
+
+        Dictionary<ulong, AggregateGroup> byKey = new(input.Count);
+        for(int row = 0; row < input.Count; row++)
+        {
+            ulong key = PackGroupKey(input, keyColumns, row);
+            if(!byKey.TryGetValue(key, out AggregateGroup? aggregateGroup))
+            {
+                //First sight of this key: capture the named-key bindings from this row (every member shares them).
+                RdfTerm?[] keyValues = new RdfTerm?[keys.Count];
+                List<SparqlBinding> namedKeys = [];
+                for(int i = 0; i < keys.Count; i++)
+                {
+                    RdfTerm? value = keyColumns[i] < 0 ? null : input.DecodeCell(keyColumns[i], row);
+                    keyValues[i] = value;
+                    if(value is RdfTerm term)
+                    {
+                        namedKeys.Add(new SparqlBinding(keyVariables[i], term));
+                    }
+                }
+
+                aggregateGroup = new AggregateGroup(keyValues, namedKeys);
+                byKey[key] = aggregateGroup;
+                groups.Add(aggregateGroup);
+            }
+
+            aggregateGroup.Members.Add(input.DecodeRow(row));
+        }
+
+        return true;
+    }
+
+    /// <summary>Packs a row's one or two grouping-key encoded ids into a key (an absent key variable, or an unbound cell, contributes <c>0</c>; the two id ranges are a faithful 64-bit composite, so distinct key tuples never collide). No keys packs to <c>0</c> — the single implicit group.</summary>
+    /// <param name="input">The columnar table.</param>
+    /// <param name="keyColumns">The grouping-key column indices (<c>-1</c> for a variable absent from the schema).</param>
+    /// <param name="row">The row index.</param>
+    /// <returns>The packed grouping key.</returns>
+    private static ulong PackGroupKey(SolutionTable input, int[] keyColumns, int row)
+    {
+        if(keyColumns.Length == 0)
+        {
+            return 0;
+        }
+
+        ulong first = keyColumns[0] < 0 ? 0u : input.ColumnArray(keyColumns[0])[row];
+        if(keyColumns.Length == 1)
+        {
+            return first << 32;
+        }
+
+        ulong second = keyColumns[1] < 0 ? 0u : input.ColumnArray(keyColumns[1])[row];
+
+        return (first << 32) | second;
     }
 
     /// <summary>Partitions solutions into groups by their grouping-key values, preserving first-appearance order of groups.</summary>

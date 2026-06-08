@@ -193,6 +193,24 @@ internal sealed class SparqlQueryEngineTests
         Assert.IsFalse(unmatched.TryGetValue(Variable("n"), out _));
     }
 
+    /// <summary>A <c>GROUP BY ?var</c> over a columnar pattern partitions on the key column and counts each group, binding the group key and the per-group aggregate.</summary>
+    [TestMethod]
+    public async Task ColumnarGroupByCountsPerGroup()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(("a", "livesIn", "x"), ("b", "livesIn", "x"), ("c", "livesIn", "y")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT ?city (COUNT(?s) AS ?n) WHERE { ?s :livesIn ?city } GROUP BY ?city", pool);
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(2, solutions);
+        SparqlSolution cityX = solutions.Single(s => ValueIri(s, "city") == Ex + "x");
+        Assert.AreEqual("2", Cast<Literal>(Value(cityX, "n")).Value.ToString());
+
+        SparqlSolution cityY = solutions.Single(s => ValueIri(s, "city") == Ex + "y");
+        Assert.AreEqual("1", Cast<Literal>(Value(cityY, "n")).Value.ToString());
+    }
+
     /// <summary>A constant-endpoint SERVICE joins the remote endpoint's solutions (returned through the injected transport) with the surrounding pattern.</summary>
     [TestMethod]
     public async Task ServiceJoinsRemoteSolutions()
