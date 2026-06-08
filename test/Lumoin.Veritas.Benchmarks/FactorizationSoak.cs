@@ -46,13 +46,24 @@ internal static class FactorizationSoak
         //The consume side: a three-arm star where the factorised form is
         //carried across both joins (Join then AddBranch) without ever
         //flattening the cubic intermediate the flat pipeline must materialise.
+        //Compression is fan²/3 (stored 3·fan vs flat fan³), so fan=1 is the
+        //no-win control where the factorised form is strictly larger, fan=2
+        //sits just past break-even, and the win grows fast from there.
+        RunStarConfiguration(subjects: 2_000, fan: 1);
+        RunStarConfiguration(subjects: 1_000, fan: 2);
         RunStarConfiguration(subjects: 200, fan: 20);
         RunStarConfiguration(subjects: 100, fan: 30);
 
         //Multi-level: a chain ?a p1 ?x . ?x p2 ?b . ?b p3 ?c where the ?a arm
         //is independent of the (?b,?c) sub-tree given ?x, so nesting the ?b
         //branch keeps the intermediate factorised across the branch-variable
-        //join the flat pipeline would have to materialise.
+        //join the flat pipeline would have to materialise. Compression is
+        //(fanA·S)/(fanA+S) with S=fanB·fanC, so it needs fan-out on BOTH the
+        //independent arm AND the sub-tree: all-ones is the no-win control,
+        //either side alone barely wins, both together wins big.
+        RunChainConfiguration(hubs: 2_000, fanA: 1, fanB: 1, fanC: 1);
+        RunChainConfiguration(hubs: 500, fanA: 30, fanB: 1, fanC: 1);
+        RunChainConfiguration(hubs: 500, fanA: 1, fanB: 15, fanC: 6);
         RunChainConfiguration(hubs: 400, fanA: 30, fanB: 15, fanC: 6);
         RunChainConfiguration(hubs: 300, fanA: 40, fanB: 20, fanC: 5);
     }
