@@ -12,8 +12,9 @@ in "Next".
 
 ## Current state
 
-- Branch `main`, tree clean at commit **`3a521e0`** (factorized star wired into the pipeline; `77249b0` was the consume side, `ccbe7f3` the produce side, `d4daefe` added this file, `08d0db1` the Yannakakis measurement).
-- Full suite: **8076 total / 0 failed / 548 skipped** (the +6 over the pre-§4.2 count is the new factorized-join tests; the skip count jitters ±2 with the environment-conditional OWL-entailment `Inconclusive` tests). With `PreferFactorizedStar` default-on, the whole corpus routes every star BGP through the factorizing join as the differential oracle.
+- Branch `main`, tree clean at commit **`ef037a7`** (depth-2 chain factorization; `3a521e0` wired the star into the pipeline, `77249b0` the consume side, `ccbe7f3` the produce side, `d4daefe` added this file, `08d0db1` the Yannakakis measurement).
+- Full suite: **8078 total / 0 failed / 548 skipped** (the +8 over the pre-§4.2 count is the new factorized-join tests; the skip count jitters ±2 with the environment-conditional OWL-entailment `Inconclusive` tests). With `PreferFactorizedStar` default-on, the whole corpus routes every star BGP through the factorizing join as the differential oracle.
+- One unrelated working-tree change persists: `generate-local-test-nuget-packages.ps1` (a sister project's edit excluding the AOT CLI from local packaging) — not mine, left uncommitted on purpose.
 - There are local commits not pushed to origin. **Do not `git push`** without explicit owner approval —
   pushing triggers paid CI and the budget is exhausted. Commit locally; validate with the full local
   suite instead.
@@ -104,12 +105,22 @@ yet wired into `ColumnarBatchPipeline`**. Shipped in one commit:
   it, **on by default**; `QueryEngineRendezvous` passes it through both batched entry points. Answer-identical,
   so the whole conformance corpus is the oracle (full suite 8076 green).
 
-**Next on §4.2:** **multi-level factorization** — factorize a branch's own tuples under a variable order so a
-*chain* join factorizes too, not just a star. Today `AddBranch` returns `null` on a branch-variable join
-(the chain case `?a p1 ?x . ?x p2 ?b . ?b p3 ?c`), so a chain falls back to the flat/streamed pipeline; the
-center variable of the next join sits inside a branch, which needs the branch to be grouped (a second
-factorization level) before it can be joined without flattening. That is the deeper representation change
-the tier was aiming at. Keep the hot path concrete — no interface over the batch types.
+- **`ef037a7` — multi-level (depth-2) factorization:** a chain factorizes when the next join's variable
+  lives inside a branch, not the group key. `FactorizedGroup` gains an optional parallel `NestedBranches`
+  array — a branch may be a nested single-level `FactorizedBatch`; `FactorizedBatch.HasNestedBranches`
+  (decided once at construction) routes `Flatten` to the flat odometer or a nested path that materialises
+  each nested sub-batch's rows before the cross product (no recursion — the depth-2 guarantee keeps the
+  sub-batch single-level). `FactorizedBatchJoin.NestBranch(left, branchVariable, probe, probeSchema)`
+  regroups the branch binding `branchVariable` into a sub-batch keyed on it, attaching the probe's per-value
+  matches; returns `null` outside the step (already nested, not a single-column branch, or a wider join).
+  Chain soak: **×22–28 compression, ×2.3–5.7 time, ×7.8–8.5 alloc** vs the flat streamed chain. Standalone.
+
+**Next on §4.2:** wire `NestBranch` into `ColumnarBatchPipeline` — detect a chain sub-shape in the plan
+(`AddBranch` returns `null` there today) and route `Join` → `NestBranch` → `Flatten`, behind the same
+`PreferFactorizedStar` flag or a sibling, with the flatten bridge as the corpus-wide oracle. Then deeper
+(depth-3+) factorization — today `NestBranch` returns `null` on an already-nested input, so a four-pattern
+chain only factorizes its first three joins; lifting that needs the nested-path flatten to handle arbitrary
+depth via an explicit stack rather than the single-level sub-batch shortcut. Keep the hot path concrete.
 
 ## Recently shipped — Yannakakis semijoin reduction (roadmap item §4.1)
 
@@ -177,16 +188,17 @@ joins compress (and sometimes never materialize). More fundamental than late mat
 the intermediate *representation*, not just when decode happens. Gated on the columnar substrate, which is
 in place.
 
-**Shipped (`ccbe7f3` produce, `77249b0` consume, `3a521e0` pipeline; see Recently shipped):** the
-`FactorizedBatch` representation, the flatten-to-`SolutionBatch` oracle, `FactorizedBatchJoin.Join` (×20–30 on
-a fan-out join), `FactorizedBatchJoin.AddBranch` carrying the form across a key-preserving (star) join
-(×133–300 on a 3-arm star), and the pipeline route — `TryPlan` detects a star, `Run` evaluates it through
-`Join` + `AddBranch` + `Flatten`, gated by `PreferFactorizedStar` (default-on, corpus is the oracle).
+**Shipped (`ccbe7f3` produce, `77249b0` consume, `3a521e0` pipeline, `ef037a7` depth-2; see Recently
+shipped):** the `FactorizedBatch` representation + flatten oracle, `Join` (×20–30 on a fan-out join),
+`AddBranch` carrying the form across a key-preserving star (×133–300 on a 3-arm star), the pipeline star
+route gated by `PreferFactorizedStar` (default-on, corpus is the oracle), and `NestBranch` — depth-2 nesting
+that factorizes a *chain* join on a branch variable (×22–28 on a fan-out chain). `NestBranch` is standalone,
+not yet pipeline-wired.
 
-**Remaining:** multi-level factorization (factorize a branch's own tuples under a variable order) so a
-*chain* join factorizes too, not just a star — `AddBranch` returns `null` on a branch-variable join today
-and the chain falls back to the flat/streamed pipeline. Keep the hot path concrete (a concrete factorized
-type, not an interface), per the substrate design rule above.
+**Remaining:** wire `NestBranch` into the pipeline (detect a chain, route `Join` → `NestBranch` → `Flatten`);
+then depth-3+ factorization — `NestBranch` returns `null` on an already-nested input today, so deeper chains
+only factorize their leading joins, and lifting that needs the nested flatten to handle arbitrary depth via
+an explicit stack. Keep the hot path concrete (a concrete factorized type, not an interface).
 
 ### §4.3 — Free Join hybrid
 
