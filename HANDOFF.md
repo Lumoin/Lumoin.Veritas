@@ -12,8 +12,8 @@ in "Next".
 
 ## Current state
 
-- Branch `main`, tree clean at commit **`b3308cf`** (chain pipeline route, opt-in; `31d2a12` made the star opt-in, `112716b` added soak control rungs, `ef037a7` was depth-2 chain factorization, `3a521e0` wired the star into the pipeline, `77249b0` the consume side, `ccbe7f3` the produce side, `08d0db1` the Yannakakis measurement).
-- Full suite: **8078 total / 0 failed / 548 skipped** (the +8 over the pre-§4.2 count is the new factorized-join tests; the skip count jitters ±2 with the environment-conditional OWL-entailment `Inconclusive` tests). With `PreferFactorizedStar` default-on, the whole corpus routes every star BGP through the factorizing join as the differential oracle.
+- Branch `main`, tree clean at commit **`3ff1f61`** (open-addressed join table + measurement; `b3308cf` chain pipeline route, `31d2a12` made the star opt-in, `ef037a7` depth-2 chain factorization, `3a521e0` wired the star into the pipeline, `77249b0`/`ccbe7f3` consume/produce sides, `08d0db1` the Yannakakis measurement).
+- Full suite: **8083 total / 0 failed / 548 skipped** (the new factorized-join + open-addressed-table tests over the pre-§4.2 count; the skip count jitters ±2 with the environment-conditional OWL-entailment `Inconclusive` tests). Factorization is opt-in (default-off): the corpus routes stars/chains through the streamed path by default.
 - One unrelated working-tree change persists: `generate-local-test-nuget-packages.ps1` (a sister project's edit excluding the AOT CLI from local packaging) — not mine, left uncommitted on purpose.
 - There are local commits not pushed to origin. **Do not `git push`** without explicit owner approval —
   pushing triggers paid CI and the budget is exhausted. Commit locally; validate with the full local
@@ -215,17 +215,17 @@ joins compress (and sometimes never materialize). More fundamental than late mat
 the intermediate *representation*, not just when decode happens. Gated on the columnar substrate, which is
 in place.
 
-**Shipped (`ccbe7f3` produce, `77249b0` consume, `3a521e0` pipeline, `ef037a7` depth-2; see Recently
-shipped):** the `FactorizedBatch` representation + flatten oracle, `Join` (×20–30 on a fan-out join),
-`AddBranch` carrying the form across a key-preserving star (×133–300 on a 3-arm star), the pipeline star
-route gated by `PreferFactorizedStar` (default-on, corpus is the oracle), and `NestBranch` — depth-2 nesting
-that factorizes a *chain* join on a branch variable (×22–28 on a fan-out chain). `NestBranch` is standalone,
-not yet pipeline-wired.
+**Shipped (`ccbe7f3` produce, `77249b0` consume, `3a521e0` pipeline-star, `ef037a7` depth-2 chain,
+`b3308cf` pipeline-chain; see Recently shipped):** the `FactorizedBatch` representation + flatten oracle,
+`Join` (×20–30 fan-out join), `AddBranch` (star, ×133–300), `NestBranch` (depth-2 chain, ×22–28), and both
+pipeline routes gated by `PreferFactorizedStar` / `PreferFactorizedChain` — **both default-off** (factorization
+is specialised: it regresses low-fan-out shapes, so engaging it per shape is the deferred selector research
+issue, memory `join-strategy-selection-is-a-future-research-issue`).
 
-**Remaining:** wire `NestBranch` into the pipeline (detect a chain, route `Join` → `NestBranch` → `Flatten`);
-then depth-3+ factorization — `NestBranch` returns `null` on an already-nested input today, so deeper chains
-only factorize their leading joins, and lifting that needs the nested flatten to handle arbitrary depth via
-an explicit stack. Keep the hot path concrete (a concrete factorized type, not an interface).
+**Remaining:** depth-3+ factorization — `NestBranch` returns `null` on an already-nested input, so deeper
+chains factorize only their leading joins; lifting that needs the nested flatten to handle arbitrary depth
+via an explicit stack and `NestBranch` to descend into a nested branch (a recursion-shaped tree transform,
+written iteratively). Narrow payoff — weigh against §4.3. Keep the hot path concrete.
 
 ### §4.3 — Free Join hybrid
 
@@ -239,8 +239,17 @@ the largest item and depends on the factorized representation being in place.
   distributed HyperCube/shuffle joins); local ephemeral join tables stay on the randomized default hash.
   Lands when distribution work starts; decoupled from the tier.
 - A radix-partitioned / open-addressing (Swiss-table) join-table swap behind the existing concrete index
-  APIs — profile-gated, constant-factor (~1.5–3× estimate), with the standard library `Dictionary` kept as
-  the differential oracle.
+  APIs, with `Dictionary` kept as the differential oracle. **First cut measured (`3ff1f61`,
+  `--profile-jointable`):** `Collections/OpenAddressedTable<TValue>` (reusable ulong-keyed open-addressed
+  table) + `OpenAddressedBatchHashTable` over it. The ~1.5–3× estimate did **not** hold — with a realistic
+  shuffled probe (probing in insertion order falsely prefetched the chained entries, a 14× artifact) the
+  result is: probe **parity** (×0.94–1.20, open ahead when cache-resident), open allocates ~2× **less** and
+  is more compact (18–34 B/key), but open **build** is slower (×0.30–0.65, incremental rehash). A
+  memory/probe-parity win paid for by build cost — a per-workload trade for the selector, not a clean swap.
+  Kept as a tested primitive + characterization soak; **not wired into `SolutionBatchJoin`**. A real probe
+  win would need the SIMD control-group scan / lower load factor of a full Swiss-table; build is improvable
+  by pre-sizing. The `OpenAddressedTable<TValue>` primitive is reusable for the other ulong-keyed maps
+  (semijoin set, factorization buckets).
 
 ---
 
