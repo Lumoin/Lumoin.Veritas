@@ -2503,7 +2503,17 @@ public sealed class SparqlQueryEngine
 
             case LeftJoin leftJoin:
             {
-                return SolutionTable.FromRows(await LeftJoinSolutionsAsync(results[new ResultKey(leftJoin.Left, graph)].AsRows(), results[new ResultKey(leftJoin.Right, graph)].AsRows(), leftJoin.Condition, graph, cancellationToken).ConfigureAwait(false));
+                //A condition-free OPTIONAL over two columnar tables stays columnar (the outer join over encoded
+                //key columns). An OPTIONAL carrying a lifted inner FILTER evaluates that condition per merged row
+                //and stays on the row path.
+                SolutionTable leftJoinLeft = results[new ResultKey(leftJoin.Left, graph)];
+                SolutionTable leftJoinRight = results[new ResultKey(leftJoin.Right, graph)];
+                if(leftJoin.Condition is null && leftJoinLeft.IsColumnar && leftJoinRight.IsColumnar && ColumnarOperators.TryLeftJoin(leftJoinLeft, leftJoinRight, out SolutionTable leftJoined))
+                {
+                    return leftJoined;
+                }
+
+                return SolutionTable.FromRows(await LeftJoinSolutionsAsync(leftJoinLeft.AsRows(), leftJoinRight.AsRows(), leftJoin.Condition, graph, cancellationToken).ConfigureAwait(false));
             }
 
             default:

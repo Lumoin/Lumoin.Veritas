@@ -145,6 +145,26 @@ internal sealed class ColumnarOperatorsTests
         Assert.AreEqual(0, filtered.Count);
     }
 
+    /// <summary>The condition-free LEFT JOIN extends each left row by its compatible right rows and carries an unmatched left row with the right-only columns unbound.</summary>
+    [TestMethod]
+    public void LeftJoinExtendsMatchesAndCarriesUnmatched()
+    {
+        SolutionTable left = Columnar(["a", "b"], [["a1", "b1"], ["a2", "b2"]]);
+        SolutionTable right = Columnar(["b", "c"], [["b1", "c1"], ["b1", "c2"], ["b9", "c9"]]);
+
+        Assert.IsTrue(ColumnarOperators.TryLeftJoin(left, right, out SolutionTable result));
+
+        //(a1,b1) matches right ?b=b1 twice; (a2,b2) has no match → carried with ?c unbound (decoded row omits ?c).
+        CollectionAssert.AreEquivalent(
+            new List<string>
+            {
+                RowKey([("a", "a1"), ("b", "b1"), ("c", "c1")]),
+                RowKey([("a", "a1"), ("b", "b1"), ("c", "c2")]),
+                RowKey([("a", "a2"), ("b", "b2")]),
+            },
+            Rows(result));
+    }
+
     /// <summary>MINUS removes the left rows whose shared-variable key matches a right row, keeping the rest.</summary>
     [TestMethod]
     public void MinusRemovesRowsWithMatchingSharedKey()

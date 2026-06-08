@@ -170,6 +170,29 @@ internal sealed class SparqlQueryEngineTests
         CollectionAssert.AreEqual(new[] { Ex + "d", Ex + "c" }, ordered);
     }
 
+    /// <summary>A condition-free <c>OPTIONAL</c> over columnar patterns evaluates as the columnar left join: a matched left row is extended, an unmatched one is kept with the optional variable unbound.</summary>
+    [TestMethod]
+    public async Task ColumnarOptionalExtendsMatchesAndKeepsUnmatched()
+    {
+        SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(
+            [
+                new DataTriple(Iri("a"), Iri("knows"), Iri("b")),
+                new DataTriple(Iri("a"), Iri("knows"), Iri("c")),
+                new DataTriple(Iri("b"), Iri("name"), StringLiteral("B")),
+            ], cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?s :knows ?o OPTIONAL { ?o :name ?n } }", pool);
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(2, solutions);
+        SparqlSolution matched = solutions.Single(s => ValueIri(s, "o") == Ex + "b");
+        Assert.AreEqual("B", Cast<Literal>(Value(matched, "n")).Value.ToString());
+
+        SparqlSolution unmatched = solutions.Single(s => ValueIri(s, "o") == Ex + "c");
+        Assert.IsFalse(unmatched.TryGetValue(Variable("n"), out _));
+    }
+
     /// <summary>A constant-endpoint SERVICE joins the remote endpoint's solutions (returned through the injected transport) with the surrounding pattern.</summary>
     [TestMethod]
     public async Task ServiceJoinsRemoteSolutions()

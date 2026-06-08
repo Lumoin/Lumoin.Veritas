@@ -354,6 +354,133 @@ internal static class ColumnarOperators
     }
 
     /// <summary>
+    /// The columnar form of a condition-free LEFT JOIN (§18.6 LeftJoin, the <c>OPTIONAL</c> with no lifted inner
+    /// FILTER): every left row appears at least once, extended by each compatible right row (matched on the shared
+    /// one or two all-bound variables) and otherwise carried with the right-only columns unbound. The output schema
+    /// is the left schema then the right-only variables. Returns <see langword="false"/> for a shared set that is
+    /// not one or two all-bound variables (including a cartesian no-shared OPTIONAL), leaving the caller to bridge
+    /// to the row form; the caller also keeps OPTIONALs that carry a condition on the row path.
+    /// </summary>
+    /// <param name="left">The required (left) columnar table.</param>
+    /// <param name="right">The optional (right) columnar table.</param>
+    /// <param name="result">Receives the left-joined columnar table when the columnar path applies.</param>
+    /// <returns><see langword="true"/> when the left join was evaluated columnar; otherwise <see langword="false"/>.</returns>
+    public static bool TryLeftJoin(SolutionTable left, SolutionTable right, out SolutionTable result)
+    {
+        IReadOnlyList<SparqlVariable> leftSchema = left.Schema;
+        IReadOnlyList<SparqlVariable> rightSchema = right.Schema;
+
+        Dictionary<SparqlVariable, int> rightColumnOf = new(rightSchema.Count);
+        for(int i = 0; i < rightSchema.Count; i++)
+        {
+            rightColumnOf[rightSchema[i]] = i;
+        }
+
+        List<int> leftSharedColumns = [];
+        List<int> rightSharedColumns = [];
+        for(int i = 0; i < leftSchema.Count; i++)
+        {
+            if(rightColumnOf.TryGetValue(leftSchema[i], out int rightColumn))
+            {
+                leftSharedColumns.Add(i);
+                rightSharedColumns.Add(rightColumn);
+            }
+        }
+
+        if(leftSharedColumns.Count is < 1 or > 2 || !AllRowsBound(left, leftSharedColumns) || !AllRowsBound(right, rightSharedColumns))
+        {
+            result = SolutionTable.Empty;
+
+            return false;
+        }
+
+        List<SparqlVariable> schema = new(leftSchema.Count + rightSchema.Count);
+        schema.AddRange(leftSchema);
+        List<int> rightOnlyColumns = [];
+        for(int i = 0; i < rightSchema.Count; i++)
+        {
+            if(!leftSchema.Contains(rightSchema[i]))
+            {
+                schema.Add(rightSchema[i]);
+                rightOnlyColumns.Add(i);
+            }
+        }
+
+        //Index the right side on the shared key; every left row appears at least once.
+        Dictionary<ulong, List<int>> index = new(right.Count);
+        for(int row = 0; row < right.Count; row++)
+        {
+            ulong key = PackJoinKey(right, rightSharedColumns, row);
+            if(!index.TryGetValue(key, out List<int>? bucket))
+            {
+                bucket = [];
+                index[key] = bucket;
+            }
+
+            bucket.Add(row);
+        }
+
+        uint[][] leftColumns = ColumnArraysOf(left);
+        uint[][] rightColumns = ColumnArraysOf(right);
+
+        List<uint>[] outputColumns = new List<uint>[schema.Count];
+        for(int i = 0; i < outputColumns.Length; i++)
+        {
+            outputColumns[i] = [];
+        }
+
+        int count = 0;
+        for(int leftRow = 0; leftRow < left.Count; leftRow++)
+        {
+            if(index.TryGetValue(PackJoinKey(left, leftSharedColumns, leftRow), out List<int>? matches))
+            {
+                foreach(int rightRow in matches)
+                {
+                    AppendLeftJoinRow(outputColumns, leftColumns, leftSchema.Count, rightColumns, rightOnlyColumns, leftRow, rightRow);
+                    count++;
+                }
+
+                continue;
+            }
+
+            //No compatible right row: the left row is carried with the right-only columns unbound.
+            AppendLeftJoinRow(outputColumns, leftColumns, leftSchema.Count, rightColumns, rightOnlyColumns, leftRow, rightRow: -1);
+            count++;
+        }
+
+        uint[][] frozen = new uint[schema.Count][];
+        for(int c = 0; c < schema.Count; c++)
+        {
+            frozen[c] = [.. outputColumns[c]];
+        }
+
+        result = SolutionTable.Columnar(schema, frozen, count, left.Dictionary, left.Overlay ?? right.Overlay);
+
+        return true;
+    }
+
+    /// <summary>Appends one left-join output row: the left columns from <paramref name="leftRow"/>, then the right-only columns from <paramref name="rightRow"/> (or <c>0</c>/unbound when <paramref name="rightRow"/> is <c>-1</c>, the unmatched left case).</summary>
+    /// <param name="outputColumns">The output column builders.</param>
+    /// <param name="leftColumns">The left table's column arrays.</param>
+    /// <param name="leftColumnCount">The number of left schema columns (the output's left prefix width).</param>
+    /// <param name="rightColumns">The right table's column arrays.</param>
+    /// <param name="rightOnlyColumns">The right column indices that are not in the left schema, in output order.</param>
+    /// <param name="leftRow">The left row index.</param>
+    /// <param name="rightRow">The right row index, or <c>-1</c> for the unmatched (right-unbound) case.</param>
+    private static void AppendLeftJoinRow(List<uint>[] outputColumns, uint[][] leftColumns, int leftColumnCount, uint[][] rightColumns, List<int> rightOnlyColumns, int leftRow, int rightRow)
+    {
+        for(int c = 0; c < leftColumnCount; c++)
+        {
+            outputColumns[c].Add(leftColumns[c][leftRow]);
+        }
+
+        for(int c = 0; c < rightOnlyColumns.Count; c++)
+        {
+            outputColumns[leftColumnCount + c].Add(rightRow < 0 ? 0u : rightColumns[rightOnlyColumns[c]][rightRow]);
+        }
+    }
+
+    /// <summary>
     /// The columnar form of MINUS (§18.6): keeps the left rows whose shared-variable key matches no right row.
     /// When the schemas share no variable, the disjoint-domain exception keeps every left row (returned as the
     /// left table). When they share one or two variables that every row binds, equal key ⟺ compatible (and the
