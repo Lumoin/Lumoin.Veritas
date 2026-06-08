@@ -25,6 +25,12 @@ internal static class Program
     /// </remarks>
     public static void Main(string[] args)
     {
+        //Numeric output is for hand-collation across machines, so it formats
+        //culture-invariantly (a dot decimal) rather than picking up the host's
+        //locale.
+        System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
+        System.Globalization.CultureInfo.DefaultThreadCurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
+
         //Profile-mode entrypoints for dotnet-trace / PerfView: these
         //run a long-lived loop in the host process so a sampling
         //profiler sees real call-stack samples without BenchmarkDotNet's
@@ -181,6 +187,15 @@ internal static class Program
         if(args.Length > 0 && args[0] == "--profile-factorized")
         {
             FactorizationSoak.RunFactorizationSoak();
+
+            return;
+        }
+
+        //The open-addressed (Swiss-table) join-table head map vs the chained
+        //Dictionary-backed one: build CPU, allocation, probe CPU, and memory.
+        if(args.Length > 0 && args[0] == "--profile-jointable")
+        {
+            JoinTableSoak.RunJoinTableSoak();
 
             return;
         }
