@@ -200,11 +200,11 @@ internal static class Program
             return;
         }
 
-        //The columnar triple index's resident bits per triple on triangle-dense
-        //data - the storage footprint behind the extreme-triangle representation.
-        if(args.Length > 0 && args[0] == "--profile-triangle-bits")
+        //The columnar triple index's packed column footprint as bits per triple,
+        //per order and total, across order-set modes.
+        if(args.Length > 0 && args[0] == "--profile-column-bits")
         {
-            TriangleMemorySoak.RunTriangleMemorySoak();
+            ColumnFootprintSoak.RunColumnFootprintSoak();
 
             return;
         }
