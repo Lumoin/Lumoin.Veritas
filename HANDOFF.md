@@ -12,8 +12,8 @@ in "Next".
 
 ## Current state
 
-- Branch `main`, tree clean at commit **`77249b0`** (factorized star-join / consume side; `ccbe7f3` was the produce side, `d4daefe` added this file, `08d0db1` was the Yannakakis measurement).
-- Full suite: **8075 total / 0 failed / 548 skipped** (the +5 over the pre-§4.2 count is the new factorized-join tests; the skip count jitters ±2 with the environment-conditional OWL-entailment `Inconclusive` tests).
+- Branch `main`, tree clean at commit **`3a521e0`** (factorized star wired into the pipeline; `77249b0` was the consume side, `ccbe7f3` the produce side, `d4daefe` added this file, `08d0db1` the Yannakakis measurement).
+- Full suite: **8076 total / 0 failed / 548 skipped** (the +6 over the pre-§4.2 count is the new factorized-join tests; the skip count jitters ±2 with the environment-conditional OWL-entailment `Inconclusive` tests). With `PreferFactorizedStar` default-on, the whole corpus routes every star BGP through the factorizing join as the differential oracle.
 - There are local commits not pushed to origin. **Do not `git push`** without explicit owner approval —
   pushing triggers paid CI and the budget is exhausted. Commit locally; validate with the full local
   suite instead.
@@ -96,11 +96,20 @@ yet wired into `ColumnarBatchPipeline`**. Shipped in one commit:
   multiset; soak measures **×133–300 compression, ×5.8–46 time, ×55–140 alloc** vs the flat cubic
   intermediate.
 
-**Next on §4.2:** wire the factorized join into `ColumnarBatchPipeline` behind a policy flag (the flatten
-bridge is the corpus-wide differential oracle) — detect a star sub-shape in the plan and route it through
-`Join` + `AddBranch`. Then the deeper move: **multi-level factorization** (factorize a branch's own tuples
-under a variable order) so a *chain* join (`AddBranch` returning `null` today) factorizes too, not just a
-star. Keep the hot path concrete — no interface over the batch types.
+- **`3a521e0` — wired into the pipeline:** `ColumnarBatchPipeline.TryPlan(useFactorizedStar)` detects a
+  star (`TryStarKey`: ≥3 patterns, the first two share 1–2 vars, every later pattern shares exactly that
+  key — no branch-variable join) and records it on `ColumnarBatchPlan.StarKey`, taking precedence over the
+  Yannakakis tree. `Run` routes a `StarKey` plan through `RunFactorizedStar` (`Join` → chain of `AddBranch`
+  → `Flatten`), with a defensive fall-back to `RunStreaming`. `QueryEnginePolicy.PreferFactorizedStar` gates
+  it, **on by default**; `QueryEngineRendezvous` passes it through both batched entry points. Answer-identical,
+  so the whole conformance corpus is the oracle (full suite 8076 green).
+
+**Next on §4.2:** **multi-level factorization** — factorize a branch's own tuples under a variable order so a
+*chain* join factorizes too, not just a star. Today `AddBranch` returns `null` on a branch-variable join
+(the chain case `?a p1 ?x . ?x p2 ?b . ?b p3 ?c`), so a chain falls back to the flat/streamed pipeline; the
+center variable of the next join sits inside a branch, which needs the branch to be grouped (a second
+factorization level) before it can be joined without flattening. That is the deeper representation change
+the tier was aiming at. Keep the hot path concrete — no interface over the batch types.
 
 ## Recently shipped — Yannakakis semijoin reduction (roadmap item §4.1)
 
@@ -168,16 +177,16 @@ joins compress (and sometimes never materialize). More fundamental than late mat
 the intermediate *representation*, not just when decode happens. Gated on the columnar substrate, which is
 in place.
 
-**Shipped (`ccbe7f3` produce, `77249b0` consume; see Recently shipped):** the `FactorizedBatch`
-representation, the flatten-to-`SolutionBatch` oracle, the factorizing `FactorizedBatchJoin.Join` (×20–30 on
-a fan-out join), and `FactorizedBatchJoin.AddBranch` carrying the factorized form across a key-preserving
-(star) join (×133–300 on a 3-arm star). Both standalone, not yet in the pipeline.
+**Shipped (`ccbe7f3` produce, `77249b0` consume, `3a521e0` pipeline; see Recently shipped):** the
+`FactorizedBatch` representation, the flatten-to-`SolutionBatch` oracle, `FactorizedBatchJoin.Join` (×20–30 on
+a fan-out join), `FactorizedBatchJoin.AddBranch` carrying the form across a key-preserving (star) join
+(×133–300 on a 3-arm star), and the pipeline route — `TryPlan` detects a star, `Run` evaluates it through
+`Join` + `AddBranch` + `Flatten`, gated by `PreferFactorizedStar` (default-on, corpus is the oracle).
 
-**Remaining:** wire it into `ColumnarBatchPipeline` behind a policy flag (flatten bridge = corpus-wide
-oracle) — detect a star sub-shape and route it through `Join` + `AddBranch`; then multi-level factorization
-(factorize a branch's own tuples under a variable order) so a *chain* join factorizes too — `AddBranch`
-returns `null` on a branch-variable join today. Keep the hot path concrete (a concrete factorized type, not
-an interface), per the substrate design rule above.
+**Remaining:** multi-level factorization (factorize a branch's own tuples under a variable order) so a
+*chain* join factorizes too, not just a star — `AddBranch` returns `null` on a branch-variable join today
+and the chain falls back to the flat/streamed pipeline. Keep the hot path concrete (a concrete factorized
+type, not an interface), per the substrate design rule above.
 
 ### §4.3 — Free Join hybrid
 
