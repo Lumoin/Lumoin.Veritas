@@ -209,6 +209,15 @@ internal static class Program
             return;
         }
 
+        //Elias-Fano succinct column encoding vs frame-of-reference: bits/value
+        //and seek cost across universe/count ratios (the ~10-vs-~22 comparison).
+        if(args.Length > 0 && args[0] == "--profile-elias-fano")
+        {
+            EliasFanoSoak.RunEliasFanoSoak();
+
+            return;
+        }
+
         //The index-arity bounding probe: per-graph store composition vs
         //one merged store, build and query, over a graph-count ladder.
         if(args.Length > 0 && args[0] == "--profile-graph-fanout")
