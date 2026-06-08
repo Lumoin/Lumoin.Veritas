@@ -12,7 +12,8 @@ in "Next".
 
 ## Current state
 
-- Branch `main`, tree clean at commit **`46ebbf6`** (soak rename `--profile-column-bits`; `3ff1f61` open-addressed join table + measurement, `b3308cf` chain pipeline route, `31d2a12` star opt-in, `ef037a7` depth-2 chain factorization, `3a521e0` wired the star, `77249b0`/`ccbe7f3` consume/produce, `08d0db1` Yannakakis). **§4.3 Free Join design pass done** (`tempdocs/free-join-design-memo.md`).
+- Branch `main`, tree clean at commit **`793206a`** (§4.3 Free Join GHT foundation; `46ebbf6` soak rename, `3ff1f61` open-addressed join table, `b3308cf` chain pipeline route, `31d2a12` star opt-in, `ef037a7` depth-2 chain factorization, `3a521e0` wired the star, `77249b0`/`ccbe7f3` consume/produce, `08d0db1` Yannakakis). **§4.3 design pass done** (`tempdocs/free-join-design-memo.md`).
+- Full suite (re-confirm): **8088 / 0 failed / 548 skipped**.
 - Full suite: **8083 total / 0 failed / 548 skipped** (the new factorized-join + open-addressed-table tests over the pre-§4.2 count; the skip count jitters ±2 with the environment-conditional OWL-entailment `Inconclusive` tests). Factorization is opt-in (default-off): the corpus routes stars/chains through the streamed path by default.
 - One unrelated working-tree change persists: `generate-local-test-nuget-packages.ps1` (a sister project's edit excluding the AOT CLI from local packaging) — not mine, left uncommitted on purpose.
 - There are local commits not pushed to origin. **Do not `git push`** without explicit owner approval —
@@ -247,6 +248,15 @@ oracle. Reusable pieces: `OpenAddressedTable<TValue>` (GHT node), `SolutionBatch
 executor, differential vs batched (acyclic) and leapfrog (cyclic); (3) a minimal depth heuristic (real
 selection = the deferred selector research); (4) hash-trie nodes where measured; (5) **factorized Free Join
 output** (`FactorizedBatch`) — where §4.2 and §4.3 converge, the high-value payoff.
+
+**Shipped: GHT foundation (`793206a`).** `Hypertrie/Execution/GeneralizedHashTrie` — build one relation into
+a multi-level hash trie (`OpenAddressedTable` internal nodes — gained an `internal` struct `Enumerator` —
+packed leaf vectors); the first `TrieColumns` are hashed levels, `LeafColumns` sit at the leaves. Depth-1 =
+binary-join shape, full-depth = WCOJ trie. `Flatten` (recursion-free DFS) is the differential oracle;
+lossless across all splits/orders (5 tests). Took the **hash-trie route (option 1)** for the foundation —
+self-contained, no surgery on the leapfrog driver. **Next: the generic join over GHTs** — the variable-at-a-
+time multiway intersection (iterate the smallest node's keys, probe the others), producing `Solution`s,
+differential vs the batched pipeline (acyclic) and leapfrog (cyclic/triangle).
 
 ### After the tier
 
