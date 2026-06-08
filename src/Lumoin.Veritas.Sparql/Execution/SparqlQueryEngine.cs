@@ -63,6 +63,9 @@ public sealed class SparqlQueryEngine
     /// <summary>A solution sequence holding the single empty solution — the result of the <see cref="UnitTable"/> identity.</summary>
     private static IReadOnlyList<SparqlSolution> SingleEmptySolution { get; } = [new SparqlSolution([])];
 
+    /// <summary>The single-empty-solution sequence as a result table — the join identity returned by the <see cref="UnitTable"/> and by a suppressed <c>SERVICE</c>.</summary>
+    private static SolutionTable SingleEmptySolutionTable { get; } = SolutionTable.FromRows(SingleEmptySolution);
+
     /// <summary>The <c>xsd:boolean</c> datatype node, for the constant an <c>EXISTS</c>/<c>NOT EXISTS</c> rewrites to.</summary>
     private static NamedNode XsdBooleanType { get; } = new(Utf8String.FromString("http://www.w3.org/2001/XMLSchema#boolean"));
 
@@ -235,7 +238,11 @@ public sealed class SparqlQueryEngine
     {
         ArgumentNullException.ThrowIfNull(algebra);
 
-        return await EvaluateInGraphAsync(algebra, TermId.None, cancellationToken).ConfigureAwait(false);
+        //The single decode boundary: a fully-columnar pipeline carried encoded term ids all the way here, and only
+        //the surviving result rows are materialized; a pipeline that hit a row-only operator was already row-backed.
+        SolutionTable result = await EvaluateInGraphAsync(algebra, TermId.None, cancellationToken).ConfigureAwait(false);
+
+        return result.AsRows();
     }
 
     /// <summary>
@@ -338,7 +345,7 @@ public sealed class SparqlQueryEngine
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The materialized solution sequence.</returns>
     /// <exception cref="NotSupportedException">The algebra uses an operator this slice does not yet execute.</exception>
-    private async ValueTask<IReadOnlyList<SparqlSolution>> EvaluateInGraphAsync(AlgebraOperator algebra, TermId activeGraph, CancellationToken cancellationToken)
+    private async ValueTask<SolutionTable> EvaluateInGraphAsync(AlgebraOperator algebra, TermId activeGraph, CancellationToken cancellationToken)
     {
         GuardSupported(algebra);
 
@@ -346,7 +353,7 @@ public sealed class SparqlQueryEngine
         //and recorded before the operator combines them. Results are keyed by (operator reference, active graph) —
         //a parsed algebra is a tree (so each operator instance appears once per graph), and a GRAPH form
         //re-evaluates the SAME sub-tree under a different active graph, so the graph is part of the key.
-        Dictionary<ResultKey, IReadOnlyList<SparqlSolution>> results = new(ResultKeyComparer.Instance);
+        Dictionary<ResultKey, SolutionTable> results = new(ResultKeyComparer.Instance);
         Stack<(AlgebraOperator Node, TermId Graph, bool Combine)> work = new();
         work.Push((algebra, activeGraph, Combine: false));
 
@@ -448,7 +455,7 @@ public sealed class SparqlQueryEngine
     /// <param name="enclosingGraph">The active graph the GRAPH form sits in (unused for the result, kept for symmetry with the key).</param>
     /// <param name="results">The per-(operator, graph) result map the child's branches were recorded in.</param>
     /// <returns>The GRAPH form's solution sequence.</returns>
-    private IReadOnlyList<SparqlSolution> CombineGraph(Graph graphOperator, TermId enclosingGraph, Dictionary<ResultKey, IReadOnlyList<SparqlSolution>> results)
+    private SolutionTable CombineGraph(Graph graphOperator, TermId enclosingGraph, Dictionary<ResultKey, SolutionTable> results)
     {
         _ = enclosingGraph;
         switch(graphOperator.Designator)
@@ -457,7 +464,9 @@ public sealed class SparqlQueryEngine
             {
                 TermId graphName = GraphNameOf(iri);
 
-                return dataset.ContainsNamedGraph(graphName) ? results[new ResultKey(graphOperator.Input, graphName)] : [];
+                //A constant GRAPH passes its child's table through unchanged — including the columnar backing, so a
+                //GRAPH-scoped BGP stays on the columnar island.
+                return dataset.ContainsNamedGraph(graphName) ? results[new ResultKey(graphOperator.Input, graphName)] : SolutionTable.Empty;
             }
 
             case GraphVariableTerm variableTerm:
@@ -466,7 +475,7 @@ public sealed class SparqlQueryEngine
                 foreach(TermId name in dataset.GraphNames)
                 {
                     RdfTerm graphTerm = dictionary.Resolve(name);
-                    foreach(SparqlSolution inner in results[new ResultKey(graphOperator.Input, name)])
+                    foreach(SparqlSolution inner in results[new ResultKey(graphOperator.Input, name)].AsRows())
                     {
                         //§18.2.2.7 Graph(var, P): eval(P, g) joined with { (var, g) }. A solution already binding the
                         //variable survives only when it equals this graph's name; otherwise the variable binds to it.
@@ -487,7 +496,7 @@ public sealed class SparqlQueryEngine
                     }
                 }
 
-                return all;
+                return SolutionTable.FromRows(all);
             }
 
             default:
@@ -539,19 +548,19 @@ public sealed class SparqlQueryEngine
     /// <param name="graph">The active graph, or <see cref="TermId.None"/> for the default graph.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The leaf's solution sequence.</returns>
-    private async ValueTask<IReadOnlyList<SparqlSolution>> EvaluateLeafAsync(AlgebraOperator op, TermId graph, CancellationToken cancellationToken)
+    private async ValueTask<SolutionTable> EvaluateLeafAsync(AlgebraOperator op, TermId graph, CancellationToken cancellationToken)
     {
         //UnitTable / inline VALUES are graph-independent; the graph-querying leaves resolve the active graph's
         //store. The store is non-null by construction: the default graph always resolves, and a GRAPH form only
         //descends into a named graph that exists (ExpandGraph), so an absent named graph never reaches here.
         if(op is UnitTable)
         {
-            return SingleEmptySolution;
+            return SingleEmptySolutionTable;
         }
 
         if(op is Table table)
         {
-            return BuildTableSolutions(table.Data);
+            return SolutionTable.FromRows(BuildTableSolutions(table.Data));
         }
 
         if(op is Service service)
@@ -576,7 +585,7 @@ public sealed class SparqlQueryEngine
 
         if(op is Path pathOperator)
         {
-            return await EvaluatePathAsync(pathOperator, graphStore, cancellationToken).ConfigureAwait(false);
+            return SolutionTable.FromRows(await EvaluatePathAsync(pathOperator, graphStore, cancellationToken).ConfigureAwait(false));
         }
 
         //The supported-operator guard runs first, so any other leaf reaching here is an executor bug, not input.
@@ -593,20 +602,20 @@ public sealed class SparqlQueryEngine
     /// <param name="service">The SERVICE operator.</param>
     /// <param name="cancellationToken">A token that aborts the remote call.</param>
     /// <returns>The service's solution sequence.</returns>
-    private async ValueTask<IReadOnlyList<SparqlSolution>> EvaluateServiceAsync(Service service, CancellationToken cancellationToken)
+    private async ValueTask<SolutionTable> EvaluateServiceAsync(Service service, CancellationToken cancellationToken)
     {
         if(service.Endpoint is not GraphIriTerm endpoint)
         {
             //A variable endpoint is resolved per left binding by the enclosing Join's bound-join
             //(CombineServiceBoundJoinAsync); on its own — with no surrounding solutions to supply the
             //endpoint — the service produces nothing.
-            return [];
+            return SolutionTable.Empty;
         }
 
         if(serviceClient is null)
         {
             return service.Silent
-                ? SingleEmptySolution
+                ? SingleEmptySolutionTable
                 : throw new NotSupportedException("SERVICE requires a SparqlClient transport, but the engine was constructed without one.");
         }
 
@@ -615,12 +624,12 @@ public sealed class SparqlQueryEngine
         {
             SparqlResultSet results = await serviceClient.QueryAsync(endpoint.Iri, query, accessContext, cancellationToken).ConfigureAwait(false);
 
-            return results.Solutions;
+            return SolutionTable.FromRows(results.Solutions);
         }
         catch(Exception ex) when(service.Silent && ex is not OperationCanceledException)
         {
             //SILENT: a federation failure contributes the join identity, so the surrounding pattern is unaffected.
-            return SingleEmptySolution;
+            return SingleEmptySolutionTable;
         }
     }
 
@@ -645,13 +654,13 @@ public sealed class SparqlQueryEngine
     /// <param name="results">The map of already-evaluated (operator, graph) keys to their solution sequences.</param>
     /// <param name="cancellationToken">A token that aborts the remote calls.</param>
     /// <returns>The bound-join's solution sequence.</returns>
-    private async ValueTask<IReadOnlyList<SparqlSolution>> CombineServiceBoundJoinAsync(Join join, TermId graph, Dictionary<ResultKey, IReadOnlyList<SparqlSolution>> results, CancellationToken cancellationToken)
+    private async ValueTask<SolutionTable> CombineServiceBoundJoinAsync(Join join, TermId graph, Dictionary<ResultKey, SolutionTable> results, CancellationToken cancellationToken)
     {
         (Service service, AlgebraOperator bindingChild) = join.Right is Service { Endpoint: GraphVariableTerm } rightService
             ? (rightService, join.Left)
             : ((Service)join.Left, join.Right);
 
-        IReadOnlyList<SparqlSolution> bindings = results[new ResultKey(bindingChild, graph)];
+        IReadOnlyList<SparqlSolution> bindings = results[new ResultKey(bindingChild, graph)].AsRows();
         SparqlVariable endpointVariable = ((GraphVariableTerm)service.Endpoint).Variable;
 
         //Group the incoming solutions by the IRI bound to the endpoint variable, so each distinct endpoint is
@@ -684,7 +693,7 @@ public sealed class SparqlQueryEngine
         {
             //SILENT with no transport: each group contributes the join identity (its solutions pass through).
             return service.Silent
-                ? Passthrough(endpointOrder, byEndpoint, unbound)
+                ? SolutionTable.FromRows(Passthrough(endpointOrder, byEndpoint, unbound))
                 : throw new NotSupportedException("SERVICE with a variable endpoint requires a SparqlClient transport, but the engine was constructed without one.");
         }
 
@@ -718,7 +727,7 @@ public sealed class SparqlQueryEngine
             joined.AddRange(unbound);
         }
 
-        return joined;
+        return SolutionTable.FromRows(joined);
     }
 
     /// <summary>The bound-join identity: every grouped and unbound solution passes through unchanged (used when SILENT suppresses the service entirely).</summary>
@@ -745,20 +754,22 @@ public sealed class SparqlQueryEngine
     /// <param name="results">The map of already-evaluated (operator, graph) keys to their solution sequences.</param>
     /// <param name="context">The seams the expression-gated operators' non-pure functions consume.</param>
     /// <returns>The operator's solution sequence.</returns>
-    private static IReadOnlyList<SparqlSolution> Combine(AlgebraOperator op, TermId graph, Dictionary<ResultKey, IReadOnlyList<SparqlSolution>> results, SparqlExpressionContext context)
+    private static SolutionTable Combine(AlgebraOperator op, TermId graph, Dictionary<ResultKey, SolutionTable> results, SparqlExpressionContext context)
     {
         return op switch
         {
+            //Project / Distinct / Slice / Union stay on the columnar island when their input is columnar (they
+            //rearrange encoded-id columns and never decode); the row-only operators bridge through AsRows.
             Project project => ApplyProject(project, results[new ResultKey(project.Input, graph)]),
             Distinct distinct => ApplyDistinct(results[new ResultKey(distinct.Input, graph)]),
 
-            //REDUCED permits but does not require duplicate elimination; passing the sequence through is conformant.
+            //REDUCED permits but does not require duplicate elimination; passing the table through is conformant.
             Reduced reduced => results[new ResultKey(reduced.Input, graph)],
             Slice slice => ApplySlice(slice, results[new ResultKey(slice.Input, graph)]),
-            Join join => JoinSolutions(results[new ResultKey(join.Left, graph)], results[new ResultKey(join.Right, graph)]),
+            Join join => SolutionTable.FromRows(JoinSolutions(results[new ResultKey(join.Left, graph)].AsRows(), results[new ResultKey(join.Right, graph)].AsRows())),
             Union union => UnionSolutions(results[new ResultKey(union.Left, graph)], results[new ResultKey(union.Right, graph)]),
-            Minus minus => MinusSolutions(results[new ResultKey(minus.Left, graph)], results[new ResultKey(minus.Right, graph)]),
-            OrderBy orderBy => ApplyOrderBy(orderBy, results[new ResultKey(orderBy.Input, graph)], context),
+            Minus minus => SolutionTable.FromRows(MinusSolutions(results[new ResultKey(minus.Left, graph)].AsRows(), results[new ResultKey(minus.Right, graph)].AsRows())),
+            OrderBy orderBy => SolutionTable.FromRows(ApplyOrderBy(orderBy, results[new ResultKey(orderBy.Input, graph)].AsRows(), context)),
 
             //ToMultiSet / ToList are multiset / sequence conversions; with no ORDER BY in scope they pass through.
             ToMultiSet toMultiSet => results[new ResultKey(toMultiSet.Input, graph)],
@@ -767,7 +778,7 @@ public sealed class SparqlQueryEngine
             //Group leaves the multiset unchanged here; the partitioning into groups happens in the AggregateJoin
             //that wraps it (which reads the Group's keys directly).
             Group group => results[new ResultKey(group.Input, graph)],
-            AggregateJoin aggregateJoin => EvaluateAggregateJoin(aggregateJoin, results[new ResultKey(aggregateJoin.Input, graph)], context),
+            AggregateJoin aggregateJoin => SolutionTable.FromRows(EvaluateAggregateJoin(aggregateJoin, results[new ResultKey(aggregateJoin.Input, graph)].AsRows(), context)),
             _ => throw new InvalidOperationException($"Operator '{op.GetType().Name}' has children but no combine rule in the executor.")
         };
     }
@@ -777,7 +788,7 @@ public sealed class SparqlQueryEngine
     /// <param name="graphStore">The active graph's store.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The BGP's solution sequence; empty when a constant in the pattern is absent from the active graph.</returns>
-    private async ValueTask<IReadOnlyList<SparqlSolution>> EvaluateBgpAsync(Bgp bgp, HypertrieGraphStore graphStore, QueryEngineRendezvous? rendezvous, TermId activeGraph, CancellationToken cancellationToken)
+    private async ValueTask<SolutionTable> EvaluateBgpAsync(Bgp bgp, HypertrieGraphStore graphStore, QueryEngineRendezvous? rendezvous, TermId activeGraph, CancellationToken cancellationToken)
     {
         VariableRegistry registry = new();
         Dictionary<SparqlVariable, Variable> toBackend = [];
@@ -808,7 +819,7 @@ public sealed class SparqlQueryEngine
                 || !TryEncodePosition(triple.Predicate, registry, toBackend, toSparql, blankToBackend, tripleTermMatches, out PatternPosition predicate)
                 || !TryEncodePosition(triple.Object, registry, toBackend, toSparql, blankToBackend, tripleTermMatches, out PatternPosition @object))
             {
-                return [];
+                return SolutionTable.Empty;
             }
 
             if(predicate.IsVariable && subject.IsVariable && predicate.Variable == subject.Variable)
@@ -921,7 +932,7 @@ public sealed class SparqlQueryEngine
         {
             await EvaluateVariantAsync(query).ConfigureAwait(false);
 
-            return solutions;
+            return SolutionTable.FromRows(solutions);
         }
 
         //The cartesian product over the per-pattern alternatives, walked
@@ -949,7 +960,7 @@ public sealed class SparqlQueryEngine
 
             if(advance < 0)
             {
-                return solutions;
+                return SolutionTable.FromRows(solutions);
             }
         }
     }
@@ -1511,7 +1522,16 @@ public sealed class SparqlQueryEngine
     /// <param name="project">The projection.</param>
     /// <param name="input">The input solution sequence.</param>
     /// <returns>The projected solution sequence.</returns>
-    private static List<SparqlSolution> ApplyProject(Project project, IReadOnlyList<SparqlSolution> input)
+    private static SolutionTable ApplyProject(Project project, SolutionTable input)
+    {
+        return SolutionTable.FromRows(ProjectRows(project, input.AsRows()));
+    }
+
+    /// <summary>The row form of projection: restricts each solution to the projected variables, in projection order, dropping bindings for variables a solution does not bind.</summary>
+    /// <param name="project">The projection.</param>
+    /// <param name="input">The input solution rows.</param>
+    /// <returns>The projected solution rows.</returns>
+    private static List<SparqlSolution> ProjectRows(Project project, IReadOnlyList<SparqlSolution> input)
     {
         List<SparqlSolution> projected = new(input.Count);
         foreach(SparqlSolution solution in input)
@@ -1534,7 +1554,15 @@ public sealed class SparqlQueryEngine
     /// <summary>Eliminates duplicate solutions, comparing the (order-stable, post-projection) binding sequences by value.</summary>
     /// <param name="input">The input solution sequence.</param>
     /// <returns>The distinct solution sequence, in first-appearance order.</returns>
-    private static List<SparqlSolution> ApplyDistinct(IReadOnlyList<SparqlSolution> input)
+    private static SolutionTable ApplyDistinct(SolutionTable input)
+    {
+        return SolutionTable.FromRows(DistinctRows(input.AsRows()));
+    }
+
+    /// <summary>The row form of duplicate elimination, comparing the (order-stable, post-projection) binding sequences by value.</summary>
+    /// <param name="input">The input solution rows.</param>
+    /// <returns>The distinct solution rows, in first-appearance order.</returns>
+    private static List<SparqlSolution> DistinctRows(IReadOnlyList<SparqlSolution> input)
     {
         List<SparqlSolution> distinct = new(input.Count);
         HashSet<SparqlSolution> seen = new(SolutionComparer.Instance);
@@ -1553,7 +1581,16 @@ public sealed class SparqlQueryEngine
     /// <param name="slice">The slice.</param>
     /// <param name="input">The input solution sequence.</param>
     /// <returns>The windowed solution sequence.</returns>
-    private static IReadOnlyList<SparqlSolution> ApplySlice(Slice slice, IReadOnlyList<SparqlSolution> input)
+    private static SolutionTable ApplySlice(Slice slice, SolutionTable input)
+    {
+        return SolutionTable.FromRows(SliceRows(slice, input.AsRows()));
+    }
+
+    /// <summary>The row form of the <c>OFFSET</c>/<c>LIMIT</c> window over the solution rows.</summary>
+    /// <param name="slice">The slice.</param>
+    /// <param name="input">The input solution rows.</param>
+    /// <returns>The windowed solution rows.</returns>
+    private static IReadOnlyList<SparqlSolution> SliceRows(Slice slice, IReadOnlyList<SparqlSolution> input)
     {
         IEnumerable<SparqlSolution> windowed = input;
         if(slice.Offset > 0)
@@ -2040,7 +2077,16 @@ public sealed class SparqlQueryEngine
     /// <param name="left">The left solution sequence.</param>
     /// <param name="right">The right solution sequence.</param>
     /// <returns>The unioned solution sequence.</returns>
-    private static List<SparqlSolution> UnionSolutions(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right)
+    private static SolutionTable UnionSolutions(SolutionTable left, SolutionTable right)
+    {
+        return SolutionTable.FromRows(UnionRows(left.AsRows(), right.AsRows()));
+    }
+
+    /// <summary>The row form of union (§18.6 Union): the multiset of all solutions of either side, left before right.</summary>
+    /// <param name="left">The left solution rows.</param>
+    /// <param name="right">The right solution rows.</param>
+    /// <returns>The unioned solution rows.</returns>
+    private static List<SparqlSolution> UnionRows(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right)
     {
         List<SparqlSolution> all = new(left.Count + right.Count);
         all.AddRange(left);
@@ -2128,23 +2174,23 @@ public sealed class SparqlQueryEngine
     /// <param name="results">The map of already-evaluated (operator, graph) keys to their solution sequences.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The operator's solution sequence.</returns>
-    private async ValueTask<IReadOnlyList<SparqlSolution>> CombineExpressionOperatorAsync(AlgebraOperator op, TermId graph, Dictionary<ResultKey, IReadOnlyList<SparqlSolution>> results, CancellationToken cancellationToken)
+    private async ValueTask<SolutionTable> CombineExpressionOperatorAsync(AlgebraOperator op, TermId graph, Dictionary<ResultKey, SolutionTable> results, CancellationToken cancellationToken)
     {
         switch(op)
         {
             case Filter filter:
             {
-                return await ApplyFilterAsync(filter, results[new ResultKey(filter.Input, graph)], graph, cancellationToken).ConfigureAwait(false);
+                return SolutionTable.FromRows(await ApplyFilterAsync(filter, results[new ResultKey(filter.Input, graph)].AsRows(), graph, cancellationToken).ConfigureAwait(false));
             }
 
             case Extend extend:
             {
-                return await ApplyExtendAsync(extend, results[new ResultKey(extend.Input, graph)], graph, cancellationToken).ConfigureAwait(false);
+                return SolutionTable.FromRows(await ApplyExtendAsync(extend, results[new ResultKey(extend.Input, graph)].AsRows(), graph, cancellationToken).ConfigureAwait(false));
             }
 
             case LeftJoin leftJoin:
             {
-                return await LeftJoinSolutionsAsync(results[new ResultKey(leftJoin.Left, graph)], results[new ResultKey(leftJoin.Right, graph)], leftJoin.Condition, graph, cancellationToken).ConfigureAwait(false);
+                return SolutionTable.FromRows(await LeftJoinSolutionsAsync(results[new ResultKey(leftJoin.Left, graph)].AsRows(), results[new ResultKey(leftJoin.Right, graph)].AsRows(), leftJoin.Condition, graph, cancellationToken).ConfigureAwait(false));
             }
 
             default:
@@ -2659,7 +2705,7 @@ public sealed class SparqlQueryEngine
         using Utf8StringPool pool = new();
         SparqlQuery normalized = (SparqlQuery)new SparqlNormalizer(pool).Normalize(query);
         AlgebraOperator algebra = SparqlTranslator.Translate(normalized);
-        IReadOnlyList<SparqlSolution> solutions = await EvaluateInGraphAsync(algebra, graph, cancellationToken).ConfigureAwait(false);
+        SolutionTable solutions = await EvaluateInGraphAsync(algebra, graph, cancellationToken).ConfigureAwait(false);
 
         return solutions.Count > 0;
     }
