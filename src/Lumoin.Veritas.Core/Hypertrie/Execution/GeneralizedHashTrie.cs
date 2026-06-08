@@ -58,6 +58,14 @@ public sealed class GeneralizedHashTrie
         this.leaves = leaves;
     }
 
+    /// <summary>The internal map at a node id, for navigation by the generic join: its keys are the descent values at this level, mapping to a child node id (non-deepest level) or a leaf id (deepest level). The root is node id 0.</summary>
+    /// <param name="nodeId">The node id.</param>
+    /// <returns>The node's map.</returns>
+    internal OpenAddressedTable<int> NodeAt(int nodeId)
+    {
+        return nodes[nodeId];
+    }
+
     /// <summary>The number of internal trie nodes — a build-size diagnostic.</summary>
     public int NodeCount => nodes.Count;
 
