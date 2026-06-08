@@ -353,6 +353,76 @@ internal static class ColumnarOperators
         }
     }
 
+    /// <summary>
+    /// The columnar form of MINUS (§18.6): keeps the left rows whose shared-variable key matches no right row.
+    /// When the schemas share no variable, the disjoint-domain exception keeps every left row (returned as the
+    /// left table). When they share one or two variables that every row binds, equal key ⟺ compatible (and the
+    /// shared variables are exactly the common set, so compatible ⟺ "compatible and shares a variable", the MINUS
+    /// condition), so a left row is removed precisely when its key is present among the right keys. Returns
+    /// <see langword="false"/> for a wider or partially-bound shared set, leaving the caller to bridge to the row
+    /// form.
+    /// </summary>
+    /// <param name="left">The left (kept) columnar table.</param>
+    /// <param name="right">The right (subtracting) columnar table.</param>
+    /// <param name="result">Receives the surviving columnar table when the columnar path applies.</param>
+    /// <returns><see langword="true"/> when MINUS was evaluated columnar; otherwise <see langword="false"/>.</returns>
+    public static bool TryMinus(SolutionTable left, SolutionTable right, out SolutionTable result)
+    {
+        IReadOnlyList<SparqlVariable> leftSchema = left.Schema;
+        IReadOnlyList<SparqlVariable> rightSchema = right.Schema;
+
+        Dictionary<SparqlVariable, int> rightColumnOf = new(rightSchema.Count);
+        for(int i = 0; i < rightSchema.Count; i++)
+        {
+            rightColumnOf[rightSchema[i]] = i;
+        }
+
+        List<int> leftSharedColumns = [];
+        List<int> rightSharedColumns = [];
+        for(int i = 0; i < leftSchema.Count; i++)
+        {
+            if(rightColumnOf.TryGetValue(leftSchema[i], out int rightColumn))
+            {
+                leftSharedColumns.Add(i);
+                rightSharedColumns.Add(rightColumn);
+            }
+        }
+
+        //No shared variable: the disjoint-domain exception keeps every left row unchanged.
+        if(leftSharedColumns.Count == 0)
+        {
+            result = left;
+
+            return true;
+        }
+
+        if(leftSharedColumns.Count > 2 || !AllRowsBound(left, leftSharedColumns) || !AllRowsBound(right, rightSharedColumns))
+        {
+            result = SolutionTable.Empty;
+
+            return false;
+        }
+
+        HashSet<ulong> rightKeys = new(right.Count);
+        for(int row = 0; row < right.Count; row++)
+        {
+            rightKeys.Add(PackJoinKey(right, rightSharedColumns, row));
+        }
+
+        List<int> keptRows = new(left.Count);
+        for(int row = 0; row < left.Count; row++)
+        {
+            if(!rightKeys.Contains(PackJoinKey(left, leftSharedColumns, row)))
+            {
+                keptRows.Add(row);
+            }
+        }
+
+        result = Gather(left, keptRows);
+
+        return true;
+    }
+
     /// <summary>Whether every row of a columnar table binds each of the given columns (no unbound <c>0</c> cell) — the all-bound precondition that makes equal join key equivalent to compatibility.</summary>
     /// <param name="table">The columnar table.</param>
     /// <param name="columns">The schema column indices to test.</param>

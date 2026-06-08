@@ -145,6 +145,32 @@ internal sealed class ColumnarOperatorsTests
         Assert.AreEqual(0, filtered.Count);
     }
 
+    /// <summary>MINUS removes the left rows whose shared-variable key matches a right row, keeping the rest.</summary>
+    [TestMethod]
+    public void MinusRemovesRowsWithMatchingSharedKey()
+    {
+        SolutionTable left = Columnar(["a", "b"], [["a1", "b1"], ["a2", "b2"], ["a3", "b3"]]);
+        SolutionTable right = Columnar(["b", "c"], [["b2", "c2"], ["b9", "c9"]]);
+
+        Assert.IsTrue(ColumnarOperators.TryMinus(left, right, out SolutionTable result));
+
+        //Shared ?b; right binds ?b ∈ {b2, b9}, so the (a2,b2) left row is removed.
+        CollectionAssert.AreEqual(
+            new List<string> { RowKey([("a", "a1"), ("b", "b1")]), RowKey([("a", "a3"), ("b", "b3")]) },
+            Rows(result));
+    }
+
+    /// <summary>MINUS with no shared variable keeps every left row (the disjoint-domain exception).</summary>
+    [TestMethod]
+    public void MinusWithNoSharedVariableKeepsAllLeftRows()
+    {
+        SolutionTable left = Columnar(["a"], [["a1"], ["a2"]]);
+        SolutionTable right = Columnar(["b"], [["b1"]]);
+
+        Assert.IsTrue(ColumnarOperators.TryMinus(left, right, out SolutionTable result));
+        CollectionAssert.AreEqual(Rows(left), Rows(result));
+    }
+
     /// <summary>The OFFSET/LIMIT window keeps exactly the requested row range, matching the oracle.</summary>
     [TestMethod]
     public void SliceMatchesOracle()

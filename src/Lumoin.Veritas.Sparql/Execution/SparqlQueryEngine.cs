@@ -774,7 +774,7 @@ public sealed class SparqlQueryEngine
             Slice slice => ApplySlice(slice, results[new ResultKey(slice.Input, graph)]),
             Join join => JoinSolutions(results[new ResultKey(join.Left, graph)], results[new ResultKey(join.Right, graph)]),
             Union union => UnionSolutions(results[new ResultKey(union.Left, graph)], results[new ResultKey(union.Right, graph)]),
-            Minus minus => SolutionTable.FromRows(MinusSolutions(results[new ResultKey(minus.Left, graph)].AsRows(), results[new ResultKey(minus.Right, graph)].AsRows())),
+            Minus minus => MinusSolutions(results[new ResultKey(minus.Left, graph)], results[new ResultKey(minus.Right, graph)]),
             OrderBy orderBy => OrderBySolutions(orderBy, results[new ResultKey(orderBy.Input, graph)], context),
 
             //ToMultiSet / ToList are multiset / sequence conversions; with no ORDER BY in scope they pass through.
@@ -2368,15 +2368,38 @@ public sealed class SparqlQueryEngine
     }
 
     /// <summary>
-    /// Subtracts the right sequence from the left (§18.6 Minus): a left solution is removed only when some right
-    /// solution is compatible with it <em>and</em> shares at least one variable. The shared-variable requirement is
-    /// the spec's disjoint-domain exception — a left solution with no variable in common with any right solution is
-    /// kept even though disjoint mappings are technically compatible.
+    /// Subtracts the right table from the left (§18.6 Minus). When both are columnar and share one or two variables
+    /// every row binds (or share none — the disjoint-domain exception), it stays columnar: an anti-join over the
+    /// encoded key columns, no decode; otherwise it bridges to the row form.
+    /// </summary>
+    /// <param name="left">The left (kept) table.</param>
+    /// <param name="right">The right (subtracting) table.</param>
+    /// <returns>The left rows that survive the subtraction.</returns>
+    private static SolutionTable MinusSolutions(SolutionTable left, SolutionTable right)
+    {
+        if(left.Count == 0)
+        {
+            return SolutionTable.Empty;
+        }
+
+        if(left.IsColumnar && right.IsColumnar && ColumnarOperators.TryMinus(left, right, out SolutionTable subtracted))
+        {
+            return subtracted;
+        }
+
+        return SolutionTable.FromRows(MinusRows(left.AsRows(), right.AsRows()));
+    }
+
+    /// <summary>
+    /// The row form of Minus (§18.6): a left solution is removed only when some right solution is compatible with it
+    /// <em>and</em> shares at least one variable. The shared-variable requirement is the spec's disjoint-domain
+    /// exception — a left solution with no variable in common with any right solution is kept even though disjoint
+    /// mappings are technically compatible.
     /// </summary>
     /// <param name="left">The left (kept) solution sequence.</param>
     /// <param name="right">The right (subtracting) solution sequence.</param>
     /// <returns>The left solutions that survive the subtraction.</returns>
-    private static List<SparqlSolution> MinusSolutions(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right)
+    private static List<SparqlSolution> MinusRows(IReadOnlyList<SparqlSolution> left, IReadOnlyList<SparqlSolution> right)
     {
         if(left.Count == 0)
         {
