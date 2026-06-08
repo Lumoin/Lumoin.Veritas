@@ -48,9 +48,10 @@ public static class ColumnarBatchPipeline
     /// <param name="query">The basic graph pattern.</param>
     /// <param name="useSemijoinReduction">Whether to attach a join tree so <see cref="Run"/> reduces dangling tuples by semijoin before the join. Engaged only for three or more scan patterns, where an intermediate can exceed the output; two-pattern joins, whose single intermediate is the output, gain nothing and stay on the unreduced stream.</param>
     /// <param name="useFactorizedStar">Whether to route a star shape — three or more patterns all joining on one shared key — through the factorising join, keeping the intermediates product-of-unions until the final flatten instead of materialising each cross product. Takes precedence over semijoin reduction when the shape qualifies; non-star shapes are unaffected.</param>
+    /// <param name="useFactorizedChain">Whether to route a three-pattern chain — the third pattern joining on a branch variable of the first join — through the join then the nesting step, keeping the chain factorised (a second level) across the branch-variable join. Takes precedence over semijoin reduction when the shape qualifies; non-chain shapes are unaffected.</param>
     /// <returns>The plan, or <see langword="null"/>.</returns>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public static ColumnarBatchPlan? TryPlan(ColumnarTripleIndex index, BasicGraphPattern query, bool useSemijoinReduction = false, bool useFactorizedStar = false)
+    public static ColumnarBatchPlan? TryPlan(ColumnarTripleIndex index, BasicGraphPattern query, bool useSemijoinReduction = false, bool useFactorizedStar = false, bool useFactorizedChain = false)
     {
         ArgumentNullException.ThrowIfNull(index);
         ArgumentNullException.ThrowIfNull(query);
@@ -153,16 +154,23 @@ public static class ColumnarBatchPipeline
         //bounds intermediates but still flattens them.
         IReadOnlyList<Variable>? starKey = useFactorizedStar ? TryStarKey(index, order) : null;
 
+        //A three-pattern chain whose third pattern joins on a branch variable
+        //of the first join factorises one level deeper: the join, then the
+        //nesting step. Mutually exclusive with the star (the third pattern
+        //shares the key there, a branch here), so it is checked only when the
+        //shape is not a star.
+        Variable? chainNestVariable = starKey is null && useFactorizedChain ? TryChainNestVariable(index, order) : null;
+
         //Yannakakis pays only when an intermediate can outgrow the
         //output — three or more relations. The tree is built over the
         //execution order so its indices address the materialised
         //relations directly; if it fails to build the run stays on the
         //unreduced stream, whose answers are identical.
-        GyoJoinTree? joinTree = starKey is null && useSemijoinReduction && order.Count >= 3
+        GyoJoinTree? joinTree = starKey is null && chainNestVariable is null && useSemijoinReduction && order.Count >= 3
             ? GyoJoinTree.TryBuild(EdgesOf(order))
             : null;
 
-        return new ColumnarBatchPlan(constraints, order, schema, joinTree, starKey);
+        return new ColumnarBatchPlan(constraints, order, schema, joinTree, starKey, chainNestVariable);
     }
 
     /// <summary>
@@ -202,6 +210,11 @@ public static class ColumnarBatchPipeline
         if(plan.StarKey is not null)
         {
             return RunFactorizedStar(index, plan);
+        }
+
+        if(plan.ChainNestVariable is not null)
+        {
+            return RunFactorizedChain(index, plan, plan.ChainNestVariable.Value);
         }
 
         return plan.JoinTree is null
@@ -343,6 +356,79 @@ public static class ColumnarBatchPipeline
         }
 
         return factorized.Flatten();
+    }
+
+    /// <summary>
+    /// The factorised chain: join the first two patterns into a product-of-
+    /// unions, then nest the branch the third pattern joins on so the chain
+    /// stays factorised across that branch-variable join. The final flatten
+    /// expands the result. Answer-identical to the streamed left-deep join;
+    /// the fall-back to the stream is a correctness backstop the plan's chain
+    /// detection makes unreachable on a planned chain.
+    /// </summary>
+    /// <param name="index">The index the plan was made for.</param>
+    /// <param name="plan">The plan, whose <see cref="ColumnarBatchPlan.ChainNestVariable"/> is set.</param>
+    /// <param name="nestVariable">The branch variable the third pattern joins on.</param>
+    /// <returns>The result batches over <see cref="ColumnarBatchPlan.Schema"/>.</returns>
+    private static IEnumerable<SolutionBatch> RunFactorizedChain(ColumnarTripleIndex index, ColumnarBatchPlan plan, Variable nestVariable)
+    {
+        IReadOnlyList<Variable> schema0 = ColumnarBatchScan.ScanSchemaOf(index, plan.Order[0]);
+        IReadOnlyList<Variable> schema1 = ColumnarBatchScan.ScanSchemaOf(index, plan.Order[1]);
+        FactorizedBatch firstTwo = FactorizedBatchJoin.Join(
+            ColumnarBatchScan.Scan(index, plan.Order[0]), schema0,
+            ColumnarBatchScan.Scan(index, plan.Order[1]), schema1);
+
+        IReadOnlyList<Variable> schema2 = ColumnarBatchScan.ScanSchemaOf(index, plan.Order[2]);
+        FactorizedBatch? nested = FactorizedBatchJoin.NestBranch(firstTwo, nestVariable, ColumnarBatchScan.Scan(index, plan.Order[2]), schema2);
+
+        return nested is null ? RunStreaming(index, plan) : nested.Flatten();
+    }
+
+    /// <summary>
+    /// The branch variable to nest on when <paramref name="order"/> is a
+    /// three-pattern factorisable chain, or <see langword="null"/>. A chain is
+    /// exactly three patterns where the first two join on one or two variables
+    /// and the third shares exactly one variable with their combined schema —
+    /// a branch variable, not the join key — which is the nesting target. A
+    /// third pattern sharing the key (a star), more than one variable, or none
+    /// disqualifies the shape, which then takes the ordinary stream. Three
+    /// patterns is the depth-2 ceiling: a fourth chain link would nest inside
+    /// the already-nested branch, which <c>NestBranch</c> does not build.
+    /// </summary>
+    /// <param name="index">The index the scan schemas are read from.</param>
+    /// <param name="order">The execution order from the greedy planner.</param>
+    /// <returns>The nesting variable, or <see langword="null"/>.</returns>
+    private static Variable? TryChainNestVariable(ColumnarTripleIndex index, List<TriplePattern> order)
+    {
+        if(order.Count != 3)
+        {
+            return null;
+        }
+
+        IReadOnlyList<Variable> schema0 = ColumnarBatchScan.ScanSchemaOf(index, order[0]);
+        IReadOnlyList<Variable> schema1 = ColumnarBatchScan.ScanSchemaOf(index, order[1]);
+        List<Variable> key = Intersection(schema0, schema1);
+
+        if(key.Count is < 1 or > SolutionBatchJoin.MaximumJoinVariables)
+        {
+            return null;
+        }
+
+        List<Variable> joinSchema = [.. schema0];
+        AppendNew(joinSchema, schema1);
+
+        IReadOnlyList<Variable> schema2 = ColumnarBatchScan.ScanSchemaOf(index, order[2]);
+        List<Variable> shared = Intersection(schema2, joinSchema);
+
+        //The third pattern must hang off exactly one variable, and that
+        //variable must be a branch of the first join (not its key) so the
+        //nesting has a single-column branch to target.
+        if(shared.Count != 1 || ContainsVariable(key, shared[0]))
+        {
+            return null;
+        }
+
+        return shared[0];
     }
 
     /// <summary>

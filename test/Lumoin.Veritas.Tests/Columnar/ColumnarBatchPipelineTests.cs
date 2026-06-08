@@ -348,6 +348,48 @@ internal sealed class ColumnarBatchPipelineTests
     }
 
     [TestMethod]
+    public async Task FactorizedChainAgreesWithStreamingAndLeapfrog()
+    {
+        List<EncodedTriple> fixture = ChainFixture();
+        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(fixture, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+
+        QueryEngineRendezvous factorized = new(store, QueryEnginePolicy.Default with { PreferFactorizedChain = true });
+        QueryEngineRendezvous streamed = new(store, QueryEnginePolicy.Default with { PreferFactorizedChain = false, PreferSemijoinReduction = false });
+        QueryEngineRendezvous leapfrog = new(store, QueryEnginePolicy.Default with { PreferBatchedForAcyclic = false });
+
+        List<QueryEngineKind> kinds = [];
+        void Capture(in QueryTraceEvent evt)
+        {
+            if(evt.Kind == QueryTraceEventKind.EngineSelected)
+            {
+                kinds.Add(evt.Engine);
+            }
+        }
+
+        List<string> viaFactorized = await DrainAsync(factorized.Query(
+            ThreePatternChain(new VariableRegistry()), TimeProvider.System, traceHandler: Capture, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+        List<string> viaStreamed = await DrainAsync(streamed.Query(
+            ThreePatternChain(new VariableRegistry()), TimeProvider.System, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+        List<string> viaLeapfrog = await DrainAsync(leapfrog.Query(
+            ThreePatternChain(new VariableRegistry()), TimeProvider.System, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.IsGreaterThan(0, viaLeapfrog.Count);
+        CollectionAssert.AreEqual(viaLeapfrog, viaFactorized);
+        CollectionAssert.AreEqual(viaLeapfrog, viaStreamed);
+        Assert.HasCount(1, kinds);
+        Assert.AreEqual(QueryEngineKind.ColumnarBatched, kinds[0]);
+
+        //The plan carries a chain nesting variable exactly when the policy is enabled and the shape is a chain.
+        ColumnarTripleIndex chainIndex = ColumnarTripleIndex.Build(fixture);
+        Assert.IsNotNull(ColumnarBatchPipeline.TryPlan(chainIndex, ThreePatternChain(new VariableRegistry()), useSemijoinReduction: false, useFactorizedChain: true)!.ChainNestVariable);
+        Assert.IsNull(ColumnarBatchPipeline.TryPlan(chainIndex, ThreePatternChain(new VariableRegistry()), useSemijoinReduction: false, useFactorizedChain: false)!.ChainNestVariable);
+
+        //A star is not a chain: its third pattern shares the key, not a branch, so the nesting variable stays null.
+        ColumnarTripleIndex starIndex = ColumnarTripleIndex.Build(StarFixture());
+        Assert.IsNull(ColumnarBatchPipeline.TryPlan(starIndex, StarQuery(new VariableRegistry()), useSemijoinReduction: false, useFactorizedChain: true)!.ChainNestVariable);
+    }
+
+    [TestMethod]
     public async Task AccessControlledQueriesStayOnTheConsultingDrivers()
     {
         HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(Fixture(), VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
