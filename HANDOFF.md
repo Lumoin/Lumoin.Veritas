@@ -12,8 +12,8 @@ in "Next".
 
 ## Current state
 
-- Branch `main`, tree clean at commit **`793206a`** (§4.3 Free Join GHT foundation; `46ebbf6` soak rename, `3ff1f61` open-addressed join table, `b3308cf` chain pipeline route, `31d2a12` star opt-in, `ef037a7` depth-2 chain factorization, `3a521e0` wired the star, `77249b0`/`ccbe7f3` consume/produce, `08d0db1` Yannakakis). **§4.3 design pass done** (`tempdocs/free-join-design-memo.md`).
-- Full suite (re-confirm): **8088 / 0 failed / 548 skipped**.
+- Branch `main`, tree clean at commit **`e3e95d2`** (§4.3 Free Join generic join, full-depth; `793206a` GHT foundation, `46ebbf6` soak rename, `3ff1f61` open-addressed join table, `b3308cf` chain pipeline route, `31d2a12` star opt-in, `ef037a7` depth-2 chain factorization, `08d0db1` Yannakakis). **§4.3 design pass done** (`tempdocs/free-join-design-memo.md`).
+- Full suite: **8091 / 0 failed / 548 skipped**.
 - Full suite: **8083 total / 0 failed / 548 skipped** (the new factorized-join + open-addressed-table tests over the pre-§4.2 count; the skip count jitters ±2 with the environment-conditional OWL-entailment `Inconclusive` tests). Factorization is opt-in (default-off): the corpus routes stars/chains through the streamed path by default.
 - One unrelated working-tree change persists: `generate-local-test-nuget-packages.ps1` (a sister project's edit excluding the AOT CLI from local packaging) — not mine, left uncommitted on purpose.
 - There are local commits not pushed to origin. **Do not `git push`** without explicit owner approval —
@@ -249,14 +249,20 @@ executor, differential vs batched (acyclic) and leapfrog (cyclic); (3) a minimal
 selection = the deferred selector research); (4) hash-trie nodes where measured; (5) **factorized Free Join
 output** (`FactorizedBatch`) — where §4.2 and §4.3 converge, the high-value payoff.
 
-**Shipped: GHT foundation (`793206a`).** `Hypertrie/Execution/GeneralizedHashTrie` — build one relation into
-a multi-level hash trie (`OpenAddressedTable` internal nodes — gained an `internal` struct `Enumerator` —
-packed leaf vectors); the first `TrieColumns` are hashed levels, `LeafColumns` sit at the leaves. Depth-1 =
-binary-join shape, full-depth = WCOJ trie. `Flatten` (recursion-free DFS) is the differential oracle;
-lossless across all splits/orders (5 tests). Took the **hash-trie route (option 1)** for the foundation —
-self-contained, no surgery on the leapfrog driver. **Next: the generic join over GHTs** — the variable-at-a-
-time multiway intersection (iterate the smallest node's keys, probe the others), producing `Solution`s,
-differential vs the batched pipeline (acyclic) and leapfrog (cyclic/triangle).
+**Shipped: GHT foundation (`793206a`) + generic join, full-depth (`e3e95d2`).**
+`GeneralizedHashTrie` — build one relation into a multi-level hash trie (`OpenAddressedTable` internal nodes
+— gained an `internal` struct `Enumerator` — packed leaf vectors); `TrieColumns` hashed, `LeafColumns` at
+leaves; depth-1 = binary-join shape, full-depth = WCOJ trie; `Flatten` (recursion-free) is lossless (5
+tests). `FreeJoinExecutor.Execute(relations, variableOrder)` — the variable-at-a-time multiway hash
+intersection (iterate the smallest node's keys, probe the others, descend together), explicit-stack DFS,
+producing `SolutionBatch`es. **Full-depth (WCOJ form) only this increment**; agrees with leapfrog on
+triangle/star/chain (3 tests). Took the **hash-trie route (option 1)** — self-contained, no leapfrog-driver
+surgery.
+
+**Next on §4.3:** (a) **leaf vectors** — the binary-join interpolation: a relation at depth < full carries
+its remaining columns as a leaf tuple vector, cross-producted at emit; this is the half that makes Free Join
+*beat* WCOJ on acyclic shapes. (b) **pipeline wiring** — `FreeJoinExecutor` behind `PreferFreeJoin`
+(default-off), the existing engines as oracle. (c) **factorized output** (`FactorizedBatch`) — §4.2 ∩ §4.3.
 
 ### After the tier
 
@@ -275,6 +281,24 @@ differential vs the batched pipeline (acyclic) and leapfrog (cyclic/triangle).
   win would need the SIMD control-group scan / lower load factor of a full Swiss-table; build is improvable
   by pre-sizing. The `OpenAddressedTable<TValue>` primitive is reusable for the other ulong-keyed maps
   (semijoin set, factorization buckets).
+
+#### Column-encoding axis — the bits/triple spectrum (owner-requested next)
+
+- **Elias-Fano column codec (next up).** The ~10-bits/triple succinct encoding for the sorted CSR value
+  columns — a near-entropy alternative to today's `FrameOfReference` (~22–25/order). Critically EF natively
+  supports `nextGEQ`/successor (the leapfrog `Seek`), so it's not "dense-but-slow random access" — it's the
+  inverted-index intersection primitive, a strong fit for our descent. Build it as a new column codec behind
+  the existing `BlockPackedColumnReader` interface (`ValueAt` via select, `LowerBound`/`Seek` via EF
+  successor), **`FrameOfReference` as the differential oracle** (same values decode identically),
+  profile-gated, measured on `--profile-column-bits` (bits/triple) + a seek microbench. Halves the columnar
+  index memory if it holds. The exact ~10 figure is the other agent's (other machine); this gives us our own
+  measured number. (Memory `column-encoding-bits-per-triple-spectrum`.) **Caveat:** real chunk — needs a
+  succinct bitvector with `select`, the EF encode, and reader wiring so the leapfrog descent uses it
+  transparently.
+- **The Ring (owner-interested, after EF).** The wavelet-tree WCOJ self-index — one structure indexing all
+  orders at ~one order's space, the succinct end carried furthest. Bigger than a codec (a whole index), but
+  the natural follow-on to EF on this axis; it loses cheap any-order access for space (three-rotation echo
+  already in-tree as `ColumnarOrderSetMode.ThreeRotations`).
 
 ---
 
