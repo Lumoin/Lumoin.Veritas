@@ -114,6 +114,162 @@ public static class FactorizedBatchJoin
         return new FactorizedBatch(outputSchema, keyColumns, branchColumns, emitted);
     }
 
+    /// <summary>
+    /// Extends a factorised batch by one more pattern that joins on its
+    /// group key — a star step. The probe must share exactly the existing
+    /// key variables (and no branch variable), so the key stays put and the
+    /// probe's matches per key attach as a fresh branch; groups drawing no
+    /// probe match drop out (the semijoin a star join entails). The result
+    /// stays factorised, so a chain of <see cref="AddBranch"/> calls evaluates
+    /// a multi-pattern star without ever materialising the flat product
+    /// between joins.
+    /// </summary>
+    /// <param name="left">The factorised batch to extend; consumed by key, not flattened.</param>
+    /// <param name="probe">The pattern's matches, joined on the key.</param>
+    /// <param name="probeSchema">The probe's schema, positional against its columns.</param>
+    /// <returns>
+    /// The extended factorised batch over the concatenated schema, or
+    /// <see langword="null"/> when the probe joins on anything but exactly the
+    /// group key — that shape needs the deeper multi-level factorisation and
+    /// stays on the flat join for now.
+    /// </returns>
+    /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
+    public static FactorizedBatch? AddBranch(
+        FactorizedBatch left,
+        IEnumerable<SolutionBatch> probe,
+        IReadOnlyList<Variable> probeSchema)
+    {
+        ArgumentNullException.ThrowIfNull(left);
+        ArgumentNullException.ThrowIfNull(probe);
+        ArgumentNullException.ThrowIfNull(probeSchema);
+
+        int keyCount = left.KeyColumns.Length;
+
+        //The probe must cover every group-key variable: a key it cannot
+        //supply is a join on a key subset, not a star step.
+        int[] probeKeyColumns = new int[keyCount];
+        for(int k = 0; k < keyCount; k++)
+        {
+            int probePosition = IndexOf(probeSchema, left.Schema[left.KeyColumns[k]]);
+            if(probePosition < 0)
+            {
+                return null;
+            }
+
+            probeKeyColumns[k] = probePosition;
+        }
+
+        //Any probe variable already in the left schema must be a key
+        //variable; a shared branch variable is a non-key join the
+        //single-level form cannot extend.
+        List<int> probeCarryColumns = [];
+        List<Variable> outputSchema = [.. left.Schema];
+        List<int> newBranchColumns = [];
+        for(int p = 0; p < probeSchema.Count; p++)
+        {
+            int leftPosition = IndexOf(left.Schema, probeSchema[p]);
+            if(leftPosition >= 0)
+            {
+                if(Array.IndexOf(left.KeyColumns, leftPosition) < 0)
+                {
+                    return null;
+                }
+
+                continue;
+            }
+
+            newBranchColumns.Add(outputSchema.Count);
+            probeCarryColumns.Add(p);
+            outputSchema.Add(probeSchema[p]);
+        }
+
+        Dictionary<JoinKey, ProbeBucket> buckets = BuildProbeBuckets(probe, probeKeyColumns, probeCarryColumns);
+        List<FactorizedGroup> extended = ExtendGroups(left, keyCount, buckets, probeCarryColumns.Count);
+
+        int[][] branchColumns = new int[left.BranchColumns.Length + 1][];
+        Array.Copy(left.BranchColumns, branchColumns, left.BranchColumns.Length);
+        branchColumns[^1] = [.. newBranchColumns];
+
+        return new FactorizedBatch(outputSchema, left.KeyColumns, branchColumns, extended);
+    }
+
+    /// <summary>Groups the probe stream by key into buckets of packed probe-only tuples — the matches each star step attaches.</summary>
+    /// <param name="probe">The probe stream.</param>
+    /// <param name="probeKeyColumns">The probe-side key column indices, in the left key's variable order.</param>
+    /// <param name="probeCarryColumns">The probe-only column indices.</param>
+    /// <returns>The key-to-bucket table.</returns>
+    private static Dictionary<JoinKey, ProbeBucket> BuildProbeBuckets(
+        IEnumerable<SolutionBatch> probe,
+        int[] probeKeyColumns,
+        List<int> probeCarryColumns)
+    {
+        int key0 = probeKeyColumns[0];
+        int key1 = probeKeyColumns.Length > 1 ? probeKeyColumns[1] : -1;
+
+        Dictionary<JoinKey, ProbeBucket> buckets = [];
+        foreach(SolutionBatch batch in probe)
+        {
+            int count = batch.Count;
+            ReadOnlySpan<uint> key0Column = batch.ColumnOf(key0);
+            ReadOnlySpan<uint> key1Column = key1 >= 0 ? batch.ColumnOf(key1) : default;
+
+            for(int row = 0; row < count; row++)
+            {
+                JoinKey key = JoinKey.Pack(key0Column[row], key1 >= 0 ? key1Column[row] : 0);
+
+                if(!buckets.TryGetValue(key, out ProbeBucket? bucket))
+                {
+                    bucket = new ProbeBucket();
+                    buckets[key] = bucket;
+                }
+
+                foreach(int column in probeCarryColumns)
+                {
+                    bucket.Values.Add(batch.ColumnOf(column)[row]);
+                }
+
+                bucket.Rows++;
+            }
+        }
+
+        return buckets;
+    }
+
+    /// <summary>Attaches each surviving group's probe bucket as a new branch; a group whose key drew no probe match is dropped.</summary>
+    /// <param name="left">The factorised batch being extended.</param>
+    /// <param name="keyCount">The key column count.</param>
+    /// <param name="buckets">The probe buckets keyed on the join key.</param>
+    /// <param name="probeCarryCount">The probe-only column count.</param>
+    /// <returns>The extended groups.</returns>
+    private static List<FactorizedGroup> ExtendGroups(
+        FactorizedBatch left,
+        int keyCount,
+        Dictionary<JoinKey, ProbeBucket> buckets,
+        int probeCarryCount)
+    {
+        List<FactorizedGroup> extended = new(left.Groups.Count);
+        foreach(FactorizedGroup group in left.Groups)
+        {
+            JoinKey key = JoinKey.Pack(group.KeyValues[0], keyCount > 1 ? group.KeyValues[1] : 0);
+            if(!buckets.TryGetValue(key, out ProbeBucket? bucket))
+            {
+                continue;
+            }
+
+            uint[][] branchValues = new uint[group.BranchValues.Length + 1][];
+            Array.Copy(group.BranchValues, branchValues, group.BranchValues.Length);
+            branchValues[^1] = probeCarryCount == 0 ? [] : [.. bucket.Values];
+
+            int[] branchRowCounts = new int[group.BranchRowCounts.Length + 1];
+            Array.Copy(group.BranchRowCounts, branchRowCounts, group.BranchRowCounts.Length);
+            branchRowCounts[^1] = bucket.Rows;
+
+            extended.Add(new FactorizedGroup(group.KeyValues, branchValues, branchRowCounts));
+        }
+
+        return extended;
+    }
+
     /// <summary>Groups the build stream by key, packing each row's build-only columns into its group's build branch.</summary>
     /// <param name="build">The build stream.</param>
     /// <param name="buildKeyColumns">The build-side key column indices, one or two.</param>
@@ -295,5 +451,19 @@ public static class FactorizedBatchJoin
             Key0 = key0;
             Key1 = key1;
         }
+    }
+
+    /// <summary>
+    /// The probe matches for one key during an <see cref="AddBranch"/> star
+    /// step: the packed probe-only tuples and their count, becoming a group's
+    /// new branch once a surviving left group claims the key.
+    /// </summary>
+    private sealed class ProbeBucket
+    {
+        /// <summary>The bucket's packed values, row-major with the probe-only column count as stride.</summary>
+        public List<uint> Values { get; } = [];
+
+        /// <summary>The bucket's row count, tracked apart from <see cref="Values"/> so a zero-column branch still carries its multiplicity.</summary>
+        public int Rows { get; set; }
     }
 }

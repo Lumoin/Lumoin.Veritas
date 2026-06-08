@@ -26,6 +26,9 @@ internal sealed class FactorizedBatchJoinTests
     /// <summary>The <c>?s p2 ?o2</c> predicate.</summary>
     private const uint P2 = 20;
 
+    /// <summary>The <c>?s p3 ?o3</c> predicate — the third arm of the star, and the <c>?o p3 ?t</c> branch-join probe.</summary>
+    private const uint P3 = 30;
+
     /// <summary>A fan-out fixture: each subject carries many <c>p1</c> objects AND many <c>p2</c> objects, so the join over the shared subject blows up multiplicatively.</summary>
     /// <param name="subjects">The distinct subject count.</param>
     /// <param name="fanP1">The <c>p1</c> object count per subject.</param>
@@ -53,6 +56,56 @@ internal sealed class FactorizedBatchJoinTests
         }
 
         return triples;
+    }
+
+    /// <summary>A three-arm star fixture: each subject carries many <c>p1</c>, <c>p2</c>, AND <c>p3</c> objects, so a join over the shared subject fans out cubically.</summary>
+    /// <param name="subjects">The distinct subject count.</param>
+    /// <param name="fanP1">The <c>p1</c> object count per subject.</param>
+    /// <param name="fanP2">The <c>p2</c> object count per subject.</param>
+    /// <param name="fanP3">The <c>p3</c> object count per subject.</param>
+    /// <returns>The fixture triples.</returns>
+    private static List<EncodedTriple> StarFixture(int subjects, int fanP1, int fanP2, int fanP3)
+    {
+        const uint subjectBase = 1_000;
+        const uint object1Base = 2_000;
+        const uint object2Base = 3_000;
+        const uint object3Base = 4_000;
+
+        List<EncodedTriple> triples = [];
+        for(int si = 0; si < subjects; si++)
+        {
+            uint subject = subjectBase + (uint)si;
+            for(int oi = 0; oi < fanP1; oi++)
+            {
+                triples.Add(EncodedTriple.FromEncoded(subject, P1, object1Base + (uint)((si * 100) + oi)));
+            }
+
+            for(int oi = 0; oi < fanP2; oi++)
+            {
+                triples.Add(EncodedTriple.FromEncoded(subject, P2, object2Base + (uint)((si * 100) + oi)));
+            }
+
+            for(int oi = 0; oi < fanP3; oi++)
+            {
+                triples.Add(EncodedTriple.FromEncoded(subject, P3, object3Base + (uint)((si * 100) + oi)));
+            }
+        }
+
+        return triples;
+    }
+
+    /// <summary>The three-arm star query <c>?s p1 ?o . ?s p2 ?o2 . ?s p3 ?o3</c>.</summary>
+    /// <param name="registry">The variable registry.</param>
+    /// <returns>The query.</returns>
+    private static BasicGraphPattern StarQuery(VariableRegistry registry)
+    {
+        return new BasicGraphPattern(
+            [
+                EdgePattern(registry, P1, "s", "o"),
+                EdgePattern(registry, P2, "s", "o2"),
+                EdgePattern(registry, P3, "s", "o3"),
+            ],
+            registry);
     }
 
     /// <summary>The pattern <c>?subject {predicate} ?object</c> over fresh variables.</summary>
@@ -171,6 +224,65 @@ internal sealed class FactorizedBatchJoinTests
 
         Assert.IsGreaterThan(0, flatRows.Count);
         CollectionAssert.AreEqual(flatRows, factorizedRows);
+    }
+
+    [TestMethod]
+    public void StarChainAddsABranchPerArmAndFlattensToTheFlatPipeline()
+    {
+        List<EncodedTriple> fixture = StarFixture(subjects: 12, fanP1: 6, fanP2: 6, fanP3: 6);
+        ColumnarTripleIndex index = ColumnarTripleIndex.Build(fixture);
+
+        VariableRegistry registry = new();
+        TriplePattern p1 = EdgePattern(registry, P1, "s", "o");
+        TriplePattern p2 = EdgePattern(registry, P2, "s", "o2");
+        TriplePattern p3 = EdgePattern(registry, P3, "s", "o3");
+        IReadOnlyList<Variable> schema1 = ColumnarBatchScan.ScanSchemaOf(index, p1);
+        IReadOnlyList<Variable> schema2 = ColumnarBatchScan.ScanSchemaOf(index, p2);
+        IReadOnlyList<Variable> schema3 = ColumnarBatchScan.ScanSchemaOf(index, p3);
+
+        //Two arms factorise on the shared subject, then the third attaches as
+        //a new branch on the same key — no flat product between the joins.
+        FactorizedBatch firstTwo = FactorizedBatchJoin.Join(
+            ColumnarBatchScan.Scan(index, p1), schema1, ColumnarBatchScan.Scan(index, p2), schema2);
+        FactorizedBatch? star = FactorizedBatchJoin.AddBranch(firstTwo, ColumnarBatchScan.Scan(index, p3), schema3);
+
+        Assert.IsNotNull(star);
+        Assert.HasCount(3, star.BranchColumns);
+
+        //The flat pipeline over the same star is the differential oracle.
+        ColumnarBatchPlan plan = ColumnarBatchPipeline.TryPlan(index, StarQuery(new VariableRegistry()))!;
+        List<string> flatRows = Fingerprints(ColumnarBatchPipeline.Run(index, plan), plan.Schema);
+        List<string> factorizedRows = Fingerprints(star.Flatten(), star.Schema);
+
+        Assert.IsGreaterThan(0, flatRows.Count);
+        CollectionAssert.AreEqual(flatRows, factorizedRows);
+
+        //12 subjects × (6 + 6 + 6) stored tuples versus 12 × 6³ flat rows.
+        Assert.AreEqual(flatRows.Count, (int)star.FlatRowCount);
+        Assert.AreEqual(12L * 6 * 6 * 6, star.FlatRowCount);
+        Assert.AreEqual(12L * (6 + 6 + 6), star.FactorizedTupleCount);
+        Assert.IsLessThan(star.FlatRowCount, star.FactorizedTupleCount);
+    }
+
+    [TestMethod]
+    public void AddBranchRefusesAProbeThatJoinsOnABranchVariable()
+    {
+        ColumnarTripleIndex index = ColumnarTripleIndex.Build(StarFixture(subjects: 5, fanP1: 3, fanP2: 3, fanP3: 2));
+        VariableRegistry registry = new();
+        TriplePattern p1 = EdgePattern(registry, P1, "s", "o");
+        TriplePattern p2 = EdgePattern(registry, P2, "s", "o2");
+
+        FactorizedBatch firstTwo = FactorizedBatchJoin.Join(
+            ColumnarBatchScan.Scan(index, p1), ColumnarBatchScan.ScanSchemaOf(index, p1),
+            ColumnarBatchScan.Scan(index, p2), ColumnarBatchScan.ScanSchemaOf(index, p2));
+
+        //?s p3 ?o shares the key ?s but also the branch variable ?o — a non-key
+        //join the single-level factorisation cannot extend, so it must refuse.
+        TriplePattern branchProbe = EdgePattern(registry, P3, "s", "o");
+        FactorizedBatch? refused = FactorizedBatchJoin.AddBranch(
+            firstTwo, ColumnarBatchScan.Scan(index, branchProbe), ColumnarBatchScan.ScanSchemaOf(index, branchProbe));
+
+        Assert.IsNull(refused);
     }
 
     [TestMethod]
