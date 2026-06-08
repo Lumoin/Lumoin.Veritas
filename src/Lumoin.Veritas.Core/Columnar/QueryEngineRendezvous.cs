@@ -401,7 +401,7 @@ public sealed class QueryEngineRendezvous
             return null;
         }
 
-        ColumnarBatchPlan? plan = ColumnarBatchPipeline.TryPlan(view, query);
+        ColumnarBatchPlan? plan = ColumnarBatchPipeline.TryPlan(view, query, policy.PreferSemijoinReduction);
 
         if(plan is null)
         {
@@ -503,7 +503,7 @@ public sealed class QueryEngineRendezvous
             reason = isBuilt ? EngineSelectionReason.ViewBuilt : EngineSelectionReason.ViewReused;
         }
 
-        ColumnarBatchPlan? plan = ColumnarBatchPipeline.TryPlan(view, query);
+        ColumnarBatchPlan? plan = ColumnarBatchPipeline.TryPlan(view, query, policy.PreferSemijoinReduction);
         if(plan is null)
         {
             return null;

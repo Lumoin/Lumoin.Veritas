@@ -46,9 +46,10 @@ public static class ColumnarBatchPipeline
     /// </summary>
     /// <param name="index">The index the scans will run on; its materialised orders bound scanability.</param>
     /// <param name="query">The basic graph pattern.</param>
+    /// <param name="useSemijoinReduction">Whether to attach a join tree so <see cref="Run"/> reduces dangling tuples by semijoin before the join. Engaged only for three or more scan patterns, where an intermediate can exceed the output; two-pattern joins, whose single intermediate is the output, gain nothing and stay on the unreduced stream.</param>
     /// <returns>The plan, or <see langword="null"/>.</returns>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public static ColumnarBatchPlan? TryPlan(ColumnarTripleIndex index, BasicGraphPattern query)
+    public static ColumnarBatchPlan? TryPlan(ColumnarTripleIndex index, BasicGraphPattern query, bool useSemijoinReduction = false)
     {
         ArgumentNullException.ThrowIfNull(index);
         ArgumentNullException.ThrowIfNull(query);
@@ -144,13 +145,25 @@ public static class ColumnarBatchPipeline
             AppendNew(schema, ColumnarBatchScan.ScanSchemaOf(index, scannable[next]));
         }
 
-        return new ColumnarBatchPlan(constraints, order, schema);
+        //Yannakakis pays only when an intermediate can outgrow the
+        //output — three or more relations. The tree is built over the
+        //execution order so its indices address the materialised
+        //relations directly; if it fails to build the run stays on the
+        //unreduced stream, whose answers are identical.
+        GyoJoinTree? joinTree = useSemijoinReduction && order.Count >= 3
+            ? GyoJoinTree.TryBuild(EdgesOf(order))
+            : null;
+
+        return new ColumnarBatchPlan(constraints, order, schema, joinTree);
     }
 
     /// <summary>
     /// Runs a planned pipeline: constraints first (any miss yields
-    /// nothing), then the scans and left-deep hash joins. Batches
-    /// stream over <see cref="ColumnarBatchPlan.Schema"/>.
+    /// nothing), then — when the plan carries a join tree — Yannakakis'
+    /// semijoin reduction before the left-deep join, otherwise the
+    /// unreduced left-deep stream. Batches flow over
+    /// <see cref="ColumnarBatchPlan.Schema"/> either way; the results
+    /// are identical, the reduced path only bounds the intermediates.
     /// </summary>
     /// <param name="index">The index the plan was made for.</param>
     /// <param name="plan">The plan from <see cref="TryPlan"/>.</param>
@@ -178,6 +191,22 @@ public static class ColumnarBatchPipeline
             return [empty];
         }
 
+        return plan.JoinTree is null
+            ? RunStreaming(index, plan)
+            : RunReduced(index, plan, plan.JoinTree);
+    }
+
+    /// <summary>
+    /// The unreduced pipeline: scan the first pattern, then left-deep
+    /// hash-join each subsequent scan. Intermediates stream but are not
+    /// bounded — the path acyclic two-pattern joins and any shape
+    /// without an attached join tree take.
+    /// </summary>
+    /// <param name="index">The index the plan was made for.</param>
+    /// <param name="plan">The plan.</param>
+    /// <returns>The result batches.</returns>
+    private static IEnumerable<SolutionBatch> RunStreaming(ColumnarTripleIndex index, ColumnarBatchPlan plan)
+    {
         IEnumerable<SolutionBatch> stream = ColumnarBatchScan.Scan(index, plan.Order[0]);
         List<Variable> accumulated = [.. ColumnarBatchScan.ScanSchemaOf(index, plan.Order[0])];
 
@@ -185,6 +214,73 @@ public static class ColumnarBatchPipeline
         {
             IReadOnlyList<Variable> probeSchema = ColumnarBatchScan.ScanSchemaOf(index, plan.Order[step]);
             stream = SolutionBatchJoin.HashJoin(stream, [.. accumulated], ColumnarBatchScan.Scan(index, plan.Order[step]), probeSchema);
+
+            foreach(Variable variable in probeSchema)
+            {
+                if(!accumulated.Contains(variable))
+                {
+                    accumulated.Add(variable);
+                }
+            }
+        }
+
+        return stream;
+    }
+
+    /// <summary>
+    /// Yannakakis on an acyclic shape: materialise every relation, run
+    /// the two semijoin passes over the join tree, then left-deep join
+    /// the reduced relations. After full reduction no relation holds a
+    /// dangling tuple, so every intermediate of the connected join order
+    /// extends to a full answer — bounding intermediates by the input
+    /// and output sizes, the guarantee the streaming path lacks.
+    /// </summary>
+    /// <param name="index">The index the plan was made for.</param>
+    /// <param name="plan">The plan.</param>
+    /// <param name="tree">The join tree over <see cref="ColumnarBatchPlan.Order"/>.</param>
+    /// <returns>The result batches.</returns>
+    private static IEnumerable<SolutionBatch> RunReduced(ColumnarTripleIndex index, ColumnarBatchPlan plan, GyoJoinTree tree)
+    {
+        int count = plan.Order.Count;
+        IReadOnlyList<Variable>[] scanSchemas = new IReadOnlyList<Variable>[count];
+        IReadOnlyList<SolutionBatch>[] relations = new IReadOnlyList<SolutionBatch>[count];
+        for(int i = 0; i < count; i++)
+        {
+            scanSchemas[i] = ColumnarBatchScan.ScanSchemaOf(index, plan.Order[i]);
+            relations[i] = [.. ColumnarBatchScan.Scan(index, plan.Order[i])];
+        }
+
+        //Upward pass: every child reduces its parent, children first, so a
+        //parent is shrunk by all its subtrees before reducing its own parent.
+        foreach(int node in tree.PostOrder)
+        {
+            int parent = tree.Parent[node];
+            if(parent >= 0)
+            {
+                relations[parent] = SolutionBatchSemijoin.Reduce(relations[parent], scanSchemas[parent], relations[node], scanSchemas[node]);
+            }
+        }
+
+        //Downward pass: every child is reduced by its now fully reduced
+        //parent, parents first. After both passes the database is globally
+        //consistent for the acyclic schema.
+        for(int k = tree.PostOrder.Count - 1; k >= 0; k--)
+        {
+            int node = tree.PostOrder[k];
+            int parent = tree.Parent[node];
+            if(parent >= 0)
+            {
+                relations[node] = SolutionBatchSemijoin.Reduce(relations[node], scanSchemas[node], relations[parent], scanSchemas[parent]);
+            }
+        }
+
+        IEnumerable<SolutionBatch> stream = relations[0];
+        List<Variable> accumulated = [.. scanSchemas[0]];
+
+        for(int step = 1; step < count; step++)
+        {
+            IReadOnlyList<Variable> probeSchema = scanSchemas[step];
+            stream = SolutionBatchJoin.HashJoin(stream, [.. accumulated], relations[step], probeSchema);
 
             foreach(Variable variable in probeSchema)
             {
@@ -252,6 +348,20 @@ public static class ColumnarBatchPipeline
         }
 
         return edges.Count <= 1;
+    }
+
+    /// <summary>The patterns' variable sets, in the given order — the join-tree builder's input.</summary>
+    /// <param name="patterns">The ordered patterns.</param>
+    /// <returns>One variable set per pattern.</returns>
+    private static List<IReadOnlyCollection<Variable>> EdgesOf(List<TriplePattern> patterns)
+    {
+        List<IReadOnlyCollection<Variable>> edges = new(patterns.Count);
+        foreach(TriplePattern pattern in patterns)
+        {
+            edges.Add(new HashSet<Variable>(pattern.Variables()));
+        }
+
+        return edges;
     }
 
     /// <summary>The number of bound positions in the pattern.</summary>

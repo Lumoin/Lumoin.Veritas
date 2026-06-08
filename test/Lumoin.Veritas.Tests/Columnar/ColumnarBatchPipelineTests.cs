@@ -97,6 +97,44 @@ internal sealed class ColumnarBatchPipelineTests
             registry);
     }
 
+    /// <summary>A fan-out fixture for a three-pattern chain: a 200-edge and a 201-edge share the subject, and a 202-edge extends the 200-edge's object.</summary>
+    /// <returns>The triples.</returns>
+    private static List<EncodedTriple> ChainFixture()
+    {
+        List<EncodedTriple> triples = [];
+        ulong state = 91;
+        for(int i = 0; i < 4_000; i++)
+        {
+            state = Mix(state);
+            uint subject = 100 + (uint)(state % 30);
+            uint @object = 300 + (uint)((state >> 8) % 50);
+            triples.Add(EncodedTriple.FromEncoded(subject, 200, @object));
+            triples.Add(EncodedTriple.FromEncoded(subject, 201, 400 + (uint)((state >> 16) % 20)));
+            triples.Add(EncodedTriple.FromEncoded(@object, 202, 500 + (uint)((state >> 24) % 10)));
+        }
+
+        return triples;
+    }
+
+    /// <summary>A three-pattern acyclic chain: the subject joins the 200- and 201-edges, the object joins the 202-edge.</summary>
+    /// <param name="registry">The variable registry.</param>
+    /// <returns>The pattern.</returns>
+    private static BasicGraphPattern ThreePatternChain(VariableRegistry registry)
+    {
+        Variable s = registry.GetOrAdd("s");
+        Variable o = registry.GetOrAdd("o");
+        Variable o2 = registry.GetOrAdd("o2");
+        Variable t = registry.GetOrAdd("t");
+
+        return new BasicGraphPattern(
+            [
+                new TriplePattern(PatternPosition.OfVariable(s), PatternPosition.Bound(TermId.FromEncoded(200)), PatternPosition.OfVariable(o)),
+                new TriplePattern(PatternPosition.OfVariable(s), PatternPosition.Bound(TermId.FromEncoded(201)), PatternPosition.OfVariable(o2)),
+                new TriplePattern(PatternPosition.OfVariable(o), PatternPosition.Bound(TermId.FromEncoded(202)), PatternPosition.OfVariable(t)),
+            ],
+            registry);
+    }
+
     /// <summary>Drains a solution stream into order-insensitive fingerprints.</summary>
     /// <param name="solutions">The stream.</param>
     /// <returns>The sorted fingerprints.</returns>
@@ -187,6 +225,47 @@ internal sealed class ColumnarBatchPipelineTests
         CollectionAssert.AreEqual(triangleLeapfrog, triangleBatched);
         Assert.HasCount(1, kinds);
         Assert.AreEqual(QueryEngineKind.Columnar, kinds[0]);
+    }
+
+    [TestMethod]
+    public async Task SemijoinReductionAgreesWithStreamingAndLeapfrog()
+    {
+        List<EncodedTriple> fixture = ChainFixture();
+        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(fixture, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+
+        QueryEngineRendezvous reduced = new(store, QueryEnginePolicy.Default with { PreferSemijoinReduction = true });
+        QueryEngineRendezvous streamed = new(store, QueryEnginePolicy.Default with { PreferSemijoinReduction = false });
+        QueryEngineRendezvous leapfrog = new(store, QueryEnginePolicy.Default with { PreferBatchedForAcyclic = false });
+
+        List<QueryEngineKind> kinds = [];
+        void Capture(in QueryTraceEvent evt)
+        {
+            if(evt.Kind == QueryTraceEventKind.EngineSelected)
+            {
+                kinds.Add(evt.Engine);
+            }
+        }
+
+        List<string> viaReduced = await DrainAsync(reduced.Query(
+            ThreePatternChain(new VariableRegistry()), TimeProvider.System, traceHandler: Capture, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+        List<string> viaStreamed = await DrainAsync(streamed.Query(
+            ThreePatternChain(new VariableRegistry()), TimeProvider.System, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+        List<string> viaLeapfrog = await DrainAsync(leapfrog.Query(
+            ThreePatternChain(new VariableRegistry()), TimeProvider.System, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.IsGreaterThan(0, viaLeapfrog.Count);
+        CollectionAssert.AreEqual(viaLeapfrog, viaReduced);
+        CollectionAssert.AreEqual(viaLeapfrog, viaStreamed);
+        Assert.HasCount(1, kinds);
+        Assert.AreEqual(QueryEngineKind.ColumnarBatched, kinds[0]);
+
+        //The plan attaches a join tree exactly when reduction is enabled and the shape has three or more patterns.
+        ColumnarTripleIndex index = ColumnarTripleIndex.Build(fixture);
+        Assert.IsNotNull(ColumnarBatchPipeline.TryPlan(index, ThreePatternChain(new VariableRegistry()), useSemijoinReduction: true)!.JoinTree);
+        Assert.IsNull(ColumnarBatchPipeline.TryPlan(index, ThreePatternChain(new VariableRegistry()), useSemijoinReduction: false)!.JoinTree);
+
+        //A two-pattern join stays on the unreduced stream even with reduction enabled.
+        Assert.IsNull(ColumnarBatchPipeline.TryPlan(index, AcyclicJoin(new VariableRegistry()), useSemijoinReduction: true)!.JoinTree);
     }
 
     [TestMethod]
