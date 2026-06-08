@@ -134,6 +134,91 @@ public sealed class OpenAddressedTable<TValue>
         return false;
     }
 
+    /// <summary>An allocation-free forward enumerator over the occupied entries, in slot order — for consumers that built a table and need to walk its contents (e.g. flattening a hash trie). Mutating the table during enumeration is undefined.</summary>
+    /// <returns>The entry enumerator.</returns>
+    internal Enumerator GetEnumerator()
+    {
+        return new Enumerator(this);
+    }
+
+    /// <summary>A forward cursor over a table's occupied slots, yielding each key with its value.</summary>
+    internal struct Enumerator: IEquatable<Enumerator>
+    {
+        private readonly OpenAddressedTable<TValue> table;
+
+        private int slot;
+
+        /// <summary>Constructs an enumerator positioned before the first slot.</summary>
+        /// <param name="table">The table to walk.</param>
+        public Enumerator(OpenAddressedTable<TValue> table)
+        {
+            ArgumentNullException.ThrowIfNull(table);
+
+            this.table = table;
+            slot = -1;
+        }
+
+        /// <summary>The key and value at the current slot.</summary>
+        public (ulong Key, TValue Value) Current => (table.keys[slot], table.values[slot]);
+
+        /// <summary>Advances to the next occupied slot.</summary>
+        /// <returns><see langword="true"/> when an occupied slot was found.</returns>
+        public bool MoveNext()
+        {
+            byte[] control = table.control;
+            while(++slot < control.Length)
+            {
+                if(control[slot] != Empty)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>Whether another enumerator walks the same table at the same slot.</summary>
+        /// <param name="other">The enumerator to compare.</param>
+        /// <returns><see langword="true"/> when both share a table and slot.</returns>
+        public readonly bool Equals(Enumerator other)
+        {
+            return ReferenceEquals(table, other.table) && slot == other.slot;
+        }
+
+        /// <summary>Whether the object is an equal enumerator.</summary>
+        /// <param name="obj">The object to compare.</param>
+        /// <returns><see langword="true"/> when <paramref name="obj"/> is an equal enumerator.</returns>
+        public readonly override bool Equals(object? obj)
+        {
+            return obj is Enumerator other && Equals(other);
+        }
+
+        /// <summary>A hash over the table identity and slot.</summary>
+        /// <returns>The hash code.</returns>
+        public readonly override int GetHashCode()
+        {
+            return HashCode.Combine(table, slot);
+        }
+
+        /// <summary>Whether two enumerators are equal.</summary>
+        /// <param name="left">The first enumerator.</param>
+        /// <param name="right">The second enumerator.</param>
+        /// <returns><see langword="true"/> when equal.</returns>
+        public static bool operator ==(Enumerator left, Enumerator right)
+        {
+            return left.Equals(right);
+        }
+
+        /// <summary>Whether two enumerators are unequal.</summary>
+        /// <param name="left">The first enumerator.</param>
+        /// <param name="right">The second enumerator.</param>
+        /// <returns><see langword="true"/> when unequal.</returns>
+        public static bool operator !=(Enumerator left, Enumerator right)
+        {
+            return !left.Equals(right);
+        }
+    }
+
     /// <summary>Doubles the slot arrays and re-probes every occupied entry into them; the keys are already distinct, so each finds a fresh empty slot.</summary>
     private void Grow()
     {
