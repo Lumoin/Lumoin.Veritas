@@ -8,23 +8,22 @@ using Lumoin.Veritas.Core.Encoding;
 namespace Lumoin.Veritas.Benchmarks;
 
 /// <summary>
-/// Soak measuring the resident memory of the columnar triple index on
-/// triangle-dense data — the storage footprint behind the "extreme triangle"
-/// representation, reported as bits per triple. The concrete type measured is
-/// <see cref="ColumnarTripleIndex"/>: its per-order block-packed CSR columns
-/// (delta-of-sorted values plus bit-packed offsets) are where a structured,
-/// near-sequential triangle corpus compresses hardest.
+/// Soak measuring the columnar triple index's <em>packed</em> bits per triple
+/// on triangle-dense data — the storage footprint behind the "extreme triangle"
+/// representation. The concrete type is <see cref="ColumnarTripleIndex"/>; its
+/// per-order block-packed CSR columns (<see cref="ColumnarOrder.PackedByteCount"/>,
+/// the exact packed byte count — not a heap estimate) are summed across the
+/// materialised orders, then divided by the triple count.
 /// </summary>
 /// <remarks>
 /// <para>
-/// The corpus is disjoint directed triangles over sequential node ids and one
-/// predicate — the favourable, highly-structured case that the compact figure
-/// describes; a random triangle graph would pack looser. Footprint is the
-/// managed-heap delta across the build (<see cref="GC.GetTotalMemory(bool)"/>
-/// with a full collect on each side, the corpus already resident before the
-/// "before" sample so the delta isolates the index). This is approximate — the
-/// codebase has no exact per-structure byte accessor yet — so the figure is a
-/// heap-retention estimate, not a serialized size. Line-oriented output.
+/// Reported both <b>per order</b> (the figure to compare against the
+/// representation's default) and as the <b>index total</b> (per order × the
+/// order count of the mode). The corpus is disjoint directed triangles over
+/// sequential ids and one predicate — the favourable, highly-structured case.
+/// Each <see cref="ColumnarOrderSetMode"/> is a point on the
+/// memory-vs-answerable-shapes curve: fewer orders cost less but cannot answer
+/// rotation-incompatible (cyclic) joins. Line-oriented output.
 /// </para>
 /// </remarks>
 internal static class TriangleMemorySoak
@@ -32,43 +31,44 @@ internal static class TriangleMemorySoak
     /// <summary>The single predicate every triangle edge carries.</summary>
     private const uint Predicate = 1_000;
 
-    /// <summary>Runs the soak ladder over a triangle-count range.</summary>
+    /// <summary>Runs the soak ladder over a triangle-count range and the order-set modes.</summary>
     public static void RunTriangleMemorySoak()
     {
-        RunConfiguration(triangles: 100_000);
         RunConfiguration(triangles: 500_000);
         RunConfiguration(triangles: 2_000_000);
     }
 
-    /// <summary>Builds the columnar index from a triangle corpus and reports its resident bits per triple.</summary>
+    /// <summary>Builds the columnar index from a triangle corpus under each order-set mode and reports its packed bits per triple.</summary>
     /// <param name="triangles">The triangle count; the triple count is three times this.</param>
     private static void RunConfiguration(int triangles)
     {
         List<EncodedTriple> corpus = BuildTriangles(triangles);
         long tripleCount = corpus.Count;
+        Console.WriteLine($"[triangle] triangles={triangles:N0} triples={tripleCount:N0}");
 
-        //The corpus is resident before the baseline sample, so the delta is the
-        //index alone. Full collect both sides to drop build scratch.
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        GC.Collect();
-        long before = GC.GetTotalMemory(forceFullCollection: true);
+        foreach(ColumnarOrderSetMode mode in (ReadOnlySpan<ColumnarOrderSetMode>)[ColumnarOrderSetMode.AllSixOrders, ColumnarOrderSetMode.ThreeRotations])
+        {
+            long start = Stopwatch.GetTimestamp();
+            ColumnarTripleIndex index = ColumnarTripleIndex.Build(corpus, mode);
+            TimeSpan elapsed = Stopwatch.GetElapsedTime(start);
 
-        long start = Stopwatch.GetTimestamp();
-        ColumnarTripleIndex index = ColumnarTripleIndex.Build(corpus);
-        TimeSpan elapsed = Stopwatch.GetElapsedTime(start);
+            long packedBytes = 0;
+            int orders = 0;
+            for(int permutation = 0; permutation < 6; permutation++)
+            {
+                if(index.IsPermutationAvailable(permutation))
+                {
+                    packedBytes += index.OrderAt(permutation).PackedByteCount;
+                    orders++;
+                }
+            }
 
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        GC.Collect();
-        long after = GC.GetTotalMemory(forceFullCollection: true);
-        long indexBytes = Math.Max(after - before, 0);
-        GC.KeepAlive(index);
+            double totalBits = packedBytes * 8.0 / tripleCount;
+            double perOrderBits = totalBits / orders;
+            double totalMiB = packedBytes / (1024.0 * 1024.0);
 
-        double bitsPerTriple = indexBytes * 8.0 / tripleCount;
-        double indexMiB = indexBytes / (1024.0 * 1024.0);
-
-        Console.WriteLine($"[triangle] triangles={triangles:N0} triples={tripleCount:N0} | build {elapsed.TotalMilliseconds,8:F1} ms | index {indexMiB,7:F1} MiB | {bitsPerTriple,6:F1} bits/triple ({indexBytes * 1.0 / tripleCount:F2} B/triple)");
+            Console.WriteLine($"[triangle]   {mode,-14} orders={orders} | build {elapsed.TotalMilliseconds,8:F1} ms | packed {totalMiB,7:F1} MiB | {perOrderBits,5:F1} bits/triple/order | {totalBits,6:F1} bits/triple total");
+        }
     }
 
     /// <summary>Builds disjoint directed triangles over sequential node ids: triangle <c>i</c> carries the edges (3i→3i+1), (3i+1→3i+2), (3i+2→3i).</summary>
