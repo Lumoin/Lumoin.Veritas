@@ -933,6 +933,24 @@ public sealed class SparqlQueryEngine
 
         if(typeExpansions.Count == 0)
         {
+            //Batched-scan fast path (default graph only): when the columnar pipeline applies, consume its
+            //column-major batches straight into the builder, so no per-row backend Solution is materialised. The
+            //per-solution rewrites (self-join equality, triple-term destructuring) have no columnar form, so a BGP
+            //carrying either stays on the per-row path. A null result declines to that same per-row path.
+            if(rendezvous is not null
+                && selfJoinEqualities.Count == 0
+                && !hasTripleTermMatches
+                && rendezvous.TryQueryBatchedColumns(graphStore, query, TimeProvider.System, accessControl) is (_, IEnumerable<SolutionBatch> batches))
+            {
+                foreach(SolutionBatch batch in batches)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    builder.AppendBatch(batch);
+                }
+
+                return builder.Build();
+            }
+
             await EvaluateVariantAsync(query).ConfigureAwait(false);
 
             return builder.Build();
@@ -1031,6 +1049,48 @@ public sealed class SparqlQueryEngine
             }
 
             rowCount++;
+        }
+
+        /// <summary>
+        /// Appends a whole Core <see cref="SolutionBatch"/> column-wise, routing each batch column to its projected
+        /// column by backend variable and leaving the columns the batch does not carry at <c>0</c> (unbound). The
+        /// batched scan never materialised a per-row <see cref="Solution"/>, so no heap solution is allocated per
+        /// scanned row.
+        /// </summary>
+        /// <param name="batch">The Core batch (its schema's variables are this BGP's backend variables).</param>
+        public void AppendBatch(SolutionBatch batch)
+        {
+            int rows = batch.Count;
+            if(rows == 0)
+            {
+                return;
+            }
+
+            int baseRow = rowCount;
+            for(int column = 0; column < columns.Length; column++)
+            {
+                List<uint> target = columns[column];
+                for(int row = 0; row < rows; row++)
+                {
+                    target.Add(0);
+                }
+            }
+
+            IReadOnlyList<Variable> batchSchema = batch.Schema;
+            for(int source = 0; source < batchSchema.Count; source++)
+            {
+                if(backendToColumn.TryGetValue(batchSchema[source], out int column))
+                {
+                    ReadOnlySpan<uint> values = batch.ColumnOf(source);
+                    List<uint> target = columns[column];
+                    for(int row = 0; row < rows; row++)
+                    {
+                        target[baseRow + row] = values[row];
+                    }
+                }
+            }
+
+            rowCount += rows;
         }
 
         /// <summary>Freezes the accumulated columns into a columnar <see cref="SolutionTable"/>.</summary>

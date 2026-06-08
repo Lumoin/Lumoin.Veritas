@@ -415,6 +415,111 @@ public sealed class QueryEngineRendezvous
         return SolutionBatch.FlattenAsync(ColumnarBatchPipeline.Run(view, plan), cancellationToken);
     }
 
+    /// <summary>
+    /// The columnar batched pipeline as a <em>raw batch stream</em> rather than a flattened per-row
+    /// <see cref="Solution"/> sequence: when this query qualifies for the batched scan-and-hash path (the same
+    /// gating <see cref="Query(HypertrieGraphStore?, BasicGraphPattern, TimeProvider, Planner?, AprioriCardinalities?, AccessControlDelegate?, AccessContext?, TraceHandler{QueryTraceEvent}?, Guid, IdentifierDelegate?, CancellationToken)"/>
+    /// applies — qualifying shape, rotation-compatible, view available or buildable on demand, acyclic plan, and
+    /// no per-candidate access control), returns the plan's output schema and the column-major
+    /// <see cref="SolutionBatch"/> stream the pipeline produces, having announced the selection on the trace bus.
+    /// Returns <see langword="null"/> for every case the per-row <c>Query</c> would handle differently (a
+    /// superseded snapshot, a non-qualifying shape, a rotation-incompatible or cyclic plan, access control, or the
+    /// batched policy disabled); the caller then evaluates through <c>Query</c> for those, so a conservative
+    /// <see langword="null"/> is always sound — it only declines the columnar fast path, never returns wrong rows.
+    /// A consumer that keeps encoded term ids columnar avoids the per-row <see cref="Solution"/> the flattening
+    /// boundary would otherwise allocate for every scanned row.
+    /// </summary>
+    /// <param name="pinnedStore">The store generation the caller's snapshot pinned, or <c>null</c> to use the rendezvous's current generation.</param>
+    /// <param name="query">The basic graph pattern.</param>
+    /// <param name="timeProvider">Clock used to stamp Ticks on the emitted selection event.</param>
+    /// <param name="accessControl">The access-control policy; non-<c>null</c> declines the batched path (it has no per-candidate consultation point).</param>
+    /// <param name="traceHandler">Optional trace handler the selection event is emitted to.</param>
+    /// <param name="correlationId">Correlation id stamped on the selection event. Pass <see cref="Guid.Empty"/> to generate a fresh one.</param>
+    /// <param name="identifiers">The identifier source used to mint a fresh correlation id when <paramref name="correlationId"/> is <see cref="Guid.Empty"/>; defaults to <see cref="VeritasIdentifiers.System"/>.</param>
+    /// <returns>The plan's output schema and its batch stream when the batched path applies, otherwise <see langword="null"/>.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="query"/> or <paramref name="timeProvider"/> is <c>null</c>.</exception>
+    public (IReadOnlyList<Variable> Schema, IEnumerable<SolutionBatch> Batches)? TryQueryBatchedColumns(
+        HypertrieGraphStore? pinnedStore,
+        BasicGraphPattern query,
+        TimeProvider timeProvider,
+        AccessControlDelegate? accessControl = null,
+        TraceHandler<QueryTraceEvent>? traceHandler = null,
+        Guid correlationId = default,
+        IdentifierDelegate? identifiers = null)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+
+        //The batched path has no per-candidate access-control consultation point, and it only exists when the
+        //policy opts in. Either disqualifier declines to the per-row Query.
+        if(accessControl is not null || !policy.PreferBatchedForAcyclic)
+        {
+            return null;
+        }
+
+        HypertrieGraphStore currentStore;
+        ColumnarTripleIndex? currentView;
+
+        lock(StateLock)
+        {
+            currentStore = store;
+            currentView = columnarView;
+        }
+
+        //A pinned snapshot the rendezvous has advanced past is answered on the system of record by Query, not here.
+        if(pinnedStore is not null && !ReferenceEquals(pinnedStore, currentStore))
+        {
+            return null;
+        }
+
+        if(query.Patterns.Count < policy.MinimumPatternsForColumnar || !IsColumnarCapable(query))
+        {
+            return null;
+        }
+
+        if(policy.OrderSetMode != ColumnarOrderSetMode.AllSixOrders
+            && ColumnarRotationPlanner.TryPlanGlobalOrder(policy.OrderSetMode, query) is null)
+        {
+            return null;
+        }
+
+        ColumnarTripleIndex? view = currentView;
+        long buildMilliseconds = 0;
+        EngineSelectionReason reason = EngineSelectionReason.ViewReused;
+        if(view is null)
+        {
+            if(!policy.BuildViewOnDemand)
+            {
+                return null;
+            }
+
+            (view, bool isBuilt, buildMilliseconds) = EnsureView(currentStore);
+            if(view is null)
+            {
+                //A commit advanced the rendezvous past the read generation; Query answers on the consistent store.
+                return null;
+            }
+
+            reason = isBuilt ? EngineSelectionReason.ViewBuilt : EngineSelectionReason.ViewReused;
+        }
+
+        ColumnarBatchPlan? plan = ColumnarBatchPipeline.TryPlan(view, query);
+        if(plan is null)
+        {
+            return null;
+        }
+
+        Guid effectiveCorrelationId = correlationId == Guid.Empty
+            ? (identifiers ?? VeritasIdentifiers.System)(new IdentifierRequest(IdentifierPurpose.Correlation, default))
+            : correlationId;
+
+        EmitEngineSelected(
+            timeProvider, traceHandler, effectiveCorrelationId,
+            QueryEngineKind.ColumnarBatched, reason, view.TripleCount, buildMilliseconds);
+
+        return (plan.Schema, ColumnarBatchPipeline.Run(view, plan));
+    }
+
     private IAsyncEnumerable<Solution> QueryColumnar(
         ColumnarTripleIndex view,
         BasicGraphPattern query,
