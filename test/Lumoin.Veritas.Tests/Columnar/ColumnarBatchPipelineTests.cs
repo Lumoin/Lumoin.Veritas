@@ -135,6 +135,43 @@ internal sealed class ColumnarBatchPipelineTests
             registry);
     }
 
+    /// <summary>A star fixture: each subject carries several objects on each of three predicates, so the three-pattern join over the shared subject fans out.</summary>
+    /// <returns>The triples.</returns>
+    private static List<EncodedTriple> StarFixture()
+    {
+        List<EncodedTriple> triples = [];
+        for(uint subject = 100; subject < 120; subject++)
+        {
+            for(uint i = 0; i < 6; i++)
+            {
+                triples.Add(EncodedTriple.FromEncoded(subject, 200, 300 + i));
+                triples.Add(EncodedTriple.FromEncoded(subject, 201, 400 + i));
+                triples.Add(EncodedTriple.FromEncoded(subject, 202, 500 + i));
+            }
+        }
+
+        return triples;
+    }
+
+    /// <summary>A three-pattern star: every arm joins on the shared subject <c>?s</c>.</summary>
+    /// <param name="registry">The variable registry.</param>
+    /// <returns>The pattern.</returns>
+    private static BasicGraphPattern StarQuery(VariableRegistry registry)
+    {
+        Variable s = registry.GetOrAdd("s");
+        Variable o = registry.GetOrAdd("o");
+        Variable o2 = registry.GetOrAdd("o2");
+        Variable o3 = registry.GetOrAdd("o3");
+
+        return new BasicGraphPattern(
+            [
+                new TriplePattern(PatternPosition.OfVariable(s), PatternPosition.Bound(TermId.FromEncoded(200)), PatternPosition.OfVariable(o)),
+                new TriplePattern(PatternPosition.OfVariable(s), PatternPosition.Bound(TermId.FromEncoded(201)), PatternPosition.OfVariable(o2)),
+                new TriplePattern(PatternPosition.OfVariable(s), PatternPosition.Bound(TermId.FromEncoded(202)), PatternPosition.OfVariable(o3)),
+            ],
+            registry);
+    }
+
     /// <summary>Drains a solution stream into order-insensitive fingerprints.</summary>
     /// <param name="solutions">The stream.</param>
     /// <returns>The sorted fingerprints.</returns>
@@ -266,6 +303,48 @@ internal sealed class ColumnarBatchPipelineTests
 
         //A two-pattern join stays on the unreduced stream even with reduction enabled.
         Assert.IsNull(ColumnarBatchPipeline.TryPlan(index, AcyclicJoin(new VariableRegistry()), useSemijoinReduction: true)!.JoinTree);
+    }
+
+    [TestMethod]
+    public async Task FactorizedStarAgreesWithStreamingAndLeapfrog()
+    {
+        List<EncodedTriple> fixture = StarFixture();
+        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(fixture, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+
+        QueryEngineRendezvous factorized = new(store, QueryEnginePolicy.Default with { PreferFactorizedStar = true });
+        QueryEngineRendezvous streamed = new(store, QueryEnginePolicy.Default with { PreferFactorizedStar = false, PreferSemijoinReduction = false });
+        QueryEngineRendezvous leapfrog = new(store, QueryEnginePolicy.Default with { PreferBatchedForAcyclic = false });
+
+        List<QueryEngineKind> kinds = [];
+        void Capture(in QueryTraceEvent evt)
+        {
+            if(evt.Kind == QueryTraceEventKind.EngineSelected)
+            {
+                kinds.Add(evt.Engine);
+            }
+        }
+
+        List<string> viaFactorized = await DrainAsync(factorized.Query(
+            StarQuery(new VariableRegistry()), TimeProvider.System, traceHandler: Capture, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+        List<string> viaStreamed = await DrainAsync(streamed.Query(
+            StarQuery(new VariableRegistry()), TimeProvider.System, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+        List<string> viaLeapfrog = await DrainAsync(leapfrog.Query(
+            StarQuery(new VariableRegistry()), TimeProvider.System, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.IsGreaterThan(0, viaLeapfrog.Count);
+        CollectionAssert.AreEqual(viaLeapfrog, viaFactorized);
+        CollectionAssert.AreEqual(viaLeapfrog, viaStreamed);
+        Assert.HasCount(1, kinds);
+        Assert.AreEqual(QueryEngineKind.ColumnarBatched, kinds[0]);
+
+        //The plan carries a star key exactly when the factorised-star policy is enabled and the shape is a star.
+        ColumnarTripleIndex starIndex = ColumnarTripleIndex.Build(fixture);
+        Assert.IsNotNull(ColumnarBatchPipeline.TryPlan(starIndex, StarQuery(new VariableRegistry()), useSemijoinReduction: false, useFactorizedStar: true)!.StarKey);
+        Assert.IsNull(ColumnarBatchPipeline.TryPlan(starIndex, StarQuery(new VariableRegistry()), useSemijoinReduction: false, useFactorizedStar: false)!.StarKey);
+
+        //A chain is not a star: its third pattern joins on a branch variable, so the star key stays null even with the flag on.
+        ColumnarTripleIndex chainIndex = ColumnarTripleIndex.Build(ChainFixture());
+        Assert.IsNull(ColumnarBatchPipeline.TryPlan(chainIndex, ThreePatternChain(new VariableRegistry()), useSemijoinReduction: false, useFactorizedStar: true)!.StarKey);
     }
 
     [TestMethod]

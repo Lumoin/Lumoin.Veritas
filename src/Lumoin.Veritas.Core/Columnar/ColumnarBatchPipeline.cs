@@ -47,9 +47,10 @@ public static class ColumnarBatchPipeline
     /// <param name="index">The index the scans will run on; its materialised orders bound scanability.</param>
     /// <param name="query">The basic graph pattern.</param>
     /// <param name="useSemijoinReduction">Whether to attach a join tree so <see cref="Run"/> reduces dangling tuples by semijoin before the join. Engaged only for three or more scan patterns, where an intermediate can exceed the output; two-pattern joins, whose single intermediate is the output, gain nothing and stay on the unreduced stream.</param>
+    /// <param name="useFactorizedStar">Whether to route a star shape — three or more patterns all joining on one shared key — through the factorising join, keeping the intermediates product-of-unions until the final flatten instead of materialising each cross product. Takes precedence over semijoin reduction when the shape qualifies; non-star shapes are unaffected.</param>
     /// <returns>The plan, or <see langword="null"/>.</returns>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public static ColumnarBatchPlan? TryPlan(ColumnarTripleIndex index, BasicGraphPattern query, bool useSemijoinReduction = false)
+    public static ColumnarBatchPlan? TryPlan(ColumnarTripleIndex index, BasicGraphPattern query, bool useSemijoinReduction = false, bool useFactorizedStar = false)
     {
         ArgumentNullException.ThrowIfNull(index);
         ArgumentNullException.ThrowIfNull(query);
@@ -145,16 +146,23 @@ public static class ColumnarBatchPipeline
             AppendNew(schema, ColumnarBatchScan.ScanSchemaOf(index, scannable[next]));
         }
 
+        //A star — three or more patterns all joining on one shared key —
+        //factorises across the whole chain: the key stays the group key and
+        //each pattern attaches as a branch, so no cross product materialises
+        //between joins. It takes precedence over semijoin reduction, which
+        //bounds intermediates but still flattens them.
+        IReadOnlyList<Variable>? starKey = useFactorizedStar ? TryStarKey(index, order) : null;
+
         //Yannakakis pays only when an intermediate can outgrow the
         //output — three or more relations. The tree is built over the
         //execution order so its indices address the materialised
         //relations directly; if it fails to build the run stays on the
         //unreduced stream, whose answers are identical.
-        GyoJoinTree? joinTree = useSemijoinReduction && order.Count >= 3
+        GyoJoinTree? joinTree = starKey is null && useSemijoinReduction && order.Count >= 3
             ? GyoJoinTree.TryBuild(EdgesOf(order))
             : null;
 
-        return new ColumnarBatchPlan(constraints, order, schema, joinTree);
+        return new ColumnarBatchPlan(constraints, order, schema, joinTree, starKey);
     }
 
     /// <summary>
@@ -189,6 +197,11 @@ public static class ColumnarBatchPipeline
             empty.SetCount(1);
 
             return [empty];
+        }
+
+        if(plan.StarKey is not null)
+        {
+            return RunFactorizedStar(index, plan);
         }
 
         return plan.JoinTree is null
@@ -292,6 +305,149 @@ public static class ColumnarBatchPipeline
         }
 
         return stream;
+    }
+
+    /// <summary>
+    /// The factorised star: join the first two patterns into a product-of-
+    /// unions keyed on the shared variables, then attach each further pattern
+    /// as a branch on that same key. No cross product materialises between
+    /// joins; the final flatten expands the result the consumer drains. The
+    /// answers are identical to the streamed left-deep join — the plan's star
+    /// detection guarantees every step shares exactly the key, so the
+    /// fall-back to the stream is only a correctness backstop, never taken on
+    /// a planned star.
+    /// </summary>
+    /// <param name="index">The index the plan was made for.</param>
+    /// <param name="plan">The plan, whose <see cref="ColumnarBatchPlan.StarKey"/> is set.</param>
+    /// <returns>The result batches over <see cref="ColumnarBatchPlan.Schema"/>.</returns>
+    private static IEnumerable<SolutionBatch> RunFactorizedStar(ColumnarTripleIndex index, ColumnarBatchPlan plan)
+    {
+        IReadOnlyList<Variable> schema0 = ColumnarBatchScan.ScanSchemaOf(index, plan.Order[0]);
+        IReadOnlyList<Variable> schema1 = ColumnarBatchScan.ScanSchemaOf(index, plan.Order[1]);
+        FactorizedBatch factorized = FactorizedBatchJoin.Join(
+            ColumnarBatchScan.Scan(index, plan.Order[0]), schema0,
+            ColumnarBatchScan.Scan(index, plan.Order[1]), schema1);
+
+        for(int step = 2; step < plan.Order.Count; step++)
+        {
+            IReadOnlyList<Variable> stepSchema = ColumnarBatchScan.ScanSchemaOf(index, plan.Order[step]);
+            FactorizedBatch? extended = FactorizedBatchJoin.AddBranch(
+                factorized, ColumnarBatchScan.Scan(index, plan.Order[step]), stepSchema);
+
+            if(extended is null)
+            {
+                return RunStreaming(index, plan);
+            }
+
+            factorized = extended;
+        }
+
+        return factorized.Flatten();
+    }
+
+    /// <summary>
+    /// The shared join key when <paramref name="order"/> is a factorisable
+    /// star, or <see langword="null"/>. A star is three or more patterns
+    /// where the first two share one or two variables and every later pattern
+    /// shares exactly those same variables with the accumulated schema — so
+    /// the key never moves into a branch and each pattern only adds new
+    /// columns. Any pattern sharing a non-key (branch) variable, fewer than
+    /// the full key, or a wider key disqualifies the shape, which then takes
+    /// the ordinary stream.
+    /// </summary>
+    /// <param name="index">The index the scan schemas are read from.</param>
+    /// <param name="order">The execution order from the greedy planner.</param>
+    /// <returns>The star key, or <see langword="null"/>.</returns>
+    private static List<Variable>? TryStarKey(ColumnarTripleIndex index, List<TriplePattern> order)
+    {
+        if(order.Count < 3)
+        {
+            return null;
+        }
+
+        IReadOnlyList<Variable> schema0 = ColumnarBatchScan.ScanSchemaOf(index, order[0]);
+        IReadOnlyList<Variable> schema1 = ColumnarBatchScan.ScanSchemaOf(index, order[1]);
+        List<Variable> key = Intersection(schema0, schema1);
+
+        if(key.Count is < 1 or > SolutionBatchJoin.MaximumJoinVariables)
+        {
+            return null;
+        }
+
+        List<Variable> accumulated = [.. schema0];
+        AppendNew(accumulated, schema1);
+
+        for(int step = 2; step < order.Count; step++)
+        {
+            IReadOnlyList<Variable> stepSchema = ColumnarBatchScan.ScanSchemaOf(index, order[step]);
+            List<Variable> shared = Intersection(stepSchema, accumulated);
+
+            if(!SameSet(shared, key))
+            {
+                return null;
+            }
+
+            AppendNew(accumulated, stepSchema);
+        }
+
+        return key;
+    }
+
+    /// <summary>The variables of <paramref name="candidates"/> that also appear in <paramref name="filter"/>, in candidate order.</summary>
+    /// <param name="candidates">The schema whose order is preserved.</param>
+    /// <param name="filter">The schema membership is tested against.</param>
+    /// <returns>The shared variables.</returns>
+    private static List<Variable> Intersection(IReadOnlyList<Variable> candidates, IReadOnlyList<Variable> filter)
+    {
+        List<Variable> shared = [];
+        foreach(Variable variable in candidates)
+        {
+            if(ContainsVariable(filter, variable))
+            {
+                shared.Add(variable);
+            }
+        }
+
+        return shared;
+    }
+
+    /// <summary>Whether the schema holds the variable.</summary>
+    /// <param name="schema">The schema.</param>
+    /// <param name="variable">The variable.</param>
+    /// <returns><see langword="true"/> when present.</returns>
+    private static bool ContainsVariable(IReadOnlyList<Variable> schema, Variable variable)
+    {
+        for(int i = 0; i < schema.Count; i++)
+        {
+            if(schema[i] == variable)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Whether two variable lists hold the same set — equal length and every member of one present in the other.</summary>
+    /// <param name="left">The first list.</param>
+    /// <param name="right">The second list.</param>
+    /// <returns><see langword="true"/> when the sets are equal.</returns>
+    private static bool SameSet(List<Variable> left, List<Variable> right)
+    {
+        if(left.Count != right.Count)
+        {
+            return false;
+        }
+
+        foreach(Variable variable in left)
+        {
+            if(!ContainsVariable(right, variable))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>
