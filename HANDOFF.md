@@ -12,7 +12,7 @@ in "Next".
 
 ## Current state
 
-- Branch `main`, tree clean at commit **`ef037a7`** (depth-2 chain factorization; `3a521e0` wired the star into the pipeline, `77249b0` the consume side, `ccbe7f3` the produce side, `d4daefe` added this file, `08d0db1` the Yannakakis measurement).
+- Branch `main`, tree clean at commit **`112716b`** (factorization soak control rungs; `ef037a7` was depth-2 chain factorization, `3a521e0` wired the star into the pipeline, `77249b0` the consume side, `ccbe7f3` the produce side, `08d0db1` the Yannakakis measurement).
 - Full suite: **8078 total / 0 failed / 548 skipped** (the +8 over the pre-§4.2 count is the new factorized-join tests; the skip count jitters ±2 with the environment-conditional OWL-entailment `Inconclusive` tests). With `PreferFactorizedStar` default-on, the whole corpus routes every star BGP through the factorizing join as the differential oracle.
 - One unrelated working-tree change persists: `generate-local-test-nuget-packages.ps1` (a sister project's edit excluding the AOT CLI from local packaging) — not mine, left uncommitted on purpose.
 - There are local commits not pushed to origin. **Do not `git push`** without explicit owner approval —
@@ -115,12 +115,30 @@ yet wired into `ColumnarBatchPipeline`**. Shipped in one commit:
   matches; returns `null` outside the step (already nested, not a single-column branch, or a wider join).
   Chain soak: **×22–28 compression, ×2.3–5.7 time, ×7.8–8.5 alloc** vs the flat streamed chain. Standalone.
 
+- **`112716b` — measurement, no-win controls (the `08d0db1` standard):** the soak now characterizes WHERE
+  factorization wins. Star compression is `fan²/3`, chain compression `(fanA·S)/(fanA+S)` with `S=fanB·fanC`.
+  **Key finding:** at fan=1 the factorized form is *strictly worse* — stores 3× (star) / 2× (chain) the flat
+  rows and runs ~×0.2–0.7 the speed; the chain needs fan-out on BOTH the independent arm AND the sub-tree
+  (one-sided is ×1.0). So this is a **specialized** optimization, not a free win — break-even at star fan≈1.7.
+
+### ⚠ Open decision on §4.2 — the `PreferFactorizedStar` default
+
+`PreferFactorizedStar` shipped **default-on** (`3a521e0`), but the measurement above shows a **regression on
+low-fan-out stars** — and the most common real star is the property-table shape (`?s a ?t . ?s label ?l .
+?s name ?n`, ~one value each, fan≈1), exactly the regression case. The corpus stays green (correctness), but
+no-fan stars now pay ~5× time / ~2.5× alloc. Unlike §4.1's semijoin (~3% at no-win, genuinely safe), this
+default is **not** clearly safe. Options to settle before/with the pipeline-wiring step: (a) flip the default
+**off** until a cost model — opt-in for known fan-out workloads; (b) add a **fan-out gate** in the planner so
+only above-break-even shapes route to factorized; (c) leave on, revisit at the cost-model stage. Awaiting
+owner call.
+
 **Next on §4.2:** wire `NestBranch` into `ColumnarBatchPipeline` — detect a chain sub-shape in the plan
-(`AddBranch` returns `null` there today) and route `Join` → `NestBranch` → `Flatten`, behind the same
-`PreferFactorizedStar` flag or a sibling, with the flatten bridge as the corpus-wide oracle. Then deeper
-(depth-3+) factorization — today `NestBranch` returns `null` on an already-nested input, so a four-pattern
-chain only factorizes its first three joins; lifting that needs the nested-path flatten to handle arbitrary
-depth via an explicit stack rather than the single-level sub-batch shortcut. Keep the hot path concrete.
+(`AddBranch` returns `null` there today) and route `Join` → `NestBranch` → `Flatten`, with the flatten bridge
+as the corpus-wide oracle — and settle the default/gate question above at the same time (the planner is where
+a fan-out gate would live). Then deeper (depth-3+) factorization — today `NestBranch` returns `null` on an
+already-nested input, so a four-pattern chain only factorizes its first three joins; lifting that needs the
+nested-path flatten to handle arbitrary depth via an explicit stack rather than the single-level sub-batch
+shortcut. Keep the hot path concrete.
 
 ## Recently shipped — Yannakakis semijoin reduction (roadmap item §4.1)
 
