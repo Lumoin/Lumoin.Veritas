@@ -175,6 +175,16 @@ internal static class Program
             return;
         }
 
+        //Factorised intermediates vs the flat row product on a fan-out join
+        //whose result is a per-key cross product - the stored-size shrink the
+        //product-of-unions representation guarantees.
+        if(args.Length > 0 && args[0] == "--profile-factorized")
+        {
+            FactorizationSoak.RunFactorizationSoak();
+
+            return;
+        }
+
         //The index-arity bounding probe: per-graph store composition vs
         //one merged store, build and query, over a graph-count ladder.
         if(args.Length > 0 && args[0] == "--profile-graph-fanout")
