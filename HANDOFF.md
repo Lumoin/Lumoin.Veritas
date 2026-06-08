@@ -12,7 +12,7 @@ in "Next".
 
 ## Current state
 
-- Branch `main`, tree clean at commit **`3ff1f61`** (open-addressed join table + measurement; `b3308cf` chain pipeline route, `31d2a12` made the star opt-in, `ef037a7` depth-2 chain factorization, `3a521e0` wired the star into the pipeline, `77249b0`/`ccbe7f3` consume/produce sides, `08d0db1` the Yannakakis measurement).
+- Branch `main`, tree clean at commit **`46ebbf6`** (soak rename `--profile-column-bits`; `3ff1f61` open-addressed join table + measurement, `b3308cf` chain pipeline route, `31d2a12` star opt-in, `ef037a7` depth-2 chain factorization, `3a521e0` wired the star, `77249b0`/`ccbe7f3` consume/produce, `08d0db1` Yannakakis). **§4.3 Free Join design pass done** (`tempdocs/free-join-design-memo.md`).
 - Full suite: **8083 total / 0 failed / 548 skipped** (the new factorized-join + open-addressed-table tests over the pre-§4.2 count; the skip count jitters ±2 with the environment-conditional OWL-entailment `Inconclusive` tests). Factorization is opt-in (default-off): the corpus routes stars/chains through the streamed path by default.
 - One unrelated working-tree change persists: `generate-local-test-nuget-packages.ps1` (a sister project's edit excluding the AOT CLI from local packaging) — not mine, left uncommitted on purpose.
 - There are local commits not pushed to origin. **Do not `git push`** without explicit owner approval —
@@ -229,9 +229,24 @@ written iteratively). Narrow payoff — weigh against §4.3. Keep the hot path c
 
 ### §4.3 — Free Join hybrid
 
-Unify the two join engines into one execution model: the operator-layer binary hash join (the row-layer
-`SolutionHashJoinIndex` and the columnar `SolutionBatchJoin`) and the leapfrog WCOJ inside BGPs. This is
-the largest item and depends on the factorized representation being in place.
+Unify the two join engines into one execution model: the columnar binary hash join (`SolutionBatchJoin` /
+`ColumnarBatchPipeline`) and the leapfrog WCOJ (`ColumnarBasicGraphPatternEvaluator` /
+`ColumnarTriejoinIterator`). Largest item; depends on the factorized representation (now in place).
+
+**Design pass done** (memo `tempdocs/free-join-design-memo.md`). Key findings: both engines already share
+the trie geometry, the planner, and the `Solution` output — they differ only in the per-level intersection
+(leapfrog track-max over the *sorted* CSR vs Free Join's hash-trie probe). Free Join's **Generalized Hash
+Trie** (leaf = tuple vector, internal node = hash map) makes depth-1 = binary hash join and full-depth =
+WCOJ one structure; the executor interpolates. Central decision: **reuse the sorted CSR trie first** (option
+2 — generalize the driver to mix depth-1 hash joins with deep leapfrog, reusing `ColumnarTriejoinIterator`),
+then evaluate a hash-trie build (`OpenAddressedTable` nodes) where build cost pays. **Augment, not replace**:
+new `FreeJoinExecutor` behind `PreferFreeJoin` (default-off), the two existing engines as the differential
+oracle. Reusable pieces: `OpenAddressedTable<TValue>` (GHT node), `SolutionBatch` (GHT leaf),
+`ColumnarBatchScan` (source), the planner/variable-order machinery. Staged plan (memo): (1) `FreeJoinPlan`
+= variable order + per-relation depth that can *reproduce* each existing engine; (2) the generic-join
+executor, differential vs batched (acyclic) and leapfrog (cyclic); (3) a minimal depth heuristic (real
+selection = the deferred selector research); (4) hash-trie nodes where measured; (5) **factorized Free Join
+output** (`FactorizedBatch`) — where §4.2 and §4.3 converge, the high-value payoff.
 
 ### After the tier
 
