@@ -2327,7 +2327,15 @@ public sealed class SparqlQueryEngine
         {
             case Filter filter:
             {
-                return SolutionTable.FromRows(await ApplyFilterAsync(filter, results[new ResultKey(filter.Input, graph)].AsRows(), graph, cancellationToken).ConfigureAwait(false));
+                //A term-(in)equality against a constant IRI evaluates on the encoded column directly (no decode),
+                //keeping only survivors columnar — the selective FILTER the row path would decode-then-discard.
+                SolutionTable filterInput = results[new ResultKey(filter.Input, graph)];
+                if(filterInput.IsColumnar && TryColumnarTermFilter(filter.Condition, filterInput, out SolutionTable filtered))
+                {
+                    return filtered;
+                }
+
+                return SolutionTable.FromRows(await ApplyFilterAsync(filter, filterInput.AsRows(), graph, cancellationToken).ConfigureAwait(false));
             }
 
             case Extend extend:
@@ -2345,6 +2353,65 @@ public sealed class SparqlQueryEngine
                 throw new InvalidOperationException($"Operator '{op.GetType().Name}' is not an expression-gated operator.");
             }
         }
+    }
+
+    /// <summary>
+    /// Recognises a <c>FILTER</c> condition of the form <c>?v = &lt;iri&gt;</c> / <c>&lt;iri&gt; = ?v</c> (and the
+    /// <c>!=</c> forms) and evaluates it directly on the columnar input's encoded column, gathering survivors
+    /// without decoding. Sound only for an IRI constant — for an IRI, SPARQL value equality coincides with term-id
+    /// equality (an IRI is never value-equal to a different term), so a literal constant or a variable-to-variable
+    /// comparison (which carry value semantics across lexical forms) is left to the row path. A condition that does
+    /// not match the shape returns <see langword="false"/>, and the caller evaluates it row-by-row.
+    /// </summary>
+    /// <param name="condition">The filter condition.</param>
+    /// <param name="input">The columnar input table.</param>
+    /// <param name="result">Receives the surviving columnar table when the condition matched the columnar shape.</param>
+    /// <returns><see langword="true"/> when the condition was evaluated columnar; otherwise <see langword="false"/>.</returns>
+    private static bool TryColumnarTermFilter(ExpressionNode condition, SolutionTable input, out SolutionTable result)
+    {
+        result = SolutionTable.Empty;
+        if(condition is not ComparisonExpression { Op: ComparisonOp.Equal or ComparisonOp.NotEqual } comparison)
+        {
+            return false;
+        }
+
+        (VariableExpression? variable, ConstantExpression? constant) = (comparison.Left, comparison.Right) switch
+        {
+            (VariableExpression v, ConstantExpression c) => (v, c),
+            (ConstantExpression c, VariableExpression v) => (v, c),
+            _ => (null, null)
+        };
+
+        if(variable is null || constant is null || constant.Value is not NamedNode iri)
+        {
+            return false;
+        }
+
+        int columnIndex = -1;
+        IReadOnlyList<SparqlVariable> schema = input.Schema;
+        for(int i = 0; i < schema.Count; i++)
+        {
+            if(schema[i] == variable.Variable)
+            {
+                columnIndex = i;
+
+                break;
+            }
+        }
+
+        //A variable absent from the schema is unbound in every row; both = and != are then a type error that drops
+        //every row, so the result is empty — and the columnar shape was still "handled" (no row fallback needed).
+        if(columnIndex < 0)
+        {
+            result = SolutionTable.Empty;
+
+            return true;
+        }
+
+        uint termId = input.Dictionary.GetIdOrDefault(iri).Encoded;
+        result = ColumnarOperators.FilterByTerm(input, columnIndex, termId, comparison.Op == ComparisonOp.Equal);
+
+        return true;
     }
 
     /// <summary>Keeps the solutions whose <c>FILTER</c> condition has effective boolean value true (§18.6 Filter); an error or non-boolean value drops the solution. Any <c>EXISTS</c>/<c>NOT EXISTS</c> in the condition is resolved per solution first.</summary>

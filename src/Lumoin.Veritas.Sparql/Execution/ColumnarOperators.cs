@@ -69,25 +69,83 @@ internal static class ColumnarOperators
             }
         }
 
+        return Gather(input, keptRows);
+    }
+
+    /// <summary>
+    /// Keeps the rows whose value in one column equals (or, when <paramref name="keepEqual"/> is
+    /// <see langword="false"/>, differs from) a term id, without decoding — the columnar form of a
+    /// <c>FILTER(?v = &lt;iri&gt;)</c> / <c>FILTER(?v != &lt;iri&gt;)</c>. Sound only for an IRI constant: an IRI is
+    /// never value-equal to a different term, so term-id equality coincides with SPARQL <c>=</c>/<c>!=</c> there
+    /// (including the IRI-vs-literal "known different" case and the unbound type error). An unbound cell
+    /// (<c>0</c>) is dropped by both forms (the comparison is a type error); an absent constant
+    /// (<paramref name="termId"/> <c>0</c>) matches no bound term, so the equality form keeps nothing.
+    /// </summary>
+    /// <param name="input">The columnar input table.</param>
+    /// <param name="columnIndex">The schema position of the compared variable.</param>
+    /// <param name="termId">The constant IRI's encoded term id, or <c>0</c> when the IRI is absent from the dictionary.</param>
+    /// <param name="keepEqual"><see langword="true"/> to keep rows equal to the term (the <c>=</c> form); <see langword="false"/> to keep bound rows that differ (the <c>!=</c> form).</param>
+    /// <returns>The surviving columnar table.</returns>
+    public static SolutionTable FilterByTerm(SolutionTable input, int columnIndex, uint termId, bool keepEqual)
+    {
+        ReadOnlySpan<uint> column = input.ColumnOf(columnIndex);
+        List<int> keptRows = new(input.Count);
+        if(keepEqual)
+        {
+            //An absent constant (termId 0) equals no bound term; an unbound cell (0) never equals a real id either.
+            if(termId != 0)
+            {
+                for(int row = 0; row < column.Length; row++)
+                {
+                    if(column[row] == termId)
+                    {
+                        keptRows.Add(row);
+                    }
+                }
+            }
+        }
+        else
+        {
+            //Bound and different: an unbound cell (0) is a type error, dropped; a real id different from the term passes.
+            for(int row = 0; row < column.Length; row++)
+            {
+                uint value = column[row];
+                if(value != 0 && value != termId)
+                {
+                    keptRows.Add(row);
+                }
+            }
+        }
+
+        return Gather(input, keptRows);
+    }
+
+    /// <summary>Builds a columnar table of the given rows of <paramref name="input"/>, gathered in the listed order; returns <paramref name="input"/> unchanged when every row is kept (the rows are an ascending subset, so a full count is the identity).</summary>
+    /// <param name="input">The columnar source table.</param>
+    /// <param name="keptRows">The retained row indices, ascending.</param>
+    /// <returns>The gathered columnar table.</returns>
+    private static SolutionTable Gather(SolutionTable input, List<int> keptRows)
+    {
         if(keptRows.Count == input.Count)
         {
             return input;
         }
 
-        uint[][] distinctColumns = new uint[columnCount][];
+        int columnCount = input.Schema.Count;
+        uint[][] gathered = new uint[columnCount][];
         for(int column = 0; column < columnCount; column++)
         {
-            uint[] source = columns[column];
+            uint[] source = input.ColumnArray(column);
             uint[] target = new uint[keptRows.Count];
             for(int i = 0; i < keptRows.Count; i++)
             {
                 target[i] = source[keptRows[i]];
             }
 
-            distinctColumns[column] = target;
+            gathered[column] = target;
         }
 
-        return SolutionTable.Columnar(input.Schema, distinctColumns, keptRows.Count, input.Dictionary);
+        return SolutionTable.Columnar(input.Schema, gathered, keptRows.Count, input.Dictionary);
     }
 
     /// <summary>Applies the <c>OFFSET</c>/<c>LIMIT</c> window to a columnar table, copying the windowed row range out of each column so only the surviving rows are ever decoded downstream. No term is decoded.</summary>

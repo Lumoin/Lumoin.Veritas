@@ -70,6 +70,45 @@ internal sealed class SparqlQueryEngineTests
         Assert.AreEqual(Ex + "c", ValueIri(solution, "c"));
     }
 
+    /// <summary>
+    /// A <c>FILTER(?v = &lt;iri&gt;)</c> over a columnar basic graph pattern is evaluated on the encoded column (the
+    /// columnar term-equality fast path): only the rows bound to that IRI survive, and the unmatched rows are
+    /// dropped without decoding.
+    /// </summary>
+    [TestMethod]
+    public async Task ColumnarTermEqualityFilterKeepsMatchingRows()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(
+            ("a", "knows", "b"), ("a", "knows", "c"), ("x", "knows", "y")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?s :knows ?o FILTER(?s = :a) }", pool);
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        //Only the two :a-subject rows survive; the :x row is filtered out.
+        Assert.HasCount(2, solutions);
+        Assert.IsTrue(solutions.All(s => ValueIri(s, "s") == Ex + "a"));
+        string[] objects = [.. solutions.Select(s => ValueIri(s, "o"))];
+        Assert.Contains(Ex + "b", objects);
+        Assert.Contains(Ex + "c", objects);
+    }
+
+    /// <summary>A <c>FILTER(?v != &lt;iri&gt;)</c> over a columnar basic graph pattern keeps the rows bound to a different IRI.</summary>
+    [TestMethod]
+    public async Task ColumnarTermInequalityFilterDropsMatchingRows()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(
+            ("a", "knows", "b"), ("x", "knows", "y")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+
+        AlgebraOperator algebra = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?s :knows ?o FILTER(?s != :a) }", pool);
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, TestContext.CancellationToken).ConfigureAwait(false);
+
+        SparqlSolution solution = solutions.Single();
+        Assert.AreEqual(Ex + "x", ValueIri(solution, "s"));
+        Assert.AreEqual(Ex + "y", ValueIri(solution, "o"));
+    }
+
     /// <summary>A constant-endpoint SERVICE joins the remote endpoint's solutions (returned through the injected transport) with the surrounding pattern.</summary>
     [TestMethod]
     public async Task ServiceJoinsRemoteSolutions()

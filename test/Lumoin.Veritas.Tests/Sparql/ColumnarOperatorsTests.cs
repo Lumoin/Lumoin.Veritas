@@ -106,6 +106,45 @@ internal sealed class ColumnarOperatorsTests
         CollectionAssert.AreEqual(expected, Rows(result));
     }
 
+    /// <summary>The equality term filter keeps exactly the rows whose column equals the term id, decoding nothing.</summary>
+    [TestMethod]
+    public void FilterByTermEqualKeepsMatchingRows()
+    {
+        SolutionTable input = Columnar(["x", "y"], [["x1", "y1"], ["x2", "y2"], ["x1", "y3"]]);
+
+        SolutionTable filtered = ColumnarOperators.FilterByTerm(input, columnIndex: 0, termId: TermId("x1"), keepEqual: true);
+
+        CollectionAssert.AreEqual(
+            new List<string> { RowKey([("x", "x1"), ("y", "y1")]), RowKey([("x", "x1"), ("y", "y3")]) },
+            Rows(filtered));
+    }
+
+    /// <summary>The inequality term filter keeps bound rows that differ and drops unbound rows (the comparison is a type error on an unbound value).</summary>
+    [TestMethod]
+    public void FilterByTermNotEqualKeepsBoundDifferentDropsUnbound()
+    {
+        SolutionTable input = Columnar(["x"], [["x1"], ["x2"], [null], ["x3"]]);
+
+        SolutionTable filtered = ColumnarOperators.FilterByTerm(input, columnIndex: 0, termId: TermId("x1"), keepEqual: false);
+
+        CollectionAssert.AreEqual(
+            new List<string> { RowKey([("x", "x2")]), RowKey([("x", "x3")]) },
+            Rows(filtered));
+    }
+
+    /// <summary>An equality filter against a term id absent from the dictionary (0) keeps nothing — no bound term equals an absent constant.</summary>
+    [TestMethod]
+    public void FilterByTermEqualAbsentConstantKeepsNone()
+    {
+        SolutionTable input = Columnar(["x"], [["x1"], ["x2"]]);
+        uint absent = Dictionary.GetIdOrDefault(new NamedNode(Utf8String.FromString(Ex + "never-added"))).Encoded;
+        Assert.AreEqual(0u, absent, "Precondition: the constant must be absent from the dictionary.");
+
+        SolutionTable filtered = ColumnarOperators.FilterByTerm(input, columnIndex: 0, termId: absent, keepEqual: true);
+
+        Assert.AreEqual(0, filtered.Count);
+    }
+
     /// <summary>The OFFSET/LIMIT window keeps exactly the requested row range, matching the oracle.</summary>
     [TestMethod]
     public void SliceMatchesOracle()
@@ -263,5 +302,13 @@ internal sealed class ColumnarOperatorsTests
     private static SparqlVariable Var(string name)
     {
         return new SparqlVariable(Utf8String.FromString(name));
+    }
+
+    /// <summary>The encoded term id of an example-namespace IRI, interning it into the shared dictionary.</summary>
+    /// <param name="name">The IRI local name.</param>
+    /// <returns>The encoded term id.</returns>
+    private uint TermId(string name)
+    {
+        return Dictionary.GetOrAdd(new NamedNode(Utf8String.FromString(Ex + name))).Encoded;
     }
 }
