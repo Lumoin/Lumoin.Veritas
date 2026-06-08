@@ -165,6 +165,16 @@ internal static class Program
             return;
         }
 
+        //Yannakakis semijoin reduction vs the unreduced left-deep
+        //stream on a chain whose middle join blows up but whose output
+        //is small - the intermediate shrink the reduction guarantees.
+        if(args.Length > 0 && args[0] == "--profile-yannakakis")
+        {
+            YannakakisSoak.RunYannakakisSoak();
+
+            return;
+        }
+
         //The index-arity bounding probe: per-graph store composition vs
         //one merged store, build and query, over a graph-count ladder.
         if(args.Length > 0 && args[0] == "--profile-graph-fanout")
