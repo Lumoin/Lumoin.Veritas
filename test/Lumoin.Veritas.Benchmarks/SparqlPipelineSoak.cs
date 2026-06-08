@@ -65,6 +65,18 @@ internal static class SparqlPipelineSoak
         double intermediate = full.Rows;
         double wastedFraction = intermediate > 0 ? (intermediate - filtered.Rows) / intermediate : 0;
         Console.WriteLine($"[pipeline-soak]   FILTER allocates {filtered.AllocMiB / Math.Max(full.AllocMiB, 0.001) * 100,5:F1}% of FULL for {filtered.Rows * 100.0 / Math.Max(intermediate, 1),6:F3}% of the rows  (decode-then-discard: {wastedFraction * 100,5:F1}% of the intermediate is thrown away)");
+
+        //The columnar island (3B.1): a single-BGP scan whose operators are all columnar (DISTINCT, LIMIT) carries
+        //encoded ids through and decodes only the surviving output rows. Allocation should track the OUTPUT, not the
+        //scanned input — the opposite of the row engine, which decoded every scanned row into a heap solution first.
+        string distinctQuery = $"PREFIX : <{Ex}> SELECT DISTINCT ?city WHERE {{ ?a :livesIn ?city }}";
+        string limitQuery = $"PREFIX : <{Ex}> SELECT * WHERE {{ ?a :knows ?b }} LIMIT 5";
+
+        Measurement distinct = await MeasureAsync(engine, distinctQuery).ConfigureAwait(false);
+        Measurement limited = await MeasureAsync(engine, limitQuery).ConfigureAwait(false);
+
+        Console.WriteLine($"[pipeline-soak]   DISTINCT ?city (scan {persons:N0} -> {distinct.Rows} out): {distinct.Milliseconds,9:F1} ms  alloc {distinct.AllocMiB,9:F2} MiB  ({(double)distinct.AllocatedBytes / persons,5:F1} B per scanned row)");
+        Console.WriteLine($"[pipeline-soak]   LIMIT 5 over :knows (scan {persons * (long)fanOut:N0} -> {limited.Rows} out): {limited.Milliseconds,9:F1} ms  alloc {limited.AllocMiB,9:F2} MiB");
     }
 
     /// <summary>Parses, translates, and evaluates a query, reporting rows, wall-clock, and allocation; warmed once before timing.</summary>

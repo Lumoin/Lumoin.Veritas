@@ -87,6 +87,20 @@ internal sealed class SolutionTable
             : columns[schemaIndex].AsSpan(0, Count);
     }
 
+    /// <summary>
+    /// The backing encoded-id array for a schema position; only valid when <see cref="IsColumnar"/>. Its length is
+    /// exactly <see cref="Count"/> (every producer freezes columns to size), so the columnar operators may alias it
+    /// into a derived table without copying. Read-only by convention, like the rest of the table.
+    /// </summary>
+    /// <param name="schemaIndex">The variable's position in <see cref="Schema"/>.</param>
+    /// <returns>The column's backing array.</returns>
+    public uint[] ColumnArray(int schemaIndex)
+    {
+        return columns is null
+            ? throw new InvalidOperationException("Columns are only available on a columnar SolutionTable.")
+            : columns[schemaIndex];
+    }
+
     /// <summary>Wraps an already-materialized solution sequence as a row-backed table.</summary>
     /// <param name="rows">The solutions held by reference.</param>
     /// <returns>The row-backed table.</returns>
