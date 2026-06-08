@@ -12,8 +12,8 @@ in "Next".
 
 ## Current state
 
-- Branch `main`, tree clean at commit **`08d0db1`**.
-- Full suite: **8070 passed / 0 failed / 546 skipped**.
+- Branch `main`, tree clean at commit **`ccbe7f3`** (factorized-intermediates first increment; `d4daefe` added this file, `08d0db1` was the Yannakakis measurement).
+- Full suite: **8073 total / 0 failed / 548 skipped** (the +3 over the prior count is the new factorized-join tests; the skip count jitters ±2 with the environment-conditional OWL-entailment `Inconclusive` tests).
 - There are local commits not pushed to origin. **Do not `git push`** without explicit owner approval —
   pushing triggers paid CI and the budget is exhausted. Commit locally; validate with the full local
   suite instead.
@@ -63,6 +63,35 @@ operator "consume batch/table → produce batch/table" so a factorized batch var
 re-signing (see Next).
 
 ---
+
+## Recently shipped — Factorized intermediates §4.2 (first increment)
+
+The representation + the factorizing join + the differential oracle, as a **standalone primitive not
+yet wired into `ColumnarBatchPipeline`**. Shipped in one commit:
+
+- **`ccbe7f3`:**
+  - `Core/Hypertrie/Execution/FactorizedBatch.cs` + `FactorizedGroup.cs` — a union of product nodes over
+    a schema partitioned into **key columns** and independent **branch column groups**. Each group stores,
+    per key tuple, the branches that vary independently given that key, so it pays the **sum** of the branch
+    sizes for what flattens to their **product** of rows. `Flatten()` walks each group's cross product via a
+    recursion-free mixed-radix odometer back into the `SolutionBatch` stream — the differential oracle.
+  - `Core/Hypertrie/Execution/FactorizedBatchJoin.cs` — the factorizing counterpart of `SolutionBatchJoin`:
+    identical output schema and `JoinKey` packing (1–2 shared variables), but groups by key and keeps the
+    build matches and probe matches as two branches instead of their cross product. Branch-union multiplicity
+    is preserved (scans are duplicate-free), so flatten reproduces the flat join row-for-row.
+  - Tests (`test/Lumoin.Veritas.Tests/Columnar/FactorizedBatchJoinTests.cs`): flattened factorized join ==
+    `SolutionBatchJoin.HashJoin` as a multiset on a fan-out fixture and on a fully-bound build side (a
+    zero-column branch carrying only multiplicity); plus an odometer cross-product unit test.
+  - Soak (`test/Lumoin.Veritas.Benchmarks/FactorizationSoak.cs`, `--profile-factorized`, Release): on a
+    fan-out join the factorized build measures **×20–30 compression** (rows/stored-tuples), **×4.8 time,
+    ×8–15 alloc** vs materializing the flat product; the no-fan-out rung (fan=1 on one side) shows ×1.0
+    compression and the honest grouping overhead (~×0.4 time) when nothing fans out.
+
+**Next on §4.2:** teach the pipeline operators to *consume* factorized batches (not just produce them) so
+the factorized form survives across consecutive joins without flattening between them, then wire it into
+`ColumnarBatchPipeline` behind a policy flag with the flatten bridge as the corpus-wide differential oracle.
+Multi-level factorization (factorize a branch's own tuples under a variable order, beyond today's single
+group-by-key level) is the deeper follow-up. Keep the hot path concrete — no interface over the batch types.
 
 ## Recently shipped — Yannakakis semijoin reduction (roadmap item §4.1)
 
@@ -123,20 +152,22 @@ order. Worth doing when the join order is next touched.
 
 Risk order on the columnar substrate:
 
-### §4.2 — Factorized intermediates (the immediate next move)
+### §4.2 — Factorized intermediates (in progress)
 
 Represent intermediate results as a compressed **product-of-unions** instead of flat rows, so many-to-many
 joins compress (and sometimes never materialize). More fundamental than late materialization: it changes
 the intermediate *representation*, not just when decode happens. Gated on the columnar substrate, which is
 in place.
 
-Where it slots: a **factorized batch variant** alongside `SolutionBatch`, produced and consumed by the
-pipeline operators. The substrate was kept "factorization-aware" — every operator already has the shape
-"consume batch → produce batch" — so the variant should slot in without re-signing the operator APIs. Keep
-the hot path concrete (a concrete factorized type, not an interface), per the substrate design rule above.
-Suggested first increment: the representation + a flatten-to-`SolutionBatch` bridge (the differential
-oracle), then teach one operator (join) to produce it, measured on a fan-out-heavy fixture where the
-factorized form is strictly smaller than the flat product.
+**First increment shipped (`ccbe7f3`, see Recently shipped):** the `FactorizedBatch` representation, the
+flatten-to-`SolutionBatch` bridge (differential oracle), and a factorizing `FactorizedBatchJoin` that
+*produces* it — measured at ×20–30 compression on a fan-out fixture. Standalone, not yet in the pipeline.
+
+**Remaining:** teach the pipeline operators to *consume* factorized batches so the form survives across
+consecutive joins without flattening between them; wire it into `ColumnarBatchPipeline` behind a policy
+flag (flatten bridge = corpus-wide oracle); then multi-level factorization (factorize a branch's own tuples
+under a variable order, beyond today's single group-by-key level). Keep the hot path concrete (a concrete
+factorized type, not an interface), per the substrate design rule above.
 
 ### §4.3 — Free Join hybrid
 
