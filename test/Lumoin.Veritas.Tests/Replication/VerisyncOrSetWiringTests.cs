@@ -1,8 +1,11 @@
 using System;
+using System.Buffers;
 using System.Linq;
+using System.Text.Json;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Verisync.Core;
+using Lumoin.Verisync.Json;
 
 namespace Lumoin.Veritas.Tests.Replication;
 
@@ -15,12 +18,12 @@ namespace Lumoin.Veritas.Tests.Replication;
 /// central package-scope rules), ahead of any production replication library.
 /// </summary>
 /// <remarks>
-/// State serialization is not exercised here: the JSON CRDT-state serializers
-/// (<c>Verisync.Json.CrdtStateJson</c>) reach <c>System.Text.Json</c>, which the
-/// test project's banned-API list forbids, and the matching CBOR serializers are
-/// not yet in <c>Verisync.Cbor</c> (they are the ones that will come from
-/// <c>Lumoin.Veritas.Cbor</c>). The payload round-trip belongs where those
-/// serializers are available — a later step.
+/// JSON state serialization is exercised here: the test project is exempt from
+/// the <c>System.Text.Json</c> ban, so <c>Verisync.Json.CrdtStateJson</c>
+/// round-trips an <see cref="OrSetState{T}"/> with a test-supplied element
+/// (de)serializer carrying the Veritas triple payload. The matching CBOR state
+/// serializers are not yet in <c>Verisync.Cbor</c> — they are the ones that will
+/// come from <c>Lumoin.Veritas.Cbor</c> — so the CBOR round-trip is still pending.
 /// </remarks>
 [TestClass]
 internal sealed class VerisyncOrSetWiringTests
@@ -74,5 +77,47 @@ internal sealed class VerisyncOrSetWiringTests
         OrSet<EncodedTriple> merged = removedByA.Merge(addedByB);
 
         Assert.IsTrue(merged.Contains(triple), "The concurrent, unobserved add must survive the remove.");
+    }
+
+    /// <summary>An OR-Set of triples survives a JSON state round-trip through <c>Verisync.Json</c>, the element payload (de)serialized by the test-supplied triple codec — the application-injected serialization seam.</summary>
+    [TestMethod]
+    public void OrSetStateRoundTripsThroughJson()
+    {
+        ReplicaId a = Replica(0x0A);
+        OrSet<EncodedTriple> original = OrSet<EncodedTriple>.Empty
+            .Add(EncodedTriple.FromEncoded(1, 100, 2), a)
+            .Add(EncodedTriple.FromEncoded(2, 100, 3), a);
+
+        SerializeMessageDelegate<OrSetState<EncodedTriple>> serialize = CrdtStateJson.CreateOrSetStateSerializer<EncodedTriple>(WriteTriple);
+        DeserializeMessageDelegate<OrSetState<EncodedTriple>> deserialize = CrdtStateJson.CreateOrSetStateDeserializer<EncodedTriple>(ReadTriple);
+
+        ArrayBufferWriter<byte> buffer = new();
+        serialize(original.ToState(), buffer);
+        OrSet<EncodedTriple> roundTripped = OrSet<EncodedTriple>.FromState(deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory)));
+
+        Assert.AreEqual(original, roundTripped);
+    }
+
+    /// <summary>Writes a triple payload as a JSON object of its three encoded ids — the element serializer the OR-Set state serializer calls per element.</summary>
+    /// <param name="writer">The JSON writer positioned at a value.</param>
+    /// <param name="triple">The triple to write.</param>
+    private static void WriteTriple(Utf8JsonWriter writer, EncodedTriple triple)
+    {
+        writer.WriteStartObject();
+        writer.WriteNumber("s", triple.Subject.Encoded);
+        writer.WriteNumber("p", triple.Predicate.Encoded);
+        writer.WriteNumber("o", triple.Object.Encoded);
+        writer.WriteEndObject();
+    }
+
+    /// <summary>Reads a triple payload back from its three encoded ids — the element deserializer the OR-Set state deserializer calls per element.</summary>
+    /// <param name="element">The JSON element holding one triple object.</param>
+    /// <returns>The triple.</returns>
+    private static EncodedTriple ReadTriple(JsonElement element)
+    {
+        return EncodedTriple.FromEncoded(
+            element.GetProperty("s").GetUInt32(),
+            element.GetProperty("p").GetUInt32(),
+            element.GetProperty("o").GetUInt32());
     }
 }

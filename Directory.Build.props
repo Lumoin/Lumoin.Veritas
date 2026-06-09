@@ -114,8 +114,9 @@ See full changelog at https://github.com/lumoin/Veritas/blob/main/CHANGELOG.md.]
     Lumoin.Veritas.Json model project is bound by the ban: it is
     backend-agnostic and reaches System.Text.Json only through the
     injected parse delegate implemented in Lumoin.Veritas.Json.Stj.
-    Tests are not exempt for the JSON ban; uniform discipline matches the
-    clock ban above.
+    Tests are exempt (the condition below excludes *.Tests), so test code may
+    exercise serialization adapters directly — for example the Verisync.Json
+    CRDT-state serializers — matching the CBOR exemption below.
 
     BannedSymbols.Xml.txt bans the System.Xml / System.Xml.Linq
     namespaces; it is added to every project except Lumoin.Veritas.Xml,
