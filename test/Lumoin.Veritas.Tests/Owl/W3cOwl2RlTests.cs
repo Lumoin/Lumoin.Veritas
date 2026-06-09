@@ -22,7 +22,10 @@ namespace Lumoin.Veritas.Tests.Owl;
 /// the RL rules are the complete calculus the conformance document
 /// prescribes. The premise's <c>owl:imports</c> resolve against the test's
 /// supplied ontologies, so the reasoned-over unit is the imports closure.
-/// Honest skips: non-RL tests and Direct-semantics-only entailment tests.
+/// An entailment test stated for the Direct Semantics only differs from its
+/// RDF-Based form solely in the conclusion's annotations, which the Direct
+/// Semantics treats as non-logical; those are projected away and the same
+/// closure decides the remainder. Honest skips: non-RL tests.
 /// </remarks>
 [TestClass]
 internal sealed class W3cOwl2RlTests
@@ -76,14 +79,14 @@ internal sealed class W3cOwl2RlTests
             Assert.Inconclusive("Not an RL-marked test; the RL rules make no completeness claim.");
         }
 
-        //The closure implements the RDF-Based rules calculus; entailment
-        //tests stated for Direct semantics only (annotation conclusions are
-        //disregarded there) measure a different reasoner.
+        //An entailment test stated for the Direct Semantics only differs from
+        //its RDF-Based form solely in the conclusion's annotations, which the
+        //Direct Semantics treats as non-logical (Syntax §5.5). For the RL
+        //profile the two semantics agree on logical consequences, so those
+        //annotation assertions are projected away below and the same closure
+        //decides the remainder.
         bool isEntailment = testCase.Kinds.Contains("PositiveEntailmentTest") || testCase.Kinds.Contains("NegativeEntailmentTest");
-        if(isEntailment && !testCase.Semantics.Contains("RDF-BASED"))
-        {
-            Assert.Inconclusive("Direct-semantics-only entailment test; the RL/RDF rules implement the RDF-Based calculus.");
-        }
+        bool directSemanticsOnly = isEntailment && !testCase.Semantics.Contains("RDF-BASED");
 
         List<Quad>? maybePremise = LoadQuads(testCase, testCase.RdfXmlPremise, testCase.FunctionalPremise);
         if(maybePremise is not List<Quad> premiseQuads)
@@ -131,6 +134,11 @@ internal sealed class W3cOwl2RlTests
         if(testCase.Kinds.Contains("PositiveEntailmentTest")
             && LoadQuads(testCase, testCase.RdfXmlConclusion, testCase.FunctionalConclusion) is List<Quad> conclusionQuads)
         {
+            if(directSemanticsOnly)
+            {
+                conclusionQuads = WithoutAnnotations(conclusionQuads);
+            }
+
             bool entails = OwlRlEntailment.Entails(
                 premiseQuads, conclusionQuads, dictionary, terms,
                 OwlRlDatatypeOracles.FromDictionary(dictionary), OwlComprehension.InformativeConditions, TestContext.CancellationToken);
@@ -146,6 +154,11 @@ internal sealed class W3cOwl2RlTests
         if(testCase.Kinds.Contains("NegativeEntailmentTest")
             && LoadQuads(testCase, testCase.RdfXmlNonConclusion, testCase.FunctionalNonConclusion) is List<Quad> nonConclusionQuads)
         {
+            if(directSemanticsOnly)
+            {
+                nonConclusionQuads = WithoutAnnotations(nonConclusionQuads);
+            }
+
             Assert.IsFalse(
                 OwlRlEntailment.Entails(
                     premiseQuads, nonConclusionQuads, dictionary, terms,
@@ -216,4 +229,26 @@ internal sealed class W3cOwl2RlTests
         return encoded;
     }
 
+    //The Direct Semantics' logical projection of a conclusion graph: its
+    //annotation assertions carry no logical meaning (Syntax §5.5), so a
+    //conclusion that adds only annotations over the premise is entailed once
+    //they are set aside. The annotation-property set is the built-ins plus the
+    //conclusion's own owl:AnnotationProperty declarations, both supplied by the
+    //RDF mapping.
+    private static List<Quad> WithoutAnnotations(List<Quad> conclusion)
+    {
+        IReadOnlySet<Utf8String> annotationProperties =
+            Lumoin.Veritas.Owl.Structural.OwlRdfMapper.Map(conclusion).DeclaredAnnotationProperties;
+
+        List<Quad> logical = new(conclusion.Count);
+        foreach(Quad quad in conclusion)
+        {
+            if(!annotationProperties.Contains(quad.Predicate.Iri))
+            {
+                logical.Add(quad);
+            }
+        }
+
+        return logical;
+    }
 }
