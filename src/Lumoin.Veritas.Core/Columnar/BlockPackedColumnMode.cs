@@ -24,4 +24,17 @@ public enum BlockPackedColumnMode
     /// for the value columns worst-case-optimal joins seek over.
     /// </summary>
     FrameOfReference,
+
+    /// <summary>
+    /// Elias-Fano quasi-succinct: the whole column is ONE monotone
+    /// <see cref="Collections.EliasFanoSequence"/> near the
+    /// information floor (≈ <c>2 + log2(universe / count)</c> bits
+    /// per value), NOT block-structured. Valid only for a globally
+    /// non-decreasing column. It drops the per-block frame overhead
+    /// frame of reference pays — the measured ~5-6 bits/value win on
+    /// monotone value columns — at the cost of a select-driven seek
+    /// (<c>NextGEQ</c>) slower than a lane probe, so it is the
+    /// memory-over-latency choice the encoder opts into per column.
+    /// </summary>
+    EliasFano,
 }

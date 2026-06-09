@@ -275,6 +275,57 @@ public sealed class EliasFanoSequence
         return end;
     }
 
+    /// <summary>
+    /// Decodes the contiguous run <c>[start, start + count)</c> into
+    /// <paramref name="destination"/> in a single linear pass: the high parts
+    /// come from one forward walk of <see cref="upper"/> (each separator zero
+    /// advances the high group), the low parts from the packed
+    /// <see cref="lower"/> payload — so a whole run costs one upper-vector walk
+    /// rather than <paramref name="count"/> independent selects. This is the
+    /// batch-decode entry the columnar layer drives; the fixed-width low-bit
+    /// unpack is the seam a SIMD kernel slots into, the same lane-unpack shape
+    /// the block-packed decode kernels already vectorise.
+    /// </summary>
+    /// <param name="start">The first index, in <c>[0, Count]</c>.</param>
+    /// <param name="count">The number of values to decode; <c>start + count</c> must not exceed <see cref="Count"/>.</param>
+    /// <param name="destination">Receives the values; at least <paramref name="count"/> long.</param>
+    /// <exception cref="ArgumentOutOfRangeException">The range falls outside the sequence.</exception>
+    /// <exception cref="ArgumentException"><paramref name="destination"/> is shorter than the run.</exception>
+    public void Decode(int start, int count, Span<uint> destination)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(start);
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(start + count, Count);
+        if(destination.Length < count)
+        {
+            throw new ArgumentException("The destination is shorter than the requested run.", nameof(destination));
+        }
+
+        if(count == 0)
+        {
+            return;
+        }
+
+        //Seed the high part from one sampled select; thereafter it advances by
+        //the separator (zero) bits between consecutive set bits, so the run is
+        //one upper-vector walk, not `count` selects.
+        long position = SelectOne(start);
+        long high = position - start;
+
+        for(int k = 0; k < count; k++)
+        {
+            uint low = LowBits == 0 ? 0u : ReadLow((long)(start + k) * LowBits);
+            destination[k] = (uint)(((ulong)high << LowBits) | low);
+
+            position++;
+            while(position < upperBits && (upper[(int)(position >> 6)] & (1UL << (int)(position & 63))) == 0)
+            {
+                high++;
+                position++;
+            }
+        }
+    }
+
     /// <summary>The position of the <paramref name="rank"/>-th set bit (0-based) in <see cref="upper"/>.</summary>
     /// <param name="rank">The zero-based rank of the set bit.</param>
     /// <returns>The bit position.</returns>

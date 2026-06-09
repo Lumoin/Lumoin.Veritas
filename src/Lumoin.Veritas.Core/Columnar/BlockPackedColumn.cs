@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
+using Lumoin.Veritas.Core.Collections;
 
 namespace Lumoin.Veritas.Core.Columnar;
 
@@ -82,6 +83,10 @@ public sealed class BlockPackedColumn
 
     private readonly uint[] exceptionValues;
 
+    //The whole column as one monotone sequence under
+    //BlockPackedColumnMode.EliasFano; null in the block-packed modes.
+    private readonly EliasFanoSequence? eliasFano;
+
     /// <summary>The kernel bundle decoding this column's blocks.</summary>
     private ColumnarKernelBackend Backend { get; }
 
@@ -91,22 +96,23 @@ public sealed class BlockPackedColumn
     /// <summary>The number of values in the column.</summary>
     public int Length { get; }
 
-    /// <summary>The number of blocks; <c>ceil(Length / 1024)</c>.</summary>
-    public int BlockCount => anchors.Length;
+    /// <summary>The number of blocks; <c>ceil(Length / 1024)</c>. Derived from the length under Elias-Fano, which holds no block metadata.</summary>
+    public int BlockCount => Mode == BlockPackedColumnMode.EliasFano ? (Length + BlockMask) >> BlockShift : anchors.Length;
 
     /// <summary>The per-block first values, raw, in every mode. Within a sorted range, anchors of fully-interior blocks are sorted; seeks scan these to pick the one block to finish in.</summary>
     public ReadOnlySpan<uint> Anchors => anchors;
 
-    /// <summary>The packed size in bytes across payload, metadata, and exception arrays — the number the soak ladder tracks.</summary>
-    public long PackedByteCount =>
-        (payload.Length * sizeof(ulong))
-        + (payloadStarts.Length * sizeof(int))
-        + (anchors.Length * sizeof(uint))
-        + (frameBases.Length * sizeof(uint))
-        + widths.Length
-        + (exceptionStarts.Length * sizeof(int))
-        + (exceptionPositions.Length * sizeof(ushort))
-        + (exceptionValues.Length * sizeof(uint));
+    /// <summary>The packed size in bytes — the Elias-Fano bit-footprint under that mode, else across payload, metadata, and exception arrays. The number the soak ladder tracks.</summary>
+    public long PackedByteCount => Mode == BlockPackedColumnMode.EliasFano
+        ? (eliasFano!.BitCount + 7) / 8
+        : (payload.Length * sizeof(ulong))
+            + (payloadStarts.Length * sizeof(int))
+            + (anchors.Length * sizeof(uint))
+            + (frameBases.Length * sizeof(uint))
+            + widths.Length
+            + (exceptionStarts.Length * sizeof(int))
+            + (exceptionPositions.Length * sizeof(ushort))
+            + (exceptionValues.Length * sizeof(uint));
 
     private BlockPackedColumn(
         ColumnarKernelBackend backend,
@@ -132,6 +138,26 @@ public sealed class BlockPackedColumn
         this.exceptionStarts = exceptionStarts;
         this.exceptionPositions = exceptionPositions;
         this.exceptionValues = exceptionValues;
+    }
+
+    /// <summary>Constructs an Elias-Fano-backed column — the whole column is one monotone sequence and the block-packed arrays are empty.</summary>
+    /// <param name="backend">The kernel bundle (carried for the batch-decode SIMD seam; Elias-Fano access itself is scalar).</param>
+    /// <param name="length">The value count.</param>
+    /// <param name="eliasFano">The packed monotone sequence.</param>
+    private BlockPackedColumn(ColumnarKernelBackend backend, int length, EliasFanoSequence eliasFano)
+    {
+        Backend = backend;
+        Mode = BlockPackedColumnMode.EliasFano;
+        Length = length;
+        this.eliasFano = eliasFano;
+        payload = [];
+        payloadStarts = [0];
+        anchors = [];
+        frameBases = [];
+        widths = [];
+        exceptionStarts = [0];
+        exceptionPositions = [];
+        exceptionValues = [];
     }
 
     /// <summary>The number of values in the given block — <see cref="BlockLength"/> for every block but possibly the last.</summary>
@@ -160,6 +186,13 @@ public sealed class BlockPackedColumn
         if(destination.Length < count)
         {
             throw new ArgumentException("The destination is shorter than the block.", nameof(destination));
+        }
+
+        if(Mode == BlockPackedColumnMode.EliasFano)
+        {
+            eliasFano!.Decode(blockIndex << BlockShift, count, destination[..count]);
+
+            return;
         }
 
         Span<uint> block = destination[..count];
@@ -200,6 +233,11 @@ public sealed class BlockPackedColumn
     /// <returns>The value.</returns>
     public uint ValueAt(int index, Span<uint> scratch, ref int cachedBlock)
     {
+        if(Mode == BlockPackedColumnMode.EliasFano)
+        {
+            return eliasFano!.Access(index);
+        }
+
         int block = index >> BlockShift;
 
         if(Mode == BlockPackedColumnMode.FrameOfReference)
@@ -238,6 +276,20 @@ public sealed class BlockPackedColumn
         if(lo >= hi)
         {
             return hi;
+        }
+
+        if(Mode == BlockPackedColumnMode.EliasFano)
+        {
+            //The column is globally non-decreasing, so the range successor is
+            //the global successor clamped into [lo, hi): a global lower bound
+            //below lo means every in-range value already clears the target.
+            int found = eliasFano!.NextGEQ(target);
+            if(found < lo)
+            {
+                return lo;
+            }
+
+            return found >= hi ? hi : found;
         }
 
         int blockLo = lo >> BlockShift;
@@ -388,6 +440,14 @@ public sealed class BlockPackedColumn
         ColumnarKernelBackend? backendOption = null)
     {
         ColumnarKernelBackend backend = backendOption ?? ColumnarKernelBackend.Default;
+
+        if(mode == BlockPackedColumnMode.EliasFano)
+        {
+            //One monotone sequence for the whole column; the caller is
+            //responsible for only choosing this mode where the values are
+            //globally non-decreasing (EliasFanoSequence.Build enforces it).
+            return new BlockPackedColumn(backend, values.Length, EliasFanoSequence.Build(values));
+        }
 
         int blockCount = (values.Length + BlockLength - 1) >> BlockShift;
         uint[] anchors = new uint[blockCount];

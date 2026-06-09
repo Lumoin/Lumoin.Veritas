@@ -104,9 +104,11 @@ public sealed class ColumnarOrder
     //Builds one permutation's column set: sorts the working array
     //by its packed 96-bit permutation keys, emits all five columns
     //in a single pass over the sorted run, then block-packs each.
-    internal static ColumnarOrder Build(EncodedTriple[] working, byte[] permutation)
+    //valueEncoding opts the value columns into Elias-Fano where
+    //globally monotone (default frame of reference).
+    internal static ColumnarOrder Build(EncodedTriple[] working, byte[] permutation, ColumnarValueColumnEncoding valueEncoding = ColumnarValueColumnEncoding.FrameOfReference)
     {
-        return BuildConcatenated([working], permutation, level0Ranges: null);
+        return BuildConcatenated([working], permutation, level0Ranges: null, valueEncoding);
     }
 
     //Builds one permutation's column set over a SEQUENCE of triple
@@ -119,7 +121,8 @@ public sealed class ColumnarOrder
     internal static ColumnarOrder BuildConcatenated(
         IReadOnlyList<EncodedTriple[]> runs,
         byte[] permutation,
-        (int Start, int End)[]? level0Ranges)
+        (int Start, int End)[]? level0Ranges,
+        ColumnarValueColumnEncoding valueEncoding = ColumnarValueColumnEncoding.FrameOfReference)
     {
         byte position0 = permutation[0];
         byte position1 = permutation[1];
@@ -174,15 +177,76 @@ public sealed class ColumnarOrder
 
         //Value columns are what worst-case-optimal descents SEEK
         //over: frame of reference keeps every lane independently
-        //probeable. Offset columns are read pointwise with descent
-        //locality: prefixed deltas pack their group-size deltas
-        //densest and the reader's block cache absorbs the decodes.
+        //probeable, or — under the opt-in policy, where the column
+        //is globally monotone — Elias-Fano trades that seek for the
+        //smaller footprint. Offset columns are read pointwise with
+        //descent locality: prefixed deltas pack their group-size
+        //deltas densest and the reader's block cache absorbs the
+        //decodes (Elias-Fano measured worse on them, so they never
+        //take it).
         return new ColumnarOrder(
-            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(values0), BlockPackedColumnMode.FrameOfReference),
+            BuildValueColumn(CollectionsMarshal.AsSpan(values0), valueEncoding),
             BlockPackedColumn.Build(CollectionsMarshal.AsSpan(offsets0), BlockPackedColumnMode.PrefixedDeltas),
-            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(values1), BlockPackedColumnMode.FrameOfReference),
+            BuildValueColumn(CollectionsMarshal.AsSpan(values1), valueEncoding),
             BlockPackedColumn.Build(CollectionsMarshal.AsSpan(offsets1), BlockPackedColumnMode.PrefixedDeltas),
-            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(values2), BlockPackedColumnMode.FrameOfReference));
+            BuildValueColumn(CollectionsMarshal.AsSpan(values2), valueEncoding));
+    }
+
+    /// <summary>
+    /// Builds a value column under the build policy: always the frame-of-
+    /// reference packing, and — when the policy opts into Elias-Fano and the
+    /// column is globally non-decreasing — also the Elias-Fano packing, keeping
+    /// the smaller via <see cref="SmallerEncoding"/>. Packing a second
+    /// candidate only ever shrinks or matches the column, so a degenerate
+    /// column (e.g. a constant predicate column, ~0 bits under frame of
+    /// reference) never regresses.
+    /// </summary>
+    /// <param name="values">The value column.</param>
+    /// <param name="valueEncoding">The build policy.</param>
+    /// <returns>The packed value column.</returns>
+    private static BlockPackedColumn BuildValueColumn(ReadOnlySpan<uint> values, ColumnarValueColumnEncoding valueEncoding)
+    {
+        BlockPackedColumn frame = BlockPackedColumn.Build(values, BlockPackedColumnMode.FrameOfReference);
+        if(valueEncoding != ColumnarValueColumnEncoding.EliasFanoWhenMonotone || !IsNonDecreasing(values))
+        {
+            return frame;
+        }
+
+        return SmallerEncoding(frame, BlockPackedColumn.Build(values, BlockPackedColumnMode.EliasFano));
+    }
+
+    /// <summary>
+    /// The footprint-minimising encoding pick — "the optimizer chooses the
+    /// cheaper encoding", in miniature. Of two packings of the SAME column it
+    /// returns the one with the smaller
+    /// <see cref="BlockPackedColumn.PackedByteCount"/> (a tie keeps the first).
+    /// This is the selection primitive a column-encoding choice composes from:
+    /// offering one more candidate can only shrink or match the result, so it
+    /// is always safe to add a candidate; the only cost is packing it. Step 3
+    /// (partitioned Elias-Fano) extends the candidate set the same way.
+    /// </summary>
+    /// <param name="first">The first candidate; kept on a tie.</param>
+    /// <param name="second">The second candidate.</param>
+    /// <returns>The smaller-footprint column.</returns>
+    private static BlockPackedColumn SmallerEncoding(BlockPackedColumn first, BlockPackedColumn second)
+    {
+        return second.PackedByteCount < first.PackedByteCount ? second : first;
+    }
+
+    /// <summary>Whether a column is globally non-decreasing — the Elias-Fano precondition. Level-0 values on a single-run build qualify; within-group level-1/2 values reset per parent and do not.</summary>
+    /// <param name="values">The column.</param>
+    /// <returns><see langword="true"/> when no value is smaller than its predecessor.</returns>
+    private static bool IsNonDecreasing(ReadOnlySpan<uint> values)
+    {
+        for(int i = 1; i < values.Length; i++)
+        {
+            if(values[i] < values[i - 1])
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static uint KeyAt(in EncodedTriple triple, byte position)

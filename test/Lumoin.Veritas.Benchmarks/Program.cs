@@ -218,6 +218,26 @@ internal static class Program
             return;
         }
 
+        //Elias-Fano vs the index's current per-column encoding on the REAL
+        //columns of a built columnar index: per-column bits/value and
+        //bits/triple, monotone columns rebuilt as Elias-Fano in place.
+        if(args.Length > 0 && args[0] == "--profile-elias-fano-columns")
+        {
+            EliasFanoSoak.RunColumnComparisonSoak();
+
+            return;
+        }
+
+        //Storage at scale: plain-WCOJ uncompressed baseline vs the block-packed
+        //index vs the index with Elias-Fano on the monotone value columns,
+        //bits/triple over a triple-count ladder, with cited Ring reference rows.
+        if(args.Length > 0 && args[0] == "--profile-storage-comparison")
+        {
+            StorageComparisonSoak.RunStorageComparisonSoak();
+
+            return;
+        }
+
         //The index-arity bounding probe: per-graph store composition vs
         //one merged store, build and query, over a graph-count ladder.
         if(args.Length > 0 && args[0] == "--profile-graph-fanout")

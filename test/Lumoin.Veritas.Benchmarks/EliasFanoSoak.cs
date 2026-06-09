@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Collections;
 using Lumoin.Veritas.Core.Columnar;
 
@@ -146,5 +148,129 @@ internal static class EliasFanoSoak
 
             return state ^ (state >> 31);
         }
+    }
+
+    /// <summary>
+    /// Measures Elias-Fano against the columnar index's CURRENT per-column
+    /// encoding on the REAL columns of a built <see cref="ColumnarTripleIndex"/>:
+    /// each column of the SPO order is decoded back to its values and, where the
+    /// column is globally non-decreasing (the level-0 value column on a
+    /// single-run build, and every exclusive-end offset column), rebuilt as an
+    /// <see cref="EliasFanoSequence"/>, so the bits/triple delta is read off the
+    /// actual index rather than a synthetic sequence. Value columns at levels 1
+    /// and 2 reset within each parent group and are NOT globally monotone — they
+    /// are reported as the partitioned-Elias-Fano targets a later step covers,
+    /// not encoded here.
+    /// </summary>
+    public static void RunColumnComparisonSoak()
+    {
+        foreach(int stride in (ReadOnlySpan<int>)[1, 16, 256])
+        {
+            RunColumnComparison(groups: 500_000, stride);
+        }
+    }
+
+    /// <summary>Builds the index from a strided corpus and reports each SPO column's current vs Elias-Fano footprint.</summary>
+    /// <param name="groups">The three-edge group count; the triple count is three times this.</param>
+    /// <param name="stride">The node-id stride between groups; sets the level-0 value column's average gap (the universe/count ratio Elias-Fano trades on).</param>
+    private static void RunColumnComparison(int groups, int stride)
+    {
+        List<EncodedTriple> corpus = BuildStridedCorpus(groups, stride);
+        long tripleCount = corpus.Count;
+        ColumnarTripleIndex index = ColumnarTripleIndex.Build(corpus, ColumnarOrderSetMode.ThreeRotations);
+        ColumnarOrder order = index.OrderAt(0);
+
+        Console.WriteLine(
+            $"[ef-columns] groups={groups:N0} stride={stride} triples={tripleCount:N0} (SPO order)\n"
+            + $"[ef-columns]   {"column",-10} {"length",12} {"cur b/val",10} {"EF b/val",9} {"cur b/trip",11} {"EF b/trip",10}  note");
+
+        ReadOnlySpan<(string Name, BlockPackedColumn Column)> columns =
+        [
+            ("L0 values", order.ValuesColumnAt(0)),
+            ("L0 offsets", order.OffsetsColumnAt(0)),
+            ("L1 values", order.ValuesColumnAt(1)),
+            ("L1 offsets", order.OffsetsColumnAt(1)),
+            ("L2 values", order.ValuesColumnAt(2)),
+        ];
+
+        foreach((string name, BlockPackedColumn column) in columns)
+        {
+            uint[] decoded = DecodeColumn(column);
+            double currentPerValue = column.PackedByteCount * 8.0 / Math.Max(column.Length, 1);
+            double currentPerTriple = column.PackedByteCount * 8.0 / tripleCount;
+
+            if(IsNonDecreasing(decoded))
+            {
+                EliasFanoSequence eliasFano = EliasFanoSequence.Build(decoded);
+                double eliasFanoPerValue = (double)eliasFano.BitCount / Math.Max(column.Length, 1);
+                double eliasFanoPerTriple = (double)eliasFano.BitCount / tripleCount;
+                string verdict = eliasFanoPerValue < currentPerValue
+                    ? $"EF −{currentPerValue - eliasFanoPerValue:F1} b/val (x{currentPerValue / Math.Max(eliasFanoPerValue, 0.01):F2})"
+                    : "current wins";
+                Console.WriteLine($"[ef-columns]   {name,-10} {column.Length,12:N0} {currentPerValue,10:F2} {eliasFanoPerValue,9:F2} {currentPerTriple,11:F2} {eliasFanoPerTriple,10:F2}  {verdict}");
+            }
+            else
+            {
+                Console.WriteLine($"[ef-columns]   {name,-10} {column.Length,12:N0} {currentPerValue,10:F2} {"-",9} {currentPerTriple,11:F2} {"-",10}  within-group: partitioned-EF target");
+            }
+        }
+    }
+
+    /// <summary>Decodes a whole block-packed column back to its values.</summary>
+    /// <param name="column">The column to decode.</param>
+    /// <returns>The column's values in column order.</returns>
+    private static uint[] DecodeColumn(BlockPackedColumn column)
+    {
+        uint[] values = new uint[column.Length];
+        for(int block = 0; block < column.BlockCount; block++)
+        {
+            int start = block << BlockPackedColumn.BlockShift;
+            column.DecodeBlock(block, values.AsSpan(start, column.BlockLengthOf(block)));
+        }
+
+        return values;
+    }
+
+    /// <summary>Whether a sequence is non-decreasing — the Elias-Fano build precondition.</summary>
+    /// <param name="values">The values to test.</param>
+    /// <returns><see langword="true"/> when no element is smaller than its predecessor.</returns>
+    private static bool IsNonDecreasing(ReadOnlySpan<uint> values)
+    {
+        for(int i = 1; i < values.Length; i++)
+        {
+            if(values[i] < values[i - 1])
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Disjoint directed triangles whose node ids are spread by
+    /// <paramref name="stride"/>: group <c>i</c> carries the edges over nodes
+    /// <c>3·i·stride</c>, <c>+1</c>, <c>+2</c>, so the distinct level-0 subjects
+    /// ascend with an average gap of about <paramref name="stride"/> — the lever
+    /// that moves the value column off the dense, both-encodings-optimal regime.
+    /// </summary>
+    /// <param name="groups">The group count.</param>
+    /// <param name="stride">The node-id stride between groups.</param>
+    /// <returns>The triple corpus, three edges per group.</returns>
+    private static List<EncodedTriple> BuildStridedCorpus(int groups, int stride)
+    {
+        const uint predicate = 1_000;
+        List<EncodedTriple> corpus = new(groups * 3);
+        for(int i = 0; i < groups; i++)
+        {
+            uint a = (uint)((long)i * 3 * stride);
+            uint b = a + 1;
+            uint c = a + 2;
+            corpus.Add(EncodedTriple.FromEncoded(a, predicate, b));
+            corpus.Add(EncodedTriple.FromEncoded(b, predicate, c));
+            corpus.Add(EncodedTriple.FromEncoded(c, predicate, a));
+        }
+
+        return corpus;
     }
 }

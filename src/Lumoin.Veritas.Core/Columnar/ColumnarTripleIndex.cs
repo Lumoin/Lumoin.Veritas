@@ -162,9 +162,10 @@ public sealed class ColumnarTripleIndex
     /// </summary>
     /// <param name="triples">The triples to index.</param>
     /// <param name="orderSetMode">Which permutation set to materialise; see <see cref="ColumnarOrderSetMode"/> for the trade.</param>
+    /// <param name="valueEncoding">How value columns are encoded; default frame of reference, or opt into Elias-Fano on the globally-monotone value columns. See <see cref="ColumnarValueColumnEncoding"/>.</param>
     /// <returns>The constructed index.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="triples"/> is <c>null</c>.</exception>
-    public static ColumnarTripleIndex Build(IEnumerable<EncodedTriple> triples, ColumnarOrderSetMode orderSetMode = ColumnarOrderSetMode.AllSixOrders)
+    public static ColumnarTripleIndex Build(IEnumerable<EncodedTriple> triples, ColumnarOrderSetMode orderSetMode = ColumnarOrderSetMode.AllSixOrders, ColumnarValueColumnEncoding valueEncoding = ColumnarValueColumnEncoding.FrameOfReference)
     {
         ArgumentNullException.ThrowIfNull(triples);
 
@@ -176,7 +177,7 @@ public sealed class ColumnarTripleIndex
         {
             if(IsPermutationInMode(i, orderSetMode))
             {
-                orders[i] = ColumnarOrder.Build(working, Permutations[i]);
+                orders[i] = ColumnarOrder.Build(working, Permutations[i], valueEncoding);
             }
         }
 
