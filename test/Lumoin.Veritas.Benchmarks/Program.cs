@@ -277,6 +277,15 @@ internal static class Program
             return;
         }
 
+        //Soak-corpus dump round-trip self-test: save a known corpus to a temp
+        //file, load it back, and report whether it survived intact.
+        if(args.Length > 0 && args[0] == "--profile-soak-corpus")
+        {
+            SoakCorpus.RunSelfTest();
+
+            return;
+        }
+
         //The index-arity bounding probe: per-graph store composition vs
         //one merged store, build and query, over a graph-count ladder.
         if(args.Length > 0 && args[0] == "--profile-graph-fanout")
