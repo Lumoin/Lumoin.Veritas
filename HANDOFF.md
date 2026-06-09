@@ -307,6 +307,23 @@ its remaining columns as a leaf tuple vector, cross-producted at emit; this is t
   the natural follow-on to EF on this axis; it loses cheap any-order access for space (three-rotation echo
   already in-tree as `ColumnarOrderSetMode.ThreeRotations`).
 
+#### OWL DL reasoning arc — toward full OWL2 DL (state-of-the-art; partly the other-agent thread)
+
+The route to closing the ~367 OWL Direct-Semantics conformance abstentions (see Conformance above — "full OWL"
+needs a DL reasoner; nothing is failing, the RL runner just abstains from non-RL entailment). **Already in
+this clone and green:** `Core.Sat.SatSolver` + `SatLiteral` (a DPLL/CDCL-style SAT solver — the "naive SAT
+resolver"), `Owl/Reasoning/SyntacticLocalityModule` (locality-based module extraction, the scalability key),
+`Owl/Reasoning/AlcModuleReasoner` (a worklist tableau deciding **ALC(H)** over a locality module — internalized
+TBox, copy-on-branch disjunctions, blocking, clash; `ModuleVerdict.UnsupportedConstructs` names what's
+excluded), `Owl/El/ElClassifier` (OWL EL), `Owl/Reasoning/DescriptionLogicDelegate` + `ReasoningRendezvous`
+(the whole-engine seam), plus RL entailment + RDFS materialization. **Remaining trajectory:** (1) the
+**SAT-backed tableau** sibling (per-world propositional abstraction over `SatSolver`, conflict clauses instead
+of snapshots — recorded in the `AlcModuleReasoner` doc); (2) extend **ALC(H) → SROIQ(D)** construct by
+construct (qualified cardinality, inverses, role chains/RBox, nominals, self, keys, datatypes, negative
+assertions); (3) **hypertableau** (HermiT-style and-branching control) as the state-of-the-art target; (4)
+wire the DL reasoner into a **Direct-Semantics OWL2 conformance runner** so the abstained cases get decided.
+A major multi-increment arc; the seam (`DescriptionLogicDelegate`) is already the integration point.
+
 ---
 
 ## Build / test / run
