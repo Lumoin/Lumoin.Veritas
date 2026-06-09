@@ -66,6 +66,26 @@ public sealed class GeneralizedHashTrie
         return nodes[nodeId];
     }
 
+    /// <summary>The number of tuples in a leaf vector, for the generic join's leaf iteration: the leaf's packed length over the leaf stride. Zero when the trie is full-depth (no leaf columns).</summary>
+    /// <param name="leafId">The leaf id, as mapped by the deepest trie node.</param>
+    /// <returns>The leaf's tuple count.</returns>
+    internal int LeafTupleCount(int leafId)
+    {
+        int stride = LeafColumns.Length;
+
+        return stride == 0 ? 0 : leaves[leafId].Count / stride;
+    }
+
+    /// <summary>One leaf tuple's value in a given leaf column, for the generic join's leaf narrowing.</summary>
+    /// <param name="leafId">The leaf id.</param>
+    /// <param name="tupleRow">The tuple's row within the leaf vector.</param>
+    /// <param name="leafColumnIndex">The index into <see cref="LeafColumns"/>.</param>
+    /// <returns>The value.</returns>
+    internal uint LeafValue(int leafId, int tupleRow, int leafColumnIndex)
+    {
+        return leaves[leafId][(tupleRow * LeafColumns.Length) + leafColumnIndex];
+    }
+
     /// <summary>The number of internal trie nodes — a build-size diagnostic.</summary>
     public int NodeCount => nodes.Count;
 

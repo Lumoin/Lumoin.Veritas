@@ -243,4 +243,68 @@ internal sealed class FreeJoinExecutorTests
     {
         await AssertAgreesWithLeapfrog(AcyclicFixture(), ChainQuery).ConfigureAwait(false);
     }
+
+    /// <summary>Builds a GHT per pattern at a chosen trie depth — the first <c>depth</c> of the pattern's scan columns in global order are trie levels, the rest leaf columns — and runs the generic join, returning its fingerprints.</summary>
+    /// <param name="index">The columnar index the relations scan.</param>
+    /// <param name="query">The basic graph pattern.</param>
+    /// <param name="depths">The trie depth per pattern, parallel to <see cref="BasicGraphPattern.Patterns"/>.</param>
+    /// <returns>The Free Join result fingerprints.</returns>
+    private static List<string> FreeJoinFingerprintsAtDepth(ColumnarTripleIndex index, BasicGraphPattern query, int[] depths)
+    {
+        List<Variable> order = [];
+        Dictionary<Variable, int> orderIndex = [];
+        foreach(TriplePattern pattern in query.Patterns)
+        {
+            foreach(Variable variable in pattern.Variables())
+            {
+                if(orderIndex.TryAdd(variable, order.Count))
+                {
+                    order.Add(variable);
+                }
+            }
+        }
+
+        List<GeneralizedHashTrie> relations = [];
+        for(int p = 0; p < query.Patterns.Count; p++)
+        {
+            IReadOnlyList<Variable> scanSchema = ColumnarBatchScan.ScanSchemaOf(index, query.Patterns[p]);
+            int[] byGlobal = [.. Enumerable.Range(0, scanSchema.Count).OrderBy(column => orderIndex[scanSchema[column]])];
+            relations.Add(GeneralizedHashTrie.Build(scanSchema, ColumnarBatchScan.Scan(index, query.Patterns[p]), byGlobal[..depths[p]], byGlobal[depths[p]..]));
+        }
+
+        return Fingerprints(FreeJoinExecutor.Execute(relations, order), order);
+    }
+
+    /// <summary>Runs the query on the leapfrog oracle and on the Free Join generic join with GHTs built at the given per-pattern depths, asserting the answers agree.</summary>
+    /// <param name="fixture">The fixture triples.</param>
+    /// <param name="queryBuilder">Builds the query over a fresh registry.</param>
+    /// <param name="depths">The trie depth per pattern.</param>
+    private async Task AssertFreeJoinAtDepthAgreesWithLeapfrog(List<EncodedTriple> fixture, Func<VariableRegistry, BasicGraphPattern> queryBuilder, int[] depths)
+    {
+        ColumnarTripleIndex index = ColumnarTripleIndex.Build(fixture);
+        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(fixture, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+        BasicGraphPattern query = queryBuilder(new VariableRegistry());
+
+        List<string> oracle = await DrainAsync(store.Query(query, TimeProvider.System, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+        List<string> freeJoin = FreeJoinFingerprintsAtDepth(index, query, depths);
+
+        Assert.IsGreaterThan(0, oracle.Count);
+        CollectionAssert.AreEqual(oracle, freeJoin);
+    }
+
+    [TestMethod]
+    public async Task StarAtDepthOneAgreesWithLeapfrog()
+    {
+        //Each pattern at depth one: a trie on the shared subject, the private
+        //object carried as a leaf vector — the binary-join shape.
+        await AssertFreeJoinAtDepthAgreesWithLeapfrog(AcyclicFixture(), StarQuery, [1, 1, 1]).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task ChainWithLeafTerminalAgreesWithLeapfrog()
+    {
+        //The shared ?o stays a trie level in both relations; only the private
+        //terminal ?t of the second relation drops into a leaf vector.
+        await AssertFreeJoinAtDepthAgreesWithLeapfrog(AcyclicFixture(), ChainQuery, [2, 1]).ConfigureAwait(false);
+    }
 }
