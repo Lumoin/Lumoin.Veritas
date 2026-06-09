@@ -247,6 +247,26 @@ internal static class Program
             return;
         }
 
+        //Identifier-assignment effect: a community-structured graph encoded with
+        //scattered vs clustered ids, frame of reference and Elias-Fano, to see
+        //whether exploiting data self-similarity shrinks the footprint.
+        if(args.Length > 0 && args[0] == "--profile-id-reassignment")
+        {
+            IdReassignmentSoak.RunIdReassignmentSoak();
+
+            return;
+        }
+
+        //Elias-Fano select-density sweep: footprint and seek vs frame of
+        //reference across select-sample rates, to find how far the samples can
+        //be sparsified while the seek stays ahead.
+        if(args.Length > 0 && args[0] == "--profile-elias-fano-select")
+        {
+            EliasFanoSoak.RunSelectDensitySoak();
+
+            return;
+        }
+
         //The index-arity bounding probe: per-graph store composition vs
         //one merged store, build and query, over a graph-count ladder.
         if(args.Length > 0 && args[0] == "--profile-graph-fanout")

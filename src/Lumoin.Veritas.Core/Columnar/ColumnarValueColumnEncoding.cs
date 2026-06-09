@@ -20,10 +20,10 @@ public enum ColumnarValueColumnEncoding
     /// A value column that is GLOBALLY non-decreasing — the level-0
     /// column of a single-run build — is stored as one
     /// <see cref="BlockPackedColumnMode.EliasFano"/> sequence, the
-    /// measured ~5-6 bits/value saving; within-group value columns
-    /// (levels 1 and 2 reset per parent) fall back to frame of
-    /// reference. Trades seek latency for footprint, so the index
-    /// build opts into it where memory outweighs latency.
+    /// measured ~5-6 bits/value saving (and a measured faster
+    /// <c>NextGEQ</c> seek); within-group value columns (levels 1 and
+    /// 2 reset per parent) fall back to frame of reference. Opt-in
+    /// because it is valid only where the column is globally monotone.
     /// </summary>
     EliasFanoWhenMonotone,
 }

@@ -31,6 +31,37 @@ internal static class EliasFanoSoak
         }
     }
 
+    /// <summary>
+    /// Sweeps the Elias-Fano select-sample rate on a fixed monotone sequence and
+    /// reports footprint and seek against frame of reference. Since the seek
+    /// measures faster than frame of reference, the question is how far the
+    /// samples can be SPARSIFIED — saving footprint, lengthening select — before
+    /// the seek advantage is spent. The simplest form of the multi-level-select
+    /// lever: vary one-level sample density rather than add a hierarchy.
+    /// </summary>
+    public static void RunSelectDensitySoak()
+    {
+        const int count = 1_000_000;
+        const int gap = 64;
+        uint[] values = BuildMonotone(count, gap, out ulong universe);
+        uint[] targets = BuildTargets(count, universe);
+
+        BlockPackedColumn frame = BlockPackedColumn.Build(values, BlockPackedColumnMode.FrameOfReference);
+        double frameBits = frame.PackedByteCount * 8.0 / count;
+        double frameSeek = TimeFrameSeek(frame, count, targets);
+
+        Console.WriteLine(
+            $"[ef-select] select-density sweep — count={count:N0} u/n≈{gap}; FoR baseline {frameBits:F1} bits/val, {frameSeek:F0} ms seek\n"
+            + $"[ef-select]   {"sampleRate",10} {"EF bits/val",12} {"EF seek ms",11} {"size vs FoR",12} {"seek vs FoR",12}");
+        foreach(int rate in (ReadOnlySpan<int>)[8, 16, 32, 64, 128, 256, 512, 1024])
+        {
+            EliasFanoSequence eliasFano = EliasFanoSequence.Build(values, rate);
+            double eliasFanoBits = (double)eliasFano.BitCount / count;
+            double eliasFanoSeek = TimeEliasFanoSeek(eliasFano, targets);
+            Console.WriteLine($"[ef-select]   {rate,10} {eliasFanoBits,12:F2} {eliasFanoSeek,11:F0} {frameBits / eliasFanoBits,11:F2}x {frameSeek / Math.Max(eliasFanoSeek, 0.01),11:F2}x");
+        }
+    }
+
     /// <summary>Builds both encodings over a monotone sequence of the given average gap and reports size and seek cost.</summary>
     /// <param name="count">The value count.</param>
     /// <param name="gap">The average successive gap; sets the universe/count ratio.</param>

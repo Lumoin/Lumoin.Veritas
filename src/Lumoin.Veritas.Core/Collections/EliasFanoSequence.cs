@@ -36,8 +36,12 @@ namespace Lumoin.Veritas.Core.Collections;
 [DebuggerDisplay("EliasFanoSequence Count={Count} LowBits={LowBits} Bits={BitCount}")]
 public sealed class EliasFanoSequence
 {
-    /// <summary>One in this many marker bits is sampled so a select resumes its scan near the answer.</summary>
-    private const int SelectSampleRate = 64;
+    /// <summary>The default select-sample rate: one in this many marker bits is sampled so a select resumes its scan near the answer.</summary>
+    private const int DefaultSelectSampleRate = 64;
+
+    //One in this many marker bits is sampled (the select-density knob): sparser
+    //shrinks the sample arrays but lengthens each select's resume scan.
+    private readonly int selectSampleRate;
 
     private readonly ulong[] lower;
 
@@ -84,8 +88,10 @@ public sealed class EliasFanoSequence
         long upperBits,
         uint maxHigh,
         int lowBits,
-        int count)
+        int count,
+        int selectSampleRate)
     {
+        this.selectSampleRate = selectSampleRate;
         this.lower = lower;
         this.upper = upper;
         this.oneSampleWord = oneSampleWord;
@@ -101,14 +107,18 @@ public sealed class EliasFanoSequence
 
     /// <summary>Builds the sequence from a non-decreasing run of values.</summary>
     /// <param name="values">The values, non-decreasing; duplicates allowed.</param>
+    /// <param name="selectSampleRate">One in this many marker bits is sampled to bound a select's resume scan; sparser shrinks the sample footprint and lengthens select.</param>
     /// <returns>The packed sequence.</returns>
     /// <exception cref="ArgumentException">The values are not non-decreasing.</exception>
-    public static EliasFanoSequence Build(ReadOnlySpan<uint> values)
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="selectSampleRate"/> is less than 1.</exception>
+    public static EliasFanoSequence Build(ReadOnlySpan<uint> values, int selectSampleRate = DefaultSelectSampleRate)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(selectSampleRate, 1);
+
         int count = values.Length;
         if(count == 0)
         {
-            return new EliasFanoSequence([], [], [0], [0], [0], [0], 0, 0, 0, 0);
+            return new EliasFanoSequence([], [], [0], [0], [0], [0], 0, 0, 0, 0, selectSampleRate);
         }
 
         for(int i = 1; i < count; i++)
@@ -154,22 +164,23 @@ public sealed class EliasFanoSequence
             upper[(int)(position >> 6)] |= 1UL << (int)(position & 63);
         }
 
-        (int[] oneSampleWord, int[] oneSampleOnesBefore) = BuildSamples(upper, upperWords, count, upperBits, ones: true);
-        (int[] zeroSampleWord, int[] zeroSampleZerosBefore) = BuildSamples(upper, upperWords, (int)(maxHigh + 1), upperBits, ones: false);
+        (int[] oneSampleWord, int[] oneSampleOnesBefore) = BuildSamples(upper, upperWords, count, upperBits, selectSampleRate, ones: true);
+        (int[] zeroSampleWord, int[] zeroSampleZerosBefore) = BuildSamples(upper, upperWords, (int)(maxHigh + 1), upperBits, selectSampleRate, ones: false);
 
-        return new EliasFanoSequence(lower, upper, oneSampleWord, oneSampleOnesBefore, zeroSampleWord, zeroSampleZerosBefore, upperBits, maxHigh, lowBits, count);
+        return new EliasFanoSequence(lower, upper, oneSampleWord, oneSampleOnesBefore, zeroSampleWord, zeroSampleZerosBefore, upperBits, maxHigh, lowBits, count, selectSampleRate);
     }
 
-    /// <summary>Samples every <see cref="SelectSampleRate"/>-th set (or unset) bit: the word it lives in and the marker count before that word.</summary>
+    /// <summary>Samples every <paramref name="sampleRate"/>-th set (or unset) bit: the word it lives in and the marker count before that word.</summary>
     /// <param name="upper">The bit-vector.</param>
     /// <param name="upperWords">The word count.</param>
     /// <param name="markerCount">The total set (or unset) bits.</param>
     /// <param name="upperBits">The valid bit length, so padding is not counted.</param>
+    /// <param name="sampleRate">One in this many markers is sampled.</param>
     /// <param name="ones"><see langword="true"/> to sample set bits, <see langword="false"/> for unset.</param>
     /// <returns>The sample word and the running marker count per sample.</returns>
-    private static (int[] Word, int[] Before) BuildSamples(ulong[] upper, int upperWords, int markerCount, long upperBits, bool ones)
+    private static (int[] Word, int[] Before) BuildSamples(ulong[] upper, int upperWords, int markerCount, long upperBits, int sampleRate, bool ones)
     {
-        int sampleCount = (markerCount / SelectSampleRate) + 1;
+        int sampleCount = (markerCount / sampleRate) + 1;
         int[] sampleWord = new int[sampleCount];
         int[] sampleBefore = new int[sampleCount];
         int markers = 0;
@@ -177,7 +188,7 @@ public sealed class EliasFanoSequence
         for(int word = 0; word < upperWords; word++)
         {
             int wordMarkers = ones ? BitOperations.PopCount(upper[word]) : BitOperations.PopCount(ZeroBits(upper, word, upperBits));
-            while(nextSample < sampleCount && (long)nextSample * SelectSampleRate < markers + wordMarkers)
+            while(nextSample < sampleCount && (long)nextSample * sampleRate < markers + wordMarkers)
             {
                 sampleWord[nextSample] = word;
                 sampleBefore[nextSample] = markers;
@@ -331,7 +342,7 @@ public sealed class EliasFanoSequence
     /// <returns>The bit position.</returns>
     private long SelectOne(int rank)
     {
-        int sample = rank / SelectSampleRate;
+        int sample = rank / selectSampleRate;
         int word = oneSampleWord[sample];
         int ones = oneSampleOnesBefore[sample];
 
@@ -353,7 +364,7 @@ public sealed class EliasFanoSequence
     /// <returns>The bit position.</returns>
     private long SelectZero(int rank)
     {
-        int sample = rank / SelectSampleRate;
+        int sample = rank / selectSampleRate;
         int word = zeroSampleWord[sample];
         int zeros = zeroSampleZerosBefore[sample];
 
