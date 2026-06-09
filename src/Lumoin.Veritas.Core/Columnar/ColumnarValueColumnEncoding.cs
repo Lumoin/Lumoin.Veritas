@@ -4,8 +4,7 @@ namespace Lumoin.Veritas.Core.Columnar;
 /// How a <see cref="ColumnarOrder"/> encodes its VALUE columns — an
 /// opt-in build policy, default <see cref="FrameOfReference"/>, which
 /// reproduces the historical layout byte-for-byte. Offset columns are
-/// unaffected: they stay prefixed-delta packed, the measured winner
-/// for their regular group-size deltas (Elias-Fano loses there).
+/// unaffected: they stay prefixed-delta packed.
 /// </summary>
 public enum ColumnarValueColumnEncoding
 {
@@ -19,11 +18,10 @@ public enum ColumnarValueColumnEncoding
     /// <summary>
     /// A value column that is GLOBALLY non-decreasing — the level-0
     /// column of a single-run build — is stored as one
-    /// <see cref="BlockPackedColumnMode.EliasFano"/> sequence, the
-    /// measured ~5-6 bits/value saving (and a measured faster
-    /// <c>NextGEQ</c> seek); within-group value columns (levels 1 and
-    /// 2 reset per parent) fall back to frame of reference. Opt-in
-    /// because it is valid only where the column is globally monotone.
+    /// <see cref="BlockPackedColumnMode.EliasFano"/> sequence;
+    /// within-group value columns (levels 1 and 2 reset per parent)
+    /// fall back to frame of reference. Opt-in because it is valid
+    /// only where the column is globally monotone.
     /// </summary>
     EliasFanoWhenMonotone,
 }

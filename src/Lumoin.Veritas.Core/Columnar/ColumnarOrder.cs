@@ -196,10 +196,8 @@ public sealed class ColumnarOrder
     /// Builds a value column under the build policy: always the frame-of-
     /// reference packing, and — when the policy opts into Elias-Fano and the
     /// column is globally non-decreasing — also the Elias-Fano packing, keeping
-    /// the smaller via <see cref="SmallerEncoding"/>. Packing a second
-    /// candidate only ever shrinks or matches the column, so a degenerate
-    /// column (e.g. a constant predicate column, ~0 bits under frame of
-    /// reference) never regresses.
+    /// the smaller via <see cref="SmallerEncoding"/>. Because the smaller is
+    /// kept, adding the Elias-Fano candidate never enlarges a column.
     /// </summary>
     /// <param name="values">The value column.</param>
     /// <param name="valueEncoding">The build policy.</param>
@@ -216,14 +214,11 @@ public sealed class ColumnarOrder
     }
 
     /// <summary>
-    /// The footprint-minimising encoding pick — "the optimizer chooses the
-    /// cheaper encoding", in miniature. Of two packings of the SAME column it
-    /// returns the one with the smaller
-    /// <see cref="BlockPackedColumn.PackedByteCount"/> (a tie keeps the first).
-    /// This is the selection primitive a column-encoding choice composes from:
-    /// offering one more candidate can only shrink or match the result, so it
-    /// is always safe to add a candidate; the only cost is packing it. Step 3
-    /// (partitioned Elias-Fano) extends the candidate set the same way.
+    /// Returns the smaller-footprint of two packings of the SAME column — the
+    /// one with the smaller <see cref="BlockPackedColumn.PackedByteCount"/>, a
+    /// tie keeping the first. Because the smaller is kept, offering a column an
+    /// additional candidate encoding can only shrink or match the result, never
+    /// enlarge it; the only cost of a candidate is packing it.
     /// </summary>
     /// <param name="first">The first candidate; kept on a tie.</param>
     /// <param name="second">The second candidate.</param>

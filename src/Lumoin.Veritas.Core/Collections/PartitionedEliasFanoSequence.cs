@@ -27,11 +27,10 @@ namespace Lumoin.Veritas.Core.Collections;
 /// the offsets it already stores.
 /// </para>
 /// <para>
-/// <b>Small segments lose.</b> The per-segment base and width are fixed
-/// overhead; on the short runs typical of real graphs (one or a few values per
-/// group) that overhead outweighs the entropy saving and frame-of-reference is
-/// smaller. The win is on LARGE, clustered groups (fan-out far above a
-/// frame-of-reference block), which the soak quantifies.
+/// <b>Per-segment overhead.</b> The per-segment base and width are fixed
+/// overhead amortised over the segment's values, so the bits per value fall as
+/// segments grow. The <c>--profile-partitioned-elias-fano</c> soak measures the
+/// footprint against frame of reference across the fan-out range.
 /// </para>
 /// </remarks>
 [DebuggerDisplay("PartitionedEliasFanoSequence Count={Count} Segments={SegmentCount} Bits={BitCount}")]

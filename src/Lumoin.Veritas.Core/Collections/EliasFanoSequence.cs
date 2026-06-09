@@ -292,10 +292,7 @@ public sealed class EliasFanoSequence
     /// come from one forward walk of <see cref="upper"/> (each separator zero
     /// advances the high group), the low parts from the packed
     /// <see cref="lower"/> payload — so a whole run costs one upper-vector walk
-    /// rather than <paramref name="count"/> independent selects. This is the
-    /// batch-decode entry the columnar layer drives; the fixed-width low-bit
-    /// unpack is the seam a SIMD kernel slots into, the same lane-unpack shape
-    /// the block-packed decode kernels already vectorise.
+    /// rather than <paramref name="count"/> independent selects.
     /// </summary>
     /// <param name="start">The first index, in <c>[0, Count]</c>.</param>
     /// <param name="count">The number of values to decode; <c>start + count</c> must not exceed <see cref="Count"/>.</param>

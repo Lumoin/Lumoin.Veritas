@@ -31,12 +31,10 @@ public enum BlockPackedColumnMode
     /// information floor (≈ <c>2 + log2(universe / count)</c> bits
     /// per value), NOT block-structured. Valid only for a globally
     /// non-decreasing column. It drops the per-block frame overhead
-    /// frame of reference pays — the measured ~5-6 bits/value win on
-    /// monotone value columns — and its <c>NextGEQ</c> seek (one
-    /// sampled <c>select₀</c> plus a short scan) measures FASTER than
-    /// frame-of-reference binary search; the only place frame of
-    /// reference is cheaper is a single point read (one lane probe vs
-    /// a select). The encoder opts into it where the column qualifies.
+    /// frame of reference carries; access and seek are select-driven
+    /// (<c>Access</c>, <c>NextGEQ</c>) rather than a lane probe and a
+    /// binary search. The encoder opts into it where the column
+    /// qualifies.
     /// </summary>
     EliasFano,
 }
