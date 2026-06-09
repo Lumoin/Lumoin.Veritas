@@ -12,25 +12,26 @@ namespace Lumoin.Veritas.Core.Hypertrie.Execution;
 /// and, once its trie is fully descended, a leaf tuple vector for its remaining
 /// columns. With every relation full-depth this is the worst-case-optimal join
 /// (the hash-trie analogue of leapfrog); with shallow tries over the join keys
-/// and leaves over the private output columns it is the binary hash join. One
-/// loop spans both.
+/// and leaves over the trailing columns it is the binary hash join. One loop
+/// spans both.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Leaf columns.</b> A relation below full depth carries its trailing
-/// variables as a leaf tuple vector, iterated as a cross-product factor when
-/// those variables are reached. This increment requires every leaf column to be
-/// <em>private</em> — a variable no other relation binds; a shared (join)
-/// variable must therefore be a trie level in every relation that has it, so a
-/// global level is either a pure trie intersection or a pure private-leaf
-/// iteration, never a mix. The leaf-intersection case — a join variable living
-/// in one relation's leaf — is a later increment and is rejected here.
+/// <b>The intersection.</b> At each variable the participants are the relations
+/// descending a trie node there and the at-leaf relations whose leaf carries
+/// that variable; the candidate values are the intersection of the trie nodes'
+/// keys and the leaf participants' distinct values, the smallest set driving
+/// the scan. A chosen value descends the trie participants (the deepest descent
+/// moving a relation onto its leaf) and narrows the leaf participants' rows. A
+/// leaf carrying a join variable therefore joins like any other relation — the
+/// binary join's build leaf and the worst-case-optimal trie meet in one rule.
 /// </para>
 /// <para>
 /// <b>Precondition.</b> Each relation's trie levels follow the global variable
-/// order, and its leaf columns are private and ordered after every trie level;
-/// the executor verifies this and throws otherwise, since the lockstep descent
-/// depends on it.
+/// order, and its leaf columns are ordered after every trie level (a relation
+/// reaches its leaf at its deepest trie level, before binding any leaf
+/// variable); the executor verifies this and throws otherwise, since the
+/// lockstep descent depends on it.
 /// </para>
 /// </remarks>
 public static class FreeJoinExecutor
@@ -43,7 +44,7 @@ public static class FreeJoinExecutor
     /// <param name="variableOrder">The global descent order; covers every relation's variables.</param>
     /// <returns>The result batches over <paramref name="variableOrder"/>; full except the last.</returns>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentException">A relation's trie order does not follow the variable order, or a leaf column is a shared variable or precedes a trie level.</exception>
+    /// <exception cref="ArgumentException">A relation's trie order does not follow the variable order, or a leaf column precedes a trie level.</exception>
     public static IEnumerable<SolutionBatch> Execute(IReadOnlyList<GeneralizedHashTrie> relations, IReadOnlyList<Variable> variableOrder)
     {
         ArgumentNullException.ThrowIfNull(relations);
@@ -55,28 +56,17 @@ public static class FreeJoinExecutor
             globalIndex[variableOrder[k]] = k;
         }
 
-        //How many relations bind each variable: a leaf column must be bound by
-        //exactly one (private), so the join variables stay on the trie levels.
-        Dictionary<Variable, int> bindingCount = [];
-        foreach(GeneralizedHashTrie trie in relations)
-        {
-            foreach(Variable variable in trie.Schema)
-            {
-                bindingCount[variable] = bindingCount.TryGetValue(variable, out int existing) ? existing + 1 : 1;
-            }
-        }
-
-        //Per global level: the relations descending a trie node there, and (for
-        //a private leaf level) the single owning relation with the leaf column
-        //it binds. Built once: a global-order-consistent build keeps a relation
-        //at the trie level for variable k whenever k is reached, and a private
-        //leaf level has no trie participant, so the two never share a level.
+        //Per global level: the relations descending a trie node there, and the
+        //at-leaf relations whose leaf binds that variable. Built once: a
+        //global-order-consistent build keeps a relation at the trie level for
+        //variable k whenever k is reached, and a relation reaches its leaf at
+        //its deepest trie level (before any of its leaf variables).
         List<TrieParticipant>[] trieAt = new List<TrieParticipant>[variableOrder.Count];
-        LeafParticipant[] leafAt = new LeafParticipant[variableOrder.Count];
+        List<LeafParticipant>[] leafAt = new List<LeafParticipant>[variableOrder.Count];
         for(int k = 0; k < variableOrder.Count; k++)
         {
             trieAt[k] = [];
-            leafAt[k] = LeafParticipant.None;
+            leafAt[k] = [];
         }
 
         for(int relation = 0; relation < relations.Count; relation++)
@@ -102,18 +92,13 @@ public static class FreeJoinExecutor
             for(int leafColumn = 0; leafColumn < trie.LeafColumns.Length; leafColumn++)
             {
                 Variable variable = trie.Schema[trie.LeafColumns[leafColumn]];
-                if(bindingCount[variable] != 1)
-                {
-                    throw new ArgumentException("A leaf column must be a private variable; a shared join variable must be a trie level (the leaf-intersection case is a later increment).", nameof(relations));
-                }
-
                 int global = globalIndex[variable];
                 if(global <= deepestTrieGlobal)
                 {
                     throw new ArgumentException("A relation's leaf columns must follow its trie levels in the global variable order.", nameof(relations));
                 }
 
-                leafAt[global] = new LeafParticipant(relation, leafColumn);
+                leafAt[global].Add(new LeafParticipant(relation, leafColumn));
             }
         }
 
@@ -124,13 +109,13 @@ public static class FreeJoinExecutor
     /// <param name="relations">The relations.</param>
     /// <param name="variableOrder">The global descent order.</param>
     /// <param name="trieAt">The trie participants at each global level.</param>
-    /// <param name="leafAt">The private-leaf owner at each global level, if any.</param>
+    /// <param name="leafAt">The leaf participants at each global level.</param>
     /// <returns>The result batches.</returns>
     private static IEnumerable<SolutionBatch> Drive(
         IReadOnlyList<GeneralizedHashTrie> relations,
         IReadOnlyList<Variable> variableOrder,
         List<TrieParticipant>[] trieAt,
-        LeafParticipant[] leafAt)
+        List<LeafParticipant>[] leafAt)
     {
         int lastLevel = variableOrder.Count - 1;
 
@@ -207,11 +192,11 @@ public static class FreeJoinExecutor
         }
     }
 
-    /// <summary>Builds the frame for a variable: a private-leaf level iterates the owner's distinct leaf values; a trie level is the multiway intersection of its participants' current nodes.</summary>
+    /// <summary>Builds the frame for a variable: the participating trie and leaf relations and their intersection candidate values.</summary>
     /// <param name="level">The global variable level.</param>
     /// <param name="relations">The relations.</param>
     /// <param name="trieAt">The trie participants at each level.</param>
-    /// <param name="leafAt">The private-leaf owner at each level, if any.</param>
+    /// <param name="leafAt">The leaf participants at each level.</param>
     /// <param name="node">The per-relation current trie node ids.</param>
     /// <param name="leafId">The per-relation leaf ids, valid once at the leaf.</param>
     /// <param name="leafRows">The per-relation narrowed leaf rows, valid once at the leaf.</param>
@@ -220,95 +205,146 @@ public static class FreeJoinExecutor
         int level,
         IReadOnlyList<GeneralizedHashTrie> relations,
         List<TrieParticipant>[] trieAt,
-        LeafParticipant[] leafAt,
+        List<LeafParticipant>[] leafAt,
         int[] node,
         int[] leafId,
         List<int>?[] leafRows)
     {
-        if(leafAt[level].IsSet)
-        {
-            LeafParticipant owner = leafAt[level];
-            List<uint> keys = DistinctLeafValues(relations[owner.Relation], leafId[owner.Relation], owner.LeafColumn, leafRows[owner.Relation]!);
+        List<TrieParticipant> trie = trieAt[level];
+        List<LeafParticipant> leaf = leafAt[level];
 
-            return new Frame(level, isLeaf: true, [owner.Relation], [false], owner.LeafColumn, keys);
+        int[] trieRelations = new int[trie.Count];
+        bool[] trieIsDeepest = new bool[trie.Count];
+        for(int i = 0; i < trie.Count; i++)
+        {
+            trieRelations[i] = trie[i].Relation;
+            trieIsDeepest[i] = trie[i].IsDeepest;
         }
 
-        List<TrieParticipant> participants = trieAt[level];
-        int[] relationIndices = new int[participants.Count];
-        bool[] isDeepest = new bool[participants.Count];
-        for(int i = 0; i < participants.Count; i++)
+        int[] leafRelations = new int[leaf.Count];
+        int[] leafColumns = new int[leaf.Count];
+        for(int i = 0; i < leaf.Count; i++)
         {
-            relationIndices[i] = participants[i].Relation;
-            isDeepest[i] = participants[i].IsDeepest;
+            leafRelations[i] = leaf[i].Relation;
+            leafColumns[i] = leaf[i].LeafColumn;
         }
 
-        return new Frame(level, isLeaf: false, relationIndices, isDeepest, leafColumn: -1, IntersectTrieNodes(relations, relationIndices, node));
+        List<uint> keys = Intersect(relations, trieRelations, leafRelations, leafColumns, node, leafId, leafRows);
+
+        return new Frame(level, trieRelations, trieIsDeepest, leafRelations, leafColumns, keys);
     }
 
-    /// <summary>The multiway intersection of the trie participants' current nodes: the keys of the smallest node every other participant's node also holds.</summary>
+    /// <summary>
+    /// The multiway intersection at a variable: the values held by every trie
+    /// participant's current node and present in every leaf participant's
+    /// narrowed rows. The smallest participant set drives the scan; the others
+    /// are probed — a trie node by lookup, a leaf by a precomputed value set.
+    /// </summary>
     /// <param name="relations">The relations.</param>
-    /// <param name="participants">The trie participants' relation indices.</param>
+    /// <param name="trieRelations">The trie participants' relation indices.</param>
+    /// <param name="leafRelations">The leaf participants' relation indices.</param>
+    /// <param name="leafColumns">The leaf participants' leaf columns, parallel to <paramref name="leafRelations"/>.</param>
     /// <param name="node">The per-relation current node ids.</param>
+    /// <param name="leafId">The per-relation leaf ids.</param>
+    /// <param name="leafRows">The per-relation narrowed leaf rows.</param>
     /// <returns>The intersection candidate values.</returns>
-    private static List<uint> IntersectTrieNodes(IReadOnlyList<GeneralizedHashTrie> relations, int[] participants, int[] node)
+    private static List<uint> Intersect(
+        IReadOnlyList<GeneralizedHashTrie> relations,
+        int[] trieRelations,
+        int[] leafRelations,
+        int[] leafColumns,
+        int[] node,
+        int[] leafId,
+        List<int>?[] leafRows)
     {
-        int smallest = participants[0];
-        for(int i = 1; i < participants.Length; i++)
+        //Each leaf participant's distinct values, for both probing and (when it
+        //is the smallest) driving.
+        HashSet<uint>[] leafSets = new HashSet<uint>[leafRelations.Length];
+        for(int i = 0; i < leafRelations.Length; i++)
         {
-            int relation = participants[i];
-            if(relations[relation].NodeAt(node[relation]).Count < relations[smallest].NodeAt(node[smallest]).Count)
+            int relation = leafRelations[i];
+            HashSet<uint> values = [];
+            foreach(int row in leafRows[relation]!)
             {
-                smallest = relation;
+                values.Add(relations[relation].LeafValue(leafId[relation], row, leafColumns[i]));
+            }
+
+            leafSets[i] = values;
+        }
+
+        //The smallest participant set drives. Kind 0 is a trie node, kind 1 a
+        //leaf value set.
+        long smallestSize = long.MaxValue;
+        int driverKind = -1;
+        int driverIndex = -1;
+        for(int i = 0; i < trieRelations.Length; i++)
+        {
+            int size = relations[trieRelations[i]].NodeAt(node[trieRelations[i]]).Count;
+            if(size < smallestSize)
+            {
+                smallestSize = size;
+                driverKind = 0;
+                driverIndex = i;
             }
         }
 
-        List<uint> keys = [];
-        OpenAddressedTable<int>.Enumerator scan = relations[smallest].NodeAt(node[smallest]).GetEnumerator();
-        while(scan.MoveNext())
+        for(int i = 0; i < leafRelations.Length; i++)
         {
-            uint key = (uint)scan.Current.Key;
-
-            bool inAll = true;
-            for(int i = 0; i < participants.Length; i++)
+            if(leafSets[i].Count < smallestSize)
             {
-                int relation = participants[i];
-                if(relation != smallest && !relations[relation].NodeAt(node[relation]).TryGetValue(key, out int _))
-                {
-                    inAll = false;
+                smallestSize = leafSets[i].Count;
+                driverKind = 1;
+                driverIndex = i;
+            }
+        }
 
-                    break;
+        bool InAllOthers(uint value)
+        {
+            for(int i = 0; i < trieRelations.Length; i++)
+            {
+                if((driverKind != 0 || i != driverIndex) && !relations[trieRelations[i]].NodeAt(node[trieRelations[i]]).TryGetValue(value, out int _))
+                {
+                    return false;
                 }
             }
 
-            if(inAll)
+            for(int i = 0; i < leafRelations.Length; i++)
             {
-                keys.Add(key);
+                if((driverKind != 1 || i != driverIndex) && !leafSets[i].Contains(value))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        List<uint> keys = [];
+        if(driverKind == 0)
+        {
+            int relation = trieRelations[driverIndex];
+            OpenAddressedTable<int>.Enumerator scan = relations[relation].NodeAt(node[relation]).GetEnumerator();
+            while(scan.MoveNext())
+            {
+                uint value = (uint)scan.Current.Key;
+                if(InAllOthers(value))
+                {
+                    keys.Add(value);
+                }
+            }
+        }
+        else
+        {
+            foreach(uint value in leafSets[driverIndex])
+            {
+                if(InAllOthers(value))
+                {
+                    keys.Add(value);
+                }
             }
         }
 
         return keys;
-    }
-
-    /// <summary>The distinct values of one leaf column across a relation's narrowed leaf rows — the candidate bindings a private-leaf level offers.</summary>
-    /// <param name="relation">The owning relation.</param>
-    /// <param name="leafId">The relation's current leaf id.</param>
-    /// <param name="leafColumn">The leaf column index.</param>
-    /// <param name="rows">The relation's narrowed leaf rows.</param>
-    /// <returns>The distinct values, in first-seen order.</returns>
-    private static List<uint> DistinctLeafValues(GeneralizedHashTrie relation, int leafId, int leafColumn, List<int> rows)
-    {
-        HashSet<uint> seen = [];
-        List<uint> values = [];
-        foreach(int row in rows)
-        {
-            uint value = relation.LeafValue(leafId, row, leafColumn);
-            if(seen.Add(value))
-            {
-                values.Add(value);
-            }
-        }
-
-        return values;
     }
 
     /// <summary>Saves each participant's state before the current value is applied, so the frame can undo it on backtrack.</summary>
@@ -318,9 +354,9 @@ public static class FreeJoinExecutor
     /// <param name="leafRows">The per-relation narrowed leaf rows.</param>
     private static void Save(Frame frame, int[] node, int[] leafId, List<int>?[] leafRows)
     {
-        for(int i = 0; i < frame.Participants.Length; i++)
+        for(int i = 0; i < frame.AllParticipants.Length; i++)
         {
-            int relation = frame.Participants[i];
+            int relation = frame.AllParticipants[i];
             frame.SavedNode[i] = node[relation];
             frame.SavedLeafId[i] = leafId[relation];
             frame.SavedLeafRows[i] = leafRows[relation];
@@ -334,16 +370,16 @@ public static class FreeJoinExecutor
     /// <param name="leafRows">The per-relation narrowed leaf rows.</param>
     private static void Restore(Frame frame, int[] node, int[] leafId, List<int>?[] leafRows)
     {
-        for(int i = 0; i < frame.Participants.Length; i++)
+        for(int i = 0; i < frame.AllParticipants.Length; i++)
         {
-            int relation = frame.Participants[i];
+            int relation = frame.AllParticipants[i];
             node[relation] = frame.SavedNode[i];
             leafId[relation] = frame.SavedLeafId[i];
             leafRows[relation] = frame.SavedLeafRows[i];
         }
     }
 
-    /// <summary>Applies the chosen value: a leaf level narrows the owner's rows to those carrying it; a trie level descends every participant, the deepest descent moving a relation onto its leaf (a full-depth relation becomes terminal).</summary>
+    /// <summary>Applies the chosen value: each trie participant descends (the deepest descent moving it onto its leaf, or to a full-depth terminal), and each leaf participant narrows its rows to those carrying the value.</summary>
     /// <param name="frame">The frame.</param>
     /// <param name="value">The chosen value.</param>
     /// <param name="relations">The relations.</param>
@@ -352,30 +388,12 @@ public static class FreeJoinExecutor
     /// <param name="leafRows">The per-relation narrowed leaf rows.</param>
     private static void Apply(Frame frame, uint value, IReadOnlyList<GeneralizedHashTrie> relations, int[] node, int[] leafId, List<int>?[] leafRows)
     {
-        if(frame.IsLeaf)
+        for(int i = 0; i < frame.TrieRelations.Length; i++)
         {
-            int relation = frame.Participants[0];
-            List<int> current = leafRows[relation]!;
-            List<int> narrowed = [];
-            foreach(int row in current)
-            {
-                if(relations[relation].LeafValue(leafId[relation], row, frame.LeafColumn) == value)
-                {
-                    narrowed.Add(row);
-                }
-            }
-
-            leafRows[relation] = narrowed;
-
-            return;
-        }
-
-        for(int i = 0; i < frame.Participants.Length; i++)
-        {
-            int relation = frame.Participants[i];
+            int relation = frame.TrieRelations[i];
             relations[relation].NodeAt(node[relation]).TryGetValue(value, out int child);
 
-            if(frame.IsDeepest[i])
+            if(frame.TrieIsDeepest[i])
             {
                 //The deepest trie node maps the value to a leaf id. A relation
                 //with leaf columns opens its full tuple set for the narrowing to
@@ -388,6 +406,23 @@ public static class FreeJoinExecutor
             {
                 node[relation] = child;
             }
+        }
+
+        for(int i = 0; i < frame.LeafRelations.Length; i++)
+        {
+            int relation = frame.LeafRelations[i];
+            int leafColumn = frame.LeafColumns[i];
+            List<int> current = leafRows[relation]!;
+            List<int> narrowed = [];
+            foreach(int row in current)
+            {
+                if(relations[relation].LeafValue(leafId[relation], row, leafColumn) == value)
+                {
+                    narrowed.Add(row);
+                }
+            }
+
+            leafRows[relation] = narrowed;
         }
     }
 
@@ -412,42 +447,38 @@ public static class FreeJoinExecutor
     /// <param name="IsDeepest">Whether this is the relation's deepest trie level.</param>
     private readonly record struct TrieParticipant(int Relation, bool IsDeepest);
 
-    /// <summary>The private-leaf owner at a level: the relation and the leaf column it binds there. <see cref="None"/> marks a level with no leaf owner.</summary>
-    /// <param name="Relation">The owning relation index, or −1 for none.</param>
-    /// <param name="LeafColumn">The leaf column index, or −1 for none.</param>
-    private readonly record struct LeafParticipant(int Relation, int LeafColumn)
-    {
-        /// <summary>The absent owner — a level that is not a private-leaf level.</summary>
-        public static LeafParticipant None { get; } = new(-1, -1);
-
-        /// <summary>Whether this level has a private-leaf owner.</summary>
-        public bool IsSet => Relation >= 0;
-    }
+    /// <summary>A leaf participant at a level: an at-leaf relation and the leaf column it binds there.</summary>
+    /// <param name="Relation">The relation index.</param>
+    /// <param name="LeafColumn">The leaf column index.</param>
+    private readonly record struct LeafParticipant(int Relation, int LeafColumn);
 
     /// <summary>
     /// One bound-variable frame of the depth-first walk: its candidate values,
-    /// the cursor into them, the relations participating at this variable, and
-    /// their state saved before the current value's application so it can be
-    /// undone on backtrack.
+    /// the cursor into them, the trie and leaf relations participating at this
+    /// variable, and their state saved before the current value's application so
+    /// it can be undone on backtrack.
     /// </summary>
     private sealed class Frame
     {
         /// <summary>The global variable level this frame binds.</summary>
         public int Level { get; }
 
-        /// <summary>Whether this is a private-leaf iteration (one owner) rather than a trie intersection.</summary>
-        public bool IsLeaf { get; }
+        /// <summary>The relations descending a trie node at this variable.</summary>
+        public int[] TrieRelations { get; }
 
-        /// <summary>The relations participating at this variable.</summary>
-        public int[] Participants { get; }
+        /// <summary>Whether each trie participant is at its deepest level, parallel to <see cref="TrieRelations"/>.</summary>
+        public bool[] TrieIsDeepest { get; }
 
-        /// <summary>Whether each trie participant is at its deepest level, parallel to <see cref="Participants"/>; all <see langword="false"/> for a leaf frame.</summary>
-        public bool[] IsDeepest { get; }
+        /// <summary>The at-leaf relations binding this variable through their leaf.</summary>
+        public int[] LeafRelations { get; }
 
-        /// <summary>The leaf column iterated by a leaf frame, or −1 for a trie frame.</summary>
-        public int LeafColumn { get; }
+        /// <summary>The leaf column each leaf participant binds, parallel to <see cref="LeafRelations"/>.</summary>
+        public int[] LeafColumns { get; }
 
-        /// <summary>The candidate values for this variable — the trie intersection or the owner's distinct leaf values.</summary>
+        /// <summary>Every participating relation — trie then leaf — over which state is saved and restored.</summary>
+        public int[] AllParticipants { get; }
+
+        /// <summary>The candidate values for this variable: the trie-and-leaf intersection.</summary>
         public List<uint> Keys { get; }
 
         /// <summary>The next candidate index to try.</summary>
@@ -456,7 +487,7 @@ public static class FreeJoinExecutor
         /// <summary>Whether the current value has been applied and awaits undo on the next visit.</summary>
         public bool Descended { get; set; }
 
-        /// <summary>Each participant's node id saved before the current application, parallel to <see cref="Participants"/>.</summary>
+        /// <summary>Each participant's node id saved before the current application, parallel to <see cref="AllParticipants"/>.</summary>
         public int[] SavedNode { get; }
 
         /// <summary>Each participant's leaf id saved before the current application.</summary>
@@ -465,24 +496,27 @@ public static class FreeJoinExecutor
         /// <summary>Each participant's narrowed leaf rows saved before the current application.</summary>
         public List<int>?[] SavedLeafRows { get; }
 
-        /// <summary>Constructs a frame over its participants and candidate values.</summary>
+        /// <summary>Constructs a frame over its trie and leaf participants and candidate values.</summary>
         /// <param name="level">The global variable level.</param>
-        /// <param name="isLeaf">Whether this is a private-leaf iteration.</param>
-        /// <param name="participants">The participating relations.</param>
-        /// <param name="isDeepest">Whether each trie participant is at its deepest level.</param>
-        /// <param name="leafColumn">The leaf column for a leaf frame, or −1.</param>
+        /// <param name="trieRelations">The trie participants.</param>
+        /// <param name="trieIsDeepest">Whether each trie participant is at its deepest level.</param>
+        /// <param name="leafRelations">The leaf participants.</param>
+        /// <param name="leafColumns">The leaf column each leaf participant binds.</param>
         /// <param name="keys">The candidate values.</param>
-        public Frame(int level, bool isLeaf, int[] participants, bool[] isDeepest, int leafColumn, List<uint> keys)
+        public Frame(int level, int[] trieRelations, bool[] trieIsDeepest, int[] leafRelations, int[] leafColumns, List<uint> keys)
         {
             Level = level;
-            IsLeaf = isLeaf;
-            Participants = participants;
-            IsDeepest = isDeepest;
-            LeafColumn = leafColumn;
+            TrieRelations = trieRelations;
+            TrieIsDeepest = trieIsDeepest;
+            LeafRelations = leafRelations;
+            LeafColumns = leafColumns;
+            AllParticipants = [.. trieRelations, .. leafRelations];
             Keys = keys;
-            SavedNode = new int[participants.Length];
-            SavedLeafId = new int[participants.Length];
-            SavedLeafRows = new List<int>?[participants.Length];
+            Index = 0;
+            Descended = false;
+            SavedNode = new int[AllParticipants.Length];
+            SavedLeafId = new int[AllParticipants.Length];
+            SavedLeafRows = new List<int>?[AllParticipants.Length];
         }
     }
 }

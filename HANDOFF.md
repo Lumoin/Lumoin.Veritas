@@ -13,7 +13,7 @@ in "Next".
 ## Current state
 
 - Branch `main`, tree clean at commit **`a0b31fa`** (Elias-Fano `select₀` `NextGEQ`; `e43578b` EF primitive, `e3e95d2` Free Join generic join full-depth, `793206a` GHT foundation, `3ff1f61` open-addressed join table, `ef037a7` depth-2 chain factorization, `08d0db1` Yannakakis). **§4.3 design pass done** (`tempdocs/free-join-design-memo.md`).
-- Full suite: **8114 / 0 failed / 546 skipped**.
+- Full suite: **8116 / 0 failed / 546 skipped**.
 - **Conformance (measured 2026-06-09, not from memory):** zero failures anywhere. W3C SHACL **120/120**, Turtle 328, NQuads 205, RDF 146 — 100%. SPARQL 1221/1248 (27 optional-feature skips). OWL `W3cOwl2` conformance suites **881/1323, 442 skip, 0 fail** — the 442 are correct cross-suite abstentions (367 RL + 65 species) + 10 corpus contradictions, **NOT** unimplemented regimes; the 2 genuine Direct-semantics entailment tests (`WebOnt-I4.6-005-Direct`, `WebOnt-equivalentClass-008-Direct`) fixed 2026-06-09 by projecting away the conclusion's annotations in `W3cOwl2RlTests` before the RL embedding check. The old "SHACL 63/120 / SHACL-SPARQL open" and "444 OWL regimes unimplemented" memories were **stale** — both corrected.
 - Full suite: **8083 total / 0 failed / 548 skipped** (the new factorized-join + open-addressed-table tests over the pre-§4.2 count; the skip count jitters ±2 with the environment-conditional OWL-entailment `Inconclusive` tests). Factorization is opt-in (default-off): the corpus routes stars/chains through the streamed path by default.
 - One unrelated working-tree change persists: `generate-local-test-nuget-packages.ps1` (a sister project's edit excluding the AOT CLI from local packaging) — not mine, left uncommitted on purpose.
@@ -260,19 +260,19 @@ producing `SolutionBatch`es. **Full-depth (WCOJ form) only this increment**; agr
 triangle/star/chain (3 tests). Took the **hash-trie route (option 1)** — self-contained, no leapfrog-driver
 surgery.
 
-**Shipped: leaf vectors — private case.** `FreeJoinExecutor` now accepts relations below full depth: a
-relation's trailing **private** columns (variables no other relation binds) drop into a leaf tuple vector,
-iterated as a cross-product factor by per-variable narrowing. A global level is therefore either a pure trie
-intersection or a pure private-leaf iteration (never mixed), because a join variable must stay a trie level
-in every relation that has it — validated, throws otherwise. `GeneralizedHashTrie` gained
-`LeafTupleCount`/`LeafValue`. Differential vs leapfrog: star at depth-1 (trie on the shared subject, private
-object a leaf) and chain with a private terminal leaf (2 new tests); the full-depth path is unchanged (3
-tests still green).
+**Shipped: leaf vectors (`FreeJoinExecutor` below full depth).** A relation's trailing columns drop into a
+leaf tuple vector. At each variable the participants are the relations descending a trie node there AND the
+at-leaf relations whose leaf carries that variable; the candidates are the intersection of the trie nodes'
+keys and the leaf participants' distinct values (smallest set drives), so a join variable may live in a
+relation's leaf — the binary-join build leaf and the WCOJ trie meet in one rule. `GeneralizedHashTrie` gained
+`LeafTupleCount`/`LeafValue`. Differential vs leapfrog: star at depth-1, chain with a private terminal leaf,
+chain all-depth-1 (leaf-meets-trie), and a diamond where `?z` is a leaf in two relations (leaf-leaf) — plus
+the 3 full-depth tests, all green. Precondition (validated): trie levels follow the global order, and leaf
+columns follow the relation's deepest trie level.
 
-**Next on §4.3:** (a) **shared-leaf intersection** — the remaining half of leaf vectors: let an at-leaf
-relation's leaf values join the per-variable hash intersection, so a join variable can live in one relation's
-leaf (today it must stay a trie level). (b) **pipeline wiring** — `FreeJoinExecutor` behind `PreferFreeJoin`
-(default-off), the existing engines as oracle. (c) **factorized output** (`FactorizedBatch`) — §4.2 ∩ §4.3.
+**Next on §4.3:** (a) **pipeline wiring** — `FreeJoinExecutor` behind `PreferFreeJoin` (default-off), routed
+in the rendezvous with a builder that turns a per-relation depth choice into GHTs; the whole conformance
+corpus as oracle. (b) **factorized output** (`FactorizedBatch`) — where §4.2 and §4.3 converge.
 
 ### After the tier
 

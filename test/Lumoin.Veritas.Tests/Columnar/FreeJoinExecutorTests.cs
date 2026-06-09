@@ -307,4 +307,64 @@ internal sealed class FreeJoinExecutorTests
         //terminal ?t of the second relation drops into a leaf vector.
         await AssertFreeJoinAtDepthAgreesWithLeapfrog(AcyclicFixture(), ChainQuery, [2, 1]).ConfigureAwait(false);
     }
+
+    [TestMethod]
+    public async Task ChainAllDepthOneAgreesWithLeapfrog()
+    {
+        //Both relations at depth one: ?o is the first relation's leaf yet the
+        //second's trie key, so the ?o level intersects a leaf with a trie node —
+        //the shared-leaf-meets-trie case.
+        await AssertFreeJoinAtDepthAgreesWithLeapfrog(AcyclicFixture(), ChainQuery, [1, 1]).ConfigureAwait(false);
+    }
+
+    /// <summary>A diamond <c>?s p0 ?a . ?s p1 ?b . ?a p2 ?z . ?b p3 ?z</c> where each <c>?s</c> reaches a shared set of <c>?z</c> through both <c>?a</c> and <c>?b</c>.</summary>
+    /// <returns>The triples.</returns>
+    private static List<EncodedTriple> DiamondFixture()
+    {
+        List<EncodedTriple> triples = [];
+        for(uint subject = 1; subject <= 10; subject++)
+        {
+            uint a = 100 + subject;
+            uint b = 200 + subject;
+            triples.Add(EncodedTriple.FromEncoded(subject, 200, a));
+            triples.Add(EncodedTriple.FromEncoded(subject, 201, b));
+            for(uint k = 0; k < 3; k++)
+            {
+                uint z = 300 + (subject * 3) + k;
+                triples.Add(EncodedTriple.FromEncoded(a, 202, z));
+                triples.Add(EncodedTriple.FromEncoded(b, 203, z));
+            }
+        }
+
+        return triples;
+    }
+
+    /// <summary>The diamond query <c>?s p0 ?a . ?s p1 ?b . ?a p2 ?z . ?b p3 ?z</c>.</summary>
+    /// <param name="registry">The variable registry.</param>
+    /// <returns>The query.</returns>
+    private static BasicGraphPattern DiamondQuery(VariableRegistry registry)
+    {
+        Variable s = registry.GetOrAdd("s");
+        Variable a = registry.GetOrAdd("a");
+        Variable b = registry.GetOrAdd("b");
+        Variable z = registry.GetOrAdd("z");
+
+        return new BasicGraphPattern(
+            [
+                new TriplePattern(PatternPosition.OfVariable(s), PatternPosition.Bound(TermId.FromEncoded(200)), PatternPosition.OfVariable(a)),
+                new TriplePattern(PatternPosition.OfVariable(s), PatternPosition.Bound(TermId.FromEncoded(201)), PatternPosition.OfVariable(b)),
+                new TriplePattern(PatternPosition.OfVariable(a), PatternPosition.Bound(TermId.FromEncoded(202)), PatternPosition.OfVariable(z)),
+                new TriplePattern(PatternPosition.OfVariable(b), PatternPosition.Bound(TermId.FromEncoded(203)), PatternPosition.OfVariable(z)),
+            ],
+            registry);
+    }
+
+    [TestMethod]
+    public async Task DiamondSharedLeafAgreesWithLeapfrog()
+    {
+        //?z is a leaf column of both ?a-p2-?z and ?b-p3-?z and a trie level in
+        //neither, so its level is a pure leaf-leaf intersection — two leaf
+        //participants, no trie participant.
+        await AssertFreeJoinAtDepthAgreesWithLeapfrog(DiamondFixture(), DiamondQuery, [2, 2, 1, 1]).ConfigureAwait(false);
+    }
 }
