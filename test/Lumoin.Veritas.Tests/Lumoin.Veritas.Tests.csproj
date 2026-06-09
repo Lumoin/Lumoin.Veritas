@@ -36,6 +36,20 @@
     </PackageReference>
   </ItemGroup>
 
+  <!--
+    The Lumoin.Verisync consensus/replication stack, consumed here to wire and
+    differentially exercise it against the Veritas graph store. Veritas serializes its
+    own payloads (Veritas.Cbor / Json.Stj); the Verisync.* packages serialize Verisync's
+    own consensus and CRDT-state types. Test projects are exempt from the central
+    package-scope validation, so this is the staging ground before any production
+    replication library exists.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Lumoin.Verisync.Core" />
+    <PackageReference Include="Lumoin.Verisync.Json" />
+    <PackageReference Include="Lumoin.Verisync.Cbor" />
+  </ItemGroup>
+
   <ItemGroup>
     <!-- Bluesky fixtures (real CAR files from public AT Protocol PDS endpoints).
          Files are populated manually per Cbor/Fixtures/Bluesky/README.md; the

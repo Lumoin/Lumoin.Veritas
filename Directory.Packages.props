@@ -65,6 +65,19 @@
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.8" />
   </ItemGroup>
   <!--
+    Consensus/replication packages: the Lumoin.Verisync stack (CRDTs, causal contexts,
+    CASPaxos consensus, authenticated log replay). Scoped out of the Library label so the
+    transport-free core and the serialization projects never take a replication dependency.
+    Consumed by test and benchmark projects (which bypass scope validation) for the wiring
+    and convergence checks, and — if a dedicated replication library is added later — by that
+    library once it is granted this label in the validation target.
+  -->
+  <ItemGroup Label="Consensus">
+    <PackageVersion Include="Lumoin.Verisync.Core" Version="0.0.1" />
+    <PackageVersion Include="Lumoin.Verisync.Json" Version="0.0.1" />
+    <PackageVersion Include="Lumoin.Verisync.Cbor" Version="0.0.1" />
+  </ItemGroup>
+  <!--
     Serialization project names whose project references are restricted to test and
     benchmark projects only. Library projects must not take a project reference to any
     project listed here, keeping the core stack serialization-agnostic. Serialization

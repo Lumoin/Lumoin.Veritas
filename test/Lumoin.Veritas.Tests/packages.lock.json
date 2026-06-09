@@ -18,6 +18,30 @@
           "Microsoft.TestPlatform.ObjectModel": "16.9.1"
         }
       },
+      "Lumoin.Verisync.Cbor": {
+        "type": "Direct",
+        "requested": "[0.0.1, )",
+        "resolved": "0.0.1",
+        "contentHash": "wNxgmpvBl9box8wbSghxLodYnOCtTk6M9TBSfXfe7+DBbFjKDpgagI/4zUaMcoaWdxqsUUK3C8Owq4V++xk4dw==",
+        "dependencies": {
+          "Lumoin.Verisync.Core": "0.0.1"
+        }
+      },
+      "Lumoin.Verisync.Core": {
+        "type": "Direct",
+        "requested": "[0.0.1, )",
+        "resolved": "0.0.1",
+        "contentHash": "C/jULk+Lz13UX5q5tGzKBm3mbkd7ale8ODzjJD8dEpUZCdvWcx7sONxPHCMfT49HYlUJF4yrq1HvgXGzPdQy4A=="
+      },
+      "Lumoin.Verisync.Json": {
+        "type": "Direct",
+        "requested": "[0.0.1, )",
+        "resolved": "0.0.1",
+        "contentHash": "I5PPMkJOE4kacSDiBmM7znYr053Wl1TQ6Tz6GeYLClVRROB1trhUCOhhOoRp0NXr+4gxsJdd+G6RoDaT2xmriA==",
+        "dependencies": {
+          "Lumoin.Verisync.Core": "0.0.1"
+        }
+      },
       "Microsoft.CodeAnalysis.BannedApiAnalyzers": {
         "type": "Direct",
         "requested": "[3.12.0-beta1.25218.8, )",
