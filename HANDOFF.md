@@ -12,8 +12,9 @@ in "Next".
 
 ## Current state
 
-- Branch `main`, tree clean at commit **`e3e95d2`** (§4.3 Free Join generic join, full-depth; `793206a` GHT foundation, `46ebbf6` soak rename, `3ff1f61` open-addressed join table, `b3308cf` chain pipeline route, `31d2a12` star opt-in, `ef037a7` depth-2 chain factorization, `08d0db1` Yannakakis). **§4.3 design pass done** (`tempdocs/free-join-design-memo.md`).
-- Full suite: **8091 / 0 failed / 548 skipped**.
+- Branch `main`, tree clean at commit **`e43578b`** (Elias-Fano succinct primitive; `e3e95d2` Free Join generic join full-depth, `793206a` GHT foundation, `3ff1f61` open-addressed join table, `ef037a7` depth-2 chain factorization, `08d0db1` Yannakakis). **§4.3 design pass done** (`tempdocs/free-join-design-memo.md`).
+- Full suite: **8097 / 0 failed / 548 skipped**.
+- **Conformance (measured 2026-06-09, not from memory):** zero failures anywhere. W3C SHACL **120/120**, Turtle 328, NQuads 205, RDF 146 — 100%. SPARQL 1221/1248 (27 optional-feature skips), OWL 986/1430 (444 entailment-regime skips). The old "SHACL 63/120 / SHACL-SPARQL open" memory was **stale** — SHACL is fully conformant; corrected.
 - Full suite: **8083 total / 0 failed / 548 skipped** (the new factorized-join + open-addressed-table tests over the pre-§4.2 count; the skip count jitters ±2 with the environment-conditional OWL-entailment `Inconclusive` tests). Factorization is opt-in (default-off): the corpus routes stars/chains through the streamed path by default.
 - One unrelated working-tree change persists: `generate-local-test-nuget-packages.ps1` (a sister project's edit excluding the AOT CLI from local packaging) — not mine, left uncommitted on purpose.
 - There are local commits not pushed to origin. **Do not `git push`** without explicit owner approval —
@@ -284,17 +285,23 @@ its remaining columns as a leaf tuple vector, cross-producted at emit; this is t
 
 #### Column-encoding axis — the bits/triple spectrum (owner-requested next)
 
-- **Elias-Fano column codec (next up).** The ~10-bits/triple succinct encoding for the sorted CSR value
-  columns — a near-entropy alternative to today's `FrameOfReference` (~22–25/order). Critically EF natively
-  supports `nextGEQ`/successor (the leapfrog `Seek`), so it's not "dense-but-slow random access" — it's the
-  inverted-index intersection primitive, a strong fit for our descent. Build it as a new column codec behind
-  the existing `BlockPackedColumnReader` interface (`ValueAt` via select, `LowerBound`/`Seek` via EF
-  successor), **`FrameOfReference` as the differential oracle** (same values decode identically),
-  profile-gated, measured on `--profile-column-bits` (bits/triple) + a seek microbench. Halves the columnar
-  index memory if it holds. The exact ~10 figure is the other agent's (other machine); this gives us our own
-  measured number. (Memory `column-encoding-bits-per-triple-spectrum`.) **Caveat:** real chunk — needs a
-  succinct bitvector with `select`, the EF encode, and reader wiring so the leapfrog descent uses it
-  transparently.
+- **Elias-Fano column codec — primitive shipped (`e43578b`), wiring is the follow-up.**
+  `Collections/EliasFanoSequence` — the near-entropy succinct encoding for monotone sequences: low bits
+  packed, high bits a sampled-`select₁` gap bit-vector; `Access` + `NextGEQ` (the successor / leapfrog
+  `Seek`). Measured (`--profile-elias-fano`): **9–11 bits/value at u/n 64–256 (the "~10")** vs
+  `FrameOfReference` ~17–19 — a ×1.7–2.5 size win, right on the EF bound + ~1 bit (the select sample).
+  Standalone, not wired. **Follow-ups (recorded):**
+  1. **`select₀`-based `NextGEQ`.** Today's `NextGEQ` is a naive binary-search over `Access` (O(log n)
+     selects), measured **×0.3–0.6 (2–3× slower seek)** than `FrameOfReference.LowerBound`. The proper EF
+     successor jumps via `select₀` to the high-part block then scans low bits — O(1)+short — which should
+     close most of that gap. Add a `select₀` sample alongside the `select₁` one.
+  2. **Wire EF behind `BlockPackedColumnReader`** for the **monotone** CSR columns — `level0Values` (distinct
+     sorted, globally monotone) and the **offset** columns (cumulative, monotone) slot in directly;
+     `FrameOfReference` stays the differential oracle. This turns the ~10 into a real index-memory win.
+  3. **Partitioned EF** for `level1Values`/`level2Values` — only *piecewise*-monotone (reset per parent
+     group), so EF must partition at the group boundaries the offsets already mark. The deepest value column
+     dominates bits/triple, so this is where the memory actually moves.
+  (Memory `column-encoding-bits-per-triple-spectrum`.)
 - **The Ring (owner-interested, after EF).** The wavelet-tree WCOJ self-index — one structure indexing all
   orders at ~one order's space, the succinct end carried furthest. Bigger than a codec (a whole index), but
   the natural follow-on to EF on this axis; it loses cheap any-order access for space (three-rotation echo
