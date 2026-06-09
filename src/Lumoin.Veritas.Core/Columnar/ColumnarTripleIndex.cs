@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Encoding;
 
 namespace Lumoin.Veritas.Core.Columnar;
@@ -601,6 +602,37 @@ public sealed class ColumnarTripleIndex
     {
         return orders[permutationIndex]
             ?? throw new InvalidOperationException($"Permutation {permutationIndex} is not materialised under {OrderSetMode}; select through TrySelectPermutation.");
+    }
+
+    /// <summary>
+    /// Emits one <see cref="ColumnarStatisticsTraceEvent"/> per materialised
+    /// order to <paramref name="handler"/>, in permutation order, sharing
+    /// <paramref name="correlationId"/> and a single timestamp; sequence numbers
+    /// are assigned from zero.
+    /// </summary>
+    /// <param name="handler">The trace handler receiving the events.</param>
+    /// <param name="correlationId">The correlation id shared by the emitted events.</param>
+    /// <param name="timeProvider">The clock supplying the event timestamp.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="handler"/> or <paramref name="timeProvider"/> is <see langword="null"/>.</exception>
+    public void EmitStatistics(TraceHandler<ColumnarStatisticsTraceEvent> handler, Guid correlationId, TimeProvider timeProvider)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+
+        long timestampTicks = timeProvider.GetUtcNow().UtcTicks;
+        long sequence = 0;
+        for(int permutation = 0; permutation < orders.Length; permutation++)
+        {
+            if(orders[permutation] is null)
+            {
+                continue;
+            }
+
+            ColumnarStatistics statistics = ColumnarStatistics.From(orders[permutation]!, permutation);
+            ColumnarStatisticsTraceEvent traceEvent = ColumnarStatisticsTraceEvent.ForOrder(sequence, timestampTicks, correlationId, statistics);
+            sequence++;
+            handler(in traceEvent);
+        }
     }
 
     /// <summary>

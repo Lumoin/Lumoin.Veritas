@@ -68,6 +68,7 @@ internal static class ColumnFootprintSoak
             double totalMiB = packedBytes / (1024.0 * 1024.0);
 
             Console.WriteLine($"[column-bits]   {mode,-14} orders={orders} | build {elapsed.TotalMilliseconds,8:F1} ms | packed {totalMiB,7:F1} MiB | {perOrderBits,5:F1} bits/triple/order | {totalBits,6:F1} bits/triple total");
+            SoakStatistics.Report(index, mode.ToString());
         }
     }
 

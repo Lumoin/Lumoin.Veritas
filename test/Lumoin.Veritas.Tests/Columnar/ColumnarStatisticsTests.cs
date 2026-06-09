@@ -77,4 +77,23 @@ internal sealed class ColumnarStatisticsTests
         Assert.AreEqual(stats.Level1FanOut.Max, evt.Level1FanOutMax);
         Assert.AreEqual(stats.BitsPerTriple, evt.BitsPerTriple, 1e-9);
     }
+
+    [TestMethod]
+    public void EmitStatisticsEmitsOneEventPerMaterialisedOrder()
+    {
+        ColumnarTripleIndex index = ColumnarTripleIndex.Build(BuildFanOut(200, 4), ColumnarOrderSetMode.ThreeRotations);
+        Guid correlation = new("11111111-1111-1111-1111-111111111111");
+
+        List<ColumnarStatisticsTraceEvent> collected = [];
+        index.EmitStatistics((in ColumnarStatisticsTraceEvent traceEvent) => collected.Add(traceEvent), correlation, TimeProvider.System);
+
+        //ThreeRotations materialises three orders.
+        Assert.HasCount(3, collected);
+        for(int i = 0; i < collected.Count; i++)
+        {
+            Assert.AreEqual(i, collected[i].SequenceNumber);
+            Assert.AreEqual(correlation, collected[i].CorrelationId);
+            Assert.AreEqual((long)(200 * 4), collected[i].TripleCount);
+        }
+    }
 }
