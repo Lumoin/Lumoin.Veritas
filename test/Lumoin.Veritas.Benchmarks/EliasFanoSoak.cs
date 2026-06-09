@@ -273,4 +273,85 @@ internal static class EliasFanoSoak
 
         return corpus;
     }
+
+    /// <summary>
+    /// Sweeps the per-group fan-out and reports, for the within-group level-2
+    /// value column (objects per subject), frame-of-reference bits/value against
+    /// partitioned Elias-Fano (each group stored Elias-Fano relative to its own
+    /// minimum, sharing one payload). Pins the break-even: tiny groups pay the
+    /// per-segment base/width overhead and frame of reference wins; large
+    /// clustered groups reach their local entropy and partitioned Elias-Fano
+    /// wins. The triple count is held roughly fixed across the sweep.
+    /// </summary>
+    public static void RunPartitionedComparisonSoak()
+    {
+        const int targetTriples = 3_000_000;
+        Console.WriteLine(
+            $"[pef] fan-out sweep — L2 objects/subject, FrameOfReference vs partitioned Elias-Fano, ~{targetTriples:N0} triples/run\n"
+            + $"[pef]   {"fanout",7} {"groups",12} {"triples",12} {"FoR b/val",10} {"PEF b/val",10}  verdict");
+        foreach(int fanOut in (ReadOnlySpan<int>)[1, 2, 8, 32, 128, 512, 2_048, 8_192])
+        {
+            RunPartitioned(fanOut, targetTriples);
+        }
+    }
+
+    /// <summary>Builds a fan-out corpus, then compares the level-2 value column's frame-of-reference and partitioned-Elias-Fano footprints.</summary>
+    /// <param name="fanOut">The objects per subject — the level-2 group size.</param>
+    /// <param name="targetTriples">The approximate triple count to hold across the sweep.</param>
+    private static void RunPartitioned(int fanOut, int targetTriples)
+    {
+        int subjects = Math.Max(1, targetTriples / fanOut);
+        List<EncodedTriple> corpus = BuildFanOutCorpus(subjects, fanOut, out long triples);
+        ColumnarTripleIndex index = ColumnarTripleIndex.Build(corpus, ColumnarOrderSetMode.ThreeRotations);
+        ColumnarOrder order = index.OrderAt(0);
+
+        BlockPackedColumn level2 = order.ValuesColumnAt(2);
+        uint[] values = DecodeColumn(level2);
+        uint[] offsets = DecodeColumn(order.OffsetsColumnAt(1));
+        int[] boundaries = new int[offsets.Length];
+        for(int i = 0; i < offsets.Length; i++)
+        {
+            boundaries[i] = (int)offsets[i];
+        }
+
+        double frameBits = level2.PackedByteCount * 8.0 / Math.Max(values.Length, 1);
+        PartitionedEliasFanoSequence partitioned = PartitionedEliasFanoSequence.Build(values, boundaries);
+        double partitionedBits = (double)partitioned.BitCount / Math.Max(values.Length, 1);
+        string verdict = partitionedBits < frameBits
+            ? $"PEF −{frameBits - partitionedBits:F1} b/val (x{frameBits / Math.Max(partitionedBits, 0.01):F2})"
+            : "FrameOfReference wins";
+
+        Console.WriteLine($"[pef]   {fanOut,7} {partitioned.SegmentCount,12:N0} {triples,12:N0} {frameBits,10:F2} {partitionedBits,10:F2}  {verdict}");
+    }
+
+    /// <summary>
+    /// Builds a fan-out corpus: <paramref name="subjects"/> subjects, each with
+    /// <paramref name="fanOut"/> objects under one predicate, every subject's
+    /// objects an ascending run in its own contiguous id range — so the level-2
+    /// value column is a concatenation of equal-size ascending groups.
+    /// </summary>
+    /// <param name="subjects">The subject count.</param>
+    /// <param name="fanOut">The objects per subject.</param>
+    /// <param name="triples">Receives the triple count.</param>
+    /// <returns>The triple corpus.</returns>
+    private static List<EncodedTriple> BuildFanOutCorpus(int subjects, int fanOut, out long triples)
+    {
+        const uint predicate = 1_000;
+        const int objectStride = 4;
+        long groupSpan = (long)fanOut * objectStride;
+        List<EncodedTriple> corpus = new(subjects * fanOut);
+        for(int s = 0; s < subjects; s++)
+        {
+            long objectBase = (long)s * groupSpan;
+            for(int k = 0; k < fanOut; k++)
+            {
+                uint obj = (uint)Math.Min(objectBase + ((long)k * objectStride), uint.MaxValue);
+                corpus.Add(EncodedTriple.FromEncoded((uint)s, predicate, obj));
+            }
+        }
+
+        triples = (long)subjects * fanOut;
+
+        return corpus;
+    }
 }

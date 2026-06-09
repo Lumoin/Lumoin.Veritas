@@ -228,12 +228,21 @@ internal static class Program
             return;
         }
 
-        //Storage at scale: plain-WCOJ uncompressed baseline vs the block-packed
-        //index vs the index with Elias-Fano on the monotone value columns,
-        //bits/triple over a triple-count ladder, with cited Ring reference rows.
+        //Storage at scale: uncompressed baseline vs the block-packed index vs
+        //the index with Elias-Fano on the monotone value columns, bits/triple
+        //over a triple-count ladder.
         if(args.Length > 0 && args[0] == "--profile-storage-comparison")
         {
             StorageComparisonSoak.RunStorageComparisonSoak();
+
+            return;
+        }
+
+        //Partitioned Elias-Fano on the within-group level-2 value column vs
+        //frame of reference, swept over per-group fan-out to pin the break-even.
+        if(args.Length > 0 && args[0] == "--profile-partitioned-elias-fano")
+        {
+            EliasFanoSoak.RunPartitionedComparisonSoak();
 
             return;
         }
