@@ -270,9 +270,14 @@ chain all-depth-1 (leaf-meets-trie), and a diamond where `?z` is a leaf in two r
 the 3 full-depth tests, all green. Precondition (validated): trie levels follow the global order, and leaf
 columns follow the relation's deepest trie level.
 
-**Next on §4.3:** (a) **pipeline wiring** — `FreeJoinExecutor` behind `PreferFreeJoin` (default-off), routed
-in the rendezvous with a builder that turns a per-relation depth choice into GHTs; the whole conformance
-corpus as oracle. (b) **factorized output** (`FactorizedBatch`) — where §4.2 and §4.3 converge.
+**Next on §4.3:** (a) **pipeline wiring.** The builder shipped — `Columnar/FreeJoinPipeline.Run(index, query)`
+scans each pattern into a full-depth GHT (every column a trie level, ordered by the `ColumnarRotationPlanner`
+global order) and drives `FreeJoinExecutor`; returns `null` for a rotation-incompatible shape, the same
+boundary the other columnar engines draw. Differential vs leapfrog on a triangle and a chain
+(`FreeJoinPipelineTests`). **Remaining:** route it behind a default-off `PreferFreeJoin` on
+`QueryEnginePolicy` in `QueryEngineRendezvous.Query` (flatten the batch stream via `SolutionBatch.FlattenAsync`),
+the whole conformance corpus as the answer-identical oracle. (b) **factorized output** (`FactorizedBatch`) —
+where §4.2 and §4.3 converge.
 
 ### After the tier
 
