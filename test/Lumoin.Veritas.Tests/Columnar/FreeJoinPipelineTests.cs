@@ -166,4 +166,43 @@ internal sealed class FreeJoinPipelineTests
     {
         await AssertPipelineAgreesWithLeapfrog(ChainFixture(), ChainQuery).ConfigureAwait(false);
     }
+
+    /// <summary>Builds a rendezvous over the store with the given policy, runs the query, and returns the sorted answer fingerprints.</summary>
+    /// <param name="store">The system of record.</param>
+    /// <param name="policy">The engine policy.</param>
+    /// <param name="query">The query.</param>
+    /// <returns>The sorted answer fingerprints.</returns>
+    private async Task<List<string>> RendezvousFingerprintsAsync(HypertrieGraphStore store, QueryEnginePolicy policy, BasicGraphPattern query)
+    {
+        QueryEngineRendezvous rendezvous = new(store, policy);
+
+        return await LeapfrogFingerprintsAsync(rendezvous.Query(query, TimeProvider.System, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+    }
+
+    /// <summary>With <c>PreferFreeJoin</c> set, the rendezvous routes the query through the Free Join engine and answers identically to the default routing (batched/leapfrog) — the answer-identity that makes the route safe to flip.</summary>
+    /// <param name="fixture">The fixture triples.</param>
+    /// <param name="queryBuilder">Builds the query over a fresh registry.</param>
+    private async Task AssertFreeJoinRouteAgreesWithDefault(List<EncodedTriple> fixture, Func<VariableRegistry, BasicGraphPattern> queryBuilder)
+    {
+        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(fixture, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+        BasicGraphPattern query = queryBuilder(new VariableRegistry());
+
+        List<string> viaDefault = await RendezvousFingerprintsAsync(store, QueryEnginePolicy.Default, query).ConfigureAwait(false);
+        List<string> viaFreeJoin = await RendezvousFingerprintsAsync(store, QueryEnginePolicy.Default with { PreferFreeJoin = true }, query).ConfigureAwait(false);
+
+        Assert.IsGreaterThan(0, viaDefault.Count);
+        CollectionAssert.AreEqual(viaDefault, viaFreeJoin);
+    }
+
+    [TestMethod]
+    public async Task FreeJoinRouteAgreesWithDefaultOnTriangle()
+    {
+        await AssertFreeJoinRouteAgreesWithDefault(TriangleFixture(), TriangleQuery).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task FreeJoinRouteAgreesWithDefaultOnChain()
+    {
+        await AssertFreeJoinRouteAgreesWithDefault(ChainFixture(), ChainQuery).ConfigureAwait(false);
+    }
 }

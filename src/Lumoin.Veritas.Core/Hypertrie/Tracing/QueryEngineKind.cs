@@ -14,4 +14,7 @@ public enum QueryEngineKind
 
     /// <summary>The columnar batched scan-and-hash pipeline — the acyclic-shape half of the join hybrid, over the same derived view.</summary>
     ColumnarBatched = 2,
+
+    /// <summary>The Free Join generic join — the unifying executor over generalized hash tries, opt-in, over the same derived view.</summary>
+    FreeJoin = 3,
 }

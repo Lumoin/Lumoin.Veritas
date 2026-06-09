@@ -18,7 +18,8 @@ namespace Lumoin.Veritas.Core.Columnar;
 /// <param name="PreferSemijoinReduction">Whether a batched acyclic pipeline of three or more patterns reduces dangling tuples by Yannakakis' two semijoin passes before joining (<see cref="ColumnarBatchPipeline"/>). On by default; it bounds the intermediates by the input and output sizes on shapes where a middle join would otherwise blow up, and is answer-identical to the unreduced stream. Two-pattern joins, whose only intermediate is the output, are never reduced.</param>
 /// <param name="PreferFactorizedStar">Whether a batched star — three or more patterns all joining on one shared key — runs through the factorising join (<see cref="ColumnarBatchPipeline"/>), keeping the intermediates product-of-unions until the final flatten rather than materialising each cross product. Answer-identical to the streamed join (the flatten reproduces the flat product), and takes precedence over semijoin reduction on a star. <b>Off by default</b>: factorisation is a specialised optimisation — its compression is <c>fan²/3</c>, so it wins on fan-out stars but is a regression at low fan-out (the common property-table shape, fan≈1, where it stores more and runs slower). It stays opt-in until a cost-based selector chooses it per shape (a deferred research issue); the trace bus records the feedback that selector will learn from.</param>
 /// <param name="PreferFactorizedChain">Whether a batched three-pattern chain — the third pattern joining on a branch variable of the first join — runs through the join then the nesting step (<see cref="ColumnarBatchPipeline"/>), keeping the chain factorised one level deeper across the branch-variable join. Answer-identical to the streamed join. <b>Off by default</b>, for the same reason as <paramref name="PreferFactorizedStar"/>: its compression is <c>(fanA·S)/(fanA+S)</c> with <c>S=fanB·fanC</c>, so it needs fan-out on both the independent arm and the sub-tree and is otherwise a regression. Opt-in until the cost-based selector chooses it per shape.</param>
-[DebuggerDisplay("QueryEnginePolicy MinPatterns={MinimumPatternsForColumnar} OnDemand={BuildViewOnDemand} Dop={DegreeOfParallelism} Orders={OrderSetMode} Batched={PreferBatchedForAcyclic} Semijoin={PreferSemijoinReduction} FactorizedStar={PreferFactorizedStar} FactorizedChain={PreferFactorizedChain}")]
+/// <param name="PreferFreeJoin">Whether a qualifying query runs through the Free Join generic join (<see cref="FreeJoinPipeline"/>) over full-depth generalized hash tries instead of the batched or leapfrog engines. <b>Off by default</b>: at full depth Free Join reproduces the worst-case-optimal join, so it is opt-in — for measurement, and as the seam the per-relation-depth interpolation toward the binary hash join will drive once a cost-based selector chooses depth per shape. Answer-identical to the other engines, so the conformance corpus is the oracle when enabled; like the batched path it has no per-candidate access-control consultation, so an access-controlled query stays on the leapfrog driver. Takes precedence over the batched path when set.</param>
+[DebuggerDisplay("QueryEnginePolicy MinPatterns={MinimumPatternsForColumnar} OnDemand={BuildViewOnDemand} Dop={DegreeOfParallelism} Orders={OrderSetMode} Batched={PreferBatchedForAcyclic} Semijoin={PreferSemijoinReduction} FactorizedStar={PreferFactorizedStar} FactorizedChain={PreferFactorizedChain} FreeJoin={PreferFreeJoin}")]
 public readonly record struct QueryEnginePolicy(
     int MinimumPatternsForColumnar,
     bool BuildViewOnDemand,
@@ -27,7 +28,8 @@ public readonly record struct QueryEnginePolicy(
     bool PreferBatchedForAcyclic = true,
     bool PreferSemijoinReduction = true,
     bool PreferFactorizedStar = false,
-    bool PreferFactorizedChain = false)
+    bool PreferFactorizedChain = false,
+    bool PreferFreeJoin = false)
 {
     /// <summary>
     /// The default policy: queries with two or more patterns route

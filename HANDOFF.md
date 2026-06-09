@@ -270,14 +270,19 @@ chain all-depth-1 (leaf-meets-trie), and a diamond where `?z` is a leaf in two r
 the 3 full-depth tests, all green. Precondition (validated): trie levels follow the global order, and leaf
 columns follow the relation's deepest trie level.
 
-**Next on §4.3:** (a) **pipeline wiring.** The builder shipped — `Columnar/FreeJoinPipeline.Run(index, query)`
-scans each pattern into a full-depth GHT (every column a trie level, ordered by the `ColumnarRotationPlanner`
-global order) and drives `FreeJoinExecutor`; returns `null` for a rotation-incompatible shape, the same
-boundary the other columnar engines draw. Differential vs leapfrog on a triangle and a chain
-(`FreeJoinPipelineTests`). **Remaining:** route it behind a default-off `PreferFreeJoin` on
-`QueryEnginePolicy` in `QueryEngineRendezvous.Query` (flatten the batch stream via `SolutionBatch.FlattenAsync`),
-the whole conformance corpus as the answer-identical oracle. (b) **factorized output** (`FactorizedBatch`) —
-where §4.2 and §4.3 converge.
+**Shipped: §4.3(a) pipeline wiring.** `Columnar/FreeJoinPipeline.Run(index, query)` scans each pattern into a
+full-depth GHT (every column a trie level, ordered by the `ColumnarRotationPlanner` global order) and drives
+`FreeJoinExecutor`; returns `null` for a rotation-incompatible shape (the boundary the other columnar engines
+draw). Routed behind a default-off `PreferFreeJoin` on `QueryEnginePolicy` in `QueryEngineRendezvous.Query`
+(`TryQueryFreeJoin`, ahead of the batched path, `QueryEngineKind.FreeJoin`, flatten via
+`SolutionBatch.FlattenAsync`). Differential: vs leapfrog on a triangle+chain through the pipeline, and vs the
+default routing through the rendezvous with the flag flipped (`FreeJoinPipelineTests`). Default-off, so the
+corpus is unaffected unless enabled; full depth reproduces WCOJ — no speed edge yet, the per-relation-depth
+interpolation toward the binary join is the deferred selector's lever.
+
+**Next on §4.3:** (b) **factorized output** — produce a `FactorizedBatch` from the generic join where the
+plan factorises (the §4.2 ∩ §4.3 convergence), and (later) the cost-based depth/selector that picks Free
+Join's per-relation depth (the deferred join-strategy-selection research issue).
 
 ### After the tier
 

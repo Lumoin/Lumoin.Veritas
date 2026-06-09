@@ -244,6 +244,14 @@ public sealed class QueryEngineRendezvous
                     ? EngineSelectionReason.ViewBuilt
                     : EngineSelectionReason.ViewReused;
 
+                IAsyncEnumerable<Solution>? freeJoin = TryQueryFreeJoin(
+                    currentView, query, reason, buildMilliseconds, timeProvider, accessControl, traceHandler, effectiveCorrelationId, cancellationToken);
+
+                if(freeJoin is not null)
+                {
+                    return freeJoin;
+                }
+
                 IAsyncEnumerable<Solution>? batched = TryQueryBatched(
                     currentView, query, reason, buildMilliseconds, timeProvider, accessControl, traceHandler, effectiveCorrelationId, cancellationToken);
 
@@ -272,6 +280,14 @@ public sealed class QueryEngineRendezvous
 
         if(qualifies && currentView is not null)
         {
+            IAsyncEnumerable<Solution>? freeJoin = TryQueryFreeJoin(
+                currentView, query, EngineSelectionReason.ViewReused, buildMilliseconds: 0, timeProvider, accessControl, traceHandler, effectiveCorrelationId, cancellationToken);
+
+            if(freeJoin is not null)
+            {
+                return freeJoin;
+            }
+
             IAsyncEnumerable<Solution>? batched = TryQueryBatched(
                 currentView, query, EngineSelectionReason.ViewReused, buildMilliseconds: 0, timeProvider, accessControl, traceHandler, effectiveCorrelationId, cancellationToken);
 
@@ -413,6 +429,53 @@ public sealed class QueryEngineRendezvous
             QueryEngineKind.ColumnarBatched, reason, view.TripleCount, buildMilliseconds);
 
         return SolutionBatch.FlattenAsync(ColumnarBatchPipeline.Run(view, plan), cancellationToken);
+    }
+
+    /// <summary>
+    /// Routes a qualifying query to the Free Join generic join when the policy
+    /// opts in and no per-candidate access control is wired (the Free Join path
+    /// has no consultation point, like the batched path), or returns
+    /// <see langword="null"/> to fall through to the batched/leapfrog path —
+    /// when the policy opts out, access control is wired, or the pipeline finds
+    /// no global variable order for this shape and so cannot plan the join.
+    /// </summary>
+    /// <param name="view">The columnar view.</param>
+    /// <param name="query">The basic graph pattern.</param>
+    /// <param name="reason">The view-acquisition reason the selection event carries.</param>
+    /// <param name="buildMilliseconds">The view build cost paid by this query, when any.</param>
+    /// <param name="timeProvider">Clock for trace events.</param>
+    /// <param name="accessControl">The access-control policy; non-<see langword="null"/> disqualifies the Free Join path.</param>
+    /// <param name="traceHandler">Optional trace handler.</param>
+    /// <param name="correlationId">The correlation id.</param>
+    /// <param name="cancellationToken">Cancellation token threaded into the flattening.</param>
+    /// <returns>The Free Join solution stream, or <see langword="null"/>.</returns>
+    private IAsyncEnumerable<Solution>? TryQueryFreeJoin(
+        ColumnarTripleIndex view,
+        BasicGraphPattern query,
+        EngineSelectionReason reason,
+        long buildMilliseconds,
+        TimeProvider timeProvider,
+        AccessControlDelegate? accessControl,
+        TraceHandler<QueryTraceEvent>? traceHandler,
+        Guid correlationId,
+        CancellationToken cancellationToken)
+    {
+        if(!policy.PreferFreeJoin || accessControl is not null)
+        {
+            return null;
+        }
+
+        IEnumerable<SolutionBatch>? batches = FreeJoinPipeline.Run(view, query);
+        if(batches is null)
+        {
+            return null;
+        }
+
+        EmitEngineSelected(
+            timeProvider, traceHandler, correlationId,
+            QueryEngineKind.FreeJoin, reason, view.TripleCount, buildMilliseconds);
+
+        return SolutionBatch.FlattenAsync(batches, cancellationToken);
     }
 
     /// <summary>
