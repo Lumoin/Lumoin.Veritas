@@ -86,6 +86,8 @@ internal static class PropertyPathSoak
         TermId start,
         string[] pathShapes)
     {
+        SoakStatistics.ReportGraph(triples, $"path corpus {triples.Length:N0} triples");
+
         //Hypertrie is the production target. InMemoryGraphStore exists
         //as a correctness reference for hypertrie parity tests, not as
         //a production storage backend; its performance on path-evaluator

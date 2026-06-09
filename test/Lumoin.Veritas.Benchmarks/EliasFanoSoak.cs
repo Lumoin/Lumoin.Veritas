@@ -208,6 +208,7 @@ internal static class EliasFanoSoak
     {
         List<EncodedTriple> corpus = BuildStridedCorpus(groups, stride);
         long tripleCount = corpus.Count;
+        SoakStatistics.ReportGraph(corpus, $"stride={stride}");
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(corpus, ColumnarOrderSetMode.ThreeRotations);
         ColumnarOrder order = index.OrderAt(0);
 
@@ -333,6 +334,7 @@ internal static class EliasFanoSoak
     {
         int subjects = Math.Max(1, targetTriples / fanOut);
         List<EncodedTriple> corpus = BuildFanOutCorpus(subjects, fanOut, out long triples);
+        SoakStatistics.ReportGraph(corpus, $"fanout={fanOut}");
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(corpus, ColumnarOrderSetMode.ThreeRotations);
         ColumnarOrder order = index.OrderAt(0);
 

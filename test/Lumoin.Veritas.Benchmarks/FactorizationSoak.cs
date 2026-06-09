@@ -76,6 +76,7 @@ internal static class FactorizationSoak
     private static void RunChainConfiguration(int hubs, int fanA, int fanB, int fanC)
     {
         List<EncodedTriple> triples = BuildChainFixture(hubs, fanA, fanB, fanC);
+        SoakStatistics.ReportGraph(triples, $"chain hubs={hubs:N0} fanA={fanA} fanB={fanB} fanC={fanC}");
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(triples);
 
         VariableRegistry registry = new();

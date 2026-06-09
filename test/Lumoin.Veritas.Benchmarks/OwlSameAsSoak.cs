@@ -48,6 +48,7 @@ internal static class OwlSameAsSoak
         OwlRlTerms terms = new(dictionary);
         List<EncodedTriple> triples = Generate(dictionary, terms, entityCount, cliqueSize, dataPerEntity);
         Console.WriteLine($"[sameas-soak] entities={entityCount:N0} clique={cliqueSize} data/entity={dataPerEntity} base={triples.Count:N0}");
+        SoakStatistics.ReportGraph(triples, $"sameas entities={entityCount:N0} clique={cliqueSize}");
 
         long canonicalStart = Stopwatch.GetTimestamp();
         long canonicalAllocBefore = GC.GetTotalAllocatedBytes(precise: true);

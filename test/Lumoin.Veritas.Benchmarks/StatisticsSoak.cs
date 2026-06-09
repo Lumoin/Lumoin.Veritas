@@ -29,6 +29,7 @@ internal static class StatisticsSoak
     private static void RunConfiguration(string name, List<EncodedTriple> corpus)
     {
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(corpus, ColumnarOrderSetMode.ThreeRotations);
+        SoakStatistics.ReportGraph(corpus, name);
         SoakStatistics.Report(index, $"{name} ({corpus.Count:N0} triples)");
     }
 

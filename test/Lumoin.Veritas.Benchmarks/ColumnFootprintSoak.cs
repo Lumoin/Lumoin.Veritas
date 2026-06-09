@@ -45,6 +45,7 @@ internal static class ColumnFootprintSoak
         List<EncodedTriple> corpus = BuildCorpus(groups);
         long tripleCount = corpus.Count;
         Console.WriteLine($"[column-bits] groups={groups:N0} triples={tripleCount:N0}");
+        SoakStatistics.ReportGraph(corpus, $"groups={groups:N0}");
 
         foreach(ColumnarOrderSetMode mode in (ReadOnlySpan<ColumnarOrderSetMode>)[ColumnarOrderSetMode.AllSixOrders, ColumnarOrderSetMode.ThreeRotations])
         {

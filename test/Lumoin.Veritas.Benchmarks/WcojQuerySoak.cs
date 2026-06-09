@@ -33,6 +33,7 @@ internal static class WcojQuerySoak
     public static async Task RunQuerySoakAsync(int subjectCount, TimeSpan duration)
     {
         EncodedTriple[] triples = SyntheticGraph.GenerateSocial(subjectCount, seed: 42);
+        SoakStatistics.ReportGraph(triples, $"social {subjectCount:N0} subjects");
 
         long heapBeforeHypertrie = GC.GetTotalMemory(forceFullCollection: true);
         Stopwatch hypertrieBuild = Stopwatch.StartNew();

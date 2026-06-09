@@ -40,6 +40,7 @@ internal static class StorageComparisonSoak
         List<EncodedTriple> corpus = BuildCorpus(groups);
         long tripleCount = corpus.Count;
         ulong universe = (ulong)((long)(groups - 1) * 3) + 3;
+        SoakStatistics.ReportGraph(corpus, $"triples={tripleCount:N0}");
         const ColumnarOrderSetMode mode = ColumnarOrderSetMode.ThreeRotations;
 
         long startFrame = Stopwatch.GetTimestamp();

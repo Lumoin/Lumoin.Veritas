@@ -54,6 +54,7 @@ internal static class YannakakisSoak
     private static void RunConfiguration(int distinctX, int fanIn, int fanOut, int selectedX)
     {
         List<EncodedTriple> triples = BuildFixture(distinctX, fanIn, fanOut, selectedX, out int r1, out int r2, out int r3);
+        SoakStatistics.ReportGraph(triples, $"x={distinctX:N0} fanIn={fanIn} fanOut={fanOut}");
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(triples);
         BasicGraphPattern query = BuildQuery();
 

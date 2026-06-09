@@ -1,18 +1,39 @@
 using System;
+using System.Collections.Generic;
 using System.Threading.Channels;
+using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.Diagnostics;
+using Lumoin.Veritas.Core.Statistics;
 
 namespace Lumoin.Veritas.Benchmarks;
 
 /// <summary>
-/// Shared soak helper that drains a built index's per-order
-/// <see cref="ColumnarStatistics"/> off the trace channel and prints a per-order
-/// summary. Any columnar soak calls <see cref="Report"/> to collect the same
-/// statistics in one line.
+/// Shared soak helper for the trace-channel statistics. <see cref="ReportGraph"/>
+/// reports the store-agnostic <see cref="GraphStatistics"/> any triple corpus
+/// has; <see cref="Report"/> reports a built index's per-order
+/// <see cref="ColumnarStatistics"/>. Both emit through the trace channel and
+/// drain it, so a soak collects the data in one line.
 /// </summary>
 internal static class SoakStatistics
 {
+    /// <summary>Computes a triple corpus's store-agnostic statistics, emits them through the trace channel, then drains and prints them.</summary>
+    /// <param name="triples">The triple corpus to summarise.</param>
+    /// <param name="label">A label for the configuration.</param>
+    public static void ReportGraph(IReadOnlyCollection<EncodedTriple> triples, string label)
+    {
+        GraphStatistics statistics = GraphStatistics.From(triples);
+        Channel<GraphStatisticsTraceEvent> channel = Channel.CreateUnbounded<GraphStatisticsTraceEvent>();
+        GraphStatisticsTraceEvent traceEvent = GraphStatisticsTraceEvent.From(0, TimeProvider.System.GetUtcNow().UtcTicks, Guid.Empty, statistics);
+        TraceHandlers.ToChannel(channel.Writer)(in traceEvent);
+        channel.Writer.Complete();
+
+        while(channel.Reader.TryRead(out GraphStatisticsTraceEvent drained))
+        {
+            Console.WriteLine($"[graph] {label}: triples={drained.TripleCount:N0} distinctS={drained.DistinctSubjects:N0} distinctP={drained.DistinctPredicates:N0} distinctO={drained.DistinctObjects:N0} | subj out-deg min/mean/max={drained.MinSubjectOutDegree}/{drained.MeanSubjectOutDegree:F1}/{drained.MaxSubjectOutDegree} | maxPredFreq={drained.MaxPredicateFrequency:N0}");
+        }
+    }
+
     /// <summary>Emits the index's per-order statistics through a trace channel, then drains and prints them.</summary>
     /// <param name="index">The built index to summarise.</param>
     /// <param name="label">A label for the configuration.</param>
