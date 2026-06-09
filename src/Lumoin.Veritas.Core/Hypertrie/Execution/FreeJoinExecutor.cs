@@ -105,6 +105,139 @@ public static class FreeJoinExecutor
         return Drive(relations, variableOrder, trieAt, leafAt);
     }
 
+    /// <summary>
+    /// Runs the generic join as a single-level <see cref="FactorizedBatch"/> for
+    /// a star — every relation a full-depth two-column trie sharing the order's
+    /// leading variable as its key and binding one further, the branch variables
+    /// pairwise distinct — or returns <see langword="null"/> when the relations
+    /// are not that shape. After the shared key each relation's matches vary
+    /// independently of the others, so the join emits one group per key value
+    /// carrying each relation's matches as a branch, never their flat product;
+    /// the differential oracle is the flattened batch against <see cref="Execute"/>.
+    /// </summary>
+    /// <param name="relations">The relations; for the star each is a full-depth two-column trie over the key then a branch variable.</param>
+    /// <param name="variableOrder">The global descent order; its first variable is the shared key, the rest the branch variables.</param>
+    /// <returns>The factorised result over <paramref name="variableOrder"/>, or <see langword="null"/> when the relations are not a single-key star.</returns>
+    /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
+    public static FactorizedBatch? ExecuteFactorized(IReadOnlyList<GeneralizedHashTrie> relations, IReadOnlyList<Variable> variableOrder)
+    {
+        ArgumentNullException.ThrowIfNull(relations);
+        ArgumentNullException.ThrowIfNull(variableOrder);
+
+        if(relations.Count < 2 || variableOrder.Count < 2)
+        {
+            return null;
+        }
+
+        Dictionary<Variable, int> orderIndex = new(variableOrder.Count);
+        for(int k = 0; k < variableOrder.Count; k++)
+        {
+            orderIndex[variableOrder[k]] = k;
+        }
+
+        Variable key = variableOrder[0];
+
+        //Each relation must be a full-depth two-column trie over the key then a
+        //branch: two trie levels, no leaf vectors, the key at level 0, and a
+        //branch variable at level 1 distinct across relations and never the key.
+        //Any other shape is not the single-key star this step factorises.
+        int[] branchColumn = new int[relations.Count];
+        HashSet<Variable> branchVariables = [];
+        for(int relation = 0; relation < relations.Count; relation++)
+        {
+            GeneralizedHashTrie trie = relations[relation];
+            if(trie.TrieColumns.Length != 2 || trie.LeafColumns.Length != 0)
+            {
+                return null;
+            }
+
+            Variable level0 = trie.Schema[trie.TrieColumns[0]];
+            Variable level1 = trie.Schema[trie.TrieColumns[1]];
+            if(level0 != key || level1 == key || !branchVariables.Add(level1))
+            {
+                return null;
+            }
+
+            branchColumn[relation] = orderIndex[level1];
+        }
+
+        //The order's non-key variables are exactly the branch variables: the
+        //star binds the key then one variable per relation, nothing more.
+        if(branchVariables.Count != variableOrder.Count - 1)
+        {
+            return null;
+        }
+
+        //The smallest root drives the key intersection; a key absent from any
+        //relation's root binds no star row and drops the group.
+        int driver = 0;
+        for(int relation = 1; relation < relations.Count; relation++)
+        {
+            if(relations[relation].NodeAt(0).Count < relations[driver].NodeAt(0).Count)
+            {
+                driver = relation;
+            }
+        }
+
+        List<FactorizedGroup> groups = [];
+
+        //Scratch reused across keys: the child node id per relation under the
+        //current key, refilled before each use.
+        int[] childNode = new int[relations.Count];
+        OpenAddressedTable<int>.Enumerator keyScan = relations[driver].NodeAt(0).GetEnumerator();
+        while(keyScan.MoveNext())
+        {
+            uint keyValue = (uint)keyScan.Current.Key;
+
+            bool present = true;
+            for(int relation = 0; relation < relations.Count; relation++)
+            {
+                if(!relations[relation].NodeAt(0).TryGetValue(keyValue, out childNode[relation]))
+                {
+                    present = false;
+
+                    break;
+                }
+            }
+
+            if(!present)
+            {
+                continue;
+            }
+
+            //Each relation's branch is its branch-variable values under this key
+            //— the keys of its level-1 node. They vary independently, so they
+            //become this group's branches in relation order.
+            uint[][] branchValues = new uint[relations.Count][];
+            int[] branchRowCounts = new int[relations.Count];
+            for(int relation = 0; relation < relations.Count; relation++)
+            {
+                OpenAddressedTable<int> node = relations[relation].NodeAt(childNode[relation]);
+                uint[] values = new uint[node.Count];
+                int next = 0;
+                OpenAddressedTable<int>.Enumerator branchScan = node.GetEnumerator();
+                while(branchScan.MoveNext())
+                {
+                    values[next] = (uint)branchScan.Current.Key;
+                    next++;
+                }
+
+                branchValues[relation] = values;
+                branchRowCounts[relation] = values.Length;
+            }
+
+            groups.Add(new FactorizedGroup([keyValue], branchValues, branchRowCounts));
+        }
+
+        int[][] branchColumns = new int[relations.Count][];
+        for(int relation = 0; relation < relations.Count; relation++)
+        {
+            branchColumns[relation] = [branchColumn[relation]];
+        }
+
+        return new FactorizedBatch(variableOrder, [0], branchColumns, groups);
+    }
+
     /// <summary>The iterator behind <see cref="Execute"/>: an explicit-stack depth-first walk, one frame per bound variable, over shared per-relation state restored on backtrack.</summary>
     /// <param name="relations">The relations.</param>
     /// <param name="variableOrder">The global descent order.</param>

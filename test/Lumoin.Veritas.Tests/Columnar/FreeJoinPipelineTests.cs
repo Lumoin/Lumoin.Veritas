@@ -155,6 +155,51 @@ internal sealed class FreeJoinPipelineTests
             registry);
     }
 
+    /// <summary>A star over a centre subject: three predicates fan out to varying object counts per centre, so each centre's branches multiply where the factorised form keeps them apart.</summary>
+    /// <returns>The triples.</returns>
+    private static List<EncodedTriple> StarFixture()
+    {
+        List<EncodedTriple> triples = [];
+        for(uint k = 1; k <= 6; k++)
+        {
+            for(uint j = 0; j < k; j++)
+            {
+                triples.Add(EncodedTriple.FromEncoded(k, 200, 100 + j));
+            }
+
+            for(uint j = 0; j < 2; j++)
+            {
+                triples.Add(EncodedTriple.FromEncoded(k, 201, 200 + j));
+            }
+
+            for(uint j = 0; j < 3; j++)
+            {
+                triples.Add(EncodedTriple.FromEncoded(k, 202, 300 + j));
+            }
+        }
+
+        return triples;
+    }
+
+    /// <summary>The star query <c>?k p0 ?b0 . ?k p1 ?b1 . ?k p2 ?b2</c> — three patterns sharing the centre.</summary>
+    /// <param name="registry">The variable registry.</param>
+    /// <returns>The query.</returns>
+    private static BasicGraphPattern StarQuery(VariableRegistry registry)
+    {
+        Variable k = registry.GetOrAdd("k");
+        Variable b0 = registry.GetOrAdd("b0");
+        Variable b1 = registry.GetOrAdd("b1");
+        Variable b2 = registry.GetOrAdd("b2");
+
+        return new BasicGraphPattern(
+            [
+                new TriplePattern(PatternPosition.OfVariable(k), PatternPosition.Bound(TermId.FromEncoded(200)), PatternPosition.OfVariable(b0)),
+                new TriplePattern(PatternPosition.OfVariable(k), PatternPosition.Bound(TermId.FromEncoded(201)), PatternPosition.OfVariable(b1)),
+                new TriplePattern(PatternPosition.OfVariable(k), PatternPosition.Bound(TermId.FromEncoded(202)), PatternPosition.OfVariable(b2)),
+            ],
+            registry);
+    }
+
     [TestMethod]
     public async Task TriangleAgreesWithLeapfrog()
     {
@@ -204,5 +249,54 @@ internal sealed class FreeJoinPipelineTests
     public async Task FreeJoinRouteAgreesWithDefaultOnChain()
     {
         await AssertFreeJoinRouteAgreesWithDefault(ChainFixture(), ChainQuery).ConfigureAwait(false);
+    }
+
+    /// <summary>Builds the index and leapfrog store, runs the factorising star pipeline, and asserts its flattened answers equal leapfrog's and the flat pipeline's; when compression is expected, asserts the stored tuple count is below the flat-row count.</summary>
+    /// <param name="fixture">The fixture triples.</param>
+    /// <param name="queryBuilder">Builds the query over a fresh registry.</param>
+    /// <param name="expectCompression">Whether the factorisation should store strictly fewer tuples than the flat product.</param>
+    private async Task AssertFactorizedAgreesWithLeapfrog(List<EncodedTriple> fixture, Func<VariableRegistry, BasicGraphPattern> queryBuilder, bool expectCompression)
+    {
+        ColumnarTripleIndex index = ColumnarTripleIndex.Build(fixture);
+        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(fixture, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+        BasicGraphPattern query = queryBuilder(new VariableRegistry());
+
+        FactorizedBatch? factorized = FreeJoinPipeline.RunFactorized(index, query);
+        Assert.IsNotNull(factorized, "The pipeline returned no factorised plan for a single-key star.");
+
+        List<string> oracle = await LeapfrogFingerprintsAsync(store.Query(query, TimeProvider.System, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+        List<string> flattened = PipelineFingerprints(factorized.Flatten());
+        List<string> flat = PipelineFingerprints(FreeJoinPipeline.Run(index, query));
+
+        Assert.IsGreaterThan(0, oracle.Count);
+        CollectionAssert.AreEqual(oracle, flattened);
+        CollectionAssert.AreEqual(flat, flattened);
+        Assert.AreEqual((long)oracle.Count, factorized.FlatRowCount);
+
+        if(expectCompression)
+        {
+            Assert.IsLessThan(factorized.FlatRowCount, factorized.FactorizedTupleCount);
+        }
+    }
+
+    [TestMethod]
+    public async Task FactorizedStarAgreesWithLeapfrogAndCompresses()
+    {
+        await AssertFactorizedAgreesWithLeapfrog(StarFixture(), StarQuery, expectCompression: true).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task FactorizedChainCentresOnTheSharedVariable()
+    {
+        await AssertFactorizedAgreesWithLeapfrog(ChainFixture(), ChainQuery, expectCompression: false).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public void FactorizedDeclinesAShapeWithNoSharedVariable()
+    {
+        ColumnarTripleIndex index = ColumnarTripleIndex.Build(TriangleFixture());
+        BasicGraphPattern query = TriangleQuery(new VariableRegistry());
+
+        Assert.IsNull(FreeJoinPipeline.RunFactorized(index, query));
     }
 }

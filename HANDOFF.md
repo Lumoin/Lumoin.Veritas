@@ -280,9 +280,21 @@ default routing through the rendezvous with the flag flipped (`FreeJoinPipelineT
 corpus is unaffected unless enabled; full depth reproduces WCOJ — no speed edge yet, the per-relation-depth
 interpolation toward the binary join is the deferred selector's lever.
 
-**Next on §4.3:** (b) **factorized output** — produce a `FactorizedBatch` from the generic join where the
-plan factorises (the §4.2 ∩ §4.3 convergence), and (later) the cost-based depth/selector that picks Free
-Join's per-relation depth (the deferred join-strategy-selection research issue).
+**Shipped: §4.3(b) factorized output (star).** `FreeJoinExecutor.ExecuteFactorized` / `FreeJoinPipeline.RunFactorized`
+emit a single-level `FactorizedBatch` for a single-key star — the one variable shared by every pattern bound
+first, then each relation's matches under a key as an independent branch — the §4.2 ∩ §4.3 convergence (the
+same `FactorizedGroup`/`FactorizedBatch` the §4.2 `FactorizedBatchJoin` produces). A 2-pattern chain centres on
+its shared middle variable and factorises too; a shape with no variable in every pattern (triangle, 3-hop
+chain) declines to `null`. Differential vs leapfrog AND the flat `Run`: the star compresses (51 stored / 126
+flat), the chain agrees 1-1, the triangle declines (`FreeJoinPipelineTests`). Per-key scratch hoisted out of the
+key loop. NOT wired into a route — a tested building block, like §4.2's factorising join.
+
+**Next on §4.3:** (c) a **`BranchStore`-style type** that owns the factorised branch values, so the jagged
+`uint[][]` → **flat-1D packing** and **`VeritasMemoryPool` threading** become one internal change both §4.2 and
+§4.3 inherit (both differential suites guarding it); the Free Join executor's per-frame scratch
+(`Frame`/saved-state/`List`s) joins that pool pass, reconciled with the Batch-4 arena revert. Then **deeper
+factorisation** (chain nesting — the `NestBranch` analogue — out of the generic join) and the cost-based
+depth/selector that picks Free Join's per-relation depth (the deferred join-strategy-selection research issue).
 
 ### After the tier
 
