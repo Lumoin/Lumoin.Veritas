@@ -355,6 +355,13 @@ internal static class EliasFanoSoak
             : "FrameOfReference wins";
 
         Console.WriteLine($"[pef]   {fanOut,7} {partitioned.SegmentCount,12:N0} {triples,12:N0} {frameBits,10:F2} {partitionedBits,10:F2}  {verdict}");
+
+        //End-to-end: build the index under the opt-in policy and report which
+        //encoding its footprint-driven selector actually kept for the L2 column.
+        ColumnarTripleIndex selected = ColumnarTripleIndex.Build(corpus, ColumnarOrderSetMode.ThreeRotations, ColumnarValueColumnEncoding.EliasFanoWhenMonotone);
+        BlockPackedColumn selectedLevel2 = selected.OrderAt(0).ValuesColumnAt(2);
+        double selectedBits = selectedLevel2.PackedByteCount * 8.0 / Math.Max(selectedLevel2.Length, 1);
+        Console.WriteLine($"[pef]     index picked L2: {selectedLevel2.Mode} at {selectedBits:F2} b/val");
     }
 
     /// <summary>

@@ -87,6 +87,11 @@ public sealed class BlockPackedColumn
     //BlockPackedColumnMode.EliasFano; null in the block-packed modes.
     private readonly EliasFanoSequence? eliasFano;
 
+    //The within-group sequence (groups reset, boundaries borrowed from the
+    //offset column) under BlockPackedColumnMode.PartitionedEliasFano; null
+    //otherwise.
+    private readonly PartitionedEliasFanoSequence? partitionedEliasFano;
+
     /// <summary>The kernel bundle decoding this column's blocks.</summary>
     private ColumnarKernelBackend Backend { get; }
 
@@ -97,22 +102,25 @@ public sealed class BlockPackedColumn
     public int Length { get; }
 
     /// <summary>The number of blocks; <c>ceil(Length / 1024)</c>. Derived from the length under Elias-Fano, which holds no block metadata.</summary>
-    public int BlockCount => Mode == BlockPackedColumnMode.EliasFano ? (Length + BlockMask) >> BlockShift : anchors.Length;
+    public int BlockCount => Mode is BlockPackedColumnMode.EliasFano or BlockPackedColumnMode.PartitionedEliasFano ? (Length + BlockMask) >> BlockShift : anchors.Length;
 
     /// <summary>The per-block first values, raw, in every mode. Within a sorted range, anchors of fully-interior blocks are sorted; seeks scan these to pick the one block to finish in.</summary>
     public ReadOnlySpan<uint> Anchors => anchors;
 
     /// <summary>The packed size in bytes — the Elias-Fano bit-footprint under that mode, else across payload, metadata, and exception arrays. The number the soak ladder tracks.</summary>
-    public long PackedByteCount => Mode == BlockPackedColumnMode.EliasFano
-        ? (eliasFano!.BitCount + 7) / 8
-        : (payload.Length * sizeof(ulong))
+    public long PackedByteCount => Mode switch
+    {
+        BlockPackedColumnMode.EliasFano => (eliasFano!.BitCount + 7) / 8,
+        BlockPackedColumnMode.PartitionedEliasFano => (partitionedEliasFano!.BitCount + 7) / 8,
+        _ => (payload.Length * sizeof(ulong))
             + (payloadStarts.Length * sizeof(int))
             + (anchors.Length * sizeof(uint))
             + (frameBases.Length * sizeof(uint))
             + widths.Length
             + (exceptionStarts.Length * sizeof(int))
             + (exceptionPositions.Length * sizeof(ushort))
-            + (exceptionValues.Length * sizeof(uint));
+            + (exceptionValues.Length * sizeof(uint)),
+    };
 
     private BlockPackedColumn(
         ColumnarKernelBackend backend,
@@ -160,6 +168,43 @@ public sealed class BlockPackedColumn
         exceptionValues = [];
     }
 
+    /// <summary>Constructs a partitioned-Elias-Fano-backed column — within-group sequence, block-packed arrays empty.</summary>
+    /// <param name="backend">The kernel bundle (carried for parity; partitioned access is scalar).</param>
+    /// <param name="length">The value count.</param>
+    /// <param name="partitionedEliasFano">The packed within-group sequence.</param>
+    private BlockPackedColumn(ColumnarKernelBackend backend, int length, PartitionedEliasFanoSequence partitionedEliasFano)
+    {
+        Backend = backend;
+        Mode = BlockPackedColumnMode.PartitionedEliasFano;
+        Length = length;
+        this.partitionedEliasFano = partitionedEliasFano;
+        payload = [];
+        payloadStarts = [0];
+        anchors = [];
+        frameBases = [];
+        widths = [];
+        exceptionStarts = [0];
+        exceptionPositions = [];
+        exceptionValues = [];
+    }
+
+    /// <summary>
+    /// Packs a within-group-monotone column as partitioned Elias-Fano, the
+    /// group boundaries supplied by the parent offset column. The boundaries
+    /// are borrowed (not copied into the footprint); the matching offset column
+    /// stores them once.
+    /// </summary>
+    /// <param name="values">The column values, non-decreasing within each group.</param>
+    /// <param name="boundaries">The exclusive-end group boundaries (the offset column).</param>
+    /// <param name="backendOption">The kernel bundle; <see langword="null"/> uses <see cref="ColumnarKernelBackend.Default"/>.</param>
+    /// <returns>The packed column.</returns>
+    public static BlockPackedColumn BuildPartitioned(ReadOnlySpan<uint> values, int[] boundaries, ColumnarKernelBackend? backendOption = null)
+    {
+        ColumnarKernelBackend backend = backendOption ?? ColumnarKernelBackend.Default;
+
+        return new BlockPackedColumn(backend, values.Length, PartitionedEliasFanoSequence.Build(values, boundaries));
+    }
+
     /// <summary>The number of values in the given block — <see cref="BlockLength"/> for every block but possibly the last.</summary>
     /// <param name="blockIndex">The block index.</param>
     /// <returns>The block's value count.</returns>
@@ -191,6 +236,17 @@ public sealed class BlockPackedColumn
         if(Mode == BlockPackedColumnMode.EliasFano)
         {
             eliasFano!.Decode(blockIndex << BlockShift, count, destination[..count]);
+
+            return;
+        }
+
+        if(Mode == BlockPackedColumnMode.PartitionedEliasFano)
+        {
+            int partitionedStart = blockIndex << BlockShift;
+            for(int i = 0; i < count; i++)
+            {
+                destination[i] = partitionedEliasFano!.Access(partitionedStart + i);
+            }
 
             return;
         }
@@ -236,6 +292,11 @@ public sealed class BlockPackedColumn
         if(Mode == BlockPackedColumnMode.EliasFano)
         {
             return eliasFano!.Access(index);
+        }
+
+        if(Mode == BlockPackedColumnMode.PartitionedEliasFano)
+        {
+            return partitionedEliasFano!.Access(index);
         }
 
         int block = index >> BlockShift;
@@ -290,6 +351,11 @@ public sealed class BlockPackedColumn
             }
 
             return found >= hi ? hi : found;
+        }
+
+        if(Mode == BlockPackedColumnMode.PartitionedEliasFano)
+        {
+            return partitionedEliasFano!.LowerBound(lo, hi, target);
         }
 
         int blockLo = lo >> BlockShift;

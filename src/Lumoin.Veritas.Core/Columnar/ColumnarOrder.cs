@@ -175,42 +175,55 @@ public sealed class ColumnarOrder
         offsets0.Add((uint)values1.Count);
         offsets1.Add((uint)values2.Count);
 
-        //Value columns are what worst-case-optimal descents SEEK
-        //over: frame of reference keeps every lane independently
-        //probeable, or — under the opt-in policy, where the column
-        //is globally monotone — Elias-Fano trades that seek for the
-        //smaller footprint. Offset columns are read pointwise with
-        //descent locality: prefixed deltas pack their group-size
-        //deltas densest and the reader's block cache absorbs the
-        //decodes (Elias-Fano measured worse on them, so they never
-        //take it).
+        //Value columns are what worst-case-optimal descents SEEK over: frame
+        //of reference keeps every lane independently probeable; under the
+        //opt-in policy a candidate succinct packing competes on footprint —
+        //whole-column Elias-Fano for the globally-monotone top level, and
+        //partitioned Elias-Fano (grouped by the parent offset column) for the
+        //within-group levels. Offset columns stay prefixed-delta packed (the
+        //reader's block cache absorbs their pointwise decodes).
+        bool partitioned = valueEncoding == ColumnarValueColumnEncoding.EliasFanoWhenMonotone;
+        int[]? level1Boundaries = partitioned ? ToBoundaries(offsets0) : null;
+        int[]? level2Boundaries = partitioned ? ToBoundaries(offsets1) : null;
+
         return new ColumnarOrder(
-            BuildValueColumn(CollectionsMarshal.AsSpan(values0), valueEncoding),
+            BuildValueColumn(CollectionsMarshal.AsSpan(values0), boundaries: null, valueEncoding),
             BlockPackedColumn.Build(CollectionsMarshal.AsSpan(offsets0), BlockPackedColumnMode.PrefixedDeltas),
-            BuildValueColumn(CollectionsMarshal.AsSpan(values1), valueEncoding),
+            BuildValueColumn(CollectionsMarshal.AsSpan(values1), level1Boundaries, valueEncoding),
             BlockPackedColumn.Build(CollectionsMarshal.AsSpan(offsets1), BlockPackedColumnMode.PrefixedDeltas),
-            BuildValueColumn(CollectionsMarshal.AsSpan(values2), valueEncoding));
+            BuildValueColumn(CollectionsMarshal.AsSpan(values2), level2Boundaries, valueEncoding));
     }
 
     /// <summary>
     /// Builds a value column under the build policy: always the frame-of-
-    /// reference packing, and — when the policy opts into Elias-Fano and the
-    /// column is globally non-decreasing — also the Elias-Fano packing, keeping
-    /// the smaller via <see cref="SmallerEncoding"/>. Because the smaller is
-    /// kept, adding the Elias-Fano candidate never enlarges a column.
+    /// reference packing, and — under the Elias-Fano policy — also a candidate
+    /// succinct packing, keeping the smaller via <see cref="SmallerEncoding"/>.
+    /// A top-level column (<paramref name="boundaries"/> <see langword="null"/>)
+    /// offers whole-column Elias-Fano when globally non-decreasing; a
+    /// within-group column offers partitioned Elias-Fano over the parent
+    /// boundaries. Because the smaller is kept, the candidate never enlarges a
+    /// column.
     /// </summary>
     /// <param name="values">The value column.</param>
+    /// <param name="boundaries">The parent group boundaries for a within-group column, or <see langword="null"/> for the top level.</param>
     /// <param name="valueEncoding">The build policy.</param>
     /// <returns>The packed value column.</returns>
-    private static BlockPackedColumn BuildValueColumn(ReadOnlySpan<uint> values, ColumnarValueColumnEncoding valueEncoding)
+    private static BlockPackedColumn BuildValueColumn(ReadOnlySpan<uint> values, int[]? boundaries, ColumnarValueColumnEncoding valueEncoding)
     {
         BlockPackedColumn frame = BlockPackedColumn.Build(values, BlockPackedColumnMode.FrameOfReference);
-        if(valueEncoding != ColumnarValueColumnEncoding.EliasFanoWhenMonotone || !IsNonDecreasing(values))
+        if(valueEncoding != ColumnarValueColumnEncoding.EliasFanoWhenMonotone)
         {
             return frame;
         }
 
-        return SmallerEncoding(frame, BlockPackedColumn.Build(values, BlockPackedColumnMode.EliasFano));
+        if(boundaries is null)
+        {
+            return IsNonDecreasing(values)
+                ? SmallerEncoding(frame, BlockPackedColumn.Build(values, BlockPackedColumnMode.EliasFano))
+                : frame;
+        }
+
+        return SmallerEncoding(frame, BlockPackedColumn.BuildPartitioned(values, boundaries));
     }
 
     /// <summary>
@@ -242,6 +255,20 @@ public sealed class ColumnarOrder
         }
 
         return true;
+    }
+
+    /// <summary>Copies an exclusive-end offset column into the int boundaries a partitioned-Elias-Fano value column borrows.</summary>
+    /// <param name="offsets">The offset column values.</param>
+    /// <returns>The boundaries, one per parent plus the final bound.</returns>
+    private static int[] ToBoundaries(List<uint> offsets)
+    {
+        int[] boundaries = new int[offsets.Count];
+        for(int i = 0; i < offsets.Count; i++)
+        {
+            boundaries[i] = (int)offsets[i];
+        }
+
+        return boundaries;
     }
 
     private static uint KeyAt(in EncodedTriple triple, byte position)

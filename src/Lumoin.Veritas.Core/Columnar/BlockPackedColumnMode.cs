@@ -37,4 +37,16 @@ public enum BlockPackedColumnMode
     /// qualifies.
     /// </summary>
     EliasFano,
+
+    /// <summary>
+    /// Partitioned Elias-Fano: a column that is non-decreasing WITHIN each
+    /// parent group but resets across group boundaries — the level-1 and
+    /// level-2 value columns — stored as one
+    /// <see cref="Collections.PartitionedEliasFanoSequence"/>, each group
+    /// Elias-Fano relative to its own minimum, the group boundaries borrowed
+    /// from the offset column. Access and the segment-local seek are
+    /// select-driven. Valid only for a within-group-monotone column built with
+    /// the matching boundaries.
+    /// </summary>
+    PartitionedEliasFano,
 }
