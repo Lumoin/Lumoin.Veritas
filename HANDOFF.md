@@ -12,7 +12,7 @@ in "Next".
 
 ## Current state
 
-- Branch `main`, tree clean at commit **`e43578b`** (Elias-Fano succinct primitive; `e3e95d2` Free Join generic join full-depth, `793206a` GHT foundation, `3ff1f61` open-addressed join table, `ef037a7` depth-2 chain factorization, `08d0db1` Yannakakis). **§4.3 design pass done** (`tempdocs/free-join-design-memo.md`).
+- Branch `main`, tree clean at commit **`a0b31fa`** (Elias-Fano `select₀` `NextGEQ`; `e43578b` EF primitive, `e3e95d2` Free Join generic join full-depth, `793206a` GHT foundation, `3ff1f61` open-addressed join table, `ef037a7` depth-2 chain factorization, `08d0db1` Yannakakis). **§4.3 design pass done** (`tempdocs/free-join-design-memo.md`).
 - Full suite: **8097 / 0 failed / 548 skipped**.
 - **Conformance (measured 2026-06-09, not from memory):** zero failures anywhere. W3C SHACL **120/120**, Turtle 328, NQuads 205, RDF 146 — 100%. SPARQL 1221/1248 (27 optional-feature skips), OWL 986/1430 (444 entailment-regime skips). The old "SHACL 63/120 / SHACL-SPARQL open" memory was **stale** — SHACL is fully conformant; corrected.
 - Full suite: **8083 total / 0 failed / 548 skipped** (the new factorized-join + open-addressed-table tests over the pre-§4.2 count; the skip count jitters ±2 with the environment-conditional OWL-entailment `Inconclusive` tests). Factorization is opt-in (default-off): the corpus routes stars/chains through the streamed path by default.
@@ -290,14 +290,20 @@ its remaining columns as a leaf tuple vector, cross-producted at emit; this is t
   packed, high bits a sampled-`select₁` gap bit-vector; `Access` + `NextGEQ` (the successor / leapfrog
   `Seek`). Measured (`--profile-elias-fano`): **9–11 bits/value at u/n 64–256 (the "~10")** vs
   `FrameOfReference` ~17–19 — a ×1.7–2.5 size win, right on the EF bound + ~1 bit (the select sample).
-  Standalone, not wired. **Follow-ups (recorded):**
-  1. **`select₀`-based `NextGEQ`.** Today's `NextGEQ` is a naive binary-search over `Access` (O(log n)
-     selects), measured **×0.3–0.6 (2–3× slower seek)** than `FrameOfReference.LowerBound`. The proper EF
-     successor jumps via `select₀` to the high-part block then scans low bits — O(1)+short — which should
-     close most of that gap. Add a `select₀` sample alongside the `select₁` one.
+  Standalone, not wired. **Follow-ups:**
+  1. ✅ **`select₀`-based `NextGEQ` (done, `a0b31fa`).** Replaced the naive binary-search successor with a
+     `select₀` jump to the target high group + a low-bit scan (a `select₀` sample beside `select₁`; padding
+     masked). Measured: seek flipped from **×0.3–0.6 (slower)** to **×2.6–3.1 FASTER** than
+     `FrameOfReference.LowerBound`, for ~1–2 bits/value of sample overhead — EF is now smaller *and* faster.
   2. **Wire EF behind `BlockPackedColumnReader`** for the **monotone** CSR columns — `level0Values` (distinct
-     sorted, globally monotone) and the **offset** columns (cumulative, monotone) slot in directly;
-     `FrameOfReference` stays the differential oracle. This turns the ~10 into a real index-memory win.
+     sorted) and the **offset** columns (cumulative) slot in directly; `FrameOfReference` stays the
+     differential oracle. Turns the ~10 into a real index-memory win. **Do the SIMD pass HERE, not on the
+     standalone primitive:** EF's low-bit array is the same bit-packed-lane layout `FrameOfReference` uses, so
+     `NextGEQ`'s low-bit scan and EF build **reuse `ColumnarKernelBackend`** (the per-ISA `readonly struct`
+     bundle of lane pack/unpack kernels — `ColumnarPortableBackend`/`Vector128`/`Vector256`/`WasmPackedSimd`,
+     auto-selected via `.Default`, once-per-block indirection). `select` popcount is minor
+     (`BitOperations.PopCount` is already intrinsic; the sample bounds the scan). The same arrangement as the
+     sibling `Lumoin.Veridical` per-ISA backends. (Owner: EF is SIMD-amenable — this is the seam.)
   3. **Partitioned EF** for `level1Values`/`level2Values` — only *piecewise*-monotone (reset per parent
      group), so EF must partition at the group boundaries the offsets already mark. The deepest value column
      dominates bits/triple, so this is where the memory actually moves.
