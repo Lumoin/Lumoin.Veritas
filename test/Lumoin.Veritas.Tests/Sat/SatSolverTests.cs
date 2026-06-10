@@ -1,12 +1,14 @@
 using System.Collections.Generic;
+using System.Diagnostics;
 using Lumoin.Veritas.Core.Sat;
 
 namespace Lumoin.Veritas.Tests.Sat;
 
 /// <summary>
 /// Tests for <see cref="SatSolver"/>: fixed verdicts, assignment validity,
-/// the pigeonhole contradiction, and a differential sweep against
-/// exhaustive enumeration over deterministically generated formulas.
+/// the pigeonhole contradiction, solving under assumptions, and differential
+/// sweeps against exhaustive enumeration and the unit-clause encoding — each
+/// sweep run in both search modes.
 /// </summary>
 [TestClass]
 internal sealed class SatSolverTests
@@ -82,9 +84,12 @@ internal sealed class SatSolverTests
         Assert.IsFalse(SatSolver.Solve(clauses, variableCount: 6, cancellationToken: TestContext.CancellationToken).IsSatisfiable);
     }
 
-    /// <summary>The solver agrees with exhaustive enumeration over a deterministic formula sweep, and its satisfying assignments check out.</summary>
+    /// <summary>The solver agrees with exhaustive enumeration over a deterministic formula sweep in both modes, and its satisfying assignments check out.</summary>
+    /// <param name="mode">The search mode under test.</param>
     [TestMethod]
-    public void DifferentialAgainstExhaustiveEnumeration()
+    [DataRow(SatSearchMode.PropagationOnly)]
+    [DataRow(SatSearchMode.ConflictLearning)]
+    public void DifferentialAgainstExhaustiveEnumeration(SatSearchMode mode)
     {
         //A deterministic xorshift drives the generation; no entropy APIs.
         ulong state = 0x9E3779B97F4A7C15UL;
@@ -108,7 +113,7 @@ internal sealed class SatSolverTests
                 clauses.Add(clause);
             }
 
-            SatVerdict verdict = SatSolver.Solve(clauses, variableCount, cancellationToken: TestContext.CancellationToken);
+            SatVerdict verdict = SatSolver.Solve(clauses, variableCount, mode: mode, cancellationToken: TestContext.CancellationToken);
             bool expected = ExistsSatisfyingAssignment(clauses, variableCount);
 
             Assert.AreEqual(expected, verdict.IsSatisfiable, $"Round {round}: solver and enumeration disagree.");
@@ -169,12 +174,45 @@ internal sealed class SatSolverTests
     }
 
     /// <summary>
-    /// Solving under assumptions agrees with solving the formula extended by
-    /// the assumptions as unit clauses, over a deterministic sweep; every
-    /// satisfying model honours the formula and all assumptions.
+    /// Conflict learning backjumps over an irrelevant decision: a conflict
+    /// driven by the first decision must unwind past a later, unrelated one
+    /// rather than only flip the topmost branch. The verdict and model still
+    /// match the formula.
     /// </summary>
     [TestMethod]
-    public void AssumptionsDifferentialAgainstUnitClauseEncoding()
+    public void ConflictLearningBackjumpsOverIrrelevantDecision()
+    {
+        //x0 and x3 are independent; x1, x2 are pinned to x0. Branching x0=true
+        //then x3=true reaches a conflict that traces only to x0, so the search
+        //backjumps past the x3 decision to assert x0=false.
+        //(~x0 | x1) & (~x0 | x2) & (~x1 | ~x2).
+        List<IReadOnlyList<SatLiteral>> clauses =
+        [
+            [new SatLiteral(0, false), new SatLiteral(1, true)],
+            [new SatLiteral(0, false), new SatLiteral(2, true)],
+            [new SatLiteral(1, false), new SatLiteral(2, false)],
+            [new SatLiteral(3, true), new SatLiteral(0, false)],
+        ];
+
+        SatVerdict learned = SatSolver.Solve(clauses, variableCount: 4, mode: SatSearchMode.ConflictLearning, cancellationToken: TestContext.CancellationToken);
+        SatVerdict propagation = SatSolver.Solve(clauses, variableCount: 4, cancellationToken: TestContext.CancellationToken);
+
+        Assert.IsTrue(learned.IsSatisfiable);
+        Assert.AreEqual(propagation.IsSatisfiable, learned.IsSatisfiable);
+        Assert.IsNotNull(learned.Assignment);
+        Assert.IsTrue(Satisfies(clauses, learned.Assignment));
+    }
+
+    /// <summary>
+    /// Solving under assumptions agrees with solving the formula extended by
+    /// the assumptions as unit clauses, over a deterministic sweep in both
+    /// modes; every satisfying model honours the formula and all assumptions.
+    /// </summary>
+    /// <param name="mode">The search mode under test.</param>
+    [TestMethod]
+    [DataRow(SatSearchMode.PropagationOnly)]
+    [DataRow(SatSearchMode.ConflictLearning)]
+    public void AssumptionsDifferentialAgainstUnitClauseEncoding(SatSearchMode mode)
     {
         //A deterministic xorshift drives the generation; no entropy APIs.
         ulong state = 0xD1B54A32D192ED03UL;
@@ -213,7 +251,7 @@ internal sealed class SatSolverTests
                 extended.Add([assumption]);
             }
 
-            SatVerdict assumed = SatSolver.SolveUnderAssumptions(clauses, variableCount, assumptions, cancellationToken: TestContext.CancellationToken);
+            SatVerdict assumed = SatSolver.SolveUnderAssumptions(clauses, variableCount, assumptions, mode: mode, cancellationToken: TestContext.CancellationToken);
             SatVerdict reference = SatSolver.Solve(extended, variableCount, cancellationToken: TestContext.CancellationToken);
 
             Assert.AreEqual(reference.IsSatisfiable, assumed.IsSatisfiable, $"Round {round}: assumptions and unit-clause encoding disagree.");
@@ -235,6 +273,90 @@ internal sealed class SatSolverTests
 
         Assert.IsGreaterThan(20, satisfiableSeen, "The sweep covers satisfiable-under-assumptions formulas.");
         Assert.IsGreaterThan(20, unsatisfiableSeen, "The sweep covers unsatisfiable-under-assumptions formulas.");
+    }
+
+    /// <summary>Both modes decide the pigeonhole contradiction unsatisfiable; the search must learn and backjump, not only propagate.</summary>
+    /// <param name="mode">The search mode under test.</param>
+    [TestMethod]
+    [DataRow(SatSearchMode.PropagationOnly)]
+    [DataRow(SatSearchMode.ConflictLearning)]
+    public void PigeonholeIsUnsatisfiableInBothModes(SatSearchMode mode)
+    {
+        (List<IReadOnlyList<SatLiteral>> clauses, int variableCount) = Pigeonhole(pigeons: 5, holes: 4);
+
+        Assert.IsFalse(SatSolver.Solve(clauses, variableCount, mode: mode, cancellationToken: TestContext.CancellationToken).IsSatisfiable);
+    }
+
+    /// <summary>
+    /// Conflict learning agrees with propagation-only on the pigeonhole
+    /// family while it records its timing. The assertion holds the modes to
+    /// the same verdict; the timing it prints is the mode comparison.
+    /// </summary>
+    [TestMethod]
+    public void PigeonholeModeComparison()
+    {
+        TestContext.WriteLine("pigeons->holes | variables | clauses | PropagationOnly (ms) | ConflictLearning (ms)");
+        for(int holes = 5; holes <= 7; holes++)
+        {
+            (List<IReadOnlyList<SatLiteral>> clauses, int variableCount) = Pigeonhole(pigeons: holes + 1, holes);
+
+            double propagationOnlyMs = TimeUnsatisfiable(clauses, variableCount, SatSearchMode.PropagationOnly);
+            double conflictLearningMs = TimeUnsatisfiable(clauses, variableCount, SatSearchMode.ConflictLearning);
+
+            TestContext.WriteLine($"{holes + 1}->{holes} | {variableCount} | {clauses.Count} | {propagationOnlyMs:F1} | {conflictLearningMs:F1}");
+        }
+    }
+
+    /// <summary>Solves the formula as unsatisfiable in the given mode, asserting the verdict and returning the elapsed milliseconds.</summary>
+    /// <param name="clauses">The formula, expected unsatisfiable.</param>
+    /// <param name="variableCount">The variable count.</param>
+    /// <param name="mode">The search mode to time.</param>
+    /// <returns>The elapsed wall-clock time in milliseconds.</returns>
+    private double TimeUnsatisfiable(List<IReadOnlyList<SatLiteral>> clauses, int variableCount, SatSearchMode mode)
+    {
+        long startTimestamp = Stopwatch.GetTimestamp();
+        SatVerdict verdict = SatSolver.Solve(clauses, variableCount, mode: mode, cancellationToken: TestContext.CancellationToken);
+        double elapsedMs = Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds;
+
+        Assert.IsFalse(verdict.IsSatisfiable, $"The pigeonhole formula must be unsatisfiable in {mode}.");
+
+        return elapsedMs;
+    }
+
+    /// <summary>
+    /// Builds the pigeonhole formula: every pigeon sits in some hole and no
+    /// two pigeons share a hole. It is unsatisfiable exactly when there are
+    /// more pigeons than holes, and propagation alone cannot prune it.
+    /// </summary>
+    /// <param name="pigeons">The pigeon count.</param>
+    /// <param name="holes">The hole count.</param>
+    /// <returns>The clauses and the variable count; variable <c>pigeon * holes + hole</c> places that pigeon in that hole.</returns>
+    private static (List<IReadOnlyList<SatLiteral>> Clauses, int VariableCount) Pigeonhole(int pigeons, int holes)
+    {
+        List<IReadOnlyList<SatLiteral>> clauses = [];
+        for(int pigeon = 0; pigeon < pigeons; pigeon++)
+        {
+            SatLiteral[] someHole = new SatLiteral[holes];
+            for(int hole = 0; hole < holes; hole++)
+            {
+                someHole[hole] = new SatLiteral((pigeon * holes) + hole, true);
+            }
+
+            clauses.Add(someHole);
+        }
+
+        for(int hole = 0; hole < holes; hole++)
+        {
+            for(int first = 0; first < pigeons; first++)
+            {
+                for(int second = first + 1; second < pigeons; second++)
+                {
+                    clauses.Add([new SatLiteral((first * holes) + hole, false), new SatLiteral((second * holes) + hole, false)]);
+                }
+            }
+        }
+
+        return (clauses, pigeons * holes);
     }
 
     /// <summary>Whether the assignment satisfies every clause.</summary>
