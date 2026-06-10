@@ -80,6 +80,13 @@ public sealed class TripleSelfIndex
         HashSet<EncodedTriple> distinct = [.. triples];
         int count = distinct.Count;
 
+        //The boundary sequences' lower payload is exactly the backend's lane
+        //layout, so resolving the canonical kernel bundle once here and threading
+        //it into every EliasFanoSequence.Build packs (and later decodes) those
+        //boundaries on the hardware path while the succinct layer stays free of
+        //this layer.
+        ColumnarKernelBackend backend = ColumnarKernelBackend.Default;
+
         WaveletMatrix[] bwtColumns = new WaveletMatrix[3];
         EliasFanoSequence[] leaderBoundaries = new EliasFanoSequence[3];
 
@@ -88,7 +95,7 @@ public sealed class TripleSelfIndex
             for(int rotation = 0; rotation < 3; rotation++)
             {
                 bwtColumns[rotation] = WaveletMatrix.Build([]);
-                leaderBoundaries[rotation] = EliasFanoSequence.Build([0u]);
+                leaderBoundaries[rotation] = EliasFanoSequence.Build([0u], lanePacker: backend.Pack.Invoke, laneUnpacker: backend.DecodeFrame.Invoke);
             }
 
             return new TripleSelfIndex(bwtColumns, leaderBoundaries, 0);
@@ -126,9 +133,9 @@ public sealed class TripleSelfIndex
         //radix passes from the third key inward, stores the third column as
         //the rotation's wavelet matrix, and the leader's cumulative block
         //starts as its boundary sequence.
-        (bwtColumns[0], leaderBoundaries[0]) = BuildRotation(subjects, predicates, objects, permutation, scratch, selectSampleRate);
-        (bwtColumns[1], leaderBoundaries[1]) = BuildRotation(objects, subjects, predicates, permutation, scratch, selectSampleRate);
-        (bwtColumns[2], leaderBoundaries[2]) = BuildRotation(predicates, objects, subjects, permutation, scratch, selectSampleRate);
+        (bwtColumns[0], leaderBoundaries[0]) = BuildRotation(subjects, predicates, objects, permutation, scratch, selectSampleRate, backend);
+        (bwtColumns[1], leaderBoundaries[1]) = BuildRotation(objects, subjects, predicates, permutation, scratch, selectSampleRate, backend);
+        (bwtColumns[2], leaderBoundaries[2]) = BuildRotation(predicates, objects, subjects, permutation, scratch, selectSampleRate, backend);
 
         return new TripleSelfIndex(bwtColumns, leaderBoundaries, count);
     }
@@ -140,6 +147,7 @@ public sealed class TripleSelfIndex
     /// <param name="permutation">A permutation buffer the sort orders.</param>
     /// <param name="scratch">A gather buffer at least the column length.</param>
     /// <param name="selectSampleRate">The select-sample rate for the wavelet column.</param>
+    /// <param name="backend">The kernel bundle the boundary sequence packs (and later decodes) its lower payload with.</param>
     /// <returns>The rotation's wavelet column and boundary sequence.</returns>
     private static (WaveletMatrix Column, EliasFanoSequence Boundary) BuildRotation(
         Span<uint> leader,
@@ -147,7 +155,8 @@ public sealed class TripleSelfIndex
         Span<uint> third,
         Span<uint> permutation,
         Span<uint> scratch,
-        int selectSampleRate)
+        int selectSampleRate,
+        ColumnarKernelBackend backend)
     {
         int count = permutation.Length;
         for(int i = 0; i < count; i++)
@@ -165,7 +174,7 @@ public sealed class TripleSelfIndex
         }
 
         WaveletMatrix column = WaveletMatrix.Build(scratch, selectSampleRate: selectSampleRate);
-        EliasFanoSequence boundary = BuildLeaderBoundary(leader, count);
+        EliasFanoSequence boundary = BuildLeaderBoundary(leader, count, backend);
 
         return (column, boundary);
     }
@@ -187,8 +196,9 @@ public sealed class TripleSelfIndex
     /// <summary>The leader's cumulative block starts: entry <c>j</c> counts the triples whose leader symbol is below <c>j</c>, through one entry past the largest leader.</summary>
     /// <param name="leader">The leader column.</param>
     /// <param name="count">The triple count.</param>
+    /// <param name="backend">The kernel bundle the boundary sequence packs (and later decodes) its lower payload with.</param>
     /// <returns>The boundary sequence.</returns>
-    private static EliasFanoSequence BuildLeaderBoundary(Span<uint> leader, int count)
+    private static EliasFanoSequence BuildLeaderBoundary(Span<uint> leader, int count, ColumnarKernelBackend backend)
     {
         uint maxLeader = 0;
         foreach(uint value in leader)
@@ -217,7 +227,7 @@ public sealed class TripleSelfIndex
 
         Debug.Assert(running == (uint)count, "The cumulative boundary must end at the triple count.");
 
-        return EliasFanoSequence.Build(cumulative);
+        return EliasFanoSequence.Build(cumulative, lanePacker: backend.Pack.Invoke, laneUnpacker: backend.DecodeFrame.Invoke);
     }
 
     /// <summary>The rotation a backward step lands in: the one led by the position cyclically preceding this rotation's leader.</summary>
