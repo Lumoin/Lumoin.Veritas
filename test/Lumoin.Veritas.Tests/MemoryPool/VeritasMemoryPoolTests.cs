@@ -254,10 +254,23 @@ internal sealed class VeritasMemoryPoolTests
             meter,
             tracingEnabled: false);
 
+        //The pool parents a rental's activity to Activity.Current, so a marker
+        //around this test's rental scopes the assertion to activities THIS
+        //rental would create: concurrent tests legitimately produce pool
+        //activities on the shared source, but only one inside the marker's
+        //trace would betray the disabled flag.
+        using Activity marker = new("TracingCanBeDisabledScope");
+        marker.Start();
+
         using(pool.Rent(32)) { }
 
-        Assert.IsEmpty(activities,
-            "No activities should be created when tracing is disabled.");
+        marker.Stop();
+
+        foreach(Activity activity in activities)
+        {
+            Assert.AreNotEqual(marker.TraceId, activity.TraceId,
+                "No activity should originate from this test's rental when tracing is disabled.");
+        }
     }
 
     [TestMethod]
