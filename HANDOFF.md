@@ -12,9 +12,9 @@ in "Next".
 
 ## Current state
 
-- Branch `main`, tree clean at **`b18c612`**. This session shipped the §4.3 Free Join arc: `255c2f4` **(a)** routed Free Join behind a default-off `PreferFreeJoin`; `6ad4ca7` **(b)** factorized-star output (the §4.2 ∩ §4.3 convergence, `FreeJoinExecutor.ExecuteFactorized` / `FreeJoinPipeline.RunFactorized`); `69ce5e5` **(c)** flat-1D `FactorizedBranches`; `82eaf32` **(d.1)** `FactorizedArena` (query-scoped bump arena, 7 lifecycle tests); `b18c612` **(d.2)** `FactorizedBranches` onto `ArenaSlice` — branch values arena-owned, every producer threads the arena, the §4.2 pipeline routes own a query-scoped arena over `VeritasMemoryPool<uint>.Shared` as lazy iterators (the self-disposing flatten), 2 more lifecycle tests. Design-only HANDOFF commits `5f05678`/`fa6b476`.
-- **→ RESUME HERE: §4.3(d) increment 3** — the Free Join executor's hot-path growable `List`/`HashSet` + class `Frame` move to flat, value-type, arena-allocated buffers (the least Rust-mappable part today). Details in the **"(d)"** paragraph of the §4.3 section below. Design lens: explicit memory ownership over GC-reliance (memory `project_rust_translatability_explicit_memory`), Rust-translatable.
-- Full suite **8134 / 0 failed / 546 skipped** at `b18c612`.
+- Branch `main`, tree clean at **`176d0a2`**. This session shipped the §4.3 Free Join arc: `255c2f4` **(a)** routed Free Join behind a default-off `PreferFreeJoin`; `6ad4ca7` **(b)** factorized-star output (the §4.2 ∩ §4.3 convergence, `FreeJoinExecutor.ExecuteFactorized` / `FreeJoinPipeline.RunFactorized`); `69ce5e5` **(c)** flat-1D `FactorizedBranches`; `82eaf32` **(d.1)** `FactorizedArena` (query-scoped bump arena, 7 lifecycle tests); `b18c612` **(d.2)** `FactorizedBranches` onto `ArenaSlice` — branch values arena-owned, every producer threads the arena, the §4.2 pipeline routes own a query-scoped arena over `VeritasMemoryPool<uint>.Shared` as lazy iterators (the self-disposing flatten), 2 more lifecycle tests; `176d0a2` **(d.3)** `FreeJoinExecutor.Drive` onto per-level reusable flat buffers — zero per-bound-value allocation. Design-only HANDOFF commits `5f05678`/`fa6b476`.
+- **→ RESUME HERE: deeper factorisation out of the generic join** — the chain-nesting analogue of §4.2's `NestBranch` inside `FreeJoinExecutor` (today `ExecuteFactorized` handles only the single-key star), and after it the cost-based per-relation depth/selector (the deferred join-strategy-selection research issue). Optional smaller pass first: group metadata (`KeyValues`, `starts`/`rowCounts`/`strides`, the `GroupBuilder`/`ProbeBucket` `List<uint>` accumulators) onto the same arena. Details in the §4.3 section below.
+- Full suite **8134 / 0 failed / 546 skipped** at `176d0a2`.
 - **Conformance (measured 2026-06-09, not from memory):** zero failures anywhere. W3C SHACL **120/120**, Turtle 328, NQuads 205, RDF 146 — 100%. SPARQL 1221/1248 (27 optional-feature skips). OWL `W3cOwl2` conformance suites **881/1323, 442 skip, 0 fail** — the 442 are correct cross-suite abstentions (367 RL + 65 species) + 10 corpus contradictions, **NOT** unimplemented regimes; the 2 genuine Direct-semantics entailment tests (`WebOnt-I4.6-005-Direct`, `WebOnt-equivalentClass-008-Direct`) fixed 2026-06-09 by projecting away the conclusion's annotations in `W3cOwl2RlTests` before the RL embedding check. The old "SHACL 63/120 / SHACL-SPARQL open" and "444 OWL regimes unimplemented" memories were **stale** — both corrected.
 - **Known flaky test (pre-existing, NOT from this session's changes):** ~1 full-suite run in ~4 fails exactly 1 test; never reproduced when hunted (6 clean differential-suite runs + 4 clean full runs). Likely a method-level-parallel race (the suite runs `Workers=0`, all cores). **NOT yet named** — I filtered it out of the one failing run before realising. Mitigation now in place: **every full-suite run captures FULL output** (`dotnet test ... 2>&1 | Out-File <tmp>` then grep the file), so the next failure is named with its CsCheck seed if applicable; root-cause it then. HARD RULE: never paper over (no retries, no timeouts, no dismiss-as-flaky) — root-cause or discuss. The "it's a CsCheck differential test" hypothesis was tested and **cleared**. Factorization stays opt-in (default-off); the corpus routes stars/chains through the streamed path by default.
 - One unrelated working-tree change persists: `generate-local-test-nuget-packages.ps1` (a sister project's edit excluding the AOT CLI from local packaging) — not mine, left uncommitted on purpose.
@@ -312,12 +312,22 @@ query-scoped arena over `VeritasMemoryPool<uint>.Shared` as lazy iterators (`usi
 fires when the consumer drains or abandons the stream — the self-disposing flatten boundary. Lifecycle tests pin
 superseded-run readability and slab return. Rust target: bump arena + `&[u32]`.
 
-**Next on §4.3:** (d.3) the Free Join executor's hot-path growable `List`/`HashSet` + class `Frame` move to
-flat, value-type, arena-allocated buffers (the least Rust-mappable part today). Group metadata
-(`KeyValues`/`starts`/`rowCounts`/`strides` arrays and the `GroupBuilder`/`ProbeBucket` `List<uint>`
-accumulators) are candidates for the same arena once the executor pass shapes them. Then **deeper
-factorisation** (chain nesting — the `NestBranch` analogue — out of the generic join) and the cost-based
-depth/selector that picks Free Join's per-relation depth (the deferred join-strategy-selection research issue).
+**Shipped: §4.3(d.3) executor hot path (`176d0a2`).** `FreeJoinExecutor.Drive` allocates nothing per bound
+value: the per-value `Frame` class (five arrays + a participant concat per descent step), the per-intersection
+closure + `HashSet[]` + `List<uint>` keys, and the per-narrowing `List<int>` are replaced by one reusable
+**`LevelFrame` per global level** — the stack is always the contiguous level prefix, so one live frame per
+level suffices. Its candidate-keys buffer (with cursor), saved participant state, cleared-and-refilled leaf
+value sets, and arrival/narrow row buffers are flat arrays + counts, grown on demand, reused across visits.
+Aliasing safety: `Apply` writes into the frame's own buffers and always reads a shallower level's (state is
+restored before each re-visit). The scratch is plain arrays grown geometrically, NOT `VeritasMemoryPool`-rented
+— renting the per-level buffers is a possible follow-up if measurement warrants; the arena is wrong for this
+scratch (bump-only, never frees, while these buffers are rebuilt per visit).
+
+**Next on §4.3:** **deeper factorisation** out of the generic join — the chain-nesting analogue of §4.2's
+`NestBranch` (today `ExecuteFactorized` covers only the single-key star) — then the cost-based per-relation
+depth/selector that picks Free Join's depth (the deferred join-strategy-selection research issue). Optional
+smaller pass: group metadata (`KeyValues`/`starts`/`rowCounts`/`strides`, the `GroupBuilder`/`ProbeBucket`
+`List<uint>` accumulators) onto the same arena.
 
 ### After the tier
 
