@@ -11,31 +11,49 @@ namespace Lumoin.Veritas.Tests.Owl;
 /// modules across the rule set (conjunction, disjunction branching,
 /// existential successors, universal propagation, role hierarchy), subset
 /// blocking on a cyclic TBox, module-local subsumptions, and the
-/// fragment-honesty contract for axioms beyond ALC(H).
+/// fragment-honesty contract for axioms beyond ALC(H). The consistency-only
+/// in-scope tests parametrize over both the snapshot engine and the
+/// SAT-backed sibling <see cref="SatTableauModuleReasoner"/>.
 /// </summary>
 [TestClass]
 internal sealed class AlcModuleReasonerTests
 {
+    /// <summary>The engines the consistency-parametrized tests decide through.</summary>
+    internal enum ConsistencyEngine
+    {
+        /// <summary>The snapshot tableau's full entry, <see cref="AlcModuleReasoner.Decide"/>.</summary>
+        Snapshot,
+
+        /// <summary>The SAT-backed sibling's consistency entry, <see cref="SatTableauModuleReasoner.DecideConsistency"/>.</summary>
+        SatBacked,
+    }
+
     /// <summary>The MSTest-supplied per-test context.</summary>
     public TestContext TestContext { get; set; } = null!;
 
     private const string Example = "http://example.org/";
 
     /// <summary>Disjoint classes sharing an instance clash; without the shared instance the module is consistent.</summary>
+    /// <param name="engine">The engine under test.</param>
     [TestMethod]
-    public void DisjointnessClashesOnTheSharedInstance()
+    [DataRow(ConsistencyEngine.Snapshot)]
+    [DataRow(ConsistencyEngine.SatBacked)]
+    public void DisjointnessClashesOnTheSharedInstance(ConsistencyEngine engine)
     {
         OwlDisjointClassesAxiom disjoint = new([Reference("A"), Reference("B")]) { Origin = Origin("disjoint") };
         OwlClassAssertionAxiom isA = new(Reference("A"), Named("x")) { Origin = Origin("isA") };
         OwlClassAssertionAxiom isB = new(Reference("B"), Named("x")) { Origin = Origin("isB") };
 
-        Assert.IsFalse(AlcModuleReasoner.Decide(Module(disjoint, isA, isB), TestContext.CancellationToken).IsConsistent);
-        Assert.IsTrue(AlcModuleReasoner.Decide(Module(disjoint, isA), TestContext.CancellationToken).IsConsistent);
+        Assert.IsFalse(Decide(engine, Module(disjoint, isA, isB)).IsConsistent);
+        Assert.IsTrue(Decide(engine, Module(disjoint, isA)).IsConsistent);
     }
 
     /// <summary>An existential meets a universal of the complement filler and clashes in the successor.</summary>
+    /// <param name="engine">The engine under test.</param>
     [TestMethod]
-    public void ExistentialMeetsUniversalComplement()
+    [DataRow(ConsistencyEngine.Snapshot)]
+    [DataRow(ConsistencyEngine.SatBacked)]
+    public void ExistentialMeetsUniversalComplement(ConsistencyEngine engine)
     {
         OwlClassAssertionAxiom some = new(
             new OwlObjectSomeValuesFrom(Property("r"), Reference("C")), Named("a"))
@@ -48,7 +66,7 @@ internal sealed class AlcModuleReasonerTests
             Origin = Origin("all"),
         };
 
-        Assert.IsFalse(AlcModuleReasoner.Decide(Module(some, all), TestContext.CancellationToken).IsConsistent);
+        Assert.IsFalse(Decide(engine, Module(some, all)).IsConsistent);
     }
 
     /// <summary>The universal propagates over an asserted edge through the told role hierarchy.</summary>
@@ -70,8 +88,11 @@ internal sealed class AlcModuleReasonerTests
     }
 
     /// <summary>A cyclic TBox terminates through subset blocking and stays consistent.</summary>
+    /// <param name="engine">The engine under test.</param>
     [TestMethod]
-    public void CyclicTBoxTerminatesThroughBlocking()
+    [DataRow(ConsistencyEngine.Snapshot)]
+    [DataRow(ConsistencyEngine.SatBacked)]
+    public void CyclicTBoxTerminatesThroughBlocking(ConsistencyEngine engine)
     {
         //A ⊑ ∃r.A with an A instance: an unblocked tableau would unfold
         //forever; subset blocking folds the cycle.
@@ -83,12 +104,15 @@ internal sealed class AlcModuleReasonerTests
         };
         OwlClassAssertionAxiom seed = new(Reference("A"), Named("a")) { Origin = Origin("seed") };
 
-        Assert.IsTrue(AlcModuleReasoner.Decide(Module(cycle, seed), TestContext.CancellationToken).IsConsistent);
+        Assert.IsTrue(Decide(engine, Module(cycle, seed)).IsConsistent);
     }
 
     /// <summary>Disjunction branching explores both disjuncts: a clash on the first branch does not condemn the module.</summary>
+    /// <param name="engine">The engine under test.</param>
     [TestMethod]
-    public void DisjunctionBranchingRecovers()
+    [DataRow(ConsistencyEngine.Snapshot)]
+    [DataRow(ConsistencyEngine.SatBacked)]
+    public void DisjunctionBranchingRecovers(ConsistencyEngine engine)
     {
         //a : (A ⊔ B); a : ¬A — only the B branch survives.
         OwlClassAssertionAxiom union = new(
@@ -98,11 +122,11 @@ internal sealed class AlcModuleReasonerTests
         };
         OwlClassAssertionAxiom notA = new(new OwlObjectComplementOf(Reference("A")), Named("a")) { Origin = Origin("notA") };
 
-        Assert.IsTrue(AlcModuleReasoner.Decide(Module(union, notA), TestContext.CancellationToken).IsConsistent);
+        Assert.IsTrue(Decide(engine, Module(union, notA)).IsConsistent);
 
         OwlClassAssertionAxiom notB = new(new OwlObjectComplementOf(Reference("B")), Named("a")) { Origin = Origin("notB") };
 
-        Assert.IsFalse(AlcModuleReasoner.Decide(Module(union, notA, notB), TestContext.CancellationToken).IsConsistent);
+        Assert.IsFalse(Decide(engine, Module(union, notA, notB)).IsConsistent);
     }
 
     /// <summary>Module-local subsumptions surface: a subclass chain yields its transitive pair.</summary>
@@ -122,13 +146,16 @@ internal sealed class AlcModuleReasonerTests
     }
 
     /// <summary>An axiom beyond ALC(H) is named on the verdict, and the supported fragment still decides.</summary>
+    /// <param name="engine">The engine under test.</param>
     [TestMethod]
-    public void BeyondFragmentAxiomsAreNamedNotDropped()
+    [DataRow(ConsistencyEngine.Snapshot)]
+    [DataRow(ConsistencyEngine.SatBacked)]
+    public void BeyondFragmentAxiomsAreNamedNotDropped(ConsistencyEngine engine)
     {
         OwlSubClassOfAxiom supported = new(Reference("A"), Reference("B")) { Origin = Origin("ab") };
         OwlHasKeyAxiom beyond = new(Reference("A"), [Property("r")], []) { Origin = Origin("key") };
 
-        ModuleVerdict verdict = AlcModuleReasoner.Decide(Module(supported, beyond), TestContext.CancellationToken);
+        ModuleVerdict verdict = Decide(engine, Module(supported, beyond));
 
         Assert.IsTrue(verdict.IsConsistent);
         Assert.Contains(nameof(OwlHasKeyAxiom), verdict.UnsupportedConstructs);
@@ -146,8 +173,11 @@ internal sealed class AlcModuleReasonerTests
     }
 
     /// <summary>An assertion over a reserved built-in role is named beyond the fragment, not read as a plain edge.</summary>
+    /// <param name="engine">The engine under test.</param>
     [TestMethod]
-    public void ReservedRolesAreNamedBeyondTheFragment()
+    [DataRow(ConsistencyEngine.Snapshot)]
+    [DataRow(ConsistencyEngine.SatBacked)]
+    public void ReservedRolesAreNamedBeyondTheFragment(ConsistencyEngine engine)
     {
         OwlObjectPropertyAssertionAxiom viaBottom = new(
             Named("a"),
@@ -157,7 +187,7 @@ internal sealed class AlcModuleReasonerTests
             Origin = Origin("edge"),
         };
 
-        ModuleVerdict verdict = AlcModuleReasoner.Decide(Module(viaBottom), TestContext.CancellationToken);
+        ModuleVerdict verdict = Decide(engine, Module(viaBottom));
 
         Assert.IsTrue(verdict.IsConsistent);
         Assert.Contains(nameof(OwlObjectPropertyAssertionAxiom), verdict.UnsupportedConstructs);
@@ -185,18 +215,34 @@ internal sealed class AlcModuleReasonerTests
     }
 
     /// <summary>SameIndividual merges its nodes: the merged individual carries both assertions into the clash.</summary>
+    /// <param name="engine">The engine under test.</param>
     [TestMethod]
-    public void SameIndividualMergesNodes()
+    [DataRow(ConsistencyEngine.Snapshot)]
+    [DataRow(ConsistencyEngine.SatBacked)]
+    public void SameIndividualMergesNodes(ConsistencyEngine engine)
     {
         OwlDisjointClassesAxiom disjoint = new([Reference("A"), Reference("B")]) { Origin = Origin("disjoint") };
         OwlClassAssertionAxiom isA = new(Reference("A"), Named("x")) { Origin = Origin("isA") };
         OwlClassAssertionAxiom isB = new(Reference("B"), Named("y")) { Origin = Origin("isB") };
 
-        Assert.IsTrue(AlcModuleReasoner.Decide(Module(disjoint, isA, isB), TestContext.CancellationToken).IsConsistent, "Distinct individuals carry one class each.");
+        Assert.IsTrue(Decide(engine, Module(disjoint, isA, isB)).IsConsistent, "Distinct individuals carry one class each.");
 
         OwlSameIndividualAxiom same = new(Named("x"), Named("y")) { Origin = Origin("same") };
 
-        Assert.IsFalse(AlcModuleReasoner.Decide(Module(disjoint, isA, isB, same), TestContext.CancellationToken).IsConsistent, "Merged, the individual is in both disjoint classes.");
+        Assert.IsFalse(Decide(engine, Module(disjoint, isA, isB, same)).IsConsistent, "Merged, the individual is in both disjoint classes.");
+    }
+
+    /// <summary>Decides the module's consistency through the selected engine.</summary>
+    /// <param name="engine">The engine to decide through.</param>
+    /// <param name="module">The module.</param>
+    /// <returns>The verdict.</returns>
+    private ModuleVerdict Decide(ConsistencyEngine engine, ReasoningModule module)
+    {
+        return engine switch
+        {
+            ConsistencyEngine.SatBacked => SatTableauModuleReasoner.DecideConsistency(module, cancellationToken: TestContext.CancellationToken),
+            _ => AlcModuleReasoner.Decide(module, TestContext.CancellationToken),
+        };
     }
 
     /// <summary>Builds a module over the axioms with no violations attached.</summary>
