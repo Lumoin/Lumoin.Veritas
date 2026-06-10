@@ -1,17 +1,18 @@
 namespace Lumoin.Veritas.Core.Columnar;
 
 /// <summary>
-/// How a <see cref="ColumnarOrder"/> encodes its VALUE columns — an
-/// opt-in build policy, default <see cref="FrameOfReference"/>, which
-/// reproduces the historical layout byte-for-byte. Offset columns are
-/// unaffected: they stay prefixed-delta packed.
+/// How a <see cref="ColumnarOrder"/> encodes its VALUE columns — a
+/// build policy, default <see cref="EliasFanoWhenMonotone"/>. Offset
+/// columns are unaffected: they stay prefixed-delta packed.
 /// </summary>
 public enum ColumnarValueColumnEncoding
 {
     /// <summary>
     /// Every value column is frame-of-reference block-packed
     /// (<see cref="BlockPackedColumnMode.FrameOfReference"/>): each
-    /// lane independently seekable, the seek-latency default.
+    /// lane independently seekable. The pre-succinct layout, kept as
+    /// the differential baseline and for build-time-sensitive callers
+    /// (the succinct policy packs candidate encodings it may discard).
     /// </summary>
     FrameOfReference,
 
@@ -23,7 +24,7 @@ public enum ColumnarValueColumnEncoding
     /// <see cref="BlockPackedColumnMode.PartitionedEliasFano"/> over
     /// the parent offsets' boundaries; each column keeps the smaller
     /// of the candidate and its frame-of-reference packing, so the
-    /// policy never enlarges a column. Opt-in.
+    /// policy never enlarges a column. The default.
     /// </summary>
     EliasFanoWhenMonotone,
 }

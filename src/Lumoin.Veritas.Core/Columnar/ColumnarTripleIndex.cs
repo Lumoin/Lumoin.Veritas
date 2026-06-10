@@ -163,10 +163,10 @@ public sealed class ColumnarTripleIndex
     /// </summary>
     /// <param name="triples">The triples to index.</param>
     /// <param name="orderSetMode">Which permutation set to materialise; see <see cref="ColumnarOrderSetMode"/> for the trade.</param>
-    /// <param name="valueEncoding">How value columns are encoded; default frame of reference, or opt into Elias-Fano on the globally-monotone value columns. See <see cref="ColumnarValueColumnEncoding"/>.</param>
+    /// <param name="valueEncoding">How value columns are encoded; default Elias-Fano where a column qualifies (each column keeps the smaller of the candidate and its frame-of-reference packing, so the default never enlarges a column), or frame of reference throughout. See <see cref="ColumnarValueColumnEncoding"/>.</param>
     /// <returns>The constructed index.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="triples"/> is <c>null</c>.</exception>
-    public static ColumnarTripleIndex Build(IEnumerable<EncodedTriple> triples, ColumnarOrderSetMode orderSetMode = ColumnarOrderSetMode.AllSixOrders, ColumnarValueColumnEncoding valueEncoding = ColumnarValueColumnEncoding.FrameOfReference)
+    public static ColumnarTripleIndex Build(IEnumerable<EncodedTriple> triples, ColumnarOrderSetMode orderSetMode = ColumnarOrderSetMode.AllSixOrders, ColumnarValueColumnEncoding valueEncoding = ColumnarValueColumnEncoding.EliasFanoWhenMonotone)
     {
         ArgumentNullException.ThrowIfNull(triples);
 

@@ -104,9 +104,11 @@ public sealed class ColumnarOrder
     //Builds one permutation's column set: sorts the working array
     //by its packed 96-bit permutation keys, emits all five columns
     //in a single pass over the sorted run, then block-packs each.
-    //valueEncoding opts the value columns into Elias-Fano where
-    //globally monotone (default frame of reference).
-    internal static ColumnarOrder Build(EncodedTriple[] working, byte[] permutation, ColumnarValueColumnEncoding valueEncoding = ColumnarValueColumnEncoding.FrameOfReference)
+    //valueEncoding defaults to the Elias-Fano policy: a qualifying
+    //value column keeps the smaller of the succinct candidate and
+    //its frame-of-reference packing, so the default never enlarges
+    //a column.
+    internal static ColumnarOrder Build(EncodedTriple[] working, byte[] permutation, ColumnarValueColumnEncoding valueEncoding = ColumnarValueColumnEncoding.EliasFanoWhenMonotone)
     {
         return BuildConcatenated([working], permutation, level0Ranges: null, valueEncoding);
     }
@@ -122,7 +124,7 @@ public sealed class ColumnarOrder
         IReadOnlyList<EncodedTriple[]> runs,
         byte[] permutation,
         (int Start, int End)[]? level0Ranges,
-        ColumnarValueColumnEncoding valueEncoding = ColumnarValueColumnEncoding.FrameOfReference)
+        ColumnarValueColumnEncoding valueEncoding = ColumnarValueColumnEncoding.EliasFanoWhenMonotone)
     {
         byte position0 = permutation[0];
         byte position1 = permutation[1];

@@ -5,12 +5,12 @@ using Lumoin.Veritas.Core.Columnar;
 namespace Lumoin.Veritas.Tests.Columnar;
 
 /// <summary>
-/// The build-time value-column encoding selection: the default policy keeps
-/// frame of reference everywhere; the opt-in Elias-Fano policy takes
-/// whole-column Elias-Fano on the globally-monotone top level and partitioned
-/// Elias-Fano on a within-group column only when it is actually smaller (large
-/// fan-out), keeping frame of reference otherwise. The footprint-driven
-/// selector never regresses a column.
+/// The build-time value-column encoding selection: the default Elias-Fano
+/// policy takes whole-column Elias-Fano on the globally-monotone top level and
+/// partitioned Elias-Fano on a within-group column only when it is actually
+/// smaller (large fan-out), keeping frame of reference otherwise — the
+/// footprint-driven selector never regresses a column. The frame-of-reference
+/// policy remains available and keeps every value column on that layout.
 /// </summary>
 [TestClass]
 internal sealed class ColumnarEncodingSelectionTests
@@ -38,14 +38,26 @@ internal sealed class ColumnarEncodingSelectionTests
     }
 
     [TestMethod]
-    public void DefaultPolicyKeepsFrameOfReferenceEverywhere()
+    public void DefaultPolicyIsTheSuccinctSelectionAndFrameOfReferenceStaysAvailable()
     {
+        //The default build takes the Elias-Fano policy: the globally-monotone
+        //top level goes succinct, and the constant predicate level stays frame
+        //of reference (its packed width is already near zero — the selector
+        //keeps the smaller).
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(FanOut(2_000, 16), ColumnarOrderSetMode.ThreeRotations);
         ColumnarOrder order = index.OrderAt(0);
 
-        Assert.AreEqual(BlockPackedColumnMode.FrameOfReference, order.ValuesColumnAt(0).Mode);
+        Assert.AreEqual(BlockPackedColumnMode.EliasFano, order.ValuesColumnAt(0).Mode);
         Assert.AreEqual(BlockPackedColumnMode.FrameOfReference, order.ValuesColumnAt(1).Mode);
-        Assert.AreEqual(BlockPackedColumnMode.FrameOfReference, order.ValuesColumnAt(2).Mode);
+
+        //The explicit frame-of-reference policy keeps every value column on
+        //that layout — the differential baseline.
+        ColumnarTripleIndex baseline = ColumnarTripleIndex.Build(FanOut(2_000, 16), ColumnarOrderSetMode.ThreeRotations, ColumnarValueColumnEncoding.FrameOfReference);
+        ColumnarOrder baselineOrder = baseline.OrderAt(0);
+
+        Assert.AreEqual(BlockPackedColumnMode.FrameOfReference, baselineOrder.ValuesColumnAt(0).Mode);
+        Assert.AreEqual(BlockPackedColumnMode.FrameOfReference, baselineOrder.ValuesColumnAt(1).Mode);
+        Assert.AreEqual(BlockPackedColumnMode.FrameOfReference, baselineOrder.ValuesColumnAt(2).Mode);
     }
 
     [TestMethod]
