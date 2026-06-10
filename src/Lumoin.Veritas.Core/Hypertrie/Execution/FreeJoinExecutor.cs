@@ -246,7 +246,16 @@ public static class FreeJoinExecutor
         return new FactorizedBatch(variableOrder, [0], branchColumns, groups);
     }
 
-    /// <summary>The iterator behind <see cref="Execute"/>: an explicit-stack depth-first walk, one frame per bound variable, over shared per-relation state restored on backtrack.</summary>
+    /// <summary>
+    /// The iterator behind <see cref="Execute"/>: an explicit-stack depth-first
+    /// walk over shared per-relation state restored on backtrack. The stack is
+    /// always the contiguous level prefix <c>0..top</c> — one live frame per
+    /// global level — so each level owns a single reusable <see cref="LevelFrame"/>
+    /// allocated here once; its candidate keys, saved state, leaf value sets,
+    /// and row buffers are flat arrays with counts, grown on demand and reused
+    /// across every visit. Steady state, the walk allocates nothing per bound
+    /// value beyond the output batches.
+    /// </summary>
     /// <param name="relations">The relations.</param>
     /// <param name="variableOrder">The global descent order.</param>
     /// <param name="trieAt">The trie participants at each global level.</param>
@@ -258,51 +267,60 @@ public static class FreeJoinExecutor
         List<TrieParticipant>[] trieAt,
         List<LeafParticipant>[] leafAt)
     {
-        int lastLevel = variableOrder.Count - 1;
+        int levelCount = variableOrder.Count;
+        int lastLevel = levelCount - 1;
 
         //Per-relation state: a current trie node while descending, then -1 once
         //the trie is fully descended, when the relation is at the leaf id with a
-        //narrowed set of leaf rows (null for a full-depth terminal).
+        //narrowed row buffer and count (a null buffer for a full-depth terminal).
         int[] node = new int[relations.Count];
         int[] leafId = new int[relations.Count];
-        List<int>?[] leafRows = new List<int>?[relations.Count];
-        uint[] bindings = new uint[variableOrder.Count];
+        int[]?[] rowsBuffer = new int[]?[relations.Count];
+        int[] rowsCount = new int[relations.Count];
+        uint[] bindings = new uint[levelCount];
+
+        LevelFrame[] frames = new LevelFrame[levelCount];
+        for(int level = 0; level < levelCount; level++)
+        {
+            frames[level] = new LevelFrame(trieAt[level], leafAt[level]);
+        }
 
         SolutionBatch output = new(variableOrder);
         int rows = 0;
 
-        List<Frame> stack = [MakeFrame(0, relations, trieAt, leafAt, node, leafId, leafRows)];
+        int top = 0;
+        EnterLevel(frames[0], relations, node, leafId, rowsBuffer, rowsCount);
 
-        while(stack.Count > 0)
+        while(top >= 0)
         {
-            Frame frame = stack[^1];
+            LevelFrame frame = frames[top];
 
             //Returning into a frame whose current value was applied: undo it
             //before advancing to the next value.
             if(frame.Descended)
             {
-                Restore(frame, node, leafId, leafRows);
+                Restore(frame, node, leafId, rowsBuffer, rowsCount);
                 frame.Descended = false;
             }
 
-            if(frame.Index >= frame.Keys.Count)
+            if(frame.Cursor >= frame.KeyCount)
             {
-                stack.RemoveAt(stack.Count - 1);
+                top--;
 
                 continue;
             }
 
-            uint value = frame.Keys[frame.Index];
-            frame.Index++;
-            bindings[frame.Level] = value;
+            uint value = frame.Keys[frame.Cursor];
+            frame.Cursor++;
+            bindings[top] = value;
 
-            Save(frame, node, leafId, leafRows);
-            Apply(frame, value, relations, node, leafId, leafRows);
+            Save(frame, node, leafId, rowsBuffer, rowsCount);
+            Apply(frame, value, relations, node, leafId, rowsBuffer, rowsCount);
             frame.Descended = true;
 
-            if(frame.Level == lastLevel)
+            if(top == lastLevel)
             {
-                for(int column = 0; column < variableOrder.Count; column++)
+                for(int column = 0; column < levelCount; column++)
                 {
                     output.ColumnSpan(column)[rows] = bindings[column];
                 }
@@ -321,7 +339,8 @@ public static class FreeJoinExecutor
             }
             else
             {
-                stack.Add(MakeFrame(frame.Level + 1, relations, trieAt, leafAt, node, leafId, leafRows));
+                top++;
+                EnterLevel(frames[top], relations, node, leafId, rowsBuffer, rowsCount);
             }
         }
 
@@ -333,84 +352,63 @@ public static class FreeJoinExecutor
         }
     }
 
-    /// <summary>Builds the frame for a variable: the participating trie and leaf relations and their intersection candidate values.</summary>
-    /// <param name="level">The global variable level.</param>
+    /// <summary>Opens a level's frame for a fresh visit: resets the cursor and computes the candidate intersection into the frame's reusable keys buffer.</summary>
+    /// <param name="frame">The level's frame.</param>
     /// <param name="relations">The relations.</param>
-    /// <param name="trieAt">The trie participants at each level.</param>
-    /// <param name="leafAt">The leaf participants at each level.</param>
     /// <param name="node">The per-relation current trie node ids.</param>
     /// <param name="leafId">The per-relation leaf ids, valid once at the leaf.</param>
-    /// <param name="leafRows">The per-relation narrowed leaf rows, valid once at the leaf.</param>
-    /// <returns>The frame.</returns>
-    private static Frame MakeFrame(
-        int level,
+    /// <param name="rowsBuffer">The per-relation narrowed leaf row buffers, valid once at the leaf.</param>
+    /// <param name="rowsCount">The per-relation narrowed leaf row counts, parallel to <paramref name="rowsBuffer"/>.</param>
+    private static void EnterLevel(
+        LevelFrame frame,
         IReadOnlyList<GeneralizedHashTrie> relations,
-        List<TrieParticipant>[] trieAt,
-        List<LeafParticipant>[] leafAt,
         int[] node,
         int[] leafId,
-        List<int>?[] leafRows)
+        int[]?[] rowsBuffer,
+        int[] rowsCount)
     {
-        List<TrieParticipant> trie = trieAt[level];
-        List<LeafParticipant> leaf = leafAt[level];
-
-        int[] trieRelations = new int[trie.Count];
-        bool[] trieIsDeepest = new bool[trie.Count];
-        for(int i = 0; i < trie.Count; i++)
-        {
-            trieRelations[i] = trie[i].Relation;
-            trieIsDeepest[i] = trie[i].IsDeepest;
-        }
-
-        int[] leafRelations = new int[leaf.Count];
-        int[] leafColumns = new int[leaf.Count];
-        for(int i = 0; i < leaf.Count; i++)
-        {
-            leafRelations[i] = leaf[i].Relation;
-            leafColumns[i] = leaf[i].LeafColumn;
-        }
-
-        List<uint> keys = Intersect(relations, trieRelations, leafRelations, leafColumns, node, leafId, leafRows);
-
-        return new Frame(level, trieRelations, trieIsDeepest, leafRelations, leafColumns, keys);
+        frame.Cursor = 0;
+        frame.Descended = false;
+        IntersectInto(frame, relations, node, leafId, rowsBuffer, rowsCount);
     }
 
     /// <summary>
-    /// The multiway intersection at a variable: the values held by every trie
-    /// participant's current node and present in every leaf participant's
-    /// narrowed rows. The smallest participant set drives the scan; the others
-    /// are probed — a trie node by lookup, a leaf by a precomputed value set.
+    /// The multiway intersection at a variable, written into the frame's keys
+    /// buffer: the values held by every trie participant's current node and
+    /// present in every leaf participant's narrowed rows. The smallest
+    /// participant set drives the scan; the others are probed — a trie node by
+    /// lookup, a leaf by its value set, rebuilt into the frame's reusable sets.
     /// </summary>
+    /// <param name="frame">The level's frame.</param>
     /// <param name="relations">The relations.</param>
-    /// <param name="trieRelations">The trie participants' relation indices.</param>
-    /// <param name="leafRelations">The leaf participants' relation indices.</param>
-    /// <param name="leafColumns">The leaf participants' leaf columns, parallel to <paramref name="leafRelations"/>.</param>
     /// <param name="node">The per-relation current node ids.</param>
     /// <param name="leafId">The per-relation leaf ids.</param>
-    /// <param name="leafRows">The per-relation narrowed leaf rows.</param>
-    /// <returns>The intersection candidate values.</returns>
-    private static List<uint> Intersect(
+    /// <param name="rowsBuffer">The per-relation narrowed leaf row buffers.</param>
+    /// <param name="rowsCount">The per-relation narrowed leaf row counts.</param>
+    private static void IntersectInto(
+        LevelFrame frame,
         IReadOnlyList<GeneralizedHashTrie> relations,
-        int[] trieRelations,
-        int[] leafRelations,
-        int[] leafColumns,
         int[] node,
         int[] leafId,
-        List<int>?[] leafRows)
+        int[]?[] rowsBuffer,
+        int[] rowsCount)
     {
+        int[] trieRelations = frame.TrieRelations;
+        int[] leafRelations = frame.LeafRelations;
+
         //Each leaf participant's distinct values, for both probing and (when it
-        //is the smallest) driving.
-        HashSet<uint>[] leafSets = new HashSet<uint>[leafRelations.Length];
+        //is the smallest) driving; the sets are cleared and refilled in place.
         for(int i = 0; i < leafRelations.Length; i++)
         {
             int relation = leafRelations[i];
-            HashSet<uint> values = [];
-            foreach(int row in leafRows[relation]!)
-            {
-                values.Add(relations[relation].LeafValue(leafId[relation], row, leafColumns[i]));
-            }
+            HashSet<uint> values = frame.LeafSets[i];
+            values.Clear();
 
-            leafSets[i] = values;
+            int[] current = rowsBuffer[relation]!;
+            for(int r = 0; r < rowsCount[relation]; r++)
+            {
+                values.Add(relations[relation].LeafValue(leafId[relation], current[r], frame.LeafColumns[i]));
+            }
         }
 
         //The smallest participant set drives. Kind 0 is a trie node, kind 1 a
@@ -431,36 +429,15 @@ public static class FreeJoinExecutor
 
         for(int i = 0; i < leafRelations.Length; i++)
         {
-            if(leafSets[i].Count < smallestSize)
+            if(frame.LeafSets[i].Count < smallestSize)
             {
-                smallestSize = leafSets[i].Count;
+                smallestSize = frame.LeafSets[i].Count;
                 driverKind = 1;
                 driverIndex = i;
             }
         }
 
-        bool InAllOthers(uint value)
-        {
-            for(int i = 0; i < trieRelations.Length; i++)
-            {
-                if((driverKind != 0 || i != driverIndex) && !relations[trieRelations[i]].NodeAt(node[trieRelations[i]]).TryGetValue(value, out int _))
-                {
-                    return false;
-                }
-            }
-
-            for(int i = 0; i < leafRelations.Length; i++)
-            {
-                if((driverKind != 1 || i != driverIndex) && !leafSets[i].Contains(value))
-                {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        List<uint> keys = [];
+        frame.KeyCount = 0;
         if(driverKind == 0)
         {
             int relation = trieRelations[driverIndex];
@@ -468,66 +445,119 @@ public static class FreeJoinExecutor
             while(scan.MoveNext())
             {
                 uint value = (uint)scan.Current.Key;
-                if(InAllOthers(value))
+                if(HeldByAllOthers(frame, relations, node, driverKind, driverIndex, value))
                 {
-                    keys.Add(value);
+                    frame.AppendKey(value);
                 }
             }
         }
         else
         {
-            foreach(uint value in leafSets[driverIndex])
+            foreach(uint value in frame.LeafSets[driverIndex])
             {
-                if(InAllOthers(value))
+                if(HeldByAllOthers(frame, relations, node, driverKind, driverIndex, value))
                 {
-                    keys.Add(value);
+                    frame.AppendKey(value);
                 }
             }
         }
+    }
 
-        return keys;
+    /// <summary>Whether every non-driver participant holds the value: each trie participant's current node by lookup, each leaf participant by its value set.</summary>
+    /// <param name="frame">The level's frame.</param>
+    /// <param name="relations">The relations.</param>
+    /// <param name="node">The per-relation current node ids.</param>
+    /// <param name="driverKind">The driving participant's kind: 0 a trie node, 1 a leaf value set.</param>
+    /// <param name="driverIndex">The driving participant's index within its kind.</param>
+    /// <param name="value">The candidate value.</param>
+    /// <returns><see langword="true"/> when every non-driver participant holds the value.</returns>
+    private static bool HeldByAllOthers(
+        LevelFrame frame,
+        IReadOnlyList<GeneralizedHashTrie> relations,
+        int[] node,
+        int driverKind,
+        int driverIndex,
+        uint value)
+    {
+        for(int i = 0; i < frame.TrieRelations.Length; i++)
+        {
+            if((driverKind != 0 || i != driverIndex) && !relations[frame.TrieRelations[i]].NodeAt(node[frame.TrieRelations[i]]).TryGetValue(value, out int _))
+            {
+                return false;
+            }
+        }
+
+        for(int i = 0; i < frame.LeafRelations.Length; i++)
+        {
+            if((driverKind != 1 || i != driverIndex) && !frame.LeafSets[i].Contains(value))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>Saves each participant's state before the current value is applied, so the frame can undo it on backtrack.</summary>
-    /// <param name="frame">The frame.</param>
+    /// <param name="frame">The level's frame.</param>
     /// <param name="node">The per-relation current node ids.</param>
     /// <param name="leafId">The per-relation leaf ids.</param>
-    /// <param name="leafRows">The per-relation narrowed leaf rows.</param>
-    private static void Save(Frame frame, int[] node, int[] leafId, List<int>?[] leafRows)
+    /// <param name="rowsBuffer">The per-relation narrowed leaf row buffers.</param>
+    /// <param name="rowsCount">The per-relation narrowed leaf row counts.</param>
+    private static void Save(LevelFrame frame, int[] node, int[] leafId, int[]?[] rowsBuffer, int[] rowsCount)
     {
         for(int i = 0; i < frame.AllParticipants.Length; i++)
         {
             int relation = frame.AllParticipants[i];
             frame.SavedNode[i] = node[relation];
             frame.SavedLeafId[i] = leafId[relation];
-            frame.SavedLeafRows[i] = leafRows[relation];
+            frame.SavedRowsBuffer[i] = rowsBuffer[relation];
+            frame.SavedRowsCount[i] = rowsCount[relation];
         }
     }
 
     /// <summary>Restores each participant's saved state, undoing the current value's application.</summary>
-    /// <param name="frame">The frame.</param>
+    /// <param name="frame">The level's frame.</param>
     /// <param name="node">The per-relation current node ids.</param>
     /// <param name="leafId">The per-relation leaf ids.</param>
-    /// <param name="leafRows">The per-relation narrowed leaf rows.</param>
-    private static void Restore(Frame frame, int[] node, int[] leafId, List<int>?[] leafRows)
+    /// <param name="rowsBuffer">The per-relation narrowed leaf row buffers.</param>
+    /// <param name="rowsCount">The per-relation narrowed leaf row counts.</param>
+    private static void Restore(LevelFrame frame, int[] node, int[] leafId, int[]?[] rowsBuffer, int[] rowsCount)
     {
         for(int i = 0; i < frame.AllParticipants.Length; i++)
         {
             int relation = frame.AllParticipants[i];
             node[relation] = frame.SavedNode[i];
             leafId[relation] = frame.SavedLeafId[i];
-            leafRows[relation] = frame.SavedLeafRows[i];
+            rowsBuffer[relation] = frame.SavedRowsBuffer[i];
+            rowsCount[relation] = frame.SavedRowsCount[i];
         }
     }
 
-    /// <summary>Applies the chosen value: each trie participant descends (the deepest descent moving it onto its leaf, or to a full-depth terminal), and each leaf participant narrows its rows to those carrying the value.</summary>
-    /// <param name="frame">The frame.</param>
+    /// <summary>
+    /// Applies the chosen value: each trie participant descends (the deepest
+    /// descent moving it onto its leaf, or to a full-depth terminal), and each
+    /// leaf participant narrows its rows to those carrying the value. Arrival
+    /// and narrowed row sets are written into the frame's per-participant
+    /// reusable buffers; the inputs always live in a shallower level's buffers
+    /// (this frame's state was restored before the visit), so the write never
+    /// aliases its read.
+    /// </summary>
+    /// <param name="frame">The level's frame.</param>
     /// <param name="value">The chosen value.</param>
     /// <param name="relations">The relations.</param>
     /// <param name="node">The per-relation current node ids.</param>
     /// <param name="leafId">The per-relation leaf ids.</param>
-    /// <param name="leafRows">The per-relation narrowed leaf rows.</param>
-    private static void Apply(Frame frame, uint value, IReadOnlyList<GeneralizedHashTrie> relations, int[] node, int[] leafId, List<int>?[] leafRows)
+    /// <param name="rowsBuffer">The per-relation narrowed leaf row buffers.</param>
+    /// <param name="rowsCount">The per-relation narrowed leaf row counts.</param>
+    private static void Apply(
+        LevelFrame frame,
+        uint value,
+        IReadOnlyList<GeneralizedHashTrie> relations,
+        int[] node,
+        int[] leafId,
+        int[]?[] rowsBuffer,
+        int[] rowsCount)
     {
         for(int i = 0; i < frame.TrieRelations.Length; i++)
         {
@@ -541,7 +571,24 @@ public static class FreeJoinExecutor
                 //come; a full-depth relation has none and is now terminal.
                 node[relation] = -1;
                 leafId[relation] = child;
-                leafRows[relation] = relations[relation].LeafColumns.Length > 0 ? AllRows(relations[relation], child) : null;
+
+                if(relations[relation].LeafColumns.Length > 0)
+                {
+                    int count = relations[relation].LeafTupleCount(child);
+                    int[] arrival = frame.ArrivalBuffer(i, count);
+                    for(int row = 0; row < count; row++)
+                    {
+                        arrival[row] = row;
+                    }
+
+                    rowsBuffer[relation] = arrival;
+                    rowsCount[relation] = count;
+                }
+                else
+                {
+                    rowsBuffer[relation] = null;
+                    rowsCount[relation] = 0;
+                }
             }
             else
             {
@@ -553,34 +600,22 @@ public static class FreeJoinExecutor
         {
             int relation = frame.LeafRelations[i];
             int leafColumn = frame.LeafColumns[i];
-            List<int> current = leafRows[relation]!;
-            List<int> narrowed = [];
-            foreach(int row in current)
+            int[] current = rowsBuffer[relation]!;
+            int currentCount = rowsCount[relation];
+            int[] narrowed = frame.NarrowBuffer(i, currentCount);
+            int narrowedCount = 0;
+            for(int r = 0; r < currentCount; r++)
             {
-                if(relations[relation].LeafValue(leafId[relation], row, leafColumn) == value)
+                if(relations[relation].LeafValue(leafId[relation], current[r], leafColumn) == value)
                 {
-                    narrowed.Add(row);
+                    narrowed[narrowedCount] = current[r];
+                    narrowedCount++;
                 }
             }
 
-            leafRows[relation] = narrowed;
+            rowsBuffer[relation] = narrowed;
+            rowsCount[relation] = narrowedCount;
         }
-    }
-
-    /// <summary>Every row of a freshly reached leaf — the unnarrowed tuple set a relation opens with on arriving at its leaf.</summary>
-    /// <param name="relation">The relation.</param>
-    /// <param name="leafId">The reached leaf id.</param>
-    /// <returns>The leaf's row indices.</returns>
-    private static List<int> AllRows(GeneralizedHashTrie relation, int leafId)
-    {
-        int count = relation.LeafTupleCount(leafId);
-        List<int> rows = new(count);
-        for(int row = 0; row < count; row++)
-        {
-            rows.Add(row);
-        }
-
-        return rows;
     }
 
     /// <summary>A trie participant at a level: the relation, and whether this is its deepest trie level (the descent that moves it onto its leaf).</summary>
@@ -594,16 +629,18 @@ public static class FreeJoinExecutor
     private readonly record struct LeafParticipant(int Relation, int LeafColumn);
 
     /// <summary>
-    /// One bound-variable frame of the depth-first walk: its candidate values,
-    /// the cursor into them, the trie and leaf relations participating at this
-    /// variable, and their state saved before the current value's application so
-    /// it can be undone on backtrack.
+    /// One global level's frame of the depth-first walk: the static trie and
+    /// leaf participants at that variable, and the level's reusable walk state —
+    /// the candidate keys buffer with its cursor, the participants' state saved
+    /// before the current value's application, the leaf participants' value
+    /// sets, and the row buffers <see cref="Apply"/> writes arrivals and
+    /// narrowings into. One frame per level is live at a time (the stack is the
+    /// contiguous level prefix), so a single instance per level serves every
+    /// visit; the variable-size buffers grow on demand and are never returned
+    /// per value.
     /// </summary>
-    private sealed class Frame
+    private sealed class LevelFrame
     {
-        /// <summary>The global variable level this frame binds.</summary>
-        public int Level { get; }
-
         /// <summary>The relations descending a trie node at this variable.</summary>
         public int[] TrieRelations { get; }
 
@@ -619,11 +656,14 @@ public static class FreeJoinExecutor
         /// <summary>Every participating relation — trie then leaf — over which state is saved and restored.</summary>
         public int[] AllParticipants { get; }
 
-        /// <summary>The candidate values for this variable: the trie-and-leaf intersection.</summary>
-        public List<uint> Keys { get; }
+        /// <summary>The candidate values for this variable, the first <see cref="KeyCount"/> valid; replaced by a larger buffer when an intersection outgrows it.</summary>
+        public uint[] Keys { get; set; }
+
+        /// <summary>The number of valid candidate values in <see cref="Keys"/> for the current visit.</summary>
+        public int KeyCount { get; set; }
 
         /// <summary>The next candidate index to try.</summary>
-        public int Index { get; set; }
+        public int Cursor { get; set; }
 
         /// <summary>Whether the current value has been applied and awaits undo on the next visit.</summary>
         public bool Descended { get; set; }
@@ -634,30 +674,101 @@ public static class FreeJoinExecutor
         /// <summary>Each participant's leaf id saved before the current application.</summary>
         public int[] SavedLeafId { get; }
 
-        /// <summary>Each participant's narrowed leaf rows saved before the current application.</summary>
-        public List<int>?[] SavedLeafRows { get; }
+        /// <summary>Each participant's narrowed leaf row buffer saved before the current application.</summary>
+        public int[]?[] SavedRowsBuffer { get; }
 
-        /// <summary>Constructs a frame over its trie and leaf participants and candidate values.</summary>
-        /// <param name="level">The global variable level.</param>
-        /// <param name="trieRelations">The trie participants.</param>
-        /// <param name="trieIsDeepest">Whether each trie participant is at its deepest level.</param>
-        /// <param name="leafRelations">The leaf participants.</param>
-        /// <param name="leafColumns">The leaf column each leaf participant binds.</param>
-        /// <param name="keys">The candidate values.</param>
-        public Frame(int level, int[] trieRelations, bool[] trieIsDeepest, int[] leafRelations, int[] leafColumns, List<uint> keys)
+        /// <summary>Each participant's narrowed leaf row count saved before the current application.</summary>
+        public int[] SavedRowsCount { get; }
+
+        /// <summary>Each leaf participant's distinct-value set, cleared and refilled per visit, parallel to <see cref="LeafRelations"/>.</summary>
+        public HashSet<uint>[] LeafSets { get; }
+
+        /// <summary>Each leaf participant's reusable narrowed-rows buffer, grown on demand, parallel to <see cref="LeafRelations"/>.</summary>
+        private int[][] NarrowBuffers { get; }
+
+        /// <summary>Each trie participant's reusable arrival-rows buffer for its deepest descent, grown on demand, parallel to <see cref="TrieRelations"/>.</summary>
+        private int[][] ArrivalBuffers { get; }
+
+        /// <summary>Constructs the level's frame over its trie and leaf participants, with empty buffers that grow on first use.</summary>
+        /// <param name="trie">The trie participants at this level.</param>
+        /// <param name="leaf">The leaf participants at this level.</param>
+        public LevelFrame(List<TrieParticipant> trie, List<LeafParticipant> leaf)
         {
-            Level = level;
-            TrieRelations = trieRelations;
-            TrieIsDeepest = trieIsDeepest;
-            LeafRelations = leafRelations;
-            LeafColumns = leafColumns;
-            AllParticipants = [.. trieRelations, .. leafRelations];
-            Keys = keys;
-            Index = 0;
-            Descended = false;
+            TrieRelations = new int[trie.Count];
+            TrieIsDeepest = new bool[trie.Count];
+            ArrivalBuffers = new int[trie.Count][];
+            for(int i = 0; i < trie.Count; i++)
+            {
+                TrieRelations[i] = trie[i].Relation;
+                TrieIsDeepest[i] = trie[i].IsDeepest;
+                ArrivalBuffers[i] = [];
+            }
+
+            LeafRelations = new int[leaf.Count];
+            LeafColumns = new int[leaf.Count];
+            LeafSets = new HashSet<uint>[leaf.Count];
+            NarrowBuffers = new int[leaf.Count][];
+            for(int i = 0; i < leaf.Count; i++)
+            {
+                LeafRelations[i] = leaf[i].Relation;
+                LeafColumns[i] = leaf[i].LeafColumn;
+                LeafSets[i] = [];
+                NarrowBuffers[i] = [];
+            }
+
+            AllParticipants = [.. TrieRelations, .. LeafRelations];
+            Keys = [];
             SavedNode = new int[AllParticipants.Length];
             SavedLeafId = new int[AllParticipants.Length];
-            SavedLeafRows = new List<int>?[AllParticipants.Length];
+            SavedRowsBuffer = new int[]?[AllParticipants.Length];
+            SavedRowsCount = new int[AllParticipants.Length];
+        }
+
+        /// <summary>Appends a candidate value to the keys buffer, growing it geometrically when full.</summary>
+        /// <param name="value">The candidate value.</param>
+        public void AppendKey(uint value)
+        {
+            if(KeyCount == Keys.Length)
+            {
+                uint[] grown = new uint[Math.Max(4, Keys.Length * 2)];
+                Array.Copy(Keys, grown, KeyCount);
+                Keys = grown;
+            }
+
+            Keys[KeyCount] = value;
+            KeyCount++;
+        }
+
+        /// <summary>A trie participant's arrival-rows buffer with at least the requested capacity; superseded references are held only by frames already popped.</summary>
+        /// <param name="participant">The trie participant index.</param>
+        /// <param name="capacity">The required element count.</param>
+        /// <returns>The buffer.</returns>
+        public int[] ArrivalBuffer(int participant, int capacity)
+        {
+            int[] buffer = ArrivalBuffers[participant];
+            if(buffer.Length < capacity)
+            {
+                buffer = new int[Math.Max(capacity, buffer.Length * 2)];
+                ArrivalBuffers[participant] = buffer;
+            }
+
+            return buffer;
+        }
+
+        /// <summary>A leaf participant's narrowed-rows buffer with at least the requested capacity; superseded references are held only by frames already popped.</summary>
+        /// <param name="participant">The leaf participant index.</param>
+        /// <param name="capacity">The required element count.</param>
+        /// <returns>The buffer.</returns>
+        public int[] NarrowBuffer(int participant, int capacity)
+        {
+            int[] buffer = NarrowBuffers[participant];
+            if(buffer.Length < capacity)
+            {
+                buffer = new int[Math.Max(capacity, buffer.Length * 2)];
+                NarrowBuffers[participant] = buffer;
+            }
+
+            return buffer;
         }
     }
 }
