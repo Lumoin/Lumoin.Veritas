@@ -8,9 +8,9 @@ namespace Lumoin.Veritas.Tests.Owl;
 /// <summary>
 /// Tests for <see cref="ConceptCnf"/>: ⊤/⊥ simplification in every
 /// structural position, the top-level assertion shortcut, subformula-table
-/// dedup, opaque restriction atoms, encoding after caller-appended clauses,
-/// block replication arithmetic, and a truth-table differential sweep
-/// against recursive negation-normal-form evaluation.
+/// dedup, opaque restriction atoms, modal-atom registration, encoding after
+/// caller-appended clauses, block replication arithmetic, and a truth-table
+/// differential sweep against recursive negation-normal-form evaluation.
 /// </summary>
 [TestClass]
 internal sealed class ConceptCnfTests
@@ -209,6 +209,24 @@ internal sealed class ConceptCnfTests
         Assert.AreNotEqual(cnf.FalseLiteral, existsBottom, "∃r.⊥ stays an opaque atom.");
         Assert.AreNotEqual(cnf.TrueLiteral, forAllTop, "∀r.⊤ stays an opaque atom.");
         Assert.IsTrue(Solve(cnf, existsBottom, forAllTop.Negated()).IsSatisfiable);
+    }
+
+    /// <summary>Modal atoms register once each in allocation order with their concepts; atoms and boolean connectives register nothing.</summary>
+    [TestMethod]
+    public void ModalAtomsRegisterInAllocationOrder()
+    {
+        ConceptCnf cnf = new();
+        SatLiteral exists = cnf.GetLiteral(Exists("r", Atom("A")));
+        cnf.GetLiteral(new AlcAnd([Atom("B"), Atom("C")]));
+        SatLiteral forAll = cnf.GetLiteral(ForAll("r", Atom("A")));
+        cnf.GetLiteral(Exists("r", Atom("A")));
+
+        Assert.HasCount(2, cnf.ModalAtoms, "Each restriction registers once; atoms and connectives register nothing.");
+        Assert.AreEqual(exists.Variable, cnf.ModalAtoms[0].Variable);
+        Assert.AreEqual(Exists("r", Atom("A")), cnf.ModalAtoms[0].Concept);
+        Assert.AreEqual(forAll.Variable, cnf.ModalAtoms[1].Variable);
+        Assert.AreEqual(ForAll("r", Atom("A")), cnf.ModalAtoms[1].Concept);
+        Assert.IsLessThan(cnf.ModalAtoms[1].Variable, cnf.ModalAtoms[0].Variable, "Registration order ascends by variable.");
     }
 
     /// <summary>Asserting a concept as a fact carries the concept's own satisfiability: a satisfiable conjunction stays satisfiable, a contradictory one goes unsatisfiable.</summary>

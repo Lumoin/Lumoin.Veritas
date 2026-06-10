@@ -40,6 +40,9 @@ internal sealed class ConceptCnf
     /// <summary>The subformula table: one dense variable per structurally distinct variable-bearing subformula, assigned on first encounter.</summary>
     private readonly Dictionary<AlcConcept, int> variableOf = [];
 
+    /// <summary>The modal-atom registrations, in allocation order.</summary>
+    private readonly List<ModalAtom> modalAtoms = [];
+
     /// <summary>The clause list; it only grows.</summary>
     private readonly List<IReadOnlyList<SatLiteral>> clauses = [];
 
@@ -64,6 +67,14 @@ internal sealed class ConceptCnf
 
     /// <summary>The number of variables allocated so far; every clause literal indexes below it.</summary>
     public int VariableCount => variableCount;
+
+    /// <summary>
+    /// The modal atoms registered so far — every existential or universal
+    /// restriction that owns a variable, in allocation order, so ascending
+    /// by variable. Callers interpreting a model read a restriction's truth
+    /// here; the restriction kind is the concept's concrete type.
+    /// </summary>
+    public IReadOnlyList<ModalAtom> ModalAtoms => modalAtoms;
 
     /// <summary>
     /// The concept's literal, encoding the concept on first encounter: the
@@ -367,8 +378,17 @@ internal sealed class ConceptCnf
             variable = variableCount;
             variableCount++;
             variableOf[concept] = variable;
+            if(concept is AlcExists or AlcForAll)
+            {
+                modalAtoms.Add(new ModalAtom(concept, variable));
+            }
         }
 
         return variable;
     }
+
+    /// <summary>One modal-atom registration: an existential or universal restriction and the variable that stands for it.</summary>
+    /// <param name="Concept">The restriction concept; an <see cref="AlcExists"/> or an <see cref="AlcForAll"/>.</param>
+    /// <param name="Variable">The variable the restriction owns.</param>
+    internal readonly record struct ModalAtom(AlcConcept Concept, int Variable);
 }
