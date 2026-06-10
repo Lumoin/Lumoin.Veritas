@@ -12,9 +12,10 @@ in "Next".
 
 ## Current state
 
-- Branch `main`, tree clean at **`176d0a2`**. This session shipped the §4.3 Free Join arc: `255c2f4` **(a)** routed Free Join behind a default-off `PreferFreeJoin`; `6ad4ca7` **(b)** factorized-star output (the §4.2 ∩ §4.3 convergence, `FreeJoinExecutor.ExecuteFactorized` / `FreeJoinPipeline.RunFactorized`); `69ce5e5` **(c)** flat-1D `FactorizedBranches`; `82eaf32` **(d.1)** `FactorizedArena` (query-scoped bump arena, 7 lifecycle tests); `b18c612` **(d.2)** `FactorizedBranches` onto `ArenaSlice` — branch values arena-owned, every producer threads the arena, the §4.2 pipeline routes own a query-scoped arena over `VeritasMemoryPool<uint>.Shared` as lazy iterators (the self-disposing flatten), 2 more lifecycle tests; `176d0a2` **(d.3)** `FreeJoinExecutor.Drive` onto per-level reusable flat buffers — zero per-bound-value allocation. Design-only HANDOFF commits `5f05678`/`fa6b476`.
-- **→ RESUME HERE: deeper factorisation out of the generic join** — the chain-nesting analogue of §4.2's `NestBranch` inside `FreeJoinExecutor` (today `ExecuteFactorized` handles only the single-key star), and after it the cost-based per-relation depth/selector (the deferred join-strategy-selection research issue). Optional smaller pass first: group metadata (`KeyValues`, `starts`/`rowCounts`/`strides`, the `GroupBuilder`/`ProbeBucket` `List<uint>` accumulators) onto the same arena. Details in the §4.3 section below.
-- Full suite **8134 / 0 failed / 546 skipped** at `176d0a2`.
+- Branch `main`, tree clean at **`f76fb8b`**. This session shipped the §4.3 Free Join arc: `255c2f4` **(a)** routed Free Join behind a default-off `PreferFreeJoin`; `6ad4ca7` **(b)** factorized-star output (the §4.2 ∩ §4.3 convergence, `FreeJoinExecutor.ExecuteFactorized` / `FreeJoinPipeline.RunFactorized`); `69ce5e5` **(c)** flat-1D `FactorizedBranches`; `82eaf32` **(d.1)** `FactorizedArena` (query-scoped bump arena); `b18c612` **(d.2)** `FactorizedBranches` values onto `ArenaSlice`, §4.2 routes self-dispose at the stream boundary; `176d0a2` **(d.3)** `FreeJoinExecutor.Drive` onto per-level reusable flat buffers — zero per-bound-value allocation; `3d9d64a` **(d.4)** nested flatten reads flat branches in place + reusable materialise buffers (no per-row tuples); `f76fb8b` **(d.5)** group keys + branch metadata onto the arena, `ExecuteFactorized` fills branch runs in place (`FactorizedBranches.Allocate`/`BranchSpan`). The §4.3(d) explicit-memory arc is COMPLETE: keys, metadata, and values all share the one query-scoped arena lifetime; executor and flatten scratch are per-level/per-slot reusable buffers.
+- **Measured after (d.5)** (`--profile-factorized`, Release, 2026-06-10, all rungs MATCH): two-pattern join ×4.5–8.5 time / ×7.2–12.4 alloc at fan 40–60; star ×43.8–93.3 time / ×54.7–138.8 alloc at fan 20–30 (×133–300 compression); chain ×5.4–14.3 time / ×7.1–7.8 alloc at the two-sided fan-out rungs (×22.5–28.6 compression). No-win controls unchanged in character: fan=1 rungs still lose (×0.1–0.9 time) — factorisation stays opt-in for the deferred selector.
+- **→ RESUME HERE: deeper factorisation out of the generic join** — the chain-nesting analogue of §4.2's `NestBranch` inside `FreeJoinExecutor` (today `ExecuteFactorized` handles only the single-key star), then the cost-based per-relation depth/selector (the deferred join-strategy-selection research issue). After that (owner): the data-storage axis — partitioned Elias-Fano wiring for the deep value columns. Details in the §4.3 section below.
+- Full suite **8136 / 0 failed / 546 skipped** at `f76fb8b`.
 - **Conformance (measured 2026-06-09, not from memory):** zero failures anywhere. W3C SHACL **120/120**, Turtle 328, NQuads 205, RDF 146 — 100%. SPARQL 1221/1248 (27 optional-feature skips). OWL `W3cOwl2` conformance suites **881/1323, 442 skip, 0 fail** — the 442 are correct cross-suite abstentions (367 RL + 65 species) + 10 corpus contradictions, **NOT** unimplemented regimes; the 2 genuine Direct-semantics entailment tests (`WebOnt-I4.6-005-Direct`, `WebOnt-equivalentClass-008-Direct`) fixed 2026-06-09 by projecting away the conclusion's annotations in `W3cOwl2RlTests` before the RL embedding check. The old "SHACL 63/120 / SHACL-SPARQL open" and "444 OWL regimes unimplemented" memories were **stale** — both corrected.
 - **Known flaky test (pre-existing, NOT from this session's changes):** ~1 full-suite run in ~4 fails exactly 1 test; never reproduced when hunted (6 clean differential-suite runs + 4 clean full runs). Likely a method-level-parallel race (the suite runs `Workers=0`, all cores). **NOT yet named** — I filtered it out of the one failing run before realising. Mitigation now in place: **every full-suite run captures FULL output** (`dotnet test ... 2>&1 | Out-File <tmp>` then grep the file), so the next failure is named with its CsCheck seed if applicable; root-cause it then. HARD RULE: never paper over (no retries, no timeouts, no dismiss-as-flaky) — root-cause or discuss. The "it's a CsCheck differential test" hypothesis was tested and **cleared**. Factorization stays opt-in (default-off); the corpus routes stars/chains through the streamed path by default.
 - One unrelated working-tree change persists: `generate-local-test-nuget-packages.ps1` (a sister project's edit excluding the AOT CLI from local packaging) — not mine, left uncommitted on purpose.
@@ -323,11 +324,19 @@ restored before each re-visit). The scratch is plain arrays grown geometrically,
 — renting the per-level buffers is a possible follow-up if measurement warrants; the arena is wrong for this
 scratch (bump-only, never frees, while these buffers are rebuilt per visit).
 
+**Shipped: §4.3(d.4)+(d.5) — the memory tail (`3d9d64a`, `f76fb8b`).** (d.4) `FactorizedBatch.FlattenNested`
+reads flat branches in place and materialises a nested branch's sub-rows row-major into a per-branch-slot
+reusable flat buffer — the per-row `uint[]` tuples and `List<uint[]>` are gone. (d.5) `FactorizedGroup.KeyValues`
+is an `ArenaSlice` (producers stage the tuple in bounded stack scratch, copy via `FactorizedArena.AllocateFrom`);
+`FactorizedBranches` packs starts/rowCounts/strides into one arena metadata run beside the values run; the new
+writer pair `FactorizedBranches.Allocate(rowCounts, strides, arena)` + `BranchSpan(branch)` lets
+`ExecuteFactorized` fill each branch run in place from the trie nodes (no transient per-branch arrays). The
+`GroupBuilder`/`ProbeBucket` `List<uint>` accumulators stay GC-transient BY DESIGN: they grow during the build
+under a hash table of live keys, which a bump arena cannot serve.
+
 **Next on §4.3:** **deeper factorisation** out of the generic join — the chain-nesting analogue of §4.2's
 `NestBranch` (today `ExecuteFactorized` covers only the single-key star) — then the cost-based per-relation
-depth/selector that picks Free Join's depth (the deferred join-strategy-selection research issue). Optional
-smaller pass: group metadata (`KeyValues`/`starts`/`rowCounts`/`strides`, the `GroupBuilder`/`ProbeBucket`
-`List<uint>` accumulators) onto the same arena.
+depth/selector that picks Free Join's depth (the deferred join-strategy-selection research issue).
 
 ### After the tier
 
