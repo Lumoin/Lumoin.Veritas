@@ -585,6 +585,105 @@ public sealed class QueryEngineRendezvous
         return (plan.Schema, ColumnarBatchPipeline.Run(view, plan));
     }
 
+    /// <summary>
+    /// Counts the query's solutions on the columnar view WITHOUT materialising
+    /// them, when the batched path applies and the shape factorises — the
+    /// consumer that keeps the compressed form: the same gating as
+    /// <see cref="TryQueryBatchedColumns"/>, then
+    /// <see cref="ColumnarBatchPipeline.TryCount"/>, whose result equals the
+    /// drained row count exactly. Returns <see langword="null"/> for every
+    /// other case (a superseded snapshot, a non-qualifying or
+    /// rotation-incompatible shape, a non-factorisable plan, access control,
+    /// or the batched policy disabled); the caller then evaluates and counts
+    /// normally, so a conservative <see langword="null"/> is always sound.
+    /// </summary>
+    /// <param name="pinnedStore">The store generation the caller's snapshot pinned, or <c>null</c> to use the rendezvous's current generation.</param>
+    /// <param name="query">The basic graph pattern.</param>
+    /// <param name="timeProvider">Clock used to stamp Ticks on the emitted selection event.</param>
+    /// <param name="accessControl">The access-control policy; non-<c>null</c> declines the count (it has no per-candidate consultation point).</param>
+    /// <param name="traceHandler">Optional trace handler the selection event is emitted to.</param>
+    /// <param name="correlationId">Correlation id stamped on the selection event. Pass <see cref="Guid.Empty"/> to generate a fresh one.</param>
+    /// <param name="identifiers">The identifier source used to mint a fresh correlation id when <paramref name="correlationId"/> is <see cref="Guid.Empty"/>; defaults to <see cref="VeritasIdentifiers.System"/>.</param>
+    /// <returns>The solution count, or <see langword="null"/> when the count fast path does not apply.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="query"/> or <paramref name="timeProvider"/> is <c>null</c>.</exception>
+    public long? TryCountBatched(
+        HypertrieGraphStore? pinnedStore,
+        BasicGraphPattern query,
+        TimeProvider timeProvider,
+        AccessControlDelegate? accessControl = null,
+        TraceHandler<QueryTraceEvent>? traceHandler = null,
+        Guid correlationId = default,
+        IdentifierDelegate? identifiers = null)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+
+        if(accessControl is not null || !policy.PreferBatchedForAcyclic)
+        {
+            return null;
+        }
+
+        HypertrieGraphStore currentStore;
+        ColumnarTripleIndex? currentView;
+
+        lock(StateLock)
+        {
+            currentStore = store;
+            currentView = columnarView;
+        }
+
+        if(pinnedStore is not null && !ReferenceEquals(pinnedStore, currentStore))
+        {
+            return null;
+        }
+
+        if(query.Patterns.Count < policy.MinimumPatternsForColumnar || !IsColumnarCapable(query))
+        {
+            return null;
+        }
+
+        if(policy.OrderSetMode != ColumnarOrderSetMode.AllSixOrders
+            && ColumnarRotationPlanner.TryPlanGlobalOrder(policy.OrderSetMode, query) is null)
+        {
+            return null;
+        }
+
+        ColumnarTripleIndex? view = currentView;
+        long buildMilliseconds = 0;
+        EngineSelectionReason reason = EngineSelectionReason.ViewReused;
+        if(view is null)
+        {
+            if(!policy.BuildViewOnDemand)
+            {
+                return null;
+            }
+
+            (view, bool isBuilt, buildMilliseconds) = EnsureView(currentStore);
+            if(view is null)
+            {
+                return null;
+            }
+
+            reason = isBuilt ? EngineSelectionReason.ViewBuilt : EngineSelectionReason.ViewReused;
+        }
+
+        long? count = ColumnarBatchPipeline.TryCount(view, query);
+        if(count is null)
+        {
+            return null;
+        }
+
+        Guid effectiveCorrelationId = correlationId == Guid.Empty
+            ? (identifiers ?? VeritasIdentifiers.System)(new IdentifierRequest(IdentifierPurpose.Correlation, default))
+            : correlationId;
+
+        EmitEngineSelected(
+            timeProvider, traceHandler, effectiveCorrelationId,
+            QueryEngineKind.ColumnarBatched, reason, view.TripleCount, buildMilliseconds);
+
+        return count;
+    }
+
     private IAsyncEnumerable<Solution> QueryColumnar(
         ColumnarTripleIndex view,
         BasicGraphPattern query,

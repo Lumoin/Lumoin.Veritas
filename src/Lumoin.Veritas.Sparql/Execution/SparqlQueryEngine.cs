@@ -416,6 +416,16 @@ public sealed class SparqlQueryEngine
                 continue;
             }
 
+            //A bare COUNT(*) over a BGP answers from the factorised build's cardinality without materialising
+            //the BGP's solutions — the whole subtree (the group passthrough and the BGP leaf) is skipped. When
+            //the fast path declines, the subtree expands and evaluates normally below.
+            if(node is AggregateJoin countJoin && TryEvaluateCountOnly(countJoin, graph) is SolutionTable counted)
+            {
+                results[new ResultKey(node, graph)] = counted;
+
+                continue;
+            }
+
             //A GRAPH form re-roots its child under the named graph(s) it designates, never the enclosing graph.
             if(node is Graph graphOperator)
             {
@@ -875,66 +885,20 @@ public sealed class SparqlQueryEngine
     /// <returns>The BGP's solution sequence; empty when a constant in the pattern is absent from the active graph.</returns>
     private async ValueTask<SolutionTable> EvaluateBgpAsync(Bgp bgp, HypertrieGraphStore graphStore, QueryEngineRendezvous? rendezvous, TermId activeGraph, CancellationToken cancellationToken)
     {
-        VariableRegistry registry = new();
-        Dictionary<SparqlVariable, Variable> toBackend = [];
-        Dictionary<Variable, SparqlVariable> toSparql = [];
-
-        //A blank node in a query pattern is a non-distinguished (existential) join variable: occurrences sharing a
-        //label join like a variable, but it is never projected. Map each label to a fresh backend variable that is
-        //registered for the join yet absent from `toSparql`, so Decode leaves it out of the output solution.
-        Dictionary<Utf8String, Variable> blankToBackend = [];
-        List<EncodedTriplePattern> patterns = new(bgp.Patterns.Count);
-
-        //A pattern position that is a quoted triple term with a variable inside cannot encode to a single bound
-        //value; each such position becomes a fresh internal join variable plus a destructuring task applied to the
-        //solutions the leapfrog produces (see docs/decisions/sparql-join-and-triple-term-matching.md). Empty for the
-        //overwhelmingly common case of no variable-bearing triple terms, so the common path below stays untouched.
-        List<TripleTermMatch> tripleTermMatches = [];
-
-        //A variable repeated within ONE pattern (?x :q ?x) is a per-pattern
-        //self-join the join drivers evaluate over distinct positions; the
-        //repeat is rewritten to a fresh internal variable equated after the
-        //join. The '#' prefix cannot collide with a SPARQL variable name.
-        List<(Variable Original, Variable Fresh)> selfJoinEqualities = [];
-
-        foreach(AstTriplePattern triple in bgp.Patterns)
+        EncodedBgp encoded = EncodeBgp(bgp);
+        if(!encoded.Encodable)
         {
-            //A constant absent from the data graph can never match, so the whole BGP yields nothing.
-            if(!TryEncodePosition(triple.Subject, registry, toBackend, toSparql, blankToBackend, tripleTermMatches, out PatternPosition subject)
-                || !TryEncodePosition(triple.Predicate, registry, toBackend, toSparql, blankToBackend, tripleTermMatches, out PatternPosition predicate)
-                || !TryEncodePosition(triple.Object, registry, toBackend, toSparql, blankToBackend, tripleTermMatches, out PatternPosition @object))
-            {
-                return SolutionTable.Empty;
-            }
-
-            if(predicate.IsVariable && subject.IsVariable && predicate.Variable == subject.Variable)
-            {
-                predicate = PatternPosition.OfVariable(FreshSelfJoinVariable(registry, selfJoinEqualities, predicate.Variable));
-            }
-
-            if(@object.IsVariable && subject.IsVariable && @object.Variable == subject.Variable)
-            {
-                @object = PatternPosition.OfVariable(FreshSelfJoinVariable(registry, selfJoinEqualities, @object.Variable));
-            }
-            else if(@object.IsVariable && predicate.IsVariable && @object.Variable == predicate.Variable)
-            {
-                @object = PatternPosition.OfVariable(FreshSelfJoinVariable(registry, selfJoinEqualities, @object.Variable));
-            }
-
-            patterns.Add(new EncodedTriplePattern(subject, predicate, @object));
+            return SolutionTable.Empty;
         }
+
+        VariableRegistry registry = encoded.Registry;
+        List<EncodedTriplePattern> patterns = encoded.Patterns;
+        Dictionary<Variable, SparqlVariable> toSparql = encoded.ToSparql;
+        List<TripleTermMatch> tripleTermMatches = encoded.TripleTermMatches;
+        List<(Variable Original, Variable Fresh)> selfJoinEqualities = encoded.SelfJoinEqualities;
 
         BasicGraphPattern query = new(patterns, registry);
         bool hasTripleTermMatches = tripleTermMatches.Count > 0;
-
-        //Registers the internal stand-in for a repeated variable and records the equality the post-join filter checks.
-        static Variable FreshSelfJoinVariable(VariableRegistry registry, List<(Variable Original, Variable Fresh)> equalities, Variable original)
-        {
-            Variable fresh = registry.GetOrAdd($"#self{equalities.Count}");
-            equalities.Add((original, fresh));
-
-            return fresh;
-        }
 
         //Whether every recorded self-join equality holds in the solution: both variables bound to the same term.
         static bool SelfJoinHolds(Solution solution, List<(Variable Original, Variable Fresh)> equalities)
@@ -1069,6 +1033,171 @@ public sealed class SparqlQueryEngine
                 return builder.Build();
             }
         }
+    }
+
+    /// <summary>
+    /// The backend encoding of a BGP leaf: the encoded patterns and their registry (the backend query), the
+    /// backend→SPARQL projection map, and the per-solution rewrites the evaluation must apply — triple-term
+    /// destructurings and per-pattern self-join equalities. <see cref="Encodable"/> is <see langword="false"/>
+    /// when a constant term is absent from the data graph, where the BGP yields nothing.
+    /// </summary>
+    private sealed class EncodedBgp
+    {
+        /// <summary>Whether every constant term encoded; <see langword="false"/> means the BGP yields nothing.</summary>
+        public bool Encodable { get; init; }
+
+        /// <summary>The encoded patterns, in AST order.</summary>
+        public List<EncodedTriplePattern> Patterns { get; init; } = [];
+
+        /// <summary>The backend variable registry the patterns are registered in.</summary>
+        public VariableRegistry Registry { get; init; } = new();
+
+        /// <summary>The backend-variable to SPARQL-variable projection map, in encounter order.</summary>
+        public Dictionary<Variable, SparqlVariable> ToSparql { get; init; } = [];
+
+        /// <summary>The variable-bearing triple-term destructurings applied per solution; empty in the common case.</summary>
+        public List<TripleTermMatch> TripleTermMatches { get; init; } = [];
+
+        /// <summary>The within-pattern variable-repeat equalities checked per solution; empty in the common case.</summary>
+        public List<(Variable Original, Variable Fresh)> SelfJoinEqualities { get; init; } = [];
+    }
+
+    /// <summary>
+    /// Encodes a BGP's AST patterns into the backend query space: constant terms to ids, SPARQL variables to
+    /// backend variables, blank nodes to non-distinguished (existential) join variables absent from the
+    /// projection map, variable-bearing triple-term positions to fresh variables plus destructuring tasks, and
+    /// within-pattern variable repeats (<c>?x :q ?x</c>) to fresh variables plus post-join equalities (the
+    /// <c>#</c> prefix cannot collide with a SPARQL variable name). Not encodable when a constant term is
+    /// absent from the data graph — such a pattern can never match, so the BGP yields nothing.
+    /// </summary>
+    /// <param name="bgp">The BGP leaf.</param>
+    /// <returns>The encoded form.</returns>
+    private EncodedBgp EncodeBgp(Bgp bgp)
+    {
+        VariableRegistry registry = new();
+        Dictionary<SparqlVariable, Variable> toBackend = [];
+        Dictionary<Variable, SparqlVariable> toSparql = [];
+        Dictionary<Utf8String, Variable> blankToBackend = [];
+        List<EncodedTriplePattern> patterns = new(bgp.Patterns.Count);
+        List<TripleTermMatch> tripleTermMatches = [];
+        List<(Variable Original, Variable Fresh)> selfJoinEqualities = [];
+
+        foreach(AstTriplePattern triple in bgp.Patterns)
+        {
+            if(!TryEncodePosition(triple.Subject, registry, toBackend, toSparql, blankToBackend, tripleTermMatches, out PatternPosition subject)
+                || !TryEncodePosition(triple.Predicate, registry, toBackend, toSparql, blankToBackend, tripleTermMatches, out PatternPosition predicate)
+                || !TryEncodePosition(triple.Object, registry, toBackend, toSparql, blankToBackend, tripleTermMatches, out PatternPosition @object))
+            {
+                return new EncodedBgp { Encodable = false, Registry = registry };
+            }
+
+            if(predicate.IsVariable && subject.IsVariable && predicate.Variable == subject.Variable)
+            {
+                predicate = PatternPosition.OfVariable(FreshSelfJoinVariable(registry, selfJoinEqualities, predicate.Variable));
+            }
+
+            if(@object.IsVariable && subject.IsVariable && @object.Variable == subject.Variable)
+            {
+                @object = PatternPosition.OfVariable(FreshSelfJoinVariable(registry, selfJoinEqualities, @object.Variable));
+            }
+            else if(@object.IsVariable && predicate.IsVariable && @object.Variable == predicate.Variable)
+            {
+                @object = PatternPosition.OfVariable(FreshSelfJoinVariable(registry, selfJoinEqualities, @object.Variable));
+            }
+
+            patterns.Add(new EncodedTriplePattern(subject, predicate, @object));
+        }
+
+        return new EncodedBgp
+        {
+            Encodable = true,
+            Patterns = patterns,
+            Registry = registry,
+            ToSparql = toSparql,
+            TripleTermMatches = tripleTermMatches,
+            SelfJoinEqualities = selfJoinEqualities,
+        };
+
+        //Registers the internal stand-in for a repeated variable and records the equality the post-join filter checks.
+        static Variable FreshSelfJoinVariable(VariableRegistry registry, List<(Variable Original, Variable Fresh)> equalities, Variable original)
+        {
+            Variable fresh = registry.GetOrAdd($"#self{equalities.Count}");
+            equalities.Add((original, fresh));
+
+            return fresh;
+        }
+    }
+
+    /// <summary>
+    /// Evaluates a bare <c>COUNT(*)</c> over a BGP from the factorised build's cardinality, without
+    /// materialising the BGP's solutions: applies when the aggregate join wraps an implicit (key-less) group
+    /// over a plain BGP, every aggregation is a non-<c>DISTINCT</c> <c>COUNT(*)</c>, the active graph is the
+    /// default graph (the engine rendezvous' view), and the encoded pattern carries none of the per-solution
+    /// rewrites (triple-term destructuring, self-join equalities, type expansion). The rendezvous count equals
+    /// the drained row count exactly, so the produced solution is identical to the normal path's; any condition
+    /// this fast path cannot read returns <see langword="null"/> and the operator evaluates normally.
+    /// </summary>
+    /// <param name="aggregateJoin">The aggregate-join operator.</param>
+    /// <param name="graph">The active graph.</param>
+    /// <returns>The single-solution table binding each count variable, or <see langword="null"/> when the fast path does not apply.</returns>
+    private SolutionTable? TryEvaluateCountOnly(AggregateJoin aggregateJoin, TermId graph)
+    {
+        if(!graph.IsNone || dataset.DefaultGraphRendezvous is not QueryEngineRendezvous rendezvous)
+        {
+            return null;
+        }
+
+        if(aggregateJoin.Input is not Group { Keys.Count: 0, Input: Bgp bgp } || aggregateJoin.Aggregations.Count == 0)
+        {
+            return null;
+        }
+
+        foreach(AggregateBinding aggregation in aggregateJoin.Aggregations)
+        {
+            if(aggregation.Aggregate is not { IsCountStar: true, IsDistinct: false })
+            {
+                return null;
+            }
+        }
+
+        EncodedBgp encoded = EncodeBgp(bgp);
+        long count;
+        if(!encoded.Encodable)
+        {
+            //A constant absent from the graph: the BGP yields nothing and the implicit group counts zero.
+            count = 0;
+        }
+        else
+        {
+            if(encoded.TripleTermMatches.Count > 0
+                || encoded.SelfJoinEqualities.Count > 0
+                || ComputeTypeExpansions(encoded.Patterns).Count > 0)
+            {
+                return null;
+            }
+
+            HypertrieGraphStore? graphStore = dataset.Resolve(graph);
+            if(graphStore is null)
+            {
+                return null;
+            }
+
+            BasicGraphPattern query = new(encoded.Patterns, encoded.Registry);
+            if(rendezvous.TryCountBatched(graphStore, query, TimeProvider.System, accessControl) is not long counted)
+            {
+                return null;
+            }
+
+            count = counted;
+        }
+
+        List<SparqlBinding> bindings = new(aggregateJoin.Aggregations.Count);
+        foreach(AggregateBinding aggregation in aggregateJoin.Aggregations)
+        {
+            bindings.Add(new SparqlBinding(aggregation.Variable, SparqlExpressionEvaluator.IntegerTerm(count)));
+        }
+
+        return SolutionTable.FromRows([new SparqlSolution(bindings)]);
     }
 
     /// <summary>

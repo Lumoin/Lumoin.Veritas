@@ -238,6 +238,14 @@ public static class SparqlExpressionEvaluator
     /// <param name="group">The group's solutions.</param>
     /// <param name="context">The seams (randomness, digests, the query timestamp) the argument expression's non-pure functions consume.</param>
     /// <returns>The aggregate's term value, or <see langword="null"/> when it has none.</returns>
+    /// <summary>The <c>xsd:integer</c> literal for a count — the same construction <c>COUNT</c> produces, exposed for the executor's count-only fast path.</summary>
+    /// <param name="value">The count.</param>
+    /// <returns>The integer literal term.</returns>
+    internal static RdfTerm IntegerTerm(long value)
+    {
+        return Integer(value).Term!;
+    }
+
     internal static RdfTerm? EvaluateAggregate(AggregateExpression aggregate, IReadOnlyList<SparqlSolution> group, SparqlExpressionContext context)
     {
         if(aggregate.IsCountStar)

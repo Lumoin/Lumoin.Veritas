@@ -872,6 +872,31 @@ internal sealed class SparqlQueryEngineTests
         Assert.AreEqual("0", LiteralValue((await engine.EvaluateAsync(none, TestContext.CancellationToken).ConfigureAwait(false)).Single(), "c"));
     }
 
+    /// <summary>An implicit-group COUNT(*) over a multi-pattern star answers from the factorised cardinality (the count-only fast path) and agrees with the drained solution count.</summary>
+    [TestMethod]
+    public async Task ImplicitGroupCountOverAStarMatchesTheDrainedCount()
+    {
+        //Two subjects with two objects on each of three predicates: the star
+        //fans out to 2 · 2³ = 16 solutions.
+        SparqlQueryEngine engine = await BuildEngineAsync(
+            ("alice", "p1", "a1"), ("alice", "p1", "a2"),
+            ("alice", "p2", "b1"), ("alice", "p2", "b2"),
+            ("alice", "p3", "c1"), ("alice", "p3", "c2"),
+            ("dave", "p1", "d1"), ("dave", "p1", "d2"),
+            ("dave", "p2", "e1"), ("dave", "p2", "e2"),
+            ("dave", "p3", "f1"), ("dave", "p3", "f2")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+
+        AlgebraOperator counted = Translate("PREFIX : <http://example.org/> SELECT (COUNT(*) AS ?c) WHERE { ?s :p1 ?o1 . ?s :p2 ?o2 . ?s :p3 ?o3 }", pool);
+        AlgebraOperator drained = Translate("PREFIX : <http://example.org/> SELECT * WHERE { ?s :p1 ?o1 . ?s :p2 ?o2 . ?s :p3 ?o3 }", pool);
+
+        IReadOnlyList<SparqlSolution> countSolutions = await engine.EvaluateAsync(counted, TestContext.CancellationToken).ConfigureAwait(false);
+        IReadOnlyList<SparqlSolution> drainedSolutions = await engine.EvaluateAsync(drained, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(16, drainedSolutions);
+        Assert.AreEqual("16", LiteralValue(countSolutions.Single(), "c"));
+    }
+
     /// <summary>GROUP BY an arithmetic expression bound to a variable partitions by the expression's value (the cross product of :p {0,1,2} × :q {0,1,2} sums to 0..4, five groups).</summary>
     [TestMethod]
     public async Task GroupByArithmeticExpressionPartitionsByValue()
