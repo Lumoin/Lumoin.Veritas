@@ -1,9 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Encoding;
+using Lumoin.Veritas.Core.Hypertrie.Execution;
+using Lumoin.Veritas.Core.Hypertrie.Planning;
+using Lumoin.Veritas.Core.Hypertrie.Query;
 
 namespace Lumoin.Veritas.Benchmarks;
 
@@ -32,11 +37,236 @@ internal static class SelfIndexSoak
     /// <summary>The probe count per membership/seek loop.</summary>
     private const int ProbeCount = 50_000;
 
-    /// <summary>Runs both corpora.</summary>
+    /// <summary>Runs both corpora: footprint, probes, and the triangle-join rung.</summary>
     public static void RunSelfIndexSoak()
     {
-        RunCorpus("triangles", BuildTriangleCorpus(500_000));
-        RunCorpus("community", BuildCommunityCorpus(nodes: 200_000, communitySize: 1_000, outDegree: 7));
+        List<EncodedTriple> triangles = BuildTriangleCorpus(500_000);
+        RunCorpus("triangles", triangles);
+        RunTriangleJoinAsync("triangles", triangles, edgePredicate: 1_000).GetAwaiter().GetResult();
+
+        List<EncodedTriple> community = BuildCommunityCorpus(nodes: 200_000, communitySize: 1_000, outDegree: 7);
+        RunCorpus("community", community);
+        RunTriangleJoinAsync("community", community, edgePredicate: 1).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// The triangle-join rung: the same three-pattern cyclic query counted by
+    /// the CSR leapfrog (the production evaluator over the all-six-orders
+    /// index, materialising solutions) and by a worst-case-optimal driver over
+    /// self-index triejoin iterators (counting agreed bindings without
+    /// materialising). Three repetitions each; the minimum is reported.
+    /// </summary>
+    /// <param name="label">The corpus label.</param>
+    /// <param name="corpus">The triples.</param>
+    /// <param name="edgePredicate">The edge predicate the triangle patterns bind.</param>
+    private static async Task RunTriangleJoinAsync(string label, List<EncodedTriple> corpus, uint edgePredicate)
+    {
+        ColumnarTripleIndex columnar = ColumnarTripleIndex.Build(corpus, ColumnarOrderSetMode.AllSixOrders);
+        TripleSelfIndex selfIndex = TripleSelfIndex.Build(corpus);
+
+        VariableRegistry registry = new();
+        Variable a = registry.GetOrAdd("a");
+        Variable b = registry.GetOrAdd("b");
+        Variable c = registry.GetOrAdd("c");
+        TermId edge = TermId.FromEncoded(edgePredicate);
+        TriplePattern[] patterns =
+        [
+            new TriplePattern(PatternPosition.OfVariable(a), PatternPosition.Bound(edge), PatternPosition.OfVariable(b)),
+            new TriplePattern(PatternPosition.OfVariable(b), PatternPosition.Bound(edge), PatternPosition.OfVariable(c)),
+            new TriplePattern(PatternPosition.OfVariable(c), PatternPosition.Bound(edge), PatternPosition.OfVariable(a)),
+        ];
+        BasicGraphPattern query = new(patterns, registry);
+
+        long csrCount = 0;
+        TimeSpan csrBest = TimeSpan.MaxValue;
+        for(int repetition = 0; repetition < 3; repetition++)
+        {
+            ColumnarBasicGraphPatternEvaluator evaluator = new(columnar, query, Planners.FirstOccurrence(query), VeritasClock.System);
+            long start = Stopwatch.GetTimestamp();
+            csrCount = 0;
+            await foreach(Solution _ in evaluator.EvaluateAsync().ConfigureAwait(false))
+            {
+                csrCount++;
+            }
+
+            TimeSpan elapsed = Stopwatch.GetElapsedTime(start);
+            if(elapsed < csrBest)
+            {
+                csrBest = elapsed;
+            }
+        }
+
+        long selfCount = 0;
+        TimeSpan selfBest = TimeSpan.MaxValue;
+        for(int repetition = 0; repetition < 3; repetition++)
+        {
+            long start = Stopwatch.GetTimestamp();
+            selfCount = CountLeapfrogSolutions(selfIndex, patterns, [a, b, c]);
+            TimeSpan elapsed = Stopwatch.GetElapsedTime(start);
+            if(elapsed < selfBest)
+            {
+                selfBest = elapsed;
+            }
+        }
+
+        string agreement = csrCount == selfCount ? "MATCH" : "MISMATCH";
+        double ratio = selfBest.TotalMilliseconds > 0 ? csrBest.TotalMilliseconds / selfBest.TotalMilliseconds : 0;
+        Console.WriteLine($"[self-index]   triangle-join corpus={label} solutions={csrCount:N0} {agreement} | csr leapfrog {csrBest.TotalMilliseconds,8:F1} ms | self leapfrog {selfBest.TotalMilliseconds,8:F1} ms | csr/self x{ratio:F2}");
+    }
+
+    /// <summary>The worst-case-optimal count over self-index iterators: per level a track-max agreement via <c>Seek</c>, an <c>Open</c> descent on agreement, an <c>Up</c>-and-advance on exhaustion — iteratively.</summary>
+    /// <param name="index">The self-index.</param>
+    /// <param name="patterns">The patterns.</param>
+    /// <param name="globalOrder">The global variable order.</param>
+    /// <returns>The solution count.</returns>
+    private static long CountLeapfrogSolutions(TripleSelfIndex index, TriplePattern[] patterns, Variable[] globalOrder)
+    {
+        SelfIndexTriejoinIterator[] iterators = new SelfIndexTriejoinIterator[patterns.Length];
+        for(int i = 0; i < patterns.Length; i++)
+        {
+            List<Variable> restriction = [];
+            foreach(Variable variable in globalOrder)
+            {
+                foreach(Variable patternVariable in patterns[i].Variables())
+                {
+                    if(patternVariable == variable)
+                    {
+                        restriction.Add(variable);
+
+                        break;
+                    }
+                }
+            }
+
+            iterators[i] = new SelfIndexTriejoinIterator(index, patterns[i], restriction);
+        }
+
+        List<SelfIndexTriejoinIterator>[] participants = new List<SelfIndexTriejoinIterator>[globalOrder.Length];
+        for(int level = 0; level < globalOrder.Length; level++)
+        {
+            participants[level] = [];
+            foreach(SelfIndexTriejoinIterator iterator in iterators)
+            {
+                foreach(Variable variable in iterator.VariableOrder)
+                {
+                    if(variable == globalOrder[level])
+                    {
+                        participants[level].Add(iterator);
+
+                        break;
+                    }
+                }
+            }
+        }
+
+        long solutions = 0;
+        uint[] bindings = new uint[globalOrder.Length];
+        int currentLevel = 0;
+        bool entering = true;
+        while(currentLevel >= 0)
+        {
+            List<SelfIndexTriejoinIterator> active = participants[currentLevel];
+            bool found;
+            uint key = 0;
+            if(entering)
+            {
+                foreach(SelfIndexTriejoinIterator iterator in active)
+                {
+                    iterator.RestartCurrentLevel();
+                }
+
+                found = TryAgree(active, 0, out key);
+            }
+            else
+            {
+                found = bindings[currentLevel] != uint.MaxValue && TryAgree(active, bindings[currentLevel] + 1, out key);
+            }
+
+            if(!found)
+            {
+                currentLevel--;
+                if(currentLevel >= 0)
+                {
+                    foreach(SelfIndexTriejoinIterator iterator in participants[currentLevel])
+                    {
+                        iterator.Up();
+                    }
+
+                    entering = false;
+                }
+
+                continue;
+            }
+
+            bindings[currentLevel] = key;
+            if(currentLevel == globalOrder.Length - 1)
+            {
+                solutions++;
+                entering = false;
+
+                continue;
+            }
+
+            foreach(SelfIndexTriejoinIterator iterator in active)
+            {
+                iterator.Open(TermId.FromEncoded(key));
+            }
+
+            currentLevel++;
+            entering = true;
+        }
+
+        return solutions;
+    }
+
+    /// <summary>The track-max agreement loop: lower-bounds every participant, then raises stragglers to the running maximum until all agree or one ends.</summary>
+    /// <param name="active">The participants at the level.</param>
+    /// <param name="lowerBound">The starting lower bound.</param>
+    /// <param name="key">Receives the agreed key.</param>
+    /// <returns><see langword="true"/> when all participants agree on a key.</returns>
+    private static bool TryAgree(List<SelfIndexTriejoinIterator> active, uint lowerBound, out uint key)
+    {
+        key = 0;
+        uint maxKey = 0;
+        foreach(SelfIndexTriejoinIterator iterator in active)
+        {
+            iterator.Seek(TermId.FromEncoded(lowerBound));
+            if(iterator.AtEnd)
+            {
+                return false;
+            }
+
+            maxKey = Math.Max(maxKey, iterator.Key.Encoded);
+        }
+
+        while(true)
+        {
+            bool stable = true;
+            foreach(SelfIndexTriejoinIterator iterator in active)
+            {
+                if(iterator.Key.Encoded < maxKey)
+                {
+                    iterator.Seek(TermId.FromEncoded(maxKey));
+                    if(iterator.AtEnd)
+                    {
+                        return false;
+                    }
+
+                    if(iterator.Key.Encoded > maxKey)
+                    {
+                        maxKey = iterator.Key.Encoded;
+                        stable = false;
+                    }
+                }
+            }
+
+            if(stable)
+            {
+                key = maxKey;
+
+                return true;
+            }
+        }
     }
 
     /// <summary>A deterministic 64-bit mixer standing in for randomness.</summary>
