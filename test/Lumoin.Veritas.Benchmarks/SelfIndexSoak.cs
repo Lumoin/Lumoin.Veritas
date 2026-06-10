@@ -1,14 +1,18 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Encoding;
+using Lumoin.Veritas.Core.Hypertrie;
 using Lumoin.Veritas.Core.Hypertrie.Execution;
 using Lumoin.Veritas.Core.Hypertrie.Planning;
 using Lumoin.Veritas.Core.Hypertrie.Query;
+using Lumoin.Veritas.Core.Hypertrie.Storage;
+using Lumoin.Veritas.Core.Hypertrie.Tracing;
 
 namespace Lumoin.Veritas.Benchmarks;
 
@@ -37,16 +41,29 @@ internal static class SelfIndexSoak
     /// <summary>The probe count per membership/seek loop.</summary>
     private const int ProbeCount = 50_000;
 
-    /// <summary>Runs both corpora: footprint, probes, and the triangle-join rung.</summary>
+    /// <summary>
+    /// The corpus's information-theoretic shape, surfaced by the corpus
+    /// builders so the footprint section can anchor measured bits/triple
+    /// against the raw and the information-floor figures: the largest node
+    /// identifier any subject or object carries and the number of distinct
+    /// predicates.
+    /// </summary>
+    /// <param name="MaxNodeId">The largest subject/object encoded identifier in the corpus.</param>
+    /// <param name="PredicateCount">The number of distinct predicates in the corpus.</param>
+    private readonly record struct CorpusShape(uint MaxNodeId, int PredicateCount);
+
+    /// <summary>Runs both corpora: footprint, probes, the triangle-join rung, and the end-to-end route rung.</summary>
     public static void RunSelfIndexSoak()
     {
-        List<EncodedTriple> triangles = BuildTriangleCorpus(500_000);
-        RunCorpus("triangles", triangles);
+        (List<EncodedTriple> triangles, CorpusShape triangleShape) = BuildTriangleCorpus(500_000);
+        RunCorpus("triangles", triangles, triangleShape);
         RunTriangleJoinAsync("triangles", triangles, edgePredicate: 1_000).GetAwaiter().GetResult();
+        RunRouteAsync("triangles", triangles, edgePredicate: 1_000).GetAwaiter().GetResult();
 
-        List<EncodedTriple> community = BuildCommunityCorpus(nodes: 200_000, communitySize: 1_000, outDegree: 7);
-        RunCorpus("community", community);
+        (List<EncodedTriple> community, CorpusShape communityShape) = BuildCommunityCorpus(nodes: 200_000, communitySize: 1_000, outDegree: 7);
+        RunCorpus("community", community, communityShape);
         RunTriangleJoinAsync("community", community, edgePredicate: 1).GetAwaiter().GetResult();
+        RunRouteAsync("community", community, edgePredicate: 1).GetAwaiter().GetResult();
     }
 
     /// <summary>
@@ -112,6 +129,115 @@ internal static class SelfIndexSoak
         string agreement = csrCount == selfCount ? "MATCH" : "MISMATCH";
         double ratio = selfBest.TotalMilliseconds > 0 ? csrBest.TotalMilliseconds / selfBest.TotalMilliseconds : 0;
         Console.WriteLine($"[self-index]   triangle-join corpus={label} solutions={csrCount:N0} {agreement} | csr leapfrog {csrBest.TotalMilliseconds,8:F1} ms | self leapfrog {selfBest.TotalMilliseconds,8:F1} ms | csr/self x{ratio:F2}");
+    }
+
+    /// <summary>
+    /// The end-to-end route rung: the same cyclic triangle query, routed by a
+    /// <see cref="QueryEngineRendezvous"/> from a <see cref="HypertrieGraphStore"/>
+    /// system of record under two policies — the all-six-orders default, and a
+    /// three-rotation view that opts the rotation-incompatible shape onto the
+    /// succinct self-index. For each policy the FIRST query pays the on-demand
+    /// index build and the SECOND reuses it; both are drained whole, so the
+    /// figure is the production query cost a caller sees, with the per-query
+    /// <see cref="QueryTraceEventKind.EngineSelected"/> event separating build
+    /// from query. The two policies' solution counts are asserted equal.
+    /// </summary>
+    /// <param name="label">The corpus label.</param>
+    /// <param name="corpus">The triples.</param>
+    /// <param name="edgePredicate">The edge predicate the triangle patterns bind.</param>
+    private static async Task RunRouteAsync(string label, List<EncodedTriple> corpus, uint edgePredicate)
+    {
+        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(corpus, VeritasHashing.Default, CancellationToken.None).ConfigureAwait(false);
+
+        VariableRegistry registry = new();
+        Variable a = registry.GetOrAdd("a");
+        Variable b = registry.GetOrAdd("b");
+        Variable c = registry.GetOrAdd("c");
+        TermId edge = TermId.FromEncoded(edgePredicate);
+        TriplePattern[] patterns =
+        [
+            new TriplePattern(PatternPosition.OfVariable(a), PatternPosition.Bound(edge), PatternPosition.OfVariable(b)),
+            new TriplePattern(PatternPosition.OfVariable(b), PatternPosition.Bound(edge), PatternPosition.OfVariable(c)),
+            new TriplePattern(PatternPosition.OfVariable(c), PatternPosition.Bound(edge), PatternPosition.OfVariable(a)),
+        ];
+        BasicGraphPattern query = new(patterns, registry);
+
+        QueryEnginePolicy defaultPolicy = QueryEnginePolicy.Default;
+        QueryEnginePolicy selfIndexPolicy = QueryEnginePolicy.Default with { OrderSetMode = ColumnarOrderSetMode.ThreeRotations, PreferSelfIndex = true };
+
+        (long defaultCount, TimeSpan defaultFirst, TimeSpan defaultSecond, QueryEngineKind defaultEngine, long defaultBuildMilliseconds) =
+            await RouteOnceAsync(store, defaultPolicy, query).ConfigureAwait(false);
+        (long selfCount, TimeSpan selfFirst, TimeSpan selfSecond, QueryEngineKind selfEngine, long selfBuildMilliseconds) =
+            await RouteOnceAsync(store, selfIndexPolicy, query).ConfigureAwait(false);
+
+        string agreement = defaultCount == selfCount ? "MATCH" : "MISMATCH";
+        Console.WriteLine($"[self-index]   route corpus={label} solutions(default)={defaultCount:N0} solutions(self-index)={selfCount:N0} {agreement}");
+        Console.WriteLine($"[self-index]     default      engine={defaultEngine,-13} | first {defaultFirst.TotalMilliseconds,8:F1} ms | second {defaultSecond.TotalMilliseconds,8:F1} ms | event build {defaultBuildMilliseconds,6:N0} ms");
+        Console.WriteLine($"[self-index]     self-index   engine={selfEngine,-13} | first {selfFirst.TotalMilliseconds,8:F1} ms | second {selfSecond.TotalMilliseconds,8:F1} ms | event build {selfBuildMilliseconds,6:N0} ms");
+    }
+
+    /// <summary>
+    /// Runs the query twice through a fresh rendezvous over the store under the
+    /// policy: the first drain materialises the on-demand index and the second
+    /// reuses the view. Returns the solution count (identical across both
+    /// drains), each drain's wall time, and the engine kind and event-carried
+    /// build milliseconds the first query's selection event announced.
+    /// </summary>
+    /// <param name="store">The system of record.</param>
+    /// <param name="policy">The routing policy.</param>
+    /// <param name="query">The triangle pattern.</param>
+    /// <returns>The solution count, the first and second drain times, the selected engine, and the first selection event's build milliseconds.</returns>
+    private static async Task<(long Count, TimeSpan First, TimeSpan Second, QueryEngineKind Engine, long BuildMilliseconds)> RouteOnceAsync(
+        HypertrieGraphStore store,
+        QueryEnginePolicy policy,
+        BasicGraphPattern query)
+    {
+        QueryEngineRendezvous rendezvous = new(store, policy);
+        List<QueryTraceEvent> selections = [];
+        TraceHandler<QueryTraceEvent> handler = CollectSelections(selections);
+
+        (long firstCount, TimeSpan firstElapsed) = await DrainQueryAsync(rendezvous, query, handler).ConfigureAwait(false);
+        QueryEngineKind engine = selections.Count > 0 ? selections[^1].Engine : default;
+        long buildMilliseconds = selections.Count > 0 ? selections[^1].Value : 0;
+
+        (long secondCount, TimeSpan secondElapsed) = await DrainQueryAsync(rendezvous, query, handler).ConfigureAwait(false);
+
+        //Both drains answer the same query on the same generation; the count is
+        //the first's, the agreement of the two confirmed by the route line.
+        long count = firstCount == secondCount ? firstCount : -1;
+
+        return (count, firstElapsed, secondElapsed, engine, buildMilliseconds);
+    }
+
+    /// <summary>Drains the query once through the rendezvous, timing the whole end-to-end stream including any on-demand build, and counting solutions.</summary>
+    /// <param name="rendezvous">The routing rendezvous.</param>
+    /// <param name="query">The pattern.</param>
+    /// <param name="handler">The selection-event sink.</param>
+    /// <returns>The solution count and the wall time.</returns>
+    private static async Task<(long Count, TimeSpan Elapsed)> DrainQueryAsync(QueryEngineRendezvous rendezvous, BasicGraphPattern query, TraceHandler<QueryTraceEvent> handler)
+    {
+        long start = Stopwatch.GetTimestamp();
+        long count = 0;
+        await foreach(Solution _ in rendezvous.Query(query, TimeProvider.System, traceHandler: handler).ConfigureAwait(false))
+        {
+            count++;
+        }
+
+        return (count, Stopwatch.GetElapsedTime(start));
+    }
+
+    /// <summary>A trace handler that appends every engine-selection event to the sink.</summary>
+    /// <param name="sink">The receiving list.</param>
+    /// <returns>The collecting handler.</returns>
+    private static TraceHandler<QueryTraceEvent> CollectSelections(List<QueryTraceEvent> sink)
+    {
+        return (in QueryTraceEvent evt) =>
+        {
+            if(evt.Kind == QueryTraceEventKind.EngineSelected)
+            {
+                sink.Add(evt);
+            }
+        };
     }
 
     /// <summary>The worst-case-optimal count over self-index iterators: per level a track-max agreement via <c>Seek</c>, an <c>Open</c> descent on agreement, an <c>Up</c>-and-advance on exhaustion — iteratively.</summary>
@@ -284,17 +410,48 @@ internal static class SelfIndexSoak
         }
     }
 
-    /// <summary>Builds all three structures over the corpus and reports footprint, build time, probe latencies, and seek latency.</summary>
+    /// <summary>The ceiling of the base-2 logarithm of <paramref name="value"/>, the bit width to address one of that many distinct identifiers — zero for a single value.</summary>
+    /// <param name="value">The cardinality to address; one or greater.</param>
+    /// <returns>The number of bits, <c>⌈log₂(value)⌉</c>.</returns>
+    private static int CeilLog2(uint value)
+    {
+        if(value <= 1)
+        {
+            return 0;
+        }
+
+        return 32 - System.Numerics.BitOperations.LeadingZeroCount(value - 1);
+    }
+
+    /// <summary>Builds the self-index and both columnar encodings over the corpus and reports the anchor rows, footprint, build time, probe latencies, and seek latency.</summary>
     /// <param name="label">The corpus label for the output lines.</param>
     /// <param name="corpus">The triples.</param>
-    private static void RunCorpus(string label, List<EncodedTriple> corpus)
+    /// <param name="shape">The corpus's information-theoretic shape, threaded from the builder.</param>
+    private static void RunCorpus(string label, List<EncodedTriple> corpus, CorpusShape shape)
     {
         long start = Stopwatch.GetTimestamp();
         TripleSelfIndex selfIndex = TripleSelfIndex.Build(corpus);
         TimeSpan selfBuild = Stopwatch.GetElapsedTime(start);
 
         int tripleCount = selfIndex.Count;
-        Console.WriteLine($"[self-index] corpus={label} triples={tripleCount:N0}");
+        Console.WriteLine($"[self-index] corpus={label} triples={tripleCount:N0} maxNodeId={shape.MaxNodeId:N0} predicates={shape.PredicateCount:N0}");
+
+        //Anchor 1: the raw triple at three 32-bit identifiers — the encoded
+        //form with no structure exploited, the high-water mark every index
+        //should beat.
+        const double rawBits = 96.0;
+        double rawMiB = rawBits / 8.0 * tripleCount / (1024.0 * 1024.0);
+        Console.WriteLine($"[self-index]   raw triples (3x32-bit)          |                  | {rawMiB,7:F1} MiB | {rawBits,6:F1} bits/triple total");
+
+        //Anchor 2: the information floor — the bits a triple needs to name two
+        //nodes and one predicate from their alphabets, ignoring structure and
+        //redundancy. Two node positions at ceil(log2(maxNodeId)) bits and one
+        //predicate at ceil(log2(predicateCount)) bits.
+        int nodeBits = CeilLog2(shape.MaxNodeId);
+        int predicateBits = CeilLog2((uint)shape.PredicateCount);
+        double floorBits = (2.0 * nodeBits) + predicateBits;
+        double floorMiB = floorBits / 8.0 * tripleCount / (1024.0 * 1024.0);
+        Console.WriteLine($"[self-index]   information floor               | 2*{nodeBits,2}+{predicateBits,2} bits     | {floorMiB,7:F1} MiB | {floorBits,6:F1} bits/triple total (2*ceil(log2 {shape.MaxNodeId:N0})+ceil(log2 {shape.PredicateCount:N0}))");
 
         double selfBits = (double)selfIndex.BitCount / tripleCount;
         double selfMiB = selfIndex.BitCount / 8.0 / (1024.0 * 1024.0);
@@ -302,22 +459,25 @@ internal static class SelfIndexSoak
 
         foreach(ColumnarOrderSetMode mode in (ReadOnlySpan<ColumnarOrderSetMode>)[ColumnarOrderSetMode.AllSixOrders, ColumnarOrderSetMode.ThreeRotations])
         {
-            start = Stopwatch.GetTimestamp();
-            ColumnarTripleIndex columnar = ColumnarTripleIndex.Build(corpus, mode);
-            TimeSpan columnarBuild = Stopwatch.GetElapsedTime(start);
-
-            long packedBytes = 0;
-            for(int permutation = 0; permutation < 6; permutation++)
+            foreach(ColumnarValueColumnEncoding encoding in (ReadOnlySpan<ColumnarValueColumnEncoding>)[ColumnarValueColumnEncoding.EliasFanoWhenMonotone, ColumnarValueColumnEncoding.FrameOfReference])
             {
-                if(columnar.IsPermutationAvailable(permutation))
-                {
-                    packedBytes += columnar.OrderAt(permutation).PackedByteCount;
-                }
-            }
+                start = Stopwatch.GetTimestamp();
+                ColumnarTripleIndex columnar = ColumnarTripleIndex.Build(corpus, mode, encoding);
+                TimeSpan columnarBuild = Stopwatch.GetElapsedTime(start);
 
-            double bits = packedBytes * 8.0 / tripleCount;
-            double miB = packedBytes / (1024.0 * 1024.0);
-            Console.WriteLine($"[self-index]   columnar {mode,-14} (packed columns) | build {columnarBuild.TotalMilliseconds,8:F1} ms | {miB,7:F1} MiB | {bits,6:F1} bits/triple total");
+                long packedBytes = 0;
+                for(int permutation = 0; permutation < 6; permutation++)
+                {
+                    if(columnar.IsPermutationAvailable(permutation))
+                    {
+                        packedBytes += columnar.OrderAt(permutation).PackedByteCount;
+                    }
+                }
+
+                double bits = packedBytes * 8.0 / tripleCount;
+                double miB = packedBytes / (1024.0 * 1024.0);
+                Console.WriteLine($"[self-index]   columnar {mode,-14} {encoding,-22} | build {columnarBuild.TotalMilliseconds,8:F1} ms | {miB,7:F1} MiB | {bits,6:F1} bits/triple total");
+            }
         }
 
         RunProbes(label, corpus, selfIndex);
@@ -451,8 +611,8 @@ internal static class SelfIndexSoak
 
     /// <summary>Builds disjoint directed triangles over sequential node ids — the column-bits soak's corpus: group <c>i</c> carries (3i→3i+1), (3i+1→3i+2), (3i+2→3i) under one predicate.</summary>
     /// <param name="groups">The group count.</param>
-    /// <returns>The corpus, three edges per group.</returns>
-    private static List<EncodedTriple> BuildTriangleCorpus(int groups)
+    /// <returns>The corpus, three edges per group, with its information-theoretic shape: node ids run 1..3·groups under a single predicate.</returns>
+    private static (List<EncodedTriple> Corpus, CorpusShape Shape) BuildTriangleCorpus(int groups)
     {
         List<EncodedTriple> corpus = new(groups * 3);
         for(int i = 0; i < groups; i++)
@@ -465,15 +625,17 @@ internal static class SelfIndexSoak
             corpus.Add(EncodedTriple.FromEncoded(c, 1_000, a));
         }
 
-        return corpus;
+        CorpusShape shape = new(MaxNodeId: (uint)(groups * 3), PredicateCount: 1);
+
+        return (corpus, shape);
     }
 
     /// <summary>Builds a community-clustered multi-predicate graph: sequential node ids in communities, most edges within the community, a few across, predicates drawn from a small set.</summary>
     /// <param name="nodes">The node count.</param>
     /// <param name="communitySize">Nodes per community.</param>
     /// <param name="outDegree">Out-edges per node.</param>
-    /// <returns>The corpus.</returns>
-    private static List<EncodedTriple> BuildCommunityCorpus(int nodes, int communitySize, int outDegree)
+    /// <returns>The corpus with its information-theoretic shape: node ids run 1..nodes under up to 32 predicates.</returns>
+    private static (List<EncodedTriple> Corpus, CorpusShape Shape) BuildCommunityCorpus(int nodes, int communitySize, int outDegree)
     {
         HashSet<EncodedTriple> corpus = new(nodes * outDegree);
         ulong state = 5;
@@ -493,6 +655,10 @@ internal static class SelfIndexSoak
             }
         }
 
-        return [.. corpus];
+        //Subjects and targets both run 1..nodes; the predicate alphabet is the
+        //fixed 32-value set the draw above samples.
+        CorpusShape shape = new(MaxNodeId: (uint)nodes, PredicateCount: 32);
+
+        return ([.. corpus], shape);
     }
 }
