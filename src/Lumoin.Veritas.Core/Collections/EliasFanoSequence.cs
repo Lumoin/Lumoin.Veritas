@@ -1,7 +1,6 @@
 using System;
 using System.Diagnostics;
 using System.Numerics;
-using Lumoin.Veritas.Core.Columnar;
 
 namespace Lumoin.Veritas.Core.Collections;
 
@@ -43,6 +42,10 @@ public sealed class EliasFanoSequence
     //One in this many marker bits is sampled (the select-density knob): sparser
     //shrinks the sample arrays but lengthens each select's resume scan.
     private readonly int selectSampleRate;
+
+    //The injected bulk lane unpacker for Decode's low-bit runs, or null for the
+    //portable per-value path; supplied by a caller owning vectorised kernels.
+    private readonly BitLaneUnpacker? laneUnpacker;
 
     private readonly ulong[] lower;
 
@@ -90,9 +93,11 @@ public sealed class EliasFanoSequence
         uint maxHigh,
         int lowBits,
         int count,
-        int selectSampleRate)
+        int selectSampleRate,
+        BitLaneUnpacker? laneUnpacker)
     {
         this.selectSampleRate = selectSampleRate;
+        this.laneUnpacker = laneUnpacker;
         this.lower = lower;
         this.upper = upper;
         this.oneSampleWord = oneSampleWord;
@@ -109,17 +114,23 @@ public sealed class EliasFanoSequence
     /// <summary>Builds the sequence from a non-decreasing run of values.</summary>
     /// <param name="values">The values, non-decreasing; duplicates allowed.</param>
     /// <param name="selectSampleRate">One in this many marker bits is sampled to bound a select's resume scan; sparser shrinks the sample footprint and lengthens select.</param>
+    /// <param name="lanePacker">A bulk lane packer for the lower payload (the payload is exactly its lane layout), or <see langword="null"/> to pack portably. Supplied by a caller owning vectorised kernels.</param>
+    /// <param name="laneUnpacker">A bulk lane unpacker retained for <see cref="Decode"/>'s low-bit runs, or <see langword="null"/> to read portably.</param>
     /// <returns>The packed sequence.</returns>
     /// <exception cref="ArgumentException">The values are not non-decreasing.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="selectSampleRate"/> is less than 1.</exception>
-    public static EliasFanoSequence Build(ReadOnlySpan<uint> values, int selectSampleRate = DefaultSelectSampleRate)
+    public static EliasFanoSequence Build(
+        ReadOnlySpan<uint> values,
+        int selectSampleRate = DefaultSelectSampleRate,
+        BitLanePacker? lanePacker = null,
+        BitLaneUnpacker? laneUnpacker = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(selectSampleRate, 1);
 
         int count = values.Length;
         if(count == 0)
         {
-            return new EliasFanoSequence([], [], [0], [0], [0], [0], 0, 0, 0, 0, selectSampleRate);
+            return new EliasFanoSequence([], [], [0], [0], [0], [0], 0, 0, 0, 0, selectSampleRate, laneUnpacker);
         }
 
         for(int i = 1; i < count; i++)
@@ -150,13 +161,24 @@ public sealed class EliasFanoSequence
         int upperWords = (int)((upperBits + 63) >> 6);
         ulong[] upper = new ulong[upperWords];
 
-        //The lower payload is exactly the kernel backends' lane layout — value
-        //i's low bits at payload bits [i·ℓ, (i+1)·ℓ), little-endian within each
-        //word, the pack masking to the lane width itself — so one whole-column
-        //pack call builds it.
+        //The lower payload is a packed lane array — value i's low bits at
+        //payload bits [i·ℓ, (i+1)·ℓ), little-endian within each word — so an
+        //injected packer builds it in one whole-column call (it masks to the
+        //lane width itself); without one the portable loop packs it.
         if(lowBits != 0)
         {
-            ColumnarKernelBackend.Default.Pack(values, lowBits, lower);
+            if(lanePacker is null)
+            {
+                uint lowMask = (uint)((1UL << lowBits) - 1);
+                for(int i = 0; i < count; i++)
+                {
+                    WriteLow(lower, (long)i * lowBits, values[i] & lowMask, lowBits);
+                }
+            }
+            else
+            {
+                lanePacker(values, lowBits, lower);
+            }
         }
 
         for(int i = 0; i < count; i++)
@@ -168,7 +190,7 @@ public sealed class EliasFanoSequence
         (int[] oneSampleWord, int[] oneSampleOnesBefore) = BuildSamples(upper, upperWords, count, upperBits, selectSampleRate, ones: true);
         (int[] zeroSampleWord, int[] zeroSampleZerosBefore) = BuildSamples(upper, upperWords, (int)(maxHigh + 1), upperBits, selectSampleRate, ones: false);
 
-        return new EliasFanoSequence(lower, upper, oneSampleWord, oneSampleOnesBefore, zeroSampleWord, zeroSampleZerosBefore, upperBits, maxHigh, lowBits, count, selectSampleRate);
+        return new EliasFanoSequence(lower, upper, oneSampleWord, oneSampleOnesBefore, zeroSampleWord, zeroSampleZerosBefore, upperBits, maxHigh, lowBits, count, selectSampleRate, laneUnpacker);
     }
 
     /// <summary>Samples every <paramref name="sampleRate"/>-th set (or unset) bit: the word it lives in and the marker count before that word.</summary>
@@ -315,10 +337,10 @@ public sealed class EliasFanoSequence
             return;
         }
 
-        //The low parts first: a scalar head until the lane offset reaches a
-        //word boundary, then the kernel backend bulk-unpacks the rest of the
-        //run in one call (the lower payload is the backends' lane layout; a
-        //zero frame base makes the frame decode a pure unpack).
+        //The low parts first. With an injected unpacker: a scalar head until
+        //the lane offset reaches a word boundary, then one bulk call unpacks
+        //the rest of the run (a zero frame base makes it a pure unpack);
+        //without one, the portable per-value read covers the whole run.
         if(LowBits == 0)
         {
             destination[..count].Clear();
@@ -326,7 +348,7 @@ public sealed class EliasFanoSequence
         else
         {
             int k = 0;
-            while(k < count && (((long)(start + k) * LowBits) & 63) != 0)
+            while(k < count && (laneUnpacker is null || (((long)(start + k) * LowBits) & 63) != 0))
             {
                 destination[k] = ReadLow((long)(start + k) * LowBits);
                 k++;
@@ -335,7 +357,7 @@ public sealed class EliasFanoSequence
             if(k < count)
             {
                 int word = (int)(((long)(start + k) * LowBits) >> 6);
-                ColumnarKernelBackend.Default.DecodeFrame(lower.AsSpan(word), LowBits, 0, destination[k..count]);
+                laneUnpacker!(lower.AsSpan(word), LowBits, 0, destination[k..count]);
             }
         }
 
@@ -418,5 +440,22 @@ public sealed class EliasFanoSequence
         }
 
         return (uint)(bits & lowMask);
+    }
+
+    /// <summary>Writes <paramref name="width"/> low bits at a bit offset of <paramref name="target"/> — the portable lane pack used when no <see cref="BitLanePacker"/> is injected.</summary>
+    /// <param name="target">The lower payload.</param>
+    /// <param name="bitOffset">The bit offset.</param>
+    /// <param name="value">The low value.</param>
+    /// <param name="width">The low-bit width.</param>
+    private static void WriteLow(ulong[] target, long bitOffset, uint value, int width)
+    {
+        int word = (int)(bitOffset >> 6);
+        int shift = (int)(bitOffset & 63);
+
+        target[word] |= (ulong)value << shift;
+        if(shift + width > 64)
+        {
+            target[word + 1] |= (ulong)value >> (64 - shift);
+        }
     }
 }

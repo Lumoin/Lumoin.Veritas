@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Lumoin.Veritas.Core.Collections;
+using Lumoin.Veritas.Core.Columnar;
 
 namespace Lumoin.Veritas.Tests.Collections;
 
@@ -73,9 +74,14 @@ internal sealed class EliasFanoSequenceTests
             Assert.AreEqual(LinearNextGEQ(values, target), sequence.NextGEQ(target), $"NextGEQ disagreed at {target}");
         }
 
-        //Decode windows at varied starts — including lane offsets off any
-        //word boundary, where the bulk unpack takes a scalar head first.
+        //Decode windows at varied starts — including lane offsets off any word
+        //boundary, where the kernel path takes a scalar head before its bulk
+        //unpack. The portable build and the injected-kernel build must agree
+        //bit-for-bit on every window.
+        ColumnarKernelBackend backend = ColumnarKernelBackend.Default;
+        EliasFanoSequence kernelSequence = EliasFanoSequence.Build(values, lanePacker: backend.Pack.Invoke, laneUnpacker: backend.DecodeFrame.Invoke);
         uint[] decoded = new uint[values.Length];
+        uint[] kernelDecoded = new uint[values.Length];
         foreach(int start in (int[])[0, 1, 3, values.Length / 3, values.Length / 2, Math.Max(0, values.Length - 7)])
         {
             if(start > values.Length)
@@ -85,9 +91,11 @@ internal sealed class EliasFanoSequenceTests
 
             int count = Math.Min(values.Length - start, 300);
             sequence.Decode(start, count, decoded);
+            kernelSequence.Decode(start, count, kernelDecoded);
             for(int k = 0; k < count; k++)
             {
                 Assert.AreEqual(values[start + k], decoded[k], $"Decode disagreed at start {start} offset {k}");
+                Assert.AreEqual(values[start + k], kernelDecoded[k], $"Kernel decode disagreed at start {start} offset {k}");
             }
         }
     }

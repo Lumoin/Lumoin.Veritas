@@ -512,7 +512,13 @@ public sealed class BlockPackedColumn
             //One monotone sequence for the whole column; the caller is
             //responsible for only choosing this mode where the values are
             //globally non-decreasing (EliasFanoSequence.Build enforces it).
-            return new BlockPackedColumn(backend, values.Length, EliasFanoSequence.Build(values));
+            //The backend's lane kernels are injected here — the sequence's
+            //lower payload is exactly their lane layout — so the succinct
+            //layer stays free of this layer.
+            return new BlockPackedColumn(
+                backend,
+                values.Length,
+                EliasFanoSequence.Build(values, lanePacker: backend.Pack.Invoke, laneUnpacker: backend.DecodeFrame.Invoke));
         }
 
         int blockCount = (values.Length + BlockLength - 1) >> BlockShift;
