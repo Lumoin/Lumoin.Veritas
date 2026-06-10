@@ -296,11 +296,26 @@ producers — §4.2 `FactorizedBatchJoin` (Emit/Extend/Nest via `Of`/`Append`/`W
 `ExecuteFactorized` — and the `Flatten`/`BranchRowsOf` consumer read through it; the layout is now internal to
 one type. Behaviour-preserving: both differential suites + the soak compile/green (8125/0/546 full).
 
-**Next on §4.3:** (d) **`VeritasMemoryPool` threading** — `FactorizedBranches`' flat array and the Free Join
-executor's per-frame scratch (`Frame`/saved-state/`List`s in `Drive`) rent from the pool, reconciled with the
-Batch-4 arena revert. Then **deeper factorisation** (chain nesting — the `NestBranch` analogue — out of the
-generic join) and the cost-based depth/selector that picks Free Join's per-relation depth (the deferred
-join-strategy-selection research issue).
+**Next on §4.3:** (d) **explicit memory ownership** under the Rust-translatability lens (the engine must port
+cleanly to Rust → explicit ownership over GC-reliance; flat layouts, value types, pools/arenas). Decision
+(user: "go with the easiest, refactor as opportunities emerge"): **per-result `IDisposable`/`Drop`** ownership.
+`FactorizedBatch`/`FactorizedGroup`/`FactorizedBranches` become disposable, owning their flat buffers rented
+from `VeritasMemoryPool` (refine to a *query-scoped arena* later — distinct from the persistent-store Batch-4
+arena being reverted); consumers `using` them. NOTE: the existing differential suites assert answer-equality,
+NOT lifecycle — so this needs NEW disposal/use-after-free tests, not just a re-run; that is why it is a careful
+focused pass, not a tail-end bolt-on. **Scope confirmed by a first attempt (built then reverted):** `IDisposable`
+on the shared `FactorizedBatch` makes CA2000 require disposal at EVERY consumer, including the §4.2 query path —
+`ColumnarBatchPipeline.RunFactorizedStar`/`Chain` return `Flatten()` lazily, so they need a self-disposing
+iterator plus eager disposal of the `AddBranch`/`NestBranch` intermediates — and that disposal is inert
+(GC-backed) until §4.2 itself is pooled. So this is NOT a §4.3-only foundation: do it as ONE pass — make the
+types disposable, pool the §4.2 query path (self-disposing flatten + intermediate disposal), and pool the §4.3
+path together, so the consumer-disposal churn arrives with its payoff. (Mechanics that worked in the attempt:
+`FactorizedBranches` holds a `Memory<uint>` + optional `IMemoryOwner<uint>`, factory `Of`/`Append`/`WithCleared`
+take a `MemoryPool<uint>?`, ownership transfers up the aggregate; a counting `MemoryPool<uint>` test double pins
+rent==return.) Then the Free Join executor's hot-path growable `List`/`HashSet` + class
+`Frame` move to flat, pre-sized, value-type buffers (the least Rust-mappable part today). Then **deeper
+factorisation** (chain nesting — the `NestBranch` analogue — out of the generic join) and the cost-based
+depth/selector that picks Free Join's per-relation depth (the deferred join-strategy-selection research issue).
 
 ### After the tier
 
