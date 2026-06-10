@@ -447,6 +447,12 @@ public sealed class SparqlQueryEngine
         //The per-operator execution trace for this evaluation (no-op when no handler is wired). Evaluation-scoped,
         //never engine state, so its sequence is monotonic within this query without racing a concurrent evaluation.
         SparqlExecutionTrace trace = new(executionTrace, correlationId, TimeProvider.System);
+
+        //Per-evaluation leaf row caps: a LIMIT whose operator chain down to a BGP leaf preserves row counts
+        //lets the leaf stop draining at offset+limit rows; the slice still trims the exact window, so answers
+        //are unchanged — only the surplus is never drained. Allocated on the first qualifying slice.
+        Dictionary<ResultKey, int>? leafRowCaps = null;
+
         Stack<(AlgebraOperator Node, TermId Graph, bool Combine)> work = new();
         work.Push((algebra, activeGraph, Combine: false));
 
@@ -488,6 +494,14 @@ public sealed class SparqlQueryEngine
                 continue;
             }
 
+            //A LIMIT whose chain down to a BGP preserves row counts caps the leaf's drain at offset+limit;
+            //an ancestor pops before its descendants, so the cap is recorded before the leaf evaluates.
+            if(node is Slice { Limit: int sliceLimit } slice && sliceLimit >= 0 && TryFindCappableBgp(slice.Input) is Bgp cappableBgp)
+            {
+                leafRowCaps ??= new Dictionary<ResultKey, int>(ResultKeyComparer.Instance);
+                leafRowCaps[new ResultKey(cappableBgp, graph)] = (int)Math.Min((long)slice.Offset + sliceLimit, int.MaxValue);
+            }
+
             //A GRAPH form re-roots its child under the named graph(s) it designates, never the enclosing graph.
             if(node is Graph graphOperator)
             {
@@ -499,7 +513,13 @@ public sealed class SparqlQueryEngine
             IReadOnlyList<AlgebraOperator> children = node.Children;
             if(children.Count == 0)
             {
-                SolutionTable leaf = await EvaluateLeafAsync(node, graph, cancellationToken).ConfigureAwait(false);
+                int maxRows = int.MaxValue;
+                if(leafRowCaps is not null && leafRowCaps.TryGetValue(new ResultKey(node, graph), out int cappedRows))
+                {
+                    maxRows = cappedRows;
+                }
+
+                SolutionTable leaf = await EvaluateLeafAsync(node, graph, maxRows, cancellationToken).ConfigureAwait(false);
                 results[new ResultKey(node, graph)] = leaf;
 
                 //The graph-querying leaves carry the only strategy decision worth a trace point; the inline
@@ -672,7 +692,7 @@ public sealed class SparqlQueryEngine
     /// <param name="graph">The active graph, or <see cref="TermId.None"/> for the default graph.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The leaf's solution sequence.</returns>
-    private async ValueTask<SolutionTable> EvaluateLeafAsync(AlgebraOperator op, TermId graph, CancellationToken cancellationToken)
+    private async ValueTask<SolutionTable> EvaluateLeafAsync(AlgebraOperator op, TermId graph, int maxRows, CancellationToken cancellationToken)
     {
         //UnitTable / inline VALUES are graph-independent; the graph-querying leaves resolve the active graph's
         //store. The store is non-null by construction: the default graph always resolves, and a GRAPH form only
@@ -704,7 +724,7 @@ public sealed class SparqlQueryEngine
             //same pinned-store fallback discipline.
             QueryEngineRendezvous? rendezvous = graph.IsNone ? dataset.DefaultGraphRendezvous : null;
 
-            return await EvaluateBgpAsync(bgp, graphStore, rendezvous, graph, cancellationToken).ConfigureAwait(false);
+            return await EvaluateBgpAsync(bgp, graphStore, rendezvous, graph, maxRows, cancellationToken).ConfigureAwait(false);
         }
 
         if(op is Path pathOperator)
@@ -940,12 +960,13 @@ public sealed class SparqlQueryEngine
         }
     }
 
-    /// <summary>Evaluates a basic graph pattern against the active graph: encodes it to the backend, runs the worst-case-optimal join engine over <paramref name="graphStore"/> — through <paramref name="rendezvous"/> when one applies, pinning the store so the engine choice never outruns this snapshot — and decodes each solution.</summary>
+    /// <summary>Evaluates a basic graph pattern against the active graph: encodes it to the backend, runs the worst-case-optimal join engine over <paramref name="graphStore"/> — through <paramref name="rendezvous"/> when one applies, pinning the store so the engine choice never outruns this snapshot — and decodes each solution. Draining stops once <paramref name="maxRows"/> accepted rows are gathered (a LIMIT pushed to the leaf; the slice above trims the exact window), possibly overshooting by less than one batch on the batched path.</summary>
     /// <param name="bgp">The basic graph pattern.</param>
     /// <param name="graphStore">The active graph's store.</param>
+    /// <param name="maxRows">The accepted-row cap; <see cref="int.MaxValue"/> drains fully.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The BGP's solution sequence; empty when a constant in the pattern is absent from the active graph.</returns>
-    private async ValueTask<SolutionTable> EvaluateBgpAsync(Bgp bgp, HypertrieGraphStore graphStore, QueryEngineRendezvous? rendezvous, TermId activeGraph, CancellationToken cancellationToken)
+    private async ValueTask<SolutionTable> EvaluateBgpAsync(Bgp bgp, HypertrieGraphStore graphStore, QueryEngineRendezvous? rendezvous, TermId activeGraph, int maxRows, CancellationToken cancellationToken)
     {
         EncodedBgp encoded = EncodeBgp(bgp);
         if(!encoded.Encodable)
@@ -1014,6 +1035,11 @@ public sealed class SparqlQueryEngine
 
             await foreach(Solution solution in backendSolutions.ConfigureAwait(false))
             {
+                if(builder.RowCount >= maxRows)
+                {
+                    return;
+                }
+
                 if(selfJoinEqualities.Count > 0 && !SelfJoinHolds(solution, selfJoinEqualities))
                 {
                     continue;
@@ -1057,6 +1083,11 @@ public sealed class SparqlQueryEngine
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     builder.AppendBatch(batch);
+
+                    if(builder.RowCount >= maxRows)
+                    {
+                        break;
+                    }
                 }
 
                 return builder.Build();
@@ -1082,6 +1113,11 @@ public sealed class SparqlQueryEngine
             }
 
             await EvaluateVariantAsync(new BasicGraphPattern(variantPatterns, registry)).ConfigureAwait(false);
+
+            if(builder.RowCount >= maxRows)
+            {
+                return builder.Build();
+            }
 
             int advance = typeExpansions.Count - 1;
             while(advance >= 0 && ++cursors[advance] == typeExpansions[advance].Alternatives.Count)
@@ -1349,6 +1385,36 @@ public sealed class SparqlQueryEngine
     }
 
     /// <summary>
+    /// The BGP a slice's row cap can push to: the slice's input chain must preserve row counts and row
+    /// eligibility on the way down — projection and the multiset/sequence conversions do; anything else
+    /// (ordering, deduplication, expressions, joins, a nested slice) stops the walk, so a cap is never
+    /// recorded where draining fewer leaf rows could change the sliced answer.
+    /// </summary>
+    /// <param name="input">The slice's input operator.</param>
+    /// <returns>The cappable BGP leaf, or <see langword="null"/>.</returns>
+    private static Bgp? TryFindCappableBgp(AlgebraOperator input)
+    {
+        AlgebraOperator current = input;
+        while(true)
+        {
+            AlgebraOperator? next = current switch
+            {
+                Project project => project.Input,
+                ToList toList => toList.Input,
+                ToMultiSet toMultiSet => toMultiSet.Input,
+                _ => null,
+            };
+
+            if(next is null)
+            {
+                return current as Bgp;
+            }
+
+            current = next;
+        }
+    }
+
+    /// <summary>
     /// Builds the columnar backing of a basic graph pattern's result: one encoded-id column per projected variable,
     /// filled row by row from the backend solutions without decoding any term. The projected variables (and their
     /// column order) are taken from the pattern's backend→SPARQL map, in encounter order; a backend join variable
@@ -1368,6 +1434,9 @@ public sealed class SparqlQueryEngine
         private readonly TermDictionary dictionary;
 
         private int rowCount;
+
+        /// <summary>The number of accepted rows so far — the leaf row cap's progress measure.</summary>
+        public int RowCount => rowCount;
 
         /// <summary>Constructs a builder over the pattern's projected variables.</summary>
         /// <param name="toSparql">The backend-variable to SPARQL-variable map; its values, in iteration (encounter) order, are the result schema and its keys are the columns' backend variables.</param>

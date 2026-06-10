@@ -943,6 +943,37 @@ internal sealed class SparqlQueryEngineTests
         Assert.IsFalse(await engine.EvaluateAskAsync(Translate("PREFIX : <http://example.org/> ASK { ?s :knows ?o FILTER(?s = :nobody) }", pool), TestContext.CancellationToken).ConfigureAwait(false));
     }
 
+    /// <summary>A LIMIT over a plain pattern caps the leaf's drain and yields exactly the window; OFFSET windows hold; and DISTINCT between the slice and the pattern declines the cap, so deduplication still sees every row.</summary>
+    [TestMethod]
+    public async Task LimitCapsTheLeafAndDistinctDeclinesTheCap()
+    {
+        //Two subjects with two objects on each of three predicates: 16 solutions,
+        //grouped by subject in the pipeline's output order.
+        SparqlQueryEngine engine = await BuildEngineAsync(
+            ("alice", "p1", "a1"), ("alice", "p1", "a2"),
+            ("alice", "p2", "b1"), ("alice", "p2", "b2"),
+            ("alice", "p3", "c1"), ("alice", "p3", "c2"),
+            ("dave", "p1", "d1"), ("dave", "p1", "d2"),
+            ("dave", "p2", "e1"), ("dave", "p2", "e2"),
+            ("dave", "p3", "f1"), ("dave", "p3", "f2")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+        const string starPattern = "{ ?s :p1 ?o1 . ?s :p2 ?o2 . ?s :p3 ?o3 }";
+
+        AlgebraOperator limited = Translate($"PREFIX : <http://example.org/> SELECT ?s WHERE {starPattern} LIMIT 3", pool);
+        Assert.HasCount(3, await engine.EvaluateAsync(limited, TestContext.CancellationToken).ConfigureAwait(false));
+
+        //OFFSET past most of the result: 16 solutions leave 2 after skipping 14.
+        AlgebraOperator window = Translate($"PREFIX : <http://example.org/> SELECT ?s WHERE {starPattern} OFFSET 14 LIMIT 5", pool);
+        Assert.HasCount(2, await engine.EvaluateAsync(window, TestContext.CancellationToken).ConfigureAwait(false));
+
+        //DISTINCT between the slice and the pattern (on a branch variable, so
+        //no fast path answers it): the first three raw rows bind at most two
+        //distinct ?o1 values, so a wrongly-capped leaf could never produce
+        //three — three rows proves the cap declined and dedup saw every row.
+        AlgebraOperator distinctLimited = Translate($"PREFIX : <http://example.org/> SELECT DISTINCT ?o1 WHERE {starPattern} LIMIT 3", pool);
+        Assert.HasCount(3, await engine.EvaluateAsync(distinctLimited, TestContext.CancellationToken).ConfigureAwait(false));
+    }
+
     /// <summary>GROUP BY an arithmetic expression bound to a variable partitions by the expression's value (the cross product of :p {0,1,2} × :q {0,1,2} sums to 0..4, five groups).</summary>
     [TestMethod]
     public async Task GroupByArithmeticExpressionPartitionsByValue()
