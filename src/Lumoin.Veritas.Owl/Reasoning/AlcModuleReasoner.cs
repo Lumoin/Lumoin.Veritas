@@ -160,7 +160,7 @@ public static class AlcModuleReasoner
     /// <param name="SuperRoles">Per-role reflexive-transitive told super-roles.</param>
     /// <param name="SignatureClasses">The named classes of the supported fragment, in first-appearance order.</param>
     /// <param name="Unsupported">The named remainder beyond the calculus.</param>
-    private sealed record Translation(
+    internal sealed record Translation(
         List<AlcConcept> TBox,
         Dictionary<Utf8String, List<AlcConcept>> AssertedConcepts,
         List<(Utf8String From, Utf8String Role, Utf8String To)> Edges,
@@ -171,7 +171,7 @@ public static class AlcModuleReasoner
     /// <summary>Translates the module's axioms into the ALC(H) reading, collecting what falls outside.</summary>
     /// <param name="module">The module.</param>
     /// <returns>The translation.</returns>
-    private static Translation Translate(ReasoningModule module)
+    internal static Translation Translate(ReasoningModule module)
     {
         List<AlcConcept> tbox = [];
         Dictionary<Utf8String, List<AlcConcept>> asserted = [];
