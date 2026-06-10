@@ -9,6 +9,7 @@ using Lumoin.Veritas.Core.Hypertrie;
 using Lumoin.Veritas.Core.Hypertrie.Execution;
 using Lumoin.Veritas.Core.Hypertrie.Query;
 using Lumoin.Veritas.Core.Hypertrie.Storage;
+using Lumoin.Veritas.Core.Memory;
 
 namespace Lumoin.Veritas.Tests.Columnar;
 
@@ -261,7 +262,8 @@ internal sealed class FreeJoinPipelineTests
         HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(fixture, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
         BasicGraphPattern query = queryBuilder(new VariableRegistry());
 
-        FactorizedBatch? factorized = FreeJoinPipeline.RunFactorized(index, query);
+        using FactorizedArena arena = new(VeritasMemoryPool<uint>.Shared);
+        FactorizedBatch? factorized = FreeJoinPipeline.RunFactorized(index, query, arena);
         Assert.IsNotNull(factorized, "The pipeline returned no factorised plan for a single-key star.");
 
         List<string> oracle = await LeapfrogFingerprintsAsync(store.Query(query, TimeProvider.System, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
@@ -297,6 +299,7 @@ internal sealed class FreeJoinPipelineTests
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(TriangleFixture());
         BasicGraphPattern query = TriangleQuery(new VariableRegistry());
 
-        Assert.IsNull(FreeJoinPipeline.RunFactorized(index, query));
+        using FactorizedArena arena = new(VeritasMemoryPool<uint>.Shared);
+        Assert.IsNull(FreeJoinPipeline.RunFactorized(index, query, arena));
     }
 }

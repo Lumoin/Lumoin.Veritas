@@ -117,12 +117,14 @@ public static class FreeJoinExecutor
     /// </summary>
     /// <param name="relations">The relations; for the star each is a full-depth two-column trie over the key then a branch variable.</param>
     /// <param name="variableOrder">The global descent order; its first variable is the shared key, the rest the branch variables.</param>
+    /// <param name="arena">The arena the groups' branch values are allocated from; the result is valid until it is disposed.</param>
     /// <returns>The factorised result over <paramref name="variableOrder"/>, or <see langword="null"/> when the relations are not a single-key star.</returns>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public static FactorizedBatch? ExecuteFactorized(IReadOnlyList<GeneralizedHashTrie> relations, IReadOnlyList<Variable> variableOrder)
+    public static FactorizedBatch? ExecuteFactorized(IReadOnlyList<GeneralizedHashTrie> relations, IReadOnlyList<Variable> variableOrder, FactorizedArena arena)
     {
         ArgumentNullException.ThrowIfNull(relations);
         ArgumentNullException.ThrowIfNull(variableOrder);
+        ArgumentNullException.ThrowIfNull(arena);
 
         if(relations.Count < 2 || variableOrder.Count < 2)
         {
@@ -232,7 +234,7 @@ public static class FreeJoinExecutor
                 branchRowCounts[relation] = values.Length;
             }
 
-            groups.Add(new FactorizedGroup([keyValue], FactorizedBranches.Of(branchValues, branchRowCounts, branchStride)));
+            groups.Add(new FactorizedGroup([keyValue], FactorizedBranches.Of(branchValues, branchRowCounts, branchStride, arena)));
         }
 
         int[][] branchColumns = new int[relations.Count][];

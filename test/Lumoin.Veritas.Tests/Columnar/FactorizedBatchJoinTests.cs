@@ -6,6 +6,7 @@ using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie.Execution;
 using Lumoin.Veritas.Core.Hypertrie.Query;
+using Lumoin.Veritas.Core.Memory;
 
 namespace Lumoin.Veritas.Tests.Columnar;
 
@@ -166,8 +167,9 @@ internal sealed class FactorizedBatchJoinTests
             ColumnarBatchScan.Scan(index, p1), buildSchema, ColumnarBatchScan.Scan(index, p2), probeSchema);
         List<string> flatRows = Fingerprints(flat, [.. buildSchema, .. probeSchema.Where(v => !buildSchema.Contains(v))]);
 
+        using FactorizedArena arena = new(VeritasMemoryPool<uint>.Shared);
         FactorizedBatch factorized = FactorizedBatchJoin.Join(
-            ColumnarBatchScan.Scan(index, p1), buildSchema, ColumnarBatchScan.Scan(index, p2), probeSchema);
+            ColumnarBatchScan.Scan(index, p1), buildSchema, ColumnarBatchScan.Scan(index, p2), probeSchema, arena);
         List<string> factorizedRows = Fingerprints(factorized.Flatten(), factorized.Schema);
 
         Assert.IsGreaterThan(0, flatRows.Count);
@@ -209,8 +211,9 @@ internal sealed class FactorizedBatchJoinTests
             ColumnarBatchScan.Scan(index, boundBuild), buildSchema, ColumnarBatchScan.Scan(index, probe), probeSchema);
         List<string> flatRows = Fingerprints(flat, [.. buildSchema, .. probeSchema.Where(v => !buildSchema.Contains(v))]);
 
+        using FactorizedArena arena = new(VeritasMemoryPool<uint>.Shared);
         FactorizedBatch factorized = FactorizedBatchJoin.Join(
-            ColumnarBatchScan.Scan(index, boundBuild), buildSchema, ColumnarBatchScan.Scan(index, probe), probeSchema);
+            ColumnarBatchScan.Scan(index, boundBuild), buildSchema, ColumnarBatchScan.Scan(index, probe), probeSchema, arena);
 
         //Branch zero (the build side) has no columns; its rows are empty
         //tuples carrying only a multiplicity of one per matched key.
@@ -242,9 +245,10 @@ internal sealed class FactorizedBatchJoinTests
 
         //Two arms factorise on the shared subject, then the third attaches as
         //a new branch on the same key — no flat product between the joins.
+        using FactorizedArena arena = new(VeritasMemoryPool<uint>.Shared);
         FactorizedBatch firstTwo = FactorizedBatchJoin.Join(
-            ColumnarBatchScan.Scan(index, p1), schema1, ColumnarBatchScan.Scan(index, p2), schema2);
-        FactorizedBatch? star = FactorizedBatchJoin.AddBranch(firstTwo, ColumnarBatchScan.Scan(index, p3), schema3);
+            ColumnarBatchScan.Scan(index, p1), schema1, ColumnarBatchScan.Scan(index, p2), schema2, arena);
+        FactorizedBatch? star = FactorizedBatchJoin.AddBranch(firstTwo, ColumnarBatchScan.Scan(index, p3), schema3, arena);
 
         Assert.IsNotNull(star);
         Assert.HasCount(3, star.BranchColumns);
@@ -272,15 +276,16 @@ internal sealed class FactorizedBatchJoinTests
         TriplePattern p1 = EdgePattern(registry, P1, "s", "o");
         TriplePattern p2 = EdgePattern(registry, P2, "s", "o2");
 
+        using FactorizedArena arena = new(VeritasMemoryPool<uint>.Shared);
         FactorizedBatch firstTwo = FactorizedBatchJoin.Join(
             ColumnarBatchScan.Scan(index, p1), ColumnarBatchScan.ScanSchemaOf(index, p1),
-            ColumnarBatchScan.Scan(index, p2), ColumnarBatchScan.ScanSchemaOf(index, p2));
+            ColumnarBatchScan.Scan(index, p2), ColumnarBatchScan.ScanSchemaOf(index, p2), arena);
 
         //?s p3 ?o shares the key ?s but also the branch variable ?o — a non-key
         //join the single-level factorisation cannot extend, so it must refuse.
         TriplePattern branchProbe = EdgePattern(registry, P3, "s", "o");
         FactorizedBatch? refused = FactorizedBatchJoin.AddBranch(
-            firstTwo, ColumnarBatchScan.Scan(index, branchProbe), ColumnarBatchScan.ScanSchemaOf(index, branchProbe));
+            firstTwo, ColumnarBatchScan.Scan(index, branchProbe), ColumnarBatchScan.ScanSchemaOf(index, branchProbe), arena);
 
         Assert.IsNull(refused);
     }
@@ -356,9 +361,10 @@ internal sealed class FactorizedBatchJoinTests
 
         //Join the first two arms on ?x, then nest the ?b branch under ?b to
         //attach the ?b p3 ?c arm — a second factorisation level.
+        using FactorizedArena arena = new(VeritasMemoryPool<uint>.Shared);
         FactorizedBatch firstTwo = FactorizedBatchJoin.Join(
-            ColumnarBatchScan.Scan(index, r1), schema1, ColumnarBatchScan.Scan(index, r2), schema2);
-        FactorizedBatch? chain = FactorizedBatchJoin.NestBranch(firstTwo, registry.GetOrAdd("b"), ColumnarBatchScan.Scan(index, r3), schema3);
+            ColumnarBatchScan.Scan(index, r1), schema1, ColumnarBatchScan.Scan(index, r2), schema2, arena);
+        FactorizedBatch? chain = FactorizedBatchJoin.NestBranch(firstTwo, registry.GetOrAdd("b"), ColumnarBatchScan.Scan(index, r3), schema3, arena);
 
         Assert.IsNotNull(chain);
         Assert.IsTrue(chain.HasNestedBranches);
@@ -393,16 +399,17 @@ internal sealed class FactorizedBatchJoinTests
         IReadOnlyList<Variable> schema2 = ColumnarBatchScan.ScanSchemaOf(index, r2);
         IReadOnlyList<Variable> schema3 = ColumnarBatchScan.ScanSchemaOf(index, r3);
 
+        using FactorizedArena arena = new(VeritasMemoryPool<uint>.Shared);
         FactorizedBatch firstTwo = FactorizedBatchJoin.Join(
-            ColumnarBatchScan.Scan(index, r1), schema1, ColumnarBatchScan.Scan(index, r2), schema2);
+            ColumnarBatchScan.Scan(index, r1), schema1, ColumnarBatchScan.Scan(index, r2), schema2, arena);
 
         //?x is the group key, not a branch — nesting cannot target it.
-        Assert.IsNull(FactorizedBatchJoin.NestBranch(firstTwo, registry.GetOrAdd("x"), ColumnarBatchScan.Scan(index, r2), schema2));
+        Assert.IsNull(FactorizedBatchJoin.NestBranch(firstTwo, registry.GetOrAdd("x"), ColumnarBatchScan.Scan(index, r2), schema2, arena));
 
         //Once nested, a second nesting would exceed depth two and is refused.
-        FactorizedBatch chain = FactorizedBatchJoin.NestBranch(firstTwo, registry.GetOrAdd("b"), ColumnarBatchScan.Scan(index, r3), schema3)!;
+        FactorizedBatch chain = FactorizedBatchJoin.NestBranch(firstTwo, registry.GetOrAdd("b"), ColumnarBatchScan.Scan(index, r3), schema3, arena)!;
         TriplePattern r4 = EdgePattern(registry, P1, "c", "d");
-        Assert.IsNull(FactorizedBatchJoin.NestBranch(chain, registry.GetOrAdd("c"), ColumnarBatchScan.Scan(index, r4), ColumnarBatchScan.ScanSchemaOf(index, r4)));
+        Assert.IsNull(FactorizedBatchJoin.NestBranch(chain, registry.GetOrAdd("c"), ColumnarBatchScan.Scan(index, r4), ColumnarBatchScan.ScanSchemaOf(index, r4), arena));
     }
 
     [TestMethod]
@@ -415,9 +422,10 @@ internal sealed class FactorizedBatchJoinTests
 
         //One group, key column 0, two single-column branches with two rows
         //each: the flatten must walk all four combinations.
+        using FactorizedArena arena = new(VeritasMemoryPool<uint>.Shared);
         FactorizedGroup group = new(
             keyValues: [7],
-            branches: FactorizedBranches.Of([[100, 101], [200, 201]], [2, 2], [1, 1]));
+            branches: FactorizedBranches.Of([[100, 101], [200, 201]], [2, 2], [1, 1], arena));
         FactorizedBatch batch = new([key, left, right], keyColumns: [0], branchColumns: [[1], [2]], groups: [group]);
 
         Assert.AreEqual(4, batch.FlatRowCount);

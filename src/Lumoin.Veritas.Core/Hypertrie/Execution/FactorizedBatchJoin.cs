@@ -45,6 +45,7 @@ public static class FactorizedBatchJoin
     /// <param name="buildSchema">The build side's schema.</param>
     /// <param name="probe">The side folded into the groups.</param>
     /// <param name="probeSchema">The probe side's schema.</param>
+    /// <param name="arena">The arena the groups' branch values are allocated from; the result is valid until it is disposed.</param>
     /// <returns>The factorised join result over the concatenated schema.</returns>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">The schemas share no variable, or more than <see cref="SolutionBatchJoin.MaximumJoinVariables"/>.</exception>
@@ -52,12 +53,14 @@ public static class FactorizedBatchJoin
         IEnumerable<SolutionBatch> build,
         IReadOnlyList<Variable> buildSchema,
         IEnumerable<SolutionBatch> probe,
-        IReadOnlyList<Variable> probeSchema)
+        IReadOnlyList<Variable> probeSchema,
+        FactorizedArena arena)
     {
         ArgumentNullException.ThrowIfNull(build);
         ArgumentNullException.ThrowIfNull(buildSchema);
         ArgumentNullException.ThrowIfNull(probe);
         ArgumentNullException.ThrowIfNull(probeSchema);
+        ArgumentNullException.ThrowIfNull(arena);
 
         if(!SolutionBatchJoin.CanJoin(buildSchema, probeSchema))
         {
@@ -109,7 +112,7 @@ public static class FactorizedBatchJoin
 
         int[] keyColumns = [.. buildKeyColumns];
         int[][] branchColumns = [[.. buildCarryColumns], [.. probeBranchColumns]];
-        List<FactorizedGroup> emitted = EmitGroups(groups, buildKeyColumns.Count, buildCarryColumns.Count, probeCarryColumns.Count);
+        List<FactorizedGroup> emitted = EmitGroups(groups, buildKeyColumns.Count, buildCarryColumns.Count, probeCarryColumns.Count, arena);
 
         return new FactorizedBatch(outputSchema, keyColumns, branchColumns, emitted);
     }
@@ -127,6 +130,7 @@ public static class FactorizedBatchJoin
     /// <param name="left">The factorised batch to extend; consumed by key, not flattened.</param>
     /// <param name="probe">The pattern's matches, joined on the key.</param>
     /// <param name="probeSchema">The probe's schema, positional against its columns.</param>
+    /// <param name="arena">The arena the extended branch values are allocated from; pass the one <paramref name="left"/> was built over so the whole chain shares its lifetime.</param>
     /// <returns>
     /// The extended factorised batch over the concatenated schema, or
     /// <see langword="null"/> when the probe joins on anything but exactly the
@@ -137,11 +141,13 @@ public static class FactorizedBatchJoin
     public static FactorizedBatch? AddBranch(
         FactorizedBatch left,
         IEnumerable<SolutionBatch> probe,
-        IReadOnlyList<Variable> probeSchema)
+        IReadOnlyList<Variable> probeSchema,
+        FactorizedArena arena)
     {
         ArgumentNullException.ThrowIfNull(left);
         ArgumentNullException.ThrowIfNull(probe);
         ArgumentNullException.ThrowIfNull(probeSchema);
+        ArgumentNullException.ThrowIfNull(arena);
 
         int keyCount = left.KeyColumns.Length;
 
@@ -184,7 +190,7 @@ public static class FactorizedBatchJoin
         }
 
         Dictionary<JoinKey, ProbeBucket> buckets = BuildProbeBuckets(probe, probeKeyColumns, probeCarryColumns);
-        List<FactorizedGroup> extended = ExtendGroups(left, keyCount, buckets, probeCarryColumns.Count);
+        List<FactorizedGroup> extended = ExtendGroups(left, keyCount, buckets, probeCarryColumns.Count, arena);
 
         int[][] branchColumns = new int[left.BranchColumns.Length + 1][];
         Array.Copy(left.BranchColumns, branchColumns, left.BranchColumns.Length);
@@ -240,12 +246,14 @@ public static class FactorizedBatchJoin
     /// <param name="keyCount">The key column count.</param>
     /// <param name="buckets">The probe buckets keyed on the join key.</param>
     /// <param name="probeCarryCount">The probe-only column count.</param>
+    /// <param name="arena">The arena the extended branch values are allocated from.</param>
     /// <returns>The extended groups.</returns>
     private static List<FactorizedGroup> ExtendGroups(
         FactorizedBatch left,
         int keyCount,
         Dictionary<JoinKey, ProbeBucket> buckets,
-        int probeCarryCount)
+        int probeCarryCount,
+        FactorizedArena arena)
     {
         List<FactorizedGroup> extended = new(left.Groups.Count);
         foreach(FactorizedGroup group in left.Groups)
@@ -257,7 +265,7 @@ public static class FactorizedBatchJoin
             }
 
             uint[] packed = probeCarryCount == 0 ? [] : [.. bucket.Values];
-            FactorizedBranches branches = group.Branches.Append(packed, bucket.Rows, probeCarryCount);
+            FactorizedBranches branches = group.Branches.Append(packed, bucket.Rows, probeCarryCount, arena);
 
             extended.Add(new FactorizedGroup(group.KeyValues, branches));
         }
@@ -279,6 +287,7 @@ public static class FactorizedBatchJoin
     /// <param name="branchVariable">The branch variable the probe joins on; it must be bound by a branch that holds it as its only column.</param>
     /// <param name="probe">The pattern's matches, joined on <paramref name="branchVariable"/>.</param>
     /// <param name="probeSchema">The probe's schema, positional against its columns.</param>
+    /// <param name="arena">The arena the nested branch values are allocated from; pass the one <paramref name="left"/> was built over so the whole chain shares its lifetime.</param>
     /// <returns>
     /// The depth-2 factorised batch over the concatenated schema, or
     /// <see langword="null"/> when the shape is outside this step: the left
@@ -290,11 +299,13 @@ public static class FactorizedBatchJoin
         FactorizedBatch left,
         Variable branchVariable,
         IEnumerable<SolutionBatch> probe,
-        IReadOnlyList<Variable> probeSchema)
+        IReadOnlyList<Variable> probeSchema,
+        FactorizedArena arena)
     {
         ArgumentNullException.ThrowIfNull(left);
         ArgumentNullException.ThrowIfNull(probe);
         ArgumentNullException.ThrowIfNull(probeSchema);
+        ArgumentNullException.ThrowIfNull(arena);
 
         //Depth-2 only: a batch that already nests would push the join two
         //levels down, which this step does not build.
@@ -373,7 +384,7 @@ public static class FactorizedBatchJoin
         int[][] branchColumnsOut = (int[][])left.BranchColumns.Clone();
         branchColumnsOut[targetBranch] = nestedBranchColumns;
 
-        List<FactorizedGroup> groups = NestGroups(left, targetBranch, nestedSchema, nestedChildColumns, probeCarryColumns.Count, buckets);
+        List<FactorizedGroup> groups = NestGroups(left, targetBranch, nestedSchema, nestedChildColumns, probeCarryColumns.Count, buckets, arena);
 
         return new FactorizedBatch(outputSchema, left.KeyColumns, branchColumnsOut, groups);
     }
@@ -385,6 +396,7 @@ public static class FactorizedBatchJoin
     /// <param name="nestedChildColumns">The nested-schema indices of the probe's new columns — the sub-batch's single branch.</param>
     /// <param name="probeCarryCount">The probe-only column count.</param>
     /// <param name="buckets">The probe matches per branch-variable value.</param>
+    /// <param name="arena">The arena the nested sub-batches' branch values are allocated from.</param>
     /// <returns>The extended groups.</returns>
     private static List<FactorizedGroup> NestGroups(
         FactorizedBatch left,
@@ -392,7 +404,8 @@ public static class FactorizedBatchJoin
         IReadOnlyList<Variable> nestedSchema,
         int[] nestedChildColumns,
         int probeCarryCount,
-        Dictionary<JoinKey, ProbeBucket> buckets)
+        Dictionary<JoinKey, ProbeBucket> buckets,
+        FactorizedArena arena)
     {
         int branchCount = left.BranchColumns.Length;
         int[][] nestedBranchColumns = [nestedChildColumns];
@@ -416,7 +429,8 @@ public static class FactorizedBatchJoin
                 FactorizedBranches nestedBranchStore = FactorizedBranches.Of(
                     [probeCarryCount == 0 ? [] : [.. bucket.Values]],
                     [bucket.Rows],
-                    [probeCarryCount]);
+                    [probeCarryCount],
+                    arena);
                 nestedGroups.Add(new FactorizedGroup([branchVariableValue], nestedBranchStore));
             }
 
@@ -431,7 +445,7 @@ public static class FactorizedBatchJoin
             nestedBranches[targetBranch] = nested;
 
             //The nested branch carries no flat values in the parent now.
-            groups.Add(new FactorizedGroup(group.KeyValues, group.Branches.WithCleared(targetBranch), nestedBranches));
+            groups.Add(new FactorizedGroup(group.KeyValues, group.Branches.WithCleared(targetBranch, arena), nestedBranches));
         }
 
         return groups;
@@ -525,12 +539,14 @@ public static class FactorizedBatchJoin
     /// <param name="keyCount">The key column count.</param>
     /// <param name="buildCarryCount">The build-only column count.</param>
     /// <param name="probeCarryCount">The probe-only column count.</param>
+    /// <param name="arena">The arena the groups' branch values are allocated from.</param>
     /// <returns>The emitted groups; a group with no probe match cannot reach a join row and is dropped.</returns>
     private static List<FactorizedGroup> EmitGroups(
         Dictionary<JoinKey, GroupBuilder> groups,
         int keyCount,
         int buildCarryCount,
-        int probeCarryCount)
+        int probeCarryCount,
+        FactorizedArena arena)
     {
         List<FactorizedGroup> emitted = new(groups.Count);
         foreach(GroupBuilder group in groups.Values)
@@ -544,7 +560,8 @@ public static class FactorizedBatchJoin
             FactorizedBranches branches = FactorizedBranches.Of(
                 [PackOf(group.BuildValues, buildCarryCount), PackOf(group.ProbeValues, probeCarryCount)],
                 [group.BuildRows, group.ProbeRows],
-                [buildCarryCount, probeCarryCount]);
+                [buildCarryCount, probeCarryCount],
+                arena);
 
             emitted.Add(new FactorizedGroup(keyValues, branches));
         }

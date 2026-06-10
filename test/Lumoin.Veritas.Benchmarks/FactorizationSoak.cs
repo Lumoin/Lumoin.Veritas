@@ -6,6 +6,7 @@ using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie.Execution;
 using Lumoin.Veritas.Core.Hypertrie.Query;
+using Lumoin.Veritas.Core.Memory;
 
 namespace Lumoin.Veritas.Benchmarks;
 
@@ -96,7 +97,8 @@ internal static class FactorizationSoak
         Console.WriteLine($"[factorize-chain] hubs={hubs:N0} fanA={fanA} fanB={fanB} fanC={fanC} | flat~{flatExpected:N0} factorized~{tupleExpected:N0}");
 
         long flatRows = CountPipelineFlat(index, plan);
-        FactorizedBatch warm = FactorizeChain(index, r1, schema1, r2, schema2, r3, schema3, branchVariable);
+        using FactorizedArena warmArena = new(VeritasMemoryPool<uint>.Shared);
+        FactorizedBatch warm = FactorizeChain(index, r1, schema1, r2, schema2, r3, schema3, branchVariable, warmArena);
         Console.WriteLine($"[factorize-chain]   flatRows={flatRows:N0} factorizedFlat={warm.FlatRowCount:N0} {(flatRows == warm.FlatRowCount ? "MATCH" : "MISMATCH")} storedTuples={warm.FactorizedTupleCount:N0} nested={warm.HasNestedBranches}");
         Console.WriteLine($"[factorize-chain]   compression: x{(double)warm.FlatRowCount / Math.Max(warm.FactorizedTupleCount, 1):F1} (rows/tuples)");
 
@@ -117,7 +119,8 @@ internal static class FactorizationSoak
     /// <param name="r3">The third arm pattern.</param>
     /// <param name="schema3">The third arm's scan schema.</param>
     /// <param name="branchVariable">The <c>?b</c> variable the third arm joins on.</param>
-    /// <returns>The depth-2 factorised chain.</returns>
+    /// <param name="arena">The arena the factorised buffers are allocated from.</param>
+    /// <returns>The depth-2 factorised chain, valid until <paramref name="arena"/> is disposed.</returns>
     private static FactorizedBatch FactorizeChain(
         ColumnarTripleIndex index,
         TriplePattern r1,
@@ -126,12 +129,13 @@ internal static class FactorizationSoak
         IReadOnlyList<Variable> schema2,
         TriplePattern r3,
         IReadOnlyList<Variable> schema3,
-        Variable branchVariable)
+        Variable branchVariable,
+        FactorizedArena arena)
     {
         FactorizedBatch firstTwo = FactorizedBatchJoin.Join(
-            ColumnarBatchScan.Scan(index, r1), schema1, ColumnarBatchScan.Scan(index, r2), schema2);
+            ColumnarBatchScan.Scan(index, r1), schema1, ColumnarBatchScan.Scan(index, r2), schema2, arena);
 
-        return FactorizedBatchJoin.NestBranch(firstTwo, branchVariable, ColumnarBatchScan.Scan(index, r3), schema3)!;
+        return FactorizedBatchJoin.NestBranch(firstTwo, branchVariable, ColumnarBatchScan.Scan(index, r3), schema3, arena)!;
     }
 
     /// <summary>Times and measures the allocations of building the depth-2 factorised chain.</summary>
@@ -154,9 +158,10 @@ internal static class FactorizationSoak
         IReadOnlyList<Variable> schema3,
         Variable branchVariable)
     {
+        using FactorizedArena arena = new(VeritasMemoryPool<uint>.Shared);
         long before = GC.GetAllocatedBytesForCurrentThread();
         long start = Stopwatch.GetTimestamp();
-        FactorizedBatch chain = FactorizeChain(index, r1, schema1, r2, schema2, r3, schema3, branchVariable);
+        FactorizedBatch chain = FactorizeChain(index, r1, schema1, r2, schema2, r3, schema3, branchVariable, arena);
         _ = chain.FactorizedTupleCount;
         TimeSpan elapsed = Stopwatch.GetElapsedTime(start);
         long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
@@ -237,8 +242,9 @@ internal static class FactorizationSoak
 
         //Warm the JIT and confirm flatten reproduces the flat cardinality.
         long flatRows = CountFlat(index, p1, buildSchema, p2, probeSchema);
+        using FactorizedArena warmArena = new(VeritasMemoryPool<uint>.Shared);
         FactorizedBatch warm = FactorizedBatchJoin.Join(
-            ColumnarBatchScan.Scan(index, p1), buildSchema, ColumnarBatchScan.Scan(index, p2), probeSchema);
+            ColumnarBatchScan.Scan(index, p1), buildSchema, ColumnarBatchScan.Scan(index, p2), probeSchema, warmArena);
         Console.WriteLine($"[factorize]   flatRows={flatRows:N0} factorizedFlat={warm.FlatRowCount:N0} {(flatRows == warm.FlatRowCount ? "MATCH" : "MISMATCH")} storedTuples={warm.FactorizedTupleCount:N0} groups={warm.Groups.Count:N0}");
         Console.WriteLine($"[factorize]   compression: x{(double)warm.FlatRowCount / Math.Max(warm.FactorizedTupleCount, 1):F1} (rows/tuples)");
 
@@ -272,7 +278,8 @@ internal static class FactorizationSoak
         Console.WriteLine($"[factorize-star] subjects={subjects:N0} fan={fan} arms=3 | flat~{flatExpected:N0} factorized~{tupleExpected:N0}");
 
         long flatRows = CountPipelineFlat(index, plan);
-        FactorizedBatch warm = FactorizeStar(index, p1, schema1, p2, schema2, p3, schema3);
+        using FactorizedArena warmArena = new(VeritasMemoryPool<uint>.Shared);
+        FactorizedBatch warm = FactorizeStar(index, p1, schema1, p2, schema2, p3, schema3, warmArena);
         Console.WriteLine($"[factorize-star]   flatRows={flatRows:N0} factorizedFlat={warm.FlatRowCount:N0} {(flatRows == warm.FlatRowCount ? "MATCH" : "MISMATCH")} storedTuples={warm.FactorizedTupleCount:N0} branches={warm.BranchColumns.Length}");
         Console.WriteLine($"[factorize-star]   compression: x{(double)warm.FlatRowCount / Math.Max(warm.FactorizedTupleCount, 1):F1} (rows/tuples)");
 
@@ -292,7 +299,8 @@ internal static class FactorizationSoak
     /// <param name="schema2">The second arm's scan schema.</param>
     /// <param name="p3">The third arm pattern.</param>
     /// <param name="schema3">The third arm's scan schema.</param>
-    /// <returns>The factorised star.</returns>
+    /// <param name="arena">The arena the factorised buffers are allocated from.</param>
+    /// <returns>The factorised star, valid until <paramref name="arena"/> is disposed.</returns>
     private static FactorizedBatch FactorizeStar(
         ColumnarTripleIndex index,
         TriplePattern p1,
@@ -300,12 +308,13 @@ internal static class FactorizationSoak
         TriplePattern p2,
         IReadOnlyList<Variable> schema2,
         TriplePattern p3,
-        IReadOnlyList<Variable> schema3)
+        IReadOnlyList<Variable> schema3,
+        FactorizedArena arena)
     {
         FactorizedBatch firstTwo = FactorizedBatchJoin.Join(
-            ColumnarBatchScan.Scan(index, p1), schema1, ColumnarBatchScan.Scan(index, p2), schema2);
+            ColumnarBatchScan.Scan(index, p1), schema1, ColumnarBatchScan.Scan(index, p2), schema2, arena);
 
-        return FactorizedBatchJoin.AddBranch(firstTwo, ColumnarBatchScan.Scan(index, p3), schema3)!;
+        return FactorizedBatchJoin.AddBranch(firstTwo, ColumnarBatchScan.Scan(index, p3), schema3, arena)!;
     }
 
     /// <summary>Times and measures the allocations of building the factorised star.</summary>
@@ -326,9 +335,10 @@ internal static class FactorizationSoak
         TriplePattern p3,
         IReadOnlyList<Variable> schema3)
     {
+        using FactorizedArena arena = new(VeritasMemoryPool<uint>.Shared);
         long before = GC.GetAllocatedBytesForCurrentThread();
         long start = Stopwatch.GetTimestamp();
-        FactorizedBatch star = FactorizeStar(index, p1, schema1, p2, schema2, p3, schema3);
+        FactorizedBatch star = FactorizeStar(index, p1, schema1, p2, schema2, p3, schema3, arena);
         _ = star.FactorizedTupleCount;
         TimeSpan elapsed = Stopwatch.GetElapsedTime(start);
         long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
@@ -444,10 +454,11 @@ internal static class FactorizationSoak
         TriplePattern probePattern,
         IReadOnlyList<Variable> probeSchema)
     {
+        using FactorizedArena arena = new(VeritasMemoryPool<uint>.Shared);
         long before = GC.GetAllocatedBytesForCurrentThread();
         long start = Stopwatch.GetTimestamp();
         FactorizedBatch batch = FactorizedBatchJoin.Join(
-            ColumnarBatchScan.Scan(index, buildPattern), buildSchema, ColumnarBatchScan.Scan(index, probePattern), probeSchema);
+            ColumnarBatchScan.Scan(index, buildPattern), buildSchema, ColumnarBatchScan.Scan(index, probePattern), probeSchema, arena);
         _ = batch.FactorizedTupleCount;
         TimeSpan elapsed = Stopwatch.GetElapsedTime(start);
         long allocated = GC.GetAllocatedBytesForCurrentThread() - before;

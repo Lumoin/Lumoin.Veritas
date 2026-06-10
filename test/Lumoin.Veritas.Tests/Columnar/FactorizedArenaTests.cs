@@ -129,6 +129,46 @@ internal sealed class FactorizedArenaTests
     }
 
     [TestMethod]
+    public void BranchStorageLivesInTheArenaAndItsSlabsReturnOnDisposal()
+    {
+        using CountingPool pool = new();
+        using FactorizedArena arena = new(pool, slabElements: 8);
+
+        //Build, then extend, then clear: every step allocates a fresh values
+        //run and abandons the superseded one inside the arena — nothing is
+        //reclaimed per step, everything at the arena's single disposal.
+        FactorizedBranches branches = FactorizedBranches.Of([[1, 2, 3], [10, 20]], [3, 2], [1, 1], arena);
+        FactorizedBranches extended = branches.Append([100, 200], 2, 1, arena);
+        FactorizedBranches cleared = extended.WithCleared(0, arena);
+
+        Assert.AreEqual(2, branches.Count);
+        Assert.AreEqual(2u, branches.ValueAt(0, 1, 0));
+        Assert.AreEqual(20u, branches.ValueAt(1, 1, 0));
+
+        //The superseded storages stay readable: their runs live until the
+        //arena disposes, not until the next derivation.
+        Assert.AreEqual(3, extended.Count);
+        Assert.AreEqual(3u, extended.ValueAt(0, 2, 0));
+        Assert.AreEqual(200u, extended.ValueAt(2, 1, 0));
+
+        Assert.AreEqual(0, cleared.RowCountOf(0));
+        Assert.AreEqual(0, cleared.StrideOf(0));
+        Assert.AreEqual(10u, cleared.ValueAt(1, 0, 0));
+        Assert.AreEqual(100u, cleared.ValueAt(2, 0, 0));
+
+        Assert.IsGreaterThan(0, pool.Outstanding);
+
+        arena.Dispose();
+        Assert.AreEqual(0, pool.Outstanding);
+    }
+
+    [TestMethod]
+    public void EmptyBranchStorageIsValidUnderNoArena()
+    {
+        Assert.AreEqual(0, FactorizedBranches.Empty.Count);
+    }
+
+    [TestMethod]
     public void HoldsOverTheRealMemoryPool()
     {
         //The real pool slices rentals from shared slabs, so a rental's backing

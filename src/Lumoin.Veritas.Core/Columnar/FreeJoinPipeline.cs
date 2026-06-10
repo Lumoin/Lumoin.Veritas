@@ -68,19 +68,21 @@ public static class FreeJoinPipeline
     /// </summary>
     /// <param name="index">The columnar index the relations scan.</param>
     /// <param name="query">The basic graph pattern.</param>
+    /// <param name="arena">The arena the result's branch values are allocated from; the caller owns its lifetime, and the result is valid until it is disposed.</param>
     /// <returns>The factorised star result, or <see langword="null"/> when the query is not a single-key star.</returns>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public static FactorizedBatch? RunFactorized(ColumnarTripleIndex index, BasicGraphPattern query)
+    public static FactorizedBatch? RunFactorized(ColumnarTripleIndex index, BasicGraphPattern query, FactorizedArena arena)
     {
         ArgumentNullException.ThrowIfNull(index);
         ArgumentNullException.ThrowIfNull(query);
+        ArgumentNullException.ThrowIfNull(arena);
 
         if(query.Patterns.Count < 2 || !TryPlanStarOrder(index, query, out IReadOnlyList<Variable>? starOrder))
         {
             return null;
         }
 
-        return FreeJoinExecutor.ExecuteFactorized(BuildRelations(index, query, starOrder), starOrder);
+        return FreeJoinExecutor.ExecuteFactorized(BuildRelations(index, query, starOrder), starOrder, arena);
     }
 
     /// <summary>

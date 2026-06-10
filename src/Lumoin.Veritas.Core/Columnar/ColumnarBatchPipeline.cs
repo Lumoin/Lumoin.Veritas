@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie.Execution;
 using Lumoin.Veritas.Core.Hypertrie.Query;
+using Lumoin.Veritas.Core.Memory;
 
 namespace Lumoin.Veritas.Core.Columnar;
 
@@ -328,34 +329,35 @@ public static class ColumnarBatchPipeline
     /// answers are identical to the streamed left-deep join — the plan's star
     /// detection guarantees every step shares exactly the key, so the
     /// fall-back to the stream is only a correctness backstop, never taken on
-    /// a planned star.
+    /// a planned star. The factorised buffers live in one query-scoped arena
+    /// that this iterator disposes when the consumer drains or abandons the
+    /// stream — the single explicit lifetime of the route.
     /// </summary>
     /// <param name="index">The index the plan was made for.</param>
     /// <param name="plan">The plan, whose <see cref="ColumnarBatchPlan.StarKey"/> is set.</param>
     /// <returns>The result batches over <see cref="ColumnarBatchPlan.Schema"/>.</returns>
     private static IEnumerable<SolutionBatch> RunFactorizedStar(ColumnarTripleIndex index, ColumnarBatchPlan plan)
     {
+        using FactorizedArena arena = new(VeritasMemoryPool<uint>.Shared);
+
         IReadOnlyList<Variable> schema0 = ColumnarBatchScan.ScanSchemaOf(index, plan.Order[0]);
         IReadOnlyList<Variable> schema1 = ColumnarBatchScan.ScanSchemaOf(index, plan.Order[1]);
-        FactorizedBatch factorized = FactorizedBatchJoin.Join(
+        FactorizedBatch? factorized = FactorizedBatchJoin.Join(
             ColumnarBatchScan.Scan(index, plan.Order[0]), schema0,
-            ColumnarBatchScan.Scan(index, plan.Order[1]), schema1);
+            ColumnarBatchScan.Scan(index, plan.Order[1]), schema1,
+            arena);
 
-        for(int step = 2; step < plan.Order.Count; step++)
+        for(int step = 2; step < plan.Order.Count && factorized is not null; step++)
         {
             IReadOnlyList<Variable> stepSchema = ColumnarBatchScan.ScanSchemaOf(index, plan.Order[step]);
-            FactorizedBatch? extended = FactorizedBatchJoin.AddBranch(
-                factorized, ColumnarBatchScan.Scan(index, plan.Order[step]), stepSchema);
-
-            if(extended is null)
-            {
-                return RunStreaming(index, plan);
-            }
-
-            factorized = extended;
+            factorized = FactorizedBatchJoin.AddBranch(
+                factorized, ColumnarBatchScan.Scan(index, plan.Order[step]), stepSchema, arena);
         }
 
-        return factorized.Flatten();
+        foreach(SolutionBatch batch in factorized is null ? RunStreaming(index, plan) : factorized.Flatten())
+        {
+            yield return batch;
+        }
     }
 
     /// <summary>
@@ -364,7 +366,10 @@ public static class ColumnarBatchPipeline
     /// stays factorised across that branch-variable join. The final flatten
     /// expands the result. Answer-identical to the streamed left-deep join;
     /// the fall-back to the stream is a correctness backstop the plan's chain
-    /// detection makes unreachable on a planned chain.
+    /// detection makes unreachable on a planned chain. The factorised buffers
+    /// live in one query-scoped arena that this iterator disposes when the
+    /// consumer drains or abandons the stream — the single explicit lifetime
+    /// of the route.
     /// </summary>
     /// <param name="index">The index the plan was made for.</param>
     /// <param name="plan">The plan, whose <see cref="ColumnarBatchPlan.ChainNestVariable"/> is set.</param>
@@ -372,16 +377,22 @@ public static class ColumnarBatchPipeline
     /// <returns>The result batches over <see cref="ColumnarBatchPlan.Schema"/>.</returns>
     private static IEnumerable<SolutionBatch> RunFactorizedChain(ColumnarTripleIndex index, ColumnarBatchPlan plan, Variable nestVariable)
     {
+        using FactorizedArena arena = new(VeritasMemoryPool<uint>.Shared);
+
         IReadOnlyList<Variable> schema0 = ColumnarBatchScan.ScanSchemaOf(index, plan.Order[0]);
         IReadOnlyList<Variable> schema1 = ColumnarBatchScan.ScanSchemaOf(index, plan.Order[1]);
         FactorizedBatch firstTwo = FactorizedBatchJoin.Join(
             ColumnarBatchScan.Scan(index, plan.Order[0]), schema0,
-            ColumnarBatchScan.Scan(index, plan.Order[1]), schema1);
+            ColumnarBatchScan.Scan(index, plan.Order[1]), schema1,
+            arena);
 
         IReadOnlyList<Variable> schema2 = ColumnarBatchScan.ScanSchemaOf(index, plan.Order[2]);
-        FactorizedBatch? nested = FactorizedBatchJoin.NestBranch(firstTwo, nestVariable, ColumnarBatchScan.Scan(index, plan.Order[2]), schema2);
+        FactorizedBatch? nested = FactorizedBatchJoin.NestBranch(firstTwo, nestVariable, ColumnarBatchScan.Scan(index, plan.Order[2]), schema2, arena);
 
-        return nested is null ? RunStreaming(index, plan) : nested.Flatten();
+        foreach(SolutionBatch batch in nested is null ? RunStreaming(index, plan) : nested.Flatten())
+        {
+            yield return batch;
+        }
     }
 
     /// <summary>
