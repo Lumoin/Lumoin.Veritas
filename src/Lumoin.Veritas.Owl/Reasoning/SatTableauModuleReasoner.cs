@@ -32,10 +32,17 @@ namespace Lumoin.Veritas.Owl.Reasoning;
 /// is TBox-entailed, so it appends to the shared CNF and the parent
 /// re-solves its unchanged assumptions against the grown formula; the loop
 /// terminates because each learned clause eliminates the model's current
-/// modal-atom combination. A world whose assumption set is already in
-/// progress, or a subset of an in-progress ancestor's set, is blocked and
-/// counts satisfiable — blocking only affirms, clauses are learned only
-/// from genuine refutations, so the two devices cannot interact unsoundly.
+/// modal-atom combination. A world whose assumption set is a subset of an
+/// in-progress ancestor's set (equal sets included) is blocked and counts
+/// satisfiable — blocking only affirms, clauses are learned only from
+/// genuine refutations, so the two devices cannot interact unsoundly.
+/// Blocking makes a verdict TENTATIVE, though: it holds only if the
+/// blocking ancestor itself ends satisfiable, so a satisfiable world whose
+/// subtree blocked against a strictly shallower ancestor stays out of the
+/// memo table — satisfiability is downward-monotone over assumption sets,
+/// which firms the verdict when the ancestor closes satisfiable, but a
+/// later refutation of the ancestor would leave a cached tentative verdict
+/// wrong. Unsatisfiable verdicts are unconditional and always cached.
 /// </para>
 /// <para>
 /// <b>Scope.</b> <see cref="DecideConsistency"/> decides consistency
@@ -56,13 +63,10 @@ namespace Lumoin.Veritas.Owl.Reasoning;
 /// </remarks>
 internal static class SatTableauModuleReasoner
 {
-    /// <summary>The memo states a world check moves through.</summary>
+    /// <summary>The settled verdicts the memo table holds; a world still on the frame stack has no entry — blocking reads the stack, not the table.</summary>
     private enum WorldState
     {
-        /// <summary>The world is on the frame stack; meeting it again blocks affirmatively.</summary>
-        InProgress,
-
-        /// <summary>The world and every successor reachable from it are satisfiable.</summary>
+        /// <summary>The world and every successor reachable from it are satisfiable, established without depending on any then-unresolved ancestor.</summary>
         Satisfiable,
 
         /// <summary>No model of the shared CNF honours the world's assumptions.</summary>
@@ -169,7 +173,7 @@ internal static class SatTableauModuleReasoner
     /// stack: solve under the world's assumptions, shrink the model, spawn
     /// successor worlds, learn a modal conflict clause from every
     /// unsatisfiable successor and re-solve, with the memo table answering
-    /// repeated sets and in-progress hits blocking affirmatively.
+    /// repeated settled sets and the ancestor walk blocking affirmatively.
     /// </summary>
     /// <param name="cnf">The shared CNF; learned clauses append to it.</param>
     /// <param name="translation">The module's translation, read for the role hierarchy.</param>
@@ -188,15 +192,13 @@ internal static class SatTableauModuleReasoner
         SatSearchMode searchMode,
         CancellationToken cancellationToken)
     {
-        //Between seeds the stack is empty, so a memo hit here is a settled
-        //verdict, never an in-progress one.
+        //The memo holds settled verdicts only, so a hit answers the seed.
         if(memo.TryGetValue(seedKey, out WorldState settled))
         {
             return settled == WorldState.Satisfiable;
         }
 
         List<WorldFrame> stack = [new WorldFrame(seedKey, seedAssumptions)];
-        memo[seedKey] = WorldState.InProgress;
 
         while(stack.Count > 0)
         {
@@ -242,13 +244,26 @@ internal static class SatTableauModuleReasoner
 
             if(frame.NextSuccessor >= frame.Successors.Count)
             {
-                //Every successor satisfiable: the world is satisfiable, and
-                //the parent's pending successor — this world — succeeded.
-                memo[frame.Key] = WorldState.Satisfiable;
+                //Every successor satisfiable: the world is satisfiable. The
+                //verdict enters the memo only when it stands on its own —
+                //a subtree blocked against a STRICTLY SHALLOWER in-progress
+                //ancestor makes it conditional on that ancestor ending
+                //satisfiable, and a conditional verdict cached past its
+                //context could outlive the ancestor's refutation. A
+                //dependency at the frame's own depth is discharged by this
+                //very pop. The conditional dependency propagates to the
+                //parent either way.
+                if(frame.DependencyMin >= stack.Count - 1)
+                {
+                    memo[frame.Key] = WorldState.Satisfiable;
+                }
+
                 stack.RemoveAt(stack.Count - 1);
                 if(stack.Count > 0)
                 {
-                    stack[^1].NextSuccessor++;
+                    WorldFrame parent = stack[^1];
+                    parent.DependencyMin = Math.Min(parent.DependencyMin, frame.DependencyMin);
+                    parent.NextSuccessor++;
                 }
 
                 continue;
@@ -268,21 +283,25 @@ internal static class SatTableauModuleReasoner
                     continue;
                 }
 
-                //Satisfiable answers affirm; an in-progress hit is the
-                //exact-set blocking — it only ever affirms.
+                //A settled satisfiable answer affirms unconditionally.
                 frame.NextSuccessor++;
 
                 continue;
             }
 
-            if(IsBlockedByAncestor(stack, successor.Key))
+            int blockingAncestor = BlockingAncestorIndex(stack, successor.Key);
+            if(blockingAncestor >= 0)
             {
+                //Subset blocking affirms tentatively: the affirmation is
+                //conditional on the blocking ancestor itself ending
+                //satisfiable, so the frame records the dependency for the
+                //memo-write decision at its own pop.
+                frame.DependencyMin = Math.Min(frame.DependencyMin, blockingAncestor);
                 frame.NextSuccessor++;
 
                 continue;
             }
 
-            memo[successor.Key] = WorldState.InProgress;
             stack.Add(new WorldFrame(successor.Key, successor.Assumptions));
         }
 
@@ -290,25 +309,27 @@ internal static class SatTableauModuleReasoner
     }
 
     /// <summary>
-    /// Whether an in-progress ancestor's assumption set is a superset of
-    /// the candidate's — the subset blocking that terminates cyclic TBox
-    /// expansion. Every frame on the stack is an in-progress ancestor of
-    /// the candidate.
+    /// The stack index of the shallowest in-progress ancestor whose
+    /// assumption set is a superset of the candidate's — the subset
+    /// blocking that terminates cyclic TBox expansion, equal sets
+    /// included. Every frame on the stack is an in-progress ancestor of
+    /// the candidate, and the index identifies which frame the tentative
+    /// affirmation depends on.
     /// </summary>
     /// <param name="stack">The frame stack.</param>
     /// <param name="candidateKey">The candidate world's canonical key.</param>
-    /// <returns><see langword="true"/> when an ancestor's set subsumes the candidate's.</returns>
-    private static bool IsBlockedByAncestor(List<WorldFrame> stack, int[] candidateKey)
+    /// <returns>The blocking ancestor's stack index, or <c>-1</c> when no ancestor's set subsumes the candidate's.</returns>
+    private static int BlockingAncestorIndex(List<WorldFrame> stack, int[] candidateKey)
     {
-        foreach(WorldFrame frame in stack)
+        for(int i = 0; i < stack.Count; i++)
         {
-            if(IsSubsetOf(candidateKey, frame.Key))
+            if(IsSubsetOf(candidateKey, stack[i].Key))
             {
-                return true;
+                return i;
             }
         }
 
-        return false;
+        return -1;
     }
 
     /// <summary>Whether one sorted canonical key is a subset of another, by a two-pointer merge walk.</summary>
@@ -560,6 +581,16 @@ internal static class SatTableauModuleReasoner
 
         /// <summary>The index of the successor currently being checked.</summary>
         public int NextSuccessor { get; set; }
+
+        /// <summary>
+        /// The shallowest stack index this frame's subtree blocked against,
+        /// directly or through a satisfiable child; <see cref="int.MaxValue"/>
+        /// when the subtree stands on its own. A satisfiable verdict enters
+        /// the memo only when this is no shallower than the frame's own
+        /// index — a tentative affirmation must not outlive the ancestor it
+        /// depends on.
+        /// </summary>
+        public int DependencyMin { get; set; } = int.MaxValue;
     }
 
     /// <summary>One planned successor world and the modal conflict clause its failure would teach the shared CNF.</summary>
