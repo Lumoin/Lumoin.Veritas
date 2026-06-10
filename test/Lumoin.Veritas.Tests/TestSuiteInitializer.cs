@@ -12,6 +12,23 @@ namespace Lumoin.Veritas.Tests;
 /// immediately instead of queueing behind the pool's gradual thread
 /// injection while every worker sits in synchronous test code.
 /// </summary>
+/// <remarks>
+/// <para>
+/// The starvation this prevents is exception-free and self-healing, which
+/// makes it look like flakiness rather than a bug: a round-trip issued while
+/// every pool worker is occupied stalls for the pool's climb-out time — the
+/// stall scales with how far demand exceeds the floor — and surfaces only if
+/// it outlives a transport timeout, as a client-side
+/// <see cref="System.Threading.Tasks.TaskCanceledException"/> whose
+/// cancellation token is NOT the caller's. Once the pool has grown, the same
+/// process cannot reproduce it. The federation harness
+/// (<c>Sparql/Federation/SparqlTestHostShell</c>) carries a transport
+/// timeline that dumps to a <c>federation-trace-*.txt</c> beside the test
+/// binary on exactly that signature, naming the stage a stalled round-trip
+/// died in. The same hazard applies to any production host that serves
+/// latency-sensitive I/O from a pool shared with long synchronous CPU work.
+/// </para>
+/// </remarks>
 [TestClass]
 internal static class TestSuiteInitializer
 {
