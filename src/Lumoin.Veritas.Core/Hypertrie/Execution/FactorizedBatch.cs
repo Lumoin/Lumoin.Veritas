@@ -191,11 +191,12 @@ public sealed class FactorizedBatch
     }
 
     /// <summary>
-    /// The flatten path for a batch with nested branches: each branch is first
-    /// resolved to its list of flat sub-rows — a flat branch's packed tuples,
-    /// a nested branch's rows materialised from its single-level sub-batch —
-    /// and the odometer then walks the cross product over those lists. Peak
-    /// memory is the sum of the branch sub-row counts, never their product.
+    /// The flatten path for a batch with nested branches: a flat branch is read
+    /// in place through the group's packed branches, a nested branch's sub-rows
+    /// are first materialised row-major into that branch slot's reusable flat
+    /// buffer (grown on demand, reused across groups), and the odometer then
+    /// walks the cross product over both. Peak memory is the sum of the branch
+    /// sub-row sizes, never their product, and no per-row tuple is allocated.
     /// </summary>
     /// <returns>The flattened batch stream.</returns>
     private IEnumerable<SolutionBatch> FlattenNested()
@@ -204,19 +205,30 @@ public sealed class FactorizedBatch
         int rows = 0;
         int branchCount = BranchColumns.Length;
 
+        uint[][] nestedRows = new uint[branchCount][];
+        for(int branch = 0; branch < branchCount; branch++)
+        {
+            nestedRows[branch] = [];
+        }
+
+        bool[] isNested = new bool[branchCount];
+        int[] counts = new int[branchCount];
+        int[] cursor = new int[branchCount];
+
         foreach(FactorizedGroup group in Groups)
         {
-            List<uint[]>[] branchRows = new List<uint[]>[branchCount];
-            int[] counts = new int[branchCount];
             long combinations = 1;
             for(int branch = 0; branch < branchCount; branch++)
             {
-                branchRows[branch] = BranchRowsOf(group, branch);
-                counts[branch] = branchRows[branch].Count;
+                FactorizedBatch? nested = group.NestedAt(branch);
+                isNested[branch] = nested is not null;
+                counts[branch] = nested is null
+                    ? group.Branches.RowCountOf(branch)
+                    : MaterializeNested(nested, branch, nestedRows);
                 combinations *= counts[branch];
             }
 
-            int[] cursor = new int[branchCount];
+            Array.Clear(cursor);
             for(long combination = 0; combination < combinations; combination++)
             {
                 for(int k = 0; k < KeyColumns.Length; k++)
@@ -227,11 +239,21 @@ public sealed class FactorizedBatch
                 for(int branch = 0; branch < branchCount; branch++)
                 {
                     int[] branchColumns = BranchColumns[branch];
-                    uint[] row = branchRows[branch][cursor[branch]];
-
-                    for(int column = 0; column < branchColumns.Length; column++)
+                    if(isNested[branch])
                     {
-                        output.ColumnSpan(branchColumns[column])[rows] = row[column];
+                        uint[] sub = nestedRows[branch];
+                        int offset = cursor[branch] * branchColumns.Length;
+                        for(int column = 0; column < branchColumns.Length; column++)
+                        {
+                            output.ColumnSpan(branchColumns[column])[rows] = sub[offset + column];
+                        }
+                    }
+                    else
+                    {
+                        for(int column = 0; column < branchColumns.Length; column++)
+                        {
+                            output.ColumnSpan(branchColumns[column])[rows] = group.Branches.ValueAt(branch, cursor[branch], column);
+                        }
                     }
                 }
 
@@ -259,58 +281,43 @@ public sealed class FactorizedBatch
         }
     }
 
-    /// <summary>One branch's flat sub-rows: the packed tuples sliced out for a flat branch, or the nested sub-batch's materialised rows for a nested branch.</summary>
-    /// <param name="group">The group the branch belongs to.</param>
-    /// <param name="branch">The branch index.</param>
-    /// <returns>The branch's sub-rows, each positional against the branch's column list.</returns>
-    private List<uint[]> BranchRowsOf(FactorizedGroup group, int branch)
-    {
-        FactorizedBatch? nested = group.NestedAt(branch);
-        if(nested is not null)
-        {
-            return MaterializeRows(nested);
-        }
-
-        int stride = BranchColumns[branch].Length;
-        int count = group.Branches.RowCountOf(branch);
-
-        List<uint[]> sub = new(count);
-        for(int row = 0; row < count; row++)
-        {
-            uint[] tuple = new uint[stride];
-            for(int column = 0; column < stride; column++)
-            {
-                tuple[column] = group.Branches.ValueAt(branch, row, column);
-            }
-
-            sub.Add(tuple);
-        }
-
-        return sub;
-    }
-
-    /// <summary>Materialises a single-level nested sub-batch into its flat rows over the sub-batch's own schema. The sub-batch carries no further nesting (the depth-2 guarantee), so the flat path expands it without recursion.</summary>
+    /// <summary>
+    /// Materialises a single-level nested sub-batch row-major into its branch
+    /// slot's reusable buffer, growing the buffer when the sub-rows outgrow it.
+    /// The sub-batch carries no further nesting (the depth-2 guarantee), so the
+    /// flat path expands it without recursion; the row width is the sub-batch's
+    /// schema width, which equals the parent branch's column count.
+    /// </summary>
     /// <param name="nested">The single-level nested sub-batch.</param>
-    /// <returns>The sub-batch's rows, each positional against its schema.</returns>
-    private static List<uint[]> MaterializeRows(FactorizedBatch nested)
+    /// <param name="branch">The branch slot the sub-rows are materialised into.</param>
+    /// <param name="nestedRows">The per-branch reusable flat buffers.</param>
+    /// <returns>The materialised sub-row count.</returns>
+    private static int MaterializeNested(FactorizedBatch nested, int branch, uint[][] nestedRows)
     {
         int width = nested.Schema.Count;
-        List<uint[]> rows = [];
+        int count = checked((int)nested.FlatRowCount);
+        long needed = (long)count * width;
+        uint[] buffer = nestedRows[branch];
+        if(buffer.Length < needed)
+        {
+            buffer = new uint[Math.Max(needed, (long)buffer.Length * 2)];
+            nestedRows[branch] = buffer;
+        }
+
+        int next = 0;
         foreach(SolutionBatch batch in nested.FlattenFlat())
         {
             for(int row = 0; row < batch.Count; row++)
             {
-                uint[] tuple = new uint[width];
                 for(int column = 0; column < width; column++)
                 {
-                    tuple[column] = batch.ColumnOf(column)[row];
+                    buffer[next] = batch.ColumnOf(column)[row];
+                    next++;
                 }
-
-                rows.Add(tuple);
             }
         }
 
-        return rows;
+        return count;
     }
 
     /// <summary>Advances the mixed-radix odometer one step: increment the last branch, carrying into earlier branches as each wraps past its row count.</summary>
