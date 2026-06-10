@@ -256,15 +256,10 @@ public static class FactorizedBatchJoin
                 continue;
             }
 
-            uint[][] branchValues = new uint[group.BranchValues.Length + 1][];
-            Array.Copy(group.BranchValues, branchValues, group.BranchValues.Length);
-            branchValues[^1] = probeCarryCount == 0 ? [] : [.. bucket.Values];
+            uint[] packed = probeCarryCount == 0 ? [] : [.. bucket.Values];
+            FactorizedBranches branches = group.Branches.Append(packed, bucket.Rows, probeCarryCount);
 
-            int[] branchRowCounts = new int[group.BranchRowCounts.Length + 1];
-            Array.Copy(group.BranchRowCounts, branchRowCounts, group.BranchRowCounts.Length);
-            branchRowCounts[^1] = bucket.Rows;
-
-            extended.Add(new FactorizedGroup(group.KeyValues, branchValues, branchRowCounts));
+            extended.Add(new FactorizedGroup(group.KeyValues, branches));
         }
 
         return extended;
@@ -405,21 +400,24 @@ public static class FactorizedBatchJoin
         List<FactorizedGroup> groups = new(left.Groups.Count);
         foreach(FactorizedGroup group in left.Groups)
         {
-            int valueCount = group.BranchRowCounts[targetBranch];
-            uint[] branchVariableValues = group.BranchValues[targetBranch];
+            int valueCount = group.Branches.RowCountOf(targetBranch);
 
             List<FactorizedGroup> nestedGroups = [];
             for(int row = 0; row < valueCount; row++)
             {
-                uint branchVariableValue = branchVariableValues[row];
+                //The target branch holds the chain variable alone (stride 1), so
+                //its value is the row's only column.
+                uint branchVariableValue = group.Branches.ValueAt(targetBranch, row, 0);
                 if(!buckets.TryGetValue(JoinKey.Pack(branchVariableValue, 0), out ProbeBucket? bucket))
                 {
                     continue;
                 }
 
-                uint[][] nestedValues = [probeCarryCount == 0 ? [] : [.. bucket.Values]];
-                int[] nestedRowCounts = [bucket.Rows];
-                nestedGroups.Add(new FactorizedGroup([branchVariableValue], nestedValues, nestedRowCounts));
+                FactorizedBranches nestedBranchStore = FactorizedBranches.Of(
+                    [probeCarryCount == 0 ? [] : [.. bucket.Values]],
+                    [bucket.Rows],
+                    [probeCarryCount]);
+                nestedGroups.Add(new FactorizedGroup([branchVariableValue], nestedBranchStore));
             }
 
             if(nestedGroups.Count == 0)
@@ -432,12 +430,8 @@ public static class FactorizedBatchJoin
             FactorizedBatch?[] nestedBranches = new FactorizedBatch?[branchCount];
             nestedBranches[targetBranch] = nested;
 
-            uint[][] branchValues = (uint[][])group.BranchValues.Clone();
-            int[] branchRowCounts = (int[])group.BranchRowCounts.Clone();
-            branchValues[targetBranch] = [];
-            branchRowCounts[targetBranch] = 0;
-
-            groups.Add(new FactorizedGroup(group.KeyValues, branchValues, branchRowCounts, nestedBranches));
+            //The nested branch carries no flat values in the parent now.
+            groups.Add(new FactorizedGroup(group.KeyValues, group.Branches.WithCleared(targetBranch), nestedBranches));
         }
 
         return groups;
@@ -547,10 +541,12 @@ public static class FactorizedBatchJoin
             }
 
             uint[] keyValues = keyCount > 1 ? [group.Key0, group.Key1] : [group.Key0];
-            uint[][] branchValues = [PackOf(group.BuildValues, buildCarryCount), PackOf(group.ProbeValues, probeCarryCount)];
-            int[] branchRowCounts = [group.BuildRows, group.ProbeRows];
+            FactorizedBranches branches = FactorizedBranches.Of(
+                [PackOf(group.BuildValues, buildCarryCount), PackOf(group.ProbeValues, probeCarryCount)],
+                [group.BuildRows, group.ProbeRows],
+                [buildCarryCount, probeCarryCount]);
 
-            emitted.Add(new FactorizedGroup(keyValues, branchValues, branchRowCounts));
+            emitted.Add(new FactorizedGroup(keyValues, branches));
         }
 
         return emitted;

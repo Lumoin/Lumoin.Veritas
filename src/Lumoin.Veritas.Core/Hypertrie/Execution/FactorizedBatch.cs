@@ -133,15 +133,21 @@ public sealed class FactorizedBatch
     {
         SolutionBatch output = new(Schema);
         int rows = 0;
+        int branchCount = BranchColumns.Length;
 
         foreach(FactorizedGroup group in Groups)
         {
-            int branchCount = BranchColumns.Length;
-
             //A mixed-radix odometer over the branch row indices walks the
             //cross product without recursion: the least-significant branch
-            //advances first and carries into the next when it wraps.
+            //advances first and carries into the next when it wraps. The radix
+            //is each branch's row count.
             int[] cursor = new int[branchCount];
+            int[] radix = new int[branchCount];
+            for(int branch = 0; branch < branchCount; branch++)
+            {
+                radix[branch] = group.Branches.RowCountOf(branch);
+            }
+
             long combinations = group.FlatRowCount;
 
             for(long combination = 0; combination < combinations; combination++)
@@ -154,13 +160,9 @@ public sealed class FactorizedBatch
                 for(int branch = 0; branch < branchCount; branch++)
                 {
                     int[] branchColumns = BranchColumns[branch];
-                    int stride = branchColumns.Length;
-                    int rowOffset = cursor[branch] * stride;
-                    uint[] values = group.BranchValues[branch];
-
-                    for(int column = 0; column < stride; column++)
+                    for(int column = 0; column < branchColumns.Length; column++)
                     {
-                        output.ColumnSpan(branchColumns[column])[rows] = values[rowOffset + column];
+                        output.ColumnSpan(branchColumns[column])[rows] = group.Branches.ValueAt(branch, cursor[branch], column);
                     }
                 }
 
@@ -176,7 +178,7 @@ public sealed class FactorizedBatch
                     rows = 0;
                 }
 
-                Advance(cursor, group.BranchRowCounts);
+                Advance(cursor, radix);
             }
         }
 
@@ -270,14 +272,17 @@ public sealed class FactorizedBatch
         }
 
         int stride = BranchColumns[branch].Length;
-        int count = group.BranchRowCounts[branch];
-        uint[] packed = group.BranchValues[branch];
+        int count = group.Branches.RowCountOf(branch);
 
         List<uint[]> sub = new(count);
         for(int row = 0; row < count; row++)
         {
             uint[] tuple = new uint[stride];
-            Array.Copy(packed, row * stride, tuple, 0, stride);
+            for(int column = 0; column < stride; column++)
+            {
+                tuple[column] = group.Branches.ValueAt(branch, row, column);
+            }
+
             sub.Add(tuple);
         }
 

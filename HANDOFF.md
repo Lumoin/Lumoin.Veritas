@@ -289,12 +289,18 @@ chain) declines to `null`. Differential vs leapfrog AND the flat `Run`: the star
 flat), the chain agrees 1-1, the triangle declines (`FreeJoinPipelineTests`). Per-key scratch hoisted out of the
 key loop. NOT wired into a route — a tested building block, like §4.2's factorising join.
 
-**Next on §4.3:** (c) a **`BranchStore`-style type** that owns the factorised branch values, so the jagged
-`uint[][]` → **flat-1D packing** and **`VeritasMemoryPool` threading** become one internal change both §4.2 and
-§4.3 inherit (both differential suites guarding it); the Free Join executor's per-frame scratch
-(`Frame`/saved-state/`List`s) joins that pool pass, reconciled with the Batch-4 arena revert. Then **deeper
-factorisation** (chain nesting — the `NestBranch` analogue — out of the generic join) and the cost-based
-depth/selector that picks Free Join's per-relation depth (the deferred join-strategy-selection research issue).
+**Shipped: §4.3(c) `FactorizedBranches` (flat-1D).** The jagged `uint[][]` branch values + the parallel
+`int[] BranchRowCounts` on `FactorizedGroup` are replaced by a single `FactorizedBranches` (flat `values` +
+per-branch `starts`/`rowCounts`/`strides`), so a group holds one values array instead of one per branch. Both
+producers — §4.2 `FactorizedBatchJoin` (Emit/Extend/Nest via `Of`/`Append`/`WithCleared`) and §4.3
+`ExecuteFactorized` — and the `Flatten`/`BranchRowsOf` consumer read through it; the layout is now internal to
+one type. Behaviour-preserving: both differential suites + the soak compile/green (8125/0/546 full).
+
+**Next on §4.3:** (d) **`VeritasMemoryPool` threading** — `FactorizedBranches`' flat array and the Free Join
+executor's per-frame scratch (`Frame`/saved-state/`List`s in `Drive`) rent from the pool, reconciled with the
+Batch-4 arena revert. Then **deeper factorisation** (chain nesting — the `NestBranch` analogue — out of the
+generic join) and the cost-based depth/selector that picks Free Join's per-relation depth (the deferred
+join-strategy-selection research issue).
 
 ### After the tier
 

@@ -15,9 +15,9 @@ namespace Lumoin.Veritas.Core.Hypertrie.Execution;
 /// <para>
 /// Column placement is owned by the parent <see cref="FactorizedBatch"/>:
 /// <see cref="KeyValues"/> are positional against the batch's key columns
-/// and each branch's packed values are positional against that branch's
-/// column list. A branch with zero columns still carries a row count — its
-/// rows are empty tuples whose only contribution is a multiplicity factor.
+/// and each branch's values are positional against that branch's column
+/// list. A branch with zero columns still carries a row count — its rows
+/// are empty tuples whose only contribution is a multiplicity factor.
 /// </para>
 /// <para>
 /// A branch may itself be a <em>nested</em> single-level
@@ -26,9 +26,9 @@ namespace Lumoin.Veritas.Core.Hypertrie.Execution;
 /// lives inside this branch and must be grouped before it can be joined
 /// without flattening. <see cref="NestedBranches"/> is <see langword="null"/>
 /// when every branch is flat (the star case); otherwise a non-<see langword="null"/>
-/// entry replaces that branch's flat <see cref="BranchValues"/>/<see cref="BranchRowCounts"/>
-/// with the sub-batch, whose schema is positional against the parent's branch
-/// column list.
+/// entry replaces that branch's flat <see cref="Branches"/> entry (which then
+/// carries a zero row count) with the sub-batch, whose schema is positional
+/// against the parent's branch column list.
 /// </para>
 /// </remarks>
 public sealed class FactorizedGroup
@@ -36,41 +36,30 @@ public sealed class FactorizedGroup
     /// <summary>The key tuple shared by every flat row of this group, one value per key column.</summary>
     public uint[] KeyValues { get; }
 
-    /// <summary>Each branch's value tuples, packed row-major with the branch's column count as stride; indexed by branch then by <c>row * stride + column</c>. Ignored for a branch that is nested.</summary>
-    public uint[][] BranchValues { get; }
+    /// <summary>The flat branches: each branch's value tuples, read positionally against the parent batch's branch column lists. A nested branch carries a zero row count here and its sub-batch in <see cref="NestedBranches"/>.</summary>
+    public FactorizedBranches Branches { get; }
 
-    /// <summary>Each branch's row count — the number of value tuples in the union, kept explicit so a zero-column branch still carries its multiplicity. Ignored for a branch that is nested.</summary>
-    public int[] BranchRowCounts { get; }
-
-    /// <summary>The nested sub-batch for each branch, parallel to <see cref="BranchValues"/>, or <see langword="null"/> when every branch is flat. A non-<see langword="null"/> entry makes that branch a nested single-level batch instead of a flat tuple union.</summary>
+    /// <summary>The nested sub-batch for each branch, parallel to <see cref="Branches"/>, or <see langword="null"/> when every branch is flat. A non-<see langword="null"/> entry makes that branch a nested single-level batch instead of a flat tuple union.</summary>
     public FactorizedBatch?[]? NestedBranches { get; }
 
-    /// <summary>Constructs a group over a key tuple and its branches' packed value tuples, optionally with some branches nested.</summary>
+    /// <summary>Constructs a group over a key tuple and its branch storage, optionally with some branches nested.</summary>
     /// <param name="keyValues">The key tuple, one value per key column.</param>
-    /// <param name="branchValues">Each branch's packed value tuples, stride equal to that branch's column count; empty for a nested branch.</param>
-    /// <param name="branchRowCounts">Each branch's row count, parallel to <paramref name="branchValues"/>; ignored for a nested branch.</param>
-    /// <param name="nestedBranches">The nested sub-batch per branch, parallel to <paramref name="branchValues"/>, or <see langword="null"/> when every branch is flat.</param>
+    /// <param name="branches">The flat branch storage; a nested branch carries a zero row count here and its sub-batch in <paramref name="nestedBranches"/>.</param>
+    /// <param name="nestedBranches">The nested sub-batch per branch, parallel to <paramref name="branches"/>, or <see langword="null"/> when every branch is flat.</param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    /// <exception cref="ArgumentException">The branch arrays differ in length.</exception>
-    public FactorizedGroup(uint[] keyValues, uint[][] branchValues, int[] branchRowCounts, FactorizedBatch?[]? nestedBranches = null)
+    /// <exception cref="ArgumentException">The nested-branch array does not run parallel to the branches.</exception>
+    public FactorizedGroup(uint[] keyValues, FactorizedBranches branches, FactorizedBatch?[]? nestedBranches = null)
     {
         ArgumentNullException.ThrowIfNull(keyValues);
-        ArgumentNullException.ThrowIfNull(branchValues);
-        ArgumentNullException.ThrowIfNull(branchRowCounts);
+        ArgumentNullException.ThrowIfNull(branches);
 
-        if(branchValues.Length != branchRowCounts.Length)
-        {
-            throw new ArgumentException("Each branch must carry both its packed values and its row count.", nameof(branchRowCounts));
-        }
-
-        if(nestedBranches is not null && nestedBranches.Length != branchValues.Length)
+        if(nestedBranches is not null && nestedBranches.Length != branches.Count)
         {
             throw new ArgumentException("The nested-branch array must run parallel to the branches.", nameof(nestedBranches));
         }
 
         KeyValues = keyValues;
-        BranchValues = branchValues;
-        BranchRowCounts = branchRowCounts;
+        Branches = branches;
         NestedBranches = nestedBranches;
     }
 
@@ -89,7 +78,7 @@ public sealed class FactorizedGroup
     {
         FactorizedBatch? nested = NestedAt(branch);
 
-        return nested is null ? BranchRowCounts[branch] : nested.FlatRowCount;
+        return nested is null ? Branches.RowCountOf(branch) : nested.FlatRowCount;
     }
 
     /// <summary>The number of flat rows this group stands for: the product of its branch row counts, or one when the group is key-only.</summary>
@@ -98,7 +87,7 @@ public sealed class FactorizedGroup
         get
         {
             long product = 1;
-            for(int branch = 0; branch < BranchValues.Length; branch++)
+            for(int branch = 0; branch < Branches.Count; branch++)
             {
                 product *= BranchFlatRowCount(branch);
             }
@@ -113,10 +102,10 @@ public sealed class FactorizedGroup
         get
         {
             long sum = 0;
-            for(int branch = 0; branch < BranchValues.Length; branch++)
+            for(int branch = 0; branch < Branches.Count; branch++)
             {
                 FactorizedBatch? nested = NestedAt(branch);
-                sum += nested is null ? BranchRowCounts[branch] : nested.FactorizedTupleCount;
+                sum += nested is null ? Branches.RowCountOf(branch) : nested.FactorizedTupleCount;
             }
 
             return sum;

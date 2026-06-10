@@ -217,7 +217,7 @@ internal sealed class FactorizedBatchJoinTests
         Assert.IsEmpty(factorized.BranchColumns[0]);
         foreach(FactorizedGroup group in factorized.Groups)
         {
-            Assert.AreEqual(1, group.BranchRowCounts[0]);
+            Assert.AreEqual(1, group.Branches.RowCountOf(0));
         }
 
         List<string> factorizedRows = Fingerprints(factorized.Flatten(), factorized.Schema);
@@ -417,8 +417,7 @@ internal sealed class FactorizedBatchJoinTests
         //each: the flatten must walk all four combinations.
         FactorizedGroup group = new(
             keyValues: [7],
-            branchValues: [[100, 101], [200, 201]],
-            branchRowCounts: [2, 2]);
+            branches: FactorizedBranches.Of([[100, 101], [200, 201]], [2, 2], [1, 1]));
         FactorizedBatch batch = new([key, left, right], keyColumns: [0], branchColumns: [[1], [2]], groups: [group]);
 
         Assert.AreEqual(4, batch.FlatRowCount);

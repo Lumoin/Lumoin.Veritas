@@ -184,6 +184,12 @@ public static class FreeJoinExecutor
         //Scratch reused across keys: the child node id per relation under the
         //current key, refilled before each use.
         int[] childNode = new int[relations.Count];
+
+        //Every star branch is a single residual variable, so each branch's
+        //stride is one; this array is constant across groups.
+        int[] branchStride = new int[relations.Count];
+        Array.Fill(branchStride, 1);
+
         OpenAddressedTable<int>.Enumerator keyScan = relations[driver].NodeAt(0).GetEnumerator();
         while(keyScan.MoveNext())
         {
@@ -226,7 +232,7 @@ public static class FreeJoinExecutor
                 branchRowCounts[relation] = values.Length;
             }
 
-            groups.Add(new FactorizedGroup([keyValue], branchValues, branchRowCounts));
+            groups.Add(new FactorizedGroup([keyValue], FactorizedBranches.Of(branchValues, branchRowCounts, branchStride)));
         }
 
         int[][] branchColumns = new int[relations.Count][];
