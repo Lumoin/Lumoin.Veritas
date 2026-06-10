@@ -4,11 +4,13 @@ using System.Linq;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Hypertrie;
 using Lumoin.Veritas.Core.Hypertrie.Execution;
 using Lumoin.Veritas.Core.Hypertrie.Query;
 using Lumoin.Veritas.Core.Hypertrie.Storage;
+using Lumoin.Veritas.Core.Hypertrie.Tracing;
 
 namespace Lumoin.Veritas.Tests.Columnar;
 
@@ -273,6 +275,96 @@ internal sealed class SelfIndexPipelineTests
             registry);
 
         Assert.IsNull(SelfIndexPipeline.Run(index, query));
+    }
+
+    /// <summary>Collects engine-selection trace events into the sink.</summary>
+    /// <param name="sink">The receiving list.</param>
+    /// <returns>The collecting handler.</returns>
+    private static TraceHandler<QueryTraceEvent> CollectSelections(List<QueryTraceEvent> sink)
+    {
+        return (in QueryTraceEvent evt) =>
+        {
+            if(evt.Kind == QueryTraceEventKind.EngineSelected)
+            {
+                sink.Add(evt);
+            }
+        };
+    }
+
+    [TestMethod]
+    public async Task SelfIndexRouteAnswersTheTriangleUnderThreeRotations()
+    {
+        List<EncodedTriple> fixture = TriangleFixture();
+        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(fixture, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+        BasicGraphPattern query = TriangleQuery(new VariableRegistry());
+
+        //The all-orders default is the answer oracle.
+        QueryEngineRendezvous allOrders = new(store, QueryEnginePolicy.Default);
+        List<string> oracle = await LeapfrogFingerprintsAsync(allOrders.Query(query, TimeProvider.System, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+        Assert.IsGreaterThan(0, oracle.Count);
+
+        //Three rotations without the flag: the cyclic shape falls back to the
+        //system of record, announced as rotation-incompatible.
+        QueryEnginePolicy threeRotations = QueryEnginePolicy.Default with { OrderSetMode = ColumnarOrderSetMode.ThreeRotations };
+        List<QueryTraceEvent> fallbackSelections = [];
+        QueryEngineRendezvous fallback = new(store, threeRotations);
+        List<string> viaFallback = await LeapfrogFingerprintsAsync(fallback.Query(query, TimeProvider.System, traceHandler: CollectSelections(fallbackSelections), cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+
+        CollectionAssert.AreEqual(oracle, viaFallback);
+        Assert.AreEqual(QueryEngineKind.Hypertrie, fallbackSelections[^1].Engine);
+        Assert.AreEqual(EngineSelectionReason.RotationIncompatible, fallbackSelections[^1].SelectionReason);
+
+        //Three rotations with the flag: the self-index answers identically,
+        //building on first demand and reusing after.
+        List<QueryTraceEvent> selections = [];
+        TraceHandler<QueryTraceEvent> handler = CollectSelections(selections);
+        QueryEngineRendezvous selfIndexed = new(store, threeRotations with { PreferSelfIndex = true });
+        List<string> first = await LeapfrogFingerprintsAsync(selfIndexed.Query(query, TimeProvider.System, traceHandler: handler, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+        List<string> second = await LeapfrogFingerprintsAsync(selfIndexed.Query(query, TimeProvider.System, traceHandler: handler, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+
+        CollectionAssert.AreEqual(oracle, first);
+        CollectionAssert.AreEqual(oracle, second);
+        Assert.HasCount(2, selections);
+        Assert.AreEqual(QueryEngineKind.SelfIndex, selections[0].Engine);
+        Assert.AreEqual(EngineSelectionReason.ViewBuilt, selections[0].SelectionReason);
+        Assert.AreEqual(QueryEngineKind.SelfIndex, selections[1].Engine);
+        Assert.AreEqual(EngineSelectionReason.ViewReused, selections[1].SelectionReason);
+    }
+
+    [TestMethod]
+    public async Task SelfIndexViewDropsOnAdvanceAndRebuildsFresh()
+    {
+        List<EncodedTriple> fixture = TriangleFixture();
+        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(fixture, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+        BasicGraphPattern query = TriangleQuery(new VariableRegistry());
+
+        QueryEnginePolicy policy = QueryEnginePolicy.Default with { OrderSetMode = ColumnarOrderSetMode.ThreeRotations, PreferSelfIndex = true };
+        List<QueryTraceEvent> selections = [];
+        TraceHandler<QueryTraceEvent> handler = CollectSelections(selections);
+        QueryEngineRendezvous rendezvous = new(store, policy);
+
+        List<string> before = await LeapfrogFingerprintsAsync(rendezvous.Query(query, TimeProvider.System, traceHandler: handler, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+
+        //Commit: a fresh disjoint 3-cycle arrives; the successor store is
+        //rebuilt the way a session commit would produce one, and the
+        //rendezvous receives the journal's effective delta.
+        EncodedTriple[] added =
+        [
+            EncodedTriple.FromEncoded(20, 200, 21),
+            EncodedTriple.FromEncoded(21, 200, 22),
+            EncodedTriple.FromEncoded(22, 200, 20),
+        ];
+        List<EncodedTriple> newTriples = [.. fixture, .. added];
+        HypertrieGraphStore newStore = await HypertrieGraphStore.BuildAsync(newTriples, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+        rendezvous.Advance(newStore, added, []);
+
+        List<string> after = await LeapfrogFingerprintsAsync(rendezvous.Query(query, TimeProvider.System, traceHandler: handler, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+        List<string> reference = await LeapfrogFingerprintsAsync(newStore.Query(query, TimeProvider.System, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+
+        CollectionAssert.AreEqual(reference, after);
+        Assert.HasCount(before.Count + 3, after);
+        Assert.AreEqual(QueryEngineKind.SelfIndex, selections[^1].Engine);
+        Assert.AreEqual(EngineSelectionReason.ViewBuilt, selections[^1].SelectionReason, "The self-index rebuilds after a commit rather than answering stale.");
     }
 
     [TestMethod]

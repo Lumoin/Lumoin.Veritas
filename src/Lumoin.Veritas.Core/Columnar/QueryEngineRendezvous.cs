@@ -63,6 +63,11 @@ public sealed class QueryEngineRendezvous
 
     private ColumnarTripleIndex? columnarView;
 
+    //The succinct self-index serving rotation-incompatible shapes when the
+    //policy opts in; materialised on first such demand and dropped on every
+    //commit — it rebuilds rather than evolving by delta.
+    private TripleSelfIndex? selfIndexView;
+
     private object StateLock { get; } = new();
 
     //Sequence-number counter for trace events emitted by this
@@ -110,6 +115,10 @@ public sealed class QueryEngineRendezvous
         {
             store = newStore;
             columnarView = columnarView?.Apply(additions, removals);
+
+            //The self-index has no delta form; the next qualifying query
+            //rebuilds it from the post-commit store.
+            selfIndexView = null;
         }
     }
 
@@ -222,6 +231,14 @@ public sealed class QueryEngineRendezvous
 
         if(shapeQualifies && !rotationCompatible)
         {
+            IAsyncEnumerable<Solution>? selfIndexed = TryQuerySelfIndex(
+                currentStore, query, timeProvider, accessControl, traceHandler, effectiveCorrelationId, cancellationToken);
+
+            if(selfIndexed is not null)
+            {
+                return selfIndexed;
+            }
+
             EmitEngineSelected(
                 timeProvider, traceHandler, effectiveCorrelationId,
                 QueryEngineKind.Hypertrie, EngineSelectionReason.RotationIncompatible, currentStore.Count, buildMilliseconds: 0);
@@ -382,6 +399,101 @@ public sealed class QueryEngineRendezvous
 
             return (view, true, stopwatch.ElapsedMilliseconds);
         }
+    }
+
+    /// <summary>
+    /// Materialises the self-index for the given store generation, exactly
+    /// once, under the same lock discipline as <see cref="EnsureView"/>: the
+    /// self-index always pairs with the store published under the same lock,
+    /// and a commit that advanced the rendezvous past the expected generation
+    /// yields none.
+    /// </summary>
+    /// <param name="expectedStore">The store generation the caller's decision was made against.</param>
+    /// <returns>The self-index paired with <paramref name="expectedStore"/> and whether this call built it, or no self-index when the generation was superseded.</returns>
+    private (TripleSelfIndex? Index, bool IsBuilt, long BuildMilliseconds) EnsureSelfIndex(HypertrieGraphStore expectedStore)
+    {
+        lock(StateLock)
+        {
+            if(!ReferenceEquals(store, expectedStore))
+            {
+                return (null, false, 0L);
+            }
+
+            if(selfIndexView is not null)
+            {
+                return (selfIndexView, false, 0L);
+            }
+
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            TripleSelfIndex index = TripleSelfIndex.Build(store.Match(TermId.None, TermId.None, TermId.None));
+            stopwatch.Stop();
+
+            selfIndexView = index;
+
+            return (index, true, stopwatch.ElapsedMilliseconds);
+        }
+    }
+
+    /// <summary>
+    /// Routes a rotation-incompatible query to the worst-case-optimal join
+    /// over the succinct self-index when the policy opts in and no
+    /// per-candidate access control is wired (the self-index path has no
+    /// consultation point, like the batched and Free Join paths), or returns
+    /// <see langword="null"/> for the system-of-record fallback — when the
+    /// policy opts out, access control is wired, the on-demand build is
+    /// disabled with no self-index materialised, the generation was
+    /// superseded, or the pipeline declines the shape.
+    /// </summary>
+    /// <param name="currentStore">The store generation the routing decision was made against.</param>
+    /// <param name="query">The basic graph pattern.</param>
+    /// <param name="timeProvider">Clock for trace events.</param>
+    /// <param name="accessControl">The access-control policy; non-<see langword="null"/> disqualifies the self-index path.</param>
+    /// <param name="traceHandler">Optional trace handler.</param>
+    /// <param name="correlationId">The correlation id.</param>
+    /// <param name="cancellationToken">Cancellation token threaded into the flattening.</param>
+    /// <returns>The self-index solution stream, or <see langword="null"/>.</returns>
+    private IAsyncEnumerable<Solution>? TryQuerySelfIndex(
+        HypertrieGraphStore currentStore,
+        BasicGraphPattern query,
+        TimeProvider timeProvider,
+        AccessControlDelegate? accessControl,
+        TraceHandler<QueryTraceEvent>? traceHandler,
+        Guid correlationId,
+        CancellationToken cancellationToken)
+    {
+        if(!policy.PreferSelfIndex || accessControl is not null)
+        {
+            return null;
+        }
+
+        TripleSelfIndex? existing;
+        lock(StateLock)
+        {
+            existing = selfIndexView;
+        }
+
+        if(existing is null && !policy.BuildViewOnDemand)
+        {
+            return null;
+        }
+
+        (TripleSelfIndex? selfIndex, bool isBuilt, long buildMilliseconds) = EnsureSelfIndex(currentStore);
+        if(selfIndex is null)
+        {
+            return null;
+        }
+
+        IEnumerable<SolutionBatch>? batches = SelfIndexPipeline.Run(selfIndex, query);
+        if(batches is null)
+        {
+            return null;
+        }
+
+        EmitEngineSelected(
+            timeProvider, traceHandler, correlationId,
+            QueryEngineKind.SelfIndex, isBuilt ? EngineSelectionReason.ViewBuilt : EngineSelectionReason.ViewReused, selfIndex.Count, buildMilliseconds);
+
+        return SolutionBatch.FlattenAsync(batches, cancellationToken);
     }
 
     /// <summary>

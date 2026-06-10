@@ -17,4 +17,7 @@ public enum QueryEngineKind
 
     /// <summary>The Free Join generic join — the unifying executor over generalized hash tries, opt-in, over the same derived view.</summary>
     FreeJoin = 3,
+
+    /// <summary>The worst-case-optimal join over the succinct triple self-index — opt-in, serving the rotation-incompatible shapes a reduced order set cannot plan.</summary>
+    SelfIndex = 4,
 }
