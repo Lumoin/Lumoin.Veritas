@@ -2,6 +2,8 @@ using System;
 using System.Buffers;
 using System.Diagnostics;
 using System.Numerics;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 using Lumoin.Veritas.Core.Memory;
 
 namespace Lumoin.Veritas.Core.Collections;
@@ -118,35 +120,11 @@ public sealed class WaveletMatrix
         {
             int shift = bitWidth - 1 - level;
             ulong[] payload = new ulong[(count + 63) >> 6];
-            int zeros = 0;
-            for(int i = 0; i < count; i++)
-            {
-                if(((current[i] >> shift) & 1) != 0)
-                {
-                    payload[i >> 6] |= 1UL << (i & 63);
-                }
-                else
-                {
-                    zeros++;
-                }
-            }
-
+            int ones = ExtractBits(current, shift, payload);
+            int zeros = count - ones;
             levels[level] = RankSelectBitVector.Build(payload, count, selectSampleRate);
             zeroCounts[level] = zeros;
-
-            int zeroCursor = 0;
-            int oneCursor = zeros;
-            for(int i = 0; i < count; i++)
-            {
-                if(((current[i] >> shift) & 1) != 0)
-                {
-                    next[oneCursor++] = current[i];
-                }
-                else
-                {
-                    next[zeroCursor++] = current[i];
-                }
-            }
+            StablePartition(current, next, shift, zeros);
 
             Span<uint> swap = current;
             current = next;
@@ -154,6 +132,77 @@ public sealed class WaveletMatrix
         }
 
         return new WaveletMatrix(levels, zeroCounts, count, bitWidth);
+    }
+
+    /// <summary>Packs bit <paramref name="shift"/> of every value into <paramref name="payload"/> at the matching position and returns the set-bit total.</summary>
+    /// <param name="values">The level's permutation.</param>
+    /// <param name="shift">The bit index to extract from each value.</param>
+    /// <param name="payload">The destination bit-vector words, one bit per value; the caller sized it and left it zeroed.</param>
+    /// <returns>The number of values whose extracted bit is set.</returns>
+    private static int ExtractBits(ReadOnlySpan<uint> values, int shift, ulong[] payload)
+    {
+        int count = values.Length;
+        int i = 0;
+        if(Avx2.IsSupported)
+        {
+            //Move the target bit of each 32-bit lane to its sign bit, then read
+            //the eight lane signs as one movemask byte; eight such bytes fill a
+            //payload word, so whole words land without per-element shifts.
+            Vector128<uint> leftShift = Vector128.CreateScalar((uint)(31 - shift));
+            int wholeWords = count >> 6;
+            for(int word = 0; word < wholeWords; word++)
+            {
+                ulong bits = 0;
+                int basePosition = word << 6;
+                for(int lane = 0; lane < 64; lane += 8)
+                {
+                    Vector256<uint> vector = Vector256.LoadUnsafe(in values[basePosition + lane]);
+                    Vector256<uint> hoisted = Avx2.ShiftLeftLogical(vector, leftShift);
+                    uint mask = (uint)Avx.MoveMask(hoisted.AsSingle());
+                    bits |= (ulong)mask << lane;
+                }
+
+                payload[word] = bits;
+            }
+
+            i = wholeWords << 6;
+        }
+
+        for(; i < count; i++)
+        {
+            payload[i >> 6] |= (ulong)((values[i] >> shift) & 1) << (i & 63);
+        }
+
+        int ones = 0;
+        foreach(ulong word in payload)
+        {
+            ones += BitOperations.PopCount(word);
+        }
+
+        return ones;
+    }
+
+    /// <summary>Stable-partitions <paramref name="source"/> into <paramref name="destination"/> by bit <paramref name="shift"/>: the unset values first in order, then the set ones, with the unset run holding <paramref name="zeros"/> entries.</summary>
+    /// <param name="source">The level's permutation.</param>
+    /// <param name="destination">The next level's permutation, written in full.</param>
+    /// <param name="shift">The bit index that selects the side.</param>
+    /// <param name="zeros">The number of unset-bit values — the start of the set-bit run.</param>
+    private static void StablePartition(ReadOnlySpan<uint> source, Span<uint> destination, int shift, int zeros)
+    {
+        int zeroCursor = 0;
+        int oneCursor = zeros;
+        for(int i = 0; i < source.Length; i++)
+        {
+            uint value = source[i];
+            int bit = (int)((value >> shift) & 1);
+
+            //Branchless cursor select: the set bit routes to the one cursor, the
+            //unset bit to the zero cursor; only the chosen cursor advances.
+            int target = bit != 0 ? oneCursor : zeroCursor;
+            destination[target] = value;
+            oneCursor += bit;
+            zeroCursor += 1 - bit;
+        }
     }
 
     /// <summary>The symbol at a position.</summary>
