@@ -134,6 +134,56 @@ internal sealed class AlcModuleReasonerTests
         Assert.Contains(nameof(OwlHasKeyAxiom), verdict.UnsupportedConstructs);
     }
 
+    /// <summary>The survey names the beyond-fragment remainder without deciding, and an in-fragment module surveys empty.</summary>
+    [TestMethod]
+    public void SurveyNamesTheRemainderWithoutDeciding()
+    {
+        OwlSubClassOfAxiom supported = new(Reference("A"), Reference("B")) { Origin = Origin("ab") };
+        OwlHasKeyAxiom beyond = new(Reference("A"), [Property("r")], []) { Origin = Origin("key") };
+
+        Assert.IsEmpty(AlcModuleReasoner.Survey(Module(supported)));
+        Assert.Contains(nameof(OwlHasKeyAxiom), AlcModuleReasoner.Survey(Module(supported, beyond)));
+    }
+
+    /// <summary>An assertion over a reserved built-in role is named beyond the fragment, not read as a plain edge.</summary>
+    [TestMethod]
+    public void ReservedRolesAreNamedBeyondTheFragment()
+    {
+        OwlObjectPropertyAssertionAxiom viaBottom = new(
+            Named("a"),
+            new NamedNode(Utf8String.FromString("http://www.w3.org/2002/07/owl#bottomObjectProperty")),
+            Named("b"))
+        {
+            Origin = Origin("edge"),
+        };
+
+        ModuleVerdict verdict = AlcModuleReasoner.Decide(Module(viaBottom), TestContext.CancellationToken);
+
+        Assert.IsTrue(verdict.IsConsistent);
+        Assert.Contains(nameof(OwlObjectPropertyAssertionAxiom), verdict.UnsupportedConstructs);
+    }
+
+    /// <summary>The consistency-only entry agrees with the full verdict on both outcomes and surfaces no subsumptions.</summary>
+    [TestMethod]
+    public void ConsistencyOnlyEntryAgreesWithoutSubsumptions()
+    {
+        OwlSubClassOfAxiom aUnderB = new(Reference("A"), Reference("B")) { Origin = Origin("ab") };
+        OwlSubClassOfAxiom bUnderC = new(Reference("B"), Reference("C")) { Origin = Origin("bc") };
+
+        ModuleVerdict full = AlcModuleReasoner.Decide(Module(aUnderB, bUnderC), TestContext.CancellationToken);
+        ModuleVerdict consistencyOnly = AlcModuleReasoner.DecideConsistency(Module(aUnderB, bUnderC), TestContext.CancellationToken);
+
+        Assert.AreEqual(full.IsConsistent, consistencyOnly.IsConsistent);
+        Assert.IsTrue(consistencyOnly.IsConsistent);
+        Assert.IsEmpty(consistencyOnly.Subsumptions, "The consistency-only entry runs no subsumption sweep.");
+
+        OwlDisjointClassesAxiom disjoint = new([Reference("A"), Reference("B")]) { Origin = Origin("disjoint") };
+        OwlClassAssertionAxiom isA = new(Reference("A"), Named("x")) { Origin = Origin("isA") };
+        OwlClassAssertionAxiom isB = new(Reference("B"), Named("x")) { Origin = Origin("isB") };
+
+        Assert.IsFalse(AlcModuleReasoner.DecideConsistency(Module(disjoint, isA, isB), TestContext.CancellationToken).IsConsistent);
+    }
+
     /// <summary>SameIndividual merges its nodes: the merged individual carries both assertions into the clash.</summary>
     [TestMethod]
     public void SameIndividualMergesNodes()

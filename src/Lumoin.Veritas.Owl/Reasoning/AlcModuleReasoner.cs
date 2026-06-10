@@ -28,7 +28,10 @@ namespace Lumoin.Veritas.Owl.Reasoning;
 /// <para>
 /// <b>Fragment honesty.</b> Axioms or expressions beyond ALC(H) —
 /// cardinalities, inverses, chains, nominals, self-restrictions, keys,
-/// data ranges, negative assertions — are named on
+/// data ranges, negative assertions, and any role position naming the
+/// reserved <c>owl:topObjectProperty</c>/<c>owl:bottomObjectProperty</c>
+/// (whose fixed universal/empty semantics lies outside the calculus) —
+/// are named on
 /// <see cref="ModuleVerdict.UnsupportedConstructs"/> and excluded: an
 /// inconsistency found in the supported fragment condemns the whole
 /// module; a consistency verdict is fragment-relative.
@@ -68,6 +71,49 @@ public static class AlcModuleReasoner
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
     public static ModuleVerdict Decide(ReasoningModule module, CancellationToken cancellationToken = default)
     {
+        return DecideCore(module, includeSubsumptions: true, cancellationToken);
+    }
+
+    /// <summary>
+    /// Decides the module's ALC(H) fragment for consistency only: the
+    /// verdict's subsumption list stays empty whatever the signature size,
+    /// and no per-pair subsumption tableaux run. The entry for callers that
+    /// consume the consistency bit alone — a satisfiability or refutation
+    /// check — where the pairwise sweep would be pure overhead.
+    /// </summary>
+    /// <param name="module">The module to decide.</param>
+    /// <param name="cancellationToken">A token that aborts the tableau between rule applications.</param>
+    /// <returns>The verdict, with an empty subsumption list.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="module"/> is <see langword="null"/>.</exception>
+    /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
+    public static ModuleVerdict DecideConsistency(ReasoningModule module, CancellationToken cancellationToken = default)
+    {
+        return DecideCore(module, includeSubsumptions: false, cancellationToken);
+    }
+
+    /// <summary>
+    /// Names the module's beyond-fragment remainder without deciding
+    /// satisfiability: the translation runs, the tableau does not. An empty
+    /// result means every axiom lies inside the ALC(H) calculus, so a
+    /// subsequent decision is whole-module rather than fragment-relative.
+    /// </summary>
+    /// <param name="module">The module to survey.</param>
+    /// <returns>The named beyond-fragment constructs, empty when the module is wholly within the fragment.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="module"/> is <see langword="null"/>.</exception>
+    public static IReadOnlyList<string> Survey(ReasoningModule module)
+    {
+        ArgumentNullException.ThrowIfNull(module);
+
+        return Translate(module).Unsupported;
+    }
+
+    /// <summary>Runs the tableau over the module's translation, optionally following with the module-local subsumption sweep.</summary>
+    /// <param name="module">The module to decide.</param>
+    /// <param name="includeSubsumptions">Whether to enumerate module-local subsumptions when the signature qualifies.</param>
+    /// <param name="cancellationToken">A token that aborts the tableau between rule applications.</param>
+    /// <returns>The verdict.</returns>
+    private static ModuleVerdict DecideCore(ReasoningModule module, bool includeSubsumptions, CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(module);
 
         Translation translation = Translate(module);
@@ -75,7 +121,7 @@ public static class AlcModuleReasoner
         bool isConsistent = IsSatisfiable(translation.TBox, translation.AssertedConcepts, translation.Edges, translation.SuperRoles, cancellationToken);
 
         List<(NamedNode SubClass, NamedNode SuperClass)> subsumptions = [];
-        if(isConsistent && translation.SignatureClasses.Count <= SubsumptionSignatureCap)
+        if(includeSubsumptions && isConsistent && translation.SignatureClasses.Count <= SubsumptionSignatureCap)
         {
             //A ⊑ B holds exactly when A ⊓ ¬B is unsatisfiable under the
             //TBox; every check is a fresh single-root tableau.
@@ -168,18 +214,21 @@ public static class AlcModuleReasoner
                 case OwlDisjointClassesAxiom disjoint when TryDisjointness(disjoint.Operands, tbox, signature, signatureSeen):
                     break;
                 case OwlObjectPropertyDomainAxiom { Property.IsInverse: false } domain
-                    when TryTranslate(domain.Domain, negate: false, signature, signatureSeen, out AlcConcept? domainConcept):
+                    when !IsReservedRole(domain.Property.Property.Iri)
+                        && TryTranslate(domain.Domain, negate: false, signature, signatureSeen, out AlcConcept? domainConcept):
                     //domain(r, C) is ∃r.⊤ ⊑ C, internalized ∀r.⊥ ⊔ C.
                     tbox.Add(new AlcOr([new AlcForAll(domain.Property.Property.Iri, AlcBottom.Instance), domainConcept]));
 
                     break;
                 case OwlObjectPropertyRangeAxiom { Property.IsInverse: false } range
-                    when TryTranslate(range.Range, negate: false, signature, signatureSeen, out AlcConcept? rangeConcept):
+                    when !IsReservedRole(range.Property.Property.Iri)
+                        && TryTranslate(range.Range, negate: false, signature, signatureSeen, out AlcConcept? rangeConcept):
                     //range(r, C) is ⊤ ⊑ ∀r.C.
                     tbox.Add(new AlcForAll(range.Property.Property.Iri, rangeConcept));
 
                     break;
-                case OwlSubObjectPropertyOfAxiom { SubProperty.IsInverse: false, SuperProperty.IsInverse: false } subRole:
+                case OwlSubObjectPropertyOfAxiom { SubProperty.IsInverse: false, SuperProperty.IsInverse: false } subRole
+                    when !IsReservedRole(subRole.SubProperty.Property.Iri) && !IsReservedRole(subRole.SuperProperty.Property.Iri):
                     rolePairs.Add((subRole.SubProperty.Property.Iri, subRole.SuperProperty.Property.Iri));
 
                     break;
@@ -190,7 +239,8 @@ public static class AlcModuleReasoner
 
                     break;
                 case OwlObjectPropertyAssertionAxiom roleAssertion
-                    when TryIndividualKey(roleAssertion.Source, out Utf8String source) && TryIndividualKey(roleAssertion.Target, out Utf8String target):
+                    when !IsReservedRole(roleAssertion.Property.Iri)
+                        && TryIndividualKey(roleAssertion.Source, out Utf8String source) && TryIndividualKey(roleAssertion.Target, out Utf8String target):
                     edges.Add((Find(merges, source), roleAssertion.Property.Iri, Find(merges, target)));
 
                     break;
@@ -366,10 +416,12 @@ public static class AlcModuleReasoner
                 OwlObjectUnionOf union => CombineOperands(union.Operands, polarity, isIntersection: false, results),
                 OwlObjectComplementOf complement => results.TryGetValue((complement.Operand, !polarity), out AlcConcept? inner) ? inner : null,
                 OwlObjectSomeValuesFrom { Property.IsInverse: false } some
-                    when results.TryGetValue((some.Filler, polarity), out AlcConcept? filler) =>
+                    when !IsReservedRole(some.Property.Property.Iri)
+                        && results.TryGetValue((some.Filler, polarity), out AlcConcept? filler) =>
                         polarity ? new AlcForAll(some.Property.Property.Iri, filler) : new AlcExists(some.Property.Property.Iri, filler),
                 OwlObjectAllValuesFrom { Property.IsInverse: false } all
-                    when results.TryGetValue((all.Filler, polarity), out AlcConcept? filler) =>
+                    when !IsReservedRole(all.Property.Property.Iri)
+                        && results.TryGetValue((all.Filler, polarity), out AlcConcept? filler) =>
                         polarity ? new AlcExists(all.Property.Property.Iri, filler) : new AlcForAll(all.Property.Property.Iri, filler),
                 _ => null
             };
@@ -803,6 +855,14 @@ public static class AlcModuleReasoner
         }
 
         return copy;
+    }
+
+    /// <summary>Whether a role IRI is one of the reserved built-ins, <c>owl:topObjectProperty</c> or <c>owl:bottomObjectProperty</c>, whose fixed universal/empty semantics the calculus does not interpret.</summary>
+    /// <param name="role">The role IRI.</param>
+    /// <returns><see langword="true"/> for a reserved role.</returns>
+    private static bool IsReservedRole(Utf8String role)
+    {
+        return role.Equals(OwlVocabulary.TopObjectProperty) || role.Equals(OwlVocabulary.BottomObjectProperty);
     }
 
     /// <summary>The individual key: a named individual by IRI, an anonymous one by label.</summary>
