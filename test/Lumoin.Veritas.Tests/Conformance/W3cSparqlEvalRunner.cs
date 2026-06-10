@@ -433,8 +433,17 @@ internal static class W3cSparqlEvalRunner
         try
         {
             AlgebraOperator algebra = SparqlTranslator.Translate(normalized);
-            IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, cancellationToken).ConfigureAwait(false);
-            actual = BuildResultSet(query, solutions);
+            if(query.Form is AskQuery)
+            {
+                //ASK goes through the engine's short-circuiting entry, so every ASK fixture
+                //exercises the first-solution fast path against the expected boolean.
+                actual = SparqlResultSet.ForAsk(await engine.EvaluateAskAsync(algebra, cancellationToken).ConfigureAwait(false));
+            }
+            else
+            {
+                IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, cancellationToken).ConfigureAwait(false);
+                actual = BuildResultSet(query, solutions);
+            }
         }
         catch(NotSupportedException ex)
         {
@@ -565,17 +574,12 @@ internal static class W3cSparqlEvalRunner
         return System.Text.RegularExpressions.Regex.Replace(lf, "_:[^,\n]+", "_:");
     }
 
-    /// <summary>Builds the result set for a SELECT (head variables + solutions) or ASK (the pattern matched) query.</summary>
+    /// <summary>Builds the result set for a SELECT (head variables + solutions) query; ASK goes through the engine's short-circuiting entry instead.</summary>
     /// <param name="query">The parsed query.</param>
     /// <param name="solutions">The engine's solution sequence.</param>
     /// <returns>The result set.</returns>
     private static SparqlResultSet BuildResultSet(SparqlQuery query, IReadOnlyList<SparqlSolution> solutions)
     {
-        if(query.Form is AskQuery)
-        {
-            return SparqlResultSet.ForAsk(solutions.Count > 0);
-        }
-
         List<Utf8String> variables = [];
         if(query.Form is SelectQuery select)
         {

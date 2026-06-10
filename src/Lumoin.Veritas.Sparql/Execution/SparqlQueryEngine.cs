@@ -233,8 +233,61 @@ public sealed class SparqlQueryEngine
     }
 
     /// <summary>
+    /// Whether the algebra has at least one solution — the <c>ASK</c> form. A plain BGP (the algebra an
+    /// <c>ASK WHERE { triples }</c> translates to) answers by streaming its FIRST backend solution and
+    /// stopping — the join drivers are lazy end to end, so no solution sequence is materialised and the
+    /// early exit disposes them; an unencodable constant answers <see langword="false"/> outright (the BGP
+    /// yields nothing). A BGP carrying per-solution rewrites (triple-term destructuring, self-join
+    /// equalities, type expansions) and every other algebra shape evaluates normally and reports emptiness,
+    /// so the fast path never changes an answer.
+    /// </summary>
+    /// <param name="algebra">The translated algebra (from <see cref="Translation.SparqlTranslator.Translate"/>).</param>
+    /// <param name="cancellationToken">A token that aborts evaluation.</param>
+    /// <returns>Whether at least one solution exists.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="algebra"/> is <see langword="null"/>.</exception>
+    /// <exception cref="NotSupportedException">The algebra uses an operator this slice does not yet execute.</exception>
+    public async ValueTask<bool> EvaluateAskAsync(AlgebraOperator algebra, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(algebra);
+
+        if(algebra is Bgp bgp)
+        {
+            EncodedBgp encoded = EncodeBgp(bgp);
+            if(!encoded.Encodable)
+            {
+                return false;
+            }
+
+            //The per-solution rewrites filter solutions after the join and type expansion changes the
+            //pattern set; existence under those takes the full evaluation below.
+            if(encoded.TripleTermMatches.Count == 0
+                && encoded.SelfJoinEqualities.Count == 0
+                && ComputeTypeExpansions(encoded.Patterns).Count == 0
+                && dataset.Resolve(TermId.None) is HypertrieGraphStore graphStore)
+            {
+                BasicGraphPattern query = new(encoded.Patterns, encoded.Registry);
+                IAsyncEnumerable<Solution> stream = dataset.DefaultGraphRendezvous is QueryEngineRendezvous rendezvous
+                    ? rendezvous.Query(graphStore, query, TimeProvider.System, accessControl: accessControl, accessContext: accessContext, cancellationToken: cancellationToken)
+                    : graphStore.Query(query, TimeProvider.System, accessControl: accessControl, accessContext: accessContext, cancellationToken: cancellationToken);
+
+                await foreach(Solution _ in stream.ConfigureAwait(false))
+                {
+                    return true;
+                }
+
+                return false;
+            }
+        }
+
+        IReadOnlyList<SparqlSolution> solutions = await EvaluateAsync(algebra, cancellationToken).ConfigureAwait(false);
+
+        return solutions.Count > 0;
+    }
+
+    /// <summary>
     /// Evaluates an algebra tree to its solution sequence. A <c>SELECT</c> consumes the sequence directly; an
-    /// <c>ASK</c> is satisfied when the sequence is non-empty.
+    /// <c>ASK</c> is satisfied when the sequence is non-empty — prefer <see cref="EvaluateAskAsync"/>, which
+    /// short-circuits at the first solution instead of materialising the sequence.
     /// </summary>
     /// <param name="algebra">The translated algebra (from <see cref="Translation.SparqlTranslator.Translate"/>).</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>

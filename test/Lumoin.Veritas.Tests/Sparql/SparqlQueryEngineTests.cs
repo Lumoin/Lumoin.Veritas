@@ -925,6 +925,24 @@ internal sealed class SparqlQueryEngineTests
         Assert.HasCount(4, branchSolutions);
     }
 
+    /// <summary>ASK over a plain BGP short-circuits at the first solution: true on a matching pattern, false on a non-matching combination and on an absent constant, and a FILTER shape still answers through the full evaluation.</summary>
+    [TestMethod]
+    public async Task AskShortCircuitsOnAPlainPatternAndFallsBackElsewhere()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(("alice", "knows", "bob"), ("alice", "knows", "carol"), ("dave", "knows", "eve")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+
+        //The streamed fast path: a match exists; a present predicate with no
+        //two-hop continuation does not; an absent constant cannot encode.
+        Assert.IsTrue(await engine.EvaluateAskAsync(Translate("PREFIX : <http://example.org/> ASK { ?s :knows ?o }", pool), TestContext.CancellationToken).ConfigureAwait(false));
+        Assert.IsFalse(await engine.EvaluateAskAsync(Translate("PREFIX : <http://example.org/> ASK { ?s :knows ?m . ?m :knows ?o }", pool), TestContext.CancellationToken).ConfigureAwait(false));
+        Assert.IsFalse(await engine.EvaluateAskAsync(Translate("PREFIX : <http://example.org/> ASK { ?s :nobody ?o }", pool), TestContext.CancellationToken).ConfigureAwait(false));
+
+        //A FILTER wraps the BGP in an expression operator — the fallback path.
+        Assert.IsTrue(await engine.EvaluateAskAsync(Translate("PREFIX : <http://example.org/> ASK { ?s :knows ?o FILTER(?o != :bob) }", pool), TestContext.CancellationToken).ConfigureAwait(false));
+        Assert.IsFalse(await engine.EvaluateAskAsync(Translate("PREFIX : <http://example.org/> ASK { ?s :knows ?o FILTER(?s = :nobody) }", pool), TestContext.CancellationToken).ConfigureAwait(false));
+    }
+
     /// <summary>GROUP BY an arithmetic expression bound to a variable partitions by the expression's value (the cross product of :p {0,1,2} × :q {0,1,2} sums to 0..4, five groups).</summary>
     [TestMethod]
     public async Task GroupByArithmeticExpressionPartitionsByValue()

@@ -132,13 +132,14 @@ internal static class VeritasOperations
 
         SparqlQuery normalized = (SparqlQuery)new SparqlNormalizer(pool).Normalize(query);
         AlgebraOperator algebra = SparqlTranslator.Translate(normalized);
-        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, cancellationToken).ConfigureAwait(false);
 
+        //ASK short-circuits at the first solution; only SELECT materialises the sequence.
         if(query.Form is AskQuery)
         {
-            return OperationResult.Ok(solutions.Count > 0 ? "true" : "false");
+            return OperationResult.Ok(await engine.EvaluateAskAsync(algebra, cancellationToken).ConfigureAwait(false) ? "true" : "false");
         }
 
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, cancellationToken).ConfigureAwait(false);
         SparqlResultSet results = SparqlResultSet.ForSelect(SelectVariables(query), solutions);
         return OperationResult.Ok(SparqlResultsDelimitedWriter.WriteToString(results, format));
     }
