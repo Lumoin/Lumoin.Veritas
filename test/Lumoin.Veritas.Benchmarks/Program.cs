@@ -219,6 +219,16 @@ internal static class Program
             return;
         }
 
+        //The succinct triple self-index vs the columnar index on the same
+        //corpora: bits/triple, build time, equal-semantics membership probes,
+        //and the bound-range seek.
+        if(args.Length > 0 && args[0] == "--profile-self-index")
+        {
+            SelfIndexSoak.RunSelfIndexSoak();
+
+            return;
+        }
+
         //Elias-Fano succinct column encoding vs frame-of-reference: bits/value
         //and seek cost across universe/count ratios (the ~10-vs-~22 comparison).
         if(args.Length > 0 && args[0] == "--profile-elias-fano")
