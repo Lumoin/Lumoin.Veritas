@@ -417,7 +417,8 @@ public sealed class QueryEngineRendezvous
             return null;
         }
 
-        ColumnarBatchPlan? plan = ColumnarBatchPipeline.TryPlan(view, query, policy.PreferSemijoinReduction, policy.PreferFactorizedStar, policy.PreferFactorizedChain);
+        JoinStrategyChoice choice = JoinStrategySelector.Choose(view, query, policy);
+        ColumnarBatchPlan? plan = ColumnarBatchPipeline.TryPlan(view, query, choice.SemijoinReduction, choice.FactorizedStar, choice.FactorizedChain);
 
         if(plan is null)
         {
@@ -566,7 +567,8 @@ public sealed class QueryEngineRendezvous
             reason = isBuilt ? EngineSelectionReason.ViewBuilt : EngineSelectionReason.ViewReused;
         }
 
-        ColumnarBatchPlan? plan = ColumnarBatchPipeline.TryPlan(view, query, policy.PreferSemijoinReduction, policy.PreferFactorizedStar, policy.PreferFactorizedChain);
+        JoinStrategyChoice choice = JoinStrategySelector.Choose(view, query, policy);
+        ColumnarBatchPlan? plan = ColumnarBatchPipeline.TryPlan(view, query, choice.SemijoinReduction, choice.FactorizedStar, choice.FactorizedChain);
         if(plan is null)
         {
             return null;

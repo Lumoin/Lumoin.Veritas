@@ -181,6 +181,16 @@ internal static class Program
             return;
         }
 
+        //The adaptive join-strategy selector: sweeps star and chain fan-out
+        //ladders comparing the streamed, factorised, and adaptively-routed
+        //times, locating the time crossover the engagement thresholds carry.
+        if(args.Length > 0 && args[0] == "--profile-join-selector")
+        {
+            JoinSelectorSoak.RunJoinSelectorSoak();
+
+            return;
+        }
+
         //Factorised intermediates vs the flat row product on a fan-out join
         //whose result is a per-key cross product - the stored-size shrink the
         //product-of-unions representation guarantees.
