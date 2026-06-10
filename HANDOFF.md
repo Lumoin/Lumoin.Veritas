@@ -15,8 +15,9 @@ in "Next".
 - Branch `main`, tree clean at **`f76fb8b`**. This session shipped the §4.3 Free Join arc: `255c2f4` **(a)** routed Free Join behind a default-off `PreferFreeJoin`; `6ad4ca7` **(b)** factorized-star output (the §4.2 ∩ §4.3 convergence, `FreeJoinExecutor.ExecuteFactorized` / `FreeJoinPipeline.RunFactorized`); `69ce5e5` **(c)** flat-1D `FactorizedBranches`; `82eaf32` **(d.1)** `FactorizedArena` (query-scoped bump arena); `b18c612` **(d.2)** `FactorizedBranches` values onto `ArenaSlice`, §4.2 routes self-dispose at the stream boundary; `176d0a2` **(d.3)** `FreeJoinExecutor.Drive` onto per-level reusable flat buffers — zero per-bound-value allocation; `3d9d64a` **(d.4)** nested flatten reads flat branches in place + reusable materialise buffers (no per-row tuples); `f76fb8b` **(d.5)** group keys + branch metadata onto the arena, `ExecuteFactorized` fills branch runs in place (`FactorizedBranches.Allocate`/`BranchSpan`). The §4.3(d) explicit-memory arc is COMPLETE: keys, metadata, and values all share the one query-scoped arena lifetime; executor and flatten scratch are per-level/per-slot reusable buffers.
 - **Measured after (d.5)** (`--profile-factorized`, Release, 2026-06-10, all rungs MATCH): two-pattern join ×4.5–8.5 time / ×7.2–12.4 alloc at fan 40–60; star ×43.8–93.3 time / ×54.7–138.8 alloc at fan 20–30 (×133–300 compression); chain ×5.4–14.3 time / ×7.1–7.8 alloc at the two-sided fan-out rungs (×22.5–28.6 compression). No-win controls unchanged in character: fan=1 rungs still lose (×0.1–0.9 time) — factorisation stays opt-in for the deferred selector.
 - **Deeper factorisation SHIPPED (`f629420`):** `ExecuteFactorized` generalised from the single-key star to a **star with chain extensions** — an extension relation (two-column trie over a centre branch variable then a fresh variable) nests as a depth-2 sub-batch under that branch, with the semijoin drop and empty-branch group kill; `FreeJoinPipeline.TryPlanFactorizedOrder` tries candidate centre keys in first-appearance order, so a four-hop chain factorises around its middle with BOTH branches nested (a shape neither §4.2 route covers). Differentials: 3-hop chain, star+chain hybrid, 4-hop chain vs leapfrog AND the flat `Run`, all compressing; triangle still declines.
-- **→ RESUME HERE: the data-storage axis (owner-requested)** — wire **partitioned Elias-Fano** for the piecewise-monotone CSR value columns (`level1Values`/`level2Values`, reset per parent group — the offsets already mark the boundaries); `PartitionedEliasFanoSequence` is BUILT and measured (wins at fan-out ≥~4–8, outlier-robust); `FrameOfReference` stays the differential oracle; do the SIMD pass at this wiring seam via `ColumnarKernelBackend`. See "Column-encoding axis" below and memory `project_elias_fano_column_measurement`. On the join tier the remaining item is the cost-based depth/selector — the deferred join-strategy-selection research issue, its own arc.
-- Full suite **8139 / 0 failed / 546 skipped** at `f629420`.
+- **Data-storage axis, SIMD pass SHIPPED (`a878c3f`).** Grounding first corrected the stale plan: the EF + partitioned-EF **wiring was already done** — `ColumnarTripleIndex.Build(..., ColumnarValueColumnEncoding.EliasFanoWhenMonotone)` (opt-in, default `FrameOfReference`) offers whole-column EF at level 0 and partitioned EF at levels 1/2 over the parent-offset boundaries, each column keeping the smaller packing. The genuinely missing piece was the SIMD pass, now in: shared `BitSelect.InWord` (hardware bit-deposit select, portable clear-loop fallback) under every sampled select of BOTH sequences; `EliasFanoSequence.Build` packs the lower payload with one `ColumnarKernelBackend.Pack` call (identical lane layout); `Decode` bulk-unpacks low bits via `DecodeFrame` (zero base) after a scalar head to word alignment. **Measured: EF seek vs FoR ×3.6–5.3 (was ×2.6–3.1), sizes unchanged; partitioned EF healthy, ×2.32–3.03 at fan-out 32–8192.**
+- **→ RESUME HERE — candidates, owner-priority order unclear, ask or pick by value:** (1) the **`EliasFanoWhenMonotone` default-flip decision** — the policy is opt-in; with EF now smaller AND ×3.6–5.3 seek-faster on qualifying columns and the smaller-wins guard preventing size regressions, flipping the default is a measured owner call (corpus + soak sweep first); (2) **the join-tier depth/selector research issue** (the join techniques and their break-evens are all in place now); (3) **The Ring** (owner-interested, the succinct end of the storage axis, after EF). Smaller: partitioned-EF build-side `Pack` reuse needs word-aligned group starts (a format change, measured trade).
+- Full suite **8140 / 0 failed / 546 skipped** at `a878c3f`.
 - **Conformance (measured 2026-06-09, not from memory):** zero failures anywhere. W3C SHACL **120/120**, Turtle 328, NQuads 205, RDF 146 — 100%. SPARQL 1221/1248 (27 optional-feature skips). OWL `W3cOwl2` conformance suites **881/1323, 442 skip, 0 fail** — the 442 are correct cross-suite abstentions (367 RL + 65 species) + 10 corpus contradictions, **NOT** unimplemented regimes; the 2 genuine Direct-semantics entailment tests (`WebOnt-I4.6-005-Direct`, `WebOnt-equivalentClass-008-Direct`) fixed 2026-06-09 by projecting away the conclusion's annotations in `W3cOwl2RlTests` before the RL embedding check. The old "SHACL 63/120 / SHACL-SPARQL open" and "444 OWL regimes unimplemented" memories were **stale** — both corrected.
 - **Known flaky test (pre-existing, NOT from this session's changes):** ~1 full-suite run in ~4 fails exactly 1 test; never reproduced when hunted (6 clean differential-suite runs + 4 clean full runs). Likely a method-level-parallel race (the suite runs `Workers=0`, all cores). **NOT yet named** — I filtered it out of the one failing run before realising. Mitigation now in place: **every full-suite run captures FULL output** (`dotnet test ... 2>&1 | Out-File <tmp>` then grep the file), so the next failure is named with its CsCheck seed if applicable; root-cause it then. HARD RULE: never paper over (no retries, no timeouts, no dismiss-as-flaky) — root-cause or discuss. The "it's a CsCheck differential test" hypothesis was tested and **cleared**. Factorization stays opt-in (default-off); the corpus routes stars/chains through the streamed path by default.
 - One unrelated working-tree change persists: `generate-local-test-nuget-packages.ps1` (a sister project's edit excluding the AOT CLI from local packaging) — not mine, left uncommitted on purpose.
@@ -367,31 +368,29 @@ the factorised routes per shape (the deferred join-strategy-selection research i
   by pre-sizing. The `OpenAddressedTable<TValue>` primitive is reusable for the other ulong-keyed maps
   (semijoin set, factorization buckets).
 
-#### Column-encoding axis — the bits/triple spectrum (owner-requested next)
+#### Column-encoding axis — the bits/triple spectrum (owner-requested)
 
-- **Elias-Fano column codec — primitive shipped (`e43578b`), wiring is the follow-up.**
-  `Collections/EliasFanoSequence` — the near-entropy succinct encoding for monotone sequences: low bits
-  packed, high bits a sampled-`select₁` gap bit-vector; `Access` + `NextGEQ` (the successor / leapfrog
-  `Seek`). Measured (`--profile-elias-fano`): **9–11 bits/value at u/n 64–256 (the "~10")** vs
-  `FrameOfReference` ~17–19 — a ×1.7–2.5 size win, right on the EF bound + ~1 bit (the select sample).
-  Standalone, not wired. **Follow-ups:**
-  1. ✅ **`select₀`-based `NextGEQ` (done, `a0b31fa`).** Replaced the naive binary-search successor with a
-     `select₀` jump to the target high group + a low-bit scan (a `select₀` sample beside `select₁`; padding
-     masked). Measured: seek flipped from **×0.3–0.6 (slower)** to **×2.6–3.1 FASTER** than
-     `FrameOfReference.LowerBound`, for ~1–2 bits/value of sample overhead — EF is now smaller *and* faster.
-  2. **Wire EF behind `BlockPackedColumnReader`** for the **monotone** CSR columns — `level0Values` (distinct
-     sorted) and the **offset** columns (cumulative) slot in directly; `FrameOfReference` stays the
-     differential oracle. Turns the ~10 into a real index-memory win. **Do the SIMD pass HERE, not on the
-     standalone primitive:** EF's low-bit array is the same bit-packed-lane layout `FrameOfReference` uses, so
-     `NextGEQ`'s low-bit scan and EF build **reuse `ColumnarKernelBackend`** (the per-ISA `readonly struct`
-     bundle of lane pack/unpack kernels — `ColumnarPortableBackend`/`Vector128`/`Vector256`/`WasmPackedSimd`,
-     auto-selected via `.Default`, once-per-block indirection). `select` popcount is minor
-     (`BitOperations.PopCount` is already intrinsic; the sample bounds the scan). The same arrangement as the
-     sibling `Lumoin.Veridical` per-ISA backends. (Owner: EF is SIMD-amenable — this is the seam.)
-  3. **Partitioned EF** for `level1Values`/`level2Values` — only *piecewise*-monotone (reset per parent
-     group), so EF must partition at the group boundaries the offsets already mark. The deepest value column
-     dominates bits/triple, so this is where the memory actually moves.
-  (Memory `column-encoding-bits-per-triple-spectrum`.)
+- **Elias-Fano column codec — primitive, wiring, and SIMD pass ALL SHIPPED.**
+  `Collections/EliasFanoSequence` (`e43578b`) — the near-entropy succinct encoding for monotone sequences:
+  low bits packed, high bits a sampled-`select₁` gap bit-vector; `Access` + `NextGEQ` (the successor /
+  leapfrog `Seek`). **9–11 bits/value at u/n 64–256** vs `FrameOfReference` ~17–19 (×1.5–1.8 size).
+  1. ✅ **`select₀`-based `NextGEQ`** (`a0b31fa`): a `select₀` jump to the target high group + a low-bit scan.
+  2. ✅ **Wiring** — `ColumnarTripleIndex.Build(..., ColumnarValueColumnEncoding.EliasFanoWhenMonotone)`
+     (opt-in, default `FrameOfReference`): whole-column `BlockPackedColumnMode.EliasFano` for the
+     globally-monotone level-0 column, `PartitionedEliasFano` for the within-group level-1/2 columns over
+     the parent-offset boundaries, every column keeping the smaller of the candidate and its
+     frame-of-reference packing (`ColumnarOrder.BuildValueColumn` / `SmallerEncoding` — the candidate can
+     never enlarge a column). Offset columns stay `PrefixedDeltas`.
+  3. ✅ **SIMD pass** (`a878c3f`): shared `BitSelect.InWord` — hardware bit-deposit select where available,
+     portable clear-loop otherwise — under every sampled select of both sequences; EF `Build` packs the
+     lower payload via one `ColumnarKernelBackend.Pack` call (the lane layouts are identical); `Decode`
+     bulk-unpacks a run's low bits via `DecodeFrame` (zero frame base) after a scalar head to word
+     alignment. **Measured: seek vs `FrameOfReference.LowerBound` ×3.6–5.3 (was ×2.6–3.1) across u/n
+     4–1024, sizes unchanged; partitioned EF ×2.32–3.03 at fan-out 32–8192, picked by the index at L2.**
+  **Remaining on this codec:** the `EliasFanoWhenMonotone` **default-flip decision** (owner call — EF is now
+  smaller and seek-faster where it applies, and the smaller-wins guard caps the size risk; sweep the corpus +
+  soaks before flipping). Smaller: partitioned-EF build-side `Pack` reuse needs word-aligned group starts (a
+  format change — measured trade). (Memory `column-encoding-bits-per-triple-spectrum`.)
 - **The Ring (owner-interested, after EF).** The wavelet-tree WCOJ self-index — one structure indexing all
   orders at ~one order's space, the succinct end carried furthest. Bigger than a codec (a whole index), but
   the natural follow-on to EF on this axis; it loses cheap any-order access for space (three-rotation echo
