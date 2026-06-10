@@ -57,19 +57,23 @@ public static class FreeJoinPipeline
     }
 
     /// <summary>
-    /// Runs the query through the Free Join generic join as a single-level
-    /// <see cref="FactorizedBatch"/> when the shape is a star — every pattern
-    /// sharing one variable and binding one further, distinct variable — or
-    /// returns <see langword="null"/> when it is not that shape. The star key is
-    /// bound first, so each relation is a trie over the key then a branch whose
-    /// matches under a key form an independent branch; the result keeps each
-    /// key's branches apart instead of materialising their flat product, and
-    /// flattens to the same rows the flat <see cref="Run"/> yields.
+    /// Runs the query through the Free Join generic join as a
+    /// <see cref="FactorizedBatch"/> when the shape is a star with optional
+    /// chain extensions — centre patterns all sharing one key variable and each
+    /// binding one further, distinct branch variable, plus extension patterns
+    /// each binding one centre branch variable and one fresh variable (the
+    /// chain step, nested under that branch) — or returns <see langword="null"/>
+    /// when it is not that shape. The key is bound first, so each centre
+    /// relation is a trie over the key then its branch and each extension a
+    /// trie over its branch variable then its fresh variable; the result keeps
+    /// each key's branches apart (an extended branch as a nested sub-batch)
+    /// instead of materialising their flat product, and flattens to the same
+    /// rows the flat <see cref="Run"/> yields.
     /// </summary>
     /// <param name="index">The columnar index the relations scan.</param>
     /// <param name="query">The basic graph pattern.</param>
-    /// <param name="arena">The arena the result's branch values are allocated from; the caller owns its lifetime, and the result is valid until it is disposed.</param>
-    /// <returns>The factorised star result, or <see langword="null"/> when the query is not a single-key star.</returns>
+    /// <param name="arena">The arena the result's key tuples, metadata, and branch values are allocated from; the caller owns its lifetime, and the result is valid until it is disposed.</param>
+    /// <returns>The factorised result, or <see langword="null"/> when the query is not a star with chain extensions.</returns>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
     public static FactorizedBatch? RunFactorized(ColumnarTripleIndex index, BasicGraphPattern query, FactorizedArena arena)
     {
@@ -77,87 +81,139 @@ public static class FreeJoinPipeline
         ArgumentNullException.ThrowIfNull(query);
         ArgumentNullException.ThrowIfNull(arena);
 
-        if(query.Patterns.Count < 2 || !TryPlanStarOrder(index, query, out IReadOnlyList<Variable>? starOrder))
+        if(query.Patterns.Count < 2 || !TryPlanFactorizedOrder(index, query, out IReadOnlyList<Variable>? factorizedOrder))
         {
             return null;
         }
 
-        return FreeJoinExecutor.ExecuteFactorized(BuildRelations(index, query, starOrder), starOrder, arena);
+        return FreeJoinExecutor.ExecuteFactorized(BuildRelations(index, query, factorizedOrder), factorizedOrder, arena);
     }
 
     /// <summary>
-    /// Detects a single-key star over the patterns' scan schemas and yields the
-    /// variable order that binds its shared key first: the key is the one
-    /// variable present in every pattern, and each pattern must bind the key and
-    /// exactly one further variable, all distinct across patterns. Binding the
-    /// key first makes each relation a trie over the key then a branch that the
-    /// factorising executor consumes; a non-star shape has no such key and is
-    /// declined.
+    /// Detects a star with optional chain extensions over the patterns' scan
+    /// schemas and yields the variable order that binds the centre key first,
+    /// then the branch variables, then the extension variables. Candidate keys
+    /// are tried in first-appearance order; for a key to hold, at least two
+    /// patterns must bind it (the centres, each adding one distinct branch
+    /// variable) and every remaining pattern must bind exactly one branch
+    /// variable plus one fresh variable (an extension — fresh meaning not the
+    /// key, not a branch, and not another extension's variable, the depth-two
+    /// bound). A shape with no such key — a triangle, a join between two
+    /// branches, a chain deeper than one extension hop from every candidate
+    /// centre — is declined.
     /// </summary>
     /// <param name="index">The columnar index, for each pattern's scan schema.</param>
     /// <param name="query">The basic graph pattern.</param>
-    /// <param name="starOrder">The key-first variable order on success; otherwise <see langword="null"/>.</param>
-    /// <returns><see langword="true"/> when the query is a single-key star.</returns>
-    private static bool TryPlanStarOrder(ColumnarTripleIndex index, BasicGraphPattern query, [NotNullWhen(true)] out IReadOnlyList<Variable>? starOrder)
+    /// <param name="factorizedOrder">The key-first variable order on success; otherwise <see langword="null"/>.</param>
+    /// <returns><see langword="true"/> when the query is a star with chain extensions.</returns>
+    private static bool TryPlanFactorizedOrder(ColumnarTripleIndex index, BasicGraphPattern query, [NotNullWhen(true)] out IReadOnlyList<Variable>? factorizedOrder)
     {
-        starOrder = null;
+        factorizedOrder = null;
 
         List<Variable>[] schemas = new List<Variable>[query.Patterns.Count];
         for(int pattern = 0; pattern < query.Patterns.Count; pattern++)
         {
             schemas[pattern] = [.. ColumnarBatchScan.ScanSchemaOf(index, query.Patterns[pattern])];
+
+            if(schemas[pattern].Count != 2)
+            {
+                return false;
+            }
         }
 
-        //The star key is the one variable shared by every pattern; a count other
-        //than one is not a single-key star.
-        Variable key = default;
-        int shared = 0;
-        foreach(Variable candidate in schemas[0])
+        //Candidate keys in first-appearance order, so the chosen factorisation
+        //is deterministic; any accepted key yields a correct grouping.
+        List<Variable> candidates = [];
+        HashSet<Variable> seen = [];
+        foreach(List<Variable> schema in schemas)
         {
-            bool inAll = true;
-            for(int pattern = 1; pattern < schemas.Length; pattern++)
+            foreach(Variable variable in schema)
             {
-                if(!schemas[pattern].Contains(candidate))
+                if(seen.Add(variable))
                 {
-                    inAll = false;
-
-                    break;
+                    candidates.Add(variable);
                 }
             }
+        }
 
-            if(inAll)
+        foreach(Variable candidate in candidates)
+        {
+            if(TryOrderForKey(schemas, candidate, out factorizedOrder))
             {
-                key = candidate;
-                shared++;
+                return true;
             }
         }
 
-        if(shared != 1)
+        return false;
+    }
+
+    /// <summary>
+    /// Whether the schemas form a star with chain extensions centred on the
+    /// given key, yielding the key-first variable order when they do: the
+    /// centre patterns' branch variables in pattern order, then the extension
+    /// patterns' fresh variables in pattern order.
+    /// </summary>
+    /// <param name="schemas">The patterns' two-variable scan schemas.</param>
+    /// <param name="key">The candidate centre key.</param>
+    /// <param name="factorizedOrder">The key-first variable order on success; otherwise <see langword="null"/>.</param>
+    /// <returns><see langword="true"/> when the shape holds for this key.</returns>
+    private static bool TryOrderForKey(List<Variable>[] schemas, Variable key, [NotNullWhen(true)] out IReadOnlyList<Variable>? factorizedOrder)
+    {
+        factorizedOrder = null;
+
+        //Centres: every schema binding the key contributes one distinct branch.
+        List<Variable> branches = [];
+        HashSet<Variable> branchSet = [];
+        foreach(List<Variable> schema in schemas)
+        {
+            if(!schema.Contains(key))
+            {
+                continue;
+            }
+
+            Variable branch = schema[0] == key ? schema[1] : schema[0];
+            if(branch == key || !branchSet.Add(branch))
+            {
+                return false;
+            }
+
+            branches.Add(branch);
+        }
+
+        if(branches.Count < 2)
         {
             return false;
         }
 
-        //Each pattern binds the key and exactly one other variable, all distinct
-        //across patterns: the star's independent branches.
-        List<Variable> order = [key];
-        HashSet<Variable> branches = [];
+        //Extensions: every remaining schema binds exactly one branch variable
+        //and one fresh variable — not the key, not a branch, not another
+        //extension's variable.
+        List<Variable> extensions = [];
+        HashSet<Variable> extensionSet = [];
         foreach(List<Variable> schema in schemas)
         {
-            if(schema.Count != 2)
+            if(schema.Contains(key))
+            {
+                continue;
+            }
+
+            bool firstIsBranch = branchSet.Contains(schema[0]);
+            bool secondIsBranch = branchSet.Contains(schema[1]);
+            if(firstIsBranch == secondIsBranch)
             {
                 return false;
             }
 
-            Variable branch = schema[0] == key ? schema[1] : schema[0];
-            if(branch == key || !branches.Add(branch))
+            Variable fresh = firstIsBranch ? schema[1] : schema[0];
+            if(fresh == key || !extensionSet.Add(fresh))
             {
                 return false;
             }
 
-            order.Add(branch);
+            extensions.Add(fresh);
         }
 
-        starOrder = order;
+        factorizedOrder = [key, .. branches, .. extensions];
 
         return true;
     }

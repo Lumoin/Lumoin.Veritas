@@ -106,19 +106,25 @@ public static class FreeJoinExecutor
     }
 
     /// <summary>
-    /// Runs the generic join as a single-level <see cref="FactorizedBatch"/> for
-    /// a star — every relation a full-depth two-column trie sharing the order's
-    /// leading variable as its key and binding one further, the branch variables
-    /// pairwise distinct — or returns <see langword="null"/> when the relations
-    /// are not that shape. After the shared key each relation's matches vary
-    /// independently of the others, so the join emits one group per key value
-    /// carrying each relation's matches as a branch, never their flat product;
-    /// the differential oracle is the flattened batch against <see cref="Execute"/>.
+    /// Runs the generic join as a <see cref="FactorizedBatch"/> for a star with
+    /// optional chain extensions: every <em>centre</em> relation is a full-depth
+    /// two-column trie sharing the order's leading variable as its key and
+    /// binding one further branch variable (pairwise distinct), and every other
+    /// relation is an <em>extension</em> — a two-column trie over one centre
+    /// branch variable then a fresh variable, the chain step the §4.2
+    /// <c>NestBranch</c> takes. After the key each centre's matches vary
+    /// independently, so the join emits one group per key value with each
+    /// centre's matches as a branch; an extended branch is regrouped into a
+    /// nested single-level sub-batch keyed on the branch variable, carrying each
+    /// extension's matches per value (the depth-2 form, with branch values
+    /// drawing no extension match dropped — the semijoin the chain entails).
+    /// Returns <see langword="null"/> for any other shape; the differential
+    /// oracle is the flattened batch against <see cref="Execute"/>.
     /// </summary>
-    /// <param name="relations">The relations; for the star each is a full-depth two-column trie over the key then a branch variable.</param>
-    /// <param name="variableOrder">The global descent order; its first variable is the shared key, the rest the branch variables.</param>
-    /// <param name="arena">The arena the groups' branch values are allocated from; the result is valid until it is disposed.</param>
-    /// <returns>The factorised result over <paramref name="variableOrder"/>, or <see langword="null"/> when the relations are not a single-key star.</returns>
+    /// <param name="relations">The relations, each a full-depth two-column trie: a centre over the key then its branch, or an extension over a centre branch then a fresh variable.</param>
+    /// <param name="variableOrder">The global descent order; its first variable is the shared key, then the branch variables, then the extension variables.</param>
+    /// <param name="arena">The arena the groups' key tuples, metadata, and branch values are allocated from; the result is valid until it is disposed.</param>
+    /// <returns>The factorised result over <paramref name="variableOrder"/>, or <see langword="null"/> when the relations are not a star with chain extensions.</returns>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
     public static FactorizedBatch? ExecuteFactorized(IReadOnlyList<GeneralizedHashTrie> relations, IReadOnlyList<Variable> variableOrder, FactorizedArena arena)
     {
@@ -138,62 +144,154 @@ public static class FreeJoinExecutor
         }
 
         Variable key = variableOrder[0];
+        int relationCount = relations.Count;
 
-        //Each relation must be a full-depth two-column trie over the key then a
-        //branch: two trie levels, no leaf vectors, the key at level 0, and a
-        //branch variable at level 1 distinct across relations and never the key.
-        //Any other shape is not the single-key star this step factorises.
-        int[] branchColumn = new int[relations.Count];
-        HashSet<Variable> branchVariables = [];
-        for(int relation = 0; relation < relations.Count; relation++)
+        //Every relation must be a full-depth two-column trie: two trie levels,
+        //no leaf vectors. Any other depth is outside this step.
+        for(int relation = 0; relation < relationCount; relation++)
         {
-            GeneralizedHashTrie trie = relations[relation];
-            if(trie.TrieColumns.Length != 2 || trie.LeafColumns.Length != 0)
+            if(relations[relation].TrieColumns.Length != 2 || relations[relation].LeafColumns.Length != 0)
             {
                 return null;
             }
-
-            Variable level0 = trie.Schema[trie.TrieColumns[0]];
-            Variable level1 = trie.Schema[trie.TrieColumns[1]];
-            if(level0 != key || level1 == key || !branchVariables.Add(level1))
-            {
-                return null;
-            }
-
-            branchColumn[relation] = orderIndex[level1];
         }
 
-        //The order's non-key variables are exactly the branch variables: the
-        //star binds the key then one variable per relation, nothing more.
-        if(branchVariables.Count != variableOrder.Count - 1)
+        //Centres first: a relation whose level 0 is the key, binding a branch
+        //variable at level 1 — distinct across centres and never the key.
+        Dictionary<Variable, int> centreOfBranch = [];
+        List<int> centreRelations = [];
+        for(int relation = 0; relation < relationCount; relation++)
+        {
+            GeneralizedHashTrie trie = relations[relation];
+            Variable level0 = trie.Schema[trie.TrieColumns[0]];
+            if(level0 != key)
+            {
+                continue;
+            }
+
+            Variable level1 = trie.Schema[trie.TrieColumns[1]];
+            if(level1 == key || !centreOfBranch.TryAdd(level1, relation))
+            {
+                return null;
+            }
+
+            centreRelations.Add(relation);
+        }
+
+        if(centreRelations.Count < 2)
         {
             return null;
         }
 
-        //The smallest root drives the key intersection; a key absent from any
-        //relation's root binds no star row and drops the group.
-        int driver = 0;
-        for(int relation = 1; relation < relations.Count; relation++)
+        //Extensions: every remaining relation must descend one centre branch
+        //variable at level 0 and bind a fresh variable at level 1 — not the
+        //key, not a branch, not another extension's variable (depth two only).
+        List<int>?[] extensionsOf = new List<int>?[relationCount];
+        HashSet<Variable> extensionVariables = [];
+        for(int relation = 0; relation < relationCount; relation++)
         {
-            if(relations[relation].NodeAt(0).Count < relations[driver].NodeAt(0).Count)
+            GeneralizedHashTrie trie = relations[relation];
+            Variable level0 = trie.Schema[trie.TrieColumns[0]];
+            if(level0 == key)
             {
-                driver = relation;
+                continue;
+            }
+
+            if(!centreOfBranch.TryGetValue(level0, out int centre))
+            {
+                return null;
+            }
+
+            Variable level1 = trie.Schema[trie.TrieColumns[1]];
+            if(level1 == key || centreOfBranch.ContainsKey(level1) || !extensionVariables.Add(level1))
+            {
+                return null;
+            }
+
+            extensionsOf[centre] ??= [];
+            extensionsOf[centre]!.Add(relation);
+        }
+
+        //The order's non-key variables are exactly the branches plus the
+        //extension variables: nothing else is bound.
+        if(centreOfBranch.Count + extensionVariables.Count != variableOrder.Count - 1)
+        {
+            return null;
+        }
+
+        //Per branch (centre order): its output columns, and for an extended
+        //branch the nested sub-batch's schema and inner branch columns — the
+        //branch variable leads the nested schema, each extension one column.
+        int branchCount = centreRelations.Count;
+        int[][] branchColumns = new int[branchCount][];
+        int[] branchStrides = new int[branchCount];
+        Variable[]?[] nestedSchemas = new Variable[]?[branchCount];
+        int[][]?[] nestedBranchColumns = new int[][]?[branchCount];
+        int maximumExtensions = 0;
+        for(int branch = 0; branch < branchCount; branch++)
+        {
+            GeneralizedHashTrie trie = relations[centreRelations[branch]];
+            Variable branchVariable = trie.Schema[trie.TrieColumns[1]];
+            List<int>? extensions = extensionsOf[centreRelations[branch]];
+
+            if(extensions is null)
+            {
+                branchColumns[branch] = [orderIndex[branchVariable]];
+                branchStrides[branch] = 1;
+
+                continue;
+            }
+
+            //An extended branch carries no flat values in the parent; its
+            //columns are the branch variable then each extension's variable,
+            //positional against the nested sub-batch's schema.
+            branchStrides[branch] = 0;
+            int[] columns = new int[1 + extensions.Count];
+            Variable[] nestedSchema = new Variable[1 + extensions.Count];
+            int[][] innerColumns = new int[extensions.Count][];
+            columns[0] = orderIndex[branchVariable];
+            nestedSchema[0] = branchVariable;
+            for(int extension = 0; extension < extensions.Count; extension++)
+            {
+                GeneralizedHashTrie extensionTrie = relations[extensions[extension]];
+                Variable extensionVariable = extensionTrie.Schema[extensionTrie.TrieColumns[1]];
+                columns[1 + extension] = orderIndex[extensionVariable];
+                nestedSchema[1 + extension] = extensionVariable;
+                innerColumns[extension] = [1 + extension];
+            }
+
+            branchColumns[branch] = columns;
+            nestedSchemas[branch] = nestedSchema;
+            nestedBranchColumns[branch] = innerColumns;
+            maximumExtensions = Math.Max(maximumExtensions, extensions.Count);
+        }
+
+        bool hasExtensions = maximumExtensions > 0;
+
+        //The smallest centre root drives the key intersection; a key absent
+        //from any centre's root binds no row and drops the group.
+        int driver = centreRelations[0];
+        for(int branch = 1; branch < branchCount; branch++)
+        {
+            if(relations[centreRelations[branch]].NodeAt(0).Count < relations[driver].NodeAt(0).Count)
+            {
+                driver = centreRelations[branch];
             }
         }
 
         List<FactorizedGroup> groups = [];
 
-        //Scratch reused across keys: the child node id and branch row count per
-        //relation under the current key, refilled before each use, and the
-        //single-value key tuple staged for its arena copy.
-        int[] childNode = new int[relations.Count];
-        int[] branchRowCounts = new int[relations.Count];
+        //Scratch reused across keys: the child node id per centre, the flat
+        //branch row counts, the per-extension child node ids and counts under
+        //a branch value, and the staged single-value tuples for arena copies.
+        int[] childNode = new int[branchCount];
+        int[] branchRowCounts = new int[branchCount];
+        int[] extensionChild = new int[Math.Max(maximumExtensions, 1)];
+        int[] extensionCounts = new int[Math.Max(maximumExtensions, 1)];
+        int[] extensionStrides = new int[Math.Max(maximumExtensions, 1)];
+        Array.Fill(extensionStrides, 1);
         Span<uint> keyScratch = stackalloc uint[1];
-
-        //Every star branch is a single residual variable, so each branch's
-        //stride is one; this array is constant across groups.
-        int[] branchStride = new int[relations.Count];
-        Array.Fill(branchStride, 1);
+        Span<uint> valueScratch = stackalloc uint[1];
 
         OpenAddressedTable<int>.Enumerator keyScan = relations[driver].NodeAt(0).GetEnumerator();
         while(keyScan.MoveNext())
@@ -201,9 +299,9 @@ public static class FreeJoinExecutor
             uint keyValue = (uint)keyScan.Current.Key;
 
             bool present = true;
-            for(int relation = 0; relation < relations.Count; relation++)
+            for(int branch = 0; branch < branchCount; branch++)
             {
-                if(!relations[relation].NodeAt(0).TryGetValue(keyValue, out childNode[relation]))
+                if(!relations[centreRelations[branch]].NodeAt(0).TryGetValue(keyValue, out childNode[branch]))
                 {
                     present = false;
 
@@ -216,21 +314,103 @@ public static class FreeJoinExecutor
                 continue;
             }
 
-            //Each relation's branch is its branch-variable values under this key
-            //— the keys of its level-1 node. They vary independently, so they
-            //become this group's branches in relation order, filled in place
-            //with no transient per-branch array between the node and the arena.
-            for(int relation = 0; relation < relations.Count; relation++)
+            //Extended branches first: regroup each branch value into a nested
+            //group carrying every extension's matches, dropping values absent
+            //from any extension; a branch left with no value kills the group
+            //(its product is empty) before the flat branches are written.
+            FactorizedBatch?[]? nestedBranches = hasExtensions ? new FactorizedBatch?[branchCount] : null;
+            bool dead = false;
+            for(int branch = 0; branch < branchCount && !dead; branch++)
             {
-                branchRowCounts[relation] = relations[relation].NodeAt(childNode[relation]).Count;
+                List<int>? extensions = extensionsOf[centreRelations[branch]];
+                if(extensions is null)
+                {
+                    continue;
+                }
+
+                OpenAddressedTable<int> values = relations[centreRelations[branch]].NodeAt(childNode[branch]);
+                List<FactorizedGroup> nestedGroups = new(values.Count);
+                OpenAddressedTable<int>.Enumerator valueScan = values.GetEnumerator();
+                while(valueScan.MoveNext())
+                {
+                    uint branchValue = (uint)valueScan.Current.Key;
+
+                    bool held = true;
+                    for(int extension = 0; extension < extensions.Count; extension++)
+                    {
+                        if(!relations[extensions[extension]].NodeAt(0).TryGetValue(branchValue, out extensionChild[extension]))
+                        {
+                            held = false;
+
+                            break;
+                        }
+                    }
+
+                    if(!held)
+                    {
+                        continue;
+                    }
+
+                    for(int extension = 0; extension < extensions.Count; extension++)
+                    {
+                        extensionCounts[extension] = relations[extensions[extension]].NodeAt(extensionChild[extension]).Count;
+                    }
+
+                    FactorizedBranches nestedStore = FactorizedBranches.Allocate(
+                        extensionCounts.AsSpan(0, extensions.Count), extensionStrides.AsSpan(0, extensions.Count), arena);
+                    for(int extension = 0; extension < extensions.Count; extension++)
+                    {
+                        Span<uint> destination = nestedStore.BranchSpan(extension);
+                        int next = 0;
+                        OpenAddressedTable<int>.Enumerator extensionScan = relations[extensions[extension]].NodeAt(extensionChild[extension]).GetEnumerator();
+                        while(extensionScan.MoveNext())
+                        {
+                            destination[next] = (uint)extensionScan.Current.Key;
+                            next++;
+                        }
+                    }
+
+                    valueScratch[0] = branchValue;
+                    nestedGroups.Add(new FactorizedGroup(arena.AllocateFrom(valueScratch), nestedStore));
+                }
+
+                if(nestedGroups.Count == 0)
+                {
+                    dead = true;
+
+                    continue;
+                }
+
+                nestedBranches![branch] = new FactorizedBatch(nestedSchemas[branch]!, [0], nestedBranchColumns[branch]!, nestedGroups);
             }
 
-            FactorizedBranches branches = FactorizedBranches.Allocate(branchRowCounts, branchStride, arena);
-            for(int relation = 0; relation < relations.Count; relation++)
+            if(dead)
             {
-                Span<uint> destination = branches.BranchSpan(relation);
+                continue;
+            }
+
+            //The flat branches: each centre's branch-variable values under this
+            //key — the keys of its level-1 node — filled in place with no
+            //transient per-branch array between the node and the arena. An
+            //extended branch carries zero rows here; its data is the sub-batch.
+            for(int branch = 0; branch < branchCount; branch++)
+            {
+                branchRowCounts[branch] = branchStrides[branch] == 0
+                    ? 0
+                    : relations[centreRelations[branch]].NodeAt(childNode[branch]).Count;
+            }
+
+            FactorizedBranches branches = FactorizedBranches.Allocate(branchRowCounts, branchStrides, arena);
+            for(int branch = 0; branch < branchCount; branch++)
+            {
+                if(branchStrides[branch] == 0)
+                {
+                    continue;
+                }
+
+                Span<uint> destination = branches.BranchSpan(branch);
                 int next = 0;
-                OpenAddressedTable<int>.Enumerator branchScan = relations[relation].NodeAt(childNode[relation]).GetEnumerator();
+                OpenAddressedTable<int>.Enumerator branchScan = relations[centreRelations[branch]].NodeAt(childNode[branch]).GetEnumerator();
                 while(branchScan.MoveNext())
                 {
                     destination[next] = (uint)branchScan.Current.Key;
@@ -239,13 +419,7 @@ public static class FreeJoinExecutor
             }
 
             keyScratch[0] = keyValue;
-            groups.Add(new FactorizedGroup(arena.AllocateFrom(keyScratch), branches));
-        }
-
-        int[][] branchColumns = new int[relations.Count][];
-        for(int relation = 0; relation < relations.Count; relation++)
-        {
-            branchColumns[relation] = [branchColumn[relation]];
+            groups.Add(new FactorizedGroup(arena.AllocateFrom(keyScratch), branches, nestedBranches));
         }
 
         return new FactorizedBatch(variableOrder, [0], branchColumns, groups);
