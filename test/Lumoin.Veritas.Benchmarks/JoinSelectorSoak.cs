@@ -86,6 +86,15 @@ internal static class JoinSelectorSoak
         string agreement = streamRows == forcedRows && streamRows == adaptiveRows ? "MATCH" : "MISMATCH";
         Console.WriteLine(
             $"[selector]   star fan={fan,2} subjects={subjects,7:N0} flat={streamRows,9:N0} comp~{compression,6:F1} | stream {streamMs,8:F1} ms  forced {forcedMs,8:F1} ms  adaptive {adaptiveMs,8:F1} ms  engaged={adaptive.FactorizedStar} {agreement}");
+
+        //The consumer that keeps the compressed form: counting through the
+        //factorised build versus draining the flat stream.
+        long countStart = Stopwatch.GetTimestamp();
+        long? counted = ColumnarBatchPipeline.TryCount(index, query);
+        double countMs = Stopwatch.GetElapsedTime(countStart).TotalMilliseconds;
+        string countAgreement = counted == streamRows ? "MATCH" : "MISMATCH";
+        Console.WriteLine(
+            $"[selector]     count: factorized {countMs,8:F1} ms vs drain {streamMs,8:F1} ms  (x{streamMs / Math.Max(countMs, 0.01):F1})  {countAgreement}");
     }
 
     /// <summary>Times one chain rung: streamed, forced-factorised, and adaptive plans over the same index, with the selector's decision.</summary>

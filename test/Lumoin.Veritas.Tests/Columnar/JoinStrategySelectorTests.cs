@@ -224,6 +224,67 @@ internal sealed class JoinStrategySelectorTests
         return fingerprints;
     }
 
+    /// <summary>Drains the streamed plan and counts its rows — the oracle for <see cref="ColumnarBatchPipeline.TryCount"/>.</summary>
+    /// <param name="index">The index.</param>
+    /// <param name="query">The query.</param>
+    /// <returns>The drained row count.</returns>
+    private static long DrainedCount(ColumnarTripleIndex index, BasicGraphPattern query)
+    {
+        ColumnarBatchPlan plan = ColumnarBatchPipeline.TryPlan(index, query)!;
+        long rows = 0;
+        foreach(SolutionBatch batch in ColumnarBatchPipeline.Run(index, plan))
+        {
+            rows += batch.Count;
+        }
+
+        return rows;
+    }
+
+    [TestMethod]
+    public void CountWithoutFlattenAgreesWithTheDrainedCount()
+    {
+        //The star, both regimes: the count must equal the drained row count
+        //exactly — the flatten is skipped, not approximated.
+        ColumnarTripleIndex fanned = ColumnarTripleIndex.Build(StarFixture(subjects: 10, fan: 12));
+        BasicGraphPattern star = StarQuery(new VariableRegistry());
+
+        long? counted = ColumnarBatchPipeline.TryCount(fanned, star);
+        Assert.IsNotNull(counted);
+        Assert.AreEqual(DrainedCount(fanned, star), counted.Value);
+        Assert.AreEqual(10L * 12 * 12 * 12, counted.Value);
+
+        ColumnarTripleIndex flat = ColumnarTripleIndex.Build(StarFixture(subjects: 50, fan: 1));
+        long? flatCounted = ColumnarBatchPipeline.TryCount(flat, StarQuery(new VariableRegistry()));
+        Assert.IsNotNull(flatCounted);
+        Assert.AreEqual(50L, flatCounted.Value);
+
+        //The chain factorises depth-2 and counts through the nested form.
+        ColumnarTripleIndex chained = ColumnarTripleIndex.Build(ChainFixture(hubs: 6, fanA: 4, fanB: 3, fanC: 2));
+        BasicGraphPattern chain = ChainQuery(new VariableRegistry());
+
+        long? chainCounted = ColumnarBatchPipeline.TryCount(chained, chain);
+        Assert.IsNotNull(chainCounted);
+        Assert.AreEqual(DrainedCount(chained, chain), chainCounted.Value);
+        Assert.AreEqual(6L * 4 * 3 * 2, chainCounted.Value);
+    }
+
+    [TestMethod]
+    public void CountWithoutFlattenDeclinesANonFactorisableShape()
+    {
+        //A two-pattern join has no star or chain factorisation; the caller
+        //counts by draining instead.
+        ColumnarTripleIndex index = ColumnarTripleIndex.Build(ChainFixture(hubs: 5, fanA: 2, fanB: 2, fanC: 2));
+        VariableRegistry registry = new();
+        BasicGraphPattern twoPattern = new(
+            [
+                EdgePattern(registry, P1, "a", "x"),
+                EdgePattern(registry, P2, "x", "b"),
+            ],
+            registry);
+
+        Assert.IsNull(ColumnarBatchPipeline.TryCount(index, twoPattern));
+    }
+
     [TestMethod]
     public async Task AdaptiveRoutingAnswersIdenticallyToTheDefault()
     {
