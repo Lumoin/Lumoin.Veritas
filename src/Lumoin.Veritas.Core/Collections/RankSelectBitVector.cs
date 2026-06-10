@@ -1,6 +1,8 @@
 using System;
 using System.Diagnostics;
 using System.Numerics;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 
 namespace Lumoin.Veritas.Core.Collections;
 
@@ -38,6 +40,10 @@ public sealed class RankSelectBitVector
     //shrinks the sample arrays but lengthens each select's resume scan.
     private readonly int selectSampleRate;
 
+    //How Rank1 counts the superblock-relative word run — the measured
+    //per-deployment knob; every mode returns identical counts.
+    private readonly RankScanMode rankScanMode;
+
     private readonly ulong[] words;
 
     //Set bits before each 512-bit superblock — the absolute tier of the rank
@@ -73,13 +79,15 @@ public sealed class RankSelectBitVector
         int[] zeroSamplePosition,
         int length,
         int oneCount,
-        int selectSampleRate)
+        int selectSampleRate,
+        RankScanMode rankScanMode)
     {
         this.words = words;
         this.superblockOnes = superblockOnes;
         this.oneSamplePosition = oneSamplePosition;
         this.zeroSamplePosition = zeroSamplePosition;
         this.selectSampleRate = selectSampleRate;
+        this.rankScanMode = rankScanMode;
         Length = length;
         OneCount = oneCount;
     }
@@ -88,10 +96,11 @@ public sealed class RankSelectBitVector
     /// <param name="payload">The packed bits, little-endian within each word; the vector owns the array from here on and clears any padding bits beyond <paramref name="bitLength"/>. Its length must be exactly the words <paramref name="bitLength"/> fills.</param>
     /// <param name="bitLength">The number of valid bits.</param>
     /// <param name="selectSampleRate">One in this many marker bits has its position sampled to bound a select's resume scan; sparser shrinks the sample footprint and lengthens select.</param>
+    /// <param name="rankScanMode">How <see cref="Rank1"/> counts the superblock-relative word run; every mode returns identical counts.</param>
     /// <returns>The built vector.</returns>
     /// <exception cref="ArgumentException">The payload length does not match <paramref name="bitLength"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="bitLength"/> is negative or <paramref name="selectSampleRate"/> is less than 1.</exception>
-    public static RankSelectBitVector Build(ulong[] payload, int bitLength, int selectSampleRate = DefaultSelectSampleRate)
+    public static RankSelectBitVector Build(ulong[] payload, int bitLength, int selectSampleRate = DefaultSelectSampleRate, RankScanMode rankScanMode = RankScanMode.Sequential)
     {
         ArgumentNullException.ThrowIfNull(payload);
         ArgumentOutOfRangeException.ThrowIfNegative(bitLength);
@@ -132,7 +141,7 @@ public sealed class RankSelectBitVector
         int[] oneSamplePosition = BuildSamples(payload, wordCount, ones, bitLength, selectSampleRate, ones: true);
         int[] zeroSamplePosition = BuildSamples(payload, wordCount, bitLength - ones, bitLength, selectSampleRate, ones: false);
 
-        return new RankSelectBitVector(payload, superblockOnes, oneSamplePosition, zeroSamplePosition, bitLength, ones, selectSampleRate);
+        return new RankSelectBitVector(payload, superblockOnes, oneSamplePosition, zeroSamplePosition, bitLength, ones, selectSampleRate, rankScanMode);
     }
 
     /// <summary>Samples every <paramref name="sampleRate"/>-th set (or unset) bit's exact position.</summary>
@@ -209,11 +218,7 @@ public sealed class RankSelectBitVector
         ArgumentOutOfRangeException.ThrowIfGreaterThan(position, Length);
 
         int word = position >> 6;
-        int ones = superblockOnes[word >> 3];
-        for(int w = word & ~(SuperblockWords - 1); w < word; w++)
-        {
-            ones += BitOperations.PopCount(words[w]);
-        }
+        int ones = superblockOnes[word >> 3] + ScanSuperblockRun(word & ~(SuperblockWords - 1), word);
 
         int bit = position & 63;
         if(bit != 0)
@@ -222,6 +227,84 @@ public sealed class RankSelectBitVector
         }
 
         return ones;
+    }
+
+    /// <summary>The set bits in the words <c>[start, end)</c> — the superblock-relative run below a rank position — counted per the configured <see cref="RankScanMode"/>.</summary>
+    /// <param name="start">The run's first word — the superblock boundary.</param>
+    /// <param name="end">The run's exclusive end word; at most <see cref="SuperblockWords"/> beyond <paramref name="start"/>.</param>
+    /// <returns>The set-bit count of the run.</returns>
+    private int ScanSuperblockRun(int start, int end) => rankScanMode switch
+    {
+        RankScanMode.Unrolled => ScanUnrolled(start, end),
+        RankScanMode.VectorPopCount => ScanVectorPopCount(start, end),
+        _ => ScanSequential(start, end),
+    };
+
+    /// <summary>The run's set bits via one serially accumulated popcount per word.</summary>
+    /// <param name="start">The run's first word.</param>
+    /// <param name="end">The run's exclusive end word.</param>
+    /// <returns>The set-bit count of the run.</returns>
+    private int ScanSequential(int start, int end)
+    {
+        int ones = 0;
+        for(int w = start; w < end; w++)
+        {
+            ones += BitOperations.PopCount(words[w]);
+        }
+
+        return ones;
+    }
+
+    /// <summary>The run's set bits via two independent accumulators, breaking the serial add chain.</summary>
+    /// <param name="start">The run's first word.</param>
+    /// <param name="end">The run's exclusive end word.</param>
+    /// <returns>The set-bit count of the run.</returns>
+    private int ScanUnrolled(int start, int end)
+    {
+        int first = 0;
+        int second = 0;
+        int w = start;
+        for(; w + 1 < end; w += 2)
+        {
+            first += BitOperations.PopCount(words[w]);
+            second += BitOperations.PopCount(words[w + 1]);
+        }
+
+        if(w < end)
+        {
+            first += BitOperations.PopCount(words[w]);
+        }
+
+        return first + second;
+    }
+
+    /// <summary>The run's set bits via one 512-bit shuffle-table popcount over the whole superblock, lanes at or beyond the run's end masked to zero; the hardware path needs <see cref="Avx512BW"/> and the full superblock in bounds, so the final partial superblock — and hardware without the instruction set — takes <see cref="ScanUnrolled"/>.</summary>
+    /// <param name="start">The run's first word — the superblock boundary.</param>
+    /// <param name="end">The run's exclusive end word.</param>
+    /// <returns>The set-bit count of the run.</returns>
+    private int ScanVectorPopCount(int start, int end)
+    {
+        if(Avx512BW.IsSupported && start + SuperblockWords <= words.Length)
+        {
+            Vector512<ulong> block = Vector512.LoadUnsafe(in words[start]);
+            Vector512<ulong> laneIndex = Vector512.Create(0UL, 1UL, 2UL, 3UL, 4UL, 5UL, 6UL, 7UL);
+            Vector512<ulong> inRun = Vector512.LessThan(laneIndex, Vector512.Create((ulong)(end - start)));
+            Vector512<byte> masked = (block & inRun).AsByte();
+
+            //Shuffle-table popcount: each byte splits into nibbles, the table
+            //maps a nibble to its set-bit count, and the per-byte counts reduce
+            //through the absolute-difference sum against zero into 64-bit lane
+            //totals.
+            Vector128<byte> nibbleCounts = Vector128.Create((byte)0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4);
+            Vector512<byte> table = Vector512.Create(Vector256.Create(nibbleCounts, nibbleCounts), Vector256.Create(nibbleCounts, nibbleCounts));
+            Vector512<byte> lowMask = Vector512.Create((byte)0x0F);
+            Vector512<byte> low = Avx512BW.Shuffle(table, masked & lowMask);
+            Vector512<byte> high = Avx512BW.Shuffle(table, Avx512BW.ShiftRightLogical(masked.AsUInt16(), 4).AsByte() & lowMask);
+
+            return (int)Vector512.Sum(Avx512BW.SumAbsoluteDifferences(low + high, Vector512<byte>.Zero));
+        }
+
+        return ScanUnrolled(start, end);
     }
 
     /// <summary>The number of unset bits strictly before a position.</summary>

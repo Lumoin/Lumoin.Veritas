@@ -70,10 +70,11 @@ public sealed class WaveletMatrix
     /// <param name="values">The symbols.</param>
     /// <param name="bitWidth">The symbol width in bits (1–32), or <c>0</c> to use the width of the largest value; every value must fit the width.</param>
     /// <param name="selectSampleRate">The select-sample rate passed to every level bit-vector.</param>
+    /// <param name="rankScanMode">The rank-scan mode passed to every level bit-vector.</param>
     /// <returns>The built matrix.</returns>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="bitWidth"/> is negative or above 32, or <paramref name="selectSampleRate"/> is less than 1.</exception>
     /// <exception cref="ArgumentException">A value does not fit <paramref name="bitWidth"/>.</exception>
-    public static WaveletMatrix Build(ReadOnlySpan<uint> values, int bitWidth = 0, int selectSampleRate = 512)
+    public static WaveletMatrix Build(ReadOnlySpan<uint> values, int bitWidth = 0, int selectSampleRate = 512, RankScanMode rankScanMode = RankScanMode.Sequential)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(bitWidth);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(bitWidth, 32);
@@ -101,7 +102,7 @@ public sealed class WaveletMatrix
         {
             for(int level = 0; level < bitWidth; level++)
             {
-                levels[level] = RankSelectBitVector.Build([], 0, selectSampleRate);
+                levels[level] = RankSelectBitVector.Build([], 0, selectSampleRate, rankScanMode);
             }
 
             return new WaveletMatrix(levels, zeroCounts, 0, bitWidth);
@@ -122,7 +123,7 @@ public sealed class WaveletMatrix
             ulong[] payload = new ulong[(count + 63) >> 6];
             int ones = ExtractBits(current, shift, payload);
             int zeros = count - ones;
-            levels[level] = RankSelectBitVector.Build(payload, count, selectSampleRate);
+            levels[level] = RankSelectBitVector.Build(payload, count, selectSampleRate, rankScanMode);
             zeroCounts[level] = zeros;
             StablePartition(current, next, shift, zeros);
 

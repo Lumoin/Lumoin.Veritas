@@ -225,6 +225,33 @@ internal sealed class WaveletMatrixTests
     }
 
     [TestMethod]
+    public void RankScanModesAnswerIdentically()
+    {
+        //The mode is a scheduling knob, never a semantic one: every operation
+        //must agree across all three modes on the same sequence.
+        uint[] values = Sequence(3_000, 600, 23);
+        WaveletMatrix sequential = WaveletMatrix.Build(values, rankScanMode: RankScanMode.Sequential);
+        WaveletMatrix unrolled = WaveletMatrix.Build(values, rankScanMode: RankScanMode.Unrolled);
+        WaveletMatrix vectored = WaveletMatrix.Build(values, rankScanMode: RankScanMode.VectorPopCount);
+
+        for(int i = 0; i < values.Length; i++)
+        {
+            Assert.AreEqual(sequential.Access(i), unrolled.Access(i), $"Unrolled Access disagreed at {i}");
+            Assert.AreEqual(sequential.Access(i), vectored.Access(i), $"VectorPopCount Access disagreed at {i}");
+        }
+
+        foreach(uint symbol in (ReadOnlySpan<uint>)[0, 1, 7, 299, 599, 600])
+        {
+            foreach(int position in (ReadOnlySpan<int>)[0, 1, 63, 64, 511, 512, 513, 1_500, 2_999, 3_000])
+            {
+                int expected = sequential.Rank(symbol, position);
+                Assert.AreEqual(expected, unrolled.Rank(symbol, position), $"Unrolled Rank disagreed for symbol {symbol} at {position}");
+                Assert.AreEqual(expected, vectored.Rank(symbol, position), $"VectorPopCount Rank disagreed for symbol {symbol} at {position}");
+            }
+        }
+    }
+
+    [TestMethod]
     public void FootprintStaysNearPayloadTimesWidth()
     {
         //100k symbols over a 10-bit alphabet: payload n·w bits plus the

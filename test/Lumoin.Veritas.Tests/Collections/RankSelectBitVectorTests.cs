@@ -45,12 +45,24 @@ internal sealed class RankSelectBitVectorTests
         return words;
     }
 
-    /// <summary>Builds the vector from the pattern and asserts every operation against a linear scan of the pattern.</summary>
+    /// <summary>Builds the vector under every rank-scan mode and asserts every operation against a linear scan of the pattern — the vector-popcount mode exercises its hardware lane where supported and its fallback elsewhere.</summary>
     /// <param name="bits">The pattern.</param>
     /// <param name="selectSampleRate">The select-sample rate to build with.</param>
     private static void AssertMatchesOracle(bool[] bits, int selectSampleRate = 512)
     {
-        RankSelectBitVector vector = RankSelectBitVector.Build(Pack(bits), bits.Length, selectSampleRate);
+        foreach(RankScanMode mode in (ReadOnlySpan<RankScanMode>)[RankScanMode.Sequential, RankScanMode.Unrolled, RankScanMode.VectorPopCount])
+        {
+            AssertMatchesOracleUnderMode(bits, selectSampleRate, mode);
+        }
+    }
+
+    /// <summary>Builds the vector under one rank-scan mode and asserts every operation against a linear scan of the pattern.</summary>
+    /// <param name="bits">The pattern.</param>
+    /// <param name="selectSampleRate">The select-sample rate to build with.</param>
+    /// <param name="mode">The rank-scan mode to build with.</param>
+    private static void AssertMatchesOracleUnderMode(bool[] bits, int selectSampleRate, RankScanMode mode)
+    {
+        RankSelectBitVector vector = RankSelectBitVector.Build(Pack(bits), bits.Length, selectSampleRate, mode);
 
         int oneCount = 0;
         foreach(bool bit in bits)
@@ -68,16 +80,16 @@ internal sealed class RankSelectBitVectorTests
         int ones = 0;
         for(int position = 0; position < bits.Length; position++)
         {
-            Assert.AreEqual(bits[position], vector.Access(position), $"Access disagreed at {position}");
-            Assert.AreEqual(ones, vector.Rank1(position), $"Rank1 disagreed at {position}");
-            Assert.AreEqual(position - ones, vector.Rank0(position), $"Rank0 disagreed at {position}");
+            Assert.AreEqual(bits[position], vector.Access(position), $"Access disagreed at {position} ({mode})");
+            Assert.AreEqual(ones, vector.Rank1(position), $"Rank1 disagreed at {position} ({mode})");
+            Assert.AreEqual(position - ones, vector.Rank0(position), $"Rank0 disagreed at {position} ({mode})");
             if(bits[position])
             {
-                Assert.AreEqual(position, vector.Select1(ones), $"Select1 disagreed at rank {ones}");
+                Assert.AreEqual(position, vector.Select1(ones), $"Select1 disagreed at rank {ones} ({mode})");
             }
             else
             {
-                Assert.AreEqual(position, vector.Select0(position - ones), $"Select0 disagreed at rank {position - ones}");
+                Assert.AreEqual(position, vector.Select0(position - ones), $"Select0 disagreed at rank {position - ones} ({mode})");
             }
 
             if(bits[position])
