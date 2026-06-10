@@ -296,26 +296,25 @@ producers — §4.2 `FactorizedBatchJoin` (Emit/Extend/Nest via `Of`/`Append`/`W
 `ExecuteFactorized` — and the `Flatten`/`BranchRowsOf` consumer read through it; the layout is now internal to
 one type. Behaviour-preserving: both differential suites + the soak compile/green (8125/0/546 full).
 
-**Next on §4.3:** (d) **explicit memory ownership** under the Rust-translatability lens (the engine must port
-cleanly to Rust → explicit ownership over GC-reliance; flat layouts, value types, pools/arenas). Decision
-(user: "go with the easiest, refactor as opportunities emerge"): **per-result `IDisposable`/`Drop`** ownership.
-`FactorizedBatch`/`FactorizedGroup`/`FactorizedBranches` become disposable, owning their flat buffers rented
-from `VeritasMemoryPool` (refine to a *query-scoped arena* later — distinct from the persistent-store Batch-4
-arena being reverted); consumers `using` them. NOTE: the existing differential suites assert answer-equality,
-NOT lifecycle — so this needs NEW disposal/use-after-free tests, not just a re-run; that is why it is a careful
-focused pass, not a tail-end bolt-on. **Scope confirmed by a first attempt (built then reverted):** `IDisposable`
-on the shared `FactorizedBatch` makes CA2000 require disposal at EVERY consumer, including the §4.2 query path —
-`ColumnarBatchPipeline.RunFactorizedStar`/`Chain` return `Flatten()` lazily, so they need a self-disposing
-iterator plus eager disposal of the `AddBranch`/`NestBranch` intermediates — and that disposal is inert
-(GC-backed) until §4.2 itself is pooled. So this is NOT a §4.3-only foundation: do it as ONE pass — make the
-types disposable, pool the §4.2 query path (self-disposing flatten + intermediate disposal), and pool the §4.3
-path together, so the consumer-disposal churn arrives with its payoff. (Mechanics that worked in the attempt:
-`FactorizedBranches` holds a `Memory<uint>` + optional `IMemoryOwner<uint>`, factory `Of`/`Append`/`WithCleared`
-take a `MemoryPool<uint>?`, ownership transfers up the aggregate; a counting `MemoryPool<uint>` test double pins
-rent==return.) Then the Free Join executor's hot-path growable `List`/`HashSet` + class
-`Frame` move to flat, pre-sized, value-type buffers (the least Rust-mappable part today). Then **deeper
-factorisation** (chain nesting — the `NestBranch` analogue — out of the generic join) and the cost-based
-depth/selector that picks Free Join's per-relation depth (the deferred join-strategy-selection research issue).
+**Next on §4.3:** (d) **explicit memory ownership** under the Rust-translatability lens — relying on the GC as
+the global root for our data-flow lifetimes is the smell to remove (user). **Settled design: a query-scoped
+arena.** Veritas already has the layering — `MemoryPool` (exact-size slab) at the bottom, a bump/arena on top
+(`Utf8StringPool` *is* that: an arena over `VeritasMemoryPool` that bulk-frees on dispose). Build a
+**`FactorizedArena`** the same way; `FactorizedBranches` holds a value-type slice `(slab, offset, length)` read
+cursor-style (the `FlatBufferCursor` shape in `..\Lumoin.Veridical`) — NO `Memory<uint>`/`IMemoryOwner` field,
+no per-rental owner object. ONE explicit lifetime: the arena, disposed at the query/result-stream boundary (the
+self-disposing flatten `finally`) — no per-`Batch`/`Group`/`Branches` `IDisposable` cascade. This dissolves what
+a first `IDisposable`+`IMemoryOwner` attempt hit (built then reverted): `IDisposable` on the shared
+`FactorizedBatch` made CA2000 demand disposal at every consumer including the §4.2 lazy-`Flatten` path, for
+GC-backed (inert) churn. The arena replaces all that with one disposable at one boundary, and is the cleanest
+Rust target (bump arena + `&[u32]`). Pattern refs (sibling repos on disk, NOT deps): `SensitiveMemory` (typed
+owned base — encapsulate the owner, never scatter it), `FlatBufferCursor` (value-type offset reads), `stackalloc`
++ `WellKnownPoseidonScratch` (bounded stack scratch). NEEDS new lifecycle tests (answer-equality suites don't
+catch use-after-free / double-free); open as a clean focused pass. Then the Free Join executor's hot-path growable
+`List`/`HashSet` + class `Frame` move to flat, value-type, arena-allocated buffers (the least Rust-mappable part
+today). Then **deeper factorisation** (chain nesting — the `NestBranch` analogue — out of the generic join) and
+the cost-based depth/selector that picks Free Join's per-relation depth (the deferred join-strategy-selection
+research issue).
 
 ### After the tier
 
