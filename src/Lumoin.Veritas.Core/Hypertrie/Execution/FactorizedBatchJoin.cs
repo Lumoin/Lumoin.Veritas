@@ -409,6 +409,7 @@ public static class FactorizedBatchJoin
     {
         int branchCount = left.BranchColumns.Length;
         int[][] nestedBranchColumns = [nestedChildColumns];
+        Span<uint> nestedKeyScratch = stackalloc uint[1];
 
         List<FactorizedGroup> groups = new(left.Groups.Count);
         foreach(FactorizedGroup group in left.Groups)
@@ -431,7 +432,8 @@ public static class FactorizedBatchJoin
                     [bucket.Rows],
                     [probeCarryCount],
                     arena);
-                nestedGroups.Add(new FactorizedGroup([branchVariableValue], nestedBranchStore));
+                nestedKeyScratch[0] = branchVariableValue;
+                nestedGroups.Add(new FactorizedGroup(arena.AllocateFrom(nestedKeyScratch), nestedBranchStore));
             }
 
             if(nestedGroups.Count == 0)
@@ -548,6 +550,8 @@ public static class FactorizedBatchJoin
         int probeCarryCount,
         FactorizedArena arena)
     {
+        Span<uint> keyScratch = stackalloc uint[2];
+
         List<FactorizedGroup> emitted = new(groups.Count);
         foreach(GroupBuilder group in groups.Values)
         {
@@ -556,7 +560,9 @@ public static class FactorizedBatchJoin
                 continue;
             }
 
-            uint[] keyValues = keyCount > 1 ? [group.Key0, group.Key1] : [group.Key0];
+            keyScratch[0] = group.Key0;
+            keyScratch[1] = group.Key1;
+            ArenaSlice keyValues = arena.AllocateFrom(keyScratch[..keyCount]);
             FactorizedBranches branches = FactorizedBranches.Of(
                 [PackOf(group.BuildValues, buildCarryCount), PackOf(group.ProbeValues, probeCarryCount)],
                 [group.BuildRows, group.ProbeRows],

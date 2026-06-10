@@ -169,6 +169,53 @@ internal sealed class FactorizedArenaTests
     }
 
     [TestMethod]
+    public void AllocateFromCopiesTheValuesIntoTheArena()
+    {
+        using CountingPool pool = new();
+        using FactorizedArena arena = new(pool);
+
+        ArenaSlice copied = arena.AllocateFrom([5, 6, 7]);
+
+        Assert.AreEqual(3, copied.Length);
+        Assert.AreEqual(5u, copied[0]);
+        Assert.AreEqual(6u, copied[1]);
+        Assert.AreEqual(7u, copied[2]);
+    }
+
+    [TestMethod]
+    public void WriterBuiltBranchStorageFillsInPlaceAndReadsBack()
+    {
+        using CountingPool pool = new();
+        using FactorizedArena arena = new(pool, slabElements: 8);
+
+        //The writer-style builder: shape first, then each branch's run is
+        //filled in place through its span — the path a producer takes when it
+        //knows the row counts upfront.
+        FactorizedBranches branches = FactorizedBranches.Allocate([2, 3], [2, 1], arena);
+        Span<uint> first = branches.BranchSpan(0);
+        first[0] = 10;
+        first[1] = 11;
+        first[2] = 20;
+        first[3] = 21;
+        Span<uint> second = branches.BranchSpan(1);
+        second[0] = 30;
+        second[1] = 31;
+        second[2] = 32;
+
+        Assert.AreEqual(2, branches.Count);
+        Assert.AreEqual(2, branches.RowCountOf(0));
+        Assert.AreEqual(2, branches.StrideOf(0));
+        Assert.AreEqual(11u, branches.ValueAt(0, 0, 1));
+        Assert.AreEqual(21u, branches.ValueAt(0, 1, 1));
+        Assert.AreEqual(3, branches.RowCountOf(1));
+        Assert.AreEqual(1, branches.StrideOf(1));
+        Assert.AreEqual(32u, branches.ValueAt(1, 2, 0));
+
+        arena.Dispose();
+        Assert.AreEqual(0, pool.Outstanding);
+    }
+
+    [TestMethod]
     public void HoldsOverTheRealMemoryPool()
     {
         //The real pool slices rentals from shared slabs, so a rental's backing

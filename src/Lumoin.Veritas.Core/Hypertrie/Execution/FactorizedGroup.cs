@@ -33,8 +33,8 @@ namespace Lumoin.Veritas.Core.Hypertrie.Execution;
 /// </remarks>
 public sealed class FactorizedGroup
 {
-    /// <summary>The key tuple shared by every flat row of this group, one value per key column.</summary>
-    public uint[] KeyValues { get; }
+    /// <summary>The key tuple shared by every flat row of this group, one value per key column; an arena run, valid until the allocating <see cref="FactorizedArena"/> is disposed.</summary>
+    public ArenaSlice KeyValues { get; }
 
     /// <summary>The flat branches: each branch's value tuples, read positionally against the parent batch's branch column lists. A nested branch carries a zero row count here and its sub-batch in <see cref="NestedBranches"/>.</summary>
     public FactorizedBranches Branches { get; }
@@ -43,14 +43,13 @@ public sealed class FactorizedGroup
     public FactorizedBatch?[]? NestedBranches { get; }
 
     /// <summary>Constructs a group over a key tuple and its branch storage, optionally with some branches nested.</summary>
-    /// <param name="keyValues">The key tuple, one value per key column.</param>
+    /// <param name="keyValues">The key tuple, one value per key column, as an arena run.</param>
     /// <param name="branches">The flat branch storage; a nested branch carries a zero row count here and its sub-batch in <paramref name="nestedBranches"/>.</param>
     /// <param name="nestedBranches">The nested sub-batch per branch, parallel to <paramref name="branches"/>, or <see langword="null"/> when every branch is flat.</param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">The nested-branch array does not run parallel to the branches.</exception>
-    public FactorizedGroup(uint[] keyValues, FactorizedBranches branches, FactorizedBatch?[]? nestedBranches = null)
+    public FactorizedGroup(ArenaSlice keyValues, FactorizedBranches branches, FactorizedBatch?[]? nestedBranches = null)
     {
-        ArgumentNullException.ThrowIfNull(keyValues);
         ArgumentNullException.ThrowIfNull(branches);
 
         if(nestedBranches is not null && nestedBranches.Length != branches.Count)

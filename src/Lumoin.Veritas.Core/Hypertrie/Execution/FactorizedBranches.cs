@@ -5,60 +5,59 @@ namespace Lumoin.Veritas.Core.Hypertrie.Execution;
 /// <summary>
 /// The flat-packed branch storage of a <see cref="FactorizedGroup"/>: every
 /// branch's value tuples concatenated into one arena-allocated values run,
-/// with a per-branch start offset, row count, and stride (its column count).
-/// A group holds one values run rather than one per branch, and branch
-/// <c>b</c>'s tuple at row <c>r</c> reads at <c>start[b] + r·stride[b]</c>.
-/// A zero-column branch keeps its row count as a multiplicity factor and
-/// contributes no values. Building from per-branch packed arrays concatenates
-/// once; the transient per-branch arrays are not retained.
+/// with a per-branch start offset, row count, and stride (its column count)
+/// packed into one arena-allocated metadata run. A group holds one values run
+/// rather than one per branch, and branch <c>b</c>'s tuple at row <c>r</c>
+/// reads at <c>start[b] + r·stride[b]</c>. A zero-column branch keeps its row
+/// count as a multiplicity factor and contributes no values.
 /// </summary>
 /// <remarks>
-/// The values live in the <see cref="FactorizedArena"/> they were allocated
+/// Both runs live in the <see cref="FactorizedArena"/> they were allocated
 /// from — the one explicit lifetime every factorised buffer of a query
 /// shares — so this storage is valid only until that arena is disposed.
-/// <see cref="Append"/> and <see cref="WithCleared"/> allocate a fresh run
-/// and abandon the superseded one inside the arena; a bump arena reclaims
+/// <see cref="Append"/> and <see cref="WithCleared"/> allocate fresh runs
+/// and abandon the superseded ones inside the arena; a bump arena reclaims
 /// nothing per run, everything at its single disposal.
 /// </remarks>
 public sealed class FactorizedBranches
 {
-    /// <summary>The empty branch set — a group that is key-only, or whose every branch is nested. Backed by the empty slice, so it is valid under any arena.</summary>
-    public static FactorizedBranches Empty { get; } = new(ArenaSlice.Empty, [], [], []);
+    /// <summary>The empty branch set — a group that is key-only, or whose every branch is nested. Backed by empty slices, so it is valid under any arena.</summary>
+    public static FactorizedBranches Empty { get; } = new(ArenaSlice.Empty, ArenaSlice.Empty, 0);
 
-    /// <summary>Every branch's value tuples concatenated row-major; branch <c>b</c> occupies <c>[starts[b], starts[b] + rowCounts[b]·strides[b])</c>. Valid until the allocating arena is disposed.</summary>
+    /// <summary>Every branch's value tuples concatenated row-major; branch <c>b</c> occupies <c>[start(b), start(b) + rowCount(b)·stride(b))</c>. Valid until the allocating arena is disposed.</summary>
     private readonly ArenaSlice values;
 
-    /// <summary>Each branch's start offset into <see cref="values"/>, parallel to <see cref="rowCounts"/>.</summary>
-    private readonly int[] starts;
+    /// <summary>The per-branch metadata, three runs of <see cref="Count"/> values each: the start offsets, then the row counts, then the strides.</summary>
+    private readonly ArenaSlice meta;
 
-    /// <summary>Each branch's row count — kept explicit so a zero-column branch still carries its multiplicity.</summary>
-    private readonly int[] rowCounts;
-
-    /// <summary>Each branch's stride, the column count of its tuples.</summary>
-    private readonly int[] strides;
-
-    /// <summary>Constructs the storage over its packed run; the caller owns the layout invariant that <paramref name="starts"/> matches the prefix sums of <c>rowCounts·strides</c>.</summary>
+    /// <summary>Constructs the storage over its packed runs; the caller owns the layout invariant that the metadata starts match the prefix sums of <c>rowCount·stride</c>.</summary>
     /// <param name="values">The concatenated value tuples.</param>
-    /// <param name="starts">Each branch's start offset into <paramref name="values"/>.</param>
-    /// <param name="rowCounts">Each branch's row count.</param>
-    /// <param name="strides">Each branch's stride.</param>
-    private FactorizedBranches(ArenaSlice values, int[] starts, int[] rowCounts, int[] strides)
+    /// <param name="meta">The packed per-branch metadata: starts, row counts, strides.</param>
+    /// <param name="count">The branch count.</param>
+    private FactorizedBranches(ArenaSlice values, ArenaSlice meta, int count)
     {
         this.values = values;
-        this.starts = starts;
-        this.rowCounts = rowCounts;
-        this.strides = strides;
+        this.meta = meta;
+        Count = count;
     }
 
     /// <summary>The number of branches.</summary>
-    public int Count => rowCounts.Length;
+    public int Count { get; }
+
+    /// <summary>A branch's start offset into the values run.</summary>
+    /// <param name="branch">The branch index.</param>
+    /// <returns>The start offset.</returns>
+    private int StartOf(int branch)
+    {
+        return (int)meta[branch];
+    }
 
     /// <summary>A branch's row count — the number of value tuples in its union.</summary>
     /// <param name="branch">The branch index.</param>
     /// <returns>The row count.</returns>
     public int RowCountOf(int branch)
     {
-        return rowCounts[branch];
+        return (int)meta[Count + branch];
     }
 
     /// <summary>A branch's stride — the column count of its tuples.</summary>
@@ -66,7 +65,7 @@ public sealed class FactorizedBranches
     /// <returns>The stride.</returns>
     public int StrideOf(int branch)
     {
-        return strides[branch];
+        return (int)meta[(2 * Count) + branch];
     }
 
     /// <summary>One value of a branch's tuple.</summary>
@@ -76,7 +75,50 @@ public sealed class FactorizedBranches
     /// <returns>The value.</returns>
     public uint ValueAt(int branch, int row, int column)
     {
-        return values[starts[branch] + (row * strides[branch]) + column];
+        return values[StartOf(branch) + (row * StrideOf(branch)) + column];
+    }
+
+    /// <summary>A branch's values run as a writable span, for a producer filling storage made by <see cref="Allocate"/> in place.</summary>
+    /// <param name="branch">The branch index.</param>
+    /// <returns>The branch's run, row-major with the branch's stride.</returns>
+    public Span<uint> BranchSpan(int branch)
+    {
+        return values.Span.Slice(StartOf(branch), RowCountOf(branch) * StrideOf(branch));
+    }
+
+    /// <summary>
+    /// Allocates storage for branches of known shape with unfilled values — the
+    /// writer-style builder for a producer that knows each branch's row count
+    /// upfront and fills the runs in place through <see cref="BranchSpan"/>,
+    /// with no transient per-branch array between it and the arena.
+    /// </summary>
+    /// <param name="rowCounts">Each branch's row count.</param>
+    /// <param name="strides">Each branch's stride, parallel to <paramref name="rowCounts"/>.</param>
+    /// <param name="arena">The arena the runs are allocated from; the storage is valid until it is disposed.</param>
+    /// <returns>The branch storage, its values awaiting the producer's fill.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="arena"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException">The branch spans differ in length.</exception>
+    public static FactorizedBranches Allocate(ReadOnlySpan<int> rowCounts, ReadOnlySpan<int> strides, FactorizedArena arena)
+    {
+        ArgumentNullException.ThrowIfNull(arena);
+
+        if(rowCounts.Length != strides.Length)
+        {
+            throw new ArgumentException("The branch spans must run parallel.", nameof(strides));
+        }
+
+        int branchCount = rowCounts.Length;
+        ArenaSlice meta = arena.Allocate(3 * branchCount);
+        int total = 0;
+        for(int branch = 0; branch < branchCount; branch++)
+        {
+            meta.Span[branch] = (uint)total;
+            meta.Span[branchCount + branch] = (uint)rowCounts[branch];
+            meta.Span[(2 * branchCount) + branch] = (uint)strides[branch];
+            total += rowCounts[branch] * strides[branch];
+        }
+
+        return new FactorizedBranches(arena.Allocate(total), meta, branchCount);
     }
 
     /// <summary>
@@ -84,13 +126,11 @@ public sealed class FactorizedBranches
     /// one arena-allocated values run; the packed inputs are copied, not
     /// retained. Each packed array is row-major with the matching stride, of
     /// length <c>rowCounts[b]·strides[b]</c> (empty for a zero-column branch).
-    /// The <paramref name="rowCounts"/> and <paramref name="strides"/> arrays
-    /// are retained by reference.
     /// </summary>
     /// <param name="packedPerBranch">Each branch's packed value tuples.</param>
     /// <param name="rowCounts">Each branch's row count, parallel to <paramref name="packedPerBranch"/>.</param>
     /// <param name="strides">Each branch's stride, parallel to <paramref name="packedPerBranch"/>.</param>
-    /// <param name="arena">The arena the values run is allocated from; the storage is valid until it is disposed.</param>
+    /// <param name="arena">The arena the runs are allocated from; the storage is valid until it is disposed.</param>
     /// <returns>The flat-packed branch storage.</returns>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">The branch arrays differ in length.</exception>
@@ -99,41 +139,31 @@ public sealed class FactorizedBranches
         ArgumentNullException.ThrowIfNull(packedPerBranch);
         ArgumentNullException.ThrowIfNull(rowCounts);
         ArgumentNullException.ThrowIfNull(strides);
-        ArgumentNullException.ThrowIfNull(arena);
 
         if(packedPerBranch.Length != rowCounts.Length || packedPerBranch.Length != strides.Length)
         {
             throw new ArgumentException("The branch arrays must run parallel.", nameof(rowCounts));
         }
 
-        int branchCount = packedPerBranch.Length;
-        int[] starts = new int[branchCount];
-        int total = 0;
-        for(int branch = 0; branch < branchCount; branch++)
+        FactorizedBranches branches = Allocate(rowCounts, strides, arena);
+        for(int branch = 0; branch < packedPerBranch.Length; branch++)
         {
-            starts[branch] = total;
-            total += rowCounts[branch] * strides[branch];
+            packedPerBranch[branch].AsSpan(0, rowCounts[branch] * strides[branch]).CopyTo(branches.BranchSpan(branch));
         }
 
-        ArenaSlice values = arena.Allocate(total);
-        for(int branch = 0; branch < branchCount; branch++)
-        {
-            packedPerBranch[branch].AsSpan(0, rowCounts[branch] * strides[branch]).CopyTo(values.Span[starts[branch]..]);
-        }
-
-        return new FactorizedBranches(values, starts, rowCounts, strides);
+        return branches;
     }
 
     /// <summary>
     /// Returns a copy extended by one more branch — the star step that attaches a
     /// pattern's per-key matches as a fresh branch without flattening the product.
-    /// The copy's values are a fresh run from the arena; the superseded run is
+    /// The copy's runs are fresh from the arena; the superseded ones are
     /// abandoned there until the arena's disposal.
     /// </summary>
     /// <param name="packed">The new branch's packed value tuples, row-major with <paramref name="stride"/>.</param>
     /// <param name="rowCount">The new branch's row count.</param>
     /// <param name="stride">The new branch's stride.</param>
-    /// <param name="arena">The arena the extended values run is allocated from.</param>
+    /// <param name="arena">The arena the extended runs are allocated from.</param>
     /// <returns>The extended branch storage.</returns>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
     public FactorizedBranches Append(uint[] packed, int rowCount, int stride, FactorizedArena arena)
@@ -141,56 +171,58 @@ public sealed class FactorizedBranches
         ArgumentNullException.ThrowIfNull(packed);
         ArgumentNullException.ThrowIfNull(arena);
 
-        int branchCount = rowCounts.Length;
-        int[] newStarts = new int[branchCount + 1];
-        int[] newRowCounts = new int[branchCount + 1];
-        int[] newStrides = new int[branchCount + 1];
-        Array.Copy(starts, newStarts, branchCount);
-        Array.Copy(rowCounts, newRowCounts, branchCount);
-        Array.Copy(strides, newStrides, branchCount);
-
+        int branchCount = Count;
         int appended = rowCount * stride;
-        newStarts[branchCount] = values.Length;
-        newRowCounts[branchCount] = rowCount;
-        newStrides[branchCount] = stride;
+
+        ArenaSlice newMeta = arena.Allocate(3 * (branchCount + 1));
+        for(int branch = 0; branch < branchCount; branch++)
+        {
+            newMeta.Span[branch] = (uint)StartOf(branch);
+            newMeta.Span[branchCount + 1 + branch] = (uint)RowCountOf(branch);
+            newMeta.Span[(2 * (branchCount + 1)) + branch] = (uint)StrideOf(branch);
+        }
+
+        newMeta.Span[branchCount] = (uint)values.Length;
+        newMeta.Span[branchCount + 1 + branchCount] = (uint)rowCount;
+        newMeta.Span[(2 * (branchCount + 1)) + branchCount] = (uint)stride;
 
         ArenaSlice newValues = arena.Allocate(values.Length + appended);
         values.Span.CopyTo(newValues.Span);
         packed.AsSpan(0, appended).CopyTo(newValues.Span[values.Length..]);
 
-        return new FactorizedBranches(newValues, newStarts, newRowCounts, newStrides);
+        return new FactorizedBranches(newValues, newMeta, branchCount + 1);
     }
 
     /// <summary>
     /// Returns a copy with one branch cleared to a zero-row, zero-stride branch —
     /// the chain step where that branch is regrouped into a nested sub-batch and
-    /// so carries no flat values in the parent. The copy's values are a fresh run
-    /// from the arena; the superseded run is abandoned there until the arena's
+    /// so carries no flat values in the parent. The copy's runs are fresh from
+    /// the arena; the superseded ones are abandoned there until the arena's
     /// disposal.
     /// </summary>
     /// <param name="branch">The branch to clear.</param>
-    /// <param name="arena">The arena the compacted values run is allocated from.</param>
+    /// <param name="arena">The arena the compacted runs are allocated from.</param>
     /// <returns>The branch storage with the branch emptied.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="arena"/> is <see langword="null"/>.</exception>
     public FactorizedBranches WithCleared(int branch, FactorizedArena arena)
     {
         ArgumentNullException.ThrowIfNull(arena);
 
-        int branchCount = rowCounts.Length;
-        int[] newRowCounts = (int[])rowCounts.Clone();
-        int[] newStrides = (int[])strides.Clone();
-        newRowCounts[branch] = 0;
-        newStrides[branch] = 0;
-
-        int[] newStarts = new int[branchCount];
+        int branchCount = Count;
+        ArenaSlice newMeta = arena.Allocate(3 * branchCount);
         int total = 0;
         for(int b = 0; b < branchCount; b++)
         {
-            newStarts[b] = total;
-            total += newRowCounts[b] * newStrides[b];
+            int rowCount = b == branch ? 0 : RowCountOf(b);
+            int stride = b == branch ? 0 : StrideOf(b);
+            newMeta.Span[b] = (uint)total;
+            newMeta.Span[branchCount + b] = (uint)rowCount;
+            newMeta.Span[(2 * branchCount) + b] = (uint)stride;
+            total += rowCount * stride;
         }
 
         ArenaSlice newValues = arena.Allocate(total);
+        FactorizedBranches cleared = new(newValues, newMeta, branchCount);
         for(int b = 0; b < branchCount; b++)
         {
             if(b == branch)
@@ -198,9 +230,9 @@ public sealed class FactorizedBranches
                 continue;
             }
 
-            values.Span.Slice(starts[b], rowCounts[b] * strides[b]).CopyTo(newValues.Span[newStarts[b]..]);
+            values.Span.Slice(StartOf(b), RowCountOf(b) * StrideOf(b)).CopyTo(cleared.BranchSpan(b));
         }
 
-        return new FactorizedBranches(newValues, newStarts, newRowCounts, newStrides);
+        return cleared;
     }
 }

@@ -183,9 +183,12 @@ public static class FreeJoinExecutor
 
         List<FactorizedGroup> groups = [];
 
-        //Scratch reused across keys: the child node id per relation under the
-        //current key, refilled before each use.
+        //Scratch reused across keys: the child node id and branch row count per
+        //relation under the current key, refilled before each use, and the
+        //single-value key tuple staged for its arena copy.
         int[] childNode = new int[relations.Count];
+        int[] branchRowCounts = new int[relations.Count];
+        Span<uint> keyScratch = stackalloc uint[1];
 
         //Every star branch is a single residual variable, so each branch's
         //stride is one; this array is constant across groups.
@@ -215,26 +218,28 @@ public static class FreeJoinExecutor
 
             //Each relation's branch is its branch-variable values under this key
             //— the keys of its level-1 node. They vary independently, so they
-            //become this group's branches in relation order.
-            uint[][] branchValues = new uint[relations.Count][];
-            int[] branchRowCounts = new int[relations.Count];
+            //become this group's branches in relation order, filled in place
+            //with no transient per-branch array between the node and the arena.
             for(int relation = 0; relation < relations.Count; relation++)
             {
-                OpenAddressedTable<int> node = relations[relation].NodeAt(childNode[relation]);
-                uint[] values = new uint[node.Count];
-                int next = 0;
-                OpenAddressedTable<int>.Enumerator branchScan = node.GetEnumerator();
-                while(branchScan.MoveNext())
-                {
-                    values[next] = (uint)branchScan.Current.Key;
-                    next++;
-                }
-
-                branchValues[relation] = values;
-                branchRowCounts[relation] = values.Length;
+                branchRowCounts[relation] = relations[relation].NodeAt(childNode[relation]).Count;
             }
 
-            groups.Add(new FactorizedGroup([keyValue], FactorizedBranches.Of(branchValues, branchRowCounts, branchStride, arena)));
+            FactorizedBranches branches = FactorizedBranches.Allocate(branchRowCounts, branchStride, arena);
+            for(int relation = 0; relation < relations.Count; relation++)
+            {
+                Span<uint> destination = branches.BranchSpan(relation);
+                int next = 0;
+                OpenAddressedTable<int>.Enumerator branchScan = relations[relation].NodeAt(childNode[relation]).GetEnumerator();
+                while(branchScan.MoveNext())
+                {
+                    destination[next] = (uint)branchScan.Current.Key;
+                    next++;
+                }
+            }
+
+            keyScratch[0] = keyValue;
+            groups.Add(new FactorizedGroup(arena.AllocateFrom(keyScratch), branches));
         }
 
         int[][] branchColumns = new int[relations.Count][];

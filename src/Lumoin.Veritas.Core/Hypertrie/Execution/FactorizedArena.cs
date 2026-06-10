@@ -183,6 +183,18 @@ public sealed class FactorizedArena: IDisposable
         return slice;
     }
 
+    /// <summary>Allocates a run holding a copy of the given values — the copying counterpart of <see cref="Allocate"/>, for small fixed tuples such as group keys.</summary>
+    /// <param name="values">The values the run is filled with.</param>
+    /// <returns>The slice over the copied values, valid until <see cref="Dispose"/>.</returns>
+    /// <exception cref="ObjectDisposedException">The arena has been disposed.</exception>
+    public ArenaSlice AllocateFrom(ReadOnlySpan<uint> values)
+    {
+        ArenaSlice slice = Allocate(values.Length);
+        values.CopyTo(slice.Span);
+
+        return slice;
+    }
+
     /// <summary>Rents a slab large enough for the request and makes it current.</summary>
     /// <param name="required">The element count that must fit.</param>
     private void GrowSlab(int required)

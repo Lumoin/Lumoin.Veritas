@@ -424,7 +424,7 @@ internal sealed class FactorizedBatchJoinTests
         //each: the flatten must walk all four combinations.
         using FactorizedArena arena = new(VeritasMemoryPool<uint>.Shared);
         FactorizedGroup group = new(
-            keyValues: [7],
+            keyValues: arena.AllocateFrom([7]),
             branches: FactorizedBranches.Of([[100, 101], [200, 201]], [2, 2], [1, 1], arena));
         FactorizedBatch batch = new([key, left, right], keyColumns: [0], branchColumns: [[1], [2]], groups: [group]);
 
