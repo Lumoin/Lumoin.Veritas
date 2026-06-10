@@ -12,9 +12,9 @@ in "Next".
 
 ## Current state
 
-- Branch `main`, tree clean at **`82eaf32`**. This session shipped the §4.3 Free Join arc: `255c2f4` **(a)** routed Free Join behind a default-off `PreferFreeJoin`; `6ad4ca7` **(b)** factorized-star output (the §4.2 ∩ §4.3 convergence, `FreeJoinExecutor.ExecuteFactorized` / `FreeJoinPipeline.RunFactorized`); `69ce5e5` **(c)** flat-1D `FactorizedBranches`; `82eaf32` **(d.1)** `FactorizedArena` (query-scoped bump arena, 7 lifecycle tests). Design-only HANDOFF commits `5f05678`/`fa6b476`.
-- **→ RESUME HERE: §4.3(d) increment 2** — move `FactorizedBranches` onto `ArenaSlice`. The `FactorizedArena` foundation is in and green; the full plan, the ownership model (query-scoped arena, NOT per-buffer `IMemoryOwner` — that was built then **reverted**, see why), and the §4.2-query-path/self-disposing-flatten detail are in the **"(d)"** paragraph of the §4.3 section below. Design lens: explicit memory ownership over GC-reliance (memory `project_rust_translatability_explicit_memory`), Rust-translatable.
-- Full suite **8125 / 0 failed / 546 skipped** at `69ce5e5`; +7 green `FactorizedArena` tests since (run filtered) — the full suite was not re-run after that purely-additive commit, so no regression is possible from it.
+- Branch `main`, tree clean at **`b18c612`**. This session shipped the §4.3 Free Join arc: `255c2f4` **(a)** routed Free Join behind a default-off `PreferFreeJoin`; `6ad4ca7` **(b)** factorized-star output (the §4.2 ∩ §4.3 convergence, `FreeJoinExecutor.ExecuteFactorized` / `FreeJoinPipeline.RunFactorized`); `69ce5e5` **(c)** flat-1D `FactorizedBranches`; `82eaf32` **(d.1)** `FactorizedArena` (query-scoped bump arena, 7 lifecycle tests); `b18c612` **(d.2)** `FactorizedBranches` onto `ArenaSlice` — branch values arena-owned, every producer threads the arena, the §4.2 pipeline routes own a query-scoped arena over `VeritasMemoryPool<uint>.Shared` as lazy iterators (the self-disposing flatten), 2 more lifecycle tests. Design-only HANDOFF commits `5f05678`/`fa6b476`.
+- **→ RESUME HERE: §4.3(d) increment 3** — the Free Join executor's hot-path growable `List`/`HashSet` + class `Frame` move to flat, value-type, arena-allocated buffers (the least Rust-mappable part today). Details in the **"(d)"** paragraph of the §4.3 section below. Design lens: explicit memory ownership over GC-reliance (memory `project_rust_translatability_explicit_memory`), Rust-translatable.
+- Full suite **8134 / 0 failed / 546 skipped** at `b18c612`.
 - **Conformance (measured 2026-06-09, not from memory):** zero failures anywhere. W3C SHACL **120/120**, Turtle 328, NQuads 205, RDF 146 — 100%. SPARQL 1221/1248 (27 optional-feature skips). OWL `W3cOwl2` conformance suites **881/1323, 442 skip, 0 fail** — the 442 are correct cross-suite abstentions (367 RL + 65 species) + 10 corpus contradictions, **NOT** unimplemented regimes; the 2 genuine Direct-semantics entailment tests (`WebOnt-I4.6-005-Direct`, `WebOnt-equivalentClass-008-Direct`) fixed 2026-06-09 by projecting away the conclusion's annotations in `W3cOwl2RlTests` before the RL embedding check. The old "SHACL 63/120 / SHACL-SPARQL open" and "444 OWL regimes unimplemented" memories were **stale** — both corrected.
 - **Known flaky test (pre-existing, NOT from this session's changes):** ~1 full-suite run in ~4 fails exactly 1 test; never reproduced when hunted (6 clean differential-suite runs + 4 clean full runs). Likely a method-level-parallel race (the suite runs `Workers=0`, all cores). **NOT yet named** — I filtered it out of the one failing run before realising. Mitigation now in place: **every full-suite run captures FULL output** (`dotnet test ... 2>&1 | Out-File <tmp>` then grep the file), so the next failure is named with its CsCheck seed if applicable; root-cause it then. HARD RULE: never paper over (no retries, no timeouts, no dismiss-as-flaky) — root-cause or discuss. The "it's a CsCheck differential test" hypothesis was tested and **cleared**. Factorization stays opt-in (default-off); the corpus routes stars/chains through the streamed path by default.
 - One unrelated working-tree change persists: `generate-local-test-nuget-packages.ps1` (a sister project's edit excluding the AOT CLI from local packaging) — not mine, left uncommitted on purpose.
@@ -297,25 +297,27 @@ producers — §4.2 `FactorizedBatchJoin` (Emit/Extend/Nest via `Of`/`Append`/`W
 `ExecuteFactorized` — and the `Flatten`/`BranchRowsOf` consumer read through it; the layout is now internal to
 one type. Behaviour-preserving: both differential suites + the soak compile/green (8125/0/546 full).
 
-**Next on §4.3:** (d) **explicit memory ownership** under the Rust-translatability lens — relying on the GC as
-the global root for our data-flow lifetimes is the smell to remove (user). **Settled design: a query-scoped
-arena.** Veritas already has the layering — `MemoryPool` (exact-size slab) at the bottom, a bump/arena on top
-(`Utf8StringPool` *is* that: an arena over `VeritasMemoryPool` that bulk-frees on dispose). Build a
-**`FactorizedArena`** the same way; `FactorizedBranches` holds a value-type slice `(slab, offset, length)` read
-cursor-style (the `FlatBufferCursor` shape in `..\Lumoin.Veridical`) — NO `Memory<uint>`/`IMemoryOwner` field,
-no per-rental owner object. ONE explicit lifetime: the arena, disposed at the query/result-stream boundary (the
-self-disposing flatten `finally`) — no per-`Batch`/`Group`/`Branches` `IDisposable` cascade. This dissolves what
-a first `IDisposable`+`IMemoryOwner` attempt hit (built then reverted): `IDisposable` on the shared
-`FactorizedBatch` made CA2000 demand disposal at every consumer including the §4.2 lazy-`Flatten` path, for
-GC-backed (inert) churn. The arena replaces all that with one disposable at one boundary, and is the cleanest
-Rust target (bump arena + `&[u32]`). Pattern refs (sibling repos on disk, NOT deps): `SensitiveMemory` (typed
-owned base — encapsulate the owner, never scatter it), `FlatBufferCursor` (value-type offset reads), `stackalloc`
-+ `WellKnownPoseidonScratch` (bounded stack scratch). NEEDS new lifecycle tests (answer-equality suites don't
-catch use-after-free / double-free); open as a clean focused pass. Then the Free Join executor's hot-path growable
-`List`/`HashSet` + class `Frame` move to flat, value-type, arena-allocated buffers (the least Rust-mappable part
-today). Then **deeper factorisation** (chain nesting — the `NestBranch` analogue — out of the generic join) and
-the cost-based depth/selector that picks Free Join's per-relation depth (the deferred join-strategy-selection
-research issue).
+**Shipped: §4.3(d) explicit memory ownership, increments 1+2.** The settled design — ONE query-scoped arena, no
+per-buffer `IMemoryOwner`/`IDisposable` cascade (a first `IDisposable`+`IMemoryOwner` attempt was built then
+**reverted**: `IDisposable` on the shared `FactorizedBatch` made CA2000 demand disposal at every consumer
+including the §4.2 lazy-`Flatten` path, for GC-backed inert churn) — is now in place end to end. `82eaf32`
+**(d.1)** `FactorizedArena`: a bump arena over `VeritasMemoryPool<uint>` handing out value-type `ArenaSlice`s
+(backing array + offset + length, cursor-style reads — no `Memory<uint>`, no per-rental owner), every slab
+returned in one `Dispose`; 7 lifecycle tests incl. a counting pool. `b18c612` **(d.2)** `FactorizedBranches`
+holds its values as an `ArenaSlice`; `Of`/`Append`/`WithCleared` allocate from the arena (append/clear allocate
+a fresh run and abandon the superseded one — bump semantics, reclaimed at the single disposal); all producers
+thread the arena (`FactorizedBatchJoin.Join`/`AddBranch`/`NestBranch`, `FreeJoinExecutor.ExecuteFactorized`,
+`FreeJoinPipeline.RunFactorized` caller-owned); the §4.2 routes `RunFactorizedStar`/`RunFactorizedChain` own a
+query-scoped arena over `VeritasMemoryPool<uint>.Shared` as lazy iterators (`using` + `yield`), so disposal
+fires when the consumer drains or abandons the stream — the self-disposing flatten boundary. Lifecycle tests pin
+superseded-run readability and slab return. Rust target: bump arena + `&[u32]`.
+
+**Next on §4.3:** (d.3) the Free Join executor's hot-path growable `List`/`HashSet` + class `Frame` move to
+flat, value-type, arena-allocated buffers (the least Rust-mappable part today). Group metadata
+(`KeyValues`/`starts`/`rowCounts`/`strides` arrays and the `GroupBuilder`/`ProbeBucket` `List<uint>`
+accumulators) are candidates for the same arena once the executor pass shapes them. Then **deeper
+factorisation** (chain nesting — the `NestBranch` analogue — out of the generic join) and the cost-based
+depth/selector that picks Free Join's per-relation depth (the deferred join-strategy-selection research issue).
 
 ### After the tier
 
