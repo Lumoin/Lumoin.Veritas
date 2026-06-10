@@ -3,7 +3,6 @@ using System.Buffers;
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.Intrinsics;
-using System.Runtime.Intrinsics.X86;
 using Lumoin.Veritas.Core.Memory;
 
 namespace Lumoin.Veritas.Core.Collections;
@@ -30,6 +29,15 @@ namespace Lumoin.Veritas.Core.Collections;
 [DebuggerDisplay("WaveletMatrix Count={Count} BitWidth={BitWidth}")]
 public sealed class WaveletMatrix
 {
+    /// <summary>The number of payload bits per packed word.</summary>
+    private const int BitsPerWord = 64;
+
+    /// <summary>The shift converting a bit position to its payload word index — log2 of <see cref="BitsPerWord"/>.</summary>
+    private const int WordBitShift = 6;
+
+    /// <summary>The mask extracting a bit position's offset within its payload word.</summary>
+    private const int WordBitMask = BitsPerWord - 1;
+
     //One bit-vector per symbol bit, most significant first.
     private readonly RankSelectBitVector[] levels;
 
@@ -120,7 +128,7 @@ public sealed class WaveletMatrix
         for(int level = 0; level < bitWidth; level++)
         {
             int shift = bitWidth - 1 - level;
-            ulong[] payload = new ulong[(count + 63) >> 6];
+            ulong[] payload = new ulong[(count + WordBitMask) >> WordBitShift];
             int ones = ExtractBits(current, shift, payload);
             int zeros = count - ones;
             levels[level] = RankSelectBitVector.Build(payload, count, selectSampleRate, rankScanMode);
@@ -142,36 +150,70 @@ public sealed class WaveletMatrix
     /// <returns>The number of values whose extracted bit is set.</returns>
     private static int ExtractBits(ReadOnlySpan<uint> values, int shift, ulong[] payload)
     {
+        //The widest hardware-accelerated lane width drives whole payload
+        //words: the target bit of each 32-bit lane hoists to the lane's sign
+        //bit, and the most-significant-bit extraction reads all lane signs as
+        //one mask — each instruction set's own sign-gather form. The scalar
+        //tail covers the sub-word remainder and every non-accelerated host.
         int count = values.Length;
+        int leftShift = 31 - shift;
+        int wholeWords = count >> WordBitShift;
         int i = 0;
-        if(Avx2.IsSupported)
+        if(Vector512.IsHardwareAccelerated)
         {
-            //Move the target bit of each 32-bit lane to its sign bit, then read
-            //the eight lane signs as one movemask byte; eight such bytes fill a
-            //payload word, so whole words land without per-element shifts.
-            Vector128<uint> leftShift = Vector128.CreateScalar((uint)(31 - shift));
-            int wholeWords = count >> 6;
             for(int word = 0; word < wholeWords; word++)
             {
                 ulong bits = 0;
-                int basePosition = word << 6;
-                for(int lane = 0; lane < 64; lane += 8)
+                int basePosition = word << WordBitShift;
+                for(int lane = 0; lane < BitsPerWord; lane += Vector512<uint>.Count)
                 {
-                    Vector256<uint> vector = Vector256.LoadUnsafe(in values[basePosition + lane]);
-                    Vector256<uint> hoisted = Avx2.ShiftLeftLogical(vector, leftShift);
-                    uint mask = (uint)Avx.MoveMask(hoisted.AsSingle());
-                    bits |= (ulong)mask << lane;
+                    Vector512<uint> hoisted = Vector512.ShiftLeft(Vector512.LoadUnsafe(in values[basePosition + lane]), leftShift);
+                    bits |= (ulong)hoisted.ExtractMostSignificantBits() << lane;
                 }
 
                 payload[word] = bits;
             }
 
-            i = wholeWords << 6;
+            i = wholeWords << WordBitShift;
+        }
+        else if(Vector256.IsHardwareAccelerated)
+        {
+            for(int word = 0; word < wholeWords; word++)
+            {
+                ulong bits = 0;
+                int basePosition = word << WordBitShift;
+                for(int lane = 0; lane < BitsPerWord; lane += Vector256<uint>.Count)
+                {
+                    Vector256<uint> hoisted = Vector256.ShiftLeft(Vector256.LoadUnsafe(in values[basePosition + lane]), leftShift);
+                    bits |= (ulong)hoisted.ExtractMostSignificantBits() << lane;
+                }
+
+                payload[word] = bits;
+            }
+
+            i = wholeWords << WordBitShift;
+        }
+        else if(Vector128.IsHardwareAccelerated)
+        {
+            for(int word = 0; word < wholeWords; word++)
+            {
+                ulong bits = 0;
+                int basePosition = word << WordBitShift;
+                for(int lane = 0; lane < BitsPerWord; lane += Vector128<uint>.Count)
+                {
+                    Vector128<uint> hoisted = Vector128.ShiftLeft(Vector128.LoadUnsafe(in values[basePosition + lane]), leftShift);
+                    bits |= (ulong)hoisted.ExtractMostSignificantBits() << lane;
+                }
+
+                payload[word] = bits;
+            }
+
+            i = wholeWords << WordBitShift;
         }
 
         for(; i < count; i++)
         {
-            payload[i >> 6] |= (ulong)((values[i] >> shift) & 1) << (i & 63);
+            payload[i >> WordBitShift] |= (ulong)((values[i] >> shift) & 1) << (i & WordBitMask);
         }
 
         int ones = 0;

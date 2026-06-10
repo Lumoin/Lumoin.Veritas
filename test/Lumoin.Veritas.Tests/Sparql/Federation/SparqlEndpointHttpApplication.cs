@@ -23,11 +23,18 @@ internal sealed class SparqlEndpointHttpApplication : IHttpApplication<HttpConte
 {
     private readonly SparqlTestEndpoint endpoint;
 
+    //The shell's transport timeline; every request marks its entry, its
+    //evaluation, its response write, and any failure, so a stalled round-trip
+    //shows whether the request ever reached the server.
+    private readonly TransportTraceRecorder trace;
+
     /// <summary>Initialises the application over the endpoint it serves.</summary>
     /// <param name="endpoint">The endpoint whose graph this application queries.</param>
-    public SparqlEndpointHttpApplication(SparqlTestEndpoint endpoint)
+    /// <param name="trace">The shell's transport timeline recorder.</param>
+    public SparqlEndpointHttpApplication(SparqlTestEndpoint endpoint, TransportTraceRecorder trace)
     {
         this.endpoint = endpoint;
+        this.trace = trace;
     }
 
     /// <summary>Creates the per-request context from Kestrel's feature collection.</summary>
@@ -43,15 +50,28 @@ internal sealed class SparqlEndpointHttpApplication : IHttpApplication<HttpConte
     /// <returns>A task that completes when the response is written.</returns>
     public async Task ProcessRequestAsync(HttpContext context)
     {
-        string query = await ReadQueryAsync(context.Request, context.RequestAborted).ConfigureAwait(false);
-        SparqlResultSet results = await endpoint.ExecuteAsync(query, context.RequestAborted).ConfigureAwait(false);
+        trace($"server {endpoint.Name}: request entered");
+        try
+        {
+            string query = await ReadQueryAsync(context.Request, context.RequestAborted).ConfigureAwait(false);
+            trace($"server {endpoint.Name}: query read ({query.Length} chars)");
+            SparqlResultSet results = await endpoint.ExecuteAsync(query, context.RequestAborted).ConfigureAwait(false);
+            trace($"server {endpoint.Name}: evaluated");
 
-        context.Response.StatusCode = 200;
-        context.Response.ContentType = "application/sparql-results+json";
+            context.Response.StatusCode = 200;
+            context.Response.ContentType = "application/sparql-results+json";
 
-        using MemoryStream buffer = new();
-        SparqlResultsJsonWriter.Write(results, buffer, indented: false);
-        await context.Response.Body.WriteAsync(buffer.ToArray(), context.RequestAborted).ConfigureAwait(false);
+            using MemoryStream buffer = new();
+            SparqlResultsJsonWriter.Write(results, buffer, indented: false);
+            await context.Response.Body.WriteAsync(buffer.ToArray(), context.RequestAborted).ConfigureAwait(false);
+            trace($"server {endpoint.Name}: response written");
+        }
+        catch(Exception exception)
+        {
+            trace($"server {endpoint.Name}: FAILED with {exception.GetType().Name}: {exception.Message}");
+
+            throw;
+        }
     }
 
     /// <summary>Releases the per-request context (no per-request state is held).</summary>

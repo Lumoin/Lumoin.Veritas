@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -21,6 +23,10 @@ using Lumoin.Veritas.Rdf.Json;
 
 namespace Lumoin.Veritas.Tests.Sparql.Federation;
 
+/// <summary>Records one transport trace event; implementations must be thread-safe.</summary>
+/// <param name="message">The event text.</param>
+internal delegate void TransportTraceRecorder(string message);
+
 /// <summary>
 /// A registry of named SPARQL endpoints, each exposed over an ephemeral loopback Kestrel server, for testing
 /// federated (<c>SERVICE</c>) queries. It offers two <see cref="SparqlServiceTransport"/> implementations over
@@ -36,6 +42,41 @@ internal sealed class SparqlTestHostShell : IAsyncDisposable
 
     /// <summary>The client used to POST to an IRI that is not a registered endpoint (so an unreachable endpoint produces a real connection failure).</summary>
     private HttpClient FallbackClient { get; } = new();
+
+    //Timeline of client- and server-side transport events, appended
+    //concurrently; the wedge-signature failure path dumps it so a stalled
+    //round-trip names the stage it died in.
+    private readonly ConcurrentQueue<string> transportEvents = new();
+
+    /// <summary>Appends a timestamped transport event to the shell's timeline.</summary>
+    /// <param name="message">The event text.</param>
+    private void Record(string message)
+    {
+        transportEvents.Enqueue($"{TimeProvider.System.GetUtcNow():HH:mm:ss.fffffff} [t{Environment.CurrentManagedThreadId:D3}] {message}");
+    }
+
+    /// <summary>The recorded transport timeline, one event per line.</summary>
+    /// <returns>The timeline text.</returns>
+    public string DumpTrace()
+    {
+        return string.Join(Environment.NewLine, transportEvents);
+    }
+
+    /// <summary>Best-effort write of the timeline to a timestamped file beside the test binary, for post-mortem when a round-trip stalls; diagnostics must never mask the original failure, so write errors are deliberately swallowed.</summary>
+    private void TryWriteTraceFile()
+    {
+        try
+        {
+            string path = Path.Combine(AppContext.BaseDirectory, $"federation-trace-{TimeProvider.System.GetUtcNow():yyyyMMdd-HHmmss-fff}.txt");
+            File.WriteAllText(path, DumpTrace());
+        }
+        catch(IOException)
+        {
+        }
+        catch(UnauthorizedAccessException)
+        {
+        }
+    }
 
     /// <summary>Registers an endpoint over the given graph.</summary>
     /// <param name="name">The endpoint's logical name.</param>
@@ -70,7 +111,7 @@ internal sealed class SparqlTestHostShell : IAsyncDisposable
             options.Listen(IPAddress.Loopback, port: 0);
             SocketTransportFactory transportFactory = new(Options.Create(new SocketTransportOptions()), NullLoggerFactory.Instance);
             endpoint.Server = new KestrelServer(Options.Create(options), transportFactory, NullLoggerFactory.Instance);
-            await endpoint.Server.StartAsync(new SparqlEndpointHttpApplication(endpoint), cancellationToken).ConfigureAwait(false);
+            await endpoint.Server.StartAsync(new SparqlEndpointHttpApplication(endpoint, Record), cancellationToken).ConfigureAwait(false);
 
             IServerAddressesFeature addresses = endpoint.Server.Features.Get<IServerAddressesFeature>()
                 ?? throw new InvalidOperationException("Kestrel did not expose a server-addresses feature.");
@@ -127,11 +168,27 @@ internal sealed class SparqlTestHostShell : IAsyncDisposable
                 };
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/sparql-results+json"));
 
-                using HttpResponseMessage response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
-                response.EnsureSuccessStatusCode();
-                byte[] body = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+                //The wedge signature — the send cancelled by the client's own
+                //timeout, not by the caller's token — dumps the timeline file
+                //and rethrows the ORIGINAL exception, so absorbing semantics
+                //(SERVICE SILENT) and exception types stay untouched.
+                Record($"client: sending to {uri}");
+                try
+                {
+                    using HttpResponseMessage response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                    response.EnsureSuccessStatusCode();
+                    byte[] body = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+                    Record($"client: received {(int)response.StatusCode} with {body.Length} bytes from {uri}");
 
-                return SparqlResultsJsonReader.Read(body);
+                    return SparqlResultsJsonReader.Read(body);
+                }
+                catch(TaskCanceledException exception) when(!cancellationToken.IsCancellationRequested)
+                {
+                    Record($"client: TIMED OUT against {uri}: {exception.Message}");
+                    TryWriteTraceFile();
+
+                    throw;
+                }
             };
         }
     }
