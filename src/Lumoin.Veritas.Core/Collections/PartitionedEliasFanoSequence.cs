@@ -362,7 +362,7 @@ public sealed class PartitionedEliasFanoSequence
         int ones = BitOperations.PopCount(bits);
         if(ones > rank)
         {
-            return regionStart + SelectInWord(bits, rank);
+            return regionStart + BitSelect.InWord(bits, rank);
         }
 
         rank -= ones;
@@ -373,7 +373,7 @@ public sealed class PartitionedEliasFanoSequence
             int wordOnes = BitOperations.PopCount(wordBits);
             if(wordOnes > rank)
             {
-                return ((long)word << 6) + SelectInWord(wordBits, rank);
+                return ((long)word << 6) + BitSelect.InWord(wordBits, rank);
             }
 
             rank -= wordOnes;
@@ -394,7 +394,7 @@ public sealed class PartitionedEliasFanoSequence
         int count = BitOperations.PopCount(zeros);
         if(count > rank)
         {
-            return ((long)word << 6) + SelectInWord(zeros, (int)rank) - regionStart;
+            return ((long)word << 6) + BitSelect.InWord(zeros, (int)rank) - regionStart;
         }
 
         rank -= count;
@@ -405,26 +405,12 @@ public sealed class PartitionedEliasFanoSequence
             int wordCount = BitOperations.PopCount(wordZeros);
             if(wordCount > rank)
             {
-                return ((long)word << 6) + SelectInWord(wordZeros, (int)rank) - regionStart;
+                return ((long)word << 6) + BitSelect.InWord(wordZeros, (int)rank) - regionStart;
             }
 
             rank -= wordCount;
             word++;
         }
-    }
-
-    /// <summary>The bit position (0–63) of the <paramref name="rank"/>-th set bit within a word.</summary>
-    /// <param name="word">The word.</param>
-    /// <param name="rank">The zero-based rank.</param>
-    /// <returns>The in-word bit position.</returns>
-    private static int SelectInWord(ulong word, int rank)
-    {
-        for(int cleared = 0; cleared < rank; cleared++)
-        {
-            word &= word - 1;
-        }
-
-        return BitOperations.TrailingZeroCount(word);
     }
 
     /// <summary>Reads <paramref name="width"/> bits at a bit offset of <see cref="lower"/>.</summary>

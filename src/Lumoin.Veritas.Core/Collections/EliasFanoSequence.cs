@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Numerics;
+using Lumoin.Veritas.Core.Columnar;
 
 namespace Lumoin.Veritas.Core.Collections;
 
@@ -138,8 +139,6 @@ public sealed class EliasFanoSequence
             lowBits = 63 - BitOperations.LeadingZeroCount(ratio);
         }
 
-        uint lowMask = lowBits == 0 ? 0u : (uint)((1UL << lowBits) - 1);
-
         //High-part shifts go through ulong: a uint >> 32 would mask the count to
         //0 and not shift, which lowBits == 32 (a single near-universe value) hits.
         uint maxHigh = (uint)((ulong)values[count - 1] >> lowBits);
@@ -151,16 +150,18 @@ public sealed class EliasFanoSequence
         int upperWords = (int)((upperBits + 63) >> 6);
         ulong[] upper = new ulong[upperWords];
 
+        //The lower payload is exactly the kernel backends' lane layout — value
+        //i's low bits at payload bits [i·ℓ, (i+1)·ℓ), little-endian within each
+        //word, the pack masking to the lane width itself — so one whole-column
+        //pack call builds it.
+        if(lowBits != 0)
+        {
+            ColumnarKernelBackend.Default.Pack(values, lowBits, lower);
+        }
+
         for(int i = 0; i < count; i++)
         {
-            uint value = values[i];
-
-            if(lowBits != 0)
-            {
-                WriteLow(lower, (long)i * lowBits, value & lowMask, lowBits);
-            }
-
-            long position = (long)((ulong)value >> lowBits) + i;
+            long position = (long)((ulong)values[i] >> lowBits) + i;
             upper[(int)(position >> 6)] |= 1UL << (int)(position & 63);
         }
 
@@ -314,6 +315,30 @@ public sealed class EliasFanoSequence
             return;
         }
 
+        //The low parts first: a scalar head until the lane offset reaches a
+        //word boundary, then the kernel backend bulk-unpacks the rest of the
+        //run in one call (the lower payload is the backends' lane layout; a
+        //zero frame base makes the frame decode a pure unpack).
+        if(LowBits == 0)
+        {
+            destination[..count].Clear();
+        }
+        else
+        {
+            int k = 0;
+            while(k < count && (((long)(start + k) * LowBits) & 63) != 0)
+            {
+                destination[k] = ReadLow((long)(start + k) * LowBits);
+                k++;
+            }
+
+            if(k < count)
+            {
+                int word = (int)(((long)(start + k) * LowBits) >> 6);
+                ColumnarKernelBackend.Default.DecodeFrame(lower.AsSpan(word), LowBits, 0, destination[k..count]);
+            }
+        }
+
         //Seed the high part from one sampled select; thereafter it advances by
         //the separator (zero) bits between consecutive set bits, so the run is
         //one upper-vector walk, not `count` selects.
@@ -322,8 +347,7 @@ public sealed class EliasFanoSequence
 
         for(int k = 0; k < count; k++)
         {
-            uint low = LowBits == 0 ? 0u : ReadLow((long)(start + k) * LowBits);
-            destination[k] = (uint)(((ulong)high << LowBits) | low);
+            destination[k] = (uint)(((ulong)high << LowBits) | destination[k]);
 
             position++;
             while(position < upperBits && (upper[(int)(position >> 6)] & (1UL << (int)(position & 63))) == 0)
@@ -348,7 +372,7 @@ public sealed class EliasFanoSequence
             int wordOnes = BitOperations.PopCount(upper[word]);
             if(ones + wordOnes > rank)
             {
-                return ((long)word << 6) + SelectInWord(upper[word], rank - ones);
+                return ((long)word << 6) + BitSelect.InWord(upper[word], rank - ones);
             }
 
             ones += wordOnes;
@@ -371,26 +395,12 @@ public sealed class EliasFanoSequence
             int wordZeros = BitOperations.PopCount(zeroBits);
             if(zeros + wordZeros > rank)
             {
-                return ((long)word << 6) + SelectInWord(zeroBits, rank - zeros);
+                return ((long)word << 6) + BitSelect.InWord(zeroBits, rank - zeros);
             }
 
             zeros += wordZeros;
             word++;
         }
-    }
-
-    /// <summary>The bit position (0–63) of the <paramref name="rank"/>-th set bit within a word.</summary>
-    /// <param name="word">The word.</param>
-    /// <param name="rank">The zero-based rank.</param>
-    /// <returns>The in-word bit position.</returns>
-    private static int SelectInWord(ulong word, int rank)
-    {
-        for(int cleared = 0; cleared < rank; cleared++)
-        {
-            word &= word - 1;
-        }
-
-        return BitOperations.TrailingZeroCount(word);
     }
 
     /// <summary>Reads <see cref="LowBits"/> bits at a bit offset of <see cref="lower"/>.</summary>
@@ -408,22 +418,5 @@ public sealed class EliasFanoSequence
         }
 
         return (uint)(bits & lowMask);
-    }
-
-    /// <summary>Writes <paramref name="width"/> low bits at a bit offset of <paramref name="target"/>.</summary>
-    /// <param name="target">The lower payload.</param>
-    /// <param name="bitOffset">The bit offset.</param>
-    /// <param name="value">The low value.</param>
-    /// <param name="width">The low-bit width.</param>
-    private static void WriteLow(ulong[] target, long bitOffset, uint value, int width)
-    {
-        int word = (int)(bitOffset >> 6);
-        int shift = (int)(bitOffset & 63);
-
-        target[word] |= (ulong)value << shift;
-        if(shift + width > 64)
-        {
-            target[word + 1] |= (ulong)value >> (64 - shift);
-        }
     }
 }

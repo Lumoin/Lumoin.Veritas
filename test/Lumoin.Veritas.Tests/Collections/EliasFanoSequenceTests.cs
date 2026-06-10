@@ -46,7 +46,7 @@ internal sealed class EliasFanoSequenceTests
         return values.Length;
     }
 
-    /// <summary>Builds the sequence and asserts Access round-trips and NextGEQ matches the linear oracle over a spread of targets.</summary>
+    /// <summary>Builds the sequence and asserts Access round-trips, NextGEQ matches the linear oracle over a spread of targets, and Decode reproduces array windows at varied offsets.</summary>
     /// <param name="values">The non-decreasing values.</param>
     private static void AssertMatchesOracle(uint[] values)
     {
@@ -71,6 +71,24 @@ internal sealed class EliasFanoSequenceTests
         foreach(uint target in targets)
         {
             Assert.AreEqual(LinearNextGEQ(values, target), sequence.NextGEQ(target), $"NextGEQ disagreed at {target}");
+        }
+
+        //Decode windows at varied starts — including lane offsets off any
+        //word boundary, where the bulk unpack takes a scalar head first.
+        uint[] decoded = new uint[values.Length];
+        foreach(int start in (int[])[0, 1, 3, values.Length / 3, values.Length / 2, Math.Max(0, values.Length - 7)])
+        {
+            if(start > values.Length)
+            {
+                continue;
+            }
+
+            int count = Math.Min(values.Length - start, 300);
+            sequence.Decode(start, count, decoded);
+            for(int k = 0; k < count; k++)
+            {
+                Assert.AreEqual(values[start + k], decoded[k], $"Decode disagreed at start {start} offset {k}");
+            }
         }
     }
 
