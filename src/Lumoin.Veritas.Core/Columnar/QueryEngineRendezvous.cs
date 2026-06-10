@@ -684,6 +684,108 @@ public sealed class QueryEngineRendezvous
         return count;
     }
 
+    /// <summary>
+    /// The distinct key projections of the query on the columnar view WITHOUT
+    /// materialising its solutions, when the batched path applies and the shape
+    /// is a factorisable star whose key covers the projection — the
+    /// late-materialisation consumer: the same gating as
+    /// <see cref="TryQueryBatchedColumns"/>, then
+    /// <see cref="ColumnarBatchPipeline.TryDistinctKeys"/>, whose rows equal
+    /// the drained-projected-deduplicated rows exactly. Returns
+    /// <see langword="null"/> for every other case; the caller then evaluates
+    /// and deduplicates normally, so a conservative <see langword="null"/> is
+    /// always sound.
+    /// </summary>
+    /// <param name="pinnedStore">The store generation the caller's snapshot pinned, or <c>null</c> to use the rendezvous's current generation.</param>
+    /// <param name="query">The basic graph pattern.</param>
+    /// <param name="projection">The projected variables, distinct, all expected to be star-key variables.</param>
+    /// <param name="timeProvider">Clock used to stamp Ticks on the emitted selection event.</param>
+    /// <param name="accessControl">The access-control policy; non-<c>null</c> declines (no per-candidate consultation point).</param>
+    /// <param name="traceHandler">Optional trace handler the selection event is emitted to.</param>
+    /// <param name="correlationId">Correlation id stamped on the selection event. Pass <see cref="Guid.Empty"/> to generate a fresh one.</param>
+    /// <param name="identifiers">The identifier source used to mint a fresh correlation id when <paramref name="correlationId"/> is <see cref="Guid.Empty"/>; defaults to <see cref="VeritasIdentifiers.System"/>.</param>
+    /// <returns>The distinct projected rows as batches over <paramref name="projection"/>, or <see langword="null"/> when the fast path does not apply.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="query"/>, <paramref name="projection"/>, or <paramref name="timeProvider"/> is <c>null</c>.</exception>
+    public List<SolutionBatch>? TryDistinctKeysBatched(
+        HypertrieGraphStore? pinnedStore,
+        BasicGraphPattern query,
+        IReadOnlyList<Variable> projection,
+        TimeProvider timeProvider,
+        AccessControlDelegate? accessControl = null,
+        TraceHandler<QueryTraceEvent>? traceHandler = null,
+        Guid correlationId = default,
+        IdentifierDelegate? identifiers = null)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentNullException.ThrowIfNull(projection);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+
+        if(accessControl is not null || !policy.PreferBatchedForAcyclic)
+        {
+            return null;
+        }
+
+        HypertrieGraphStore currentStore;
+        ColumnarTripleIndex? currentView;
+
+        lock(StateLock)
+        {
+            currentStore = store;
+            currentView = columnarView;
+        }
+
+        if(pinnedStore is not null && !ReferenceEquals(pinnedStore, currentStore))
+        {
+            return null;
+        }
+
+        if(query.Patterns.Count < policy.MinimumPatternsForColumnar || !IsColumnarCapable(query))
+        {
+            return null;
+        }
+
+        if(policy.OrderSetMode != ColumnarOrderSetMode.AllSixOrders
+            && ColumnarRotationPlanner.TryPlanGlobalOrder(policy.OrderSetMode, query) is null)
+        {
+            return null;
+        }
+
+        ColumnarTripleIndex? view = currentView;
+        long buildMilliseconds = 0;
+        EngineSelectionReason reason = EngineSelectionReason.ViewReused;
+        if(view is null)
+        {
+            if(!policy.BuildViewOnDemand)
+            {
+                return null;
+            }
+
+            (view, bool isBuilt, buildMilliseconds) = EnsureView(currentStore);
+            if(view is null)
+            {
+                return null;
+            }
+
+            reason = isBuilt ? EngineSelectionReason.ViewBuilt : EngineSelectionReason.ViewReused;
+        }
+
+        List<SolutionBatch>? distinct = ColumnarBatchPipeline.TryDistinctKeys(view, query, projection);
+        if(distinct is null)
+        {
+            return null;
+        }
+
+        Guid effectiveCorrelationId = correlationId == Guid.Empty
+            ? (identifiers ?? VeritasIdentifiers.System)(new IdentifierRequest(IdentifierPurpose.Correlation, default))
+            : correlationId;
+
+        EmitEngineSelected(
+            timeProvider, traceHandler, effectiveCorrelationId,
+            QueryEngineKind.ColumnarBatched, reason, view.TripleCount, buildMilliseconds);
+
+        return distinct;
+    }
+
     private IAsyncEnumerable<Solution> QueryColumnar(
         ColumnarTripleIndex view,
         BasicGraphPattern query,

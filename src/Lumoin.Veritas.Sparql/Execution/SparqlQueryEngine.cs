@@ -426,6 +426,15 @@ public sealed class SparqlQueryEngine
                 continue;
             }
 
+            //A DISTINCT of star-key variables over a BGP answers from the factorised build's group keys, one
+            //row per group, without materialising the branch product — the same subtree skip as the count.
+            if(node is Distinct distinctNode && TryEvaluateDistinctKeys(distinctNode, graph) is SolutionTable distinctKeys)
+            {
+                results[new ResultKey(node, graph)] = distinctKeys;
+
+                continue;
+            }
+
             //A GRAPH form re-roots its child under the named graph(s) it designates, never the enclosing graph.
             if(node is Graph graphOperator)
             {
@@ -1198,6 +1207,92 @@ public sealed class SparqlQueryEngine
         }
 
         return SolutionTable.FromRows([new SparqlSolution(bindings)]);
+    }
+
+    /// <summary>
+    /// Evaluates a <c>SELECT DISTINCT</c> of star-key variables over a BGP from the factorised build's group
+    /// keys, without materialising the BGP's solutions: applies when a <see cref="Distinct"/> wraps a
+    /// <see cref="Project"/> directly over a plain BGP, the active graph is the default graph, the encoded
+    /// pattern carries none of the per-solution rewrites, every projected variable is bound by the pattern,
+    /// and the shape is a factorisable star whose key covers the projection (the rendezvous decides the last
+    /// two). The produced rows equal the normal path's drained-projected-deduplicated rows exactly; any
+    /// condition this fast path cannot read returns <see langword="null"/> and the operator evaluates normally.
+    /// </summary>
+    /// <param name="distinct">The DISTINCT operator wrapping the projection.</param>
+    /// <param name="graph">The active graph.</param>
+    /// <returns>The distinct projected table, or <see langword="null"/> when the fast path does not apply.</returns>
+    private SolutionTable? TryEvaluateDistinctKeys(Distinct distinct, TermId graph)
+    {
+        if(!graph.IsNone || dataset.DefaultGraphRendezvous is not QueryEngineRendezvous rendezvous)
+        {
+            return null;
+        }
+
+        if(distinct.Input is not Project { Input: Bgp bgp } project || project.Variables.Count == 0)
+        {
+            return null;
+        }
+
+        EncodedBgp encoded = EncodeBgp(bgp);
+        if(encoded.Encodable
+            && (encoded.TripleTermMatches.Count > 0
+                || encoded.SelfJoinEqualities.Count > 0
+                || ComputeTypeExpansions(encoded.Patterns).Count > 0))
+        {
+            return null;
+        }
+
+        //Every projected variable must be bound by the pattern; the projection
+        //map, in projection order, is the output schema.
+        Dictionary<Variable, SparqlVariable> projectionMap = new(project.Variables.Count);
+        List<Variable> projection = new(project.Variables.Count);
+        foreach(SparqlVariable variable in project.Variables)
+        {
+            Variable? backend = null;
+            foreach(KeyValuePair<Variable, SparqlVariable> pair in encoded.ToSparql)
+            {
+                if(pair.Value == variable)
+                {
+                    backend = pair.Key;
+
+                    break;
+                }
+            }
+
+            if(backend is not Variable bound || !projectionMap.TryAdd(bound, variable))
+            {
+                return null;
+            }
+
+            projection.Add(bound);
+        }
+
+        BgpColumnBuilder builder = new(projectionMap, dictionary);
+        if(!encoded.Encodable)
+        {
+            //A constant absent from the graph: the BGP yields nothing and the distinct projection is empty.
+            return builder.Build();
+        }
+
+        HypertrieGraphStore? graphStore = dataset.Resolve(graph);
+        if(graphStore is null)
+        {
+            return null;
+        }
+
+        BasicGraphPattern query = new(encoded.Patterns, encoded.Registry);
+        List<SolutionBatch>? batches = rendezvous.TryDistinctKeysBatched(graphStore, query, projection, TimeProvider.System, accessControl);
+        if(batches is null)
+        {
+            return null;
+        }
+
+        foreach(SolutionBatch batch in batches)
+        {
+            builder.AppendBatch(batch);
+        }
+
+        return builder.Build();
     }
 
     /// <summary>

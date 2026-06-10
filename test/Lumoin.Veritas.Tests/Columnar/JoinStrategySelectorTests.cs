@@ -269,6 +269,61 @@ internal sealed class JoinStrategySelectorTests
     }
 
     [TestMethod]
+    public void DistinctKeysWithoutFlattenAgreesWithTheDrainedDistinct()
+    {
+        ColumnarTripleIndex index = ColumnarTripleIndex.Build(StarFixture(subjects: 9, fan: 5));
+        VariableRegistry registry = new();
+        BasicGraphPattern star = new(
+            [
+                EdgePattern(registry, P1, "s", "o1"),
+                EdgePattern(registry, P2, "s", "o2"),
+                EdgePattern(registry, P3, "s", "o3"),
+            ],
+            registry);
+
+        //One row per centre subject, no flatten: 9 distinct keys.
+        List<SolutionBatch>? batches = ColumnarBatchPipeline.TryDistinctKeys(index, star, [registry.GetOrAdd("s")]);
+        Assert.IsNotNull(batches);
+
+        HashSet<uint> keys = [];
+        foreach(SolutionBatch batch in batches)
+        {
+            Assert.HasCount(1, batch.Schema);
+            for(int row = 0; row < batch.Count; row++)
+            {
+                Assert.IsTrue(keys.Add(batch.ColumnOf(0)[row]), "A distinct key repeated.");
+            }
+        }
+
+        Assert.HasCount(9, keys);
+
+        //The drained oracle: distinct key values of the flat result.
+        ColumnarBatchPlan plan = ColumnarBatchPipeline.TryPlan(index, star)!;
+        int keyColumn = -1;
+        for(int column = 0; column < plan.Schema.Count; column++)
+        {
+            if(plan.Schema[column] == registry.GetOrAdd("s"))
+            {
+                keyColumn = column;
+            }
+        }
+
+        HashSet<uint> drained = [];
+        foreach(SolutionBatch batch in ColumnarBatchPipeline.Run(index, plan))
+        {
+            for(int row = 0; row < batch.Count; row++)
+            {
+                drained.Add(batch.ColumnOf(keyColumn)[row]);
+            }
+        }
+
+        Assert.IsTrue(keys.SetEquals(drained));
+
+        //A branch variable is outside the key — declined.
+        Assert.IsNull(ColumnarBatchPipeline.TryDistinctKeys(index, star, [registry.GetOrAdd("o1")]));
+    }
+
+    [TestMethod]
     public void CountWithoutFlattenDeclinesANonFactorisableShape()
     {
         //A two-pattern join has no star or chain factorisation; the caller

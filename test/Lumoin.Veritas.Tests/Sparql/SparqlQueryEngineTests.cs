@@ -897,6 +897,34 @@ internal sealed class SparqlQueryEngineTests
         Assert.AreEqual("16", LiteralValue(countSolutions.Single(), "c"));
     }
 
+    /// <summary>A DISTINCT projection onto the star key answers from the factorised group keys (one row per centre), and a DISTINCT onto a branch variable still answers correctly through the normal path.</summary>
+    [TestMethod]
+    public async Task DistinctStarKeyProjectionMatchesTheGroupKeys()
+    {
+        SparqlQueryEngine engine = await BuildEngineAsync(
+            ("alice", "p1", "a1"), ("alice", "p1", "a2"),
+            ("alice", "p2", "b1"), ("alice", "p2", "b2"),
+            ("alice", "p3", "c1"), ("alice", "p3", "c2"),
+            ("dave", "p1", "d1"), ("dave", "p1", "d2"),
+            ("dave", "p2", "e1"), ("dave", "p2", "e2"),
+            ("dave", "p3", "f1"), ("dave", "p3", "f2")).ConfigureAwait(false);
+        using Utf8StringPool pool = new();
+
+        //The key projection: two centres, two rows — the factorised fast path.
+        AlgebraOperator keys = Translate("PREFIX : <http://example.org/> SELECT DISTINCT ?s WHERE { ?s :p1 ?o1 . ?s :p2 ?o2 . ?s :p3 ?o3 }", pool);
+        IReadOnlyList<SparqlSolution> keySolutions = await engine.EvaluateAsync(keys, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(2, keySolutions);
+        Assert.Contains(s => ValueIri(s, "s") == Ex + "alice", keySolutions);
+        Assert.Contains(s => ValueIri(s, "s") == Ex + "dave", keySolutions);
+
+        //A branch projection is outside the key; the normal path answers it.
+        AlgebraOperator branches = Translate("PREFIX : <http://example.org/> SELECT DISTINCT ?o1 WHERE { ?s :p1 ?o1 . ?s :p2 ?o2 . ?s :p3 ?o3 }", pool);
+        IReadOnlyList<SparqlSolution> branchSolutions = await engine.EvaluateAsync(branches, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(4, branchSolutions);
+    }
+
     /// <summary>GROUP BY an arithmetic expression bound to a variable partitions by the expression's value (the cross product of :p {0,1,2} × :q {0,1,2} sums to 0..4, five groups).</summary>
     [TestMethod]
     public async Task GroupByArithmeticExpressionPartitionsByValue()

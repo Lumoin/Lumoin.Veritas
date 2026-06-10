@@ -267,6 +267,126 @@ public static class ColumnarBatchPipeline
     }
 
     /// <summary>
+    /// The distinct key projections of a factorisable star WITHOUT flattening —
+    /// the late-materialisation consumer: a star's groups are keyed uniquely
+    /// and every group stands for at least one solution, so projecting onto key
+    /// variables needs one row per group (deduplicated only when the projection
+    /// is a proper key subset), never the branch product. Returns
+    /// <see langword="null"/> when the shape is not a factorisable star, a
+    /// build step refuses, or the projection reaches outside the star key; the
+    /// caller evaluates, projects, and deduplicates normally. The rows equal
+    /// the drained-projected-deduplicated rows exactly, in group order.
+    /// </summary>
+    /// <param name="index">The index to answer on.</param>
+    /// <param name="query">The basic graph pattern.</param>
+    /// <param name="projection">The projected variables, distinct, all star-key variables.</param>
+    /// <returns>The distinct projected rows as batches over <paramref name="projection"/>, or <see langword="null"/> when the fast path does not apply.</returns>
+    /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
+    public static List<SolutionBatch>? TryDistinctKeys(ColumnarTripleIndex index, BasicGraphPattern query, IReadOnlyList<Variable> projection)
+    {
+        ArgumentNullException.ThrowIfNull(index);
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentNullException.ThrowIfNull(projection);
+
+        if(projection.Count == 0)
+        {
+            return null;
+        }
+
+        ColumnarBatchPlan? plan = TryPlan(index, query, useSemijoinReduction: false, useFactorizedStar: true, useFactorizedChain: true);
+        if(plan is null || plan.StarKey is null)
+        {
+            return null;
+        }
+
+        foreach(TriplePattern constraint in plan.Constraints)
+        {
+            if(!index.Contains(constraint.Subject.BoundTerm, constraint.Predicate.BoundTerm, constraint.Object.BoundTerm))
+            {
+                return [];
+            }
+        }
+
+        using FactorizedArena arena = new(VeritasMemoryPool<uint>.Shared);
+
+        FactorizedBatch? star = TryBuildFactorizedStar(index, plan, arena);
+        if(star is null)
+        {
+            return null;
+        }
+
+        //Each projected variable must be a key variable; its key position maps
+        //the group's key tuple onto the output columns. A duplicate or non-key
+        //projection declines.
+        int[] keyPosition = new int[projection.Count];
+        for(int p = 0; p < projection.Count; p++)
+        {
+            keyPosition[p] = -1;
+            for(int k = 0; k < star.KeyColumns.Length; k++)
+            {
+                if(star.Schema[star.KeyColumns[k]] == projection[p])
+                {
+                    keyPosition[p] = k;
+
+                    break;
+                }
+            }
+
+            if(keyPosition[p] < 0)
+            {
+                return null;
+            }
+
+            for(int earlier = 0; earlier < p; earlier++)
+            {
+                if(projection[earlier] == projection[p])
+                {
+                    return null;
+                }
+            }
+        }
+
+        //Group keys are unique by construction; a proper key subset dedups by
+        //its packed projection.
+        HashSet<JoinKey>? seen = projection.Count < star.KeyColumns.Length ? [] : null;
+
+        List<SolutionBatch> output = [];
+        SolutionBatch current = new(projection);
+        int rows = 0;
+        foreach(FactorizedGroup group in star.Groups)
+        {
+            if(seen is not null
+                && !seen.Add(JoinKey.Pack(group.KeyValues[keyPosition[0]], projection.Count > 1 ? group.KeyValues[keyPosition[1]] : 0)))
+            {
+                continue;
+            }
+
+            for(int p = 0; p < projection.Count; p++)
+            {
+                current.ColumnSpan(p)[rows] = group.KeyValues[keyPosition[p]];
+            }
+
+            rows++;
+
+            if(rows == SolutionBatch.BatchLength)
+            {
+                current.SetCount(rows);
+                output.Add(current);
+                current = new SolutionBatch(projection);
+                rows = 0;
+            }
+        }
+
+        if(rows > 0)
+        {
+            current.SetCount(rows);
+            output.Add(current);
+        }
+
+        return output;
+    }
+
+    /// <summary>
     /// The unreduced pipeline: scan the first pattern, then left-deep
     /// hash-join each subsequent scan. Intermediates stream but are not
     /// bounded — the path acyclic two-pattern joins and any shape
