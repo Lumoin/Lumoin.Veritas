@@ -128,6 +128,115 @@ internal sealed class SatSolverTests
         Assert.IsGreaterThan(20, unsatisfiableSeen, "The sweep covers unsatisfiable formulas.");
     }
 
+    /// <summary>Assumptions consistent with a model are satisfiable and the model honours them; contradicting assumptions are not.</summary>
+    [TestMethod]
+    public void AssumptionsFixLiteralsBeforeBranching()
+    {
+        //(x0 | x1) & (~x0 | x2).
+        List<IReadOnlyList<SatLiteral>> clauses =
+        [
+            [new SatLiteral(0, true), new SatLiteral(1, true)],
+            [new SatLiteral(0, false), new SatLiteral(2, true)],
+        ];
+
+        //Assuming x0 forces x2 by propagation; the model must honour both.
+        SatVerdict assumed = SatSolver.SolveUnderAssumptions(clauses, variableCount: 3, [new SatLiteral(0, true)], cancellationToken: TestContext.CancellationToken);
+        Assert.IsTrue(assumed.IsSatisfiable);
+        Assert.IsNotNull(assumed.Assignment);
+        Assert.IsTrue(assumed.Assignment[0]);
+        Assert.IsTrue(assumed.Assignment[2]);
+        Assert.IsTrue(Satisfies(clauses, assumed.Assignment));
+
+        //Assumptions that contradict each other are unsatisfiable under them.
+        SatVerdict contradicting = SatSolver.SolveUnderAssumptions(clauses, variableCount: 3, [new SatLiteral(1, true), new SatLiteral(1, false)], cancellationToken: TestContext.CancellationToken);
+        Assert.IsFalse(contradicting.IsSatisfiable);
+    }
+
+    /// <summary>An assumption that drives propagation into a conflict is unsatisfiable under assumptions — the conflict traces to the prefix.</summary>
+    [TestMethod]
+    public void AssumptionConflictThroughPropagationIsUnsatisfiable()
+    {
+        //(~x0 | x1) & (~x0 | ~x1): satisfiable on its own (x0 false), but
+        //assuming x0 forces x1 both ways.
+        List<IReadOnlyList<SatLiteral>> clauses =
+        [
+            [new SatLiteral(0, false), new SatLiteral(1, true)],
+            [new SatLiteral(0, false), new SatLiteral(1, false)],
+        ];
+
+        Assert.IsTrue(SatSolver.Solve(clauses, variableCount: 2, cancellationToken: TestContext.CancellationToken).IsSatisfiable);
+        Assert.IsFalse(SatSolver.SolveUnderAssumptions(clauses, variableCount: 2, [new SatLiteral(0, true)], cancellationToken: TestContext.CancellationToken).IsSatisfiable);
+    }
+
+    /// <summary>
+    /// Solving under assumptions agrees with solving the formula extended by
+    /// the assumptions as unit clauses, over a deterministic sweep; every
+    /// satisfying model honours the formula and all assumptions.
+    /// </summary>
+    [TestMethod]
+    public void AssumptionsDifferentialAgainstUnitClauseEncoding()
+    {
+        //A deterministic xorshift drives the generation; no entropy APIs.
+        ulong state = 0xD1B54A32D192ED03UL;
+        int satisfiableSeen = 0;
+        int unsatisfiableSeen = 0;
+
+        for(int round = 0; round < 300; round++)
+        {
+            int variableCount = 1 + (int)(Next(ref state) % 9);
+            int clauseCount = 1 + (int)(Next(ref state) % 18);
+            List<IReadOnlyList<SatLiteral>> clauses = [];
+            for(int i = 0; i < clauseCount; i++)
+            {
+                int width = 1 + (int)(Next(ref state) % 3);
+                SatLiteral[] clause = new SatLiteral[width];
+                for(int j = 0; j < width; j++)
+                {
+                    clause[j] = new SatLiteral((int)(Next(ref state) % (uint)variableCount), (Next(ref state) & 1) == 0);
+                }
+
+                clauses.Add(clause);
+            }
+
+            int assumptionCount = (int)(Next(ref state) % 4);
+            List<SatLiteral> assumptions = [];
+            for(int i = 0; i < assumptionCount; i++)
+            {
+                assumptions.Add(new SatLiteral((int)(Next(ref state) % (uint)variableCount), (Next(ref state) & 1) == 0));
+            }
+
+            //The oracle: the assumptions as unit clauses appended to the
+            //formula must give the same satisfiability.
+            List<IReadOnlyList<SatLiteral>> extended = [.. clauses];
+            foreach(SatLiteral assumption in assumptions)
+            {
+                extended.Add([assumption]);
+            }
+
+            SatVerdict assumed = SatSolver.SolveUnderAssumptions(clauses, variableCount, assumptions, cancellationToken: TestContext.CancellationToken);
+            SatVerdict reference = SatSolver.Solve(extended, variableCount, cancellationToken: TestContext.CancellationToken);
+
+            Assert.AreEqual(reference.IsSatisfiable, assumed.IsSatisfiable, $"Round {round}: assumptions and unit-clause encoding disagree.");
+            if(assumed.IsSatisfiable)
+            {
+                satisfiableSeen++;
+                Assert.IsNotNull(assumed.Assignment);
+                Assert.IsTrue(Satisfies(clauses, assumed.Assignment), $"Round {round}: the model does not satisfy the formula.");
+                foreach(SatLiteral assumption in assumptions)
+                {
+                    Assert.AreEqual(assumption.IsPositive, assumed.Assignment[assumption.Variable], $"Round {round}: the model does not honour an assumption.");
+                }
+            }
+            else
+            {
+                unsatisfiableSeen++;
+            }
+        }
+
+        Assert.IsGreaterThan(20, satisfiableSeen, "The sweep covers satisfiable-under-assumptions formulas.");
+        Assert.IsGreaterThan(20, unsatisfiableSeen, "The sweep covers unsatisfiable-under-assumptions formulas.");
+    }
+
     /// <summary>Whether the assignment satisfies every clause.</summary>
     /// <param name="clauses">The formula.</param>
     /// <param name="assignment">The assignment.</param>
