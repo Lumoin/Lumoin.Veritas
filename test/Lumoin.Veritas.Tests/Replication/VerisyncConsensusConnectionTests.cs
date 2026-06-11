@@ -54,6 +54,9 @@ internal sealed class VerisyncConsensusConnectionTests
 
                     return ValueTask.CompletedTask;
                 },
+                //No durable acceptor state in this in-memory wiring; persistence is the
+                //CLI tier's concern.
+                persistAcceptor: null,
                 cancellationToken));
 
             requestChannels.Add(requests);

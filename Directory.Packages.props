@@ -73,9 +73,9 @@
     library once it is granted this label in the validation target.
   -->
   <ItemGroup Label="Consensus">
-    <PackageVersion Include="Lumoin.Verisync.Core" Version="0.0.1" />
-    <PackageVersion Include="Lumoin.Verisync.Json" Version="0.0.1" />
-    <PackageVersion Include="Lumoin.Verisync.Cbor" Version="0.0.1" />
+    <PackageVersion Include="Lumoin.Verisync.Core" Version="0.0.2" />
+    <PackageVersion Include="Lumoin.Verisync.Json" Version="0.0.2" />
+    <PackageVersion Include="Lumoin.Verisync.Cbor" Version="0.0.2" />
   </ItemGroup>
   <!--
     Serialization project names whose project references are restricted to test and
