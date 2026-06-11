@@ -200,6 +200,59 @@ internal sealed class ReasoningRendezvousTests
         Assert.IsEmpty(result.ModuleVerdict.UnsupportedConstructs, "The union module sits inside ALC(H).");
     }
 
+    /// <summary>
+    /// The SAT-backed sibling is selectable behind the same seam by wiring
+    /// <see cref="SatTableauModuleReasoner.CreateDelegate"/> in place of the
+    /// snapshot delegate: the beyond-RL module routes through the
+    /// description-logic strategy and the SAT engine decides it, naming no
+    /// beyond-fragment remainder, exactly as the snapshot default does.
+    /// </summary>
+    [TestMethod]
+    public async Task SatBackedDelegateDecidesTheBeyondRlModule()
+    {
+        TermDictionary dictionary = new();
+        (HypertrieGraphStore store, _) = await BuildBeyondRlStoreAsync(dictionary).ConfigureAwait(false);
+
+        ReasoningRendezvous rendezvous = new(ReasoningPolicy.Default, SatTableauModuleReasoner.CreateDelegate());
+
+        ReasoningResult result = await rendezvous.MaterializeAsync(
+            store, dictionary, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(ReasoningStrategy.DescriptionLogicDelegate, result.Strategy);
+        Assert.AreEqual(ReasoningSelectionReason.BeyondRlDelegated, result.Reason);
+        Assert.IsNotNull(result.ModuleVerdict);
+        Assert.IsTrue(result.IsConsistent, "c1 ⊑ a ∪ b is satisfiable.");
+        Assert.IsEmpty(result.ModuleVerdict.UnsupportedConstructs, "The union module sits inside ALC(H).");
+    }
+
+    /// <summary>
+    /// The seam is the selection point: the snapshot default and the
+    /// SAT-backed sibling, wired through the same delegate parameter, route
+    /// identically and reach the same verdict over the same beyond-RL module
+    /// — the engine choice is search strategy, not answer.
+    /// </summary>
+    [TestMethod]
+    public async Task SnapshotAndSatBackedDelegatesAgreeThroughTheSeam()
+    {
+        TermDictionary snapshotDictionary = new();
+        (HypertrieGraphStore snapshotStore, _) = await BuildBeyondRlStoreAsync(snapshotDictionary).ConfigureAwait(false);
+        ReasoningRendezvous snapshotRendezvous = new(ReasoningPolicy.Default, AlcModuleReasoner.CreateDelegate());
+        ReasoningResult snapshotResult = await snapshotRendezvous.MaterializeAsync(
+            snapshotStore, snapshotDictionary, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+
+        TermDictionary satDictionary = new();
+        (HypertrieGraphStore satStore, _) = await BuildBeyondRlStoreAsync(satDictionary).ConfigureAwait(false);
+        ReasoningRendezvous satRendezvous = new(ReasoningPolicy.Default, SatTableauModuleReasoner.CreateDelegate());
+        ReasoningResult satResult = await satRendezvous.MaterializeAsync(
+            satStore, satDictionary, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(snapshotResult.Strategy, satResult.Strategy, "Both engines route through the same strategy.");
+        Assert.AreEqual(snapshotResult.Reason, satResult.Reason, "Both engines route through the same reason.");
+        Assert.IsNotNull(snapshotResult.ModuleVerdict);
+        Assert.IsNotNull(satResult.ModuleVerdict);
+        Assert.AreEqual(snapshotResult.ModuleVerdict.IsConsistent, satResult.ModuleVerdict.IsConsistent, "Both engines agree on consistency.");
+    }
+
     /// <summary>Floor detection runs once per store generation and is visible through <see cref="ReasoningRendezvous.FloorFor"/>.</summary>
     [TestMethod]
     public async Task FloorDetectsOncePerGeneration()

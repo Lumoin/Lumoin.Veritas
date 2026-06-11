@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Sat;
 
@@ -86,6 +87,23 @@ internal static class SatTableauModuleReasoner
 
         /// <summary>No model of the shared CNF honours the world's assumptions.</summary>
         Unsatisfiable,
+    }
+
+    /// <summary>
+    /// Wraps <see cref="Decide"/> as the seam delegate, the SAT-backed
+    /// counterpart of <see cref="AlcModuleReasoner.CreateDelegate"/>: a
+    /// rendezvous constructed with this delegate routes beyond-RL modules
+    /// through the SAT-backed engine instead of the snapshot tableau, while
+    /// the default — the snapshot engine — stays whatever the caller wires.
+    /// Both engines decide the same ALC(H) fragment and name the same
+    /// beyond-fragment remainder, so the choice is one of search strategy,
+    /// not of answer.
+    /// </summary>
+    /// <param name="searchMode">How the solver prunes within one world's boolean structure; both modes decide the same satisfiability.</param>
+    /// <returns>The delegate for <see cref="ReasoningRendezvous"/> wiring.</returns>
+    public static DescriptionLogicDelegate CreateDelegate(SatSearchMode searchMode = SatSearchMode.ConflictLearning)
+    {
+        return (module, cancellationToken) => ValueTask.FromResult(Decide(module, searchMode, cancellationToken));
     }
 
     /// <summary>
