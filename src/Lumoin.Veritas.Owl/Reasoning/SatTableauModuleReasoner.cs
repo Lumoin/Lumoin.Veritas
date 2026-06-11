@@ -60,6 +60,13 @@ namespace Lumoin.Veritas.Owl.Reasoning;
 /// in template space; a chain failure teaches the template its modal
 /// clause and the joint root rebuilds and re-solves. The joint root spans
 /// blocks, so it never enters the template-space memo table.
+/// <see cref="Decide"/> adds the module-local subsumption sweep when the
+/// named-class signature is within
+/// <see cref="AlcModuleReasoner.SubsumptionSignatureCap"/>: each ordered
+/// pair of distinct named classes probes the shared CNF as one world
+/// under the assumptions <c>{+sub, −super}</c> — unsatisfiable means
+/// subsumed — with the memo table and every learned modal clause carrying
+/// across the whole sweep.
 /// </para>
 /// <para>
 /// <b>Fragment honesty.</b> The verdict names the beyond-fragment
@@ -82,6 +89,29 @@ internal static class SatTableauModuleReasoner
     }
 
     /// <summary>
+    /// Decides the module's ALC(H) fragment over the shared CNF:
+    /// consistency, module-local subsumptions between named classes when
+    /// the signature is within
+    /// <see cref="AlcModuleReasoner.SubsumptionSignatureCap"/>, and the
+    /// beyond-fragment remainder named on
+    /// <see cref="ModuleVerdict.UnsupportedConstructs"/> exactly as
+    /// <see cref="AlcModuleReasoner"/> does.
+    /// </summary>
+    /// <param name="module">The module to decide.</param>
+    /// <param name="searchMode">How the solver prunes within one world's boolean structure; both modes decide the same satisfiability.</param>
+    /// <param name="cancellationToken">A token that aborts between solver calls.</param>
+    /// <returns>The verdict.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="module"/> is <see langword="null"/>.</exception>
+    /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
+    public static ModuleVerdict Decide(
+        ReasoningModule module,
+        SatSearchMode searchMode = SatSearchMode.ConflictLearning,
+        CancellationToken cancellationToken = default)
+    {
+        return DecideCore(module, includeSubsumptions: true, searchMode, cancellationToken);
+    }
+
+    /// <summary>
     /// Decides the module's ALC(H) consistency over the shared CNF: the
     /// subsumption list stays empty, and
     /// <see cref="ModuleVerdict.UnsupportedConstructs"/> names the
@@ -100,6 +130,26 @@ internal static class SatTableauModuleReasoner
         ReasoningModule module,
         SatSearchMode searchMode = SatSearchMode.ConflictLearning,
         CancellationToken cancellationToken = default)
+    {
+        return DecideCore(module, includeSubsumptions: false, searchMode, cancellationToken);
+    }
+
+    /// <summary>
+    /// Runs the consistency check over the shared CNF — the joint instance
+    /// when asserted role edges are present, per-seed worlds otherwise —
+    /// optionally following with the module-local subsumption sweep against
+    /// the same CNF and memo table.
+    /// </summary>
+    /// <param name="module">The module to decide.</param>
+    /// <param name="includeSubsumptions">Whether to enumerate module-local subsumptions when the signature qualifies.</param>
+    /// <param name="searchMode">The solver's search mode.</param>
+    /// <param name="cancellationToken">A token that aborts between solver calls.</param>
+    /// <returns>The verdict.</returns>
+    private static ModuleVerdict DecideCore(
+        ReasoningModule module,
+        bool includeSubsumptions,
+        SatSearchMode searchMode,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(module);
 
@@ -120,10 +170,62 @@ internal static class SatTableauModuleReasoner
             ? CheckJointRoot(cnf, translation, memo, searchMode, cancellationToken)
             : CheckAllSeedWorlds(cnf, translation, memo, searchMode, cancellationToken);
 
-        return new ModuleVerdict(isConsistent, Subsumptions: [])
+        List<(NamedNode SubClass, NamedNode SuperClass)> subsumptions =
+            includeSubsumptions && isConsistent && translation.SignatureClasses.Count <= AlcModuleReasoner.SubsumptionSignatureCap
+                ? SweepSubsumptions(cnf, translation, memo, searchMode, cancellationToken)
+                : [];
+
+        return new ModuleVerdict(isConsistent, subsumptions)
         {
             UnsupportedConstructs = translation.Unsupported,
         };
+    }
+
+    /// <summary>
+    /// The module-local subsumption sweep over the shared CNF: for every
+    /// ordered pair of distinct named signature classes, <c>A ⊑ B</c>
+    /// holds exactly when the single-world check under the assumptions
+    /// <c>{+x_A, −x_B}</c> is unsatisfiable. Every probe runs against the
+    /// same CNF and memo table, so modal clauses and settled verdicts
+    /// accumulate across the whole sweep.
+    /// </summary>
+    /// <param name="cnf">The shared CNF; probe encoding and learned clauses grow it.</param>
+    /// <param name="translation">The module's translation, read for the signature.</param>
+    /// <param name="memo">The memo table the probes share.</param>
+    /// <param name="searchMode">The solver's search mode.</param>
+    /// <param name="cancellationToken">A token that aborts between solver calls.</param>
+    /// <returns>The subsumed pairs, in pair-enumeration order.</returns>
+    private static List<(NamedNode SubClass, NamedNode SuperClass)> SweepSubsumptions(
+        ConceptCnf cnf,
+        AlcModuleReasoner.Translation translation,
+        Dictionary<int[], WorldState> memo,
+        SatSearchMode searchMode,
+        CancellationToken cancellationToken)
+    {
+        List<(NamedNode SubClass, NamedNode SuperClass)> subsumptions = [];
+        foreach(Utf8String subClass in translation.SignatureClasses)
+        {
+            foreach(Utf8String superClass in translation.SignatureClasses)
+            {
+                if(subClass.Equals(superClass))
+                {
+                    continue;
+                }
+
+                List<SatLiteral> literals =
+                [
+                    cnf.GetLiteral(new AlcAtom(subClass)),
+                    cnf.GetLiteral(new AlcNot(new AlcAtom(superClass))),
+                ];
+                (SatLiteral[] assumptions, int[] key) = Canonicalize(literals);
+                if(!CheckWorld(cnf, translation, memo, assumptions, key, searchMode, cancellationToken))
+                {
+                    subsumptions.Add((new NamedNode(subClass), new NamedNode(superClass)));
+                }
+            }
+        }
+
+        return subsumptions;
     }
 
     /// <summary>

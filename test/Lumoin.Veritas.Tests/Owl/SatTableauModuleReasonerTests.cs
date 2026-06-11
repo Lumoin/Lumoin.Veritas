@@ -8,9 +8,10 @@ using Lumoin.Veritas.Owl.Structural;
 namespace Lumoin.Veritas.Tests.Owl;
 
 /// <summary>
-/// Tests for <see cref="SatTableauModuleReasoner"/>: a deterministic
-/// differential sweep against the snapshot engine over generated ALC(H)
-/// modules, the tableau boundary matrix (existentials into ⊥, ∀-only
+/// Tests for <see cref="SatTableauModuleReasoner"/>: deterministic
+/// differential sweeps against the snapshot engine over generated ALC(H)
+/// modules — consistency agreement, and full-verdict parity including the
+/// module-local subsumption sets — the tableau boundary matrix (existentials into ⊥, ∀-only
 /// labels, blocking cycles, shared successor sets, per-individual worlds,
 /// fragment honesty), the joint-instance boundary matrix over asserted
 /// role edges (edge universal propagation, told super-role reach, cycle
@@ -76,6 +77,54 @@ internal sealed class SatTableauModuleReasonerTests
 
         Assert.IsGreaterThan(20, consistentSeen, "The sweep covers consistent modules.");
         Assert.IsGreaterThan(20, inconsistentSeen, "The sweep covers inconsistent modules.");
+    }
+
+    /// <summary>
+    /// The full <see cref="SatTableauModuleReasoner.Decide"/> verdict
+    /// agrees with the snapshot engine's round for round over a
+    /// deterministic sweep of generated modules within the subsumption
+    /// signature cap: consistency matches and the module-local subsumption
+    /// sets are equal under order-insensitive comparison, with rounds that
+    /// surface subsumptions covered.
+    /// </summary>
+    [TestMethod]
+    public void DecideParityAgreesWithTheSnapshotEngine()
+    {
+        //A deterministic xorshift drives the generation; no entropy APIs.
+        ulong state = 0x9E3779B97F4A7C15UL;
+        int subsumptionsSeen = 0;
+
+        for(int round = 0; round < 150; round++)
+        {
+            ReasoningModule module = GenerateModule(ref state);
+            ModuleVerdict snapshot = AlcModuleReasoner.Decide(module, TestContext.CancellationToken);
+            ModuleVerdict satBacked = SatTableauModuleReasoner.Decide(module, cancellationToken: TestContext.CancellationToken);
+
+            Assert.AreEqual(snapshot.IsConsistent, satBacked.IsConsistent, $"Round {round}: the engines disagree on consistency.");
+
+            List<string> snapshotPairs = SubsumptionKeys(snapshot);
+            List<string> satBackedPairs = SubsumptionKeys(satBacked);
+            CollectionAssert.AreEqual(snapshotPairs, satBackedPairs, $"Round {round}: the engines disagree on the subsumption set.");
+            subsumptionsSeen += snapshotPairs.Count;
+        }
+
+        Assert.IsGreaterThan(0, subsumptionsSeen, "The sweep covers rounds that surface subsumptions.");
+    }
+
+    /// <summary>The verdict's subsumption pairs as sorted comparison keys, one <c>sub→super</c> string per pair.</summary>
+    /// <param name="verdict">The verdict.</param>
+    /// <returns>The keys, sorted ordinally.</returns>
+    private static List<string> SubsumptionKeys(ModuleVerdict verdict)
+    {
+        List<string> keys = new(verdict.Subsumptions.Count);
+        foreach((NamedNode subClass, NamedNode superClass) in verdict.Subsumptions)
+        {
+            keys.Add($"{subClass.Iri}→{superClass.Iri}");
+        }
+
+        keys.Sort(StringComparer.Ordinal);
+
+        return keys;
     }
 
     /// <summary>

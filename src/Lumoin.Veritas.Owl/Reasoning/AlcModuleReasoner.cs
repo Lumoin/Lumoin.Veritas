@@ -48,8 +48,8 @@ namespace Lumoin.Veritas.Owl.Reasoning;
 /// </remarks>
 public static class AlcModuleReasoner
 {
-    /// <summary>The largest named-class signature for which module-local subsumptions enumerate; beyond it the verdict carries consistency only.</summary>
-    private const int SubsumptionSignatureCap = 16;
+    /// <summary>The largest named-class signature for which module-local subsumptions enumerate; beyond it the verdict carries consistency only. Shared with the SAT-backed sibling so both engines sweep the same modules.</summary>
+    internal const int SubsumptionSignatureCap = 16;
 
     /// <summary>
     /// Wraps <see cref="Decide"/> as the seam delegate.

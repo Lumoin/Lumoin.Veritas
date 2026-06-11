@@ -11,20 +11,20 @@ namespace Lumoin.Veritas.Tests.Owl;
 /// modules across the rule set (conjunction, disjunction branching,
 /// existential successors, universal propagation, role hierarchy), subset
 /// blocking on a cyclic TBox, module-local subsumptions, and the
-/// fragment-honesty contract for axioms beyond ALC(H). The consistency-only
-/// in-scope tests parametrize over both the snapshot engine and the
+/// fragment-honesty contract for axioms beyond ALC(H). The in-scope
+/// behavioural tests parametrize over both the snapshot engine and the
 /// SAT-backed sibling <see cref="SatTableauModuleReasoner"/>.
 /// </summary>
 [TestClass]
 internal sealed class AlcModuleReasonerTests
 {
-    /// <summary>The engines the consistency-parametrized tests decide through.</summary>
+    /// <summary>The engines the parametrized tests decide through.</summary>
     internal enum ConsistencyEngine
     {
         /// <summary>The snapshot tableau's full entry, <see cref="AlcModuleReasoner.Decide"/>.</summary>
         Snapshot,
 
-        /// <summary>The SAT-backed sibling's consistency entry, <see cref="SatTableauModuleReasoner.DecideConsistency"/>.</summary>
+        /// <summary>The SAT-backed sibling's full entry, <see cref="SatTableauModuleReasoner.Decide"/>.</summary>
         SatBacked,
     }
 
@@ -133,13 +133,16 @@ internal sealed class AlcModuleReasonerTests
     }
 
     /// <summary>Module-local subsumptions surface: a subclass chain yields its transitive pair.</summary>
+    /// <param name="engine">The engine under test.</param>
     [TestMethod]
-    public void SubsumptionsSurfaceTheChain()
+    [DataRow(ConsistencyEngine.Snapshot)]
+    [DataRow(ConsistencyEngine.SatBacked)]
+    public void SubsumptionsSurfaceTheChain(ConsistencyEngine engine)
     {
         OwlSubClassOfAxiom aUnderB = new(Reference("A"), Reference("B")) { Origin = Origin("ab") };
         OwlSubClassOfAxiom bUnderC = new(Reference("B"), Reference("C")) { Origin = Origin("bc") };
 
-        ModuleVerdict verdict = AlcModuleReasoner.Decide(Module(aUnderB, bUnderC), TestContext.CancellationToken);
+        ModuleVerdict verdict = Decide(engine, Module(aUnderB, bUnderC));
 
         Assert.IsTrue(verdict.IsConsistent);
         Assert.Contains(
@@ -197,14 +200,17 @@ internal sealed class AlcModuleReasonerTests
     }
 
     /// <summary>The consistency-only entry agrees with the full verdict on both outcomes and surfaces no subsumptions.</summary>
+    /// <param name="engine">The engine under test.</param>
     [TestMethod]
-    public void ConsistencyOnlyEntryAgreesWithoutSubsumptions()
+    [DataRow(ConsistencyEngine.Snapshot)]
+    [DataRow(ConsistencyEngine.SatBacked)]
+    public void ConsistencyOnlyEntryAgreesWithoutSubsumptions(ConsistencyEngine engine)
     {
         OwlSubClassOfAxiom aUnderB = new(Reference("A"), Reference("B")) { Origin = Origin("ab") };
         OwlSubClassOfAxiom bUnderC = new(Reference("B"), Reference("C")) { Origin = Origin("bc") };
 
-        ModuleVerdict full = AlcModuleReasoner.Decide(Module(aUnderB, bUnderC), TestContext.CancellationToken);
-        ModuleVerdict consistencyOnly = AlcModuleReasoner.DecideConsistency(Module(aUnderB, bUnderC), TestContext.CancellationToken);
+        ModuleVerdict full = Decide(engine, Module(aUnderB, bUnderC));
+        ModuleVerdict consistencyOnly = DecideConsistencyOnly(engine, Module(aUnderB, bUnderC));
 
         Assert.AreEqual(full.IsConsistent, consistencyOnly.IsConsistent);
         Assert.IsTrue(consistencyOnly.IsConsistent);
@@ -214,7 +220,7 @@ internal sealed class AlcModuleReasonerTests
         OwlClassAssertionAxiom isA = new(Reference("A"), Named("x")) { Origin = Origin("isA") };
         OwlClassAssertionAxiom isB = new(Reference("B"), Named("x")) { Origin = Origin("isB") };
 
-        Assert.IsFalse(AlcModuleReasoner.DecideConsistency(Module(disjoint, isA, isB), TestContext.CancellationToken).IsConsistent);
+        Assert.IsFalse(DecideConsistencyOnly(engine, Module(disjoint, isA, isB)).IsConsistent);
     }
 
     /// <summary>SameIndividual merges its nodes: the merged individual carries both assertions into the clash.</summary>
@@ -235,7 +241,7 @@ internal sealed class AlcModuleReasonerTests
         Assert.IsFalse(Decide(engine, Module(disjoint, isA, isB, same)).IsConsistent, "Merged, the individual is in both disjoint classes.");
     }
 
-    /// <summary>Decides the module's consistency through the selected engine.</summary>
+    /// <summary>Decides the module through the selected engine's full entry — consistency plus the module-local subsumption sweep.</summary>
     /// <param name="engine">The engine to decide through.</param>
     /// <param name="module">The module.</param>
     /// <returns>The verdict.</returns>
@@ -243,8 +249,21 @@ internal sealed class AlcModuleReasonerTests
     {
         return engine switch
         {
-            ConsistencyEngine.SatBacked => SatTableauModuleReasoner.DecideConsistency(module, cancellationToken: TestContext.CancellationToken),
+            ConsistencyEngine.SatBacked => SatTableauModuleReasoner.Decide(module, cancellationToken: TestContext.CancellationToken),
             _ => AlcModuleReasoner.Decide(module, TestContext.CancellationToken),
+        };
+    }
+
+    /// <summary>Decides the module through the selected engine's consistency-only entry.</summary>
+    /// <param name="engine">The engine to decide through.</param>
+    /// <param name="module">The module.</param>
+    /// <returns>The verdict, with an empty subsumption list.</returns>
+    private ModuleVerdict DecideConsistencyOnly(ConsistencyEngine engine, ReasoningModule module)
+    {
+        return engine switch
+        {
+            ConsistencyEngine.SatBacked => SatTableauModuleReasoner.DecideConsistency(module, cancellationToken: TestContext.CancellationToken),
+            _ => AlcModuleReasoner.DecideConsistency(module, TestContext.CancellationToken),
         };
     }
 
