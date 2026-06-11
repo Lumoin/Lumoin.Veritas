@@ -12,7 +12,10 @@ namespace Lumoin.Veritas.Tests.Owl;
 /// differential sweep against the snapshot engine over generated ALC(H)
 /// modules, the tableau boundary matrix (existentials into ⊥, ∀-only
 /// labels, blocking cycles, shared successor sets, per-individual worlds,
-/// the asserted-edge scope guard, fragment honesty), the propagation-only
+/// fragment honesty), the joint-instance boundary matrix over asserted
+/// role edges (edge universal propagation, told super-role reach, cycle
+/// transitivity, self-edges, joint-to-chain handoff, chain failures
+/// teaching the joint root, inconsistent TBoxes), the propagation-only
 /// search mode, and a hard propositional reach case decided by this engine
 /// alone.
 /// </summary>
@@ -41,8 +44,9 @@ internal sealed class SatTableauModuleReasonerTests
     /// The SAT-backed verdict agrees with the snapshot engine round for
     /// round over a deterministic sweep of generated in-scope ALC(H)
     /// modules — disjunction-heavy TBoxes, occasional role-hierarchy pairs
-    /// and cyclic inclusions, zero to two asserted individuals — and both
-    /// verdicts occur.
+    /// and cyclic inclusions, zero to two asserted individuals, zero to
+    /// three asserted role edges including self-edges and cycles — and
+    /// both verdicts occur.
     /// </summary>
     [TestMethod]
     public void DifferentialSweepAgreesWithTheSnapshotEngine()
@@ -202,14 +206,151 @@ internal sealed class SatTableauModuleReasonerTests
         Assert.IsFalse(DecideSat(Module(fine, contradictory)).IsConsistent);
     }
 
-    /// <summary>A module with asserted role edges is outside this engine's scope and throws.</summary>
+    /// <summary>A universal propagates across an asserted role edge in the joint instance: the target carries the filler and clashes with its complement assertion.</summary>
     [TestMethod]
-    public void AssertedRoleEdgesAreNotSupported()
+    public void EdgeUniversalPropagatesAcrossTheAssertedEdge()
     {
-        OwlObjectPropertyAssertionAxiom edge = new(Named("a"), Named("r"), Named("b")) { Origin = Origin("edge") };
+        OwlClassAssertionAxiom forbids = new(
+            new OwlObjectAllValuesFrom(Property("r"), new OwlObjectComplementOf(Reference("C"))), Named("a"))
+        {
+            Origin = Origin("forbids"),
+        };
+        OwlObjectPropertyAssertionAxiom edge = Edge("a", "r", "b", "edge");
+        OwlClassAssertionAxiom isC = new(Reference("C"), Named("b")) { Origin = Origin("isC") };
 
-        Assert.ThrowsExactly<NotSupportedException>(
-            () => DecideSat(Module(edge)));
+        Assert.IsFalse(DecideSat(Module(forbids, edge, isC)).IsConsistent, "∀r.¬C at a reaches b over the edge and clashes with C.");
+        Assert.IsTrue(DecideSat(Module(forbids, edge)).IsConsistent, "The edge alone carries no clash.");
+        Assert.IsTrue(DecideSat(Module(forbids, isC)).IsConsistent, "Without the edge the universal reaches nothing.");
+    }
+
+    /// <summary>The edge universal propagates through a told super-role: an edge over the sub-role triggers the super-role's universal.</summary>
+    [TestMethod]
+    public void EdgeUniversalReachesThroughTheToldSuperRole()
+    {
+        OwlSubObjectPropertyOfAxiom hierarchy = new(Property("s"), Property("r")) { Origin = Origin("hierarchy") };
+        OwlClassAssertionAxiom forbids = new(
+            new OwlObjectAllValuesFrom(Property("r"), new OwlObjectComplementOf(Reference("C"))), Named("a"))
+        {
+            Origin = Origin("forbids"),
+        };
+        OwlObjectPropertyAssertionAxiom edge = Edge("a", "s", "b", "edge");
+        OwlClassAssertionAxiom isC = new(Reference("C"), Named("b")) { Origin = Origin("isC") };
+
+        Assert.IsFalse(DecideSat(Module(hierarchy, forbids, edge, isC)).IsConsistent, "The s-edge reaches the ∀r restriction through s ⊑ r.");
+        Assert.IsTrue(DecideSat(Module(forbids, edge, isC)).IsConsistent, "Without the hierarchy the universal does not reach over s.");
+    }
+
+    /// <summary>Universal propagation runs transitively around a two-cycle of asserted edges: the consequence returns to its origin after both hops.</summary>
+    [TestMethod]
+    public void EdgeCyclePropagatesTransitively()
+    {
+        //A ⊑ ∀r.B and B ⊑ ∀r.C: A at a puts B at b over a→r→b, and B at b
+        //puts C back at a over b→r→a — two hops through the cycle.
+        OwlSubClassOfAxiom aAll = new(
+            Reference("A"),
+            new OwlObjectAllValuesFrom(Property("r"), Reference("B")))
+        {
+            Origin = Origin("aAll"),
+        };
+        OwlSubClassOfAxiom bAll = new(
+            Reference("B"),
+            new OwlObjectAllValuesFrom(Property("r"), Reference("C")))
+        {
+            Origin = Origin("bAll"),
+        };
+        OwlObjectPropertyAssertionAxiom forward = Edge("a", "r", "b", "forward");
+        OwlObjectPropertyAssertionAxiom backward = Edge("b", "r", "a", "backward");
+        OwlClassAssertionAxiom seedA = new(Reference("A"), Named("a")) { Origin = Origin("seedA") };
+        OwlClassAssertionAxiom notC = new(new OwlObjectComplementOf(Reference("C")), Named("a")) { Origin = Origin("notC") };
+
+        Assert.IsFalse(DecideSat(Module(aAll, bAll, forward, backward, seedA, notC)).IsConsistent, "C returns to a around the cycle and clashes with ¬C.");
+        Assert.IsTrue(DecideSat(Module(aAll, bAll, forward, seedA, notC)).IsConsistent, "Without the return edge nothing carries C back to a.");
+    }
+
+    /// <summary>A self-edge propagates the individual's own universal onto itself.</summary>
+    [TestMethod]
+    public void SelfEdgePropagatesOntoTheIndividual()
+    {
+        OwlObjectPropertyAssertionAxiom loop = Edge("a", "r", "a", "loop");
+        OwlClassAssertionAxiom isC = new(Reference("C"), Named("a")) { Origin = Origin("isC") };
+        OwlClassAssertionAxiom forbids = new(
+            new OwlObjectAllValuesFrom(Property("r"), new OwlObjectComplementOf(Reference("C"))), Named("a"))
+        {
+            Origin = Origin("forbids"),
+        };
+        OwlClassAssertionAxiom keeps = new(
+            new OwlObjectAllValuesFrom(Property("r"), Reference("C")), Named("a"))
+        {
+            Origin = Origin("keeps"),
+        };
+
+        Assert.IsFalse(DecideSat(Module(loop, isC, forbids)).IsConsistent, "∀r.¬C over the self-edge contradicts the individual's own C.");
+        Assert.IsTrue(DecideSat(Module(loop, isC, keeps)).IsConsistent, "∀r.C over the self-edge agrees with the individual's own C.");
+    }
+
+    /// <summary>An edge target forced into an existential spawns an anonymous successor chain off the joint instance, and the chain's verdict decides the module.</summary>
+    [TestMethod]
+    public void EdgeTargetSpawnsAnAnonymousSuccessor()
+    {
+        //a: ∀r.(∃s.C) and a →r→ b force ∃s.C at b, whose successor is an
+        //anonymous world off the joint instance.
+        OwlClassAssertionAxiom all = new(
+            new OwlObjectAllValuesFrom(
+                Property("r"),
+                new OwlObjectSomeValuesFrom(Property("s"), Reference("C"))),
+            Named("a"))
+        {
+            Origin = Origin("all"),
+        };
+        OwlObjectPropertyAssertionAxiom edge = Edge("a", "r", "b", "edge");
+
+        Assert.IsTrue(DecideSat(Module(all, edge)).IsConsistent, "The anonymous successor carries C and stands.");
+
+        OwlSubClassOfAxiom cEmpty = new(Reference("C"), Reference(Nothing, qualified: true)) { Origin = Origin("cEmpty") };
+
+        Assert.IsFalse(DecideSat(Module(all, edge, cEmpty)).IsConsistent, "With C globally empty the forced chain fails and condemns the joint root.");
+    }
+
+    /// <summary>A successor-chain failure teaches the joint instance: the learned template clause instantiates into every block, forcing the existential off where an alternative exists and condemning the root where none does.</summary>
+    [TestMethod]
+    public void ChainFailureTeachesTheJointInstance()
+    {
+        OwlObjectPropertyAssertionAxiom edge = Edge("a", "r", "b", "edge");
+        OwlClassAssertionAxiom impossible = new(
+            new OwlObjectSomeValuesFrom(Property("s"), Reference(Nothing, qualified: true)), Named("a"))
+        {
+            Origin = Origin("impossible"),
+        };
+
+        Assert.IsFalse(DecideSat(Module(edge, impossible)).IsConsistent, "∃s.⊥ asserted with edges present condemns the joint root.");
+
+        OwlClassAssertionAxiom recoverable = new(
+            new OwlObjectUnionOf(
+            [
+                new OwlObjectSomeValuesFrom(Property("s"), Reference(Nothing, qualified: true)),
+                Reference("B"),
+            ]),
+            Named("a"))
+        {
+            Origin = Origin("recoverable"),
+        };
+
+        Assert.IsTrue(DecideSat(Module(edge, recoverable)).IsConsistent, "The learned clause forces the existential off and the B disjunct survives.");
+    }
+
+    /// <summary>An inconsistent TBox condemns a module with asserted edges: every block carries the contradiction.</summary>
+    [TestMethod]
+    public void EdgesWithAnInconsistentTBoxAreCondemned()
+    {
+        OwlSubClassOfAxiom contradiction = new(
+            Reference(Thing, qualified: true),
+            Reference(Nothing, qualified: true))
+        {
+            Origin = Origin("contradiction"),
+        };
+        OwlObjectPropertyAssertionAxiom edge = Edge("a", "r", "b", "edge");
+
+        Assert.IsFalse(DecideSat(Module(contradiction, edge)).IsConsistent);
     }
 
     /// <summary>The beyond-fragment remainder is named identically to the snapshot engine, and the supported fragment still decides.</summary>
@@ -303,7 +444,7 @@ internal sealed class SatTableauModuleReasonerTests
         return new ReasoningModule(axioms, Violations: []);
     }
 
-    /// <summary>Generates one in-scope module: one to three TBox axioms biased toward disjunction-heavy inclusions, with occasional global inclusions, cycles, disjointness, and role-hierarchy pairs, plus zero to two asserted individuals.</summary>
+    /// <summary>Generates one in-scope module: one to three TBox axioms biased toward disjunction-heavy inclusions, with occasional global inclusions, cycles, disjointness, and role-hierarchy pairs, plus zero to two asserted individuals and zero to three asserted role edges among up to three individuals — self-edges and cycles included.</summary>
     /// <param name="state">The xorshift state.</param>
     /// <returns>The module.</returns>
     private static ReasoningModule GenerateModule(ref ulong state)
@@ -381,6 +522,14 @@ internal sealed class SatTableauModuleReasonerTests
                     Origin = Origin($"assert{individual}_{assertion}"),
                 });
             }
+        }
+
+        int edgeCount = (int)(Next(ref state) % 4);
+        for(int edge = 0; edge < edgeCount; edge++)
+        {
+            string from = $"i{Next(ref state) % 3}";
+            string to = $"i{Next(ref state) % 3}";
+            axioms.Add(Edge(from, NextRole(ref state), to, $"edge{edge}"));
         }
 
         return new ReasoningModule(axioms, Violations: []);
@@ -473,6 +622,17 @@ internal sealed class SatTableauModuleReasonerTests
     private static NamedNode Named(string local)
     {
         return new NamedNode(Utf8String.FromString(Example + local));
+    }
+
+    /// <summary>An asserted role edge between two individuals in the example namespace.</summary>
+    /// <param name="from">The source individual's local name.</param>
+    /// <param name="role">The role's local name.</param>
+    /// <param name="to">The target individual's local name.</param>
+    /// <param name="marker">The origin marker.</param>
+    /// <returns>The assertion axiom.</returns>
+    private static OwlObjectPropertyAssertionAxiom Edge(string from, string role, string to, string marker)
+    {
+        return new OwlObjectPropertyAssertionAxiom(Named(from), Named(role), Named(to)) { Origin = Origin(marker) };
     }
 
     /// <summary>A distinct origin quad for the marker name.</summary>

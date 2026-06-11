@@ -70,8 +70,11 @@ internal sealed class AlcModuleReasonerTests
     }
 
     /// <summary>The universal propagates over an asserted edge through the told role hierarchy.</summary>
+    /// <param name="engine">The engine under test.</param>
     [TestMethod]
-    public void UniversalPropagatesThroughTheRoleHierarchy()
+    [DataRow(ConsistencyEngine.Snapshot)]
+    [DataRow(ConsistencyEngine.SatBacked)]
+    public void UniversalPropagatesThroughTheRoleHierarchy(ConsistencyEngine engine)
     {
         //s ⊑ r; a ∀r.C; a s b; b ¬C — the universal reaches b through s.
         OwlSubObjectPropertyOfAxiom hierarchy = new(Property("s"), Property("r")) { Origin = Origin("hierarchy") };
@@ -83,8 +86,8 @@ internal sealed class AlcModuleReasonerTests
         OwlObjectPropertyAssertionAxiom edge = new(Named("a"), new NamedNode(Utf8String.FromString(Example + "s")), Named("b")) { Origin = Origin("edge") };
         OwlClassAssertionAxiom notC = new(new OwlObjectComplementOf(Reference("C")), Named("b")) { Origin = Origin("notC") };
 
-        Assert.IsFalse(AlcModuleReasoner.Decide(Module(hierarchy, all, edge, notC), TestContext.CancellationToken).IsConsistent);
-        Assert.IsTrue(AlcModuleReasoner.Decide(Module(all, edge, notC), TestContext.CancellationToken).IsConsistent, "Without the hierarchy the universal does not reach over s.");
+        Assert.IsFalse(Decide(engine, Module(hierarchy, all, edge, notC)).IsConsistent);
+        Assert.IsTrue(Decide(engine, Module(all, edge, notC)).IsConsistent, "Without the hierarchy the universal does not reach over s.");
     }
 
     /// <summary>A cyclic TBox terminates through subset blocking and stays consistent.</summary>

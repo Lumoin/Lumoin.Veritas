@@ -47,11 +47,19 @@ namespace Lumoin.Veritas.Owl.Reasoning;
 /// <para>
 /// <b>Scope.</b> <see cref="DecideConsistency"/> decides consistency
 /// through a single anonymous root world when no individual carries
-/// assertions, else one independent world per named individual whose
-/// assumptions are that individual's asserted concepts — sound because
-/// without asserted role edges no constraint travels between named
-/// individuals. A module with asserted role edges throws
-/// <see cref="NotSupportedException"/>.
+/// assertions, one independent world per named individual when concepts
+/// alone are asserted — sound because without asserted role edges no
+/// constraint travels between named individuals — and one joint SAT
+/// instance over the whole named forest when asserted role edges are
+/// present: the template variable space replicates per individual in
+/// blocks of a width frozen per solve, every template clause instantiates
+/// into every block, each asserted edge contributes one propagation
+/// clause per universal atom its role reaches through the told hierarchy,
+/// and each individual's asserted concepts assume into its block. The
+/// joint model's true existential atoms spawn per-block successor chains
+/// in template space; a chain failure teaches the template its modal
+/// clause and the joint root rebuilds and re-solves. The joint root spans
+/// blocks, so it never enters the template-space memo table.
 /// </para>
 /// <para>
 /// <b>Fragment honesty.</b> The verdict names the beyond-fragment
@@ -78,16 +86,15 @@ internal static class SatTableauModuleReasoner
     /// subsumption list stays empty, and
     /// <see cref="ModuleVerdict.UnsupportedConstructs"/> names the
     /// beyond-fragment remainder exactly as <see cref="AlcModuleReasoner"/>
-    /// does. Only modules without asserted role edges are decided: each
-    /// named individual is an independent world, so an asserted edge —
-    /// which would let constraints travel between individuals — throws.
+    /// does. Without asserted role edges each named individual is an
+    /// independent world; with them the named forest checks as one joint
+    /// SAT instance over per-individual variable blocks.
     /// </summary>
     /// <param name="module">The module to decide.</param>
     /// <param name="searchMode">How the solver prunes within one world's boolean structure; both modes decide the same satisfiability.</param>
     /// <param name="cancellationToken">A token that aborts between solver calls.</param>
     /// <returns>The verdict, with an empty subsumption list.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="module"/> is <see langword="null"/>.</exception>
-    /// <exception cref="NotSupportedException">The module asserts role edges between individuals.</exception>
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
     public static ModuleVerdict DecideConsistency(
         ReasoningModule module,
@@ -97,10 +104,6 @@ internal static class SatTableauModuleReasoner
         ArgumentNullException.ThrowIfNull(module);
 
         AlcModuleReasoner.Translation translation = AlcModuleReasoner.Translate(module);
-        if(translation.Edges.Count > 0)
-        {
-            throw new NotSupportedException("The module asserts role edges between individuals; this engine decides only modules whose individuals carry concept assertions alone.");
-        }
 
         //The shared CNF: every world carries the internalized TBox, so its
         //conjuncts assert as facts once and worlds differ only in their
@@ -111,7 +114,11 @@ internal static class SatTableauModuleReasoner
             cnf.AssertFact(conjunct);
         }
 
-        bool isConsistent = CheckAllSeedWorlds(cnf, translation, searchMode, cancellationToken);
+        Dictionary<int[], WorldState> memo = new(CanonicalKeyComparer.Instance);
+
+        bool isConsistent = translation.Edges.Count > 0
+            ? CheckJointRoot(cnf, translation, memo, searchMode, cancellationToken)
+            : CheckAllSeedWorlds(cnf, translation, memo, searchMode, cancellationToken);
 
         return new ModuleVerdict(isConsistent, Subsumptions: [])
         {
@@ -127,17 +134,17 @@ internal static class SatTableauModuleReasoner
     /// </summary>
     /// <param name="cnf">The shared CNF.</param>
     /// <param name="translation">The module's translation.</param>
+    /// <param name="memo">The memo table over canonical assumption sets.</param>
     /// <param name="searchMode">The solver's search mode.</param>
     /// <param name="cancellationToken">A token that aborts between solver calls.</param>
     /// <returns><see langword="true"/> when every seed world is satisfiable.</returns>
     private static bool CheckAllSeedWorlds(
         ConceptCnf cnf,
         AlcModuleReasoner.Translation translation,
+        Dictionary<int[], WorldState> memo,
         SatSearchMode searchMode,
         CancellationToken cancellationToken)
     {
-        Dictionary<int[], WorldState> memo = new(CanonicalKeyComparer.Instance);
-
         List<(SatLiteral[] Assumptions, int[] Key)> seeds = [];
         if(translation.AssertedConcepts.Count == 0)
         {
@@ -166,6 +173,286 @@ internal static class SatTableauModuleReasoner
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Checks the named forest as one joint SAT instance when asserted role
+    /// edges are present: the template variable space replicates per named
+    /// individual, every template clause instantiates into every block,
+    /// asserted edges contribute universal-propagation clauses, and each
+    /// individual's asserted concepts assume into its block. The joint
+    /// model's true existential atoms spawn per-block successor chains in
+    /// template space through <see cref="CheckWorld"/>; a chain failure
+    /// appends its modal conflict clause to the template and the joint
+    /// instance rebuilds and re-solves. The joint root spans blocks, so it
+    /// never enters the template-space memo table — only the chains do.
+    /// </summary>
+    /// <remarks>
+    /// The rebuild-per-solve discipline is the width-freeze design: every
+    /// concept that can contribute to the joint root — the asserted
+    /// concepts and, to a fixpoint, every universal filler an asserted edge
+    /// can reach — encodes into the template before the block width freezes
+    /// at the template's variable count, and successor chains that grow the
+    /// template between solves invalidate nothing because the next build
+    /// re-derives the block layout and re-instantiates every clause,
+    /// learned ones included.
+    /// </remarks>
+    /// <param name="cnf">The shared template CNF; learned clauses append to it.</param>
+    /// <param name="translation">The module's translation.</param>
+    /// <param name="memo">The memo table the successor chains share.</param>
+    /// <param name="searchMode">The solver's search mode.</param>
+    /// <param name="cancellationToken">A token that aborts between solver calls.</param>
+    /// <returns><see langword="true"/> when the joint instance and every spawned chain are satisfiable.</returns>
+    private static bool CheckJointRoot(
+        ConceptCnf cnf,
+        AlcModuleReasoner.Translation translation,
+        Dictionary<int[], WorldState> memo,
+        SatSearchMode searchMode,
+        CancellationToken cancellationToken)
+    {
+        //The block layout: one block per named individual, asserted
+        //individuals first in assertion order, then edge endpoints in edge
+        //order — deterministic either way.
+        List<Utf8String> individuals = [];
+        Dictionary<Utf8String, int> blockOf = [];
+        foreach(KeyValuePair<Utf8String, List<AlcConcept>> entry in translation.AssertedConcepts)
+        {
+            BlockFor(individuals, blockOf, entry.Key);
+        }
+
+        foreach((Utf8String from, Utf8String role, Utf8String to) in translation.Edges)
+        {
+            BlockFor(individuals, blockOf, from);
+            BlockFor(individuals, blockOf, to);
+        }
+
+        while(true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            JointInstance joint = BuildJointInstance(cnf, translation, individuals, blockOf);
+            SatVerdict verdict = SatSolver.SolveUnderAssumptions(
+                joint.Clauses,
+                joint.VariableCount,
+                joint.Assumptions,
+                pool: null,
+                searchMode,
+                cancellationToken);
+            if(!verdict.IsSatisfiable)
+            {
+                return false;
+            }
+
+            bool[] model = ShrinkJointModel(joint, verdict.Assignment!);
+            bool learned = false;
+            for(int block = 0; block < individuals.Count && !learned; block++)
+            {
+                bool[] blockModel = ExtractBlockModel(model, block, joint.BlockWidth);
+                foreach(SuccessorPlan plan in PlanSuccessors(cnf, translation, blockModel))
+                {
+                    if(!CheckWorld(cnf, translation, memo, plan.Assumptions, plan.Key, searchMode, cancellationToken))
+                    {
+                        //The chain failure teaches the TEMPLATE its modal
+                        //conflict clause — TBox-entailed, so sound in every
+                        //block — and the joint instance rebuilds against
+                        //the grown template, which instantiates the clause
+                        //into every block.
+                        cnf.Append(plan.ConflictClause);
+                        learned = true;
+
+                        break;
+                    }
+                }
+            }
+
+            if(!learned)
+            {
+                return true;
+            }
+        }
+    }
+
+    /// <summary>The individual's block index, allocated densely on first encounter.</summary>
+    /// <param name="individuals">The individuals in block order.</param>
+    /// <param name="blockOf">The individual-to-block index.</param>
+    /// <param name="individual">The individual key.</param>
+    private static void BlockFor(List<Utf8String> individuals, Dictionary<Utf8String, int> blockOf, Utf8String individual)
+    {
+        if(!blockOf.ContainsKey(individual))
+        {
+            blockOf[individual] = individuals.Count;
+            individuals.Add(individual);
+        }
+    }
+
+    /// <summary>
+    /// Builds the joint instance from the template as it stands: encodes
+    /// every contributor into the template — the asserted concepts and, to
+    /// a fixpoint, the filler of every universal atom some asserted edge's
+    /// role reaches — freezes the block width at the template's variable
+    /// count, instantiates every template clause into every block, adds one
+    /// propagation clause per asserted edge and reachable universal atom,
+    /// and offsets each individual's asserted-concept literals into its
+    /// block as the joint assumptions.
+    /// </summary>
+    /// <param name="cnf">The shared template CNF; contributor encoding grows it before the freeze.</param>
+    /// <param name="translation">The module's translation.</param>
+    /// <param name="individuals">The individuals in block order.</param>
+    /// <param name="blockOf">The individual-to-block index.</param>
+    /// <returns>The joint instance.</returns>
+    private static JointInstance BuildJointInstance(
+        ConceptCnf cnf,
+        AlcModuleReasoner.Translation translation,
+        List<Utf8String> individuals,
+        Dictionary<Utf8String, int> blockOf)
+    {
+        //Every joint contributor encodes BEFORE the width freezes. Asserted
+        //concepts first; then every edge-reachable universal filler, walked
+        //by index to a fixpoint because encoding a filler can register
+        //further universal atoms that themselves need edge clauses.
+        foreach(KeyValuePair<Utf8String, List<AlcConcept>> entry in translation.AssertedConcepts)
+        {
+            foreach(AlcConcept concept in entry.Value)
+            {
+                cnf.GetLiteral(concept);
+            }
+        }
+
+        for(int i = 0; i < cnf.ModalAtoms.Count; i++)
+        {
+            if(cnf.ModalAtoms[i].Concept is not AlcForAll forAll)
+            {
+                continue;
+            }
+
+            foreach((Utf8String _, Utf8String role, Utf8String _) in translation.Edges)
+            {
+                if(RoleReaches(role, forAll.Role, translation.SuperRoles))
+                {
+                    cnf.GetLiteral(forAll.Filler);
+
+                    break;
+                }
+            }
+        }
+
+        int blockWidth = cnf.VariableCount;
+        int blockCount = individuals.Count;
+
+        List<IReadOnlyList<SatLiteral>> clauses = new(cnf.Clauses.Count * blockCount);
+        for(int block = 0; block < blockCount; block++)
+        {
+            foreach(IReadOnlyList<SatLiteral> template in cnf.Clauses)
+            {
+                clauses.Add(ConceptCnf.InstantiateInBlock(template, block, blockWidth));
+            }
+        }
+
+        //Asserted-edge universal propagation: for every edge a →r→ b and
+        //every universal atom ∀s.D whose role r reaches, the clause
+        //(¬x_a,∀sD ∨ lit_b(D)) — fully propositional, so propagation holds
+        //transitively through edge cycles by unit propagation alone.
+        foreach((Utf8String from, Utf8String role, Utf8String to) in translation.Edges)
+        {
+            int fromBlock = blockOf[from];
+            int toBlock = blockOf[to];
+            for(int i = 0; i < cnf.ModalAtoms.Count; i++)
+            {
+                ConceptCnf.ModalAtom atom = cnf.ModalAtoms[i];
+                if(atom.Concept is not AlcForAll forAll || !RoleReaches(role, forAll.Role, translation.SuperRoles))
+                {
+                    continue;
+                }
+
+                SatLiteral filler = cnf.GetLiteral(forAll.Filler);
+                clauses.Add(
+                [
+                    new SatLiteral(ConceptCnf.BlockVariable(fromBlock, atom.Variable, blockWidth), IsPositive: false),
+                    new SatLiteral(ConceptCnf.BlockVariable(toBlock, filler.Variable, blockWidth), filler.IsPositive),
+                ]);
+            }
+        }
+
+        List<SatLiteral> assumptionLiterals = [];
+        foreach(KeyValuePair<Utf8String, List<AlcConcept>> entry in translation.AssertedConcepts)
+        {
+            int block = blockOf[entry.Key];
+            foreach(AlcConcept concept in entry.Value)
+            {
+                SatLiteral literal = cnf.GetLiteral(concept);
+                assumptionLiterals.Add(new SatLiteral(ConceptCnf.BlockVariable(block, literal.Variable, blockWidth), literal.IsPositive));
+            }
+        }
+
+        (SatLiteral[] assumptions, int[] _) = Canonicalize(assumptionLiterals);
+
+        List<int> modalVariables = new(cnf.ModalAtoms.Count);
+        foreach(ConceptCnf.ModalAtom atom in cnf.ModalAtoms)
+        {
+            modalVariables.Add(atom.Variable);
+        }
+
+        return new JointInstance(clauses, blockWidth * blockCount, assumptions, blockWidth, blockCount, modalVariables);
+    }
+
+    /// <summary>
+    /// The greedy model-shrink pass over the joint model: for each block
+    /// and each true modal-atom replica in descending variable order,
+    /// tentatively flip it to false and keep the flip when every joint
+    /// clause stays satisfied. Assumption literals are never flipped.
+    /// </summary>
+    /// <param name="joint">The joint instance, read for the clauses, the assumptions, and the block layout.</param>
+    /// <param name="assignment">The solver's satisfying assignment.</param>
+    /// <returns>The shrunk joint model.</returns>
+    private static bool[] ShrinkJointModel(JointInstance joint, IReadOnlyList<bool> assignment)
+    {
+        bool[] model = new bool[assignment.Count];
+        for(int i = 0; i < model.Length; i++)
+        {
+            model[i] = assignment[i];
+        }
+
+        HashSet<int> pinned = [];
+        foreach(SatLiteral assumption in joint.Assumptions)
+        {
+            pinned.Add(assumption.Variable);
+        }
+
+        for(int block = joint.BlockCount - 1; block >= 0; block--)
+        {
+            for(int i = joint.ModalVariables.Count - 1; i >= 0; i--)
+            {
+                int variable = ConceptCnf.BlockVariable(block, joint.ModalVariables[i], joint.BlockWidth);
+                if(!model[variable] || pinned.Contains(variable))
+                {
+                    continue;
+                }
+
+                model[variable] = false;
+                if(!Satisfies(joint.Clauses, model))
+                {
+                    model[variable] = true;
+                }
+            }
+        }
+
+        return model;
+    }
+
+    /// <summary>The block's slice of the joint model, re-indexed to template variable space.</summary>
+    /// <param name="jointModel">The shrunk joint model.</param>
+    /// <param name="blockIndex">The block to extract.</param>
+    /// <param name="blockWidth">The frozen per-block variable count.</param>
+    /// <returns>The block's model over template variables.</returns>
+    private static bool[] ExtractBlockModel(bool[] jointModel, int blockIndex, int blockWidth)
+    {
+        bool[] blockModel = new bool[blockWidth];
+        for(int variable = 0; variable < blockWidth; variable++)
+        {
+            blockModel[variable] = jointModel[ConceptCnf.BlockVariable(blockIndex, variable, blockWidth)];
+        }
+
+        return blockModel;
     }
 
     /// <summary>
@@ -442,12 +729,14 @@ internal static class SatTableauModuleReasoner
     {
         //Snapshot the model's true modal atoms before encoding any filler:
         //encoding may register fresh modal atoms, which belong to deeper
-        //worlds, not this model.
+        //worlds, not this model. An atom registered after the model solved
+        //— a per-block joint model covers only the variables of its width
+        //freeze — carries no truth in it and reads false.
         List<(AlcExists Concept, int Variable)> trueExistentials = [];
         List<(AlcForAll Concept, int Variable)> trueUniversals = [];
         foreach(ConceptCnf.ModalAtom atom in cnf.ModalAtoms)
         {
-            if(!model[atom.Variable])
+            if(atom.Variable >= model.Length || !model[atom.Variable])
             {
                 continue;
             }
@@ -598,6 +887,21 @@ internal static class SatTableauModuleReasoner
     /// <param name="Assumptions">The successor's assumption literals, canonical.</param>
     /// <param name="ConflictClause">The negations of exactly the modal atoms that built the successor.</param>
     private sealed record SuccessorPlan(int[] Key, SatLiteral[] Assumptions, SatLiteral[] ConflictClause);
+
+    /// <summary>One build of the joint instance over the named forest: the template instantiated per individual block as the template stood at the width freeze.</summary>
+    /// <param name="Clauses">The joint clauses — every template clause in every block, plus the asserted-edge propagation clauses.</param>
+    /// <param name="VariableCount">The joint variable count, the block width times the block count.</param>
+    /// <param name="Assumptions">The joint assumptions — each individual's asserted-concept literals offset into its block, canonical.</param>
+    /// <param name="BlockWidth">The frozen per-block variable count.</param>
+    /// <param name="BlockCount">The number of individual blocks.</param>
+    /// <param name="ModalVariables">The template variables of the modal atoms registered at the freeze, ascending.</param>
+    private sealed record JointInstance(
+        List<IReadOnlyList<SatLiteral>> Clauses,
+        int VariableCount,
+        SatLiteral[] Assumptions,
+        int BlockWidth,
+        int BlockCount,
+        List<int> ModalVariables);
 
     /// <summary>Element-wise equality and hashing over canonical key arrays.</summary>
     private sealed class CanonicalKeyComparer: IEqualityComparer<int[]>
