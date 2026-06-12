@@ -241,6 +241,38 @@ internal sealed class AlcModuleReasonerTests
         Assert.IsFalse(Decide(engine, Module(disjoint, isA, isB, same)).IsConsistent, "Merged, the individual is in both disjoint classes.");
     }
 
+    /// <summary>
+    /// A per-individual contradiction reachable only through the
+    /// non-first individual's block condemns the module: an asserted role
+    /// edge <c>r(a, b)</c> places <c>a</c> first and <c>b</c> second, the
+    /// concepts <c>a</c> carries are satisfiable on their own, and <c>b</c>
+    /// carries <c>C</c> while the TBox forces <c>C ⊑ D</c> and
+    /// <c>C ⊑ ¬D</c> — a clash <c>a</c> never meets, since <c>a</c> is never
+    /// <c>C</c>. The clash lands purely in <c>b</c>'s block; an engine that
+    /// instantiated the TBox into the first block alone would see only
+    /// <c>a</c>'s satisfiable block and wrongly report the module
+    /// consistent.
+    /// </summary>
+    /// <param name="engine">The engine under test.</param>
+    [TestMethod]
+    [DataRow(ConsistencyEngine.Snapshot)]
+    [DataRow(ConsistencyEngine.SatBacked)]
+    public void NonFirstBlockContradictionCondemnsTheModule(ConsistencyEngine engine)
+    {
+        OwlSubClassOfAxiom cImpliesD = new(Reference("C"), Reference("D")) { Origin = Origin("cImpliesD") };
+        OwlSubClassOfAxiom cImpliesNotD = new(Reference("C"), new OwlObjectComplementOf(Reference("D"))) { Origin = Origin("cImpliesNotD") };
+        OwlClassAssertionAxiom satisfiableA = new(Reference("A"), Named("a")) { Origin = Origin("satisfiableA") };
+        OwlObjectPropertyAssertionAxiom edge = new(Named("a"), new NamedNode(Utf8String.FromString(Example + "r")), Named("b")) { Origin = Origin("edge") };
+        OwlClassAssertionAxiom isC = new(Reference("C"), Named("b")) { Origin = Origin("isC") };
+
+        Assert.IsTrue(
+            Decide(engine, Module(cImpliesD, cImpliesNotD, satisfiableA, edge)).IsConsistent,
+            "Without b's C assertion the non-first block carries no clash.");
+        Assert.IsFalse(
+            Decide(engine, Module(cImpliesD, cImpliesNotD, satisfiableA, edge, isC)).IsConsistent,
+            "C ⊑ D and C ⊑ ¬D clash in b's block alone, condemning the module.");
+    }
+
     /// <summary>Decides the module through the selected engine's full entry — consistency plus the module-local subsumption sweep.</summary>
     /// <param name="engine">The engine to decide through.</param>
     /// <param name="module">The module.</param>
