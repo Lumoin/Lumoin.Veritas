@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Net.Http;
 using System.Text.RegularExpressions;
@@ -24,6 +25,11 @@ internal sealed partial class VeritasCliIntegrationTests
     /// <returns>The endpoint-address regex.</returns>
     [GeneratedRegex(@"(https?://[^\s]+/sparql)")]
     private static partial Regex ListeningEndpointRegex();
+
+    /// <summary>The compiled pattern matching the worker-thread floor line the <c>serve</c> command prints (source-generated, so no per-call regex compilation).</summary>
+    /// <returns>The worker-thread floor regex.</returns>
+    [GeneratedRegex(@"Worker-thread minimum floored at (\d+)\.")]
+    private static partial Regex WorkerThreadFloorRegex();
 
     /// <summary>Gets or sets the test execution context (supplies the cancellation token).</summary>
     public TestContext TestContext { get; set; } = null!;
@@ -112,6 +118,61 @@ internal sealed partial class VeritasCliIntegrationTests
         }
     }
 
+    /// <summary>The <c>serve</c> command floors the worker-thread pool minimum at four times the processor count at startup.</summary>
+    /// <returns>The asynchronous test.</returns>
+    [TestMethod]
+    public async Task ServeCommandFloorsWorkerThreadPoolAtStartup()
+    {
+        string? executable = GetCliExecutablePath();
+        if(executable is null)
+        {
+            Assert.Inconclusive("The Lumoin.Veritas.Cli executable was not built; build it to run this test.");
+
+            return;
+        }
+
+        (string dataPath, _) = WriteFixture();
+
+        using Process process = new()
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = executable,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            }
+        };
+
+        process.StartInfo.ArgumentList.Add("serve");
+        process.StartInfo.ArgumentList.Add("--port");
+        process.StartInfo.ArgumentList.Add("0");
+        process.StartInfo.ArgumentList.Add("--data");
+        process.StartInfo.ArgumentList.Add(dataPath);
+
+        process.Start();
+        _ = process.StandardError.ReadToEndAsync(TestContext.CancellationToken);
+
+        try
+        {
+            int? floor = await ReadWorkerThreadFloorAsync(process, TestContext.CancellationToken).ConfigureAwait(false);
+            Assert.IsNotNull(floor, "The server did not report a worker-thread floor.");
+            Assert.IsTrue(
+                floor >= Environment.ProcessorCount * 4,
+                $"Worker-thread floor {floor} is below four times the processor count ({Environment.ProcessorCount * 4}).");
+        }
+        finally
+        {
+            if(!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+
+            await process.WaitForExitAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        }
+    }
+
     /// <summary>Reads the child's standard output until it prints the SPARQL endpoint address (or the timeout elapses).</summary>
     /// <param name="process">The running server process.</param>
     /// <param name="cancellationToken">A token that aborts the wait.</param>
@@ -135,6 +196,34 @@ internal sealed partial class VeritasCliIntegrationTests
         catch(OperationCanceledException)
         {
             //Fall through to the null return: the address line never arrived.
+        }
+
+        return null;
+    }
+
+    /// <summary>Reads the child's standard output until it prints the worker-thread floor (or the timeout elapses).</summary>
+    /// <param name="process">The running server process.</param>
+    /// <param name="cancellationToken">A token that aborts the wait.</param>
+    /// <returns>The reported worker-thread floor, or <see langword="null"/> if it was not reported in time.</returns>
+    private static async Task<int?> ReadWorkerThreadFloorAsync(Process process, CancellationToken cancellationToken)
+    {
+        using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+
+        try
+        {
+            while(await process.StandardOutput.ReadLineAsync(timeout.Token).ConfigureAwait(false) is { } line)
+            {
+                Match match = WorkerThreadFloorRegex().Match(line);
+                if(match.Success)
+                {
+                    return int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture);
+                }
+            }
+        }
+        catch(OperationCanceledException)
+        {
+            //Fall through to the null return: the floor line never arrived.
         }
 
         return null;

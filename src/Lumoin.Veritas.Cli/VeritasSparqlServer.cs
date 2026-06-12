@@ -39,6 +39,10 @@ internal static class VeritasSparqlServer
     /// <returns>The process exit code (0 on a clean stop, 1 when the dataset could not be loaded).</returns>
     public static async Task<int> RunAsync(IReadOnlyList<string> dataPaths, int port, CancellationToken cancellationToken)
     {
+        //The endpoint serves latency-sensitive I/O from the shared worker pool; floor the pool's
+        //minimum so a burst of synchronous CPU work cannot starve response continuations.
+        int workerThreadFloor = HostThreadPoolFloor.Apply();
+
         SparqlExpressionContext context = SparqlExpressionContext.CreateDefault();
         (SparqlQueryEngine? engine, string? error) = await VeritasOperations.BuildEngineAsync(dataPaths, context, cancellationToken).ConfigureAwait(false);
         if(error is not null)
@@ -69,6 +73,10 @@ internal static class VeritasSparqlServer
                 await Console.Out.WriteLineAsync($"Veritas SPARQL endpoint listening on {address}/sparql ({dataPaths.Count} data file(s)).").ConfigureAwait(false);
             }
         }
+
+        //Report the applied worker-thread floor so an operator (and the integration test) can confirm
+        //the pool minimum was raised before any request is served.
+        await Console.Out.WriteLineAsync($"Worker-thread minimum floored at {workerThreadFloor}.").ConfigureAwait(false);
 
         await app.WaitForShutdownAsync(cancellationToken).ConfigureAwait(false);
 
