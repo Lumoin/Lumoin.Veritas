@@ -11,8 +11,9 @@ namespace Lumoin.Veritas.Core.Sat;
 /// </summary>
 /// <param name="IsSatisfiable">Whether a satisfying assignment exists.</param>
 /// <param name="Assignment">A satisfying assignment indexed by variable, or <c>null</c> when unsatisfiable. Variables no clause constrains come out <see langword="false"/>.</param>
+/// <param name="AssumptionCore">For an unsatisfiable verdict, the subset of the supplied assumptions that participates in the refutation; re-solving while assuming only this subset is still unsatisfiable. It is <c>null</c> for a satisfiable verdict and non-<c>null</c> for every unsatisfiable verdict — empty when the formula alone refutes (no assumption participates), the full supplied set when the search mode cannot tighten it, and a proper subset when the conflict analysis attributes the refutation to fewer assumptions.</param>
 [DebuggerDisplay("SatVerdict {IsSatisfiable}")]
-public readonly record struct SatVerdict(bool IsSatisfiable, IReadOnlyList<bool>? Assignment);
+public readonly record struct SatVerdict(bool IsSatisfiable, IReadOnlyList<bool>? Assignment, IReadOnlyList<SatLiteral>? AssumptionCore = null);
 
 /// <summary>
 /// The satisfiability seam consumers program against: any engine deciding
@@ -45,14 +46,17 @@ public delegate SatVerdict SatSolve(
 /// <remarks>
 /// The assumptions are a reserved trail prefix: each is decided up front and
 /// never unwound, so a conflict that traces to that prefix is the
-/// unsatisfiable-under-assumptions proof. The seam stays at whole-solver
+/// unsatisfiable-under-assumptions proof. An unsatisfiable verdict also
+/// carries the failed-assumption core — the subset of assumptions reachable
+/// from the final conflict through reason antecedents — in
+/// <see cref="SatVerdict.AssumptionCore"/>. The seam stays at whole-solver
 /// granularity, matching <see cref="SatSolve"/>.
 /// </remarks>
 /// <param name="clauses">The clauses, each a disjunction of literals; the formula is their conjunction.</param>
 /// <param name="variableCount">The number of variables.</param>
 /// <param name="assumptions">The literals fixed before branching.</param>
 /// <param name="cancellationToken">A token that aborts the search.</param>
-/// <returns>The verdict, with a satisfying assignment of the formula and every assumption when one exists.</returns>
+/// <returns>The verdict, with a satisfying assignment of the formula and every assumption when one exists, or the failed-assumption core when none does.</returns>
 public delegate SatVerdict SatSolveUnderAssumptions(
     IReadOnlyList<IReadOnlyList<SatLiteral>> clauses,
     int variableCount,
@@ -82,6 +86,20 @@ public delegate SatVerdict SatSolveUnderAssumptions(
 /// response ever unwinds. A conflict that survives down to that prefix is
 /// the unsatisfiable-under-assumptions proof; otherwise the search
 /// proceeds exactly as the unassumed case over the remaining variables.
+/// </para>
+/// <para>
+/// <b>Failed-assumption core.</b> An unsatisfiable-under-assumptions
+/// verdict carries the subset of assumptions that participates in the
+/// refutation, in <see cref="SatVerdict.AssumptionCore"/>. The
+/// <see cref="SatSearchMode.ConflictLearning"/> mode records a reason
+/// clause for every forced literal, so it walks the final conflict back
+/// through those reasons to the level-0 assumptions it depends on — a
+/// tight core. The <see cref="SatSearchMode.PropagationOnly"/> default
+/// records no reasons mid-search, so it returns the whole supplied set as
+/// the honest sound core, tightening only the case it can prove cheaply:
+/// an assumption that directly contradicts an already-fixed literal. The
+/// full set is always sound, since assuming everything reproduces the
+/// refutation.
 /// </para>
 /// <para>
 /// <b>Deliberately the naive first engine.</b> The intended consumers
@@ -138,7 +156,9 @@ public static class SatSolver
     /// search. A satisfying verdict satisfies both the formula and every
     /// assumption; an unsatisfiable verdict means no assignment satisfies
     /// the formula while honouring the assumptions — including the case
-    /// where the assumptions contradict each other or a clause directly.
+    /// where the assumptions contradict each other or a clause directly —
+    /// and carries the failed-assumption core in
+    /// <see cref="SatVerdict.AssumptionCore"/>.
     /// </remarks>
     /// <param name="clauses">The clauses, each a disjunction of literals; the formula is their conjunction. An empty clause makes the formula unsatisfiable; an empty clause list is satisfiable when the assumptions are mutually consistent.</param>
     /// <param name="variableCount">The number of variables; every literal's <see cref="SatLiteral.Variable"/> must lie below it.</param>
@@ -146,7 +166,7 @@ public static class SatSolver
     /// <param name="pool">The pool the solver's working buffers rent from; <c>null</c> uses <see cref="MemoryPool{T}.Shared"/>.</param>
     /// <param name="mode">How a conflict prunes the search; both modes decide the same satisfiability and return a model honouring the formula and assumptions when one exists.</param>
     /// <param name="cancellationToken">A token that aborts the search between propagation rounds.</param>
-    /// <returns>The verdict, with a satisfying assignment of the formula and every assumption when one exists.</returns>
+    /// <returns>The verdict, with a satisfying assignment of the formula and every assumption when one exists, or the failed-assumption core in <see cref="SatVerdict.AssumptionCore"/> when none does.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="clauses"/> or <paramref name="assumptions"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="variableCount"/> is negative or a literal indexes beyond it.</exception>
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
@@ -227,21 +247,32 @@ public static class SatSolver
         int trailCount = 0;
         int decisionCount = 0;
 
+        //The variable an assumption fixes records which assumption fixed it,
+        //by index into the supplied list, so a direct contradiction names the
+        //exact assumption that set the clashing value. NoAssumption marks a
+        //variable no assumption fixed.
+        using IMemoryOwner<int> assumedByOwner = pool.Rent(Math.Max(variableCount, 1));
+        Span<int> assumedBy = assumedByOwner.Memory.Span[..variableCount];
+        assumedBy.Fill(NoAssumption);
+
         //The assumptions are decided first into a reserved trail prefix the
         //conflict unwind never crosses. An assumption that contradicts an
-        //earlier one is itself the unsatisfiable-under-assumptions proof.
-        foreach(SatLiteral assumption in assumptions)
+        //earlier one is itself the unsatisfiable-under-assumptions proof; its
+        //core is exactly the clashing pair.
+        for(int assumptionIndex = 0; assumptionIndex < assumptions.Count; assumptionIndex++)
         {
+            SatLiteral assumption = assumptions[assumptionIndex];
             int wanted = assumption.IsPositive ? 1 : 0;
             int current = values[assumption.Variable];
             if(current == -1)
             {
                 values[assumption.Variable] = wanted;
+                assumedBy[assumption.Variable] = assumptionIndex;
                 trail[trailCount++] = assumption.Variable;
             }
             else if(current != wanted)
             {
-                return new SatVerdict(false, null);
+                return new SatVerdict(false, null, [assumptions[assumedBy[assumption.Variable]], assumption]);
             }
         }
 
@@ -254,7 +285,9 @@ public static class SatSolver
                 //Conflict: unwind to the deepest decision whose second
                 //branch is untried, never below the assumption prefix. None
                 //left proves unsatisfiability (under assumptions, when the
-                //prefix is non-empty).
+                //prefix is non-empty). This mode records no reason for a
+                //propagated literal, so the honest sound core is the whole
+                //supplied set: assuming all of it reproduces the refutation.
                 bool branched = false;
                 while(decisionCount > 0)
                 {
@@ -284,7 +317,7 @@ public static class SatSolver
 
                 if(!branched)
                 {
-                    return new SatVerdict(false, null);
+                    return new SatVerdict(false, null, DeduplicatedAssumptions(assumptions));
                 }
 
                 continue;
@@ -351,14 +384,17 @@ public static class SatSolver
         using IMemoryOwner<int> levelsOwner = pool.Rent(variableCount);
         using IMemoryOwner<int> reasonsOwner = pool.Rent(variableCount);
         using IMemoryOwner<int> seenOwner = pool.Rent(variableCount);
+        using IMemoryOwner<int> assumedByOwner = pool.Rent(Math.Max(variableCount, 1));
 
         Span<int> values = valuesOwner.Memory.Span[..variableCount];
         Span<int> trail = trailOwner.Memory.Span[..variableCount];
         Span<int> levels = levelsOwner.Memory.Span[..variableCount];
         Span<int> reasons = reasonsOwner.Memory.Span[..variableCount];
         Span<int> seen = seenOwner.Memory.Span[..variableCount];
+        Span<int> assumedBy = assumedByOwner.Memory.Span[..variableCount];
         values.Fill(-1);
         seen.Clear();
+        assumedBy.Fill(NoAssumption);
         int trailCount = 0;
         int currentLevel = 0;
 
@@ -372,9 +408,10 @@ public static class SatSolver
 
         //The assumptions are decided first at level 0. An assumption that
         //contradicts an earlier one is the unsatisfiable-under-assumptions
-        //proof.
-        foreach(SatLiteral assumption in assumptions)
+        //proof; its core is exactly the clashing pair.
+        for(int assumptionIndex = 0; assumptionIndex < assumptions.Count; assumptionIndex++)
         {
+            SatLiteral assumption = assumptions[assumptionIndex];
             int wanted = assumption.IsPositive ? 1 : 0;
             int current = values[assumption.Variable];
             if(current == -1)
@@ -382,11 +419,12 @@ public static class SatSolver
                 values[assumption.Variable] = wanted;
                 levels[assumption.Variable] = 0;
                 reasons[assumption.Variable] = NoReason;
+                assumedBy[assumption.Variable] = assumptionIndex;
                 trail[trailCount++] = assumption.Variable;
             }
             else if(current != wanted)
             {
-                return new SatVerdict(false, null);
+                return new SatVerdict(false, null, [assumptions[assumedBy[assumption.Variable]], assumption]);
             }
         }
 
@@ -399,10 +437,14 @@ public static class SatSolver
             {
                 //A conflict at level 0 traces wholly to the formula and the
                 //assumption prefix: unsatisfiable (under assumptions when the
-                //prefix is non-empty).
+                //prefix is non-empty). The reason column then yields the
+                //failed-assumption core — the assumptions reachable from the
+                //conflict through reason antecedents.
                 if(currentLevel == 0)
                 {
-                    return new SatVerdict(false, null);
+                    List<SatLiteral> core = ExtractCore(database, conflict, assumptions, assumedBy, reasons, values, seen);
+
+                    return new SatVerdict(false, null, core);
                 }
 
                 int backjumpLevel = Analyze(database, conflict, values, levels, reasons, trail, trailCount, currentLevel, seen, learned, out SatLiteral asserting);
@@ -453,6 +495,9 @@ public static class SatSolver
 
     /// <summary>The reason marker for a variable assigned by decision or assumption rather than forced by a clause.</summary>
     private const int NoReason = -1;
+
+    /// <summary>The marker for a variable no assumption fixed; a non-negative entry indexes the assumption that fixed it.</summary>
+    private const int NoAssumption = -1;
 
     /// <summary>The default engine behind the <see cref="SatSolve"/> seam: <see cref="Solve"/> with the shared pool.</summary>
     public static SatSolve Default { get; } = static (clauses, variableCount, cancellationToken) => Solve(clauses, variableCount, pool: null, cancellationToken: cancellationToken);
@@ -685,6 +730,105 @@ public static class SatSolver
         learned.Insert(0, asserting);
 
         return backjumpLevel;
+    }
+
+    /// <summary>
+    /// Extracts the failed-assumption core from a level-0 conflict — the
+    /// analyze-final walk: starting from the conflicting clause, follows reason
+    /// antecedents backward through the level-0 implication graph and collects
+    /// every assumption it reaches.
+    /// </summary>
+    /// <remarks>
+    /// Every variable a clause in the walk mentions is assigned at level 0, so
+    /// it was fixed either by an assumption (named through <paramref name="assumedBy"/>)
+    /// or forced by a reason clause (named through <paramref name="reasons"/>);
+    /// the walk adds the former to the core and recurses into the latter.
+    /// Assumptions outside the reachable set never forced any literal on a path
+    /// to the conflict, so they are absent from the implication graph and
+    /// dropping them leaves the same propagation reaching the same conflict —
+    /// the returned core is sound. The first occurrence of each variable's
+    /// assumption fixes its place; later duplicates of the same literal do not
+    /// re-enter.
+    /// </remarks>
+    /// <param name="database">The clause database holding the conflict and reason clauses.</param>
+    /// <param name="conflict">The index of the conflicting clause.</param>
+    /// <param name="assumptions">The supplied assumptions; <paramref name="assumedBy"/> indexes into this list.</param>
+    /// <param name="assumedBy">The per-variable column naming the assumption that fixed each variable, or <see cref="NoAssumption"/>.</param>
+    /// <param name="reasons">The per-variable reason column naming the clause that forced each variable, or <see cref="NoReason"/>.</param>
+    /// <param name="values">The assignment column; every variable a walked clause mentions is assigned under it.</param>
+    /// <param name="seen">The marker column used as the walk's visited set; entered and left cleared.</param>
+    /// <returns>The assumptions reachable from the conflict, each once, in the order the walk first reaches them.</returns>
+    private static List<SatLiteral> ExtractCore(
+        List<IReadOnlyList<SatLiteral>> database,
+        int conflict,
+        IReadOnlyList<SatLiteral> assumptions,
+        Span<int> assumedBy,
+        Span<int> reasons,
+        Span<int> values,
+        Span<int> seen)
+    {
+        List<SatLiteral> core = [];
+        List<int> pending = [conflict];
+        List<int> touched = [];
+
+        while(pending.Count > 0)
+        {
+            int clauseIndex = pending[^1];
+            pending.RemoveAt(pending.Count - 1);
+            foreach(SatLiteral literal in database[clauseIndex])
+            {
+                int variable = literal.Variable;
+
+                //An unassigned variable cannot sit on the level-0 implication
+                //graph: every literal of the conflict and of a reason clause is
+                //assigned. The guard keeps the walk total regardless.
+                if(values[variable] == -1 || seen[variable] != 0)
+                {
+                    continue;
+                }
+
+                seen[variable] = 1;
+                touched.Add(variable);
+                if(assumedBy[variable] != NoAssumption)
+                {
+                    core.Add(assumptions[assumedBy[variable]]);
+                }
+                else if(reasons[variable] != NoReason)
+                {
+                    pending.Add(reasons[variable]);
+                }
+            }
+        }
+
+        //Leave the marker column as it was entered: cleared.
+        foreach(int variable in touched)
+        {
+            seen[variable] = 0;
+        }
+
+        return core;
+    }
+
+    /// <summary>
+    /// The supplied assumptions with each literal kept once, in first-occurrence
+    /// order: the whole-set sound core for a refutation the search mode cannot
+    /// trace to fewer assumptions.
+    /// </summary>
+    /// <param name="assumptions">The supplied assumptions.</param>
+    /// <returns>The distinct assumption literals, in the order they first appear.</returns>
+    private static List<SatLiteral> DeduplicatedAssumptions(IReadOnlyList<SatLiteral> assumptions)
+    {
+        List<SatLiteral> distinct = [];
+        HashSet<SatLiteral> already = [];
+        foreach(SatLiteral assumption in assumptions)
+        {
+            if(already.Add(assumption))
+            {
+                distinct.Add(assumption);
+            }
+        }
+
+        return distinct;
     }
 
     /// <summary>

@@ -275,6 +275,222 @@ internal sealed class SatSolverTests
         Assert.IsGreaterThan(20, unsatisfiableSeen, "The sweep covers unsatisfiable-under-assumptions formulas.");
     }
 
+    /// <summary>
+    /// The failed-assumption core of an unsatisfiable-under-assumptions verdict
+    /// is sound and a subset of the assumptions, over a deterministic sweep in
+    /// both modes: re-solving while assuming only the core stays unsatisfiable,
+    /// and every core literal was a supplied assumption.
+    /// </summary>
+    /// <param name="mode">The search mode under test.</param>
+    [TestMethod]
+    [DataRow(SatSearchMode.PropagationOnly)]
+    [DataRow(SatSearchMode.ConflictLearning)]
+    public void AssumptionCoreSoundnessSweep(SatSearchMode mode)
+    {
+        //A deterministic xorshift drives the generation; no entropy APIs.
+        ulong state = 0xA0761D6478BD642FUL;
+        int satisfiableSeen = 0;
+        int unsatisfiableSeen = 0;
+
+        for(int round = 0; round < 300; round++)
+        {
+            int variableCount = 1 + (int)(Next(ref state) % 7);
+            int clauseCount = 1 + (int)(Next(ref state) % 14);
+            List<IReadOnlyList<SatLiteral>> clauses = [];
+            for(int i = 0; i < clauseCount; i++)
+            {
+                int width = 1 + (int)(Next(ref state) % 3);
+                SatLiteral[] clause = new SatLiteral[width];
+                for(int j = 0; j < width; j++)
+                {
+                    clause[j] = new SatLiteral((int)(Next(ref state) % (uint)variableCount), (Next(ref state) & 1) == 0);
+                }
+
+                clauses.Add(clause);
+            }
+
+            //Bias toward several assumptions so the unsatisfiable-under-
+            //assumptions arm fires often: the core is only exercised there.
+            int assumptionCount = (int)(Next(ref state) % (uint)(variableCount + 1));
+            List<SatLiteral> assumptions = [];
+            for(int i = 0; i < assumptionCount; i++)
+            {
+                assumptions.Add(new SatLiteral((int)(Next(ref state) % (uint)variableCount), (Next(ref state) & 1) == 0));
+            }
+
+            SatVerdict verdict = SatSolver.SolveUnderAssumptions(clauses, variableCount, assumptions, mode: mode, cancellationToken: TestContext.CancellationToken);
+            if(verdict.IsSatisfiable)
+            {
+                satisfiableSeen++;
+                Assert.IsNull(verdict.AssumptionCore, $"Round {round}: a satisfiable verdict carries no core.");
+
+                continue;
+            }
+
+            unsatisfiableSeen++;
+            Assert.IsNotNull(verdict.AssumptionCore, $"Round {round}: an unsatisfiable-under-assumptions verdict carries a core.");
+
+            //The core is a subset of the supplied assumptions.
+            foreach(SatLiteral coreLiteral in verdict.AssumptionCore)
+            {
+                Assert.Contains(coreLiteral, assumptions, $"Round {round}: a core literal was not a supplied assumption.");
+            }
+
+            //Soundness: re-solving while assuming only the core is still
+            //unsatisfiable.
+            SatVerdict reSolved = SatSolver.SolveUnderAssumptions(clauses, variableCount, [.. verdict.AssumptionCore], mode: mode, cancellationToken: TestContext.CancellationToken);
+            Assert.IsFalse(reSolved.IsSatisfiable, $"Round {round}: assuming only the core is no longer unsatisfiable — the core is unsound.");
+        }
+
+        TestContext.WriteLine($"{mode} | rounds {300} | satisfiable {satisfiableSeen} | unsatisfiable {unsatisfiableSeen}");
+        Assert.IsGreaterThan(20, satisfiableSeen, "The sweep covers satisfiable-under-assumptions formulas.");
+        Assert.IsGreaterThan(20, unsatisfiableSeen, "The sweep covers unsatisfiable-under-assumptions formulas.");
+    }
+
+    /// <summary>An unsatisfiable verdict reached without assumptions carries the empty core: the formula alone refutes, so no assumption participates.</summary>
+    /// <param name="mode">The search mode under test.</param>
+    [TestMethod]
+    [DataRow(SatSearchMode.PropagationOnly)]
+    [DataRow(SatSearchMode.ConflictLearning)]
+    public void EmptyAssumptionSetYieldsEmptyCore(SatSearchMode mode)
+    {
+        //Contradicting unit clauses: unsatisfiable from the formula alone.
+        List<IReadOnlyList<SatLiteral>> clauses =
+        [
+            [new SatLiteral(0, IsPositive: true)],
+            [new SatLiteral(0, IsPositive: false)],
+        ];
+
+        SatVerdict verdict = SatSolver.SolveUnderAssumptions(clauses, variableCount: 1, assumptions: [], mode: mode, cancellationToken: TestContext.CancellationToken);
+
+        Assert.IsFalse(verdict.IsSatisfiable);
+        Assert.IsNotNull(verdict.AssumptionCore);
+        Assert.IsEmpty(verdict.AssumptionCore, "The formula alone refutes, so no assumption participates.");
+    }
+
+    /// <summary>A single assumption that propagation alone refutes is exactly the core.</summary>
+    /// <param name="mode">The search mode under test.</param>
+    [TestMethod]
+    [DataRow(SatSearchMode.PropagationOnly)]
+    [DataRow(SatSearchMode.ConflictLearning)]
+    public void SingleRefutedAssumptionIsExactlyTheCore(SatSearchMode mode)
+    {
+        //(~x0 | x1) & (~x0 | ~x1): satisfiable on its own (x0 false), but
+        //assuming x0 forces x1 both ways. The lone assumption is the whole core.
+        List<IReadOnlyList<SatLiteral>> clauses =
+        [
+            [new SatLiteral(0, false), new SatLiteral(1, true)],
+            [new SatLiteral(0, false), new SatLiteral(1, false)],
+        ];
+
+        SatLiteral assumeX0 = new(0, IsPositive: true);
+        SatVerdict verdict = SatSolver.SolveUnderAssumptions(clauses, variableCount: 2, [assumeX0], mode: mode, cancellationToken: TestContext.CancellationToken);
+
+        Assert.IsFalse(verdict.IsSatisfiable);
+        Assert.IsNotNull(verdict.AssumptionCore);
+        Assert.HasCount(1, verdict.AssumptionCore);
+        Assert.AreEqual(assumeX0, verdict.AssumptionCore[0]);
+    }
+
+    /// <summary>
+    /// An assumption on a variable no clause mentions cannot participate in any
+    /// refutation: with conflict learning the core excludes it, leaving exactly
+    /// the assumptions that drive the conflict. Minimality is provable here —
+    /// the irrelevant assumption shares no clause with the refuting pair.
+    /// </summary>
+    [TestMethod]
+    public void IrrelevantAssumptionIsExcludedFromTheCore()
+    {
+        //x2 appears in no clause. Assuming x0 refutes via (~x0 | x1) & (~x0 |
+        //~x1); the assumption on x2 is irrelevant and must not enter the core.
+        List<IReadOnlyList<SatLiteral>> clauses =
+        [
+            [new SatLiteral(0, false), new SatLiteral(1, true)],
+            [new SatLiteral(0, false), new SatLiteral(1, false)],
+        ];
+
+        SatLiteral assumeX0 = new(0, IsPositive: true);
+        SatLiteral assumeX2 = new(2, IsPositive: true);
+        SatVerdict verdict = SatSolver.SolveUnderAssumptions(clauses, variableCount: 3, [assumeX2, assumeX0], mode: SatSearchMode.ConflictLearning, cancellationToken: TestContext.CancellationToken);
+
+        Assert.IsFalse(verdict.IsSatisfiable);
+        Assert.IsNotNull(verdict.AssumptionCore);
+        Assert.Contains(assumeX0, verdict.AssumptionCore, "The refuting assumption is in the core.");
+        Assert.DoesNotContain(assumeX2, verdict.AssumptionCore, "The irrelevant assumption is excluded.");
+        Assert.HasCount(1, verdict.AssumptionCore, "Only the refuting assumption participates.");
+    }
+
+    /// <summary>
+    /// Two contradictory assumptions on the same variable are exactly the core:
+    /// the clash names the pair, and re-solving on that pair stays unsatisfiable.
+    /// </summary>
+    /// <param name="mode">The search mode under test.</param>
+    [TestMethod]
+    [DataRow(SatSearchMode.PropagationOnly)]
+    [DataRow(SatSearchMode.ConflictLearning)]
+    public void ContradictoryAssumptionsAreExactlyTheCore(SatSearchMode mode)
+    {
+        //An empty formula: the only refutation is the contradictory pair.
+        SatLiteral assumeX0True = new(0, IsPositive: true);
+        SatLiteral assumeX0False = new(0, IsPositive: false);
+        SatVerdict verdict = SatSolver.SolveUnderAssumptions([], variableCount: 1, [assumeX0True, assumeX0False], mode: mode, cancellationToken: TestContext.CancellationToken);
+
+        Assert.IsFalse(verdict.IsSatisfiable);
+        Assert.IsNotNull(verdict.AssumptionCore);
+        Assert.HasCount(2, verdict.AssumptionCore);
+        Assert.Contains(assumeX0True, verdict.AssumptionCore);
+        Assert.Contains(assumeX0False, verdict.AssumptionCore);
+
+        SatVerdict reSolved = SatSolver.SolveUnderAssumptions([], variableCount: 1, [.. verdict.AssumptionCore], mode: mode, cancellationToken: TestContext.CancellationToken);
+        Assert.IsFalse(reSolved.IsSatisfiable, "Re-solving on the contradictory pair stays unsatisfiable.");
+    }
+
+    /// <summary>
+    /// A duplicated assumption enters the core at most once: the core stays a
+    /// set even when the supplied assumptions repeat a literal.
+    /// </summary>
+    /// <param name="mode">The search mode under test.</param>
+    [TestMethod]
+    [DataRow(SatSearchMode.PropagationOnly)]
+    [DataRow(SatSearchMode.ConflictLearning)]
+    public void DuplicateAssumptionEntersTheCoreOnce(SatSearchMode mode)
+    {
+        //(~x0 | x1) & (~x0 | ~x1): assuming x0 (twice) refutes. The duplicate
+        //must not double the core.
+        List<IReadOnlyList<SatLiteral>> clauses =
+        [
+            [new SatLiteral(0, false), new SatLiteral(1, true)],
+            [new SatLiteral(0, false), new SatLiteral(1, false)],
+        ];
+
+        SatLiteral assumeX0 = new(0, IsPositive: true);
+        SatVerdict verdict = SatSolver.SolveUnderAssumptions(clauses, variableCount: 2, [assumeX0, assumeX0], mode: mode, cancellationToken: TestContext.CancellationToken);
+
+        Assert.IsFalse(verdict.IsSatisfiable);
+        Assert.IsNotNull(verdict.AssumptionCore);
+        Assert.HasCount(1, verdict.AssumptionCore, "The duplicate assumption enters the core once.");
+        Assert.AreEqual(assumeX0, verdict.AssumptionCore[0]);
+    }
+
+    /// <summary>A satisfiable-under-assumptions verdict carries no core.</summary>
+    /// <param name="mode">The search mode under test.</param>
+    [TestMethod]
+    [DataRow(SatSearchMode.PropagationOnly)]
+    [DataRow(SatSearchMode.ConflictLearning)]
+    public void SatisfiableVerdictHasNoCore(SatSearchMode mode)
+    {
+        //(x0 | x1): assuming x0 is satisfiable.
+        List<IReadOnlyList<SatLiteral>> clauses =
+        [
+            [new SatLiteral(0, true), new SatLiteral(1, true)],
+        ];
+
+        SatVerdict verdict = SatSolver.SolveUnderAssumptions(clauses, variableCount: 2, [new SatLiteral(0, true)], mode: mode, cancellationToken: TestContext.CancellationToken);
+
+        Assert.IsTrue(verdict.IsSatisfiable);
+        Assert.IsNull(verdict.AssumptionCore);
+    }
+
     /// <summary>Both modes decide the pigeonhole contradiction unsatisfiable; the search must learn and backjump, not only propagate.</summary>
     /// <param name="mode">The search mode under test.</param>
     [TestMethod]
