@@ -20,26 +20,26 @@
       },
       "Lumoin.Verisync.Cbor": {
         "type": "Direct",
-        "requested": "[0.0.1, )",
-        "resolved": "0.0.1",
-        "contentHash": "wNxgmpvBl9box8wbSghxLodYnOCtTk6M9TBSfXfe7+DBbFjKDpgagI/4zUaMcoaWdxqsUUK3C8Owq4V++xk4dw==",
+        "requested": "[0.0.2, )",
+        "resolved": "0.0.2",
+        "contentHash": "IAF/ztmaqqVtDKQHRlaPqNayQ+ZVvd3D/3i2xfW8gmcHDinnhOCUEa4E0G8y+eqBKL1BfoWNe8lpXc3w9kAbnw==",
         "dependencies": {
-          "Lumoin.Verisync.Core": "0.0.1"
+          "Lumoin.Verisync.Core": "0.0.2"
         }
       },
       "Lumoin.Verisync.Core": {
         "type": "Direct",
-        "requested": "[0.0.1, )",
-        "resolved": "0.0.1",
-        "contentHash": "C/jULk+Lz13UX5q5tGzKBm3mbkd7ale8ODzjJD8dEpUZCdvWcx7sONxPHCMfT49HYlUJF4yrq1HvgXGzPdQy4A=="
+        "requested": "[0.0.2, )",
+        "resolved": "0.0.2",
+        "contentHash": "3J22EzNeKg93qH1ZVmpSAHnS+6EM9fTOTf8XPP7N9RTXMOlSypuNvD+kMP60cRgxWTf24glkDh2RY9jmetCuIw=="
       },
       "Lumoin.Verisync.Json": {
         "type": "Direct",
-        "requested": "[0.0.1, )",
-        "resolved": "0.0.1",
-        "contentHash": "I5PPMkJOE4kacSDiBmM7znYr053Wl1TQ6Tz6GeYLClVRROB1trhUCOhhOoRp0NXr+4gxsJdd+G6RoDaT2xmriA==",
+        "requested": "[0.0.2, )",
+        "resolved": "0.0.2",
+        "contentHash": "l6Elv3sDe4XGgczDbsgA27Xn+UEMz6w2O/vUPKT3MLY+AHkQy4d5v0TIEE38uZnyts8upQ14IKFF7Q07QIz7mw==",
         "dependencies": {
-          "Lumoin.Verisync.Core": "0.0.1"
+          "Lumoin.Verisync.Core": "0.0.2"
         }
       },
       "Microsoft.CodeAnalysis.BannedApiAnalyzers": {
