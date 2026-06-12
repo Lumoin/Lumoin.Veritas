@@ -19,8 +19,9 @@ namespace Lumoin.Veritas.Owl.Reasoning;
 /// <see cref="ConceptCnf"/>, so every world carries its clauses. A world is
 /// a canonical assumption set — the sorted distinct literals of its label
 /// concepts — checked by <see cref="SatSolver.SolveUnderAssumptions"/>. A
-/// satisfying model passes a greedy shrink that flips gratuitously-true
-/// modal atoms to false; each existential atom still true spawns a
+/// satisfying model passes a greedy top-down shrink that flips
+/// gratuitously-true variables — connectives and the modal atoms they
+/// force — to false; each existential atom still true spawns a
 /// successor world carrying the filler plus every universal filler whose
 /// role the existential's role reaches through the told role hierarchy.
 /// Worlds explore over an explicit frame stack with a memo table over
@@ -182,7 +183,7 @@ internal static class SatTableauModuleReasoner
             cnf.AssertFact(conjunct);
         }
 
-        Dictionary<int[], WorldState> memo = new(CanonicalKeyComparer.Instance);
+        WorldMemo memo = new();
 
         bool isConsistent = translation.Edges.Count > 0
             ? CheckJointRoot(cnf, translation, memo, searchMode, cancellationToken)
@@ -216,7 +217,7 @@ internal static class SatTableauModuleReasoner
     private static List<(NamedNode SubClass, NamedNode SuperClass)> SweepSubsumptions(
         ConceptCnf cnf,
         AlcModuleReasoner.Translation translation,
-        Dictionary<int[], WorldState> memo,
+        WorldMemo memo,
         SatSearchMode searchMode,
         CancellationToken cancellationToken)
     {
@@ -236,7 +237,7 @@ internal static class SatTableauModuleReasoner
                     cnf.GetLiteral(new AlcNot(new AlcAtom(superClass))),
                 ];
                 (SatLiteral[] assumptions, int[] key) = Canonicalize(literals);
-                if(!CheckWorld(cnf, translation, memo, assumptions, key, searchMode, cancellationToken))
+                if(!CheckWorld(cnf, translation, memo, assumptions, key, searchMode, minimizeCores: true, cancellationToken))
                 {
                     subsumptions.Add((new NamedNode(subClass), new NamedNode(superClass)));
                 }
@@ -261,7 +262,7 @@ internal static class SatTableauModuleReasoner
     private static bool CheckAllSeedWorlds(
         ConceptCnf cnf,
         AlcModuleReasoner.Translation translation,
-        Dictionary<int[], WorldState> memo,
+        WorldMemo memo,
         SatSearchMode searchMode,
         CancellationToken cancellationToken)
     {
@@ -286,7 +287,7 @@ internal static class SatTableauModuleReasoner
 
         foreach((SatLiteral[] assumptions, int[] key) in seeds)
         {
-            if(!CheckWorld(cnf, translation, memo, assumptions, key, searchMode, cancellationToken))
+            if(!CheckWorld(cnf, translation, memo, assumptions, key, searchMode, minimizeCores: true, cancellationToken))
             {
                 return false;
             }
@@ -296,61 +297,170 @@ internal static class SatTableauModuleReasoner
     }
 
     /// <summary>
-    /// Checks the named forest as one joint SAT instance when asserted role
-    /// edges are present: the template variable space replicates per named
-    /// individual, every template clause instantiates into every block,
-    /// asserted edges contribute universal-propagation clauses, and each
-    /// individual's asserted concepts assume into its block. The joint
-    /// model's true existential atoms spawn per-block successor chains in
-    /// template space through <see cref="CheckWorld"/>; a chain failure
-    /// appends its modal conflict clause to the template and the joint
-    /// instance rebuilds and re-solves. The joint root spans blocks, so it
-    /// never enters the template-space memo table — only the chains do.
+    /// Checks the named forest when asserted role edges are present, one
+    /// joint SAT instance per connected component of the asserted edge
+    /// graph: in ALC(H) without inverses or nominals, constraints travel
+    /// between named individuals only along asserted edges, so disjoint
+    /// components compose models independently under the shared TBox.
+    /// Asserted individuals no edge touches check as independent per-seed
+    /// worlds, exactly as in the edge-free case.
     /// </summary>
-    /// <remarks>
-    /// The rebuild-per-solve discipline is the width-freeze design: every
-    /// concept that can contribute to the joint root — the asserted
-    /// concepts and, to a fixpoint, every universal filler an asserted edge
-    /// can reach — encodes into the template before the block width freezes
-    /// at the template's variable count, and successor chains that grow the
-    /// template between solves invalidate nothing because the next build
-    /// re-derives the block layout and re-instantiates every clause,
-    /// learned ones included.
-    /// </remarks>
     /// <param name="cnf">The shared template CNF; learned clauses append to it.</param>
     /// <param name="translation">The module's translation.</param>
     /// <param name="memo">The memo table the successor chains share.</param>
     /// <param name="searchMode">The solver's search mode.</param>
     /// <param name="cancellationToken">A token that aborts between solver calls.</param>
-    /// <returns><see langword="true"/> when the joint instance and every spawned chain are satisfiable.</returns>
+    /// <returns><see langword="true"/> when every component's joint instance and every spawned chain are satisfiable.</returns>
     private static bool CheckJointRoot(
         ConceptCnf cnf,
         AlcModuleReasoner.Translation translation,
-        Dictionary<int[], WorldState> memo,
+        WorldMemo memo,
         SatSearchMode searchMode,
         CancellationToken cancellationToken)
     {
-        //The block layout: one block per named individual, asserted
-        //individuals first in assertion order, then edge endpoints in edge
-        //order — deterministic either way.
-        List<Utf8String> individuals = [];
-        Dictionary<Utf8String, int> blockOf = [];
+        Dictionary<Utf8String, Utf8String> componentParent = [];
+        foreach((Utf8String from, Utf8String _, Utf8String to) in translation.Edges)
+        {
+            Unite(componentParent, from, to);
+        }
+
+        //Edge components group by their representative; each becomes one
+        //joint instance over exactly its own individuals and edges. An
+        //asserted individual no edge touches is an independent world — the
+        //same argument that makes the edge-free case per-seed: in ALC(H)
+        //without inverses or nominals, constraints travel between named
+        //individuals only along asserted edges, so disjoint components
+        //compose models independently under the shared TBox.
+        Dictionary<Utf8String, List<(Utf8String From, Utf8String Role, Utf8String To)>> componentEdges = [];
+        foreach((Utf8String from, Utf8String role, Utf8String to) edge in translation.Edges)
+        {
+            Utf8String root = Find(componentParent, edge.from);
+            if(!componentEdges.TryGetValue(root, out List<(Utf8String From, Utf8String Role, Utf8String To)>? edges))
+            {
+                edges = [];
+                componentEdges[root] = edges;
+            }
+
+            edges.Add(edge);
+        }
+
         foreach(KeyValuePair<Utf8String, List<AlcConcept>> entry in translation.AssertedConcepts)
         {
-            BlockFor(individuals, blockOf, entry.Key);
+            if(componentParent.ContainsKey(entry.Key))
+            {
+                continue;
+            }
+
+            List<SatLiteral> literals = new(entry.Value.Count);
+            foreach(AlcConcept concept in entry.Value)
+            {
+                literals.Add(cnf.GetLiteral(concept));
+            }
+
+            (SatLiteral[] assumptions, int[] key) = Canonicalize(literals);
+            if(!CheckWorld(cnf, translation, memo, assumptions, key, searchMode, minimizeCores: true, cancellationToken))
+            {
+                return false;
+            }
         }
 
-        foreach((Utf8String from, Utf8String role, Utf8String to) in translation.Edges)
+        foreach(KeyValuePair<Utf8String, List<(Utf8String From, Utf8String Role, Utf8String To)>> component in componentEdges)
         {
-            BlockFor(individuals, blockOf, from);
-            BlockFor(individuals, blockOf, to);
+            List<Utf8String> individuals = [];
+            Dictionary<Utf8String, int> blockOf = [];
+            foreach((Utf8String from, Utf8String _, Utf8String to) in component.Value)
+            {
+                BlockFor(individuals, blockOf, from);
+                BlockFor(individuals, blockOf, to);
+            }
+
+            if(!CheckJointComponent(cnf, translation, memo, individuals, blockOf, component.Value, searchMode, cancellationToken))
+            {
+                return false;
+            }
         }
 
+        return true;
+    }
+
+    /// <summary>The union-find root of an individual in the edge-component forest, with path compression; an individual no union ever named is its own root.</summary>
+    /// <param name="parent">The parent map.</param>
+    /// <param name="individual">The individual to resolve.</param>
+    /// <returns>The component representative.</returns>
+    private static Utf8String Find(Dictionary<Utf8String, Utf8String> parent, Utf8String individual)
+    {
+        Utf8String current = individual;
+        while(parent.TryGetValue(current, out Utf8String next) && !next.Equals(current))
+        {
+            current = next;
+        }
+
+        if(!individual.Equals(current))
+        {
+            parent[individual] = current;
+        }
+
+        return current;
+    }
+
+    /// <summary>Unites two individuals' edge components in the union-find forest.</summary>
+    /// <param name="parent">The parent map.</param>
+    /// <param name="first">The first individual.</param>
+    /// <param name="second">The second individual.</param>
+    private static void Unite(Dictionary<Utf8String, Utf8String> parent, Utf8String first, Utf8String second)
+    {
+        Utf8String firstRoot = Find(parent, first);
+        Utf8String secondRoot = Find(parent, second);
+        parent[firstRoot] = secondRoot;
+        if(!parent.ContainsKey(secondRoot))
+        {
+            parent[secondRoot] = secondRoot;
+        }
+    }
+
+    /// <summary>
+    /// Runs one edge component's joint check to a verdict: build the
+    /// component's joint instance from the template as it stands, solve,
+    /// shrink, spawn every block's successor chains, learn every failing
+    /// chain's modal clause into the template in the same round, and
+    /// rebuild until a round completes with no failure or the joint
+    /// instance itself refutes. The joint root spans blocks, so it never
+    /// enters the template-space memo table — only the chains do.
+    /// </summary>
+    /// <remarks>
+    /// The rebuild-per-solve discipline is the width-freeze design: every
+    /// concept that can contribute to the joint root — the component's
+    /// asserted concepts and, to a fixpoint, every universal filler one of
+    /// its asserted edges can reach — encodes into the template before the
+    /// block width freezes at the template's variable count, and successor
+    /// chains that grow the template between solves invalidate nothing
+    /// because the next build re-derives the block layout and
+    /// re-instantiates every clause, learned ones included.
+    /// </remarks>
+    /// <param name="cnf">The shared template CNF; learned clauses append to it.</param>
+    /// <param name="translation">The module's translation.</param>
+    /// <param name="memo">The memo table the successor chains share.</param>
+    /// <param name="individuals">The component's individuals in block order.</param>
+    /// <param name="blockOf">The component's individual-to-block index.</param>
+    /// <param name="edges">The component's asserted edges.</param>
+    /// <param name="searchMode">The solver's search mode.</param>
+    /// <param name="cancellationToken">A token that aborts between solver calls.</param>
+    /// <returns><see langword="true"/> when the component's joint instance and every spawned chain are satisfiable.</returns>
+    private static bool CheckJointComponent(
+        ConceptCnf cnf,
+        AlcModuleReasoner.Translation translation,
+        WorldMemo memo,
+        List<Utf8String> individuals,
+        Dictionary<Utf8String, int> blockOf,
+        List<(Utf8String From, Utf8String Role, Utf8String To)> edges,
+        SatSearchMode searchMode,
+        CancellationToken cancellationToken)
+    {
         while(true)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            JointInstance joint = BuildJointInstance(cnf, translation, individuals, blockOf);
+            JointInstance joint = BuildJointInstance(cnf, translation, individuals, blockOf, edges);
             SatVerdict verdict = SatSolver.SolveUnderAssumptions(
                 joint.Clauses,
                 joint.VariableCount,
@@ -365,22 +475,26 @@ internal static class SatTableauModuleReasoner
 
             bool[] model = ShrinkJointModel(joint, verdict.Assignment!);
             bool learned = false;
-            for(int block = 0; block < individuals.Count && !learned; block++)
+            HashSet<int[]> learnedThisRound = new(CanonicalKeyComparer.Instance);
+            for(int block = 0; block < individuals.Count; block++)
             {
                 bool[] blockModel = ExtractBlockModel(model, block, joint.BlockWidth);
                 foreach(SuccessorPlan plan in PlanSuccessors(cnf, translation, blockModel))
                 {
-                    if(!CheckWorld(cnf, translation, memo, plan.Assumptions, plan.Key, searchMode, cancellationToken))
+                    if(!CheckWorld(cnf, translation, memo, plan.Assumptions, plan.Key, searchMode, minimizeCores: true, cancellationToken))
                     {
-                        //The chain failure teaches the TEMPLATE its modal
-                        //conflict clause — TBox-entailed, so sound in every
-                        //block — and the joint instance rebuilds against
-                        //the grown template, which instantiates the clause
-                        //into every block.
-                        cnf.Append(plan.ConflictClause);
-                        learned = true;
+                        //Every chain failure of the round teaches the
+                        //TEMPLATE its modal conflict core — TBox-entailed,
+                        //so sound in every block — before the one rebuild
+                        //instantiates them all into every block. Distinct
+                        //blocks repeating the same failed plan contribute
+                        //the clause once.
+                        if(learnedThisRound.Add(plan.Key))
+                        {
+                            cnf.Append(MinimizeConflictClause(cnf, translation, memo, plan, searchMode, cancellationToken));
+                        }
 
-                        break;
+                        learned = true;
                     }
                 }
             }
@@ -416,15 +530,17 @@ internal static class SatTableauModuleReasoner
     /// block as the joint assumptions.
     /// </summary>
     /// <param name="cnf">The shared template CNF; contributor encoding grows it before the freeze.</param>
-    /// <param name="translation">The module's translation.</param>
-    /// <param name="individuals">The individuals in block order.</param>
-    /// <param name="blockOf">The individual-to-block index.</param>
+    /// <param name="translation">The module's translation, read for the role hierarchy.</param>
+    /// <param name="individuals">The component's individuals in block order.</param>
+    /// <param name="blockOf">The component's individual-to-block index.</param>
+    /// <param name="edges">The component's asserted edges.</param>
     /// <returns>The joint instance.</returns>
     private static JointInstance BuildJointInstance(
         ConceptCnf cnf,
         AlcModuleReasoner.Translation translation,
         List<Utf8String> individuals,
-        Dictionary<Utf8String, int> blockOf)
+        Dictionary<Utf8String, int> blockOf,
+        List<(Utf8String From, Utf8String Role, Utf8String To)> edges)
     {
         //Every joint contributor encodes BEFORE the width freezes. Asserted
         //concepts first; then every edge-reachable universal filler, walked
@@ -432,6 +548,11 @@ internal static class SatTableauModuleReasoner
         //further universal atoms that themselves need edge clauses.
         foreach(KeyValuePair<Utf8String, List<AlcConcept>> entry in translation.AssertedConcepts)
         {
+            if(!blockOf.ContainsKey(entry.Key))
+            {
+                continue;
+            }
+
             foreach(AlcConcept concept in entry.Value)
             {
                 cnf.GetLiteral(concept);
@@ -445,7 +566,7 @@ internal static class SatTableauModuleReasoner
                 continue;
             }
 
-            foreach((Utf8String _, Utf8String role, Utf8String _) in translation.Edges)
+            foreach((Utf8String _, Utf8String role, Utf8String _) in edges)
             {
                 if(RoleReaches(role, forAll.Role, translation.SuperRoles))
                 {
@@ -472,7 +593,7 @@ internal static class SatTableauModuleReasoner
         //every universal atom ∀s.D whose role r reaches, the clause
         //(¬x_a,∀sD ∨ lit_b(D)) — fully propositional, so propagation holds
         //transitively through edge cycles by unit propagation alone.
-        foreach((Utf8String from, Utf8String role, Utf8String to) in translation.Edges)
+        foreach((Utf8String from, Utf8String role, Utf8String to) in edges)
         {
             int fromBlock = blockOf[from];
             int toBlock = blockOf[to];
@@ -496,7 +617,11 @@ internal static class SatTableauModuleReasoner
         List<SatLiteral> assumptionLiterals = [];
         foreach(KeyValuePair<Utf8String, List<AlcConcept>> entry in translation.AssertedConcepts)
         {
-            int block = blockOf[entry.Key];
+            if(!blockOf.TryGetValue(entry.Key, out int block))
+            {
+                continue;
+            }
+
             foreach(AlcConcept concept in entry.Value)
             {
                 SatLiteral literal = cnf.GetLiteral(concept);
@@ -517,9 +642,11 @@ internal static class SatTableauModuleReasoner
 
     /// <summary>
     /// The greedy model-shrink pass over the joint model: for each block
-    /// and each true modal-atom replica in descending variable order,
+    /// and each true variable replica in descending within-block order,
     /// tentatively flip it to false and keep the flip when every joint
-    /// clause stays satisfied. Assumption literals are never flipped.
+    /// clause stays satisfied. Connective replicas shrink alongside modal
+    /// ones — a gratuitously-true connective is what forces its modal
+    /// operands true. Assumption literals are never flipped.
     /// </summary>
     /// <param name="joint">The joint instance, read for the clauses, the assumptions, and the block layout.</param>
     /// <param name="assignment">The solver's satisfying assignment.</param>
@@ -538,25 +665,90 @@ internal static class SatTableauModuleReasoner
             pinned.Add(assumption.Variable);
         }
 
-        for(int block = joint.BlockCount - 1; block >= 0; block--)
+        ShrinkInPlace(joint.Clauses, model, pinned);
+
+        return model;
+    }
+
+    /// <summary>
+    /// The shared greedy shrink core: walks the variables in descending
+    /// order and flips each unpinned true variable to false when every
+    /// clause keeps a true literal, tracked incrementally through
+    /// per-clause true-literal counts over positive and negative occurrence
+    /// lists. Descending order is top-down — definitional clauses only
+    /// point from a connective to its lower-id operands, so one pass undoes
+    /// a gratuitously-true forcing chain parent-first, freeing the modal
+    /// operands for their own flips. The reserved always-true variable and
+    /// its block replicas stay through their unit clauses.
+    /// </summary>
+    /// <param name="clauses">The clauses the shrunk model must keep satisfied.</param>
+    /// <param name="model">The model to shrink in place; must satisfy <paramref name="clauses"/> on entry.</param>
+    /// <param name="pinned">The variables that are never flipped.</param>
+    private static void ShrinkInPlace(IReadOnlyList<IReadOnlyList<SatLiteral>> clauses, bool[] model, HashSet<int> pinned)
+    {
+        int[] trueCounts = new int[clauses.Count];
+        List<int>?[] positiveOccurrences = new List<int>?[model.Length];
+        List<int>?[] negativeOccurrences = new List<int>?[model.Length];
+        for(int clauseIndex = 0; clauseIndex < clauses.Count; clauseIndex++)
         {
-            for(int i = joint.ModalVariables.Count - 1; i >= 0; i--)
+            foreach(SatLiteral literal in clauses[clauseIndex])
             {
-                int variable = ConceptCnf.BlockVariable(block, joint.ModalVariables[i], joint.BlockWidth);
-                if(!model[variable] || pinned.Contains(variable))
+                if(model[literal.Variable] == literal.IsPositive)
                 {
-                    continue;
+                    trueCounts[clauseIndex]++;
                 }
 
-                model[variable] = false;
-                if(!Satisfies(joint.Clauses, model))
-                {
-                    model[variable] = true;
-                }
+                List<int>?[] occurrences = literal.IsPositive ? positiveOccurrences : negativeOccurrences;
+                (occurrences[literal.Variable] ??= []).Add(clauseIndex);
             }
         }
 
-        return model;
+        for(int variable = model.Length - 1; variable >= 1; variable--)
+        {
+            if(!model[variable] || pinned.Contains(variable))
+            {
+                continue;
+            }
+
+            //Flipping true→false removes a true literal from every clause
+            //holding the positive literal; any of them down to its last
+            //true literal blocks the flip.
+            bool blocked = false;
+            if(positiveOccurrences[variable] is List<int> positives)
+            {
+                foreach(int clauseIndex in positives)
+                {
+                    if(trueCounts[clauseIndex] == 1)
+                    {
+                        blocked = true;
+
+                        break;
+                    }
+                }
+            }
+
+            if(blocked)
+            {
+                continue;
+            }
+
+            model[variable] = false;
+            if(positiveOccurrences[variable] is List<int> lostClauses)
+            {
+                foreach(int clauseIndex in lostClauses)
+                {
+                    trueCounts[clauseIndex]--;
+                }
+            }
+
+            if(negativeOccurrences[variable] is List<int> gainedClauses)
+            {
+                foreach(int clauseIndex in gainedClauses)
+                {
+                    trueCounts[clauseIndex]++;
+                }
+            }
+        }
     }
 
     /// <summary>The block's slice of the joint model, re-indexed to template variable space.</summary>
@@ -580,7 +772,8 @@ internal static class SatTableauModuleReasoner
     /// stack: solve under the world's assumptions, shrink the model, spawn
     /// successor worlds, learn a modal conflict clause from every
     /// unsatisfiable successor and re-solve, with the memo table answering
-    /// repeated settled sets and the ancestor walk blocking affirmatively.
+    /// settled sets and their monotone consequences and the ancestor walk
+    /// blocking affirmatively.
     /// </summary>
     /// <param name="cnf">The shared CNF; learned clauses append to it.</param>
     /// <param name="translation">The module's translation, read for the role hierarchy.</param>
@@ -588,24 +781,36 @@ internal static class SatTableauModuleReasoner
     /// <param name="seedAssumptions">The seed world's assumption literals, canonical.</param>
     /// <param name="seedKey">The seed world's canonical key.</param>
     /// <param name="searchMode">The solver's search mode.</param>
+    /// <param name="minimizeCores">Whether learned modal clauses shrink to conflict cores; the minimization probes themselves run without it, which bounds the probe recursion at one level.</param>
     /// <param name="cancellationToken">A token that aborts between solver calls.</param>
     /// <returns><see langword="true"/> when the seed world is satisfiable.</returns>
     private static bool CheckWorld(
         ConceptCnf cnf,
         AlcModuleReasoner.Translation translation,
-        Dictionary<int[], WorldState> memo,
+        WorldMemo memo,
         SatLiteral[] seedAssumptions,
         int[] seedKey,
         SatSearchMode searchMode,
+        bool minimizeCores,
         CancellationToken cancellationToken)
     {
-        //The memo holds settled verdicts only, so a hit answers the seed.
-        if(memo.TryGetValue(seedKey, out WorldState settled))
+        //The memo holds settled verdicts only, so an exact or monotone
+        //answer settles the seed.
+        if(memo.Answer(seedKey) is WorldState settled)
         {
             return settled == WorldState.Satisfiable;
         }
 
         List<WorldFrame> stack = [new WorldFrame(seedKey, seedAssumptions)];
+
+        //Tentative satisfiable verdicts, invocation-scoped: a world that
+        //popped satisfiable conditional on a still-live ancestor, keyed to
+        //the stack index it depends on. A repeat of the same set answers
+        //from here exactly like a blocking hit — the consumer inherits the
+        //dependency — and the entries promote into the settled memo when
+        //their ancestor discharges satisfiably, or discard when it is
+        //refuted. The settled memo never holds a conditional verdict.
+        Dictionary<int[], int> tentativeDepth = new(CanonicalKeyComparer.Instance);
 
         while(stack.Count > 0)
         {
@@ -624,19 +829,33 @@ internal static class SatTableauModuleReasoner
                     cancellationToken);
                 if(!verdict.IsSatisfiable)
                 {
-                    memo[frame.Key] = WorldState.Unsatisfiable;
+                    memo.Record(frame.Key, WorldState.Unsatisfiable);
+
+                    //Tentative verdicts conditional on this world's
+                    //satisfiability lose their premise with the refutation.
+                    if(frame.AttachedTentatives is not null)
+                    {
+                        foreach(int[] dependent in frame.AttachedTentatives)
+                        {
+                            tentativeDepth.Remove(dependent);
+                        }
+                    }
+
                     stack.RemoveAt(stack.Count - 1);
                     if(stack.Count == 0)
                     {
                         return false;
                     }
 
-                    //The parent learns the modal conflict clause over
-                    //exactly the atoms that built the failed successor —
-                    //TBox-entailed, so sound in every world — and re-solves
-                    //its unchanged assumptions against the grown CNF.
+                    //The parent learns the modal conflict clause over the
+                    //failed successor's conflict core — TBox-entailed, so
+                    //sound in every world — and re-solves its unchanged
+                    //assumptions against the grown CNF.
                     WorldFrame parent = stack[^1];
-                    cnf.Append(parent.Successors![parent.NextSuccessor].ConflictClause);
+                    SuccessorPlan failedPlan = parent.Successors![parent.NextSuccessor];
+                    cnf.Append(minimizeCores
+                        ? MinimizeConflictClause(cnf, translation, memo, failedPlan, searchMode, cancellationToken)
+                        : failedPlan.ConflictClause);
                     parent.Successors = null;
 
                     continue;
@@ -662,7 +881,38 @@ internal static class SatTableauModuleReasoner
                 //parent either way.
                 if(frame.DependencyMin >= stack.Count - 1)
                 {
-                    memo[frame.Key] = WorldState.Satisfiable;
+                    memo.Record(frame.Key, WorldState.Satisfiable);
+
+                    //The verdicts that were conditional on this world
+                    //discharge with it and settle.
+                    if(frame.AttachedTentatives is not null)
+                    {
+                        foreach(int[] dependent in frame.AttachedTentatives)
+                        {
+                            memo.Record(dependent, WorldState.Satisfiable);
+                            tentativeDepth.Remove(dependent);
+                        }
+                    }
+                }
+                else
+                {
+                    //A conditional verdict parks on the frame it depends on
+                    //— reusable as a tentative answer while that ancestor
+                    //lives, settled or discarded at its pop. Verdicts that
+                    //were conditional on THIS frame transfer with it: this
+                    //world ends satisfiable only if the ancestor does.
+                    WorldFrame holder = stack[frame.DependencyMin];
+                    holder.AttachedTentatives ??= [];
+                    holder.AttachedTentatives.Add(frame.Key);
+                    tentativeDepth[frame.Key] = frame.DependencyMin;
+                    if(frame.AttachedTentatives is not null)
+                    {
+                        foreach(int[] dependent in frame.AttachedTentatives)
+                        {
+                            holder.AttachedTentatives.Add(dependent);
+                            tentativeDepth[dependent] = frame.DependencyMin;
+                        }
+                    }
                 }
 
                 stack.RemoveAt(stack.Count - 1);
@@ -677,14 +927,16 @@ internal static class SatTableauModuleReasoner
             }
 
             SuccessorPlan successor = frame.Successors[frame.NextSuccessor];
-            if(memo.TryGetValue(successor.Key, out WorldState known))
+            if(memo.Answer(successor.Key) is WorldState known)
             {
                 if(known == WorldState.Unsatisfiable)
                 {
                     //The memo answers without a solver call, but the modal
                     //clause for this parent's atom combination is still
                     //learned: it is what forces the re-solve to move on.
-                    cnf.Append(successor.ConflictClause);
+                    cnf.Append(minimizeCores
+                        ? MinimizeConflictClause(cnf, translation, memo, successor, searchMode, cancellationToken)
+                        : successor.ConflictClause);
                     frame.Successors = null;
 
                     continue;
@@ -704,6 +956,18 @@ internal static class SatTableauModuleReasoner
                 //satisfiable, so the frame records the dependency for the
                 //memo-write decision at its own pop.
                 frame.DependencyMin = Math.Min(frame.DependencyMin, blockingAncestor);
+                frame.NextSuccessor++;
+
+                continue;
+            }
+
+            if(tentativeDepth.TryGetValue(successor.Key, out int tentativeAncestor))
+            {
+                //A repeat of a set that already popped satisfiable
+                //conditional on a live ancestor affirms exactly like a
+                //blocking hit: the consumer inherits the dependency on
+                //that ancestor.
+                frame.DependencyMin = Math.Min(frame.DependencyMin, tentativeAncestor);
                 frame.NextSuccessor++;
 
                 continue;
@@ -765,10 +1029,13 @@ internal static class SatTableauModuleReasoner
     }
 
     /// <summary>
-    /// The greedy model-shrink pass: for each true modal-atom variable in
-    /// descending variable order, tentatively flip it to false and keep the
-    /// flip when every clause stays satisfied. Assumption literals and the
-    /// reserved variable 0 are never flipped.
+    /// The greedy model-shrink pass: for each true variable in descending
+    /// variable order, tentatively flip it to false and keep the flip when
+    /// every clause stays satisfied. Connective variables shrink alongside
+    /// modal atoms — a gratuitously-true connective is what forces its
+    /// modal operands true, so freeing it first lets the operands shrink in
+    /// the same pass. Assumption literals and the reserved variable 0 are
+    /// never flipped.
     /// </summary>
     /// <param name="cnf">The shared CNF, read for the modal-atom registrations and the clauses.</param>
     /// <param name="assignment">The solver's satisfying assignment.</param>
@@ -788,50 +1055,9 @@ internal static class SatTableauModuleReasoner
             pinned.Add(assumption.Variable);
         }
 
-        for(int i = cnf.ModalAtoms.Count - 1; i >= 0; i--)
-        {
-            int variable = cnf.ModalAtoms[i].Variable;
-            if(variable == 0 || !model[variable] || pinned.Contains(variable))
-            {
-                continue;
-            }
-
-            model[variable] = false;
-            if(!Satisfies(cnf.Clauses, model))
-            {
-                model[variable] = true;
-            }
-        }
+        ShrinkInPlace(cnf.Clauses, model, pinned);
 
         return model;
-    }
-
-    /// <summary>Whether every clause has a literal true under the model.</summary>
-    /// <param name="clauses">The clauses.</param>
-    /// <param name="model">The model.</param>
-    /// <returns><see langword="true"/> when all clauses are satisfied.</returns>
-    private static bool Satisfies(IReadOnlyList<IReadOnlyList<SatLiteral>> clauses, bool[] model)
-    {
-        foreach(IReadOnlyList<SatLiteral> clause in clauses)
-        {
-            bool satisfied = false;
-            foreach(SatLiteral literal in clause)
-            {
-                if(model[literal.Variable] == literal.IsPositive)
-                {
-                    satisfied = true;
-
-                    break;
-                }
-            }
-
-            if(!satisfied)
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     /// <summary>
@@ -889,20 +1115,104 @@ internal static class SatTableauModuleReasoner
         {
             List<SatLiteral> literals = [cnf.GetLiteral(exists.Filler)];
             List<SatLiteral> conflict = [new SatLiteral(existsVariable, IsPositive: false)];
+            List<SuccessorContributor> contributors = [new SuccessorContributor(literals[0], conflict[0])];
             foreach((AlcForAll forAll, int forAllVariable) in trueUniversals)
             {
                 if(RoleReaches(exists.Role, forAll.Role, translation.SuperRoles))
                 {
-                    literals.Add(cnf.GetLiteral(forAll.Filler));
-                    conflict.Add(new SatLiteral(forAllVariable, IsPositive: false));
+                    SatLiteral filler = cnf.GetLiteral(forAll.Filler);
+                    SatLiteral negatedAtom = new(forAllVariable, IsPositive: false);
+                    literals.Add(filler);
+                    conflict.Add(negatedAtom);
+                    contributors.Add(new SuccessorContributor(filler, negatedAtom));
                 }
             }
 
             (SatLiteral[] assumptions, int[] key) = Canonicalize(literals);
-            plans.Add(new SuccessorPlan(key, assumptions, [.. conflict]));
+            plans.Add(new SuccessorPlan(key, assumptions, [.. conflict], [.. contributors]));
         }
 
         return plans;
+    }
+
+    /// <summary>
+    /// The modal conflict clause a failed successor teaches the shared CNF,
+    /// shrunk to a conflict core by greedy contributor deletion: each
+    /// contributor in turn is dropped and the remaining label re-checked —
+    /// still unsatisfiable means the contributor was not load-bearing and
+    /// stays dropped. Every retained probe verdict enters the shared memo,
+    /// and every candidate label's unsatisfiability is a genuine
+    /// TBox-relative refutation, so the shortened clause is TBox-entailed
+    /// exactly as the full-set clause is — it merely prunes whole families
+    /// of modal-atom combinations instead of one.
+    /// </summary>
+    /// <param name="cnf">The shared CNF; probe chains may grow it.</param>
+    /// <param name="translation">The module's translation, read for the role hierarchy.</param>
+    /// <param name="memo">The memo table the probes share.</param>
+    /// <param name="plan">The failed successor's plan.</param>
+    /// <param name="searchMode">The solver's search mode.</param>
+    /// <param name="cancellationToken">A token that aborts between solver calls.</param>
+    /// <returns>The minimized conflict clause.</returns>
+    private static SatLiteral[] MinimizeConflictClause(
+        ConceptCnf cnf,
+        AlcModuleReasoner.Translation translation,
+        WorldMemo memo,
+        SuccessorPlan plan,
+        SatSearchMode searchMode,
+        CancellationToken cancellationToken)
+    {
+        //The core is a property of the refuted LABEL, not of the parent
+        //combination that built it, so distinct parents reaching the same
+        //label share the probe work through the memo's core cache.
+        int[]? core = memo.CoreFor(plan.Key);
+        if(core is null)
+        {
+            List<SuccessorContributor> kept = [.. plan.Contributors];
+
+            //Universal contributors drop first (the existential is index 0
+            //and most often load-bearing), each by one world check over the
+            //remaining label.
+            for(int candidate = kept.Count - 1; candidate >= 0 && kept.Count > 1; candidate--)
+            {
+                List<SatLiteral> literals = new(kept.Count - 1);
+                for(int i = 0; i < kept.Count; i++)
+                {
+                    if(i != candidate)
+                    {
+                        literals.Add(kept[i].Filler);
+                    }
+                }
+
+                (SatLiteral[] assumptions, int[] key) = Canonicalize(literals);
+                if(!CheckWorld(cnf, translation, memo, assumptions, key, searchMode, minimizeCores: false, cancellationToken))
+                {
+                    kept.RemoveAt(candidate);
+                }
+            }
+
+            List<SatLiteral> coreLiterals = new(kept.Count);
+            foreach(SuccessorContributor contributor in kept)
+            {
+                coreLiterals.Add(contributor.Filler);
+            }
+
+            (SatLiteral[] _, core) = Canonicalize(coreLiterals);
+            memo.RecordCore(plan.Key, core);
+        }
+
+        //The clause keeps exactly the contributors whose filler the core
+        //needs; the core is a subset of the plan's label, so every core
+        //literal is covered by at least one contributor.
+        List<SatLiteral> clause = new(plan.Contributors.Length);
+        foreach(SuccessorContributor contributor in plan.Contributors)
+        {
+            if(Array.BinarySearch(core, Encode(contributor.Filler)) >= 0)
+            {
+                clause.Add(contributor.Conflict);
+            }
+        }
+
+        return [.. clause];
     }
 
     /// <summary>Whether the existential's role reaches the universal's role through the told hierarchy, reflexively.</summary>
@@ -967,6 +1277,95 @@ internal static class SatTableauModuleReasoner
         return new SatLiteral(code >> 1, IsPositive: (code & 1) != 0);
     }
 
+    /// <summary>
+    /// The settled-verdict memo over canonical assumption-set keys. A lookup
+    /// answers exact hits and monotone consequences: satisfiability is
+    /// downward-monotone over assumption sets — a subset of a settled
+    /// satisfiable set is satisfiable — and unsatisfiability is
+    /// upward-monotone — a superset of a settled unsatisfiable set is
+    /// unsatisfiable. Both directions hold at the world level (the verdict
+    /// covers the modal subtree, and removing label concepts weakens the
+    /// world) and survive clause growth, because every appended clause is
+    /// TBox-entailed. Only settled verdicts enter; tentative blocked-
+    /// dependent affirmations stay on the frame stack.
+    /// </summary>
+    private sealed class WorldMemo
+    {
+        /// <summary>The settled verdicts by exact canonical key.</summary>
+        private readonly Dictionary<int[], WorldState> settled = new(CanonicalKeyComparer.Instance);
+
+        /// <summary>The settled satisfiable keys, scanned for superset answers.</summary>
+        private readonly List<int[]> satisfiableKeys = [];
+
+        /// <summary>The settled unsatisfiable keys, scanned for subset answers.</summary>
+        private readonly List<int[]> unsatisfiableKeys = [];
+
+        /// <summary>The minimized conflict cores by refuted-label key: the canonical key of the label subset whose unsatisfiability the minimization probes established.</summary>
+        private readonly Dictionary<int[], int[]> conflictCores = new(CanonicalKeyComparer.Instance);
+
+        /// <summary>Records a settled verdict for the key; a key already settled keeps its verdict (clause growth never flips a settled verdict).</summary>
+        /// <param name="key">The canonical key.</param>
+        /// <param name="state">The settled verdict.</param>
+        public void Record(int[] key, WorldState state)
+        {
+            if(settled.TryAdd(key, state))
+            {
+                List<int[]> keys = state == WorldState.Satisfiable ? satisfiableKeys : unsatisfiableKeys;
+                keys.Add(key);
+            }
+        }
+
+        /// <summary>
+        /// The settled verdict the memo can answer for the key: an exact
+        /// hit, a settled satisfiable superset (downward monotonicity), or
+        /// a settled unsatisfiable subset (upward monotonicity);
+        /// <see langword="null"/> when nothing settled answers it.
+        /// </summary>
+        /// <param name="key">The canonical key to answer.</param>
+        /// <returns>The answered verdict, or <see langword="null"/>.</returns>
+        public WorldState? Answer(int[] key)
+        {
+            if(settled.TryGetValue(key, out WorldState exact))
+            {
+                return exact;
+            }
+
+            foreach(int[] satisfiable in satisfiableKeys)
+            {
+                if(IsSubsetOf(key, satisfiable))
+                {
+                    return WorldState.Satisfiable;
+                }
+            }
+
+            foreach(int[] unsatisfiable in unsatisfiableKeys)
+            {
+                if(IsSubsetOf(unsatisfiable, key))
+                {
+                    return WorldState.Unsatisfiable;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>The cached minimized conflict core for a refuted label key, or <see langword="null"/> when none was recorded.</summary>
+        /// <param name="key">The refuted label's canonical key.</param>
+        /// <returns>The core's canonical key, or <see langword="null"/>.</returns>
+        public int[]? CoreFor(int[] key)
+        {
+            return conflictCores.TryGetValue(key, out int[]? core) ? core : null;
+        }
+
+        /// <summary>Records the minimized conflict core for a refuted label key.</summary>
+        /// <param name="key">The refuted label's canonical key.</param>
+        /// <param name="core">The core's canonical key.</param>
+        public void RecordCore(int[] key, int[] core)
+        {
+            conflictCores[key] = core;
+        }
+    }
+
     /// <summary>One in-progress world check on the explicit frame stack.</summary>
     private sealed class WorldFrame
     {
@@ -988,6 +1387,15 @@ internal static class SatTableauModuleReasoner
         /// <summary>The successors planned from the current model, or <see langword="null"/> when the world needs solving or re-solving.</summary>
         public List<SuccessorPlan>? Successors { get; set; }
 
+        /// <summary>
+        /// The canonical keys of worlds whose satisfiable verdicts are
+        /// conditional on this world ending satisfiable: they settle into
+        /// the memo when this frame pops satisfiable on its own, transfer
+        /// to a shallower holder when this frame pops conditionally, and
+        /// discard when this world is refuted.
+        /// </summary>
+        public List<int[]>? AttachedTentatives { get; set; }
+
         /// <summary>The index of the successor currently being checked.</summary>
         public int NextSuccessor { get; set; }
 
@@ -1002,11 +1410,17 @@ internal static class SatTableauModuleReasoner
         public int DependencyMin { get; set; } = int.MaxValue;
     }
 
+    /// <summary>One modal atom's contribution to a successor world: the filler literal it adds to the successor's label and the negated atom literal it adds to the conflict clause.</summary>
+    /// <param name="Filler">The contributor's filler literal in the successor's label.</param>
+    /// <param name="Conflict">The contributor's negated modal-atom literal in the conflict clause.</param>
+    private readonly record struct SuccessorContributor(SatLiteral Filler, SatLiteral Conflict);
+
     /// <summary>One planned successor world and the modal conflict clause its failure would teach the shared CNF.</summary>
     /// <param name="Key">The successor's canonical key.</param>
     /// <param name="Assumptions">The successor's assumption literals, canonical.</param>
     /// <param name="ConflictClause">The negations of exactly the modal atoms that built the successor.</param>
-    private sealed record SuccessorPlan(int[] Key, SatLiteral[] Assumptions, SatLiteral[] ConflictClause);
+    /// <param name="Contributors">The per-atom contributions, the existential first — the unit the conflict-core minimization deletes over.</param>
+    private sealed record SuccessorPlan(int[] Key, SatLiteral[] Assumptions, SatLiteral[] ConflictClause, SuccessorContributor[] Contributors);
 
     /// <summary>One build of the joint instance over the named forest: the template instantiated per individual block as the template stood at the width freeze.</summary>
     /// <param name="Clauses">The joint clauses — every template clause in every block, plus the asserted-edge propagation clauses.</param>

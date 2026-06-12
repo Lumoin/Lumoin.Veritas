@@ -42,15 +42,26 @@ internal sealed class W3cOwl2DirectTests
     /// <summary>The MSTest-supplied per-test context.</summary>
     public TestContext TestContext { get; set; } = null!;
 
+    /// <summary>The engines the corpus runs against: the snapshot tableau as the reference baseline and the SAT-backed sibling as the parametrized arm.</summary>
+    internal enum DirectEngine
+    {
+        /// <summary>The snapshot tableau, <see cref="AlcModuleReasoner.DecideConsistency"/> — the reference baseline.</summary>
+        Snapshot,
+
+        /// <summary>The SAT-backed sibling, <see cref="SatTableauModuleReasoner.DecideConsistency"/>.</summary>
+        SatBacked,
+    }
+
     /// <summary>
     /// Tests whose in-fragment tableau search measurably exceeds the
-    /// snapshot engine's practical reach (over twenty seconds per decision
-    /// when triaged): hard propositional instances whose disjunction
-    /// branching a copy-on-branch tableau cannot bound without conflict
-    /// learning. They abstain here as the recorded SAT-backed sibling's
-    /// workload; landing that sibling re-measures this list.
+    /// <em>snapshot</em> engine's practical reach (over twenty seconds per
+    /// decision when triaged): hard propositional instances whose
+    /// disjunction branching a copy-on-branch tableau cannot bound without
+    /// conflict learning. The gap is engine-relative — the SAT-backed
+    /// sibling decides every one of them, so it abstains on none; only the
+    /// snapshot arm reads this set.
     /// </summary>
-    private static HashSet<string> PracticalReachGaps { get; } =
+    private static HashSet<string> SnapshotPracticalReachGaps { get; } =
     [
         "WebOnt-description-logic-040",
         "WebOnt-description-logic-201",
@@ -58,33 +69,61 @@ internal sealed class W3cOwl2DirectTests
         "WebOnt-description-logic-209",
     ];
 
+    /// <summary>Whether the engine abstains on the test as a measured practical-reach gap: the snapshot engine does on the recorded set, the SAT-backed engine on none.</summary>
+    /// <param name="engine">The deciding engine.</param>
+    /// <param name="identifier">The test identifier.</param>
+    /// <returns><c>true</c> when the engine abstains on the test as a practical-reach gap.</returns>
+    private static bool IsPracticalReachGap(DirectEngine engine, string identifier)
+    {
+        return engine == DirectEngine.Snapshot && SnapshotPracticalReachGaps.Contains(identifier);
+    }
+
     /// <summary>The fresh witness individual counterexample concepts are asserted on; its reserved IRI cannot collide with corpus document terms.</summary>
     private static NamedNode Witness { get; } = new(Utf8String.FromString("urn:lumoin:veritas:conformance:direct#witness"));
 
     /// <summary>The <c>owl:Thing</c> reference used to close a property over all successors in a domain counterexample.</summary>
     private static OwlClassReference ThingReference { get; } = new(new NamedNode(Utf8String.FromString("http://www.w3.org/2002/07/owl#Thing")));
 
-    /// <summary>Runs one approved-status test case through the tableau.</summary>
+    /// <summary>Runs one approved-status test case through the snapshot tableau — the reference baseline.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     [TestMethod]
     [Owl2ManifestData("approved", "all.rdf")]
     public void RunApproved(Owl2TestCase testCase)
     {
-        RunAndAssert(testCase);
+        RunAndAssert(DirectEngine.Snapshot, testCase);
     }
 
-    /// <summary>Runs one proposed-status test case through the tableau.</summary>
+    /// <summary>Runs one proposed-status test case through the snapshot tableau — the reference baseline.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     [TestMethod]
     [Owl2ManifestData("proposed", "all.rdf")]
     public void RunProposed(Owl2TestCase testCase)
     {
-        RunAndAssert(testCase);
+        RunAndAssert(DirectEngine.Snapshot, testCase);
     }
 
-    /// <summary>Applies the remit guard, loads and maps the test documents, and dispatches the test's kinds to the tableau arms.</summary>
+    /// <summary>Runs one approved-status test case through the SAT-backed sibling, the parametrized engine arm.</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    [TestMethod]
+    [Owl2ManifestData("approved", "all.rdf")]
+    public void RunApprovedSatBacked(Owl2TestCase testCase)
+    {
+        RunAndAssert(DirectEngine.SatBacked, testCase);
+    }
+
+    /// <summary>Runs one proposed-status test case through the SAT-backed sibling, the parametrized engine arm.</summary>
+    /// <param name="testCase">The manifest-declared test case.</param>
+    [TestMethod]
+    [Owl2ManifestData("proposed", "all.rdf")]
+    public void RunProposedSatBacked(Owl2TestCase testCase)
+    {
+        RunAndAssert(DirectEngine.SatBacked, testCase);
+    }
+
+    /// <summary>Applies the remit guard, loads and maps the test documents, and dispatches the test's kinds to the tableau arms through the selected engine.</summary>
+    /// <param name="engine">The engine to decide through.</param>
     /// <param name="testCase">The test case.</param>
-    private void RunAndAssert(Owl2TestCase testCase)
+    private void RunAndAssert(DirectEngine engine, Owl2TestCase testCase)
     {
         ArgumentNullException.ThrowIfNull(testCase);
 
@@ -113,7 +152,7 @@ internal sealed class W3cOwl2DirectTests
             Assert.Inconclusive("Not a DL-species test; a description-logic tableau makes no claim.");
         }
 
-        if(PracticalReachGaps.Contains(testCase.Identifier))
+        if(IsPracticalReachGap(engine, testCase.Identifier))
         {
             Assert.Inconclusive("Beyond the snapshot tableau's practical reach; the SAT-backed sibling's workload.");
         }
@@ -146,7 +185,7 @@ internal sealed class W3cOwl2DirectTests
 
         if(isInconsistency)
         {
-            ModuleVerdict verdict = Decide(premise, refutation: null);
+            ModuleVerdict verdict = Decide(engine, premise, refutation: null);
             if(verdict.IsConsistent)
             {
                 AbstainWhenBeyondFragment(verdict);
@@ -158,7 +197,7 @@ internal sealed class W3cOwl2DirectTests
 
         if(isConsistency)
         {
-            ModuleVerdict verdict = Decide(premise, refutation: null);
+            ModuleVerdict verdict = Decide(engine, premise, refutation: null);
 
             Assert.IsTrue(verdict.IsConsistent, $"{testCase.Identifier}: the premise is consistent, but the tableau found a clash.");
             AbstainWhenBeyondFragment(verdict);
@@ -167,13 +206,13 @@ internal sealed class W3cOwl2DirectTests
         if(isPositive
             && LoadQuads(testCase, testCase.RdfXmlConclusion, testCase.FunctionalConclusion) is List<Quad> conclusionQuads)
         {
-            AssertEntailed(testCase, premise, conclusionQuads);
+            AssertEntailed(engine, testCase, premise, conclusionQuads);
         }
 
         if(isNegative
             && LoadQuads(testCase, testCase.RdfXmlNonConclusion, testCase.FunctionalNonConclusion) is List<Quad> nonConclusionQuads)
         {
-            AssertNotEntailed(testCase, premise, nonConclusionQuads);
+            AssertNotEntailed(engine, testCase, premise, nonConclusionQuads);
         }
     }
 
@@ -184,10 +223,11 @@ internal sealed class W3cOwl2DirectTests
     /// non-entailment and fails; one resting on beyond-fragment axioms
     /// abstains.
     /// </summary>
+    /// <param name="engine">The engine to decide through.</param>
     /// <param name="testCase">The test case.</param>
     /// <param name="premise">The mapped premise.</param>
     /// <param name="conclusionQuads">The conclusion document's triples.</param>
-    private void AssertEntailed(Owl2TestCase testCase, OwlOntologyDocument premise, List<Quad> conclusionQuads)
+    private void AssertEntailed(DirectEngine engine, Owl2TestCase testCase, OwlOntologyDocument premise, List<Quad> conclusionQuads)
     {
         OwlOntologyDocument conclusion = OwlRdfMapper.Map(conclusionQuads);
 
@@ -212,7 +252,7 @@ internal sealed class W3cOwl2DirectTests
                     Assert.Inconclusive($"A conclusion {axiom.GetType().Name} refutation lies beyond the tableau's fragment.");
                 }
 
-                ModuleVerdict verdict = Decide(premise, check);
+                ModuleVerdict verdict = Decide(engine, premise, check);
                 if(verdict.IsConsistent)
                 {
                     AbstainWhenBeyondFragment(verdict);
@@ -229,10 +269,11 @@ internal sealed class W3cOwl2DirectTests
     /// axiom is entailed the test fails, and a walk that could not settle
     /// any axiom either way abstains.
     /// </summary>
+    /// <param name="engine">The engine to decide through.</param>
     /// <param name="testCase">The test case.</param>
     /// <param name="premise">The mapped premise.</param>
     /// <param name="nonConclusionQuads">The non-conclusion document's triples.</param>
-    private void AssertNotEntailed(Owl2TestCase testCase, OwlOntologyDocument premise, List<Quad> nonConclusionQuads)
+    private void AssertNotEntailed(DirectEngine engine, Owl2TestCase testCase, OwlOntologyDocument premise, List<Quad> nonConclusionQuads)
     {
         OwlOntologyDocument nonConclusion = OwlRdfMapper.Map(nonConclusionQuads);
         bool isUndecided = false;
@@ -260,7 +301,7 @@ internal sealed class W3cOwl2DirectTests
                     break;
                 }
 
-                ModuleVerdict verdict = Decide(premise, check);
+                ModuleVerdict verdict = Decide(engine, premise, check);
                 if(!verdict.IsConsistent)
                 {
                     continue;
@@ -287,11 +328,12 @@ internal sealed class W3cOwl2DirectTests
         Assert.Fail($"{testCase.Identifier}: the non-conclusion follows from the premise but must not.");
     }
 
-    /// <summary>Decides the premise's axioms, optionally extended by one refutation assertion, as one module.</summary>
+    /// <summary>Decides the premise's axioms, optionally extended by one refutation assertion, as one module through the selected engine's consistency-only entry.</summary>
+    /// <param name="engine">The engine to decide through.</param>
     /// <param name="premise">The mapped premise.</param>
     /// <param name="refutation">The counterexample assertion to add, or <c>null</c> for the premise alone.</param>
     /// <returns>The tableau verdict.</returns>
-    private ModuleVerdict Decide(OwlOntologyDocument premise, OwlClassAssertionAxiom? refutation)
+    private ModuleVerdict Decide(DirectEngine engine, OwlOntologyDocument premise, OwlClassAssertionAxiom? refutation)
     {
         List<OwlAxiom> axioms = new(premise.Axioms.Length + 1);
         axioms.AddRange(premise.Axioms);
@@ -300,7 +342,13 @@ internal sealed class W3cOwl2DirectTests
             axioms.Add(refutation);
         }
 
-        return AlcModuleReasoner.DecideConsistency(new ReasoningModule(axioms, Violations: []), TestContext.CancellationToken);
+        ReasoningModule module = new(axioms, Violations: []);
+
+        return engine switch
+        {
+            DirectEngine.SatBacked => SatTableauModuleReasoner.DecideConsistency(module, cancellationToken: TestContext.CancellationToken),
+            _ => AlcModuleReasoner.DecideConsistency(module, TestContext.CancellationToken),
+        };
     }
 
     /// <summary>Whether a synthesized refutation assertion falls outside the tableau's fragment — its corpus-drawn expression carries a construct the calculus does not interpret.</summary>
