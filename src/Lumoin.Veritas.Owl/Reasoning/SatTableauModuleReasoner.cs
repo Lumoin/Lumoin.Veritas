@@ -1142,9 +1142,13 @@ internal static class SatTableauModuleReasoner
     /// still unsatisfiable means the contributor was not load-bearing and
     /// stays dropped. Every retained probe verdict enters the shared memo,
     /// and every candidate label's unsatisfiability is a genuine
-    /// TBox-relative refutation, so the shortened clause is TBox-entailed
-    /// exactly as the full-set clause is — it merely prunes whole families
-    /// of modal-atom combinations instead of one.
+    /// TBox-relative refutation. The emitted clause keeps the existential
+    /// trigger unconditionally — its entailment argument runs through the
+    /// successor the trigger forces, never through universal atoms alone,
+    /// which hold vacuously in a world without one — plus the universal
+    /// contributors the core needs, so it is TBox-entailed exactly as the
+    /// full-set clause is while pruning whole families of modal-atom
+    /// combinations instead of one.
     /// </summary>
     /// <param name="cnf">The shared CNF; probe chains may grow it.</param>
     /// <param name="translation">The module's translation, read for the role hierarchy.</param>
@@ -1200,12 +1204,19 @@ internal static class SatTableauModuleReasoner
             memo.RecordCore(plan.Key, core);
         }
 
-        //The clause keeps exactly the contributors whose filler the core
-        //needs; the core is a subset of the plan's label, so every core
-        //literal is covered by at least one contributor.
-        List<SatLiteral> clause = new(plan.Contributors.Length);
-        foreach(SuccessorContributor contributor in plan.Contributors)
+        //The existential trigger always enters the clause: the clause's
+        //entailment runs through the successor the trigger forces to carry
+        //the core, and a world whose universal atoms all hold vacuously
+        //asserts no successor, so it lies outside the clause's claim.
+        //Universal contributors enter only when the core needs their
+        //filler.
+        List<SatLiteral> clause = new(plan.Contributors.Length)
         {
+            plan.Contributors[0].Conflict,
+        };
+        for(int i = 1; i < plan.Contributors.Length; i++)
+        {
+            SuccessorContributor contributor = plan.Contributors[i];
             if(Array.BinarySearch(core, Encode(contributor.Filler)) >= 0)
             {
                 clause.Add(contributor.Conflict);

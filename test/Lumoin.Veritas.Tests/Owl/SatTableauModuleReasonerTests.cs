@@ -446,6 +446,53 @@ internal sealed class SatTableauModuleReasonerTests
     }
 
     /// <summary>
+    /// A learned conflict core of mutually exclusive universal fillers
+    /// keeps its existential trigger: the disjunct that satisfies both
+    /// universals vacuously — asserting no successor — survives the modal
+    /// clause its failing sibling disjunct teaches, and the module stays
+    /// consistent on both engines. The extra atom keeps the vacuous
+    /// disjunct structurally distinct from the failing disjunct's
+    /// subformulas, and listing it first is the operand order under which
+    /// the solve-and-shrink keeps the existential-bearing disjunct and
+    /// spawns its failing successor — the order that exercises the learned
+    /// clause's trigger.
+    /// </summary>
+    [TestMethod]
+    public void UniversalOnlyConflictCoreKeepsItsExistentialTrigger()
+    {
+        OwlSubClassOfAxiom disjoint = new(
+            Reference("D1"),
+            new OwlObjectComplementOf(Reference("D2")))
+        {
+            Origin = Origin("disjoint"),
+        };
+        OwlClassAssertionAxiom choice = new(
+            new OwlObjectUnionOf(
+            [
+                new OwlObjectIntersectionOf(
+                [
+                    Reference("B"),
+                    new OwlObjectAllValuesFrom(Property("r"), Reference("D1")),
+                    new OwlObjectAllValuesFrom(Property("r"), Reference("D2")),
+                ]),
+                new OwlObjectIntersectionOf(
+                [
+                    new OwlObjectSomeValuesFrom(Property("r"), Reference("C")),
+                    new OwlObjectAllValuesFrom(Property("r"), Reference("D1")),
+                    new OwlObjectAllValuesFrom(Property("r"), Reference("D2")),
+                ]),
+            ]),
+            Named("a"))
+        {
+            Origin = Origin("choice"),
+        };
+        ReasoningModule module = Module(disjoint, choice);
+
+        Assert.IsTrue(DecideSat(module).IsConsistent, "The all-universal disjunct holds vacuously with no successor asserted.");
+        Assert.IsTrue(AlcModuleReasoner.DecideConsistency(module, TestContext.CancellationToken).IsConsistent, "The snapshot engine agrees.");
+    }
+
+    /// <summary>
     /// A pigeonhole-shaped TBox — every pigeon in some hole, no two
     /// pigeons sharing one — is hard propositional disjunction structure:
     /// the SAT-backed engine alone decides the over-full instance
