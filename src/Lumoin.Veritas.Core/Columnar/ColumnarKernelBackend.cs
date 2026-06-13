@@ -1,4 +1,5 @@
 using System;
+using Lumoin.Veritas.Core.Execution;
 
 namespace Lumoin.Veritas.Core.Columnar;
 
@@ -94,6 +95,17 @@ public readonly struct ColumnarKernelBackend: IEquatable<ColumnarKernelBackend>
 
     /// <summary>The cached best-available backend for this process.</summary>
     public static ColumnarKernelBackend Default => ColumnarKernelBackendSelection.SelectBest();
+
+    /// <summary>
+    /// The best-available backend whose vector width does not exceed
+    /// <paramref name="cap"/> — the <see cref="ExecutionPolicy.KernelWidthCap"/>
+    /// ceiling applied to the static capability ladder, for the
+    /// down-clocking SKU case and force-narrow measurement passes.
+    /// <see cref="KernelWidthCap.Auto"/> returns <see cref="Default"/>.
+    /// </summary>
+    /// <param name="cap">The width ceiling.</param>
+    /// <returns>The selected backend.</returns>
+    public static ColumnarKernelBackend ForCap(KernelWidthCap cap) => ColumnarKernelBackendSelection.SelectForCap(cap);
 
     /// <summary>Constructs a backend bundle from its kernels.</summary>
     /// <param name="pack">The pack kernel.</param>

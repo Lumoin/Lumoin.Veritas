@@ -44,4 +44,19 @@ public static class VeritasMetrics
 
     /// <summary>Total bytes interned in the pool.</summary>
     public const string StringPoolTotalBytesInterned = "veritas.string_pool.total_bytes_interned";
+
+    /// <summary>Current compute-lane worker count — the lane width that moves on a quota re-derivation.</summary>
+    public const string ComputeLaneWorkers = "veritas.compute_lane.workers";
+
+    /// <summary>Queued compute-lane work depth, tagged by priority class — the per-class backpressure signal.</summary>
+    public const string ComputeLaneQueueDepth = "veritas.compute_lane.queue_depth";
+
+    /// <summary>Total compute-lane turns completed.</summary>
+    public const string ComputeLaneTurnsTotal = "veritas.compute_lane.turns_total";
+
+    /// <summary>Total compute-lane admissions shed — the load-shedding signal.</summary>
+    public const string ComputeLaneShedTotal = "veritas.compute_lane.shed_total";
+
+    /// <summary>Distribution of compute-lane turn durations in milliseconds, tagged by work class. Recorded at the turn-execution site.</summary>
+    public const string ComputeLaneTurnDuration = "veritas.compute_lane.turn_duration";
 }
