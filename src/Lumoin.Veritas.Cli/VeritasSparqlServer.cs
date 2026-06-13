@@ -40,8 +40,11 @@ internal static class VeritasSparqlServer
     public static async Task<int> RunAsync(IReadOnlyList<string> dataPaths, int port, CancellationToken cancellationToken)
     {
         //The endpoint serves latency-sensitive I/O from the shared worker pool; floor the pool's
-        //minimum so a burst of synchronous CPU work cannot starve response continuations.
+        //minimum so a burst of synchronous CPU work cannot starve response continuations. The
+        //floor is reported the moment it applies — before the dataset loads or the host binds —
+        //so an operator (and the integration test) observes it as the first line of output.
         int workerThreadFloor = HostThreadPoolFloor.Apply();
+        await Console.Out.WriteLineAsync($"Worker-thread minimum floored at {workerThreadFloor}.").ConfigureAwait(false);
 
         SparqlExpressionContext context = SparqlExpressionContext.CreateDefault();
         (SparqlQueryEngine? engine, string? error) = await VeritasOperations.BuildEngineAsync(dataPaths, context, cancellationToken).ConfigureAwait(false);
@@ -73,10 +76,6 @@ internal static class VeritasSparqlServer
                 await Console.Out.WriteLineAsync($"Veritas SPARQL endpoint listening on {address}/sparql ({dataPaths.Count} data file(s)).").ConfigureAwait(false);
             }
         }
-
-        //Report the applied worker-thread floor so an operator (and the integration test) can confirm
-        //the pool minimum was raised before any request is served.
-        await Console.Out.WriteLineAsync($"Worker-thread minimum floored at {workerThreadFloor}.").ConfigureAwait(false);
 
         await app.WaitForShutdownAsync(cancellationToken).ConfigureAwait(false);
 
