@@ -262,6 +262,11 @@ internal sealed class AlcModuleReasonerTests
         OwlSubClassOfAxiom cImpliesD = new(Reference("C"), Reference("D")) { Origin = Origin("cImpliesD") };
         OwlSubClassOfAxiom cImpliesNotD = new(Reference("C"), new OwlObjectComplementOf(Reference("D"))) { Origin = Origin("cImpliesNotD") };
         OwlClassAssertionAxiom satisfiableA = new(Reference("A"), Named("a")) { Origin = Origin("satisfiableA") };
+
+        //The discriminating power depends on b landing in a non-first block: the joint instance
+        //allocates blocks by first encounter, and the edge presents its source a before its target b,
+        //so a takes block 0 and b block 1. The contradiction is asserted on b alone, so a block-0-only
+        //instantiation would miss it. Keep the edge oriented a -> b for this reason.
         OwlObjectPropertyAssertionAxiom edge = new(Named("a"), new NamedNode(Utf8String.FromString(Example + "r")), Named("b")) { Origin = Origin("edge") };
         OwlClassAssertionAxiom isC = new(Reference("C"), Named("b")) { Origin = Origin("isC") };
 

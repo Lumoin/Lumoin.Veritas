@@ -156,11 +156,15 @@ internal sealed partial class VeritasCliIntegrationTests
 
         try
         {
+            //The reported value is the minimum the runtime accepted (read back inside the host), not the
+            //requested one, so the assertion confirms the floor was actually applied. The expectation
+            //mirrors the host's own ceiling: four times the processor count, capped at the host's maximum.
+            int expectedFloor = Math.Min(Environment.ProcessorCount * 4, 256);
             int? floor = await ReadWorkerThreadFloorAsync(process, TestContext.CancellationToken).ConfigureAwait(false);
             Assert.IsNotNull(floor, "The server did not report a worker-thread floor.");
             Assert.IsTrue(
-                floor >= Environment.ProcessorCount * 4,
-                $"Worker-thread floor {floor} is below four times the processor count ({Environment.ProcessorCount * 4}).");
+                floor >= expectedFloor,
+                $"Worker-thread floor {floor} is below the expected floor ({expectedFloor}).");
         }
         finally
         {
