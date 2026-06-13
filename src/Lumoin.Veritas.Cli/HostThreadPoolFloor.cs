@@ -22,25 +22,20 @@ internal static class HostThreadPoolFloor
     /// <summary>
     /// Raises the pool's minimum worker-thread count toward four times the processor count, bounded by
     /// <see cref="MaximumWorkerFloor"/>, when it is currently lower, and otherwise leaves it untouched. The
-    /// pool's maximum is first raised to admit the target when it would otherwise clamp it, so the minimum
-    /// the runtime accepts equals the one requested. The completion-port minimum is read and written back
-    /// unchanged. Returns the worker minimum the runtime reports afterwards — read back, not the requested
-    /// value — so a caller observes what was actually applied rather than what was asked for.
+    /// pool maximum is never changed: a deliberately low operator ceiling is honoured, so on a host whose
+    /// maximum sits below the target the minimum is floored only up to that ceiling — the pool saturates at
+    /// the operator's maximum rather than silently overriding it. Because the requested minimum is clamped
+    /// to the existing maximum it is always admissible, so the completion-port minimum is read and written
+    /// back unchanged and the request applies. Returns the worker minimum the runtime reports afterwards —
+    /// read back, not the requested value — so a caller observes what was actually applied.
     /// </summary>
     /// <returns>The worker-thread minimum in effect after the floor is applied.</returns>
     public static int Apply()
     {
         ThreadPool.GetMinThreads(out int workerMinimum, out int completionPortMinimum);
+        ThreadPool.GetMaxThreads(out int workerMaximum, out _);
         int target = Math.Min(Environment.ProcessorCount * WorkerThreadsPerProcessor, MaximumWorkerFloor);
-        int floor = Math.Max(workerMinimum, target);
-
-        //SetMinThreads fails silently when the requested minimum exceeds the pool maximum; raise the
-        //maximum to admit the floor first so the minimum the runtime accepts is the one requested.
-        ThreadPool.GetMaxThreads(out int workerMaximum, out int completionPortMaximum);
-        if(workerMaximum < floor)
-        {
-            ThreadPool.SetMaxThreads(floor, completionPortMaximum);
-        }
+        int floor = Math.Min(Math.Max(workerMinimum, target), workerMaximum);
 
         ThreadPool.SetMinThreads(floor, completionPortMinimum);
 
