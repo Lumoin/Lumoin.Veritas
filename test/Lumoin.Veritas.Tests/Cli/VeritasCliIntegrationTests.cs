@@ -158,8 +158,13 @@ internal sealed partial class VeritasCliIntegrationTests
         {
             //The reported value is the minimum the runtime accepted (read back inside the host), not the
             //requested one, so the assertion confirms the floor was actually applied. The expectation
-            //mirrors the host's own ceiling: four times the processor count, capped at the host's maximum.
-            int expectedFloor = Math.Min(Environment.ProcessorCount * 4, 256);
+            //mirrors the host's own ceiling: four times the processor count, capped at 256 AND at the pool
+            //maximum the host honours — the host floors only up to its maximum rather than overriding a
+            //deliberately low one. The child inherits this process's pool configuration, so the local
+            //maximum is the same bound the child applied; reading it keeps the assertion correct even when
+            //the whole run is launched under a constrained maximum.
+            ThreadPool.GetMaxThreads(out int workerMaximum, out _);
+            int expectedFloor = Math.Min(Math.Min(Environment.ProcessorCount * 4, 256), workerMaximum);
             int? floor = await ReadWorkerThreadFloorAsync(process, TestContext.CancellationToken).ConfigureAwait(false);
             Assert.IsNotNull(floor, "The server did not report a worker-thread floor.");
             Assert.IsTrue(
