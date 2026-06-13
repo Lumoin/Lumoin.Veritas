@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
+using System.Threading.Tasks;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Encoding;
+using Lumoin.Veritas.Core.Execution;
 using Lumoin.Veritas.Core.Hypertrie;
 using Lumoin.Veritas.Core.Hypertrie.AccessControl;
 using Lumoin.Veritas.Core.Hypertrie.Execution;
@@ -56,12 +58,20 @@ public sealed class QueryEngineRendezvous
 {
     private readonly QueryEnginePolicy policy;
 
+    //The compute lane that materialises the on-demand view off the serve
+    //path when present; null routes the build inline under StateLock.
+    private readonly IComputeLane? computeLane;
+
     //The current engines. Swapped together under StateLock by
     //Advance; read together under the same lock at query start so
     //a query never pairs a new store with a stale view.
     private HypertrieGraphStore store;
 
     private ColumnarTripleIndex? columnarView;
+
+    //Set under StateLock while an off-path view build is in flight on the
+    //compute lane, so concurrent queries admit at most one build turn.
+    private bool viewBuildPending;
 
     //The succinct self-index serving rotation-incompatible shapes when the
     //policy opts in; materialised on first such demand and dropped on every
@@ -82,13 +92,15 @@ public sealed class QueryEngineRendezvous
     /// </summary>
     /// <param name="store">The system of record.</param>
     /// <param name="policy">The selection policy. Pass <see cref="QueryEnginePolicy.Default"/> for the standard join-routing behaviour.</param>
+    /// <param name="computeLane">An optional compute lane. When supplied, the on-demand columnar view materialises as a lane turn off the serve path and queries serve from the system of record until it lands; when <c>null</c>, the view builds inline on the first qualifying query.</param>
     /// <exception cref="ArgumentNullException"><paramref name="store"/> is <c>null</c>.</exception>
-    public QueryEngineRendezvous(HypertrieGraphStore store, QueryEnginePolicy policy)
+    public QueryEngineRendezvous(HypertrieGraphStore store, QueryEnginePolicy policy, IComputeLane? computeLane = null)
     {
         ArgumentNullException.ThrowIfNull(store);
 
         this.store = store;
         this.policy = policy;
+        this.computeLane = computeLane;
     }
 
     /// <summary>
@@ -251,18 +263,16 @@ public sealed class QueryEngineRendezvous
 
         if(qualifies && currentView is null && policy.BuildViewOnDemand)
         {
-            (currentView, bool isBuilt, long buildMilliseconds) = EnsureView(currentStore);
+            (ColumnarTripleIndex? ensured, EngineSelectionReason ensureReason, long buildMilliseconds) = EnsureView(currentStore);
 
-            if(currentView is not null)
+            if(ensured is not null)
             {
-                //A racing query may have built the view first; it
-                //then arrives here as a reuse with zero build cost.
-                EngineSelectionReason reason = isBuilt
-                    ? EngineSelectionReason.ViewBuilt
-                    : EngineSelectionReason.ViewReused;
+                //A racing query may have built the view first; it then arrives
+                //here as a reuse with zero build cost. EnsureView reports which.
+                currentView = ensured;
 
                 IAsyncEnumerable<Solution>? freeJoin = TryQueryFreeJoin(
-                    currentView, query, reason, buildMilliseconds, timeProvider, accessControl, traceHandler, effectiveCorrelationId, cancellationToken);
+                    currentView, query, ensureReason, buildMilliseconds, timeProvider, accessControl, traceHandler, effectiveCorrelationId, cancellationToken);
 
                 if(freeJoin is not null)
                 {
@@ -270,7 +280,7 @@ public sealed class QueryEngineRendezvous
                 }
 
                 IAsyncEnumerable<Solution>? batched = TryQueryBatched(
-                    currentView, query, reason, buildMilliseconds, timeProvider, accessControl, traceHandler, effectiveCorrelationId, cancellationToken);
+                    currentView, query, ensureReason, buildMilliseconds, timeProvider, accessControl, traceHandler, effectiveCorrelationId, cancellationToken);
 
                 if(batched is not null)
                 {
@@ -279,17 +289,18 @@ public sealed class QueryEngineRendezvous
 
                 EmitEngineSelected(
                     timeProvider, traceHandler, effectiveCorrelationId,
-                    QueryEngineKind.Columnar, reason, currentView.TripleCount, buildMilliseconds);
+                    QueryEngineKind.Columnar, ensureReason, currentView.TripleCount, buildMilliseconds);
 
                 return QueryColumnar(currentView, query, planner, cardinalities, timeProvider, accessControl, accessContext, traceHandler, effectiveCorrelationId, cancellationToken);
             }
 
-            //A commit advanced the rendezvous past the generation
-            //this query read; the read pair stays the consistent
-            //one to answer on.
+            //No view to pair with: either an off-path build is in flight on the
+            //compute lane (ViewBuilding) or a commit advanced the rendezvous past
+            //the generation this query read (SnapshotSuperseded). Either way the
+            //read store stays the consistent one to answer on.
             EmitEngineSelected(
                 timeProvider, traceHandler, effectiveCorrelationId,
-                QueryEngineKind.Hypertrie, EngineSelectionReason.SnapshotSuperseded, currentStore.Count, buildMilliseconds: 0);
+                QueryEngineKind.Hypertrie, ensureReason, currentStore.Count, buildMilliseconds: 0);
 
             return currentStore.Query(
                 query, timeProvider, planner, cardinalities, accessControl, accessContext, traceHandler, effectiveCorrelationId, identifiers, cancellationToken);
@@ -377,18 +388,37 @@ public sealed class QueryEngineRendezvous
     /// view at all when a commit advanced the rendezvous past the
     /// expected generation while the caller decided.
     /// </returns>
-    private (ColumnarTripleIndex? View, bool IsBuilt, long BuildMilliseconds) EnsureView(HypertrieGraphStore expectedStore)
+    private (ColumnarTripleIndex? View, EngineSelectionReason Reason, long BuildMilliseconds) EnsureView(HypertrieGraphStore expectedStore)
     {
         lock(StateLock)
         {
             if(!ReferenceEquals(store, expectedStore))
             {
-                return (null, false, 0L);
+                return (null, EngineSelectionReason.SnapshotSuperseded, 0L);
             }
 
             if(columnarView is not null)
             {
-                return (columnarView, false, 0L);
+                return (columnarView, EngineSelectionReason.ViewReused, 0L);
+            }
+
+            if(computeLane is not null)
+            {
+                //Off the serve path: admit one build turn for this generation and serve
+                //this query from the system of record while it runs. A shed admission
+                //falls through to the inline build below so the view is never starved.
+                if(viewBuildPending)
+                {
+                    return (null, EngineSelectionReason.ViewBuilding, 0L);
+                }
+
+                viewBuildPending = true;
+                if(computeLane.Admit(ComputeWorkClass.ViewBuild, new ViewBuildTurn(this, expectedStore).RunAsync) == ComputeAdmission.Admitted)
+                {
+                    return (null, EngineSelectionReason.ViewBuilding, 0L);
+                }
+
+                viewBuildPending = false;
             }
 
             Stopwatch stopwatch = Stopwatch.StartNew();
@@ -397,7 +427,76 @@ public sealed class QueryEngineRendezvous
 
             columnarView = view;
 
-            return (view, true, stopwatch.ElapsedMilliseconds);
+            return (view, EngineSelectionReason.ViewBuilt, stopwatch.ElapsedMilliseconds);
+        }
+    }
+
+    /// <summary>
+    /// Materialises the columnar view for <paramref name="expectedStore"/>
+    /// off the serve path — the body of the compute-lane view-build turn.
+    /// The expensive build runs without the lock; the result is installed
+    /// under <see cref="StateLock"/> only if the store has not advanced
+    /// past the build's generation, so a commit that lands mid-build
+    /// discards the stale view and the next qualifying query rebuilds.
+    /// </summary>
+    /// <param name="expectedStore">The store generation the build was admitted against.</param>
+    private void BuildViewOffLane(HypertrieGraphStore expectedStore)
+    {
+        lock(StateLock)
+        {
+            //A commit may have landed between admission and this turn running.
+            if(!ReferenceEquals(store, expectedStore) || columnarView is not null)
+            {
+                viewBuildPending = false;
+
+                return;
+            }
+        }
+
+        ColumnarTripleIndex view = ColumnarTripleIndex.Build(expectedStore.Match(TermId.None, TermId.None, TermId.None), policy.OrderSetMode);
+
+        lock(StateLock)
+        {
+            if(ReferenceEquals(store, expectedStore) && columnarView is null)
+            {
+                columnarView = view;
+            }
+
+            viewBuildPending = false;
+        }
+    }
+
+    /// <summary>
+    /// The compute-lane turn that builds the on-demand columnar view off
+    /// the serve path. Holds the rendezvous and the store generation the
+    /// build was admitted against rather than capturing them in a closure,
+    /// matching the project's no-closure convention.
+    /// </summary>
+    private sealed class ViewBuildTurn
+    {
+        /// <summary>The rendezvous whose view this turn materialises.</summary>
+        private readonly QueryEngineRendezvous owner;
+
+        /// <summary>The store generation the build was admitted against.</summary>
+        private readonly HypertrieGraphStore expectedStore;
+
+        /// <summary>Constructs the turn over <paramref name="owner"/> for <paramref name="expectedStore"/>.</summary>
+        /// <param name="owner">The rendezvous.</param>
+        /// <param name="expectedStore">The store generation to build from.</param>
+        public ViewBuildTurn(QueryEngineRendezvous owner, HypertrieGraphStore expectedStore)
+        {
+            this.owner = owner;
+            this.expectedStore = expectedStore;
+        }
+
+        /// <summary>Runs the build. Method-group convertible to <see cref="ComputeWorkDelegate"/>.</summary>
+        /// <param name="cancellationToken">Unused; the build runs to completion.</param>
+        /// <returns>A completed task — the build is synchronous CPU work.</returns>
+        public ValueTask RunAsync(CancellationToken cancellationToken)
+        {
+            owner.BuildViewOffLane(expectedStore);
+
+            return ValueTask.CompletedTask;
         }
     }
 
@@ -669,14 +768,14 @@ public sealed class QueryEngineRendezvous
                 return null;
             }
 
-            (view, bool isBuilt, buildMilliseconds) = EnsureView(currentStore);
+            (view, reason, buildMilliseconds) = EnsureView(currentStore);
             if(view is null)
             {
                 //A commit advanced the rendezvous past the read generation; Query answers on the consistent store.
                 return null;
             }
 
-            reason = isBuilt ? EngineSelectionReason.ViewBuilt : EngineSelectionReason.ViewReused;
+            //EnsureView set the reason to ViewBuilt (just materialised) or ViewReused.
         }
 
         JoinStrategyChoice choice = JoinStrategySelector.Choose(view, query, policy);
@@ -770,13 +869,13 @@ public sealed class QueryEngineRendezvous
                 return null;
             }
 
-            (view, bool isBuilt, buildMilliseconds) = EnsureView(currentStore);
+            (view, reason, buildMilliseconds) = EnsureView(currentStore);
             if(view is null)
             {
                 return null;
             }
 
-            reason = isBuilt ? EngineSelectionReason.ViewBuilt : EngineSelectionReason.ViewReused;
+            //EnsureView set the reason to ViewBuilt (just materialised) or ViewReused.
         }
 
         long? count = ColumnarBatchPipeline.TryCount(view, query);
@@ -872,13 +971,13 @@ public sealed class QueryEngineRendezvous
                 return null;
             }
 
-            (view, bool isBuilt, buildMilliseconds) = EnsureView(currentStore);
+            (view, reason, buildMilliseconds) = EnsureView(currentStore);
             if(view is null)
             {
                 return null;
             }
 
-            reason = isBuilt ? EngineSelectionReason.ViewBuilt : EngineSelectionReason.ViewReused;
+            //EnsureView set the reason to ViewBuilt (just materialised) or ViewReused.
         }
 
         List<SolutionBatch>? distinct = ColumnarBatchPipeline.TryDistinctKeys(view, query, projection);

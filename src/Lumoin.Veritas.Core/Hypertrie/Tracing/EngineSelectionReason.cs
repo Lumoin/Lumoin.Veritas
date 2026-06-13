@@ -24,4 +24,7 @@ public enum EngineSelectionReason
 
     /// <summary>The query's join shape is rotation-incompatible with the policy's reduced columnar order set (a cyclic shape under three rotations), so it ran on the system of record, which carries every order.</summary>
     RotationIncompatible = 4,
+
+    /// <summary>The query qualified for a derived view that is being materialised off the serve path on the compute lane; this query ran on the system of record while the build is in flight, and a later query reuses the view once it lands.</summary>
+    ViewBuilding = 5,
 }
