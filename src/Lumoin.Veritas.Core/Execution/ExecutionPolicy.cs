@@ -38,8 +38,9 @@ namespace Lumoin.Veritas.Core.Execution;
 /// <param name="HostPoolFloorMultiplier">The thread-pool minimum floor applied at host startup, as a multiple of the processor count; <c>0</c> disables it. A transitional patch-fix (default <c>4</c>) that compensates for CPU work mis-placed on the I/O pool; it is lifted once the compute lane removes that work, gated by measurement. The browser, which has no pool to floor, always resolves to <c>0</c>.</param>
 /// <param name="KernelWidthCap">Caps the SIMD codec ladder below hardware capability; <see cref="Execution.KernelWidthCap.Auto"/> leaves it uncapped.</param>
 /// <param name="EccAssumption">The operator's stance on hardware memory error correction, which scales verify-on-load and scrub cadence; <see cref="MemoryProtectionAssumption.AutoDetect"/> probes and defaults conservatively to unprotected when inconclusive.</param>
-/// <param name="ScrubCadence">The target cadence at which a full scrub walk is initiated. <c>null</c> derives a cadence from the resolved protection state; <see cref="TimeSpan.Zero"/> disables scrubbing; a positive value sets it explicitly. The realised per-block coverage latency is load-dependent and read from telemetry, not this knob.</param>
+/// <param name="ScrubCadence">An explicit override of the scrub-initiation cadence. <c>null</c> defers to <paramref name="ScrubCadenceEstimator"/>; <see cref="TimeSpan.Zero"/> disables scrubbing; a positive value sets it explicitly. The realised per-block coverage latency is load-dependent and read from telemetry, not this knob.</param>
 /// <param name="ColumnAccessMode">How the persistence layer reaches column bytes; <see cref="Execution.ColumnAccessMode.Auto"/> memory-maps local files where the OS supports it and range-streams otherwise.</param>
+/// <param name="ScrubCadenceEstimator">The configurable function that derives the scrub-initiation cadence from the protection, data-size, and cluster context; <c>null</c> uses <see cref="ScrubCadenceEstimators.Default"/>. Consulted only when <paramref name="ScrubCadence"/> is <c>null</c>.</param>
 [DebuggerDisplay("ExecutionPolicy Workers={ComputeLaneWorkers} Queue={ComputeQueueCapacity} Floor={HostPoolFloorMultiplier} Cap={KernelWidthCap} Ecc={EccAssumption} Scrub={ScrubCadence} Access={ColumnAccessMode}")]
 public readonly record struct ExecutionPolicy(
     int ComputeLaneWorkers = 0,
@@ -48,16 +49,11 @@ public readonly record struct ExecutionPolicy(
     KernelWidthCap KernelWidthCap = KernelWidthCap.Auto,
     MemoryProtectionAssumption EccAssumption = MemoryProtectionAssumption.AutoDetect,
     TimeSpan? ScrubCadence = null,
-    ColumnAccessMode ColumnAccessMode = ColumnAccessMode.Auto)
+    ColumnAccessMode ColumnAccessMode = ColumnAccessMode.Auto,
+    ScrubCadenceEstimatorDelegate? ScrubCadenceEstimator = null)
 {
     /// <summary>The derived compute-queue depth per worker when <see cref="ComputeQueueCapacity"/> is left to derive. A placeholder constant until characterised under a real serve load.</summary>
     private const int DerivedQueueDepthPerWorker = 4;
-
-    /// <summary>The derived scrub-initiation cadence when memory is treated as error-corrected — the lighter cadence. A placeholder until the measured walk cost is known (memo §9 open item); the realised coverage latency is read from telemetry, not this target.</summary>
-    private static readonly TimeSpan DerivedProtectedScrubCadence = TimeSpan.FromHours(24);
-
-    /// <summary>The derived scrub-initiation cadence when memory is treated as unprotected — the heavier cadence, where silent bit-rot is the live risk. A placeholder until the measured walk cost is known (memo §9 open item).</summary>
-    private static readonly TimeSpan DerivedUnprotectedScrubCadence = TimeSpan.FromHours(6);
 
     /// <summary>
     /// The default policy: every knob derives from the observed
@@ -75,7 +71,8 @@ public readonly record struct ExecutionPolicy(
         KernelWidthCap: KernelWidthCap.Auto,
         EccAssumption: MemoryProtectionAssumption.AutoDetect,
         ScrubCadence: null,
-        ColumnAccessMode: ColumnAccessMode.Auto);
+        ColumnAccessMode: ColumnAccessMode.Auto,
+        ScrubCadenceEstimator: null);
 
     /// <summary>
     /// Resolves this policy against the real running environment,
@@ -209,7 +206,15 @@ public readonly record struct ExecutionPolicy(
             return requested;
         }
 
-        return protection.MemoryIsProtected ? DerivedProtectedScrubCadence : DerivedUnprotectedScrubCadence;
+        //Only the protection verdict is known at resolve time; the data size and the
+        //cluster constellation are runtime and persistence facts the scrub scheduler
+        //re-estimates with later. The estimator is configurable; the default is the
+        //Poisson reliability model.
+        ScrubCadenceEstimatorDelegate estimator = ScrubCadenceEstimator ?? ScrubCadenceEstimators.Default;
+
+        return estimator(new ScrubCadenceContext(
+            MemoryIsProtected: protection.MemoryIsProtected,
+            ProtectedReplicaCount: protection.MemoryIsProtected ? 1 : 0));
     }
 
     /// <summary>
