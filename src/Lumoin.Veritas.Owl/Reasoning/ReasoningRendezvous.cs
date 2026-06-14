@@ -27,7 +27,9 @@ namespace Lumoin.Veritas.Owl.Reasoning;
 /// <param name="Reason">The expressiveness rung that selected it.</param>
 /// <param name="DetectedProfiles">The profile floor the TBox was detected at.</param>
 /// <param name="Module">The beyond-ceiling module, or <c>null</c> when the TBox is within the in-engine calculi.</param>
-/// <param name="ModuleVerdict">The external reasoner's verdict over <paramref name="Module"/>, or <c>null</c> when none was wired or the policy reports instead.</param>
+/// <param name="ModuleVerdict">The external reasoner's verdict over <paramref name="Module"/>, or <c>null</c> when none was wired, the policy reports instead, or the decision abstained on its budget.</param>
+/// <param name="DecisionOutcome">How the external decision ended, or <c>null</c> when no external reasoner ran. <see cref="ReasoningDecisionOutcome.AbstainedBudget"/> leaves <paramref name="ModuleVerdict"/> null and <paramref name="IsConsistent"/> at the value the in-engine pass derived.</param>
+/// <param name="DecisionStatistics">The work the external decision spent, or <c>null</c> when no external reasoner ran.</param>
 public sealed record ReasoningResult(
     HypertrieGraphStore Store,
     int DerivedCount,
@@ -37,7 +39,9 @@ public sealed record ReasoningResult(
     ReasoningSelectionReason Reason,
     OwlProfiles DetectedProfiles,
     ReasoningModule? Module,
-    ModuleVerdict? ModuleVerdict);
+    ModuleVerdict? ModuleVerdict,
+    ReasoningDecisionOutcome? DecisionOutcome,
+    ReasoningDecisionStatistics? DecisionStatistics);
 
 /// <summary>
 /// The per-request reasoning-strategy choice, mirroring the join layer's
@@ -169,6 +173,8 @@ public sealed class ReasoningRendezvous
         string? inconsistencyRule = null;
         ReasoningModule? module = null;
         ModuleVerdict? verdict = null;
+        ReasoningDecisionOutcome? decisionOutcome = null;
+        ReasoningDecisionStatistics? decisionStatistics = null;
 
         if(rdfsShaped)
         {
@@ -212,8 +218,18 @@ public sealed class ReasoningRendezvous
                 {
                     strategy = ReasoningStrategy.DescriptionLogicDelegate;
                     reason = ReasoningSelectionReason.BeyondRlDelegated;
-                    verdict = await DescriptionLogic(module!, cancellationToken).ConfigureAwait(false);
-                    isConsistent = isConsistent && verdict.IsConsistent;
+                    ModuleDecision decision = await DescriptionLogic(module!, cancellationToken).ConfigureAwait(false);
+                    decisionOutcome = decision.Outcome;
+                    decisionStatistics = decision.Statistics;
+                    verdict = decision.Verdict;
+
+                    //A budget abstention leaves no verdict to fold: the result
+                    //keeps the consistency the in-engine pass derived, and the
+                    //outcome records that the module went undecided.
+                    if(verdict is not null)
+                    {
+                        isConsistent = isConsistent && verdict.IsConsistent;
+                    }
                 }
                 else
                 {
@@ -240,7 +256,8 @@ public sealed class ReasoningRendezvous
 
         return new ReasoningResult(
             resultStore, derivedCount, isConsistent, inconsistencyRule,
-            strategy, reason, floor.Memberships, module, verdict);
+            strategy, reason, floor.Memberships, module, verdict,
+            decisionOutcome, decisionStatistics);
     }
 
     /// <summary>

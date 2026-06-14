@@ -133,7 +133,9 @@ internal sealed class ReasoningRendezvousTests
             {
                 received = module;
 
-                return ValueTask.FromResult(new ModuleVerdict(IsConsistent: true, Subsumptions: []));
+                return ValueTask.FromResult(ModuleDecision.Decided(
+                    new ModuleVerdict(IsConsistent: true, Subsumptions: []),
+                    ReasoningDecisionStatistics.Empty));
             });
 
         ReasoningResult result = await rendezvous.MaterializeAsync(
@@ -144,6 +146,8 @@ internal sealed class ReasoningRendezvousTests
         Assert.IsNotNull(received);
         Assert.IsNotNull(result.ModuleVerdict);
         Assert.IsTrue(result.IsConsistent);
+        Assert.AreEqual(ReasoningDecisionOutcome.Decided, result.DecisionOutcome);
+        Assert.IsNotNull(result.DecisionStatistics);
     }
 
     /// <summary>Strategy E: the first classification request pays the build, the second reuses the same generation's result, and the closure's inverted index answers expansion.</summary>
@@ -223,6 +227,13 @@ internal sealed class ReasoningRendezvousTests
         Assert.IsNotNull(result.ModuleVerdict);
         Assert.IsTrue(result.IsConsistent, "c1 ⊑ a ∪ b is satisfiable.");
         Assert.IsEmpty(result.ModuleVerdict.UnsupportedConstructs, "The union module sits inside ALC(H).");
+
+        //The SAT engine reports the work it spent, threaded through to the result.
+        Assert.AreEqual(ReasoningDecisionOutcome.Decided, result.DecisionOutcome);
+        Assert.IsNotNull(result.DecisionStatistics);
+        ReasoningDecisionStatistics statistics = result.DecisionStatistics.Value;
+        Assert.IsGreaterThan(0, statistics.SolveCount, "The SAT engine ran at least one world solve.");
+        Assert.AreEqual(result.Module!.Axioms.Count, statistics.ModuleAxiomCount);
     }
 
     /// <summary>

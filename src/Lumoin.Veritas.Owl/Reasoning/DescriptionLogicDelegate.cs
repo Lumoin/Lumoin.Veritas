@@ -49,7 +49,7 @@ public sealed record ModuleVerdict(
 /// </summary>
 /// <param name="module">The SROIQ(D)-hard module.</param>
 /// <param name="cancellationToken">A token that aborts external reasoning.</param>
-/// <returns>The module verdict.</returns>
-public delegate ValueTask<ModuleVerdict> DescriptionLogicDelegate(
+/// <returns>The module decision: the verdict and the work it spent, or an abstention when the decision's budget ran out before a verdict.</returns>
+public delegate ValueTask<ModuleDecision> DescriptionLogicDelegate(
     ReasoningModule module,
     CancellationToken cancellationToken);

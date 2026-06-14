@@ -95,6 +95,15 @@ internal sealed class SatTableauModuleReasoner
     /// <summary>The token that aborts the decision between solver calls.</summary>
     private readonly CancellationToken cancellationToken;
 
+    /// <summary>The number of axioms in the decided module, reported on the decision statistics.</summary>
+    private readonly int moduleAxiomCount;
+
+    /// <summary>The running count of world solves the decision has spent.</summary>
+    private int solveCount;
+
+    /// <summary>The solver counters accumulated across the decision's world solves.</summary>
+    private SatSolveStatistics runningTally;
+
     /// <summary>
     /// Opens a decision session over a module: translates it, asserts the
     /// internalized TBox into the shared CNF once, and fixes the search mode
@@ -123,8 +132,17 @@ internal sealed class SatTableauModuleReasoner
         }
 
         memo = new WorldMemo();
+        moduleAxiomCount = module.Axioms.Count;
         this.searchMode = searchMode;
         this.cancellationToken = cancellationToken;
+    }
+
+    /// <summary>Folds one world solve's statistics into the decision's running totals.</summary>
+    /// <param name="statistics">The solve's reported statistics.</param>
+    private void RecordSolve(in SatSolveStatistics statistics)
+    {
+        solveCount++;
+        runningTally = SatSolveStatistics.Combine(runningTally, statistics);
     }
 
     /// <summary>The settled verdicts the memo table holds; a world still on the frame stack has no entry — blocking reads the stack, not the table.</summary>
@@ -151,7 +169,7 @@ internal sealed class SatTableauModuleReasoner
     /// <returns>The delegate for <see cref="ReasoningRendezvous"/> wiring.</returns>
     public static DescriptionLogicDelegate CreateDelegate(SatSearchMode searchMode = SatSearchMode.ConflictLearning)
     {
-        return (module, cancellationToken) => ValueTask.FromResult(Decide(module, searchMode, cancellationToken));
+        return (module, cancellationToken) => ValueTask.FromResult(DecideModule(module, searchMode, cancellationToken));
     }
 
     /// <summary>
@@ -174,7 +192,7 @@ internal sealed class SatTableauModuleReasoner
         SatSearchMode searchMode = SatSearchMode.ConflictLearning,
         CancellationToken cancellationToken = default)
     {
-        return new SatTableauModuleReasoner(module, searchMode, cancellationToken).DecideCore(includeSubsumptions: true);
+        return new SatTableauModuleReasoner(module, searchMode, cancellationToken).RunDecision(includeSubsumptions: true).Verdict!;
     }
 
     /// <summary>
@@ -197,18 +215,39 @@ internal sealed class SatTableauModuleReasoner
         SatSearchMode searchMode = SatSearchMode.ConflictLearning,
         CancellationToken cancellationToken = default)
     {
-        return new SatTableauModuleReasoner(module, searchMode, cancellationToken).DecideCore(includeSubsumptions: false);
+        return new SatTableauModuleReasoner(module, searchMode, cancellationToken).RunDecision(includeSubsumptions: false).Verdict!;
+    }
+
+    /// <summary>
+    /// Decides the module as a full <see cref="ModuleDecision"/> — the
+    /// verdict plus the work the decision spent — the form the
+    /// <see cref="DescriptionLogicDelegate"/> seam returns. Includes the
+    /// module-local subsumption sweep, mirroring <see cref="Decide"/>.
+    /// </summary>
+    /// <param name="module">The module to decide.</param>
+    /// <param name="searchMode">How the solver prunes within one world's boolean structure.</param>
+    /// <param name="cancellationToken">A token that aborts between solver calls.</param>
+    /// <returns>The decision: the verdict and the work it spent.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="module"/> is <see langword="null"/>.</exception>
+    /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
+    public static ModuleDecision DecideModule(
+        ReasoningModule module,
+        SatSearchMode searchMode = SatSearchMode.ConflictLearning,
+        CancellationToken cancellationToken = default)
+    {
+        return new SatTableauModuleReasoner(module, searchMode, cancellationToken).RunDecision(includeSubsumptions: true);
     }
 
     /// <summary>
     /// Runs the consistency check over the shared CNF — the joint instance
     /// when asserted role edges are present, per-seed worlds otherwise —
     /// optionally following with the module-local subsumption sweep against
-    /// the same CNF and memo table.
+    /// the same CNF and memo table, and wraps the verdict with the work the
+    /// decision spent.
     /// </summary>
     /// <param name="includeSubsumptions">Whether to enumerate module-local subsumptions when the signature qualifies.</param>
-    /// <returns>The verdict.</returns>
-    private ModuleVerdict DecideCore(bool includeSubsumptions)
+    /// <returns>The decision.</returns>
+    private ModuleDecision RunDecision(bool includeSubsumptions)
     {
         bool isConsistent = translation.Edges.Count > 0
             ? CheckJointRoot()
@@ -219,10 +258,12 @@ internal sealed class SatTableauModuleReasoner
                 ? SweepSubsumptions()
                 : [];
 
-        return new ModuleVerdict(isConsistent, subsumptions)
+        ModuleVerdict verdict = new(isConsistent, subsumptions)
         {
             UnsupportedConstructs = translation.Unsupported,
         };
+
+        return ModuleDecision.Decided(verdict, new ReasoningDecisionStatistics(moduleAxiomCount, solveCount, runningTally));
     }
 
     /// <summary>
@@ -453,6 +494,7 @@ internal sealed class SatTableauModuleReasoner
                 pool: null,
                 searchMode,
                 cancellationToken);
+            RecordSolve(verdict.Statistics);
             if(!verdict.IsSatisfiable)
             {
                 return false;
@@ -798,6 +840,7 @@ internal sealed class SatTableauModuleReasoner
                     pool: null,
                     searchMode,
                     cancellationToken);
+                RecordSolve(verdict.Statistics);
                 if(!verdict.IsSatisfiable)
                 {
                     memo.Record(frame.Key, WorldState.Unsatisfiable);

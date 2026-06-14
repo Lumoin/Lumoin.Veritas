@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Sat;
 using Lumoin.Veritas.Owl.Structural;
 
 namespace Lumoin.Veritas.Owl.Reasoning;
@@ -52,12 +53,18 @@ public static class AlcModuleReasoner
     internal const int SubsumptionSignatureCap = 16;
 
     /// <summary>
-    /// Wraps <see cref="Decide"/> as the seam delegate.
+    /// Wraps <see cref="Decide"/> as the seam delegate. The snapshot engine
+    /// runs no solver, so the decision reports zero solves and empty solver
+    /// totals and never abstains on a budget — it always decides or throws on
+    /// cancellation.
     /// </summary>
     /// <returns>The delegate for <see cref="ReasoningRendezvous"/> wiring.</returns>
     public static DescriptionLogicDelegate CreateDelegate()
     {
-        return static (module, cancellationToken) => ValueTask.FromResult(Decide(module, cancellationToken));
+        return static (module, cancellationToken) => ValueTask.FromResult(
+            ModuleDecision.Decided(
+                Decide(module, cancellationToken),
+                new ReasoningDecisionStatistics(module.Axioms.Count, SolveCount: 0, SatSolveStatistics.Empty)));
     }
 
     /// <summary>
