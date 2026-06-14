@@ -129,6 +129,65 @@ internal sealed class QueryEngineRendezvousLaneTests
         Assert.HasCount(fromSystemOfRecord.Count, fromView);
     }
 
+    [TestMethod]
+    public async Task SelfIndexBuildOffloadsToTheLaneAndServesFromTheSystemOfRecordUntilItLands()
+    {
+        //A 3-cycle: under the three-rotation order set the triangle shape is rotation-incompatible,
+        //so it routes to the succinct self-index when the policy opts in.
+        EncodedTriple[] triples =
+        [
+            EncodedTriple.FromEncoded(1, Knows.Encoded, 2),
+            EncodedTriple.FromEncoded(2, Knows.Encoded, 3),
+            EncodedTriple.FromEncoded(3, Knows.Encoded, 1),
+        ];
+
+        HypertrieGraphStore store = await HypertrieGraphStore
+            .BuildAsync(triples, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+
+        ManualComputeLane lane = new();
+        await using var laneScope = lane.ConfigureAwait(false);
+        QueryEnginePolicy policy = new(MinimumPatternsForColumnar: 2, BuildViewOnDemand: true, DegreeOfParallelism: 1, OrderSetMode: ColumnarOrderSetMode.ThreeRotations, PreferSelfIndex: true);
+        QueryEngineRendezvous rendezvous = new(store, policy, lane);
+        VariableRegistry registry = new();
+        BasicGraphPattern triangle = Triangle(registry);
+        List<QueryTraceEvent> selections = [];
+        TraceHandler<QueryTraceEvent> handler = CollectSelections(selections);
+
+        //First query: the self-index build is admitted to the lane and this query serves the
+        //system of record while it is in flight.
+        List<Solution> fromSystemOfRecord = await Drain(rendezvous.Query(
+            triangle, VeritasClock.System, traceHandler: handler, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.AreEqual(QueryEngineKind.Hypertrie, selections[^1].Engine);
+        Assert.AreEqual(1, lane.QueueDepth, "The self-index build was admitted to the lane.");
+
+        //Run the lane: the self-index materialises off the serve path.
+        await lane.DrainAsync().ConfigureAwait(false);
+
+        //A later query now answers from the self-index, with the same results.
+        List<Solution> fromSelfIndex = await Drain(rendezvous.Query(
+            triangle, VeritasClock.System, traceHandler: handler, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.AreEqual(QueryEngineKind.SelfIndex, selections[^1].Engine);
+        Assert.HasCount(fromSystemOfRecord.Count, fromSelfIndex);
+    }
+
+    /// <summary>(?a knows ?b) . (?b knows ?c) . (?c knows ?a): a 3-cycle — rotation-incompatible under a reduced order set, so it routes to the self-index.</summary>
+    /// <param name="registry">The variable registry.</param>
+    /// <returns>The basic graph pattern.</returns>
+    private static BasicGraphPattern Triangle(VariableRegistry registry)
+    {
+        Variable a = registry.GetOrAdd("a");
+        Variable b = registry.GetOrAdd("b");
+        Variable c = registry.GetOrAdd("c");
+
+        TriplePattern first = new(PatternPosition.OfVariable(a), PatternPosition.Bound(Knows), PatternPosition.OfVariable(b));
+        TriplePattern second = new(PatternPosition.OfVariable(b), PatternPosition.Bound(Knows), PatternPosition.OfVariable(c));
+        TriplePattern third = new(PatternPosition.OfVariable(c), PatternPosition.Bound(Knows), PatternPosition.OfVariable(a));
+
+        return new BasicGraphPattern([first, second, third], registry);
+    }
+
     /// <summary>(?a knows ?b) . (?b knows ?c): a two-pattern join that qualifies for the columnar view under the default policy.</summary>
     /// <param name="registry">The variable registry.</param>
     /// <returns>The basic graph pattern.</returns>

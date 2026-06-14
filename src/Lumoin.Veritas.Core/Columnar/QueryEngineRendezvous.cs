@@ -78,6 +78,10 @@ public sealed class QueryEngineRendezvous
     //commit — it rebuilds rather than evolving by delta.
     private TripleSelfIndex? selfIndexView;
 
+    //Set under StateLock while an off-path self-index build is in flight on
+    //the compute lane, so concurrent queries admit at most one build turn.
+    private bool selfIndexBuildPending;
+
     private object StateLock { get; } = new();
 
     //Sequence-number counter for trace events emitted by this
@@ -523,6 +527,24 @@ public sealed class QueryEngineRendezvous
                 return (selfIndexView, false, 0L);
             }
 
+            if(computeLane is not null)
+            {
+                //Off the serve path: admit one self-index build turn and serve this query from the
+                //system of record while it runs. A shed admission falls through to the inline build.
+                if(selfIndexBuildPending)
+                {
+                    return (null, false, 0L);
+                }
+
+                selfIndexBuildPending = true;
+                if(computeLane.Admit(ComputeWorkClass.ViewBuild, new SelfIndexBuildTurn(this, expectedStore).RunAsync) == ComputeAdmission.Admitted)
+                {
+                    return (null, false, 0L);
+                }
+
+                selfIndexBuildPending = false;
+            }
+
             Stopwatch stopwatch = Stopwatch.StartNew();
             TripleSelfIndex index = TripleSelfIndex.Build(store.Match(TermId.None, TermId.None, TermId.None));
             stopwatch.Stop();
@@ -530,6 +552,72 @@ public sealed class QueryEngineRendezvous
             selfIndexView = index;
 
             return (index, true, stopwatch.ElapsedMilliseconds);
+        }
+    }
+
+    /// <summary>
+    /// Materialises the succinct self-index for <paramref name="expectedStore"/>
+    /// off the serve path — the body of the compute-lane self-index build
+    /// turn. The build runs without the lock; the result installs under
+    /// <see cref="StateLock"/> only if the store has not advanced past the
+    /// build's generation.
+    /// </summary>
+    /// <param name="expectedStore">The store generation the build was admitted against.</param>
+    private void BuildSelfIndexOffLane(HypertrieGraphStore expectedStore)
+    {
+        lock(StateLock)
+        {
+            if(!ReferenceEquals(store, expectedStore) || selfIndexView is not null)
+            {
+                selfIndexBuildPending = false;
+
+                return;
+            }
+        }
+
+        TripleSelfIndex index = TripleSelfIndex.Build(expectedStore.Match(TermId.None, TermId.None, TermId.None));
+
+        lock(StateLock)
+        {
+            if(ReferenceEquals(store, expectedStore) && selfIndexView is null)
+            {
+                selfIndexView = index;
+            }
+
+            selfIndexBuildPending = false;
+        }
+    }
+
+    /// <summary>
+    /// The compute-lane turn that builds the succinct self-index off the
+    /// serve path. Holds the rendezvous and the store generation rather
+    /// than capturing them in a closure, matching the no-closure convention.
+    /// </summary>
+    private sealed class SelfIndexBuildTurn
+    {
+        /// <summary>The rendezvous whose self-index this turn materialises.</summary>
+        private readonly QueryEngineRendezvous owner;
+
+        /// <summary>The store generation the build was admitted against.</summary>
+        private readonly HypertrieGraphStore expectedStore;
+
+        /// <summary>Constructs the turn over <paramref name="owner"/> for <paramref name="expectedStore"/>.</summary>
+        /// <param name="owner">The rendezvous.</param>
+        /// <param name="expectedStore">The store generation to build from.</param>
+        public SelfIndexBuildTurn(QueryEngineRendezvous owner, HypertrieGraphStore expectedStore)
+        {
+            this.owner = owner;
+            this.expectedStore = expectedStore;
+        }
+
+        /// <summary>Runs the build. Method-group convertible to <see cref="ComputeWorkDelegate"/>.</summary>
+        /// <param name="cancellationToken">Unused; the build runs to completion.</param>
+        /// <returns>A completed task — the build is synchronous CPU work.</returns>
+        public ValueTask RunAsync(CancellationToken cancellationToken)
+        {
+            owner.BuildSelfIndexOffLane(expectedStore);
+
+            return ValueTask.CompletedTask;
         }
     }
 
