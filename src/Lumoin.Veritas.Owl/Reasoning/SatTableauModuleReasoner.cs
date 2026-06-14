@@ -78,8 +78,55 @@ namespace Lumoin.Veritas.Owl.Reasoning;
 /// the supported fragment.
 /// </para>
 /// </remarks>
-internal static class SatTableauModuleReasoner
+internal sealed class SatTableauModuleReasoner
 {
+    /// <summary>The module's shared translation: the internalized TBox, the asserted forest, the role hierarchy, and the beyond-fragment remainder. Built once per decision.</summary>
+    private readonly AlcModuleReasoner.Translation translation;
+
+    /// <summary>The shared CNF every world carries: the internalized TBox asserted once, grown by the decision's learned modal clauses.</summary>
+    private readonly ConceptCnf cnf;
+
+    /// <summary>The settled-verdict memo over canonical assumption-set keys, shared across every world of the decision.</summary>
+    private readonly WorldMemo memo;
+
+    /// <summary>How the solver prunes within one world's boolean structure; fixed for the decision.</summary>
+    private readonly SatSearchMode searchMode;
+
+    /// <summary>The token that aborts the decision between solver calls.</summary>
+    private readonly CancellationToken cancellationToken;
+
+    /// <summary>
+    /// Opens a decision session over a module: translates it, asserts the
+    /// internalized TBox into the shared CNF once, and fixes the search mode
+    /// and token for the decision. The session is single-use and
+    /// decision-scoped — one per <see cref="Decide"/> or
+    /// <see cref="DecideConsistency"/> call — so the shared CNF, memo, and
+    /// learned clauses never leak between decisions.
+    /// </summary>
+    /// <param name="module">The module to decide.</param>
+    /// <param name="searchMode">How the solver prunes within one world's boolean structure.</param>
+    /// <param name="cancellationToken">A token that aborts between solver calls.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="module"/> is <see langword="null"/>.</exception>
+    private SatTableauModuleReasoner(ReasoningModule module, SatSearchMode searchMode, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(module);
+
+        translation = AlcModuleReasoner.Translate(module);
+
+        //The shared CNF: every world carries the internalized TBox, so its
+        //conjuncts assert as facts once and worlds differ only in their
+        //assumption sets.
+        cnf = new ConceptCnf();
+        foreach(AlcConcept conjunct in translation.TBox)
+        {
+            cnf.AssertFact(conjunct);
+        }
+
+        memo = new WorldMemo();
+        this.searchMode = searchMode;
+        this.cancellationToken = cancellationToken;
+    }
+
     /// <summary>The settled verdicts the memo table holds; a world still on the frame stack has no entry — blocking reads the stack, not the table.</summary>
     private enum WorldState
     {
@@ -127,7 +174,7 @@ internal static class SatTableauModuleReasoner
         SatSearchMode searchMode = SatSearchMode.ConflictLearning,
         CancellationToken cancellationToken = default)
     {
-        return DecideCore(module, includeSubsumptions: true, searchMode, cancellationToken);
+        return new SatTableauModuleReasoner(module, searchMode, cancellationToken).DecideCore(includeSubsumptions: true);
     }
 
     /// <summary>
@@ -150,7 +197,7 @@ internal static class SatTableauModuleReasoner
         SatSearchMode searchMode = SatSearchMode.ConflictLearning,
         CancellationToken cancellationToken = default)
     {
-        return DecideCore(module, includeSubsumptions: false, searchMode, cancellationToken);
+        return new SatTableauModuleReasoner(module, searchMode, cancellationToken).DecideCore(includeSubsumptions: false);
     }
 
     /// <summary>
@@ -159,39 +206,17 @@ internal static class SatTableauModuleReasoner
     /// optionally following with the module-local subsumption sweep against
     /// the same CNF and memo table.
     /// </summary>
-    /// <param name="module">The module to decide.</param>
     /// <param name="includeSubsumptions">Whether to enumerate module-local subsumptions when the signature qualifies.</param>
-    /// <param name="searchMode">The solver's search mode.</param>
-    /// <param name="cancellationToken">A token that aborts between solver calls.</param>
     /// <returns>The verdict.</returns>
-    private static ModuleVerdict DecideCore(
-        ReasoningModule module,
-        bool includeSubsumptions,
-        SatSearchMode searchMode,
-        CancellationToken cancellationToken)
+    private ModuleVerdict DecideCore(bool includeSubsumptions)
     {
-        ArgumentNullException.ThrowIfNull(module);
-
-        AlcModuleReasoner.Translation translation = AlcModuleReasoner.Translate(module);
-
-        //The shared CNF: every world carries the internalized TBox, so its
-        //conjuncts assert as facts once and worlds differ only in their
-        //assumption sets.
-        ConceptCnf cnf = new();
-        foreach(AlcConcept conjunct in translation.TBox)
-        {
-            cnf.AssertFact(conjunct);
-        }
-
-        WorldMemo memo = new();
-
         bool isConsistent = translation.Edges.Count > 0
-            ? CheckJointRoot(cnf, translation, memo, searchMode, cancellationToken)
-            : CheckAllSeedWorlds(cnf, translation, memo, searchMode, cancellationToken);
+            ? CheckJointRoot()
+            : CheckAllSeedWorlds();
 
         List<(NamedNode SubClass, NamedNode SuperClass)> subsumptions =
             includeSubsumptions && isConsistent && translation.SignatureClasses.Count <= AlcModuleReasoner.SubsumptionSignatureCap
-                ? SweepSubsumptions(cnf, translation, memo, searchMode, cancellationToken)
+                ? SweepSubsumptions()
                 : [];
 
         return new ModuleVerdict(isConsistent, subsumptions)
@@ -208,18 +233,8 @@ internal static class SatTableauModuleReasoner
     /// same CNF and memo table, so modal clauses and settled verdicts
     /// accumulate across the whole sweep.
     /// </summary>
-    /// <param name="cnf">The shared CNF; probe encoding and learned clauses grow it.</param>
-    /// <param name="translation">The module's translation, read for the signature.</param>
-    /// <param name="memo">The memo table the probes share.</param>
-    /// <param name="searchMode">The solver's search mode.</param>
-    /// <param name="cancellationToken">A token that aborts between solver calls.</param>
     /// <returns>The subsumed pairs, in pair-enumeration order.</returns>
-    private static List<(NamedNode SubClass, NamedNode SuperClass)> SweepSubsumptions(
-        ConceptCnf cnf,
-        AlcModuleReasoner.Translation translation,
-        WorldMemo memo,
-        SatSearchMode searchMode,
-        CancellationToken cancellationToken)
+    private List<(NamedNode SubClass, NamedNode SuperClass)> SweepSubsumptions()
     {
         List<(NamedNode SubClass, NamedNode SuperClass)> subsumptions = [];
         foreach(Utf8String subClass in translation.SignatureClasses)
@@ -237,7 +252,7 @@ internal static class SatTableauModuleReasoner
                     cnf.GetLiteral(new AlcNot(new AlcAtom(superClass))),
                 ];
                 (SatLiteral[] assumptions, int[] key) = Canonicalize(literals);
-                if(!CheckWorld(cnf, translation, memo, assumptions, key, searchMode, minimizeCores: true, cancellationToken))
+                if(!CheckWorld(assumptions, key, minimizeCores: true))
                 {
                     subsumptions.Add((new NamedNode(subClass), new NamedNode(superClass)));
                 }
@@ -253,18 +268,8 @@ internal static class SatTableauModuleReasoner
     /// assertions, else one world per asserted individual. The memo table
     /// and every learned clause carry across seeds.
     /// </summary>
-    /// <param name="cnf">The shared CNF.</param>
-    /// <param name="translation">The module's translation.</param>
-    /// <param name="memo">The memo table over canonical assumption sets.</param>
-    /// <param name="searchMode">The solver's search mode.</param>
-    /// <param name="cancellationToken">A token that aborts between solver calls.</param>
     /// <returns><see langword="true"/> when every seed world is satisfiable.</returns>
-    private static bool CheckAllSeedWorlds(
-        ConceptCnf cnf,
-        AlcModuleReasoner.Translation translation,
-        WorldMemo memo,
-        SatSearchMode searchMode,
-        CancellationToken cancellationToken)
+    private bool CheckAllSeedWorlds()
     {
         List<(SatLiteral[] Assumptions, int[] Key)> seeds = [];
         if(translation.AssertedConcepts.Count == 0)
@@ -287,7 +292,7 @@ internal static class SatTableauModuleReasoner
 
         foreach((SatLiteral[] assumptions, int[] key) in seeds)
         {
-            if(!CheckWorld(cnf, translation, memo, assumptions, key, searchMode, minimizeCores: true, cancellationToken))
+            if(!CheckWorld(assumptions, key, minimizeCores: true))
             {
                 return false;
             }
@@ -305,18 +310,8 @@ internal static class SatTableauModuleReasoner
     /// Asserted individuals no edge touches check as independent per-seed
     /// worlds, exactly as in the edge-free case.
     /// </summary>
-    /// <param name="cnf">The shared template CNF; learned clauses append to it.</param>
-    /// <param name="translation">The module's translation.</param>
-    /// <param name="memo">The memo table the successor chains share.</param>
-    /// <param name="searchMode">The solver's search mode.</param>
-    /// <param name="cancellationToken">A token that aborts between solver calls.</param>
     /// <returns><see langword="true"/> when every component's joint instance and every spawned chain are satisfiable.</returns>
-    private static bool CheckJointRoot(
-        ConceptCnf cnf,
-        AlcModuleReasoner.Translation translation,
-        WorldMemo memo,
-        SatSearchMode searchMode,
-        CancellationToken cancellationToken)
+    private bool CheckJointRoot()
     {
         Dictionary<Utf8String, Utf8String> componentParent = [];
         foreach((Utf8String from, Utf8String _, Utf8String to) in translation.Edges)
@@ -358,7 +353,7 @@ internal static class SatTableauModuleReasoner
             }
 
             (SatLiteral[] assumptions, int[] key) = Canonicalize(literals);
-            if(!CheckWorld(cnf, translation, memo, assumptions, key, searchMode, minimizeCores: true, cancellationToken))
+            if(!CheckWorld(assumptions, key, minimizeCores: true))
             {
                 return false;
             }
@@ -374,7 +369,7 @@ internal static class SatTableauModuleReasoner
                 BlockFor(individuals, blockOf, to);
             }
 
-            if(!CheckJointComponent(cnf, translation, memo, individuals, blockOf, component.Value, searchMode, cancellationToken))
+            if(!CheckJointComponent(individuals, blockOf, component.Value))
             {
                 return false;
             }
@@ -437,30 +432,20 @@ internal static class SatTableauModuleReasoner
     /// because the next build re-derives the block layout and
     /// re-instantiates every clause, learned ones included.
     /// </remarks>
-    /// <param name="cnf">The shared template CNF; learned clauses append to it.</param>
-    /// <param name="translation">The module's translation.</param>
-    /// <param name="memo">The memo table the successor chains share.</param>
     /// <param name="individuals">The component's individuals in block order.</param>
     /// <param name="blockOf">The component's individual-to-block index.</param>
     /// <param name="edges">The component's asserted edges.</param>
-    /// <param name="searchMode">The solver's search mode.</param>
-    /// <param name="cancellationToken">A token that aborts between solver calls.</param>
     /// <returns><see langword="true"/> when the component's joint instance and every spawned chain are satisfiable.</returns>
-    private static bool CheckJointComponent(
-        ConceptCnf cnf,
-        AlcModuleReasoner.Translation translation,
-        WorldMemo memo,
+    private bool CheckJointComponent(
         List<Utf8String> individuals,
         Dictionary<Utf8String, int> blockOf,
-        List<(Utf8String From, Utf8String Role, Utf8String To)> edges,
-        SatSearchMode searchMode,
-        CancellationToken cancellationToken)
+        List<(Utf8String From, Utf8String Role, Utf8String To)> edges)
     {
         while(true)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            JointInstance joint = BuildJointInstance(cnf, translation, individuals, blockOf, edges);
+            JointInstance joint = BuildJointInstance(individuals, blockOf, edges);
             SatVerdict verdict = SatSolver.SolveUnderAssumptions(
                 joint.Clauses,
                 joint.VariableCount,
@@ -479,9 +464,9 @@ internal static class SatTableauModuleReasoner
             for(int block = 0; block < individuals.Count; block++)
             {
                 bool[] blockModel = ExtractBlockModel(model, block, joint.BlockWidth);
-                foreach(SuccessorPlan plan in PlanSuccessors(cnf, translation, blockModel))
+                foreach(SuccessorPlan plan in PlanSuccessors(blockModel))
                 {
-                    if(!CheckWorld(cnf, translation, memo, plan.Assumptions, plan.Key, searchMode, minimizeCores: true, cancellationToken))
+                    if(!CheckWorld(plan.Assumptions, plan.Key, minimizeCores: true))
                     {
                         //Every chain failure of the round teaches the
                         //TEMPLATE its modal conflict core — TBox-entailed,
@@ -491,7 +476,7 @@ internal static class SatTableauModuleReasoner
                         //the clause once.
                         if(learnedThisRound.Add(plan.Key))
                         {
-                            cnf.Append(MinimizeConflictClause(cnf, translation, memo, plan, searchMode, cancellationToken));
+                            cnf.Append(MinimizeConflictClause(plan));
                         }
 
                         learned = true;
@@ -529,15 +514,11 @@ internal static class SatTableauModuleReasoner
     /// and offsets each individual's asserted-concept literals into its
     /// block as the joint assumptions.
     /// </summary>
-    /// <param name="cnf">The shared template CNF; contributor encoding grows it before the freeze.</param>
-    /// <param name="translation">The module's translation, read for the role hierarchy.</param>
     /// <param name="individuals">The component's individuals in block order.</param>
     /// <param name="blockOf">The component's individual-to-block index.</param>
     /// <param name="edges">The component's asserted edges.</param>
     /// <returns>The joint instance.</returns>
-    private static JointInstance BuildJointInstance(
-        ConceptCnf cnf,
-        AlcModuleReasoner.Translation translation,
+    private JointInstance BuildJointInstance(
         List<Utf8String> individuals,
         Dictionary<Utf8String, int> blockOf,
         List<(Utf8String From, Utf8String Role, Utf8String To)> edges)
@@ -775,24 +756,14 @@ internal static class SatTableauModuleReasoner
     /// settled sets and their monotone consequences and the ancestor walk
     /// blocking affirmatively.
     /// </summary>
-    /// <param name="cnf">The shared CNF; learned clauses append to it.</param>
-    /// <param name="translation">The module's translation, read for the role hierarchy.</param>
-    /// <param name="memo">The memo table over canonical assumption sets.</param>
     /// <param name="seedAssumptions">The seed world's assumption literals, canonical.</param>
     /// <param name="seedKey">The seed world's canonical key.</param>
-    /// <param name="searchMode">The solver's search mode.</param>
     /// <param name="minimizeCores">Whether learned modal clauses shrink to conflict cores; the minimization probes themselves run without it, which bounds the probe recursion at one level.</param>
-    /// <param name="cancellationToken">A token that aborts between solver calls.</param>
     /// <returns><see langword="true"/> when the seed world is satisfiable.</returns>
-    private static bool CheckWorld(
-        ConceptCnf cnf,
-        AlcModuleReasoner.Translation translation,
-        WorldMemo memo,
+    private bool CheckWorld(
         SatLiteral[] seedAssumptions,
         int[] seedKey,
-        SatSearchMode searchMode,
-        bool minimizeCores,
-        CancellationToken cancellationToken)
+        bool minimizeCores)
     {
         //The memo holds settled verdicts only, so an exact or monotone
         //answer settles the seed.
@@ -854,15 +825,15 @@ internal static class SatTableauModuleReasoner
                     WorldFrame parent = stack[^1];
                     SuccessorPlan failedPlan = parent.Successors![parent.NextSuccessor];
                     cnf.Append(minimizeCores
-                        ? MinimizeConflictClause(cnf, translation, memo, failedPlan, searchMode, cancellationToken)
+                        ? MinimizeConflictClause(failedPlan)
                         : failedPlan.ConflictClause);
                     parent.Successors = null;
 
                     continue;
                 }
 
-                bool[] model = Shrink(cnf, verdict.Assignment!, frame.Assumptions);
-                frame.Successors = PlanSuccessors(cnf, translation, model);
+                bool[] model = Shrink(verdict.Assignment!, frame.Assumptions);
+                frame.Successors = PlanSuccessors(model);
                 frame.NextSuccessor = 0;
 
                 continue;
@@ -935,7 +906,7 @@ internal static class SatTableauModuleReasoner
                     //clause for this parent's atom combination is still
                     //learned: it is what forces the re-solve to move on.
                     cnf.Append(minimizeCores
-                        ? MinimizeConflictClause(cnf, translation, memo, successor, searchMode, cancellationToken)
+                        ? MinimizeConflictClause(successor)
                         : successor.ConflictClause);
                     frame.Successors = null;
 
@@ -1037,11 +1008,10 @@ internal static class SatTableauModuleReasoner
     /// the same pass. Assumption literals and the reserved variable 0 are
     /// never flipped.
     /// </summary>
-    /// <param name="cnf">The shared CNF, read for the modal-atom registrations and the clauses.</param>
     /// <param name="assignment">The solver's satisfying assignment.</param>
     /// <param name="assumptions">The world's assumption literals, whose variables stay pinned.</param>
     /// <returns>The shrunk model.</returns>
-    private static bool[] Shrink(ConceptCnf cnf, IReadOnlyList<bool> assignment, SatLiteral[] assumptions)
+    private bool[] Shrink(IReadOnlyList<bool> assignment, SatLiteral[] assumptions)
     {
         bool[] model = new bool[assignment.Count];
         for(int i = 0; i < model.Length; i++)
@@ -1067,11 +1037,9 @@ internal static class SatTableauModuleReasoner
     /// existential's role reaches through the told role hierarchy, and its
     /// conflict clause negates exactly those atoms.
     /// </summary>
-    /// <param name="cnf">The shared CNF; the successor fillers encode into it on demand.</param>
-    /// <param name="translation">The module's translation, read for the role hierarchy.</param>
     /// <param name="model">The shrunk model.</param>
     /// <returns>The successor plans, in modal-atom allocation order.</returns>
-    private static List<SuccessorPlan> PlanSuccessors(ConceptCnf cnf, AlcModuleReasoner.Translation translation, bool[] model)
+    private List<SuccessorPlan> PlanSuccessors(bool[] model)
     {
         //Snapshot the model's true modal atoms before encoding any filler:
         //encoding may register fresh modal atoms, which belong to deeper
@@ -1150,20 +1118,9 @@ internal static class SatTableauModuleReasoner
     /// full-set clause is while pruning whole families of modal-atom
     /// combinations instead of one.
     /// </summary>
-    /// <param name="cnf">The shared CNF; probe chains may grow it.</param>
-    /// <param name="translation">The module's translation, read for the role hierarchy.</param>
-    /// <param name="memo">The memo table the probes share.</param>
     /// <param name="plan">The failed successor's plan.</param>
-    /// <param name="searchMode">The solver's search mode.</param>
-    /// <param name="cancellationToken">A token that aborts between solver calls.</param>
     /// <returns>The minimized conflict clause.</returns>
-    private static SatLiteral[] MinimizeConflictClause(
-        ConceptCnf cnf,
-        AlcModuleReasoner.Translation translation,
-        WorldMemo memo,
-        SuccessorPlan plan,
-        SatSearchMode searchMode,
-        CancellationToken cancellationToken)
+    private SatLiteral[] MinimizeConflictClause(SuccessorPlan plan)
     {
         //The core is a property of the refuted LABEL, not of the parent
         //combination that built it, so distinct parents reaching the same
@@ -1188,7 +1145,7 @@ internal static class SatTableauModuleReasoner
                 }
 
                 (SatLiteral[] assumptions, int[] key) = Canonicalize(literals);
-                if(!CheckWorld(cnf, translation, memo, assumptions, key, searchMode, minimizeCores: false, cancellationToken))
+                if(!CheckWorld(assumptions, key, minimizeCores: false))
                 {
                     kept.RemoveAt(candidate);
                 }
