@@ -151,6 +151,32 @@ internal sealed class AlcModuleReasonerTests
             "The transitive subsumption A ⊑ C surfaces.");
     }
 
+    /// <summary>
+    /// The snapshot engine's decision reports its tableau work: it runs no
+    /// solver, so the solve count is zero, but the tableau totals carry the
+    /// runs and rule applications the consistency check and subsumption sweep
+    /// spent.
+    /// </summary>
+    [TestMethod]
+    public void DecideModuleReportsTableauStatistics()
+    {
+        OwlSubClassOfAxiom aUnderB = new(Reference("A"), Reference("B")) { Origin = Origin("ab") };
+        OwlSubClassOfAxiom bUnderC = new(Reference("B"), Reference("C")) { Origin = Origin("bc") };
+        ReasoningModule module = Module(aUnderB, bUnderC);
+
+        ModuleDecision decision = AlcModuleReasoner.DecideModule(module, TestContext.CancellationToken);
+
+        Assert.AreEqual(ReasoningDecisionOutcome.Decided, decision.Outcome);
+        Assert.IsNotNull(decision.Verdict);
+        Assert.IsTrue(decision.Verdict.IsConsistent);
+
+        //The snapshot engine runs no solver, but does run tableaux.
+        Assert.AreEqual(0, decision.Statistics.SolveCount);
+        Assert.AreEqual(module.Axioms.Count, decision.Statistics.ModuleAxiomCount);
+        Assert.IsGreaterThan(0, decision.Statistics.TableauTotals.TableauRuns, "At least the consistency tableau ran.");
+        Assert.IsGreaterThan(0, decision.Statistics.TableauTotals.RuleApplications, "The internalized TBox drove rule applications.");
+    }
+
     /// <summary>An axiom beyond ALC(H) is named on the verdict, and the supported fragment still decides.</summary>
     /// <param name="engine">The engine under test.</param>
     [TestMethod]

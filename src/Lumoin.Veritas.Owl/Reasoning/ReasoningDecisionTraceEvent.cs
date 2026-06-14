@@ -23,6 +23,11 @@ namespace Lumoin.Veritas.Owl.Reasoning;
 /// <param name="SolverConflicts">The conflicts summed across the decision's world solves.</param>
 /// <param name="SolverLearnedClauses">The first-UIP clauses learned across the decision's world solves.</param>
 /// <param name="SolverMaxDecisionLevel">The deepest decision level reached by any of the decision's world solves.</param>
+/// <param name="TableauRuns">The tableau runs the snapshot engine started; zero for the SAT-backed engine.</param>
+/// <param name="TableauRuleApplications">The tableau rule applications summed across the decision's runs.</param>
+/// <param name="TableauBranches">The disjunction branches the snapshot engine opened across the decision's runs.</param>
+/// <param name="TableauClashes">The clashes the snapshot engine backtracked from across the decision's runs.</param>
+/// <param name="TableauMaxNodes">The largest node forest any of the decision's tableau runs reached.</param>
 /// <param name="ElapsedMilliseconds">The decision's wall-clock cost.</param>
 public readonly record struct ReasoningDecisionTraceEvent(
     long SequenceNumber,
@@ -36,6 +41,11 @@ public readonly record struct ReasoningDecisionTraceEvent(
     int SolverConflicts,
     int SolverLearnedClauses,
     int SolverMaxDecisionLevel,
+    int TableauRuns,
+    long TableauRuleApplications,
+    int TableauBranches,
+    int TableauClashes,
+    int TableauMaxNodes,
     long ElapsedMilliseconds): ITraceEvent
 {
     /// <summary>Builds the event from a decision's outcome, statistics, and measured cost.</summary>
@@ -66,6 +76,11 @@ public readonly record struct ReasoningDecisionTraceEvent(
             statistics.SolverTotals.Conflicts,
             statistics.SolverTotals.LearnedClauses,
             statistics.SolverTotals.MaxDecisionLevel,
+            statistics.TableauTotals.TableauRuns,
+            statistics.TableauTotals.RuleApplications,
+            statistics.TableauTotals.Branches,
+            statistics.TableauTotals.Clashes,
+            statistics.TableauTotals.MaxNodes,
             elapsedMilliseconds);
     }
 }

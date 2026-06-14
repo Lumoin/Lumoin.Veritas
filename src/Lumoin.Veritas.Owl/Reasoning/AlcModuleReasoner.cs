@@ -61,10 +61,7 @@ public static class AlcModuleReasoner
     /// <returns>The delegate for <see cref="ReasoningRendezvous"/> wiring.</returns>
     public static DescriptionLogicDelegate CreateDelegate()
     {
-        return static (module, cancellationToken) => ValueTask.FromResult(
-            ModuleDecision.Decided(
-                Decide(module, cancellationToken),
-                new ReasoningDecisionStatistics(module.Axioms.Count, SolveCount: 0, SatSolveStatistics.Empty)));
+        return static (module, cancellationToken) => ValueTask.FromResult(DecideModule(module, cancellationToken));
     }
 
     /// <summary>
@@ -78,7 +75,7 @@ public static class AlcModuleReasoner
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
     public static ModuleVerdict Decide(ReasoningModule module, CancellationToken cancellationToken = default)
     {
-        return DecideCore(module, includeSubsumptions: true, cancellationToken);
+        return DecideCore(module, includeSubsumptions: true, out _, cancellationToken);
     }
 
     /// <summary>
@@ -95,7 +92,28 @@ public static class AlcModuleReasoner
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
     public static ModuleVerdict DecideConsistency(ReasoningModule module, CancellationToken cancellationToken = default)
     {
-        return DecideCore(module, includeSubsumptions: false, cancellationToken);
+        return DecideCore(module, includeSubsumptions: false, out _, cancellationToken);
+    }
+
+    /// <summary>
+    /// Decides the module as a full <see cref="ModuleDecision"/> — the
+    /// verdict together with the tableau work it spent — the form the
+    /// <see cref="DescriptionLogicDelegate"/> seam returns. The snapshot
+    /// engine runs no solver, so the statistics carry no world solves and
+    /// empty solver totals; the tableau totals carry the work.
+    /// </summary>
+    /// <param name="module">The module to decide.</param>
+    /// <param name="cancellationToken">A token that aborts the tableau between rule applications.</param>
+    /// <returns>The decision: the verdict and the tableau work it spent.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="module"/> is <see langword="null"/>.</exception>
+    /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
+    public static ModuleDecision DecideModule(ReasoningModule module, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(module);
+
+        ModuleVerdict verdict = DecideCore(module, includeSubsumptions: true, out AlcTableauStatistics statistics, cancellationToken);
+
+        return ModuleDecision.Decided(verdict, new ReasoningDecisionStatistics(module.Axioms.Count, SolveCount: 0, SatSolveStatistics.Empty, statistics));
     }
 
     /// <summary>
@@ -117,15 +135,17 @@ public static class AlcModuleReasoner
     /// <summary>Runs the tableau over the module's translation, optionally following with the module-local subsumption sweep.</summary>
     /// <param name="module">The module to decide.</param>
     /// <param name="includeSubsumptions">Whether to enumerate module-local subsumptions when the signature qualifies.</param>
+    /// <param name="statistics">The tableau statistics the decision's runs accumulate into.</param>
     /// <param name="cancellationToken">A token that aborts the tableau between rule applications.</param>
     /// <returns>The verdict.</returns>
-    private static ModuleVerdict DecideCore(ReasoningModule module, bool includeSubsumptions, CancellationToken cancellationToken)
+    private static ModuleVerdict DecideCore(ReasoningModule module, bool includeSubsumptions, out AlcTableauStatistics statistics, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(module);
 
         Translation translation = Translate(module);
 
-        bool isConsistent = IsSatisfiable(translation.TBox, translation.AssertedConcepts, translation.Edges, translation.SuperRoles, cancellationToken);
+        statistics = AlcTableauStatistics.Empty;
+        bool isConsistent = IsSatisfiable(translation.TBox, translation.AssertedConcepts, translation.Edges, translation.SuperRoles, ref statistics, cancellationToken);
 
         List<(NamedNode SubClass, NamedNode SuperClass)> subsumptions = [];
         if(includeSubsumptions && isConsistent && translation.SignatureClasses.Count <= SubsumptionSignatureCap)
@@ -146,7 +166,7 @@ public static class AlcModuleReasoner
                         [Utf8String.FromString("?")] = [new AlcAtom(subClass), new AlcNot(new AlcAtom(superClass))],
                     };
 
-                    if(!IsSatisfiable(translation.TBox, root, edges: [], translation.SuperRoles, cancellationToken))
+                    if(!IsSatisfiable(translation.TBox, root, edges: [], translation.SuperRoles, ref statistics, cancellationToken))
                     {
                         subsumptions.Add((new NamedNode(subClass), new NamedNode(superClass)));
                     }
@@ -521,6 +541,7 @@ public static class AlcModuleReasoner
     /// <param name="assertedConcepts">Per-individual asserted concepts.</param>
     /// <param name="edges">The asserted role edges.</param>
     /// <param name="superRoles">Per-role told super-roles.</param>
+    /// <param name="statistics">The running tableau statistics this run folds its counters into.</param>
     /// <param name="cancellationToken">A token that aborts between rule applications.</param>
     /// <returns><see langword="true"/> when a clash-free fully expanded tableau exists.</returns>
     private static bool IsSatisfiable(
@@ -528,6 +549,7 @@ public static class AlcModuleReasoner
         Dictionary<Utf8String, List<AlcConcept>> assertedConcepts,
         List<(Utf8String From, Utf8String Role, Utf8String To)> edges,
         Dictionary<Utf8String, HashSet<Utf8String>> superRoles,
+        ref AlcTableauStatistics statistics,
         CancellationToken cancellationToken)
     {
         //Seed the forest: one node per asserted individual (or a single
@@ -577,12 +599,24 @@ public static class AlcModuleReasoner
         //next disjunct of the branch that created it.
         List<(List<List<AlcConcept>> Labels, List<int> Parents, List<List<(int, Utf8String)>> Outgoing, int Node, List<AlcConcept> Remaining)> choices = [];
 
+        //The run's counters, folded into the running total at either exit.
+        long ruleApplications = 0;
+        int branches = 0;
+        int clashes = 0;
+        int maxNodes = labels.Count;
+
         while(true)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            if(labels.Count > maxNodes)
+            {
+                maxNodes = labels.Count;
+            }
+
             if(HasClash(labels))
             {
+                clashes++;
                 bool restored = false;
                 while(choices.Count > 0)
                 {
@@ -605,15 +639,26 @@ public static class AlcModuleReasoner
 
                 if(!restored)
                 {
+                    statistics = AlcTableauStatistics.Combine(statistics, new AlcTableauStatistics(TableauRuns: 1, ruleApplications, branches, clashes, maxNodes));
+
                     return false;
                 }
 
                 continue;
             }
 
+            int choicesBefore = choices.Count;
             if(!ApplyOneRule(labels, parents, outgoing, superRoles, tbox, choices))
             {
+                statistics = AlcTableauStatistics.Combine(statistics, new AlcTableauStatistics(TableauRuns: 1, ruleApplications, branches, clashes, maxNodes));
+
                 return true;
+            }
+
+            ruleApplications++;
+            if(choices.Count > choicesBefore)
+            {
+                branches++;
             }
         }
     }
