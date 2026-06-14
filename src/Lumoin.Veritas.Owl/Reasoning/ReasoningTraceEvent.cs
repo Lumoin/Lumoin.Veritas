@@ -59,7 +59,7 @@ public enum ReasoningSelectionReason
 /// <param name="Reason">The expressiveness rung that selected it.</param>
 /// <param name="BeyondRlAxiomCount">The number of axioms the RL grammar excluded; zero when the TBox is within profile.</param>
 /// <param name="DerivedCount">The number of triples the materialization derived.</param>
-/// <param name="ElapsedMilliseconds">The materialization wall-clock cost.</param>
+/// <param name="ElapsedMilliseconds">The materialization cost in fractional milliseconds, measured on a monotonic clock.</param>
 [DebuggerDisplay("ReasoningTraceEvent {Strategy} {Reason} Derived={DerivedCount}")]
 public readonly record struct ReasoningTraceEvent(
     long SequenceNumber,
@@ -69,4 +69,4 @@ public readonly record struct ReasoningTraceEvent(
     ReasoningSelectionReason Reason,
     int BeyondRlAxiomCount,
     int DerivedCount,
-    long ElapsedMilliseconds): ITraceEvent;
+    double ElapsedMilliseconds): ITraceEvent;

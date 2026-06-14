@@ -160,7 +160,7 @@ public sealed class ReasoningRendezvous
             throw new ArgumentException("A time provider must be supplied when a trace handler is configured.", nameof(timeProvider));
         }
 
-        long startTicks = timeProvider?.GetUtcNow().UtcTicks ?? 0;
+        long startTimestamp = timeProvider?.GetTimestamp() ?? 0;
 
         ReasoningFloor floor = DetectFloor(store, dictionary);
 
@@ -258,7 +258,7 @@ public sealed class ReasoningRendezvous
 
         if(traceHandler is not null)
         {
-            long elapsedMilliseconds = (timeProvider!.GetUtcNow().UtcTicks - startTicks) / TimeSpan.TicksPerMillisecond;
+            double elapsedMilliseconds = timeProvider!.GetElapsedTime(startTimestamp).TotalMilliseconds;
             ReasoningTraceEvent traceEvent = new(
                 Interlocked.Increment(ref traceSequence),
                 timeProvider.GetUtcNow().UtcTicks,
@@ -313,7 +313,7 @@ public sealed class ReasoningRendezvous
             throw new ArgumentException("A time provider must be supplied when a trace handler is configured.", nameof(timeProvider));
         }
 
-        long startTicks = timeProvider?.GetUtcNow().UtcTicks ?? 0;
+        long startTimestamp = timeProvider?.GetTimestamp() ?? 0;
 
         El.ElClassification? existing;
         lock(ClassificationLock)
@@ -339,7 +339,7 @@ public sealed class ReasoningRendezvous
 
         if(traceHandler is not null)
         {
-            long elapsedMilliseconds = (timeProvider!.GetUtcNow().UtcTicks - startTicks) / TimeSpan.TicksPerMillisecond;
+            double elapsedMilliseconds = timeProvider!.GetElapsedTime(startTimestamp).TotalMilliseconds;
             ReasoningTraceEvent traceEvent = new(
                 Interlocked.Increment(ref traceSequence),
                 timeProvider.GetUtcNow().UtcTicks,
@@ -348,7 +348,7 @@ public sealed class ReasoningRendezvous
                 isBuilt ? ReasoningSelectionReason.ElClassificationBuilt : ReasoningSelectionReason.ElClassificationReused,
                 BeyondRlAxiomCount: existing.UnsupportedConstructs.Count,
                 DerivedCount: 0,
-                isBuilt ? elapsedMilliseconds : 0);
+                isBuilt ? elapsedMilliseconds : 0.0);
 
             traceHandler(in traceEvent);
         }
