@@ -177,6 +177,30 @@ internal sealed class AlcModuleReasonerTests
         Assert.IsGreaterThan(0, decision.Statistics.TableauTotals.RuleApplications, "The internalized TBox drove rule applications.");
     }
 
+    /// <summary>The snapshot engine's tableau counters for a known decision are pinned, so a regression that mis-counts the tableau work is caught — the telemetry oracle, not a mere non-zero check.</summary>
+    [TestMethod]
+    public void DecideModulePinsTheTableauCountersForAKnownDecision()
+    {
+        OwlSubClassOfAxiom aUnderB = new(Reference("A"), Reference("B")) { Origin = Origin("ab") };
+        OwlSubClassOfAxiom bUnderC = new(Reference("B"), Reference("C")) { Origin = Origin("bc") };
+
+        ModuleDecision decision = AlcModuleReasoner.DecideModule(Module(aUnderB, bUnderC), TestContext.CancellationToken);
+
+        Assert.AreEqual(ReasoningDecisionOutcome.Decided, decision.Outcome);
+        Assert.IsTrue(decision.Verdict!.IsConsistent);
+        Assert.AreEqual(0, decision.Statistics.SolveCount);
+
+        //One consistency tableau plus one per ordered subsumption pair over the
+        //three signature classes A, B, C: 1 + 3*2 = 7. The rest are pinned, so a
+        //regression that mis-counts the tableau work is caught.
+        AlcTableauStatistics totals = decision.Statistics.TableauTotals;
+        Assert.AreEqual(7, totals.TableauRuns);
+        Assert.AreEqual(8L, totals.RuleApplications);
+        Assert.AreEqual(8, totals.Branches);
+        Assert.AreEqual(8, totals.Clashes);
+        Assert.AreEqual(1, totals.MaxNodes);
+    }
+
     /// <summary>An axiom beyond ALC(H) is named on the verdict, and the supported fragment still decides.</summary>
     /// <param name="engine">The engine under test.</param>
     [TestMethod]

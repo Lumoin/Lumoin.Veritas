@@ -484,6 +484,29 @@ internal sealed class SatTableauModuleReasonerTests
         Assert.AreEqual(1, bounded.Statistics.SolveCount, "Exactly the budgeted one solve ran before abstaining.");
     }
 
+    /// <summary>The SAT engine's counters for a known decision are pinned, so a regression that mis-counts the solver work is caught — the telemetry oracle, not a mere non-zero check.</summary>
+    [TestMethod]
+    public void DecideModulePinsTheSolverCountersForAKnownDecision()
+    {
+        ModuleDecision decision = SatTableauModuleReasoner.DecideModule(
+            PigeonholeModule(pigeons: 4, holes: 2), ReasoningBudget.Unbounded, SatSearchMode.ConflictLearning, TestContext.CancellationToken);
+
+        //Four pigeons into two holes is inconsistent; with no asserted
+        //individuals the engine decides it in one anonymous-root world solve.
+        Assert.AreEqual(ReasoningDecisionOutcome.Decided, decision.Outcome);
+        Assert.IsFalse(decision.Verdict!.IsConsistent);
+        Assert.AreEqual(1, decision.Statistics.SolveCount);
+
+        //The solver counters for that single solve are pinned, so a regression
+        //that mis-counts the work is caught.
+        SatSolveStatistics totals = decision.Statistics.SolverTotals;
+        Assert.AreEqual(1, totals.Decisions);
+        Assert.AreEqual(19L, totals.Propagations);
+        Assert.AreEqual(2, totals.Conflicts);
+        Assert.AreEqual(1, totals.LearnedClauses);
+        Assert.AreEqual(1, totals.MaxDecisionLevel);
+    }
+
     /// <summary>
     /// A learned conflict core of mutually exclusive universal fillers
     /// keeps its existential trigger: the disjunct that satisfies both
