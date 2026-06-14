@@ -35,7 +35,7 @@ namespace Lumoin.Veritas.Core.Execution;
 /// </remarks>
 /// <param name="ComputeLaneWorkers">Worker threads on the compute lane; <c>0</c> derives one core of headroom below the observed CPU budget. An explicit value is honoured as operator intent except on the browser, which is always a single cooperative thread.</param>
 /// <param name="ComputeQueueCapacity">The bounded depth of the compute lane's work queue, beyond which admission sheds; <c>0</c> derives a small multiple of the worker count.</param>
-/// <param name="HostPoolFloorMultiplier">The thread-pool minimum floor applied at host startup, as a multiple of the processor count; <c>0</c> disables it. A transitional patch-fix (default <c>4</c>) that compensates for CPU work mis-placed on the I/O pool; it is lifted once the compute lane removes that work, gated by measurement. The browser, which has no pool to floor, always resolves to <c>0</c>.</param>
+/// <param name="HostPoolFloorMultiplier">The thread-pool minimum floor applied at host startup, as a multiple of the processor count; <c>0</c> disables it. A transitional patch-fix that compensated for CPU work mis-placed on the I/O pool — now shipped lifted (default <c>0</c>): the compute lane moves the build CPU off the serve pool, so a measured floor-lift gate retired the floor as the default. Set a positive multiplier to re-enable it. The browser, which has no pool to floor, always resolves to <c>0</c>.</param>
 /// <param name="KernelWidthCap">Caps the SIMD codec ladder below hardware capability; <see cref="Execution.KernelWidthCap.Auto"/> leaves it uncapped.</param>
 /// <param name="EccAssumption">The operator's stance on hardware memory error correction, which scales verify-on-load and scrub cadence; <see cref="MemoryProtectionAssumption.AutoDetect"/> probes and defaults conservatively to unprotected when inconclusive.</param>
 /// <param name="ScrubCadence">An explicit override of the scrub-initiation cadence. <c>null</c> defers to <paramref name="ScrubCadenceEstimator"/>; <see cref="TimeSpan.Zero"/> disables scrubbing; a positive value sets it explicitly. The realised per-block coverage latency is load-dependent and read from telemetry, not this knob.</param>
@@ -45,7 +45,7 @@ namespace Lumoin.Veritas.Core.Execution;
 public readonly record struct ExecutionPolicy(
     int ComputeLaneWorkers = 0,
     int ComputeQueueCapacity = 0,
-    int HostPoolFloorMultiplier = 4,
+    int HostPoolFloorMultiplier = 0,
     KernelWidthCap KernelWidthCap = KernelWidthCap.Auto,
     MemoryProtectionAssumption EccAssumption = MemoryProtectionAssumption.AutoDetect,
     TimeSpan? ScrubCadence = null,
@@ -67,7 +67,7 @@ public readonly record struct ExecutionPolicy(
     public static ExecutionPolicy Default { get; } = new(
         ComputeLaneWorkers: 0,
         ComputeQueueCapacity: 0,
-        HostPoolFloorMultiplier: 4,
+        HostPoolFloorMultiplier: 0,
         KernelWidthCap: KernelWidthCap.Auto,
         EccAssumption: MemoryProtectionAssumption.AutoDetect,
         ScrubCadence: null,

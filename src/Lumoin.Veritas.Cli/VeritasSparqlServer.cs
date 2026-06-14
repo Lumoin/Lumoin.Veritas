@@ -45,7 +45,7 @@ internal static class VeritasSparqlServer
         //continuations behind the pool's gradual thread injection. The floor is reported the moment
         //it applies — before the dataset loads or the host binds — so an operator (and the
         //integration test) observes it as the first line of output.
-        int workerThreadFloor = HostThreadPoolFloor.Apply();
+        int workerThreadFloor = HostThreadPoolFloor.Apply(ExecutionPolicy.Default.HostPoolFloorMultiplier);
         await Console.Out.WriteLineAsync($"Worker-thread minimum floored at {workerThreadFloor}.").ConfigureAwait(false);
 
         //Own a compute lane for the host: on-demand columnar view builds run as lane turns off the

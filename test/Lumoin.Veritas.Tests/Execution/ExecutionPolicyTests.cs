@@ -31,11 +31,11 @@ internal sealed class ExecutionPolicyTests
     {
         ExecutionPolicy policy = ExecutionPolicy.Default;
 
-        //Every knob is at its derive/auto sentinel except the transitional host pool floor,
-        //which ships at four and is lifted to zero once the lane removes the work it absorbs.
+        //Every knob is at its derive/auto sentinel, including the host pool floor: the floor-lift
+        //gate retired it once the lane moved the build CPU off the serve pool, so it ships lifted at zero.
         Assert.AreEqual(0, policy.ComputeLaneWorkers);
         Assert.AreEqual(0, policy.ComputeQueueCapacity);
-        Assert.AreEqual(4, policy.HostPoolFloorMultiplier);
+        Assert.AreEqual(0, policy.HostPoolFloorMultiplier);
         Assert.AreEqual(KernelWidthCap.Auto, policy.KernelWidthCap);
         Assert.AreEqual(MemoryProtectionAssumption.AutoDetect, policy.EccAssumption);
         Assert.IsNull(policy.ScrubCadence);
@@ -50,7 +50,7 @@ internal sealed class ExecutionPolicyTests
         Assert.AreEqual(8, plan.ObservedProcessorBudget);
         Assert.AreEqual(7, plan.ComputeLaneWorkers);
         Assert.AreEqual(28, plan.ComputeQueueCapacity);
-        Assert.AreEqual(4, plan.HostPoolFloorMultiplier);
+        Assert.AreEqual(0, plan.HostPoolFloorMultiplier);
     }
 
     [TestMethod]

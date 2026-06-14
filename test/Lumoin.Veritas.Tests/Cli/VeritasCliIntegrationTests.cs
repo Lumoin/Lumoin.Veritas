@@ -118,10 +118,10 @@ internal sealed partial class VeritasCliIntegrationTests
         }
     }
 
-    /// <summary>The <c>serve</c> command floors the worker-thread pool minimum at four times the processor count at startup.</summary>
+    /// <summary>The <c>serve</c> command reports its worker-thread minimum at startup. The floor ships lifted by default (the compute lane moved the build CPU off the serve pool, so a measured floor-lift gate retired it), so the reported value is the runtime's own minimum — the host still announces it.</summary>
     /// <returns>The asynchronous test.</returns>
     [TestMethod]
-    public async Task ServeCommandFloorsWorkerThreadPoolAtStartup()
+    public async Task ServeCommandReportsWorkerThreadMinimumAtStartup()
     {
         string? executable = GetCliExecutablePath();
         if(executable is null)
@@ -156,20 +156,12 @@ internal sealed partial class VeritasCliIntegrationTests
 
         try
         {
-            //The reported value is the minimum the runtime accepted (read back inside the host), not the
-            //requested one, so the assertion confirms the floor was actually applied. The expectation
-            //mirrors the host's own ceiling: four times the processor count, capped at 256 AND at the pool
-            //maximum the host honours — the host floors only up to its maximum rather than overriding a
-            //deliberately low one. The child inherits this process's pool configuration, so the local
-            //maximum is the same bound the child applied; reading it keeps the assertion correct even when
-            //the whole run is launched under a constrained maximum.
-            ThreadPool.GetMaxThreads(out int workerMaximum, out _);
-            int expectedFloor = Math.Min(Math.Min(Environment.ProcessorCount * 4, 256), workerMaximum);
+            //The floor ships lifted (default multiplier zero), so the host applies no raise and reports
+            //the runtime's own worker-thread minimum, read back inside the host. The assertion confirms
+            //the host announces a positive minimum at startup rather than a specific floored value.
             int? floor = await ReadWorkerThreadFloorAsync(process, TestContext.CancellationToken).ConfigureAwait(false);
-            Assert.IsNotNull(floor, "The server did not report a worker-thread floor.");
-            Assert.IsTrue(
-                floor >= expectedFloor,
-                $"Worker-thread floor {floor} is below the expected floor ({expectedFloor}).");
+            Assert.IsNotNull(floor, "The server did not report a worker-thread minimum.");
+            Assert.IsGreaterThan(0, floor.Value, "The reported worker-thread minimum should be positive.");
         }
         finally
         {
