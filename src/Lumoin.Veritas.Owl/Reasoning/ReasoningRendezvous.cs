@@ -135,9 +135,10 @@ public sealed class ReasoningRendezvous
     /// <param name="store">The store to reason over.</param>
     /// <param name="dictionary">The term dictionary the store's triples were encoded with.</param>
     /// <param name="traceHandler">Optional handler receiving the <see cref="ReasoningTraceEvent"/>.</param>
-    /// <param name="timeProvider">Clock for trace timestamps and cost measurement. Required when <paramref name="traceHandler"/> is non-<c>null</c>.</param>
+    /// <param name="timeProvider">Clock for trace timestamps and cost measurement. Required when either trace handler is non-<c>null</c>.</param>
     /// <param name="correlationId">Correlation id stamped on emitted trace events.</param>
     /// <param name="cancellationToken">A token that aborts detection, derivation, and the commit.</param>
+    /// <param name="decisionTraceHandler">Optional handler receiving the <see cref="ReasoningDecisionTraceEvent"/> for a delegated beyond-RL decision.</param>
     /// <returns>The reasoning result.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="store"/> or <paramref name="dictionary"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException">A trace handler is supplied without a time provider.</exception>
@@ -148,12 +149,13 @@ public sealed class ReasoningRendezvous
         TraceHandler<ReasoningTraceEvent>? traceHandler = null,
         TimeProvider? timeProvider = null,
         Guid correlationId = default,
+        TraceHandler<ReasoningDecisionTraceEvent>? decisionTraceHandler = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(dictionary);
 
-        if(traceHandler is not null && timeProvider is null)
+        if((traceHandler is not null || decisionTraceHandler is not null) && timeProvider is null)
         {
             throw new ArgumentException("A time provider must be supplied when a trace handler is configured.", nameof(timeProvider));
         }
@@ -218,6 +220,8 @@ public sealed class ReasoningRendezvous
                 {
                     strategy = ReasoningStrategy.DescriptionLogicDelegate;
                     reason = ReasoningSelectionReason.BeyondRlDelegated;
+
+                    long decisionStartTicks = timeProvider?.GetUtcNow().UtcTicks ?? 0;
                     ModuleDecision decision = await DescriptionLogic(module!, cancellationToken).ConfigureAwait(false);
                     decisionOutcome = decision.Outcome;
                     decisionStatistics = decision.Statistics;
@@ -229,6 +233,20 @@ public sealed class ReasoningRendezvous
                     if(verdict is not null)
                     {
                         isConsistent = isConsistent && verdict.IsConsistent;
+                    }
+
+                    if(decisionTraceHandler is not null)
+                    {
+                        long decisionElapsedMilliseconds = (timeProvider!.GetUtcNow().UtcTicks - decisionStartTicks) / TimeSpan.TicksPerMillisecond;
+                        ReasoningDecisionTraceEvent decisionEvent = ReasoningDecisionTraceEvent.From(
+                            Interlocked.Increment(ref traceSequence),
+                            timeProvider.GetUtcNow().UtcTicks,
+                            correlationId,
+                            decision.Outcome,
+                            decision.Statistics,
+                            decisionElapsedMilliseconds);
+
+                        decisionTraceHandler(in decisionEvent);
                     }
                 }
                 else

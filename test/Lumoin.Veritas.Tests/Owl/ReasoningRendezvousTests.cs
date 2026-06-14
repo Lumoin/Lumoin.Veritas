@@ -264,6 +264,30 @@ internal sealed class ReasoningRendezvousTests
         Assert.AreEqual(snapshotResult.ModuleVerdict.IsConsistent, satResult.ModuleVerdict.IsConsistent, "Both engines agree on consistency.");
     }
 
+    /// <summary>A delegated decision emits one <see cref="ReasoningDecisionTraceEvent"/> carrying the outcome and the solver work it spent.</summary>
+    [TestMethod]
+    public async Task DelegatedDecisionEmitsADecisionTraceEvent()
+    {
+        TermDictionary dictionary = new();
+        (HypertrieGraphStore store, _) = await BuildBeyondRlStoreAsync(dictionary).ConfigureAwait(false);
+
+        ReasoningRendezvous rendezvous = new(ReasoningPolicy.Default, SatTableauModuleReasoner.CreateDelegate());
+        List<ReasoningDecisionTraceEvent> decisionEvents = [];
+
+        ReasoningResult result = await rendezvous.MaterializeAsync(
+            store,
+            dictionary,
+            timeProvider: TimeProvider.System,
+            decisionTraceHandler: CollectDecisions(decisionEvents),
+            cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.HasCount(1, decisionEvents);
+        ReasoningDecisionTraceEvent emitted = decisionEvents[0];
+        Assert.AreEqual(ReasoningDecisionOutcome.Decided, emitted.Outcome);
+        Assert.IsGreaterThan(0, emitted.SolveCount, "The SAT engine ran at least one world solve.");
+        Assert.AreEqual(result.Module!.Axioms.Count, emitted.ModuleAxiomCount);
+    }
+
     /// <summary>Floor detection runs once per store generation and is visible through <see cref="ReasoningRendezvous.FloorFor"/>.</summary>
     [TestMethod]
     public async Task FloorDetectsOncePerGeneration()
@@ -441,5 +465,13 @@ internal sealed class ReasoningRendezvousTests
     private static TraceHandler<ReasoningTraceEvent> Collect(List<ReasoningTraceEvent> sink)
     {
         return (in ReasoningTraceEvent evt) => sink.Add(evt);
+    }
+
+    /// <summary>A trace handler that appends every decision event to a sink, for assertions.</summary>
+    /// <param name="sink">The list the handler appends to.</param>
+    /// <returns>The handler.</returns>
+    private static TraceHandler<ReasoningDecisionTraceEvent> CollectDecisions(List<ReasoningDecisionTraceEvent> sink)
+    {
+        return (in ReasoningDecisionTraceEvent evt) => sink.Add(evt);
     }
 }
