@@ -31,6 +31,9 @@ internal sealed class CooperativeComputeLane: IComputeLane
     /// <summary>The optional sink recording each completed turn's duration; <c>null</c> leaves the lane meter-free.</summary>
     private readonly RecordTurnDurationDelegate? recordTurnDuration;
 
+    /// <summary>The monotonic clock the lane times turns with.</summary>
+    private readonly TimeProvider timeProvider;
+
     /// <summary>The bounded multi-class work queue.</summary>
     private readonly BoundedComputeQueue queue;
 
@@ -62,13 +65,16 @@ internal sealed class CooperativeComputeLane: IComputeLane
     /// </summary>
     /// <param name="policy">The policy whose resolved plan sizes the queue.</param>
     /// <param name="observeEnvironment">The environment observation seam.</param>
+    /// <param name="timeProvider">The monotonic clock the lane times turns with.</param>
     /// <param name="recordTurnDuration">The optional per-turn duration sink; <c>null</c> leaves the lane meter-free.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="observeEnvironment"/> is <c>null</c>.</exception>
-    internal CooperativeComputeLane(ExecutionPolicy policy, ObserveEnvironmentDelegate observeEnvironment, RecordTurnDurationDelegate? recordTurnDuration = null)
+    /// <exception cref="ArgumentNullException"><paramref name="observeEnvironment"/> or <paramref name="timeProvider"/> is <c>null</c>.</exception>
+    internal CooperativeComputeLane(ExecutionPolicy policy, ObserveEnvironmentDelegate observeEnvironment, TimeProvider timeProvider, RecordTurnDurationDelegate? recordTurnDuration = null)
     {
         ArgumentNullException.ThrowIfNull(observeEnvironment);
+        ArgumentNullException.ThrowIfNull(timeProvider);
 
         this.recordTurnDuration = recordTurnDuration;
+        this.timeProvider = timeProvider;
         ResolvedExecutionPlan plan = policy.Resolve(observeEnvironment());
         queue = new BoundedComputeQueue(plan.ComputeQueueCapacity);
         pump = PumpLoopAsync();
@@ -209,7 +215,7 @@ internal sealed class CooperativeComputeLane: IComputeLane
     /// <returns>A task that completes when the turn is done.</returns>
     private async Task RunTurnAsync(ComputeWorkClass workClass, ComputeWorkDelegate work)
     {
-        long startTimestamp = recordTurnDuration is not null ? Stopwatch.GetTimestamp() : 0;
+        long startTimestamp = recordTurnDuration is not null ? timeProvider.GetTimestamp() : 0;
         try
         {
             await work(CancellationToken.None).ConfigureAwait(false);
@@ -226,7 +232,7 @@ internal sealed class CooperativeComputeLane: IComputeLane
             //on the turn count sees the matching duration already recorded.
             if(recordTurnDuration is not null)
             {
-                recordTurnDuration(workClass, Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds);
+                recordTurnDuration(workClass, timeProvider.GetElapsedTime(startTimestamp).TotalMilliseconds);
             }
 
             Interlocked.Increment(ref turnsCompleted);

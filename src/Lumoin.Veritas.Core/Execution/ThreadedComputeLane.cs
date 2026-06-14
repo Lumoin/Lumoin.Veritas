@@ -42,6 +42,9 @@ internal sealed class ThreadedComputeLane: IComputeLane
     /// <summary>The optional sink recording each completed turn's duration; <c>null</c> leaves the lane meter-free.</summary>
     private readonly RecordTurnDurationDelegate? recordTurnDuration;
 
+    /// <summary>The monotonic clock the lane times turns with and runs the control-plane tick on.</summary>
+    private readonly TimeProvider timeProvider;
+
     /// <summary>The lock guarding the queue and worker bookkeeping; turns are awaited outside it.</summary>
     private readonly object gate = new();
 
@@ -102,6 +105,7 @@ internal sealed class ThreadedComputeLane: IComputeLane
         this.policy = policy;
         this.observeEnvironment = observeEnvironment;
         this.recordTurnDuration = recordTurnDuration;
+        this.timeProvider = timeProvider;
 
         ResolvedExecutionPlan plan = policy.Resolve(observeEnvironment());
         queue = new BoundedComputeQueue(plan.ComputeQueueCapacity);
@@ -115,7 +119,7 @@ internal sealed class ThreadedComputeLane: IComputeLane
             }
         }
 
-        tickLoop = RunControlPlaneLoopAsync(this, timeProvider);
+        tickLoop = RunControlPlaneLoopAsync(this);
     }
 
     /// <inheritdoc/>
@@ -293,7 +297,7 @@ internal sealed class ThreadedComputeLane: IComputeLane
     /// <returns>A task that completes when the turn is done.</returns>
     private async Task RunTurnAsync(ComputeWorkClass workClass, ComputeWorkDelegate work)
     {
-        long startTimestamp = recordTurnDuration is not null ? Stopwatch.GetTimestamp() : 0;
+        long startTimestamp = recordTurnDuration is not null ? timeProvider.GetTimestamp() : 0;
         try
         {
             await work(CancellationToken.None).ConfigureAwait(false);
@@ -310,7 +314,7 @@ internal sealed class ThreadedComputeLane: IComputeLane
             //on the turn count sees the matching duration already recorded.
             if(recordTurnDuration is not null)
             {
-                recordTurnDuration(workClass, Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds);
+                recordTurnDuration(workClass, timeProvider.GetElapsedTime(startTimestamp).TotalMilliseconds);
             }
 
             Interlocked.Increment(ref turnsCompleted);
@@ -323,11 +327,10 @@ internal sealed class ThreadedComputeLane: IComputeLane
 
     /// <summary>The control-plane tick loop: every cadence, enqueue a reserved tick turn that re-reads the budget and resizes the lane. Retired by cancelling its token on disposal.</summary>
     /// <param name="self">The lane.</param>
-    /// <param name="timeProvider">The time source for the periodic timer.</param>
     /// <returns>The loop task.</returns>
-    private static async Task RunControlPlaneLoopAsync(ThreadedComputeLane self, TimeProvider timeProvider)
+    private static async Task RunControlPlaneLoopAsync(ThreadedComputeLane self)
     {
-        using PeriodicTimer timer = new(ControlPlaneTickCadence, timeProvider);
+        using PeriodicTimer timer = new(ControlPlaneTickCadence, self.timeProvider);
 
         try
         {

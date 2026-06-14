@@ -237,7 +237,7 @@ internal sealed class ComputeLaneTests
     {
         using ManualResetEventSlim ran = new(false);
 
-        CooperativeComputeLane lane = new(ExecutionPolicy.Default, () => Env(8));
+        CooperativeComputeLane lane = new(ExecutionPolicy.Default, () => Env(8), TimeProvider.System);
         await using var laneScope = lane.ConfigureAwait(false);
 
         //The single-cooperative-thread lane is always width one.
@@ -261,7 +261,7 @@ internal sealed class ComputeLaneTests
         TaskCompletionSource release = new();
 
         ExecutionPolicy policy = ExecutionPolicy.Default with { ComputeQueueCapacity = 2 };
-        CooperativeComputeLane lane = new(policy, () => Env(8));
+        CooperativeComputeLane lane = new(policy, () => Env(8), TimeProvider.System);
         await using var laneScope = lane.ConfigureAwait(false);
 
         lane.Admit(ComputeWorkClass.ViewBuild, async _ =>

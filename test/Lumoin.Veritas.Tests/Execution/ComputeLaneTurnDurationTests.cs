@@ -32,10 +32,10 @@ internal sealed class ComputeLaneTurnDurationTests
     }
 
     [TestMethod]
-    public async Task LaneRecordsEachTurnDurationTaggedByClass()
+    public async Task LaneRecordsTheExactTurnDurationTaggedByClass()
     {
         FakeTimeProvider time = new();
-        ExecutionPolicy policy = ExecutionPolicy.Default with { ComputeLaneWorkers = 2, ComputeQueueCapacity = 16 };
+        ExecutionPolicy policy = ExecutionPolicy.Default with { ComputeLaneWorkers = 1, ComputeQueueCapacity = 16 };
 
         List<(ComputeWorkClass WorkClass, double Milliseconds)> recorded = [];
         object recordLock = new();
@@ -50,22 +50,24 @@ internal sealed class ComputeLaneTurnDurationTests
         ThreadedComputeLane lane = new(policy, () => Env(8), time, recorder);
         await using var laneScope = lane.ConfigureAwait(false);
 
-        for(int i = 0; i < 3; i++)
+        //The lane times turns on the injected time provider, so advancing the
+        //fake clock inside the turn makes the recorded duration exact — and the
+        //recorder runs before the turn count is bumped, so a completed turn
+        //means its recording is in.
+        lane.Admit(ComputeWorkClass.ViewBuild, _ =>
         {
-            lane.Admit(ComputeWorkClass.ViewBuild, _ => ValueTask.CompletedTask);
-        }
+            time.Advance(TimeSpan.FromMilliseconds(5));
 
-        //The recorder runs before the turn count is bumped, so three completed turns means three recordings are in.
-        Assert.IsTrue(SpinWait.SpinUntil(() => lane.TurnsCompleted == 3, ConditionTimeout), $"Expected three completed turns, saw {lane.TurnsCompleted}.");
+            return ValueTask.CompletedTask;
+        });
+
+        Assert.IsTrue(SpinWait.SpinUntil(() => lane.TurnsCompleted == 1, ConditionTimeout), $"Expected one completed turn, saw {lane.TurnsCompleted}.");
 
         lock(recordLock)
         {
-            Assert.HasCount(3, recorded);
-            foreach((ComputeWorkClass workClass, double milliseconds) in recorded)
-            {
-                Assert.AreEqual(ComputeWorkClass.ViewBuild, workClass);
-                Assert.IsGreaterThanOrEqualTo(0.0, milliseconds);
-            }
+            Assert.HasCount(1, recorded);
+            Assert.AreEqual(ComputeWorkClass.ViewBuild, recorded[0].WorkClass);
+            Assert.AreEqual(5.0, recorded[0].Milliseconds);
         }
     }
 

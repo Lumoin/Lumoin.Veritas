@@ -25,7 +25,7 @@ public static class ComputeLane
     public static IComputeLane ForCurrentPlatform(ExecutionPolicy policy, RecordTurnDurationDelegate? recordTurnDuration = null)
     {
         return OperatingSystem.IsBrowser()
-            ? new CooperativeComputeLane(policy, ExecutionEnvironment.Observe, recordTurnDuration)
+            ? new CooperativeComputeLane(policy, ExecutionEnvironment.Observe, VeritasClock.System, recordTurnDuration)
             : new ThreadedComputeLane(policy, ExecutionEnvironment.Observe, VeritasClock.System, recordTurnDuration);
     }
 }
