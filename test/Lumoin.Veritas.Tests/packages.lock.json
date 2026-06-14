@@ -411,6 +411,13 @@
           "Lumoin.Veritas.Json": "[0.0.0, )"
         }
       },
+      "lumoin.veritas.jsonata": {
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Veritas.Core": "[0.0.0, )",
+          "Lumoin.Veritas.Json": "[0.0.0, )"
+        }
+      },
       "lumoin.veritas.jsonld": {
         "type": "Project",
         "dependencies": {
