@@ -59,4 +59,13 @@ public static class VeritasMetrics
 
     /// <summary>Distribution of compute-lane turn durations in milliseconds, tagged by work class. Recorded at the turn-execution site.</summary>
     public const string ComputeLaneTurnDuration = "veritas.compute_lane.turn_duration";
+
+    /// <summary>Total description-logic decisions, tagged by outcome — decided or abstained on budget.</summary>
+    public const string ReasoningDecisionsTotal = "veritas.reasoning.decisions_total";
+
+    /// <summary>Distribution of world solves per description-logic decision, tagged by outcome.</summary>
+    public const string ReasoningDecisionSolveCount = "veritas.reasoning.solve_count";
+
+    /// <summary>Distribution of description-logic decision durations in milliseconds, tagged by outcome.</summary>
+    public const string ReasoningDecisionDuration = "veritas.reasoning.duration";
 }
