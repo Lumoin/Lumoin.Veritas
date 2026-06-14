@@ -29,8 +29,8 @@ public sealed class ReasoningDecisionInstruments
     /// <summary>The per-decision world-solve-count histogram, tagged by outcome.</summary>
     private readonly Histogram<int> solveCount;
 
-    /// <summary>The per-decision duration histogram in milliseconds, tagged by outcome.</summary>
-    private readonly Histogram<long> duration;
+    /// <summary>The per-decision duration histogram in fractional milliseconds, tagged by outcome.</summary>
+    private readonly Histogram<double> duration;
 
     /// <summary>Creates the reasoning-decision instruments on a meter.</summary>
     /// <param name="meter">The meter the instruments are created on.</param>
@@ -41,7 +41,7 @@ public sealed class ReasoningDecisionInstruments
 
         decisions = meter.CreateCounter<long>(VeritasMetrics.ReasoningDecisionsTotal, "decisions", "Total description-logic decisions by outcome.");
         solveCount = meter.CreateHistogram<int>(VeritasMetrics.ReasoningDecisionSolveCount, "solves", "World solves per description-logic decision.");
-        duration = meter.CreateHistogram<long>(VeritasMetrics.ReasoningDecisionDuration, "ms", "Description-logic decision duration in milliseconds.");
+        duration = meter.CreateHistogram<double>(VeritasMetrics.ReasoningDecisionDuration, "ms", "Description-logic decision duration in milliseconds.");
     }
 
     /// <summary>The trace handler that records each decision event to the instruments; wire it as the rendezvous's decision-trace handler.</summary>

@@ -28,7 +28,7 @@ namespace Lumoin.Veritas.Owl.Reasoning;
 /// <param name="TableauBranches">The disjunction branches the snapshot engine opened across the decision's runs.</param>
 /// <param name="TableauClashes">The clashes the snapshot engine backtracked from across the decision's runs.</param>
 /// <param name="TableauMaxNodes">The largest node forest any of the decision's tableau runs reached.</param>
-/// <param name="ElapsedMilliseconds">The decision's wall-clock cost.</param>
+/// <param name="ElapsedMilliseconds">The decision's wall-clock cost in fractional milliseconds, measured on a monotonic clock so a sub-millisecond decision is not lost to zero.</param>
 public readonly record struct ReasoningDecisionTraceEvent(
     long SequenceNumber,
     long TimestampTicks,
@@ -46,7 +46,7 @@ public readonly record struct ReasoningDecisionTraceEvent(
     int TableauBranches,
     int TableauClashes,
     int TableauMaxNodes,
-    long ElapsedMilliseconds): ITraceEvent
+    double ElapsedMilliseconds): ITraceEvent
 {
     /// <summary>Builds the event from a decision's outcome, statistics, and measured cost.</summary>
     /// <param name="sequenceNumber">The event's sequence number.</param>
@@ -62,7 +62,7 @@ public readonly record struct ReasoningDecisionTraceEvent(
         Guid correlationId,
         ReasoningDecisionOutcome outcome,
         in ReasoningDecisionStatistics statistics,
-        long elapsedMilliseconds)
+        double elapsedMilliseconds)
     {
         return new ReasoningDecisionTraceEvent(
             sequenceNumber,

@@ -25,7 +25,7 @@ internal sealed class ReasoningDecisionInstrumentsTests
         long totalDecisions = 0;
         Dictionary<string, long> decisionsByOutcome = [];
         List<int> solveCounts = [];
-        List<long> durations = [];
+        List<double> durations = [];
 
         using MeterListener listener = new();
         listener.InstrumentPublished = (instrument, activeListener) =>
@@ -36,26 +36,21 @@ internal sealed class ReasoningDecisionInstrumentsTests
             }
         };
 
-        //The decision counter and the duration histogram are long instruments; the solve-count histogram is an int one.
+        //The decision counter is a long instrument; the solve-count histogram is int; the duration histogram is fractional double.
         listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, state) =>
         {
-            if(instrument.Name == VeritasMetrics.ReasoningDecisionsTotal)
+            if(instrument.Name != VeritasMetrics.ReasoningDecisionsTotal)
             {
-                totalDecisions += measurement;
-                foreach(KeyValuePair<string, object?> tag in tags)
-                {
-                    if(tag.Key == "outcome" && tag.Value is string outcome)
-                    {
-                        decisionsByOutcome[outcome] = decisionsByOutcome.GetValueOrDefault(outcome) + measurement;
-                    }
-                }
-
                 return;
             }
 
-            if(instrument.Name == VeritasMetrics.ReasoningDecisionDuration)
+            totalDecisions += measurement;
+            foreach(KeyValuePair<string, object?> tag in tags)
             {
-                durations.Add(measurement);
+                if(tag.Key == "outcome" && tag.Value is string outcome)
+                {
+                    decisionsByOutcome[outcome] = decisionsByOutcome.GetValueOrDefault(outcome) + measurement;
+                }
             }
         });
         listener.SetMeasurementEventCallback<int>((instrument, measurement, tags, state) =>
@@ -63,6 +58,13 @@ internal sealed class ReasoningDecisionInstrumentsTests
             if(instrument.Name == VeritasMetrics.ReasoningDecisionSolveCount)
             {
                 solveCounts.Add(measurement);
+            }
+        });
+        listener.SetMeasurementEventCallback<double>((instrument, measurement, tags, state) =>
+        {
+            if(instrument.Name == VeritasMetrics.ReasoningDecisionDuration)
+            {
+                durations.Add(measurement);
             }
         });
         listener.Start();
@@ -82,7 +84,7 @@ internal sealed class ReasoningDecisionInstrumentsTests
         Assert.AreEqual(1L, decisionsByOutcome["abstained_budget"]);
         Assert.Contains(7, solveCounts);
         Assert.Contains(1, solveCounts);
-        Assert.Contains(12L, durations);
-        Assert.Contains(30L, durations);
+        Assert.Contains(12.0, durations);
+        Assert.Contains(30.0, durations);
     }
 }

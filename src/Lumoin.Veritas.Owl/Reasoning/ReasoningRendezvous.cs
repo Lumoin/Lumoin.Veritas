@@ -221,7 +221,7 @@ public sealed class ReasoningRendezvous
                     strategy = ReasoningStrategy.DescriptionLogicDelegate;
                     reason = ReasoningSelectionReason.BeyondRlDelegated;
 
-                    long decisionStartTicks = timeProvider?.GetUtcNow().UtcTicks ?? 0;
+                    long decisionStartTimestamp = timeProvider?.GetTimestamp() ?? 0;
                     ModuleDecision decision = await DescriptionLogic(module!, cancellationToken).ConfigureAwait(false);
                     decisionOutcome = decision.Outcome;
                     decisionStatistics = decision.Statistics;
@@ -237,7 +237,7 @@ public sealed class ReasoningRendezvous
 
                     if(decisionTraceHandler is not null)
                     {
-                        long decisionElapsedMilliseconds = (timeProvider!.GetUtcNow().UtcTicks - decisionStartTicks) / TimeSpan.TicksPerMillisecond;
+                        double decisionElapsedMilliseconds = timeProvider!.GetElapsedTime(decisionStartTimestamp).TotalMilliseconds;
                         ReasoningDecisionTraceEvent decisionEvent = ReasoningDecisionTraceEvent.From(
                             Interlocked.Increment(ref traceSequence),
                             timeProvider.GetUtcNow().UtcTicks,
