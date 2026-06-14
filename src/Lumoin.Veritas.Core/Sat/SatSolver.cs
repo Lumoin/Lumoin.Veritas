@@ -12,8 +12,9 @@ namespace Lumoin.Veritas.Core.Sat;
 /// <param name="IsSatisfiable">Whether a satisfying assignment exists.</param>
 /// <param name="Assignment">A satisfying assignment indexed by variable, or <c>null</c> when unsatisfiable. Variables no clause constrains come out <see langword="false"/>.</param>
 /// <param name="AssumptionCore">For an unsatisfiable verdict, the subset of the supplied assumptions that participates in the refutation; re-solving while assuming only this subset is still unsatisfiable. It is <c>null</c> for a satisfiable verdict and non-<c>null</c> for every unsatisfiable verdict — empty when the formula alone refutes (no assumption participates), the full supplied set when the search mode cannot tighten it, and a proper subset when the conflict analysis attributes the refutation to fewer assumptions.</param>
+/// <param name="Statistics">The work the run spent reaching the verdict; <see cref="SatSolveStatistics.Empty"/> for a verdict decided before any search step (such as a direct assumption contradiction).</param>
 [DebuggerDisplay("SatVerdict {IsSatisfiable}")]
-public readonly record struct SatVerdict(bool IsSatisfiable, IReadOnlyList<bool>? Assignment, IReadOnlyList<SatLiteral>? AssumptionCore = null);
+public readonly record struct SatVerdict(bool IsSatisfiable, IReadOnlyList<bool>? Assignment, IReadOnlyList<SatLiteral>? AssumptionCore = null, SatSolveStatistics Statistics = default);
 
 /// <summary>
 /// The satisfiability seam consumers program against: any engine deciding
@@ -247,6 +248,15 @@ public static class SatSolver
         int trailCount = 0;
         int decisionCount = 0;
 
+        //The work counters, accumulated across the run and reported on the
+        //verdict: branch decisions (including a chronological second-branch
+        //flip), forced propagations, conflicts hit, and the deepest decision
+        //level reached. This mode never learns a clause.
+        int decisions = 0;
+        long propagations = 0;
+        int conflicts = 0;
+        int maxDecisionLevel = 0;
+
         //The variable an assumption fixes records which assumption fixed it,
         //by index into the supplied list, so a direct contradiction names the
         //exact assumption that set the clashing value. NoAssumption marks a
@@ -280,7 +290,7 @@ public static class SatSolver
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if(!Propagate(clauses, values, trail, ref trailCount))
+            if(!Propagate(clauses, values, trail, ref trailCount, ref propagations))
             {
                 //Conflict: unwind to the deepest decision whose second
                 //branch is untried, never below the assumption prefix. None
@@ -288,6 +298,7 @@ public static class SatSolver
                 //prefix is non-empty). This mode records no reason for a
                 //propagated literal, so the honest sound core is the whole
                 //supplied set: assuming all of it reproduces the refutation.
+                conflicts++;
                 bool branched = false;
                 while(decisionCount > 0)
                 {
@@ -310,6 +321,7 @@ public static class SatSolver
                     decisionTried[decisionCount - 1] = 1;
                     values[variable] = 0;
                     trail[trailCount++] = variable;
+                    decisions++;
                     branched = true;
 
                     break;
@@ -317,7 +329,7 @@ public static class SatSolver
 
                 if(!branched)
                 {
-                    return new SatVerdict(false, null, DeduplicatedAssumptions(assumptions));
+                    return new SatVerdict(false, null, DeduplicatedAssumptions(assumptions), new SatSolveStatistics(decisions, propagations, conflicts, LearnedClauses: 0, maxDecisionLevel));
                 }
 
                 continue;
@@ -335,7 +347,7 @@ public static class SatSolver
                     assignment[i] = values[i] == 1;
                 }
 
-                return new SatVerdict(true, assignment);
+                return new SatVerdict(true, assignment, AssumptionCore: null, new SatSolveStatistics(decisions, propagations, conflicts, LearnedClauses: 0, maxDecisionLevel));
             }
 
             decisionDepths[decisionCount] = trailCount;
@@ -344,6 +356,11 @@ public static class SatSolver
             decisionCount++;
             values[next] = 1;
             trail[trailCount++] = next;
+            decisions++;
+            if(decisionCount > maxDecisionLevel)
+            {
+                maxDecisionLevel = decisionCount;
+            }
         }
     }
 
@@ -398,6 +415,15 @@ public static class SatSolver
         int trailCount = 0;
         int currentLevel = 0;
 
+        //The work counters, accumulated across the run and reported on the
+        //verdict: branch decisions, forced propagations, conflicts hit,
+        //first-UIP clauses learned, and the deepest decision level reached.
+        int decisions = 0;
+        long propagations = 0;
+        int conflicts = 0;
+        int learnedClauses = 0;
+        int maxDecisionLevel = 0;
+
         //The clause database starts as the formula and grows with the
         //first-UIP clauses; reason indices point into it.
         List<IReadOnlyList<SatLiteral>> database = [.. clauses];
@@ -432,7 +458,7 @@ public static class SatSolver
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            int conflict = PropagateWithReasons(database, values, levels, reasons, trail, ref trailCount, currentLevel);
+            int conflict = PropagateWithReasons(database, values, levels, reasons, trail, ref trailCount, currentLevel, ref propagations);
             if(conflict >= 0)
             {
                 //A conflict at level 0 traces wholly to the formula and the
@@ -440,11 +466,12 @@ public static class SatSolver
                 //prefix is non-empty). The reason column then yields the
                 //failed-assumption core — the assumptions reachable from the
                 //conflict through reason antecedents.
+                conflicts++;
                 if(currentLevel == 0)
                 {
                     List<SatLiteral> core = ExtractCore(database, conflict, assumptions, assumedBy, reasons, values, seen);
 
-                    return new SatVerdict(false, null, core);
+                    return new SatVerdict(false, null, core, new SatSolveStatistics(decisions, propagations, conflicts, learnedClauses, maxDecisionLevel));
                 }
 
                 int backjumpLevel = Analyze(database, conflict, values, levels, reasons, trail, trailCount, currentLevel, seen, learned, out SatLiteral asserting);
@@ -460,6 +487,7 @@ public static class SatSolver
 
                 currentLevel = backjumpLevel;
                 database.Add(learned.ToArray());
+                learnedClauses++;
                 int learnedIndex = database.Count - 1;
                 int assertVariable = asserting.Variable;
                 values[assertVariable] = asserting.IsPositive ? 1 : 0;
@@ -482,7 +510,7 @@ public static class SatSolver
                     assignment[i] = values[i] == 1;
                 }
 
-                return new SatVerdict(true, assignment);
+                return new SatVerdict(true, assignment, AssumptionCore: null, new SatSolveStatistics(decisions, propagations, conflicts, learnedClauses, maxDecisionLevel));
             }
 
             currentLevel++;
@@ -490,6 +518,11 @@ public static class SatSolver
             levels[next] = currentLevel;
             reasons[next] = NoReason;
             trail[trailCount++] = next;
+            decisions++;
+            if(currentLevel > maxDecisionLevel)
+            {
+                maxDecisionLevel = currentLevel;
+            }
         }
     }
 
@@ -514,8 +547,9 @@ public static class SatSolver
     /// <param name="values">The assignment column.</param>
     /// <param name="trail">The trail receiving forced assignments.</param>
     /// <param name="trailCount">The trail's live length.</param>
+    /// <param name="propagations">The running count of forced assignments, incremented once per literal this call propagates.</param>
     /// <returns><see langword="false"/> on conflict.</returns>
-    private static bool Propagate(IReadOnlyList<IReadOnlyList<SatLiteral>> clauses, Span<int> values, Span<int> trail, ref int trailCount)
+    private static bool Propagate(IReadOnlyList<IReadOnlyList<SatLiteral>> clauses, Span<int> values, Span<int> trail, ref int trailCount, ref long propagations)
     {
         bool changed = true;
         while(changed)
@@ -556,6 +590,7 @@ public static class SatSolver
                 {
                     values[unit.Variable] = unit.IsPositive ? 1 : 0;
                     trail[trailCount++] = unit.Variable;
+                    propagations++;
                     changed = true;
                 }
             }
@@ -576,8 +611,9 @@ public static class SatSolver
     /// <param name="trail">The trail receiving forced assignments.</param>
     /// <param name="trailCount">The trail's live length.</param>
     /// <param name="currentLevel">The level forced literals are recorded at.</param>
+    /// <param name="propagations">The running count of forced assignments, incremented once per literal this call propagates.</param>
     /// <returns>The index of the conflicting clause, or <c>-1</c> when propagation reaches a conflict-free fixpoint.</returns>
-    private static int PropagateWithReasons(List<IReadOnlyList<SatLiteral>> database, Span<int> values, Span<int> levels, Span<int> reasons, Span<int> trail, ref int trailCount, int currentLevel)
+    private static int PropagateWithReasons(List<IReadOnlyList<SatLiteral>> database, Span<int> values, Span<int> levels, Span<int> reasons, Span<int> trail, ref int trailCount, int currentLevel, ref long propagations)
     {
         bool changed = true;
         while(changed)
@@ -621,6 +657,7 @@ public static class SatSolver
                     levels[unit.Variable] = currentLevel;
                     reasons[unit.Variable] = clauseIndex;
                     trail[trailCount++] = unit.Variable;
+                    propagations++;
                     changed = true;
                 }
             }
