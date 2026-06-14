@@ -95,6 +95,9 @@ internal sealed class SatTableauModuleReasoner
     /// <summary>The token that aborts the decision between solver calls.</summary>
     private readonly CancellationToken cancellationToken;
 
+    /// <summary>The work-based bound on the decision; the engine abstains rather than start a world solve that would exceed it.</summary>
+    private readonly ReasoningBudget budget;
+
     /// <summary>The number of axioms in the decided module, reported on the decision statistics.</summary>
     private readonly int moduleAxiomCount;
 
@@ -103,6 +106,9 @@ internal sealed class SatTableauModuleReasoner
 
     /// <summary>The solver counters accumulated across the decision's world solves.</summary>
     private SatSolveStatistics runningTally;
+
+    /// <summary>Whether the decision has abstained on its budget; once set it stays set and unwinds the search.</summary>
+    private bool abstained;
 
     /// <summary>
     /// Opens a decision session over a module: translates it, asserts the
@@ -113,10 +119,11 @@ internal sealed class SatTableauModuleReasoner
     /// learned clauses never leak between decisions.
     /// </summary>
     /// <param name="module">The module to decide.</param>
+    /// <param name="budget">The work-based bound on the decision.</param>
     /// <param name="searchMode">How the solver prunes within one world's boolean structure.</param>
     /// <param name="cancellationToken">A token that aborts between solver calls.</param>
     /// <exception cref="ArgumentNullException"><paramref name="module"/> is <see langword="null"/>.</exception>
-    private SatTableauModuleReasoner(ReasoningModule module, SatSearchMode searchMode, CancellationToken cancellationToken)
+    private SatTableauModuleReasoner(ReasoningModule module, ReasoningBudget budget, SatSearchMode searchMode, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(module);
 
@@ -133,6 +140,7 @@ internal sealed class SatTableauModuleReasoner
 
         memo = new WorldMemo();
         moduleAxiomCount = module.Axioms.Count;
+        this.budget = budget;
         this.searchMode = searchMode;
         this.cancellationToken = cancellationToken;
     }
@@ -143,6 +151,39 @@ internal sealed class SatTableauModuleReasoner
     {
         solveCount++;
         runningTally = SatSolveStatistics.Combine(runningTally, statistics);
+    }
+
+    /// <summary>
+    /// Whether the decision must abstain — it has already been marked
+    /// abstaining, or it has reached its work bound. Checked at each
+    /// world-solve loop head before the solve, so an exhausted budget stops
+    /// the search before the next solve. Once the bound is reached every
+    /// loop head returns the benign satisfiable value and the search unwinds
+    /// without a further solve; the only learned clause a post-bound step can
+    /// still append is the conservative (un-minimized) one a minimization
+    /// probe leaves, which is sound. <see cref="RunDecision"/> turns the mark
+    /// into an <see cref="ReasoningDecisionOutcome.AbstainedBudget"/>
+    /// decision. The mark is monotone — the work counters only grow — so it
+    /// never clears.
+    /// </summary>
+    /// <returns><c>true</c> when the decision must abstain.</returns>
+    private bool ShouldAbstain()
+    {
+        if(abstained || budget.IsExhaustedBy(solveCount, runningTally))
+        {
+            abstained = true;
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>The decision's statistics as they stand: the module size, the world solves spent, and the accumulated solver totals.</summary>
+    /// <returns>The statistics.</returns>
+    private ReasoningDecisionStatistics Statistics()
+    {
+        return new ReasoningDecisionStatistics(moduleAxiomCount, solveCount, runningTally);
     }
 
     /// <summary>The settled verdicts the memo table holds; a world still on the frame stack has no entry — blocking reads the stack, not the table.</summary>
@@ -166,10 +207,11 @@ internal sealed class SatTableauModuleReasoner
     /// not of answer.
     /// </summary>
     /// <param name="searchMode">How the solver prunes within one world's boolean structure; both modes decide the same satisfiability.</param>
+    /// <param name="budget">The work-based bound applied to each decision the delegate makes; the default is unbounded.</param>
     /// <returns>The delegate for <see cref="ReasoningRendezvous"/> wiring.</returns>
-    public static DescriptionLogicDelegate CreateDelegate(SatSearchMode searchMode = SatSearchMode.ConflictLearning)
+    public static DescriptionLogicDelegate CreateDelegate(SatSearchMode searchMode = SatSearchMode.ConflictLearning, ReasoningBudget budget = default)
     {
-        return (module, cancellationToken) => ValueTask.FromResult(DecideModule(module, searchMode, cancellationToken));
+        return (module, cancellationToken) => ValueTask.FromResult(DecideModule(module, budget, searchMode, cancellationToken));
     }
 
     /// <summary>
@@ -192,7 +234,7 @@ internal sealed class SatTableauModuleReasoner
         SatSearchMode searchMode = SatSearchMode.ConflictLearning,
         CancellationToken cancellationToken = default)
     {
-        return new SatTableauModuleReasoner(module, searchMode, cancellationToken).RunDecision(includeSubsumptions: true).Verdict!;
+        return new SatTableauModuleReasoner(module, ReasoningBudget.Unbounded, searchMode, cancellationToken).RunDecision(includeSubsumptions: true).Verdict!;
     }
 
     /// <summary>
@@ -215,27 +257,30 @@ internal sealed class SatTableauModuleReasoner
         SatSearchMode searchMode = SatSearchMode.ConflictLearning,
         CancellationToken cancellationToken = default)
     {
-        return new SatTableauModuleReasoner(module, searchMode, cancellationToken).RunDecision(includeSubsumptions: false).Verdict!;
+        return new SatTableauModuleReasoner(module, ReasoningBudget.Unbounded, searchMode, cancellationToken).RunDecision(includeSubsumptions: false).Verdict!;
     }
 
     /// <summary>
     /// Decides the module as a full <see cref="ModuleDecision"/> — the
-    /// verdict plus the work the decision spent — the form the
+    /// verdict plus the work the decision spent, or an abstention when the
+    /// budget runs out before a verdict — the form the
     /// <see cref="DescriptionLogicDelegate"/> seam returns. Includes the
     /// module-local subsumption sweep, mirroring <see cref="Decide"/>.
     /// </summary>
     /// <param name="module">The module to decide.</param>
+    /// <param name="budget">The work-based bound on the decision; the default is unbounded.</param>
     /// <param name="searchMode">How the solver prunes within one world's boolean structure.</param>
     /// <param name="cancellationToken">A token that aborts between solver calls.</param>
-    /// <returns>The decision: the verdict and the work it spent.</returns>
+    /// <returns>The decision: the verdict and the work it spent, or a budget abstention.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="module"/> is <see langword="null"/>.</exception>
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
     public static ModuleDecision DecideModule(
         ReasoningModule module,
+        ReasoningBudget budget = default,
         SatSearchMode searchMode = SatSearchMode.ConflictLearning,
         CancellationToken cancellationToken = default)
     {
-        return new SatTableauModuleReasoner(module, searchMode, cancellationToken).RunDecision(includeSubsumptions: true);
+        return new SatTableauModuleReasoner(module, budget, searchMode, cancellationToken).RunDecision(includeSubsumptions: true);
     }
 
     /// <summary>
@@ -243,7 +288,9 @@ internal sealed class SatTableauModuleReasoner
     /// when asserted role edges are present, per-seed worlds otherwise —
     /// optionally following with the module-local subsumption sweep against
     /// the same CNF and memo table, and wraps the verdict with the work the
-    /// decision spent.
+    /// decision spent. A solve site that finds the budget exhausted unwinds
+    /// the search through <see cref="BudgetExhaustedSignal"/>, and the
+    /// decision abstains with the work spent so far.
     /// </summary>
     /// <param name="includeSubsumptions">Whether to enumerate module-local subsumptions when the signature qualifies.</param>
     /// <returns>The decision.</returns>
@@ -252,18 +299,26 @@ internal sealed class SatTableauModuleReasoner
         bool isConsistent = translation.Edges.Count > 0
             ? CheckJointRoot()
             : CheckAllSeedWorlds();
+        if(abstained)
+        {
+            return ModuleDecision.AbstainedOnBudget(Statistics());
+        }
 
         List<(NamedNode SubClass, NamedNode SuperClass)> subsumptions =
             includeSubsumptions && isConsistent && translation.SignatureClasses.Count <= AlcModuleReasoner.SubsumptionSignatureCap
                 ? SweepSubsumptions()
                 : [];
+        if(abstained)
+        {
+            return ModuleDecision.AbstainedOnBudget(Statistics());
+        }
 
         ModuleVerdict verdict = new(isConsistent, subsumptions)
         {
             UnsupportedConstructs = translation.Unsupported,
         };
 
-        return ModuleDecision.Decided(verdict, new ReasoningDecisionStatistics(moduleAxiomCount, solveCount, runningTally));
+        return ModuleDecision.Decided(verdict, Statistics());
     }
 
     /// <summary>
@@ -296,6 +351,11 @@ internal sealed class SatTableauModuleReasoner
                 if(!CheckWorld(assumptions, key, minimizeCores: true))
                 {
                     subsumptions.Add((new NamedNode(subClass), new NamedNode(superClass)));
+                }
+
+                if(abstained)
+                {
+                    return subsumptions;
                 }
             }
         }
@@ -485,6 +545,10 @@ internal sealed class SatTableauModuleReasoner
         while(true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if(ShouldAbstain())
+            {
+                return true;
+            }
 
             JointInstance joint = BuildJointInstance(individuals, blockOf, edges);
             SatVerdict verdict = SatSolver.SolveUnderAssumptions(
@@ -827,6 +891,11 @@ internal sealed class SatTableauModuleReasoner
 
         while(stack.Count > 0)
         {
+            if(ShouldAbstain())
+            {
+                return true;
+            }
+
             WorldFrame frame = stack[^1];
 
             if(frame.Successors is null)

@@ -446,6 +446,45 @@ internal sealed class SatTableauModuleReasonerTests
     }
 
     /// <summary>
+    /// A work budget bounds the decision: an acyclic existential chain
+    /// (<c>C ⊑ ∃r.D</c> with <c>C(a)</c>) needs a second world solve for the
+    /// successor, so a one-solve budget cannot finish it and the decision
+    /// abstains with a reason and no verdict — while an unbounded budget
+    /// decides it. The differential oracle compares verdicts, not solve
+    /// counts, so the budget gets its own test.
+    /// </summary>
+    [TestMethod]
+    public void DecideModuleAbstainsWhenTheBudgetIsExhausted()
+    {
+        OwlSubClassOfAxiom chain = new(
+            Reference("C"),
+            new OwlObjectSomeValuesFrom(Property("r"), Reference("D")))
+        {
+            Origin = Origin("chain"),
+        };
+        OwlClassAssertionAxiom seed = new(Reference("C"), Named("a")) { Origin = Origin("seed") };
+        ReasoningModule module = Module(chain, seed);
+
+        //Unbounded: the decision completes and reports more than one solve.
+        ModuleDecision unbounded = SatTableauModuleReasoner.DecideModule(
+            module, ReasoningBudget.Unbounded, SatSearchMode.ConflictLearning, TestContext.CancellationToken);
+
+        Assert.AreEqual(ReasoningDecisionOutcome.Decided, unbounded.Outcome);
+        Assert.IsNotNull(unbounded.Verdict);
+        Assert.IsTrue(unbounded.Verdict.IsConsistent);
+        Assert.IsGreaterThan(1, unbounded.Statistics.SolveCount, "The chain needs more than the seed solve.");
+
+        //A one-solve budget cannot finish: the decision abstains, carrying no
+        //verdict but the work it spent up to the bound.
+        ModuleDecision bounded = SatTableauModuleReasoner.DecideModule(
+            module, new ReasoningBudget(MaxSolves: 1, MaxConflicts: 0), SatSearchMode.ConflictLearning, TestContext.CancellationToken);
+
+        Assert.AreEqual(ReasoningDecisionOutcome.AbstainedBudget, bounded.Outcome);
+        Assert.IsNull(bounded.Verdict);
+        Assert.AreEqual(1, bounded.Statistics.SolveCount, "Exactly the budgeted one solve ran before abstaining.");
+    }
+
+    /// <summary>
     /// A learned conflict core of mutually exclusive universal fillers
     /// keeps its existential trigger: the disjunct that satisfies both
     /// universals vacuously — asserting no successor — survives the modal
