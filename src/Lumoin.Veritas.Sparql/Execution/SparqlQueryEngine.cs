@@ -10,6 +10,7 @@ using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Encoding;
+using Lumoin.Veritas.Core.Execution;
 using Lumoin.Veritas.Core.Hypertrie;
 using Lumoin.Veritas.Core.Hypertrie.AccessControl;
 using Lumoin.Veritas.Core.Hypertrie.Execution;
@@ -130,9 +131,10 @@ public sealed class SparqlQueryEngine
     /// <param name="accessContext">The opaque "who is asking" context; <see langword="null"/> when none.</param>
     /// <param name="typeExpansion">The query-time type-expansion seam; <see langword="null"/> leaves patterns unexpanded.</param>
     /// <param name="executionTrace">The per-operator execution-trace handler, or <see langword="null"/> for no tracing.</param>
+    /// <param name="computeLane">An optional compute lane materialising the default graph's on-demand view off the serve path; <see langword="null"/> builds it inline.</param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public SparqlQueryEngine(HypertrieGraphStore store, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null, TypeExpansionDelegate? typeExpansion = null, TraceHandler<SparqlExecutionTraceEvent>? executionTrace = null)
-        : this(SparqlDataset.FromDefaultGraph(store), dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion, executionTrace)
+    public SparqlQueryEngine(HypertrieGraphStore store, TermDictionary dictionary, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null, TypeExpansionDelegate? typeExpansion = null, TraceHandler<SparqlExecutionTraceEvent>? executionTrace = null, IComputeLane? computeLane = null)
+        : this(SparqlDataset.FromDefaultGraph(store, computeLane), dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion, executionTrace)
     {
     }
 
@@ -145,17 +147,18 @@ public sealed class SparqlQueryEngine
     /// <param name="serviceClient">The transport a <c>SERVICE</c> federation step uses; <see langword="null"/> means a non-silent <c>SERVICE</c> raises <see cref="NotSupportedException"/>.</param>
     /// <param name="accessControl">The access-control policy consulted per candidate triple; <see langword="null"/> allows every triple.</param>
     /// <param name="accessContext">The opaque "who is asking" context; <see langword="null"/> when none.</param>
+    /// <param name="computeLane">An optional compute lane materialising the default graph's on-demand view off the serve path; <see langword="null"/> builds it inline.</param>
     /// <param name="cancellationToken">A token that aborts the build.</param>
     /// <returns>An engine ready to evaluate queries against the graph.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="triples"/> is <see langword="null"/>.</exception>
-    public static async ValueTask<SparqlQueryEngine> BuildAsync(IEnumerable<DataTriple> triples, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null, TypeExpansionDelegate? typeExpansion = null, TraceHandler<SparqlExecutionTraceEvent>? executionTrace = null, CancellationToken cancellationToken = default)
+    public static async ValueTask<SparqlQueryEngine> BuildAsync(IEnumerable<DataTriple> triples, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null, TypeExpansionDelegate? typeExpansion = null, TraceHandler<SparqlExecutionTraceEvent>? executionTrace = null, IComputeLane? computeLane = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(triples);
 
         TermDictionary dictionary = new();
         HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(Encode(triples, dictionary), VeritasHashing.Default, cancellationToken).ConfigureAwait(false);
 
-        return new SparqlQueryEngine(store, dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion, executionTrace);
+        return new SparqlQueryEngine(store, dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion, executionTrace, computeLane);
     }
 
     /// <summary>
@@ -169,6 +172,7 @@ public sealed class SparqlQueryEngine
     /// <param name="serviceClient">The transport a <c>SERVICE</c> federation step uses; <see langword="null"/> means a non-silent <c>SERVICE</c> raises <see cref="NotSupportedException"/>.</param>
     /// <param name="accessControl">The access-control policy consulted per candidate triple; <see langword="null"/> allows every triple.</param>
     /// <param name="accessContext">The opaque "who is asking" context; <see langword="null"/> when none.</param>
+    /// <param name="computeLane">An optional compute lane materialising the default graph's on-demand view off the serve path; <see langword="null"/> builds it inline.</param>
     /// <param name="cancellationToken">A token that aborts the build.</param>
     /// <returns>An engine ready to evaluate queries against the dataset.</returns>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
@@ -181,6 +185,7 @@ public sealed class SparqlQueryEngine
         AccessContext? accessContext = null,
         TypeExpansionDelegate? typeExpansion = null,
         TraceHandler<SparqlExecutionTraceEvent>? executionTrace = null,
+        IComputeLane? computeLane = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(defaultGraph);
@@ -211,7 +216,7 @@ public sealed class SparqlQueryEngine
             named[graphNames[i]] = stores[i + 1];
         }
 
-        return new SparqlQueryEngine(new SparqlDataset(stores[0], named), dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion, executionTrace);
+        return new SparqlQueryEngine(new SparqlDataset(stores[0], named, computeLane), dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion, executionTrace);
     }
 
     /// <summary>Encodes a graph's triples into <paramref name="dictionary"/>.</summary>
@@ -374,7 +379,7 @@ public sealed class SparqlQueryEngine
             named.Add((new NamedNode(fromNamed.Value), triples));
         }
 
-        return await BuildDatasetAsync(defaultGraph, named, expressionContext, serviceClient, accessControl, accessContext, TypeExpansion, executionTrace, cancellationToken).ConfigureAwait(false);
+        return await BuildDatasetAsync(defaultGraph, named, expressionContext, serviceClient, accessControl, accessContext, TypeExpansion, executionTrace, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

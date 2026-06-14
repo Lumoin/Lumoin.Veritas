@@ -4,6 +4,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Execution;
 using Lumoin.Veritas.Sparql.Execution;
 using Lumoin.Veritas.Sparql.Results;
 using Microsoft.AspNetCore.Builder;
@@ -47,8 +48,14 @@ internal static class VeritasSparqlServer
         int workerThreadFloor = HostThreadPoolFloor.Apply();
         await Console.Out.WriteLineAsync($"Worker-thread minimum floored at {workerThreadFloor}.").ConfigureAwait(false);
 
+        //Own a compute lane for the host: on-demand columnar view builds run as lane turns off the
+        //serve pool, keeping the latency-sensitive response path clear. Disposed on shutdown, which
+        //drains any in-flight build before the process exits.
+        IComputeLane computeLane = ComputeLane.ForCurrentPlatform(ExecutionPolicy.Default);
+        await using var computeLaneScope = computeLane.ConfigureAwait(false);
+
         SparqlExpressionContext context = SparqlExpressionContext.CreateDefault();
-        (SparqlQueryEngine? engine, string? error) = await VeritasOperations.BuildEngineAsync(dataPaths, context, cancellationToken).ConfigureAwait(false);
+        (SparqlQueryEngine? engine, string? error) = await VeritasOperations.BuildEngineAsync(dataPaths, context, computeLane, cancellationToken).ConfigureAwait(false);
         if(error is not null)
         {
             await Console.Error.WriteLineAsync(error).ConfigureAwait(false);

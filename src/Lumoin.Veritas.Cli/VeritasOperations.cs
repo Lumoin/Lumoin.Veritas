@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
+using Lumoin.Veritas.Core.Execution;
 using Lumoin.Veritas.NQuads;
 using Lumoin.Veritas.Sparql.Algebra;
 using Lumoin.Veritas.Sparql.Ast;
@@ -29,11 +30,13 @@ internal static class VeritasOperations
     /// <summary>Builds a query engine over the RDF documents at <paramref name="dataPaths"/> (default graph plus any named graphs the files carry).</summary>
     /// <param name="dataPaths">The data document paths (<c>.ttl</c>/<c>.nt</c>/<c>.trig</c>/<c>.nq</c>).</param>
     /// <param name="context">The expression context (carries the effective base IRI).</param>
+    /// <param name="computeLane">An optional compute lane materialising the default graph's on-demand view off the serve path; <see langword="null"/> builds it inline.</param>
     /// <param name="cancellationToken">A token that aborts the build.</param>
     /// <returns>The built engine, or an error message describing the first document that could not be read.</returns>
     public static async Task<(SparqlQueryEngine? Engine, string? Error)> BuildEngineAsync(
         IReadOnlyList<string> dataPaths,
         SparqlExpressionContext context,
+        IComputeLane? computeLane,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(dataPaths);
@@ -77,7 +80,7 @@ internal static class VeritasOperations
 
         if(namedGraphs.Count == 0)
         {
-            SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(defaultGraph, context, cancellationToken: cancellationToken).ConfigureAwait(false);
+            SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(defaultGraph, context, computeLane: computeLane, cancellationToken: cancellationToken).ConfigureAwait(false);
             return (engine, null);
         }
 
@@ -87,7 +90,7 @@ internal static class VeritasOperations
             named.Add((entry.Key, entry.Value));
         }
 
-        SparqlQueryEngine datasetEngine = await SparqlQueryEngine.BuildDatasetAsync(defaultGraph, named, context, cancellationToken: cancellationToken).ConfigureAwait(false);
+        SparqlQueryEngine datasetEngine = await SparqlQueryEngine.BuildDatasetAsync(defaultGraph, named, context, computeLane: computeLane, cancellationToken: cancellationToken).ConfigureAwait(false);
         return (datasetEngine, null);
     }
 
@@ -191,7 +194,8 @@ internal static class VeritasOperations
         using Utf8StringPool pool = new();
         SparqlExpressionContext context = SparqlExpressionContext.CreateDefault().WithBaseIri(Utf8String.FromString(baseIri));
 
-        (SparqlQueryEngine? engine, string? error) = await BuildEngineAsync(dataPaths, context, cancellationToken).ConfigureAwait(false);
+        //A one-shot CLI query builds its view inline; the compute lane is for the long-running server.
+        (SparqlQueryEngine? engine, string? error) = await BuildEngineAsync(dataPaths, context, computeLane: null, cancellationToken).ConfigureAwait(false);
         if(error is not null)
         {
             return OperationResult.Failed(error);

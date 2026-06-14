@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.Encoding;
+using Lumoin.Veritas.Core.Execution;
 using Lumoin.Veritas.Core.Hypertrie;
 
 namespace Lumoin.Veritas.Sparql.Execution;
@@ -67,9 +68,10 @@ public sealed class SparqlDataset
     /// <summary>Constructs a dataset from its default graph and its named graphs, with a fresh engine rendezvous for the default graph.</summary>
     /// <param name="defaultGraph">The default graph.</param>
     /// <param name="namedGraphs">The named graphs keyed by graph-name term id; encoded by the same dictionary as <paramref name="defaultGraph"/>.</param>
+    /// <param name="computeLane">An optional compute lane; when supplied, the default graph's on-demand columnar view materialises as a lane turn off the serve path. <see langword="null"/> builds it inline on the first qualifying query.</param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public SparqlDataset(HypertrieGraphStore defaultGraph, IReadOnlyDictionary<TermId, HypertrieGraphStore> namedGraphs)
-        : this(defaultGraph, namedGraphs, new QueryEngineRendezvous(defaultGraph, QueryEnginePolicy.Default))
+    public SparqlDataset(HypertrieGraphStore defaultGraph, IReadOnlyDictionary<TermId, HypertrieGraphStore> namedGraphs, IComputeLane? computeLane = null)
+        : this(defaultGraph, namedGraphs, new QueryEngineRendezvous(defaultGraph, QueryEnginePolicy.Default, computeLane))
     {
     }
 
@@ -149,11 +151,12 @@ public sealed class SparqlDataset
 
     /// <summary>Builds a dataset with only a default graph and no named graphs — the common single-graph case.</summary>
     /// <param name="defaultGraph">The default graph.</param>
+    /// <param name="computeLane">An optional compute lane materialising the default graph's view off the serve path; <see langword="null"/> builds it inline.</param>
     /// <returns>A named-graph-free dataset.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="defaultGraph"/> is <see langword="null"/>.</exception>
-    public static SparqlDataset FromDefaultGraph(HypertrieGraphStore defaultGraph)
+    public static SparqlDataset FromDefaultGraph(HypertrieGraphStore defaultGraph, IComputeLane? computeLane = null)
     {
-        return new SparqlDataset(defaultGraph, new Dictionary<TermId, HypertrieGraphStore>());
+        return new SparqlDataset(defaultGraph, new Dictionary<TermId, HypertrieGraphStore>(), computeLane);
     }
 
     /// <summary>Resolves the store for an active graph: the default graph for <see cref="TermId.None"/>, else the named graph for that term id.</summary>
