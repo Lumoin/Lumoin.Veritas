@@ -108,8 +108,9 @@ internal sealed class ComputeLaneInstrumentsTests
         Assert.AreEqual(3L, turns);
         Assert.AreEqual(0L, shed);
 
-        //Every priority class is reported, and the drained queue is empty.
-        Assert.HasCount(6, queueDepthByClass);
+        //At least the six built-in classes are reported (a consumer-created class adds more), and
+        //the drained queue is empty.
+        Assert.IsGreaterThanOrEqualTo(6, queueDepthByClass.Count);
         Assert.AreEqual(0, queueDepthByClass["view_build"]);
         Assert.AreEqual(0, queueDepthByClass["scrub"]);
     }

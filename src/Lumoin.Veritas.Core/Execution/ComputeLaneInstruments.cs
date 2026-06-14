@@ -63,35 +63,16 @@ public static class ComputeLaneInstruments
             "Total compute-lane admissions shed.");
     }
 
-    /// <summary>Yields the current queued depth of each priority class as a class-tagged measurement.</summary>
+    /// <summary>Yields the current queued depth of each defined priority class as a class-tagged measurement.</summary>
     /// <param name="lane">The lane to read.</param>
-    /// <returns>One measurement per priority class.</returns>
+    /// <returns>One measurement per defined priority class.</returns>
     private static IEnumerable<Measurement<int>> EnumerateQueueDepths(IComputeLane lane)
     {
-        for(int ordinal = 0; ordinal <= (int)ComputeWorkClass.Scrub; ordinal++)
+        foreach(ComputeWorkClass workClass in ComputeWorkClass.All)
         {
-            ComputeWorkClass workClass = (ComputeWorkClass)ordinal;
-
             yield return new Measurement<int>(
                 lane.QueueDepthOf(workClass),
-                new KeyValuePair<string, object?>("class", ClassTag(workClass)));
+                new KeyValuePair<string, object?>("class", ComputeWorkClassNames.GetName(workClass)));
         }
-    }
-
-    /// <summary>Maps a priority class to its metric tag value (snake-case, OpenTelemetry-conventional).</summary>
-    /// <param name="workClass">The class.</param>
-    /// <returns>The tag value.</returns>
-    private static string ClassTag(ComputeWorkClass workClass)
-    {
-        return workClass switch
-        {
-            ComputeWorkClass.ControlPlaneTick => "control_plane_tick",
-            ComputeWorkClass.ViewBuild => "view_build",
-            ComputeWorkClass.BulkSort => "bulk_sort",
-            ComputeWorkClass.Reasoning => "reasoning",
-            ComputeWorkClass.SketchUpdate => "sketch_update",
-            ComputeWorkClass.Scrub => "scrub",
-            _ => "unknown",
-        };
     }
 }

@@ -6,9 +6,9 @@ namespace Lumoin.Veritas.Core.Execution;
 
 /// <summary>
 /// One observable, bounded, multi-class FIFO backing the compute lane.
-/// Work is served in strict priority order — the lowest-ordinal
-/// non-empty <see cref="ComputeWorkClass"/> first, FIFO within a class —
-/// and admission is bounded so overload sheds with a verdict rather than
+/// Work is served in strict priority order — the lowest-priority
+/// <see cref="ComputeWorkClass"/> first, FIFO within a class — and
+/// admission is bounded so overload sheds with a verdict rather than
 /// growing without limit. The reserved
 /// <see cref="ComputeWorkClass.ControlPlaneTick"/> sits outside the
 /// shed-able bound, so a quota re-read is admitted and served even when
@@ -19,17 +19,17 @@ namespace Lumoin.Veritas.Core.Execution;
 /// Not internally synchronised: the compute lane owns the lock that
 /// guards concurrent access (the single-shared-FIFO mutual-exclusion
 /// discipline), so this stays a plain deterministic data structure
-/// exercised single-threaded in isolation. Per-class depth is kept in
-/// running counters so admission is constant-time, not a per-offer scan.
+/// exercised single-threaded in isolation. Per-class backlogs live in a
+/// dictionary keyed by the class and ordered by its priority, so the work
+/// classes can be an open set (built-in plus consumer-created) rather than
+/// a fixed enumeration; shed-able and reserved depth are kept in running
+/// counters so admission is constant-time.
 /// </para>
 /// </remarks>
 internal sealed class BoundedComputeQueue
 {
-    /// <summary>The number of priority classes. The classes are contiguous from zero with <see cref="ComputeWorkClass.Scrub"/> as the highest ordinal, so this covers them all; a new class must keep that contiguity.</summary>
-    private const int ClassCount = (int)ComputeWorkClass.Scrub + 1;
-
-    /// <summary>Per-class FIFO backlogs indexed by the class ordinal; lower ordinals are served first.</summary>
-    private readonly Queue<ComputeWorkDelegate>[] backlogs;
+    /// <summary>Per-class FIFO backlogs, ordered by class priority (lowest priority value served first); classes appear lazily on first enqueue.</summary>
+    private readonly SortedDictionary<ComputeWorkClass, Queue<ComputeWorkDelegate>> backlogs = new();
 
     /// <summary>The running count of queued shed-able work (every class except the reserved control-plane tick), kept in step with the backlogs so admission is constant-time.</summary>
     private int shedableCount;
@@ -45,11 +45,6 @@ internal sealed class BoundedComputeQueue
         ArgumentOutOfRangeException.ThrowIfLessThan(shedableCapacity, 1);
 
         ShedableCapacity = shedableCapacity;
-        backlogs = new Queue<ComputeWorkDelegate>[ClassCount];
-        for(int ordinal = 0; ordinal < backlogs.Length; ordinal++)
-        {
-            backlogs[ordinal] = new Queue<ComputeWorkDelegate>();
-        }
     }
 
     /// <summary>The capacity bounding the shed-able classes.</summary>
@@ -63,14 +58,14 @@ internal sealed class BoundedComputeQueue
     /// <returns>The number of queued items of that class.</returns>
     public int DepthOf(ComputeWorkClass workClass)
     {
-        return backlogs[(int)workClass].Count;
+        return backlogs.TryGetValue(workClass, out Queue<ComputeWorkDelegate>? backlog) ? backlog.Count : 0;
     }
 
     /// <summary>
     /// Offers work to the queue. The reserved
-    /// <see cref="ComputeWorkClass.ControlPlaneTick"/> is always
-    /// admitted; a shed-able class is admitted only while the shed-able
-    /// backlog is below capacity, and otherwise sheds with
+    /// <see cref="ComputeWorkClass.ControlPlaneTick"/> is always admitted;
+    /// a shed-able class is admitted only while the shed-able backlog is
+    /// below capacity, and otherwise sheds with
     /// <see cref="ComputeAdmission.ShedQueueFull"/>.
     /// </summary>
     /// <param name="workClass">The work's priority class.</param>
@@ -80,44 +75,49 @@ internal sealed class BoundedComputeQueue
     {
         ArgumentNullException.ThrowIfNull(work);
 
-        if(workClass == ComputeWorkClass.ControlPlaneTick)
-        {
-            backlogs[(int)workClass].Enqueue(work);
-            reservedCount++;
-
-            return ComputeAdmission.Admitted;
-        }
-
-        if(shedableCount >= ShedableCapacity)
+        bool reserved = workClass == ComputeWorkClass.ControlPlaneTick;
+        if(!reserved && shedableCount >= ShedableCapacity)
         {
             return ComputeAdmission.ShedQueueFull;
         }
 
-        backlogs[(int)workClass].Enqueue(work);
-        shedableCount++;
+        if(!backlogs.TryGetValue(workClass, out Queue<ComputeWorkDelegate>? backlog))
+        {
+            backlog = new Queue<ComputeWorkDelegate>();
+            backlogs[workClass] = backlog;
+        }
+
+        backlog.Enqueue(work);
+        if(reserved)
+        {
+            reservedCount++;
+        }
+        else
+        {
+            shedableCount++;
+        }
 
         return ComputeAdmission.Admitted;
     }
 
     /// <summary>
     /// Removes and returns the highest-priority queued turn — the
-    /// lowest-ordinal non-empty class, FIFO within it.
+    /// lowest-priority-value non-empty class, FIFO within it.
     /// </summary>
     /// <param name="workClass">The dequeued turn's class, when one was available.</param>
     /// <param name="work">The dequeued turn body, when one was available.</param>
     /// <returns><c>true</c> when a turn was dequeued; <c>false</c> when the queue is empty.</returns>
     public bool TryDequeue(out ComputeWorkClass workClass, [MaybeNullWhen(false)] out ComputeWorkDelegate work)
     {
-        for(int ordinal = 0; ordinal < backlogs.Length; ordinal++)
+        foreach(KeyValuePair<ComputeWorkClass, Queue<ComputeWorkDelegate>> entry in backlogs)
         {
-            Queue<ComputeWorkDelegate> backlog = backlogs[ordinal];
-            if(backlog.Count == 0)
+            if(entry.Value.Count == 0)
             {
                 continue;
             }
 
-            work = backlog.Dequeue();
-            workClass = (ComputeWorkClass)ordinal;
+            work = entry.Value.Dequeue();
+            workClass = entry.Key;
             if(workClass == ComputeWorkClass.ControlPlaneTick)
             {
                 reservedCount--;
