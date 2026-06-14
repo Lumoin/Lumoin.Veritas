@@ -28,6 +28,9 @@ internal sealed class CooperativeComputeLane: IComputeLane
     /// <summary>The lock guarding the queue; turns are awaited outside it.</summary>
     private readonly object gate = new();
 
+    /// <summary>The optional sink recording each completed turn's duration; <c>null</c> leaves the lane meter-free.</summary>
+    private readonly RecordTurnDurationDelegate? recordTurnDuration;
+
     /// <summary>The bounded multi-class work queue.</summary>
     private readonly BoundedComputeQueue queue;
 
@@ -59,11 +62,13 @@ internal sealed class CooperativeComputeLane: IComputeLane
     /// </summary>
     /// <param name="policy">The policy whose resolved plan sizes the queue.</param>
     /// <param name="observeEnvironment">The environment observation seam.</param>
+    /// <param name="recordTurnDuration">The optional per-turn duration sink; <c>null</c> leaves the lane meter-free.</param>
     /// <exception cref="ArgumentNullException"><paramref name="observeEnvironment"/> is <c>null</c>.</exception>
-    internal CooperativeComputeLane(ExecutionPolicy policy, ObserveEnvironmentDelegate observeEnvironment)
+    internal CooperativeComputeLane(ExecutionPolicy policy, ObserveEnvironmentDelegate observeEnvironment, RecordTurnDurationDelegate? recordTurnDuration = null)
     {
         ArgumentNullException.ThrowIfNull(observeEnvironment);
 
+        this.recordTurnDuration = recordTurnDuration;
         ResolvedExecutionPlan plan = policy.Resolve(observeEnvironment());
         queue = new BoundedComputeQueue(plan.ComputeQueueCapacity);
         pump = PumpLoopAsync();
@@ -183,7 +188,7 @@ internal sealed class CooperativeComputeLane: IComputeLane
 
             if(work is not null)
             {
-                await RunTurnAsync(work).ConfigureAwait(false);
+                await RunTurnAsync(workClass, work).ConfigureAwait(false);
 
                 continue;
             }
@@ -199,10 +204,12 @@ internal sealed class CooperativeComputeLane: IComputeLane
     }
 
     /// <summary>Runs one turn to completion, isolating its faults from the pump and keeping the turn counter current. A faulting turn does not stop the pump.</summary>
+    /// <param name="workClass">The turn's work class — the tag for the recorded duration.</param>
     /// <param name="work">The turn body.</param>
     /// <returns>A task that completes when the turn is done.</returns>
-    private async Task RunTurnAsync(ComputeWorkDelegate work)
+    private async Task RunTurnAsync(ComputeWorkClass workClass, ComputeWorkDelegate work)
     {
+        long startTimestamp = recordTurnDuration is not null ? Stopwatch.GetTimestamp() : 0;
         try
         {
             await work(CancellationToken.None).ConfigureAwait(false);
@@ -215,6 +222,13 @@ internal sealed class CooperativeComputeLane: IComputeLane
         }
         finally
         {
+            //Record before counting the turn done, so an observer that waits
+            //on the turn count sees the matching duration already recorded.
+            if(recordTurnDuration is not null)
+            {
+                recordTurnDuration(workClass, Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds);
+            }
+
             Interlocked.Increment(ref turnsCompleted);
         }
     }

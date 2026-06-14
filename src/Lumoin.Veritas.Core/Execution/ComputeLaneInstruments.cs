@@ -63,6 +63,31 @@ public static class ComputeLaneInstruments
             "Total compute-lane admissions shed.");
     }
 
+    /// <summary>
+    /// Creates the turn-duration histogram on <paramref name="meter"/> and
+    /// returns the recorder a lane records each completed turn's duration
+    /// through, tagged by work class. The histogram lives with the meter;
+    /// disposing the meter retires it. This is the push counterpart to
+    /// <see cref="Register"/>'s observable instruments — the lane records at
+    /// the turn-execution site rather than being read from.
+    /// </summary>
+    /// <param name="meter">The meter the histogram is created on.</param>
+    /// <returns>The per-turn duration recorder to hand a lane.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="meter"/> is <c>null</c>.</exception>
+    public static RecordTurnDurationDelegate CreateTurnDurationRecorder(Meter meter)
+    {
+        ArgumentNullException.ThrowIfNull(meter);
+
+        Histogram<double> turnDuration = meter.CreateHistogram<double>(
+            VeritasMetrics.ComputeLaneTurnDuration,
+            "ms",
+            "Compute-lane turn durations in milliseconds, tagged by work class.");
+
+        return (workClass, elapsedMilliseconds) => turnDuration.Record(
+            elapsedMilliseconds,
+            new KeyValuePair<string, object?>("class", ComputeWorkClassNames.GetName(workClass)));
+    }
+
     /// <summary>Yields the current queued depth of each defined priority class as a class-tagged measurement.</summary>
     /// <param name="lane">The lane to read.</param>
     /// <returns>One measurement per defined priority class.</returns>

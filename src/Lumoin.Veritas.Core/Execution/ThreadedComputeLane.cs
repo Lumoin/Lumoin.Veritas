@@ -39,6 +39,9 @@ internal sealed class ThreadedComputeLane: IComputeLane
     /// <summary>The environment observation seam re-read on each control-plane tick.</summary>
     private readonly ObserveEnvironmentDelegate observeEnvironment;
 
+    /// <summary>The optional sink recording each completed turn's duration; <c>null</c> leaves the lane meter-free.</summary>
+    private readonly RecordTurnDurationDelegate? recordTurnDuration;
+
     /// <summary>The lock guarding the queue and worker bookkeeping; turns are awaited outside it.</summary>
     private readonly object gate = new();
 
@@ -89,14 +92,16 @@ internal sealed class ThreadedComputeLane: IComputeLane
     /// <param name="policy">The policy whose resolved plan sizes the lane.</param>
     /// <param name="observeEnvironment">The environment observation seam, re-read on each control-plane tick.</param>
     /// <param name="timeProvider">The time source for the control-plane tick timer.</param>
+    /// <param name="recordTurnDuration">The optional per-turn duration sink; <c>null</c> leaves the lane meter-free.</param>
     /// <exception cref="ArgumentNullException"><paramref name="observeEnvironment"/> or <paramref name="timeProvider"/> is <c>null</c>.</exception>
-    internal ThreadedComputeLane(ExecutionPolicy policy, ObserveEnvironmentDelegate observeEnvironment, TimeProvider timeProvider)
+    internal ThreadedComputeLane(ExecutionPolicy policy, ObserveEnvironmentDelegate observeEnvironment, TimeProvider timeProvider, RecordTurnDurationDelegate? recordTurnDuration = null)
     {
         ArgumentNullException.ThrowIfNull(observeEnvironment);
         ArgumentNullException.ThrowIfNull(timeProvider);
 
         this.policy = policy;
         this.observeEnvironment = observeEnvironment;
+        this.recordTurnDuration = recordTurnDuration;
 
         ResolvedExecutionPlan plan = policy.Resolve(observeEnvironment());
         queue = new BoundedComputeQueue(plan.ComputeQueueCapacity);
@@ -288,6 +293,7 @@ internal sealed class ThreadedComputeLane: IComputeLane
     /// <returns>A task that completes when the turn is done.</returns>
     private async Task RunTurnAsync(ComputeWorkClass workClass, ComputeWorkDelegate work)
     {
+        long startTimestamp = recordTurnDuration is not null ? Stopwatch.GetTimestamp() : 0;
         try
         {
             await work(CancellationToken.None).ConfigureAwait(false);
@@ -300,6 +306,13 @@ internal sealed class ThreadedComputeLane: IComputeLane
         }
         finally
         {
+            //Record before counting the turn done, so an observer that waits
+            //on the turn count sees the matching duration already recorded.
+            if(recordTurnDuration is not null)
+            {
+                recordTurnDuration(workClass, Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds);
+            }
+
             Interlocked.Increment(ref turnsCompleted);
             if(workClass == ComputeWorkClass.ControlPlaneTick)
             {

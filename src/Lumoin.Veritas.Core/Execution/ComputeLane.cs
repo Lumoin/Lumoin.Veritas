@@ -20,11 +20,12 @@ public static class ComputeLane
     /// elsewhere (bounded async consumers sized to the resolved width).
     /// </summary>
     /// <param name="policy">The policy the lane sizes itself from.</param>
+    /// <param name="recordTurnDuration">The optional per-turn duration sink the lane records to; <c>null</c> leaves the lane meter-free.</param>
     /// <returns>The platform's lane.</returns>
-    public static IComputeLane ForCurrentPlatform(ExecutionPolicy policy)
+    public static IComputeLane ForCurrentPlatform(ExecutionPolicy policy, RecordTurnDurationDelegate? recordTurnDuration = null)
     {
         return OperatingSystem.IsBrowser()
-            ? new CooperativeComputeLane(policy, ExecutionEnvironment.Observe)
-            : new ThreadedComputeLane(policy, ExecutionEnvironment.Observe, VeritasClock.System);
+            ? new CooperativeComputeLane(policy, ExecutionEnvironment.Observe, recordTurnDuration)
+            : new ThreadedComputeLane(policy, ExecutionEnvironment.Observe, VeritasClock.System, recordTurnDuration);
     }
 }
