@@ -53,7 +53,7 @@ namespace Lumoin.Veritas.Core.Columnar;
 /// </para>
 /// </remarks>
 [DebuggerDisplay("BlockPackedColumn Mode={Mode} Length={Length} Blocks={BlockCount} PackedBytes={PackedByteCount}")]
-public sealed class BlockPackedColumn
+public sealed partial class BlockPackedColumn
 {
     /// <summary>The block length as a shift: blocks hold 2^10 = 1,024 values.</summary>
     public const int BlockShift = 10;
