@@ -426,7 +426,7 @@ public sealed class QueryEngineRendezvous
             }
 
             Stopwatch stopwatch = Stopwatch.StartNew();
-            ColumnarTripleIndex view = ColumnarTripleIndex.Build(store.Match(TermId.None, TermId.None, TermId.None), policy.OrderSetMode);
+            ColumnarTripleIndex view = ColumnarTripleIndex.Build(store.Match(TermId.None, TermId.None, TermId.None), policy.OrderSetMode, backing: policy.ColumnPayloadBacking);
             stopwatch.Stop();
 
             columnarView = view;
@@ -457,7 +457,7 @@ public sealed class QueryEngineRendezvous
             }
         }
 
-        ColumnarTripleIndex view = ColumnarTripleIndex.Build(expectedStore.Match(TermId.None, TermId.None, TermId.None), policy.OrderSetMode);
+        ColumnarTripleIndex view = ColumnarTripleIndex.Build(expectedStore.Match(TermId.None, TermId.None, TermId.None), policy.OrderSetMode, backing: policy.ColumnPayloadBacking);
 
         lock(StateLock)
         {

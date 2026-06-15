@@ -99,6 +99,9 @@ public sealed class ColumnarTripleIndex
     /// <summary>Which permutation set this index materialises.</summary>
     public ColumnarOrderSetMode OrderSetMode { get; }
 
+    /// <summary>Where this index's block-packed column payloads live; preserved across <see cref="Apply"/> so a native index stays native through compaction.</summary>
+    internal ColumnPayloadBacking Backing { get; }
+
     private ColumnarTripleIndex(
         ColumnarOrder?[] orders,
         ColumnarOrderSetMode orderSetMode,
@@ -107,7 +110,8 @@ public sealed class ColumnarTripleIndex
         HashSet<EncodedTriple> removedSet,
         EncodedTriple[][] addedByOrder,
         EncodedTriple[][] removedByOrder,
-        (int Start, int End)[]? level0Bounds = null)
+        (int Start, int End)[]? level0Bounds = null,
+        ColumnPayloadBacking backing = ColumnPayloadBacking.Managed)
     {
         this.orders = orders;
         OrderSetMode = orderSetMode;
@@ -117,6 +121,7 @@ public sealed class ColumnarTripleIndex
         this.addedByOrder = addedByOrder;
         this.removedByOrder = removedByOrder;
         this.level0Bounds = level0Bounds;
+        Backing = backing;
     }
 
     /// <summary>
@@ -185,7 +190,7 @@ public sealed class ColumnarTripleIndex
 
         EncodedTriple[][] emptyRuns = [EmptyTriples, EmptyTriples, EmptyTriples, EmptyTriples, EmptyTriples, EmptyTriples];
 
-        return new ColumnarTripleIndex(orders, orderSetMode, working.Length, [], [], emptyRuns, emptyRuns);
+        return new ColumnarTripleIndex(orders, orderSetMode, working.Length, [], [], emptyRuns, emptyRuns, backing: backing);
     }
 
     /// <summary>Whether the permutation at <paramref name="permutationIndex"/> belongs to <paramref name="mode"/>'s set: the rotations are SPO, POS, and OSP.</summary>
@@ -331,7 +336,7 @@ public sealed class ColumnarTripleIndex
             merged.ExceptWith(newRemoved);
             merged.UnionWith(newAdded);
 
-            return Build(merged, OrderSetMode);
+            return Build(merged, OrderSetMode, backing: Backing);
         }
 
         //Evolve the per-order runs by linear merge: only this
@@ -352,7 +357,8 @@ public sealed class ColumnarTripleIndex
             newAdded,
             newRemoved,
             MergePerOrder(addedByOrder, addedInsertions, addedDeletions, orders),
-            MergePerOrder(removedByOrder, removedInsertions, removedDeletions, orders));
+            MergePerOrder(removedByOrder, removedInsertions, removedDeletions, orders),
+            backing: Backing);
     }
 
     /// <summary>
