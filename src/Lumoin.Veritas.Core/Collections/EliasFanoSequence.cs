@@ -34,7 +34,7 @@ namespace Lumoin.Veritas.Core.Collections;
 /// </para>
 /// </remarks>
 [DebuggerDisplay("EliasFanoSequence Count={Count} LowBits={LowBits} Bits={BitCount}")]
-public sealed class EliasFanoSequence
+public sealed partial class EliasFanoSequence
 {
     /// <summary>The default select-sample rate: one in this many marker bits is sampled so a select resumes its scan near the answer.</summary>
     private const int DefaultSelectSampleRate = 64;

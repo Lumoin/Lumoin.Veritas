@@ -34,7 +34,7 @@ namespace Lumoin.Veritas.Core.Collections;
 /// </para>
 /// </remarks>
 [DebuggerDisplay("PartitionedEliasFanoSequence Count={Count} Segments={SegmentCount} Bits={BitCount}")]
-public sealed class PartitionedEliasFanoSequence
+public sealed partial class PartitionedEliasFanoSequence
 {
     private readonly ulong[] lower;
 
