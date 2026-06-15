@@ -12,8 +12,8 @@ namespace Lumoin.Veritas.Core.Columnar;
 /// </summary>
 public sealed class InMemoryColumnSource : ColumnSource
 {
-    /// <summary>The packed payload words.</summary>
-    private readonly ulong[] words;
+    /// <summary>The packed payload words, held as a whole-column view.</summary>
+    private readonly ReadOnlyMemory<ulong> words;
 
     /// <summary>Wraps <paramref name="words"/> as a column source; the array is held, not copied.</summary>
     /// <param name="words">The packed payload words.</param>
@@ -29,7 +29,7 @@ public sealed class InMemoryColumnSource : ColumnSource
     public override int LengthInBytes => words.Length * sizeof(ulong);
 
     /// <inheritdoc/>
-    public override ReadOnlySpan<byte> Bytes => MemoryMarshal.AsBytes(new ReadOnlySpan<ulong>(words));
+    public override ReadOnlySpan<byte> Bytes => MemoryMarshal.AsBytes(words.Span);
 
     /// <inheritdoc/>
     public override bool TryGetMemory(out ReadOnlyMemory<ulong> memory)
