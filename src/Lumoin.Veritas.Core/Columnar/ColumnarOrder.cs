@@ -26,7 +26,7 @@ namespace Lumoin.Veritas.Core.Columnar;
 /// </para>
 /// </remarks>
 [DebuggerDisplay("ColumnarOrder L0={level0Values.Length} L1={level1Values.Length} L2={level2Values.Length}")]
-public sealed class ColumnarOrder
+public sealed partial class ColumnarOrder
 {
     private readonly BlockPackedColumn level0Values;
 

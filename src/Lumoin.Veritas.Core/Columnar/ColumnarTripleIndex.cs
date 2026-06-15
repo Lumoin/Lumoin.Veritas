@@ -43,7 +43,7 @@ namespace Lumoin.Veritas.Core.Columnar;
 /// </para>
 /// </remarks>
 [DebuggerDisplay("ColumnarTripleIndex Triples={TripleCount}")]
-public sealed class ColumnarTripleIndex
+public sealed partial class ColumnarTripleIndex
 {
     /// <summary>The six position permutations, indexed by <see cref="PermutationIndex"/>: each entry lists the RDF positions (0 = subject, 1 = predicate, 2 = object) in descent order.</summary>
     private static readonly byte[][] Permutations =

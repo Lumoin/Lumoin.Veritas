@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -51,11 +52,23 @@ internal static class LittleEndianBuffer
     /// <param name="source">The byte image positioned at the array.</param>
     /// <param name="consumed">Receives the bytes consumed.</param>
     /// <returns>The read array.</returns>
+    /// <exception cref="InvalidDataException">The source is truncated, or declares a length beyond its bounds (a malformed image).</exception>
     internal static T[] ReadArray<T>(ReadOnlySpan<byte> source, out int consumed) where T : unmanaged
     {
+        if(source.Length < sizeof(int))
+        {
+            throw new InvalidDataException("The byte image is truncated before an array length.");
+        }
+
         int count = BinaryPrimitives.ReadInt32LittleEndian(source);
+        int elementSize = Unsafe.SizeOf<T>();
+        if(count < 0 || ((long)count * elementSize) > source.Length - sizeof(int))
+        {
+            throw new InvalidDataException("The byte image declares an array length beyond its bounds.");
+        }
+
         T[] result = new T[count];
-        int byteCount = count * Unsafe.SizeOf<T>();
+        int byteCount = count * elementSize;
         source.Slice(sizeof(int), byteCount).CopyTo(MemoryMarshal.AsBytes(result.AsSpan()));
         consumed = sizeof(int) + byteCount;
 
