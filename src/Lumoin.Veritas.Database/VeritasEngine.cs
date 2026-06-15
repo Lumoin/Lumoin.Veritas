@@ -5,7 +5,12 @@ using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Execution;
+using Lumoin.Veritas.Core.Hypertrie;
+using Lumoin.Veritas.Core.Hypertrie.Storage;
 using Lumoin.Veritas.Owl.Reasoning;
+using Lumoin.Veritas.Shacl.Components;
+using Lumoin.Veritas.Shacl.Loading;
+using Lumoin.Veritas.Shacl.Validation;
 using Lumoin.Veritas.Sparql.Algebra;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
@@ -136,11 +141,53 @@ public sealed class VeritasEngine: IAsyncDisposable
         return await queryEngine.EvaluateAskAsync(algebra, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Validates the served default graph against a SHACL shapes graph and
+    /// returns the report. The shapes are loaded over the same dictionary the
+    /// data uses, so a term denotes the same thing in both; when reasoning is
+    /// wired the validation runs over the entailed graph the database serves.
+    /// </summary>
+    /// <param name="shapes">The SHACL shapes graph as triples.</param>
+    /// <param name="cancellationToken">A token that aborts validation.</param>
+    /// <returns>The validation report — whether the data conforms and, if not, the results.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="shapes"/> is <see langword="null"/>.</exception>
+    /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
+    public async ValueTask<ValidationReport> ValidateAsync(IEnumerable<DataTriple> shapes, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(shapes);
+
+        TermDictionary dictionary = queryEngine.Dictionary;
+        HypertrieGraphStore shapesStore = await BuildShapesStore(shapes, dictionary, cancellationToken).ConfigureAwait(false);
+        ShapeRegistry registry = await ShapeLoader
+            .LoadAsync(shapesStore.AsMatchDelegate(), dictionary, ShaclBuiltInComponents.All, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+
+        return await ShaclValidator
+            .ValidateAsync(registry, queryEngine.Dataset.DefaultGraph.AsMatchOps(), dictionary, ShaclBuiltInEvaluators.All, TimeProvider.System, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     /// <summary>Drains and disposes the owned compute lane.</summary>
     /// <returns>A task that completes when the lane has stopped.</returns>
     public ValueTask DisposeAsync()
     {
         return computeLane.DisposeAsync();
+    }
+
+    /// <summary>Builds a store over the shapes triples, encoding them into the data's dictionary so shapes and data share term identity.</summary>
+    /// <param name="shapes">The shapes triples.</param>
+    /// <param name="dictionary">The shared dictionary.</param>
+    /// <param name="cancellationToken">A token that aborts the build.</param>
+    /// <returns>The shapes store.</returns>
+    private static async ValueTask<HypertrieGraphStore> BuildShapesStore(IEnumerable<DataTriple> shapes, TermDictionary dictionary, CancellationToken cancellationToken)
+    {
+        List<EncodedTriple> encoded = [];
+        foreach(DataTriple triple in shapes)
+        {
+            encoded.Add(new EncodedTriple(dictionary.GetOrAdd(triple.Subject), dictionary.GetOrAdd(triple.Predicate), dictionary.GetOrAdd(triple.Object)));
+        }
+
+        return await HypertrieGraphStore.BuildAsync(encoded, VeritasHashing.Default, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Parses, normalises, and translates a query into the executable algebra over the supplied pool, which must outlive the evaluation that reads the algebra's interned terms.</summary>

@@ -10,6 +10,7 @@
     <ProjectReference Include="..\Lumoin.Veritas.Rdf\Lumoin.Veritas.Rdf.csproj" />
     <ProjectReference Include="..\Lumoin.Veritas.Sparql\Lumoin.Veritas.Sparql.csproj" />
     <ProjectReference Include="..\Lumoin.Veritas.Owl\Lumoin.Veritas.Owl.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Shacl\Lumoin.Veritas.Shacl.csproj" />
   </ItemGroup>
 
 </Project>

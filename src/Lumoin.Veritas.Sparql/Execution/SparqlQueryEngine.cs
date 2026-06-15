@@ -81,6 +81,12 @@ public sealed class SparqlQueryEngine
 
     private readonly TermDictionary dictionary;
 
+    /// <summary>The dataset the engine queries — its default graph and any named graphs; the composition layer reads it to validate the served data.</summary>
+    public SparqlDataset Dataset => dataset;
+
+    /// <summary>The term dictionary that encoded the engine's graphs; shapes validated against the served data share it so a term denotes the same id in both.</summary>
+    public TermDictionary Dictionary => dictionary;
+
     private readonly SparqlExpressionContext expressionContext;
 
     private readonly SparqlClient? serviceClient;

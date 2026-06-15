@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Database;
+using Lumoin.Veritas.Shacl.Validation;
 using Lumoin.Veritas.Sparql.Execution;
 
 namespace Lumoin.Veritas.Tests.Database;
@@ -64,6 +65,69 @@ internal sealed class VeritasEngineTests
             .AskAsync($"ASK {{ <{Ex}rex> <{RdfType}> <{Ex}Dog> }}", TestContext.CancellationToken)
             .ConfigureAwait(false);
         Assert.IsTrue(isDog, "The asserted triple is served unchanged.");
+    }
+
+    [TestMethod]
+    public async Task ValidateReportsConformanceAgainstShapes()
+    {
+        //alice is a Person with a name — conforming under "every Person has a name".
+        VeritasEngine database = await VeritasEngine
+            .OpenAsync(PersonData(withName: true), cancellationToken: TestContext.CancellationToken)
+            .ConfigureAwait(false);
+        await using var scope = database.ConfigureAwait(false);
+
+        ValidationReport report = await database
+            .ValidateAsync(EveryPersonHasAName(), TestContext.CancellationToken)
+            .ConfigureAwait(false);
+
+        Assert.IsTrue(report.Conforms, "alice has a name, so the data conforms.");
+    }
+
+    [TestMethod]
+    public async Task ValidateReportsAViolationWhenTheDataDoesNotConform()
+    {
+        //bob is a Person with no name — violating "every Person has a name".
+        VeritasEngine database = await VeritasEngine
+            .OpenAsync(PersonData(withName: false), cancellationToken: TestContext.CancellationToken)
+            .ConfigureAwait(false);
+        await using var scope = database.ConfigureAwait(false);
+
+        ValidationReport report = await database
+            .ValidateAsync(EveryPersonHasAName(), TestContext.CancellationToken)
+            .ConfigureAwait(false);
+
+        Assert.IsFalse(report.Conforms, "bob has no name, so the data violates the shape.");
+        Assert.IsNotEmpty(report.Results, "The non-conformance is reported as a result.");
+    }
+
+    /// <summary>The SHACL property shape: every Person must have at least one name.</summary>
+    /// <returns>The shapes triples.</returns>
+    private static IReadOnlyList<DataTriple> EveryPersonHasAName()
+    {
+        const string Sh = "http://www.w3.org/ns/shacl#";
+        const string XsdInteger = "http://www.w3.org/2001/XMLSchema#integer";
+
+        return
+        [
+            new DataTriple(Iri(Ex + "NameShape"), Iri(RdfType), Iri(Sh + "PropertyShape")),
+            new DataTriple(Iri(Ex + "NameShape"), Iri(Sh + "targetClass"), Iri(Ex + "Person")),
+            new DataTriple(Iri(Ex + "NameShape"), Iri(Sh + "path"), Iri(Ex + "name")),
+            new DataTriple(Iri(Ex + "NameShape"), Iri(Sh + "minCount"), new Literal(Utf8String.FromString("1"), Iri(XsdInteger))),
+        ];
+    }
+
+    /// <summary>A Person, with or without a name.</summary>
+    /// <param name="withName">Whether the person carries a name.</param>
+    /// <returns>The data triples.</returns>
+    private static IReadOnlyList<DataTriple> PersonData(bool withName)
+    {
+        const string XsdString = "http://www.w3.org/2001/XMLSchema#string";
+        NamedNode person = Iri(Ex + (withName ? "alice" : "bob"));
+        DataTriple isPerson = new(person, Iri(RdfType), Iri(Ex + "Person"));
+
+        return withName
+            ? [isPerson, new DataTriple(person, Iri(Ex + "name"), new Literal(Utf8String.FromString("Alice"), Iri(XsdString)))]
+            : [isPerson];
     }
 
     /// <summary>The RDFS-shaped graph: rex is a Dog, and Dog is a subclass of Animal.</summary>
