@@ -67,7 +67,11 @@ public sealed class BlockPackedColumn
     //value in the side arrays.
     private const int ExceptionCostBits = 48;
 
-    private readonly ulong[] payload;
+    /// <summary>The byte source backing the packed payload; the seam over the column's payload bytes behind one read contract.</summary>
+    private readonly ColumnSource payloadSource;
+
+    /// <summary>The whole-column payload view, resolved once from <see cref="payloadSource"/> at construction and sliced per read.</summary>
+    private readonly ReadOnlyMemory<ulong> payload;
 
     private readonly int[] payloadStarts;
 
@@ -122,11 +126,23 @@ public sealed class BlockPackedColumn
             + (exceptionValues.Length * sizeof(uint)),
     };
 
+    /// <summary>Constructs a block-packed column over a payload byte source and its parallel block metadata.</summary>
+    /// <param name="backend">The kernel bundle decoding this column's blocks.</param>
+    /// <param name="mode">The block encoding.</param>
+    /// <param name="length">The value count.</param>
+    /// <param name="payloadSource">The byte source backing the packed lane words.</param>
+    /// <param name="payloadStarts">The per-block payload word offsets, with one entry past the last block.</param>
+    /// <param name="anchors">The per-block first values.</param>
+    /// <param name="frameBases">The per-block frame minimums under frame of reference; empty otherwise.</param>
+    /// <param name="widths">The per-block lane widths.</param>
+    /// <param name="exceptionStarts">The per-block exception offsets, with one entry past the last block.</param>
+    /// <param name="exceptionPositions">The packed exception in-block positions.</param>
+    /// <param name="exceptionValues">The packed exception values.</param>
     private BlockPackedColumn(
         ColumnarKernelBackend backend,
         BlockPackedColumnMode mode,
         int length,
-        ulong[] payload,
+        ColumnSource payloadSource,
         int[] payloadStarts,
         uint[] anchors,
         uint[] frameBases,
@@ -138,7 +154,13 @@ public sealed class BlockPackedColumn
         Backend = backend;
         Mode = mode;
         Length = length;
-        this.payload = payload;
+        this.payloadSource = payloadSource;
+        if(!payloadSource.TryGetMemory(out ReadOnlyMemory<ulong> resolvedPayload))
+        {
+            throw new ArgumentException("The payload source cannot hand out a contiguous column view.", nameof(payloadSource));
+        }
+
+        payload = resolvedPayload;
         this.payloadStarts = payloadStarts;
         this.anchors = anchors;
         this.frameBases = frameBases;
@@ -158,7 +180,8 @@ public sealed class BlockPackedColumn
         Mode = BlockPackedColumnMode.EliasFano;
         Length = length;
         this.eliasFano = eliasFano;
-        payload = [];
+        payloadSource = ColumnSource.Empty;
+        payload = ReadOnlyMemory<ulong>.Empty;
         payloadStarts = [0];
         anchors = [];
         frameBases = [];
@@ -178,7 +201,8 @@ public sealed class BlockPackedColumn
         Mode = BlockPackedColumnMode.PartitionedEliasFano;
         Length = length;
         this.partitionedEliasFano = partitionedEliasFano;
-        payload = [];
+        payloadSource = ColumnSource.Empty;
+        payload = ReadOnlyMemory<ulong>.Empty;
         payloadStarts = [0];
         anchors = [];
         frameBases = [];
@@ -253,7 +277,7 @@ public sealed class BlockPackedColumn
 
         Span<uint> block = destination[..count];
         int width = widths[blockIndex];
-        ReadOnlySpan<ulong> blockPayload = payload.AsSpan(payloadStarts[blockIndex], payloadStarts[blockIndex + 1] - payloadStarts[blockIndex]);
+        ReadOnlySpan<ulong> blockPayload = payload.Span.Slice(payloadStarts[blockIndex], payloadStarts[blockIndex + 1] - payloadStarts[blockIndex]);
 
         if(Mode == BlockPackedColumnMode.FrameOfReference)
         {
@@ -303,7 +327,7 @@ public sealed class BlockPackedColumn
 
         if(Mode == BlockPackedColumnMode.FrameOfReference)
         {
-            return frameBases[block] + LaneAt(block, index & BlockMask);
+            return frameBases[block] + LaneAt(payload.Span, block, index & BlockMask);
         }
 
         if(block != cachedBlock)
@@ -434,6 +458,7 @@ public sealed class BlockPackedColumn
             //collapse immediately, and the binary search costs
             //log2(range) single-lane reads.
             uint frameBase = frameBases[block];
+            ReadOnlySpan<ulong> payloadSpan = payload.Span;
             int low = lo;
             int high = hi;
 
@@ -441,7 +466,7 @@ public sealed class BlockPackedColumn
             {
                 int mid = low + ((high - low) >> 1);
 
-                if(frameBase + LaneAt(block, mid & BlockMask) < target)
+                if(frameBase + LaneAt(payloadSpan, block, mid & BlockMask) < target)
                 {
                     low = mid + 1;
                 }
@@ -466,11 +491,12 @@ public sealed class BlockPackedColumn
         return blockStart + relative;
     }
 
-    /// <summary>Reads one bit lane raw — layout arithmetic, not a kernel: a lane spans at most two payload words.</summary>
+    /// <summary>Reads one bit lane raw from a resolved payload span — layout arithmetic, not a kernel: a lane spans at most two payload words.</summary>
+    /// <param name="payload">The whole-column payload span, resolved once by the caller.</param>
     /// <param name="blockIndex">The block.</param>
     /// <param name="lane">The in-block lane position.</param>
     /// <returns>The lane's packed value.</returns>
-    private uint LaneAt(int blockIndex, int lane)
+    private uint LaneAt(ReadOnlySpan<ulong> payload, int blockIndex, int lane)
     {
         int width = widths[blockIndex];
         if(width == 0)
@@ -606,7 +632,7 @@ public sealed class BlockPackedColumn
             backend,
             mode,
             values.Length,
-            [.. payload],
+            new InMemoryColumnSource([.. payload]),
             payloadStarts,
             anchors,
             frameBases,
