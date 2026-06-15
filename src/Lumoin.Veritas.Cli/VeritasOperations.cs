@@ -5,14 +5,10 @@ using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
-using Lumoin.Veritas.Core.Execution;
+using Lumoin.Veritas.Database;
 using Lumoin.Veritas.NQuads;
-using Lumoin.Veritas.Sparql.Algebra;
-using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
-using Lumoin.Veritas.Sparql.Parser;
 using Lumoin.Veritas.Sparql.Results;
-using Lumoin.Veritas.Sparql.Translation;
 using Lumoin.Veritas.Turtle;
 using IoPath = System.IO.Path;
 
@@ -27,20 +23,15 @@ namespace Lumoin.Veritas.Cli;
 /// </summary>
 internal static class VeritasOperations
 {
-    /// <summary>Builds a query engine over the RDF documents at <paramref name="dataPaths"/> (default graph plus any named graphs the files carry).</summary>
+    /// <summary>Opens a Veritas database over the RDF documents at <paramref name="dataPaths"/> (default graph plus any named graphs the files carry), with the database's fully-wired default configuration.</summary>
     /// <param name="dataPaths">The data document paths (<c>.ttl</c>/<c>.nt</c>/<c>.trig</c>/<c>.nq</c>).</param>
-    /// <param name="context">The expression context (carries the effective base IRI).</param>
-    /// <param name="computeLane">An optional compute lane materialising the default graph's on-demand view off the serve path; <see langword="null"/> builds it inline.</param>
-    /// <param name="cancellationToken">A token that aborts the build.</param>
-    /// <returns>The built engine, or an error message describing the first document that could not be read.</returns>
-    public static async Task<(SparqlQueryEngine? Engine, string? Error)> BuildEngineAsync(
+    /// <param name="cancellationToken">A token that aborts loading and opening.</param>
+    /// <returns>The opened database, or an error message describing the first document that could not be read.</returns>
+    public static async Task<(VeritasEngine? Database, string? Error)> OpenDatabaseAsync(
         IReadOnlyList<string> dataPaths,
-        SparqlExpressionContext context,
-        IComputeLane? computeLane,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(dataPaths);
-        ArgumentNullException.ThrowIfNull(context);
 
         List<DataTriple> defaultGraph = [];
         Dictionary<RdfTerm, List<DataTriple>> namedGraphs = [];
@@ -78,73 +69,51 @@ internal static class VeritasOperations
             }
         }
 
-        if(namedGraphs.Count == 0)
-        {
-            SparqlQueryEngine engine = await SparqlQueryEngine.BuildAsync(defaultGraph, context, computeLane: computeLane, cancellationToken: cancellationToken).ConfigureAwait(false);
-            return (engine, null);
-        }
-
         List<(RdfTerm Name, IEnumerable<DataTriple> Triples)> named = [];
         foreach(KeyValuePair<RdfTerm, List<DataTriple>> entry in namedGraphs)
         {
             named.Add((entry.Key, entry.Value));
         }
 
-        SparqlQueryEngine datasetEngine = await SparqlQueryEngine.BuildDatasetAsync(defaultGraph, named, context, computeLane: computeLane, cancellationToken: cancellationToken).ConfigureAwait(false);
-        return (datasetEngine, null);
+        VeritasEngine database = await VeritasEngine.OpenAsync(defaultGraph, named, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        return (database, null);
     }
 
-    /// <summary>Executes a SPARQL <c>SELECT</c>/<c>ASK</c> query against a built engine and renders the result set as CSV or TSV.</summary>
-    /// <param name="engine">The engine built by <see cref="BuildEngineAsync"/>.</param>
-    /// <param name="pool">The string pool the request parsed into.</param>
+    /// <summary>Executes a SPARQL <c>SELECT</c>/<c>ASK</c> query against an open database and renders the result as CSV/TSV (SELECT) or a boolean (ASK).</summary>
+    /// <param name="database">The database opened by <see cref="OpenDatabaseAsync"/>.</param>
     /// <param name="queryText">The query text.</param>
     /// <param name="baseIri">The base IRI relative references resolve against (a file URL for a query file, or the request base).</param>
     /// <param name="format">The delimited output format.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The rendered results, or an error message for a malformed or not-yet-renderable query.</returns>
     public static async Task<OperationResult> ExecuteQueryAsync(
-        SparqlQueryEngine engine,
-        Utf8StringPool pool,
+        VeritasEngine database,
         string queryText,
         string baseIri,
         SparqlDelimitedResultsFormat format,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(engine);
-        ArgumentNullException.ThrowIfNull(pool);
+        ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(queryText);
 
-        ParseResult<SparqlRequest> parsed = SparqlParser.ParseRequest(
-            Utf8String.FromString(queryText).Memory,
-            pool,
-            Utf8String.FromString(baseIri));
-        if(parsed.HasErrors)
+        VeritasQueryResult result;
+        try
         {
-            return OperationResult.Failed($"Query did not parse: {DescribeFirstError(parsed.Diagnostics)}");
+            result = await database.QueryAsync(queryText, baseIri, cancellationToken).ConfigureAwait(false);
+        }
+        catch(ArgumentException ex)
+        {
+            return OperationResult.Failed(ex.Message);
+        }
+        catch(NotSupportedException ex)
+        {
+            return OperationResult.Failed(ex.Message);
         }
 
-        if(parsed.Tree is not SparqlQuery query)
-        {
-            return OperationResult.Failed("The request is a SPARQL Update, not a query; use the update surface.");
-        }
-
-        if(query.Form is ConstructQuery or DescribeQuery)
-        {
-            return OperationResult.Failed("CONSTRUCT / DESCRIBE graph results are not yet rendered by this surface; SELECT and ASK are supported.");
-        }
-
-        SparqlQuery normalized = (SparqlQuery)new SparqlNormalizer(pool).Normalize(query);
-        AlgebraOperator algebra = SparqlTranslator.Translate(normalized);
-
-        //ASK short-circuits at the first solution; only SELECT materialises the sequence.
-        if(query.Form is AskQuery)
-        {
-            return OperationResult.Ok(await engine.EvaluateAskAsync(algebra, cancellationToken).ConfigureAwait(false) ? "true" : "false");
-        }
-
-        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, cancellationToken).ConfigureAwait(false);
-        SparqlResultSet results = SparqlResultSet.ForSelect(SelectVariables(query), solutions);
-        return OperationResult.Ok(SparqlResultsDelimitedWriter.WriteToString(results, format));
+        return result.IsAsk
+            ? OperationResult.Ok(result.Boolean!.Value ? "true" : "false")
+            : OperationResult.Ok(SparqlResultsDelimitedWriter.WriteToString(result.Bindings!, format));
     }
 
     /// <summary>Reads a SPARQL query file and evaluates it against the documents at <paramref name="dataPaths"/>; the convenience the <c>query</c> command calls.</summary>
@@ -191,17 +160,15 @@ internal static class VeritasOperations
         ArgumentNullException.ThrowIfNull(dataPaths);
         ArgumentNullException.ThrowIfNull(baseIri);
 
-        using Utf8StringPool pool = new();
-        SparqlExpressionContext context = SparqlExpressionContext.CreateDefault().WithBaseIri(Utf8String.FromString(baseIri));
-
-        //A one-shot CLI query builds its view inline; the compute lane is for the long-running server.
-        (SparqlQueryEngine? engine, string? error) = await BuildEngineAsync(dataPaths, context, computeLane: null, cancellationToken).ConfigureAwait(false);
+        (VeritasEngine? database, string? error) = await OpenDatabaseAsync(dataPaths, cancellationToken).ConfigureAwait(false);
         if(error is not null)
         {
             return OperationResult.Failed(error);
         }
 
-        return await ExecuteQueryAsync(engine!, pool, queryText, baseIri, format, cancellationToken).ConfigureAwait(false);
+        await using var scope = database!.ConfigureAwait(false);
+
+        return await ExecuteQueryAsync(database!, queryText, baseIri, format, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Reads a document's quads, dispatching on the file extension; Turtle/N-Triples/TriG via the Turtle reader, N-Quads via the N-Quads reader.</summary>
@@ -242,43 +209,6 @@ internal static class VeritasOperations
         }
 
         return (null, $"Unsupported data format '{extension}' for '{path}'; supported: .ttl, .nt, .trig, .nq.");
-    }
-
-    /// <summary>Collects a <c>SELECT</c> query's projected variable names in head order (the result columns).</summary>
-    /// <param name="query">The query.</param>
-    /// <returns>The projected variable names.</returns>
-    private static List<Utf8String> SelectVariables(SparqlQuery query)
-    {
-        List<Utf8String> variables = [];
-        if(query.Form is SelectQuery select)
-        {
-            foreach(SelectProjection projection in select.Projections)
-            {
-                switch(projection)
-                {
-                    case SelectVariable variable:
-                    {
-                        variables.Add(variable.Variable.Name);
-
-                        break;
-                    }
-
-                    case SelectExpressionAs expressionAs:
-                    {
-                        variables.Add(expressionAs.AsVariable.Name);
-
-                        break;
-                    }
-
-                    default:
-                    {
-                        break;
-                    }
-                }
-            }
-        }
-
-        return variables;
     }
 
     /// <summary>Renders the first error diagnostic (code and message) for an operation-result error string.</summary>

@@ -142,16 +142,41 @@
           "System.IO.Hashing": "[10.0.8, )"
         }
       },
+      "lumoin.veritas.database": {
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Veritas.Core": "[0.0.0, )",
+          "Lumoin.Veritas.Owl": "[0.0.0, )",
+          "Lumoin.Veritas.Rdf": "[0.0.0, )",
+          "Lumoin.Veritas.Shacl": "[0.0.0, )",
+          "Lumoin.Veritas.Sparql": "[0.0.0, )"
+        }
+      },
       "lumoin.veritas.nquads": {
         "type": "Project",
         "dependencies": {
           "Lumoin.Veritas.Core": "[0.0.0, )"
         }
       },
+      "lumoin.veritas.owl": {
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Veritas.Core": "[0.0.0, )",
+          "Lumoin.Veritas.Rdf": "[0.0.0, )"
+        }
+      },
       "lumoin.veritas.rdf": {
         "type": "Project",
         "dependencies": {
           "Lumoin.Veritas.Core": "[0.0.0, )"
+        }
+      },
+      "lumoin.veritas.shacl": {
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Veritas.Core": "[0.0.0, )",
+          "Lumoin.Veritas.Rdf": "[0.0.0, )",
+          "Lumoin.Veritas.Sparql": "[0.0.0, )"
         }
       },
       "lumoin.veritas.sparql": {

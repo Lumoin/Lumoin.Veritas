@@ -3,9 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
-using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Execution;
-using Lumoin.Veritas.Sparql.Execution;
+using Lumoin.Veritas.Database;
 using Lumoin.Veritas.Sparql.Results;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -48,14 +47,10 @@ internal static class VeritasSparqlServer
         int workerThreadFloor = HostThreadPoolFloor.Apply(ExecutionPolicy.Default.HostPoolFloorMultiplier);
         await Console.Out.WriteLineAsync($"Worker-thread minimum floored at {workerThreadFloor}.").ConfigureAwait(false);
 
-        //Own a compute lane for the host: on-demand columnar view builds run as lane turns off the
-        //serve pool, keeping the latency-sensitive response path clear. Disposed on shutdown, which
-        //drains any in-flight build before the process exits.
-        IComputeLane computeLane = ComputeLane.ForCurrentPlatform(ExecutionPolicy.Default);
-        await using var computeLaneScope = computeLane.ConfigureAwait(false);
-
-        SparqlExpressionContext context = SparqlExpressionContext.CreateDefault();
-        (SparqlQueryEngine? engine, string? error) = await VeritasOperations.BuildEngineAsync(dataPaths, context, computeLane, cancellationToken).ConfigureAwait(false);
+        //Open the database over the data: one engine composing storage, query, reasoning, and its own
+        //compute lane (on-demand view builds run as lane turns off the serve pool). Disposed on
+        //shutdown, which drains any in-flight build before the process exits.
+        (VeritasEngine? database, string? error) = await VeritasOperations.OpenDatabaseAsync(dataPaths, cancellationToken).ConfigureAwait(false);
         if(error is not null)
         {
             await Console.Error.WriteLineAsync(error).ConfigureAwait(false);
@@ -63,14 +58,16 @@ internal static class VeritasSparqlServer
             return 1;
         }
 
+        await using var databaseScope = database!.ConfigureAwait(false);
+
         WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
         builder.Logging.SetMinimumLevel(LogLevel.Warning);
 
         WebApplication app = builder.Build();
         app.Urls.Add($"http://localhost:{port}");
 
-        app.MapGet("/sparql", (HttpContext httpContext) => HandleAsync(httpContext, engine!, httpContext.Request.Query["query"], cancellationToken));
-        app.MapPost("/sparql", (HttpContext httpContext) => HandlePostAsync(httpContext, engine!, cancellationToken));
+        app.MapGet("/sparql", (HttpContext httpContext) => HandleAsync(httpContext, database!, httpContext.Request.Query["query"], cancellationToken));
+        app.MapPost("/sparql", (HttpContext httpContext) => HandlePostAsync(httpContext, database!, cancellationToken));
 
         await app.StartAsync(cancellationToken).ConfigureAwait(false);
 
@@ -92,10 +89,10 @@ internal static class VeritasSparqlServer
 
     /// <summary>Extracts the query from a POST (an <c>application/sparql-query</c> body or a form field) and answers it.</summary>
     /// <param name="httpContext">The request context.</param>
-    /// <param name="engine">The dataset engine.</param>
+    /// <param name="database">The open database.</param>
     /// <param name="cancellationToken">A token that aborts the request.</param>
     /// <returns>The asynchronous handling.</returns>
-    private static async Task HandlePostAsync(HttpContext httpContext, SparqlQueryEngine engine, CancellationToken cancellationToken)
+    private static async Task HandlePostAsync(HttpContext httpContext, VeritasEngine database, CancellationToken cancellationToken)
     {
         string? query;
         string contentType = httpContext.Request.ContentType ?? string.Empty;
@@ -109,16 +106,16 @@ internal static class VeritasSparqlServer
             query = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        await HandleAsync(httpContext, engine, query, cancellationToken).ConfigureAwait(false);
+        await HandleAsync(httpContext, database, query, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>Answers one query against the dataset, writing CSV/TSV results or a plain-text error.</summary>
+    /// <summary>Answers one query against the database, writing CSV/TSV results or a plain-text error.</summary>
     /// <param name="httpContext">The request context.</param>
-    /// <param name="engine">The dataset engine.</param>
+    /// <param name="database">The open database.</param>
     /// <param name="query">The query text (possibly empty).</param>
     /// <param name="cancellationToken">A token that aborts the request.</param>
     /// <returns>The asynchronous handling.</returns>
-    private static async Task HandleAsync(HttpContext httpContext, SparqlQueryEngine engine, string? query, CancellationToken cancellationToken)
+    private static async Task HandleAsync(HttpContext httpContext, VeritasEngine database, string? query, CancellationToken cancellationToken)
     {
         if(string.IsNullOrWhiteSpace(query))
         {
@@ -133,8 +130,7 @@ internal static class VeritasSparqlServer
             ? SparqlDelimitedResultsFormat.Tsv
             : SparqlDelimitedResultsFormat.Csv;
 
-        using Utf8StringPool pool = new();
-        OperationResult result = await VeritasOperations.ExecuteQueryAsync(engine, pool, query, baseIri: string.Empty, format, cancellationToken).ConfigureAwait(false);
+        OperationResult result = await VeritasOperations.ExecuteQueryAsync(database, query, baseIri: string.Empty, format, cancellationToken).ConfigureAwait(false);
 
         if(!result.Succeeded)
         {
