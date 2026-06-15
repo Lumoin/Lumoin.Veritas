@@ -1,5 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <PropertyGroup>
+    <!-- The persistence serving tier holds succinct column payloads in 64-byte-aligned
+         native memory (off the GC heap); the native allocation and its span wrapper need
+         unsafe blocks, scoped to the Memory/ byte-source types. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="System.IO.Hashing" />
   </ItemGroup>
