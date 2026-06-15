@@ -324,6 +324,16 @@ internal static class Program
             return;
         }
 
+        //Managed vs native-aligned column payload backing at fixed bytes: the GC-resident
+        //reduction (payload off the LOH), build/read cost, and working set — across the
+        //frame-of-reference (all block-packed) and Elias-Fano (realistic default) encodings.
+        if(args.Length > 0 && args[0] == "--profile-column-backing")
+        {
+            ColumnBackingSoak.RunColumnBackingSoak();
+
+            return;
+        }
+
         BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
     }
 }
