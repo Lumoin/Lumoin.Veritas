@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using Lumoin.Veritas.Core.Collections;
 
 namespace Lumoin.Veritas.Core.Columnar;
@@ -525,11 +526,13 @@ public sealed class BlockPackedColumn
     /// <param name="values">The column values, in column order.</param>
     /// <param name="mode">The encoding to use; see <see cref="BlockPackedColumnMode"/> for the trade.</param>
     /// <param name="backendOption">The kernel bundle to pack with (and later decode with); <see langword="null"/> uses <see cref="ColumnarKernelBackend.Default"/>.</param>
+    /// <param name="backing">Where the block-packed payload words live; default managed. Ignored by the Elias-Fano modes, which hold no block payload.</param>
     /// <returns>The packed column.</returns>
     public static BlockPackedColumn Build(
         ReadOnlySpan<uint> values,
         BlockPackedColumnMode mode = BlockPackedColumnMode.PrefixedDeltas,
-        ColumnarKernelBackend? backendOption = null)
+        ColumnarKernelBackend? backendOption = null,
+        ColumnPayloadBacking backing = ColumnPayloadBacking.Managed)
     {
         ColumnarKernelBackend backend = backendOption ?? ColumnarKernelBackend.Default;
 
@@ -628,11 +631,15 @@ public sealed class BlockPackedColumn
             payloadStarts[blockIndex + 1] = payload.Count;
         }
 
+        ColumnSource payloadSource = backing == ColumnPayloadBacking.NativeAligned
+            ? InMemoryColumnSource.CreateNative(CollectionsMarshal.AsSpan(payload))
+            : new InMemoryColumnSource([.. payload]);
+
         return new BlockPackedColumn(
             backend,
             mode,
             values.Length,
-            new InMemoryColumnSource([.. payload]),
+            payloadSource,
             payloadStarts,
             anchors,
             frameBases,

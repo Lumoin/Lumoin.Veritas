@@ -164,9 +164,10 @@ public sealed class ColumnarTripleIndex
     /// <param name="triples">The triples to index.</param>
     /// <param name="orderSetMode">Which permutation set to materialise; see <see cref="ColumnarOrderSetMode"/> for the trade.</param>
     /// <param name="valueEncoding">How value columns are encoded; default Elias-Fano where a column qualifies (each column keeps the smaller of the candidate and its frame-of-reference packing, so the default never enlarges a column), or frame of reference throughout. See <see cref="ColumnarValueColumnEncoding"/>.</param>
+    /// <param name="backing">Where block-packed column payloads live; default managed. See <see cref="ColumnPayloadBacking"/>.</param>
     /// <returns>The constructed index.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="triples"/> is <c>null</c>.</exception>
-    public static ColumnarTripleIndex Build(IEnumerable<EncodedTriple> triples, ColumnarOrderSetMode orderSetMode = ColumnarOrderSetMode.AllSixOrders, ColumnarValueColumnEncoding valueEncoding = ColumnarValueColumnEncoding.EliasFanoWhenMonotone)
+    public static ColumnarTripleIndex Build(IEnumerable<EncodedTriple> triples, ColumnarOrderSetMode orderSetMode = ColumnarOrderSetMode.AllSixOrders, ColumnarValueColumnEncoding valueEncoding = ColumnarValueColumnEncoding.EliasFanoWhenMonotone, ColumnPayloadBacking backing = ColumnPayloadBacking.Managed)
     {
         ArgumentNullException.ThrowIfNull(triples);
 
@@ -178,7 +179,7 @@ public sealed class ColumnarTripleIndex
         {
             if(IsPermutationInMode(i, orderSetMode))
             {
-                orders[i] = ColumnarOrder.Build(working, Permutations[i], valueEncoding);
+                orders[i] = ColumnarOrder.Build(working, Permutations[i], valueEncoding, backing);
             }
         }
 

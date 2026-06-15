@@ -108,9 +108,9 @@ public sealed class ColumnarOrder
     //value column keeps the smaller of the succinct candidate and
     //its frame-of-reference packing, so the default never enlarges
     //a column.
-    internal static ColumnarOrder Build(EncodedTriple[] working, byte[] permutation, ColumnarValueColumnEncoding valueEncoding = ColumnarValueColumnEncoding.EliasFanoWhenMonotone)
+    internal static ColumnarOrder Build(EncodedTriple[] working, byte[] permutation, ColumnarValueColumnEncoding valueEncoding = ColumnarValueColumnEncoding.EliasFanoWhenMonotone, ColumnPayloadBacking backing = ColumnPayloadBacking.Managed)
     {
-        return BuildConcatenated([working], permutation, level0Ranges: null, valueEncoding);
+        return BuildConcatenated([working], permutation, level0Ranges: null, valueEncoding, backing);
     }
 
     //Builds one permutation's column set over a SEQUENCE of triple
@@ -124,7 +124,8 @@ public sealed class ColumnarOrder
         IReadOnlyList<EncodedTriple[]> runs,
         byte[] permutation,
         (int Start, int End)[]? level0Ranges,
-        ColumnarValueColumnEncoding valueEncoding = ColumnarValueColumnEncoding.EliasFanoWhenMonotone)
+        ColumnarValueColumnEncoding valueEncoding = ColumnarValueColumnEncoding.EliasFanoWhenMonotone,
+        ColumnPayloadBacking backing = ColumnPayloadBacking.Managed)
     {
         byte position0 = permutation[0];
         byte position1 = permutation[1];
@@ -189,11 +190,11 @@ public sealed class ColumnarOrder
         int[]? level2Boundaries = partitioned ? ToBoundaries(offsets1) : null;
 
         return new ColumnarOrder(
-            BuildValueColumn(CollectionsMarshal.AsSpan(values0), boundaries: null, valueEncoding),
-            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(offsets0), BlockPackedColumnMode.PrefixedDeltas),
-            BuildValueColumn(CollectionsMarshal.AsSpan(values1), level1Boundaries, valueEncoding),
-            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(offsets1), BlockPackedColumnMode.PrefixedDeltas),
-            BuildValueColumn(CollectionsMarshal.AsSpan(values2), level2Boundaries, valueEncoding));
+            BuildValueColumn(CollectionsMarshal.AsSpan(values0), boundaries: null, valueEncoding, backing),
+            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(offsets0), BlockPackedColumnMode.PrefixedDeltas, backing: backing),
+            BuildValueColumn(CollectionsMarshal.AsSpan(values1), level1Boundaries, valueEncoding, backing),
+            BlockPackedColumn.Build(CollectionsMarshal.AsSpan(offsets1), BlockPackedColumnMode.PrefixedDeltas, backing: backing),
+            BuildValueColumn(CollectionsMarshal.AsSpan(values2), level2Boundaries, valueEncoding, backing));
     }
 
     /// <summary>
@@ -209,10 +210,11 @@ public sealed class ColumnarOrder
     /// <param name="values">The value column.</param>
     /// <param name="boundaries">The parent group boundaries for a within-group column, or <see langword="null"/> for the top level.</param>
     /// <param name="valueEncoding">The build policy.</param>
+    /// <param name="backing">Where the chosen column's block payload lives; default managed. The Elias-Fano candidates hold no block payload, so it shapes only the frame-of-reference candidate.</param>
     /// <returns>The packed value column.</returns>
-    private static BlockPackedColumn BuildValueColumn(ReadOnlySpan<uint> values, int[]? boundaries, ColumnarValueColumnEncoding valueEncoding)
+    private static BlockPackedColumn BuildValueColumn(ReadOnlySpan<uint> values, int[]? boundaries, ColumnarValueColumnEncoding valueEncoding, ColumnPayloadBacking backing)
     {
-        BlockPackedColumn frame = BlockPackedColumn.Build(values, BlockPackedColumnMode.FrameOfReference);
+        BlockPackedColumn frame = BlockPackedColumn.Build(values, BlockPackedColumnMode.FrameOfReference, backing: backing);
         if(valueEncoding != ColumnarValueColumnEncoding.EliasFanoWhenMonotone)
         {
             return frame;

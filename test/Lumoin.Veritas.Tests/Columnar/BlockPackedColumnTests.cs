@@ -74,6 +74,32 @@ internal sealed class BlockPackedColumnTests
         Assert.AreEqual(0, column.BlockCount);
     }
 
+    /// <summary>A native-backed column is byte-identical in footprint and decodes value-for-value with its managed twin, through both whole-block decode and pointwise reads, in both block-packed modes.</summary>
+    [TestMethod]
+    public void NativeBackingDecodesIdenticallyToManaged()
+    {
+        uint[] values = new uint[5000];
+        for(int i = 0; i < values.Length; i++)
+        {
+            values[i] = (uint)((i * 7) + (i & 15));
+        }
+
+        foreach(BlockPackedColumnMode mode in (BlockPackedColumnMode[])[BlockPackedColumnMode.PrefixedDeltas, BlockPackedColumnMode.FrameOfReference])
+        {
+            BlockPackedColumn managed = BlockPackedColumn.Build(values, mode, backing: ColumnPayloadBacking.Managed);
+            BlockPackedColumn native = BlockPackedColumn.Build(values, mode, backing: ColumnPayloadBacking.NativeAligned);
+
+            Assert.AreEqual(managed.PackedByteCount, native.PackedByteCount, "Native backing must not change the footprint.");
+            CollectionAssert.AreEqual(DecodeAll(managed), DecodeAll(native));
+
+            BlockPackedColumnReader reader = new(native);
+            for(int i = 0; i < values.Length; i++)
+            {
+                Assert.AreEqual(values[i], reader.ValueAt(i));
+            }
+        }
+    }
+
     [TestMethod]
     public void SingleValueAndConstantRunsRoundTrip()
     {
