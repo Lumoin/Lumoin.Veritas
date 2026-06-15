@@ -24,11 +24,8 @@ public sealed unsafe class AlignedNativeBuffer: IDisposable
     /// <summary>The alignment, in bytes, of the native block — the widest column-kernel SIMD lane.</summary>
     private const int Alignment = 64;
 
-    /// <summary>The native block's base address, or 0 once freed (or for an empty block).</summary>
+    /// <summary>The native block's base address, or 0 once freed (or for an empty block). A naked field: <see cref="Free"/> clears it via <see cref="Interlocked.Exchange(ref nint, nint)"/>, which needs a <c>ref</c> to the field.</summary>
     private nint pointer;
-
-    /// <summary>The number of <c>ulong</c> words the block holds.</summary>
-    private readonly int length;
 
     /// <summary>Wraps an allocated base address; 0 for an empty block.</summary>
     /// <param name="pointer">The native base address, or 0 for an empty block.</param>
@@ -36,7 +33,7 @@ public sealed unsafe class AlignedNativeBuffer: IDisposable
     private AlignedNativeBuffer(nint pointer, int length)
     {
         this.pointer = pointer;
-        this.length = length;
+        Length = length;
     }
 
     /// <summary>Allocates a 64-byte-aligned native block of <paramref name="length"/> <c>ulong</c> words; the contents are uninitialized.</summary>
@@ -59,7 +56,7 @@ public sealed unsafe class AlignedNativeBuffer: IDisposable
     }
 
     /// <summary>The number of <c>ulong</c> words the block holds.</summary>
-    public int Length => length;
+    public int Length { get; }
 
     /// <summary>The native block as a writable span; empty for an empty block.</summary>
     /// <exception cref="ObjectDisposedException">The block was non-empty and has been freed.</exception>
@@ -67,7 +64,7 @@ public sealed unsafe class AlignedNativeBuffer: IDisposable
     {
         get
         {
-            if(length == 0)
+            if(Length == 0)
             {
                 return Span<ulong>.Empty;
             }
@@ -75,7 +72,7 @@ public sealed unsafe class AlignedNativeBuffer: IDisposable
             nint current = Volatile.Read(ref pointer);
             ObjectDisposedException.ThrowIf(current == 0, this);
 
-            return new Span<ulong>((void*)current, length);
+            return new Span<ulong>((void*)current, Length);
         }
     }
 
@@ -87,9 +84,9 @@ public sealed unsafe class AlignedNativeBuffer: IDisposable
     public MemoryHandle Pin(int elementIndex)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(elementIndex);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(elementIndex, length);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(elementIndex, Length);
 
-        if(length == 0)
+        if(Length == 0)
         {
             return default;
         }

@@ -68,11 +68,8 @@ public sealed class BlockPackedColumn
     //value in the side arrays.
     private const int ExceptionCostBits = 48;
 
-    /// <summary>The byte source backing the packed payload; the seam over the column's payload bytes behind one read contract.</summary>
-    private readonly ColumnSource payloadSource;
-
-    /// <summary>The whole-column payload view, resolved once from <see cref="payloadSource"/> at construction and sliced per read.</summary>
-    private readonly ReadOnlyMemory<ulong> payload;
+    /// <summary>The whole-column payload view, resolved once from the byte source at construction and sliced per read.</summary>
+    private ReadOnlyMemory<ulong> Payload { get; }
 
     private readonly int[] payloadStarts;
 
@@ -117,7 +114,7 @@ public sealed class BlockPackedColumn
     {
         BlockPackedColumnMode.EliasFano => (eliasFano!.BitCount + 7) / 8,
         BlockPackedColumnMode.PartitionedEliasFano => (partitionedEliasFano!.BitCount + 7) / 8,
-        _ => (payload.Length * sizeof(ulong))
+        _ => (Payload.Length * sizeof(ulong))
             + (payloadStarts.Length * sizeof(int))
             + (anchors.Length * sizeof(uint))
             + (frameBases.Length * sizeof(uint))
@@ -155,13 +152,12 @@ public sealed class BlockPackedColumn
         Backend = backend;
         Mode = mode;
         Length = length;
-        this.payloadSource = payloadSource;
         if(!payloadSource.TryGetMemory(out ReadOnlyMemory<ulong> resolvedPayload))
         {
             throw new ArgumentException("The payload source cannot hand out a contiguous column view.", nameof(payloadSource));
         }
 
-        payload = resolvedPayload;
+        Payload = resolvedPayload;
         this.payloadStarts = payloadStarts;
         this.anchors = anchors;
         this.frameBases = frameBases;
@@ -181,8 +177,7 @@ public sealed class BlockPackedColumn
         Mode = BlockPackedColumnMode.EliasFano;
         Length = length;
         this.eliasFano = eliasFano;
-        payloadSource = ColumnSource.Empty;
-        payload = ReadOnlyMemory<ulong>.Empty;
+        Payload = ReadOnlyMemory<ulong>.Empty;
         payloadStarts = [0];
         anchors = [];
         frameBases = [];
@@ -202,8 +197,7 @@ public sealed class BlockPackedColumn
         Mode = BlockPackedColumnMode.PartitionedEliasFano;
         Length = length;
         this.partitionedEliasFano = partitionedEliasFano;
-        payloadSource = ColumnSource.Empty;
-        payload = ReadOnlyMemory<ulong>.Empty;
+        Payload = ReadOnlyMemory<ulong>.Empty;
         payloadStarts = [0];
         anchors = [];
         frameBases = [];
@@ -278,7 +272,7 @@ public sealed class BlockPackedColumn
 
         Span<uint> block = destination[..count];
         int width = widths[blockIndex];
-        ReadOnlySpan<ulong> blockPayload = payload.Span.Slice(payloadStarts[blockIndex], payloadStarts[blockIndex + 1] - payloadStarts[blockIndex]);
+        ReadOnlySpan<ulong> blockPayload = Payload.Span.Slice(payloadStarts[blockIndex], payloadStarts[blockIndex + 1] - payloadStarts[blockIndex]);
 
         if(Mode == BlockPackedColumnMode.FrameOfReference)
         {
@@ -328,7 +322,7 @@ public sealed class BlockPackedColumn
 
         if(Mode == BlockPackedColumnMode.FrameOfReference)
         {
-            return frameBases[block] + LaneAt(payload.Span, block, index & BlockMask);
+            return frameBases[block] + LaneAt(Payload.Span, block, index & BlockMask);
         }
 
         if(block != cachedBlock)
@@ -459,7 +453,7 @@ public sealed class BlockPackedColumn
             //collapse immediately, and the binary search costs
             //log2(range) single-lane reads.
             uint frameBase = frameBases[block];
-            ReadOnlySpan<ulong> payloadSpan = payload.Span;
+            ReadOnlySpan<ulong> payloadSpan = Payload.Span;
             int low = lo;
             int high = hi;
 

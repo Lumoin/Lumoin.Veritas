@@ -15,7 +15,7 @@ namespace Lumoin.Veritas.Core.Memory;
 public sealed class NativeColumnMemoryManager: MemoryManager<ulong>
 {
     /// <summary>The owning native block this manager views.</summary>
-    private readonly AlignedNativeBuffer buffer;
+    private AlignedNativeBuffer Buffer { get; }
 
     /// <summary>Views <paramref name="buffer"/> as managed memory.</summary>
     /// <param name="buffer">The native block to view.</param>
@@ -24,19 +24,19 @@ public sealed class NativeColumnMemoryManager: MemoryManager<ulong>
     {
         ArgumentNullException.ThrowIfNull(buffer);
 
-        this.buffer = buffer;
+        Buffer = buffer;
     }
 
     /// <inheritdoc/>
     public override Span<ulong> GetSpan()
     {
-        return buffer.Span;
+        return Buffer.Span;
     }
 
     /// <inheritdoc/>
     public override MemoryHandle Pin(int elementIndex = 0)
     {
-        return buffer.Pin(elementIndex);
+        return Buffer.Pin(elementIndex);
     }
 
     /// <inheritdoc/>
@@ -50,7 +50,7 @@ public sealed class NativeColumnMemoryManager: MemoryManager<ulong>
     {
         if(disposing)
         {
-            buffer.Dispose();
+            Buffer.Dispose();
         }
     }
 }

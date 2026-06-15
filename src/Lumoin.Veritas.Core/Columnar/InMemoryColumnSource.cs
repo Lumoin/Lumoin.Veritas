@@ -14,7 +14,7 @@ namespace Lumoin.Veritas.Core.Columnar;
 public sealed class InMemoryColumnSource : ColumnSource
 {
     /// <summary>The packed payload words, held as a whole-column view.</summary>
-    private readonly ReadOnlyMemory<ulong> words;
+    private ReadOnlyMemory<ulong> Words { get; }
 
     /// <summary>Wraps <paramref name="words"/> as a column source; the array is held, not copied.</summary>
     /// <param name="words">The packed payload words.</param>
@@ -23,14 +23,14 @@ public sealed class InMemoryColumnSource : ColumnSource
     {
         ArgumentNullException.ThrowIfNull(words);
 
-        this.words = words;
+        Words = words;
     }
 
     /// <summary>Wraps a pre-resolved whole-column view — the native-backed path's entry.</summary>
     /// <param name="words">The whole-column view (over native memory via <see cref="NativeColumnMemoryManager"/>).</param>
     private InMemoryColumnSource(ReadOnlyMemory<ulong> words)
     {
-        this.words = words;
+        Words = words;
     }
 
     /// <summary>Builds a native-backed source: copies <paramref name="words"/> into a 64-byte-aligned off-GC block and views it as the whole-column handle.</summary>
@@ -46,15 +46,15 @@ public sealed class InMemoryColumnSource : ColumnSource
     }
 
     /// <inheritdoc/>
-    public override int LengthInBytes => words.Length * sizeof(ulong);
+    public override int LengthInBytes => Words.Length * sizeof(ulong);
 
     /// <inheritdoc/>
-    public override ReadOnlySpan<byte> Bytes => MemoryMarshal.AsBytes(words.Span);
+    public override ReadOnlySpan<byte> Bytes => MemoryMarshal.AsBytes(Words.Span);
 
     /// <inheritdoc/>
     public override bool TryGetMemory(out ReadOnlyMemory<ulong> memory)
     {
-        memory = words;
+        memory = Words;
 
         return true;
     }
