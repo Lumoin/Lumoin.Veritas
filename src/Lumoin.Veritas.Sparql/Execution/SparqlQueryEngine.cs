@@ -148,15 +148,20 @@ public sealed class SparqlQueryEngine
     /// <param name="accessControl">The access-control policy consulted per candidate triple; <see langword="null"/> allows every triple.</param>
     /// <param name="accessContext">The opaque "who is asking" context; <see langword="null"/> when none.</param>
     /// <param name="computeLane">An optional compute lane materialising the default graph's on-demand view off the serve path; <see langword="null"/> builds it inline.</param>
+    /// <param name="reasoning">An optional materialisation seam run over the built store before the engine serves it, so the graph carries entailments; <see langword="null"/> serves simple-entailment results.</param>
     /// <param name="cancellationToken">A token that aborts the build.</param>
     /// <returns>An engine ready to evaluate queries against the graph.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="triples"/> is <see langword="null"/>.</exception>
-    public static async ValueTask<SparqlQueryEngine> BuildAsync(IEnumerable<DataTriple> triples, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null, TypeExpansionDelegate? typeExpansion = null, TraceHandler<SparqlExecutionTraceEvent>? executionTrace = null, IComputeLane? computeLane = null, CancellationToken cancellationToken = default)
+    public static async ValueTask<SparqlQueryEngine> BuildAsync(IEnumerable<DataTriple> triples, SparqlExpressionContext? expressionContext = null, SparqlClient? serviceClient = null, AccessControlDelegate? accessControl = null, AccessContext? accessContext = null, TypeExpansionDelegate? typeExpansion = null, TraceHandler<SparqlExecutionTraceEvent>? executionTrace = null, IComputeLane? computeLane = null, ReasoningMaterializationDelegate? reasoning = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(triples);
 
         TermDictionary dictionary = new();
         HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(Encode(triples, dictionary), VeritasHashing.Default, cancellationToken).ConfigureAwait(false);
+        if(reasoning is not null)
+        {
+            store = await reasoning(store, dictionary, cancellationToken).ConfigureAwait(false);
+        }
 
         return new SparqlQueryEngine(store, dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion, executionTrace, computeLane);
     }
@@ -173,6 +178,7 @@ public sealed class SparqlQueryEngine
     /// <param name="accessControl">The access-control policy consulted per candidate triple; <see langword="null"/> allows every triple.</param>
     /// <param name="accessContext">The opaque "who is asking" context; <see langword="null"/> when none.</param>
     /// <param name="computeLane">An optional compute lane materialising the default graph's on-demand view off the serve path; <see langword="null"/> builds it inline.</param>
+    /// <param name="reasoning">An optional materialisation seam run over the built default graph before the engine serves it, so the default graph carries entailments; <see langword="null"/> serves simple-entailment results.</param>
     /// <param name="cancellationToken">A token that aborts the build.</param>
     /// <returns>An engine ready to evaluate queries against the dataset.</returns>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
@@ -186,6 +192,7 @@ public sealed class SparqlQueryEngine
         TypeExpansionDelegate? typeExpansion = null,
         TraceHandler<SparqlExecutionTraceEvent>? executionTrace = null,
         IComputeLane? computeLane = null,
+        ReasoningMaterializationDelegate? reasoning = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(defaultGraph);
@@ -210,13 +217,19 @@ public sealed class SparqlQueryEngine
         }
 
         IReadOnlyList<HypertrieGraphStore> stores = await HypertrieGraphStore.BuildSharedAsync(encodedGraphs, VeritasHashing.Default, cancellationToken).ConfigureAwait(false);
+        HypertrieGraphStore defaultStore = stores[0];
+        if(reasoning is not null)
+        {
+            defaultStore = await reasoning(defaultStore, dictionary, cancellationToken).ConfigureAwait(false);
+        }
+
         Dictionary<TermId, HypertrieGraphStore> named = new(namedGraphs.Count);
         for(int i = 0; i < graphNames.Count; i++)
         {
             named[graphNames[i]] = stores[i + 1];
         }
 
-        return new SparqlQueryEngine(new SparqlDataset(stores[0], named, computeLane), dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion, executionTrace);
+        return new SparqlQueryEngine(new SparqlDataset(defaultStore, named, computeLane), dictionary, expressionContext, serviceClient, accessControl, accessContext, typeExpansion, executionTrace);
     }
 
     /// <summary>Encodes a graph's triples into <paramref name="dictionary"/>.</summary>
