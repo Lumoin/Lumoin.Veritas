@@ -242,7 +242,7 @@ public sealed class GraphSetRendezvous
             }
 
             Stopwatch stopwatch = Stopwatch.StartNew();
-            ColumnarGraphSetIndex built = ColumnarGraphSetIndex.Build(Source(), policy.OrderSetMode);
+            ColumnarGraphSetIndex built = ColumnarGraphSetIndex.Build(Source(), policy.OrderSetMode, backing: policy.ColumnPayloadBacking);
             stopwatch.Stop();
 
             set = built;

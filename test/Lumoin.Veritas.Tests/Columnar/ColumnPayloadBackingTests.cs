@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
+using Lumoin.Veritas.Core.Encoding;
 
 namespace Lumoin.Veritas.Tests.Columnar;
 
@@ -105,5 +106,32 @@ internal sealed class ColumnPayloadBackingTests
 
         Assert.AreEqual(ColumnPayloadBacking.NativeAligned, evolved.Backing, "Native backing must survive Apply/compaction.");
         Assert.AreEqual(2_000, evolved.TripleCount);
+    }
+
+    /// <summary>A native-backed graph-set matches the managed set's footprint, and each per-graph view inherits the native backing.</summary>
+    [TestMethod]
+    public void NativeGraphSetViewsInheritNativeBacking()
+    {
+        Dictionary<TermId, IEnumerable<EncodedTriple>> graphs = new()
+        {
+            [TermId.FromEncoded(7)] = Corpus(500, 4),
+            [TermId.FromEncoded(8)] = Corpus(500, 4, subjectBase: 100_000),
+        };
+
+        ColumnarGraphSetIndex managed = ColumnarGraphSetIndex.Build(graphs, ColumnarOrderSetMode.AllSixOrders, ColumnPayloadBacking.Managed);
+        ColumnarGraphSetIndex native = ColumnarGraphSetIndex.Build(graphs, ColumnarOrderSetMode.AllSixOrders, ColumnPayloadBacking.NativeAligned);
+
+        Assert.AreEqual(managed.PackedByteCount, native.PackedByteCount);
+
+        foreach(uint graphId in (uint[])[7, 8])
+        {
+            TermId graph = TermId.FromEncoded(graphId);
+            ColumnarTripleIndex managedView = managed.GetView(graph)!;
+            ColumnarTripleIndex nativeView = native.GetView(graph)!;
+
+            Assert.AreEqual(ColumnPayloadBacking.Managed, managedView.Backing);
+            Assert.AreEqual(ColumnPayloadBacking.NativeAligned, nativeView.Backing);
+            Assert.AreEqual(managedView.TripleCount, nativeView.TripleCount);
+        }
     }
 }

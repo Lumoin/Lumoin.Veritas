@@ -137,16 +137,18 @@ public sealed class ColumnarTripleIndex
     /// <param name="orderSetMode">The shared order-set mode.</param>
     /// <param name="tripleCount">The graph's triple count.</param>
     /// <param name="level0Bounds">Per-order level-0 (start, end) ranges of the graph's run.</param>
+    /// <param name="backing">Where the shared columns' block-packed payloads live; the view inherits the graph-set's backing so a compacting <see cref="Apply"/> preserves it.</param>
     /// <returns>The view.</returns>
     internal static ColumnarTripleIndex CreateView(
         ColumnarOrder?[] orders,
         ColumnarOrderSetMode orderSetMode,
         int tripleCount,
-        (int Start, int End)[] level0Bounds)
+        (int Start, int End)[] level0Bounds,
+        ColumnPayloadBacking backing = ColumnPayloadBacking.Managed)
     {
         EncodedTriple[][] emptyRuns = [EmptyTriples, EmptyTriples, EmptyTriples, EmptyTriples, EmptyTriples, EmptyTriples];
 
-        return new ColumnarTripleIndex(orders, orderSetMode, tripleCount, [], [], emptyRuns, emptyRuns, level0Bounds);
+        return new ColumnarTripleIndex(orders, orderSetMode, tripleCount, [], [], emptyRuns, emptyRuns, level0Bounds, backing);
     }
 
     /// <summary>

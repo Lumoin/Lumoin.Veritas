@@ -64,6 +64,9 @@ public sealed class ColumnarGraphSetIndex
     /// <summary>Which permutation set the shared columns materialise.</summary>
     public ColumnarOrderSetMode OrderSetMode { get; }
 
+    /// <summary>Where the shared columns' block-packed payloads live; carried into each graph view.</summary>
+    internal ColumnPayloadBacking Backing { get; }
+
     /// <summary>The number of graphs in the set.</summary>
     public int GraphCount => directory.Count;
 
@@ -89,12 +92,14 @@ public sealed class ColumnarGraphSetIndex
         ColumnarOrder?[] orders,
         ColumnarOrderSetMode orderSetMode,
         Dictionary<TermId, GraphEntry> directory,
-        long tripleCount)
+        long tripleCount,
+        ColumnPayloadBacking backing)
     {
         this.orders = orders;
         OrderSetMode = orderSetMode;
         this.directory = directory;
         TripleCount = tripleCount;
+        Backing = backing;
     }
 
     /// <summary>
@@ -104,11 +109,13 @@ public sealed class ColumnarGraphSetIndex
     /// </summary>
     /// <param name="graphs">The graphs' triples keyed by graph-name term id.</param>
     /// <param name="orderSetMode">Which permutation set to materialise; see <see cref="ColumnarOrderSetMode"/> for the trade.</param>
+    /// <param name="backing">Where the shared columns' block-packed payloads live; default managed. See <see cref="ColumnPayloadBacking"/>.</param>
     /// <returns>The graph-set index.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="graphs"/> is <c>null</c>.</exception>
     public static ColumnarGraphSetIndex Build(
         IReadOnlyDictionary<TermId, IEnumerable<EncodedTriple>> graphs,
-        ColumnarOrderSetMode orderSetMode = ColumnarOrderSetMode.AllSixOrders)
+        ColumnarOrderSetMode orderSetMode = ColumnarOrderSetMode.AllSixOrders,
+        ColumnPayloadBacking backing = ColumnPayloadBacking.Managed)
     {
         ArgumentNullException.ThrowIfNull(graphs);
 
@@ -139,7 +146,7 @@ public sealed class ColumnarGraphSetIndex
             }
 
             (int Start, int End)[] level0Ranges = new (int, int)[runs.Count];
-            orders[i] = ColumnarOrder.BuildConcatenated(runs, [.. ColumnarTripleIndex.PermutationAt(i)], level0Ranges);
+            orders[i] = ColumnarOrder.BuildConcatenated(runs, [.. ColumnarTripleIndex.PermutationAt(i)], level0Ranges, backing: backing);
             rangesPerOrder[i] = level0Ranges;
         }
 
@@ -158,7 +165,7 @@ public sealed class ColumnarGraphSetIndex
             directory[graphIds[g]] = new GraphEntry(perOrder, runs[g].Length);
         }
 
-        return new ColumnarGraphSetIndex(orders, orderSetMode, directory, tripleCount);
+        return new ColumnarGraphSetIndex(orders, orderSetMode, directory, tripleCount, backing);
     }
 
     /// <summary>The graph-name term ids in the set.</summary>
@@ -193,7 +200,7 @@ public sealed class ColumnarGraphSetIndex
                 return existing;
             }
 
-            ColumnarTripleIndex view = ColumnarTripleIndex.CreateView(orders, OrderSetMode, entry.TripleCount, entry.Level0Ranges);
+            ColumnarTripleIndex view = ColumnarTripleIndex.CreateView(orders, OrderSetMode, entry.TripleCount, entry.Level0Ranges, Backing);
             views[graph] = view;
 
             return view;
