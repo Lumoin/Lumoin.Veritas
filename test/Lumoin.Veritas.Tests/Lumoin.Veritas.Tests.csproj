@@ -70,6 +70,7 @@
     <ProjectReference Include="..\..\src\Lumoin.Veritas.CborLd\Lumoin.Veritas.CborLd.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Cid\Lumoin.Veritas.Cid.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Database\Lumoin.Veritas.Database.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.JsonLd\Lumoin.Veritas.JsonLd.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Jsonata\Lumoin.Veritas.Jsonata.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.JsonPointer\Lumoin.Veritas.JsonPointer.csproj" />
