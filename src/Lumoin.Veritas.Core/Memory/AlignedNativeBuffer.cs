@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Runtime.InteropServices;
 using System.Threading;
 
@@ -76,6 +77,27 @@ public sealed unsafe class AlignedNativeBuffer: IDisposable
 
             return new Span<ulong>((void*)current, length);
         }
+    }
+
+    /// <summary>Hands a handle over the native address at <paramref name="elementIndex"/>; the block is already fixed, so there is nothing to unpin.</summary>
+    /// <param name="elementIndex">The element offset to address; may equal <see cref="Length"/> for the one-past-end position.</param>
+    /// <returns>A handle over the native address (no GC pin).</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="elementIndex"/> is negative or past the block.</exception>
+    /// <exception cref="ObjectDisposedException">The block was non-empty and has been freed.</exception>
+    public MemoryHandle Pin(int elementIndex)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(elementIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(elementIndex, length);
+
+        if(length == 0)
+        {
+            return default;
+        }
+
+        nint current = Volatile.Read(ref pointer);
+        ObjectDisposedException.ThrowIf(current == 0, this);
+
+        return new MemoryHandle((ulong*)current + elementIndex);
     }
 
     /// <summary>Frees the native block; idempotent and safe against the finalizer.</summary>

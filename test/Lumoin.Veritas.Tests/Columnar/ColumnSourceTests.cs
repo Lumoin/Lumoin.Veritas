@@ -71,4 +71,28 @@ internal sealed class ColumnSourceTests
             }
         }
     }
+
+    /// <summary>A native-backed source hands back exactly the words it was built from, off the managed heap.</summary>
+    [TestMethod]
+    public void NativeBackedSourceRoundTrips()
+    {
+        ulong[] data = [0, 1, 0xFFFF_FFFF_FFFF_FFFFUL, 42, 7, 100, 1UL << 63];
+        InMemoryColumnSource source = InMemoryColumnSource.CreateNative(data);
+
+        Assert.IsTrue(source.TryGetMemory(out ReadOnlyMemory<ulong> memory));
+        CollectionAssert.AreEqual(data, memory.ToArray());
+        Assert.AreEqual(data.Length * sizeof(ulong), source.LengthInBytes);
+        CollectionAssert.AreEqual(data, MemoryMarshal.Cast<byte, ulong>(source.Bytes).ToArray());
+    }
+
+    /// <summary>A native-backed empty source is a zero-length view.</summary>
+    [TestMethod]
+    public void NativeBackedEmptySourceIsZeroLength()
+    {
+        InMemoryColumnSource source = InMemoryColumnSource.CreateNative([]);
+
+        Assert.IsTrue(source.TryGetMemory(out ReadOnlyMemory<ulong> memory));
+        Assert.AreEqual(0, memory.Length);
+        Assert.AreEqual(0, source.LengthInBytes);
+    }
 }

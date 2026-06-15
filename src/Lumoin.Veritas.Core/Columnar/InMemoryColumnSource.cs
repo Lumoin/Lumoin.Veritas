@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using Lumoin.Veritas.Core.Memory;
 
 namespace Lumoin.Veritas.Core.Columnar;
 
@@ -23,6 +24,25 @@ public sealed class InMemoryColumnSource : ColumnSource
         ArgumentNullException.ThrowIfNull(words);
 
         this.words = words;
+    }
+
+    /// <summary>Wraps a pre-resolved whole-column view — the native-backed path's entry.</summary>
+    /// <param name="words">The whole-column view (over native memory via <see cref="NativeColumnMemoryManager"/>).</param>
+    private InMemoryColumnSource(ReadOnlyMemory<ulong> words)
+    {
+        this.words = words;
+    }
+
+    /// <summary>Builds a native-backed source: copies <paramref name="words"/> into a 64-byte-aligned off-GC block and views it as the whole-column handle.</summary>
+    /// <param name="words">The packed payload words to copy into native memory.</param>
+    /// <returns>A source whose payload lives off the managed heap; the block is reclaimed when the source becomes unreachable.</returns>
+    public static InMemoryColumnSource CreateNative(ReadOnlySpan<ulong> words)
+    {
+        AlignedNativeBuffer buffer = AlignedNativeBuffer.Allocate(words.Length);
+        words.CopyTo(buffer.Span);
+        NativeColumnMemoryManager manager = new(buffer);
+
+        return new InMemoryColumnSource(manager.Memory);
     }
 
     /// <inheritdoc/>
