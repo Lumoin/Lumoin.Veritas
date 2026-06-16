@@ -16,7 +16,7 @@ namespace Lumoin.Veritas.Core.Execution;
 /// context constructible directly.
 /// </para>
 /// </remarks>
-/// <param name="MemoryIsProtected">Whether this node's memory is treated as hardware error-corrected; protection lowers the per-item uncorrectable-error intensity.</param>
+/// <param name="MemoryIsProtected">Whether this node's memory is treated as hardware error-corrected; this lowers ONLY the memory channel's per-item intensity (see <see cref="CorruptionChannel"/>), not the storage channel or any other.</param>
 /// <param name="ProtectedItemCount">The number of content items (blocks) under integrity protection — the aggregate error opportunity. A non-positive value means "unknown", and the estimator substitutes a nominal size.</param>
 /// <param name="ReplicaCount">The number of replicas holding this data. Cross-checking across replicas lets each node scrub less often; one replica is a single node with no cross-check.</param>
 /// <param name="ProtectedReplicaCount">How many of the replicas have error-corrected memory — the heterogeneous-protection constellation; protected replicas are the more reliable detectors.</param>

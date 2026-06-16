@@ -19,6 +19,14 @@ namespace Lumoin.Veritas.Core.Execution;
 /// operator who knows the true state overrides the probe with
 /// <see cref="AssumeProtected"/> or <see cref="AssumeUnprotected"/>.
 /// </para>
+/// <para>
+/// This concerns the MEMORY channel only — RAM error correction (see
+/// <see cref="CorruptionChannel.Memory"/>). It is not a statement about data
+/// at rest or in flight: "protected" must not be read as "the persisted data
+/// is safe". Corruption of stored bytes is the storage channel
+/// (<see cref="CorruptionChannel.Storage"/>), which error correction does not
+/// reach and which the checksum-and-scrub layer guards regardless of this knob.
+/// </para>
 /// </remarks>
 public enum MemoryProtectionAssumption
 {
