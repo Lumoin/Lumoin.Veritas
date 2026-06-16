@@ -4,6 +4,7 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using Lumoin.Veritas.Core.Integrity;
 using Lumoin.Veritas.Core.Serialization;
 
 namespace Lumoin.Veritas.Core.Columnar;
@@ -12,22 +13,24 @@ namespace Lumoin.Veritas.Core.Columnar;
 /// The self-describing, versioned byte image of a standalone <see cref="ColumnarTripleIndex"/> —
 /// the persistence container that frames the per-column codec into a whole-index sidecar so a
 /// built index reloads WITHOUT re-sorting or re-packing (warm start). The layout is a fixed
-/// header (magic, format version, required-feature flags, a reserved checksum-algorithm byte),
-/// then the index scalars and accumulated delta, then a per-column directory, then the column
-/// blobs laid back-to-back, each starting on a 64-byte boundary so a later memory-mapped reader
-/// can address them in place. Each blob is one <see cref="BlockPackedColumn"/> image and is fully
-/// self-describing via its leading mode tag; the directory mirrors the encoding id so a reader can
-/// route or skip a blob without opening it.
+/// header (magic, format version, required-feature flags, a checksum-algorithm byte), then the
+/// index scalars and accumulated delta, then a per-column directory, then a per-blob checksum
+/// section, then the column blobs laid back-to-back, each starting on a 64-byte boundary so a
+/// later memory-mapped reader can address them in place. Each blob is one
+/// <see cref="BlockPackedColumn"/> image and is fully self-describing via its leading mode tag;
+/// the directory mirrors the encoding id so a reader can route or skip a blob without opening it.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Out of scope for this container, by design: per-block and whole-file checksums (a later
-/// increment; the algorithm-id byte is reserved here), atomic commit discipline (the
-/// manifest/CURRENT-pointer story belongs to the durable journal tier), the string-to-identifier
-/// term dictionary and the optional self-index (both external to this type — rebuildable or
-/// separately persisted), and graph-view indexes whose columns are shared with a graph set (a
-/// view's <c>level0Bounds</c> is rejected; persist the whole set instead). The decode kernels are
-/// process-local and re-supplied at read time, never serialized.
+/// Each blob carries a pluggable, explicitly-selected checksum verified on load: the header's
+/// algorithm byte selects the algorithm (0 = none), and the per-blob digests sit in a section
+/// between the directory and the blobs. Out of scope for this container, by design: a whole-file
+/// checksum, atomic commit discipline (the manifest/CURRENT-pointer story belongs to the durable
+/// journal tier), the string-to-identifier term dictionary and the optional self-index (both
+/// external to this type — rebuildable or separately persisted), and graph-view indexes whose
+/// columns are shared with a graph set (a view's <c>level0Bounds</c> is rejected; persist the
+/// whole set instead). The decode kernels are process-local and re-supplied at read time, never
+/// serialized.
 /// </para>
 /// </remarks>
 public sealed partial class ColumnarTripleIndex
@@ -44,7 +47,7 @@ public sealed partial class ColumnarTripleIndex
     /// <summary>The required-feature flags this build understands; an image setting any bit outside this mask is refused.</summary>
     private const ulong KnownRequiredFeatures = 0UL;
 
-    /// <summary>The reserved checksum-algorithm id meaning "no checksum" — the only value this increment writes.</summary>
+    /// <summary>The checksum-algorithm id written when no checksum is selected; the image then carries no checksum section and is not verified on load.</summary>
     private const byte ChecksumAlgorithmNone = 0;
 
     /// <summary>The fixed header size: magic (8) + major (1) + minor (1) + feature flags (8) + checksum-algorithm id (1).</summary>
@@ -88,17 +91,16 @@ public sealed partial class ColumnarTripleIndex
         public BlockPackedColumn Column { get; } = column;
     }
 
-    /// <summary>The number of bytes <see cref="WriteTo"/> writes for this index.</summary>
+    /// <summary>The number of bytes <see cref="WriteTo"/> writes for this index under the given checksum selection.</summary>
+    /// <param name="checksum">The checksum algorithm whose per-blob section sizes the image, or <see langword="null"/> for no checksums.</param>
+    /// <returns>The image byte size.</returns>
     /// <exception cref="NotSupportedException">This index is a graph view (its columns are shared and not persisted standalone).</exception>
-    internal int SerializedSize
+    internal int ComputeSerializedSize(ChecksumAlgorithm? checksum)
     {
-        get
-        {
-            List<ColumnSlot> slots = CollectSlots();
-            LayOutBlobs(slots, out int total);
+        List<ColumnSlot> slots = CollectSlots();
+        LayOutBlobs(slots, checksum, out int total);
 
-            return total;
-        }
+        return total;
     }
 
     /// <summary>Collects the five columns of every materialised order in canonical slot order.</summary>
@@ -124,10 +126,11 @@ public sealed partial class ColumnarTripleIndex
         return slots;
     }
 
-    /// <summary>The byte size of the header, scalars, delta, and directory — everything before the first blob.</summary>
+    /// <summary>The byte size of the header, scalars, delta, directory, and per-blob checksum section — everything before the first blob.</summary>
     /// <param name="slotCount">The number of column slots in the directory.</param>
+    /// <param name="checksum">The checksum algorithm whose per-blob section precedes the blobs, or <see langword="null"/> for none.</param>
     /// <returns>The front-matter byte size.</returns>
-    private int FrontSize(int slotCount)
+    private int FrontSize(int slotCount, ChecksumAlgorithm? checksum)
     {
         int scalars = 1                                  // order-set mode
             + 1                                          // backing
@@ -137,15 +140,17 @@ public sealed partial class ColumnarTripleIndex
             + sizeof(int) + (addedSet.Count * TripleByteSize)        // added delta: count + 3 ids per triple
             + sizeof(int) + (removedSet.Count * TripleByteSize);     // removed delta
         int directory = sizeof(int) + (slotCount * DirectoryEntrySize);
+        int checksumSection = checksum is null ? 0 : slotCount * checksum.ByteWidth;
 
-        return HeaderSize + scalars + directory;
+        return HeaderSize + scalars + directory + checksumSection;
     }
 
     /// <summary>Computes each blob's 64-byte-aligned byte offset and the total image size.</summary>
     /// <param name="slots">The column slots.</param>
+    /// <param name="checksum">The checksum algorithm whose per-blob section precedes the blobs, or <see langword="null"/>.</param>
     /// <param name="total">Receives the total image size in bytes.</param>
     /// <returns>The per-slot blob byte offsets.</returns>
-    private int[] LayOutBlobs(List<ColumnSlot> slots, out int total)
+    private int[] LayOutBlobs(List<ColumnSlot> slots, ChecksumAlgorithm? checksum, out int total)
     {
         if(level0Bounds is not null)
         {
@@ -153,7 +158,7 @@ public sealed partial class ColumnarTripleIndex
         }
 
         int[] offsets = new int[slots.Count];
-        int cursor = FrontSize(slots.Count);
+        int cursor = FrontSize(slots.Count, checksum);
         for(int i = 0; i < slots.Count; i++)
         {
             cursor = Align(cursor);
@@ -166,14 +171,15 @@ public sealed partial class ColumnarTripleIndex
         return offsets;
     }
 
-    /// <summary>Writes this index's self-describing byte image into <paramref name="destination"/> (exactly <see cref="SerializedSize"/> bytes); blob-alignment padding is zero-filled.</summary>
-    /// <param name="destination">The buffer to write into; at least <see cref="SerializedSize"/> long.</param>
+    /// <summary>Writes this index's self-describing byte image into <paramref name="destination"/> (exactly <see cref="ComputeSerializedSize"/> bytes for the same <paramref name="checksum"/>); blob-alignment padding is zero-filled.</summary>
+    /// <param name="destination">The buffer to write into; at least the computed size long.</param>
+    /// <param name="checksum">The checksum algorithm to stamp and compute per blob, or <see langword="null"/> for no checksums.</param>
     /// <exception cref="NotSupportedException">This index is a graph view, or the host is big-endian.</exception>
-    internal void WriteTo(Span<byte> destination)
+    internal void WriteTo(Span<byte> destination, ChecksumAlgorithm? checksum)
     {
         LittleEndianBuffer.EnsureLittleEndian();
         List<ColumnSlot> slots = CollectSlots();
-        int[] offsets = LayOutBlobs(slots, out _);
+        int[] offsets = LayOutBlobs(slots, checksum, out _);
 
         int p = 0;
         ContainerMagic.CopyTo(destination[p..]);
@@ -182,7 +188,7 @@ public sealed partial class ColumnarTripleIndex
         destination[p++] = FormatVersionMinor;
         BinaryPrimitives.WriteUInt64LittleEndian(destination[p..], KnownRequiredFeatures);
         p += sizeof(ulong);
-        destination[p++] = ChecksumAlgorithmNone;
+        destination[p++] = checksum?.Id ?? ChecksumAlgorithmNone;
 
         destination[p++] = (byte)OrderSetMode;
         destination[p++] = (byte)Backing;
@@ -219,8 +225,13 @@ public sealed partial class ColumnarTripleIndex
             p += sizeof(ulong);
         }
 
+        //The per-blob checksum section follows the directory; reserve it now and backfill once the
+        //blobs are written, so each checksum is computed over the bytes actually laid down.
+        int checksumSectionOffset = p;
+        p += checksum is null ? 0 : slots.Count * checksum.ByteWidth;
+
         //Zero-fill the alignment gaps and write each blob into its slot, so the image carries no
-        //stale buffer bytes between the directory and the blobs or between blobs.
+        //stale buffer bytes between the checksum section and the blobs or between blobs.
         int gapStart = p;
         for(int i = 0; i < slots.Count; i++)
         {
@@ -233,18 +244,29 @@ public sealed partial class ColumnarTripleIndex
             slots[i].Column.WriteTo(destination.Slice(offsets[i], length));
             gapStart = offsets[i] + length;
         }
+
+        if(checksum is not null)
+        {
+            for(int i = 0; i < slots.Count; i++)
+            {
+                checksum.Compute(
+                    destination.Slice(offsets[i], slots[i].Column.SerializedSize),
+                    destination.Slice(checksumSectionOffset + (i * checksum.ByteWidth), checksum.ByteWidth));
+            }
+        }
     }
 
-    /// <summary>Reconstructs a standalone index from an image written by <see cref="WriteTo"/>, warm — the base columns reload through the per-column codec with no re-pack, and any accumulated delta is re-attached.</summary>
+    /// <summary>Reconstructs a standalone index from an image written by <see cref="WriteTo"/>, warm — the base columns reload through the per-column codec with no re-pack, each blob is verified against its checksum (when the image carries them), and any accumulated delta is re-attached.</summary>
     /// <param name="source">The byte image.</param>
     /// <param name="deltaPool">The pool the transient delta triples are rented from while they are re-attached; nothing from it outlives the call.</param>
+    /// <param name="resolveChecksum">Resolves the image's checksum-algorithm id on read; <see langword="null"/> uses <see cref="ChecksumAlgorithm.DefaultResolver"/> (the built-ins).</param>
     /// <param name="backingOverride">Where reloaded payloads live; <see langword="null"/> honors the persisted backing so a native index reloads native.</param>
     /// <param name="backendOption">The kernel bundle to decode with; <see langword="null"/> uses <see cref="ColumnarKernelBackend.Default"/>.</param>
     /// <returns>The reconstructed index.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="deltaPool"/> is <see langword="null"/>.</exception>
-    /// <exception cref="InvalidDataException">The image is not a Veritas columnar index, or its directory is malformed.</exception>
-    /// <exception cref="NotSupportedException">The image's major version or required features are unsupported, the image is a graph view, or the host is big-endian.</exception>
-    internal static ColumnarTripleIndex ReadFrom(ReadOnlySpan<byte> source, MemoryPool<EncodedTriple> deltaPool, ColumnPayloadBacking? backingOverride = null, ColumnarKernelBackend? backendOption = null)
+    /// <exception cref="InvalidDataException">The image is not a Veritas columnar index, its directory is malformed, or a blob fails its checksum.</exception>
+    /// <exception cref="NotSupportedException">The image's major version, required features, or checksum algorithm are unsupported, the image is a graph view, or the host is big-endian.</exception>
+    internal static ColumnarTripleIndex ReadFrom(ReadOnlySpan<byte> source, MemoryPool<EncodedTriple> deltaPool, ResolveChecksumAlgorithmDelegate? resolveChecksum = null, ColumnPayloadBacking? backingOverride = null, ColumnarKernelBackend? backendOption = null)
     {
         ArgumentNullException.ThrowIfNull(deltaPool);
         LittleEndianBuffer.EnsureLittleEndian();
@@ -274,8 +296,13 @@ public sealed partial class ColumnarTripleIndex
             throw new NotSupportedException("The columnar index image requires features this build does not implement.");
         }
 
-        //The checksum-algorithm id is reserved; this increment writes and expects "none".
-        p++;
+        byte checksumAlgorithmId = source[p++];
+        ChecksumAlgorithm? checksum = null;
+        if(checksumAlgorithmId != ChecksumAlgorithmNone)
+        {
+            checksum = (resolveChecksum ?? ChecksumAlgorithm.DefaultResolver)(checksumAlgorithmId)
+                ?? throw new NotSupportedException($"The columnar index image uses checksum algorithm id {checksumAlgorithmId}, which this reader does not resolve.");
+        }
 
         ColumnarOrderSetMode orderSetMode = (ColumnarOrderSetMode)source[p++];
         ColumnPayloadBacking persistedBacking = (ColumnPayloadBacking)source[p++];
@@ -306,8 +333,17 @@ public sealed partial class ColumnarTripleIndex
             throw new InvalidDataException("The columnar index directory entry count is beyond the image bounds.");
         }
 
+        //The per-blob checksum section sits immediately after the directory; each entry is verified
+        //inline as its blob is read.
+        int checksumSectionOffset = p + (entryCount * DirectoryEntrySize);
+        if(checksum is not null && (checksumSectionOffset + ((long)entryCount * checksum.ByteWidth)) > source.Length)
+        {
+            throw new InvalidDataException("The columnar index checksum section is beyond the image bounds.");
+        }
+
         ColumnarKernelBackend backend = backendOption ?? ColumnarKernelBackend.Default;
         BlockPackedColumn?[]?[] perOrder = new BlockPackedColumn?[Permutations.Length][];
+        Span<byte> checksumScratch = stackalloc byte[ChecksumAlgorithm.MaximumByteWidth];
         for(int e = 0; e < entryCount; e++)
         {
             byte orderIndex = source[p++];
@@ -337,7 +373,19 @@ public sealed partial class ColumnarTripleIndex
                 throw new InvalidDataException("The columnar index directory names a blob beyond the image bounds.");
             }
 
-            BlockPackedColumn column = BlockPackedColumn.ReadFrom(source.Slice((int)byteOffset, (int)byteLength), backing, backend);
+            ReadOnlySpan<byte> blobBytes = source.Slice((int)byteOffset, (int)byteLength);
+            if(checksum is not null)
+            {
+                Span<byte> computed = checksumScratch[..checksum.ByteWidth];
+                checksum.Compute(blobBytes, computed);
+                ReadOnlySpan<byte> expected = source.Slice(checksumSectionOffset + (e * checksum.ByteWidth), checksum.ByteWidth);
+                if(!computed.SequenceEqual(expected))
+                {
+                    throw new InvalidDataException($"Checksum mismatch for a column blob (order {orderIndex}, level {level}, role {role}).");
+                }
+            }
+
+            BlockPackedColumn column = BlockPackedColumn.ReadFrom(blobBytes, backing, backend);
             (perOrder[orderIndex] ??= new BlockPackedColumn?[5])[SlotIndex(level, role)] = column;
         }
 
