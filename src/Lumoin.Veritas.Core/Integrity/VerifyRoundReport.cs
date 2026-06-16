@@ -11,14 +11,18 @@ namespace Lumoin.Veritas.Core.Integrity;
 /// </summary>
 internal readonly struct VerifyRoundReport
 {
-    /// <summary>Creates a report over the per-blob verdicts.</summary>
+    /// <summary>Creates a report over the per-blob verdicts and the front-matter verdict.</summary>
     /// <param name="checksumAlgorithmId">The image's checksum-algorithm id (0 = none).</param>
     /// <param name="hasChecksums">Whether the image carried checksums to verify.</param>
+    /// <param name="hasFrontMatterChecksum">Whether the image carried a front-matter checksum (covering the header, scalars, delta, directory, and per-blob section).</param>
+    /// <param name="frontMatterValid">Whether the front-matter checksum matched; <see langword="true"/> when the image carried none.</param>
     /// <param name="blobs">The per-blob verdicts, in directory order.</param>
-    internal VerifyRoundReport(byte checksumAlgorithmId, bool hasChecksums, IReadOnlyList<BlobVerdict> blobs)
+    internal VerifyRoundReport(byte checksumAlgorithmId, bool hasChecksums, bool hasFrontMatterChecksum, bool frontMatterValid, IReadOnlyList<BlobVerdict> blobs)
     {
         ChecksumAlgorithmId = checksumAlgorithmId;
         HasChecksums = hasChecksums;
+        HasFrontMatterChecksum = hasFrontMatterChecksum;
+        FrontMatterValid = frontMatterValid;
         Blobs = blobs;
     }
 
@@ -27,6 +31,12 @@ internal readonly struct VerifyRoundReport
 
     /// <summary>Whether the image carried checksums; when <see langword="false"/> the verdicts are unverified.</summary>
     internal bool HasChecksums { get; }
+
+    /// <summary>Whether the image carried a front-matter checksum over everything before the blobs (header, scalars, delta, directory, per-blob section).</summary>
+    internal bool HasFrontMatterChecksum { get; }
+
+    /// <summary>Whether the front-matter checksum matched the stored digest; <see langword="true"/> when the image carried none.</summary>
+    internal bool FrontMatterValid { get; }
 
     /// <summary>The per-blob verdicts, in directory order.</summary>
     internal IReadOnlyList<BlobVerdict> Blobs { get; }
@@ -52,8 +62,8 @@ internal readonly struct VerifyRoundReport
         }
     }
 
-    /// <summary>Whether the image was verified and every blob passed.</summary>
-    internal bool IsClean => HasChecksums && CorruptCount == 0;
+    /// <summary>Whether the image was verified and every blob and the front matter passed.</summary>
+    internal bool IsClean => HasChecksums && CorruptCount == 0 && (!HasFrontMatterChecksum || FrontMatterValid);
 }
 
 /// <summary>One column blob's verify verdict: where it lives in the image and the index, and whether its checksum matched.</summary>

@@ -139,8 +139,10 @@ internal sealed class ColumnarIndexFileTests
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(triples);
         byte[] image = ToImage(index);
 
-        //The last byte is the last byte of the last column blob; flipping it must fail that blob's checksum.
-        image[^1] ^= 0xFF;
+        //Corrupt the first byte of the first column blob (located via a verify round, since the image
+        //tail is now the front-matter checksum trailer); that blob's checksum must fail on a mapped load.
+        VerifyRoundReport report = ColumnarTripleIndex.RunVerifyRound(image);
+        image[(int)report.Blobs[0].ByteOffset] ^= 0xFF;
 
         string path = Path.GetTempFileName();
         try
@@ -192,7 +194,10 @@ internal sealed class ColumnarIndexFileTests
             AssertSameTriples(triples, restored);
         }
 
-        using(CorruptingColumnarImageSource corrupting = new(BufferSource(image, pool), pool, image.Length - 1))
+        //Corrupt the first byte of the first column blob (located via a verify round), so the failure
+        //is a per-blob checksum on the source decode path, not the front-matter trailer at the tail.
+        VerifyRoundReport report = ColumnarTripleIndex.RunVerifyRound(image);
+        using(CorruptingColumnarImageSource corrupting = new(BufferSource(image, pool), pool, (int)report.Blobs[0].ByteOffset))
         {
             Assert.ThrowsExactly<InvalidDataException>(() => { _ = ColumnarIndexFile.Read(corrupting, deltaPool); });
         }

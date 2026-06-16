@@ -17,7 +17,7 @@ namespace Lumoin.Veritas.Core.Integrity;
 /// </remarks>
 internal enum PersistenceInvariant
 {
-    /// <summary>I1 — no checksum-unverified COLUMN-BLOB bytes reach a consumer under the resolved verify mode. Reachable now: the load-time per-blob checksum refuses an image with a corrupt column blob before its bytes are decoded. The front matter and the persisted delta are not yet under a checksum — a whole-image checksum is a later tier, and in the full design the delta's integrity comes from the journal layer.</summary>
+    /// <summary>I1 — no checksum-unverified bytes reach a consumer under the resolved verify mode. Reachable now: when a checksum algorithm is selected, the load-time per-blob checksum refuses an image with a corrupt column blob before its bytes are decoded, and a front-matter checksum trailer covers the header, scalars, delta, directory, and per-blob section — everything the per-blob digests do not — verified before those bytes are trusted; together they cover the whole image. An image written without a checksum algorithm carries neither and is unverified.</summary>
     DetectionPrecedesUse,
 
     /// <summary>I2 — a corrupt item never enters a sketch or reconciliation stream. Needs the integrity sketch (a later tier).</summary>

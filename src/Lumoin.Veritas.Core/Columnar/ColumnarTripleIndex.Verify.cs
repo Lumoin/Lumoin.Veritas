@@ -52,6 +52,7 @@ public sealed partial class ColumnarTripleIndex
             throw new NotSupportedException("The columnar index image requires features this build does not implement.");
         }
 
+        bool hasFrontMatterChecksum = (featureFlags & FrontMatterChecksumFeature) != 0;
         byte checksumAlgorithmId = image[p++];
         ChecksumAlgorithm? checksum = null;
         if(checksumAlgorithmId != ChecksumAlgorithmNone)
@@ -93,6 +94,26 @@ public sealed partial class ColumnarTripleIndex
 
         BlobVerdict[] verdicts = new BlobVerdict[entryCount];
         Span<byte> checksumScratch = stackalloc byte[ChecksumAlgorithm.MaximumByteWidth];
+
+        //The front-matter checksum is recomputed and reported (decode-free) alongside the per-blob
+        //verdicts; a truncated trailer is structural and refused, a content mismatch is reported.
+        bool frontMatterValid = true;
+        if(hasFrontMatterChecksum)
+        {
+            if(checksum is null)
+            {
+                throw new InvalidDataException("The columnar index image flags a front-matter checksum but selects no checksum algorithm.");
+            }
+
+            int frontMatterEnd = checksumSectionOffset + (entryCount * checksum.ByteWidth);
+            if((long)frontMatterEnd + checksum.ByteWidth > image.Length)
+            {
+                throw new InvalidDataException("The columnar index front-matter checksum is beyond the image bounds.");
+            }
+
+            frontMatterValid = VerifyBlob(image[..frontMatterEnd], checksum, image.Slice(image.Length - checksum.ByteWidth, checksum.ByteWidth), checksumScratch);
+        }
+
         for(int e = 0; e < entryCount; e++)
         {
             byte orderIndex = image[p++];
@@ -129,7 +150,7 @@ public sealed partial class ColumnarTripleIndex
             verdicts[e] = new BlobVerdict(e, orderIndex, level, role, (long)byteOffset, (long)byteLength, valid);
         }
 
-        return new VerifyRoundReport(checksumAlgorithmId, checksum is not null, verdicts);
+        return new VerifyRoundReport(checksumAlgorithmId, checksum is not null, hasFrontMatterChecksum, frontMatterValid, verdicts);
     }
 
     /// <summary>Recomputes a column blob's checksum into <paramref name="scratch"/> and compares it to the stored digest — the single per-blob verify both the decode-free round and the warm reader use, so detection is sourced once.</summary>

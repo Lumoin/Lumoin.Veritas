@@ -44,8 +44,11 @@ public sealed partial class ColumnarTripleIndex
     /// <summary>The format minor version; bumped for backward-compatible additions.</summary>
     private const byte FormatVersionMinor = 0;
 
+    /// <summary>The feature flag marking a front-matter checksum trailer (a digest over the header, scalars, delta, directory, and per-blob section, appended after the blobs).</summary>
+    private const ulong FrontMatterChecksumFeature = 1UL << 0;
+
     /// <summary>The required-feature flags this build understands; an image setting any bit outside this mask is refused.</summary>
-    private const ulong KnownRequiredFeatures = 0UL;
+    private const ulong KnownRequiredFeatures = FrontMatterChecksumFeature;
 
     /// <summary>The checksum-algorithm id written when no checksum is selected; the image then carries no checksum section and is not verified on load.</summary>
     private const byte ChecksumAlgorithmNone = 0;
@@ -166,7 +169,9 @@ public sealed partial class ColumnarTripleIndex
             cursor += slots[i].Column.SerializedSize;
         }
 
-        total = cursor;
+        //A front-matter checksum trailer (one digest under the selected algorithm) is appended after
+        //the blobs when checksums are written; it covers everything before the blobs.
+        total = cursor + (checksum is null ? 0 : checksum.ByteWidth);
 
         return offsets;
     }
@@ -179,14 +184,14 @@ public sealed partial class ColumnarTripleIndex
     {
         LittleEndianBuffer.EnsureLittleEndian();
         List<ColumnSlot> slots = CollectSlots();
-        int[] offsets = LayOutBlobs(slots, checksum, out _);
+        int[] offsets = LayOutBlobs(slots, checksum, out int total);
 
         int p = 0;
         ContainerMagic.CopyTo(destination[p..]);
         p += ContainerMagic.Length;
         destination[p++] = FormatVersionMajor;
         destination[p++] = FormatVersionMinor;
-        BinaryPrimitives.WriteUInt64LittleEndian(destination[p..], KnownRequiredFeatures);
+        BinaryPrimitives.WriteUInt64LittleEndian(destination[p..], checksum is null ? 0UL : FrontMatterChecksumFeature);
         p += sizeof(ulong);
         destination[p++] = checksum?.Id ?? ChecksumAlgorithmNone;
 
@@ -253,6 +258,12 @@ public sealed partial class ColumnarTripleIndex
                     destination.Slice(offsets[i], slots[i].Column.SerializedSize),
                     destination.Slice(checksumSectionOffset + (i * checksum.ByteWidth), checksum.ByteWidth));
             }
+
+            //The front-matter checksum trailer covers everything before the blobs — including the
+            //delta and directory the per-blob digests do not — and is computed last so it digests the
+            //now-filled per-blob section. It sits at the image tail, after the blobs.
+            int frontMatterEnd = FrontSize(slots.Count, checksum);
+            checksum.Compute(destination[..frontMatterEnd], destination.Slice(total - checksum.ByteWidth, checksum.ByteWidth));
         }
     }
 
@@ -296,6 +307,7 @@ public sealed partial class ColumnarTripleIndex
             throw new NotSupportedException("The columnar index image requires features this build does not implement.");
         }
 
+        bool hasFrontMatterChecksum = (featureFlags & FrontMatterChecksumFeature) != 0;
         byte checksumAlgorithmId = source[p++];
         ChecksumAlgorithm? checksum = null;
         if(checksumAlgorithmId != ChecksumAlgorithmNone)
@@ -344,6 +356,28 @@ public sealed partial class ColumnarTripleIndex
         ColumnarKernelBackend backend = backendOption ?? ColumnarKernelBackend.Default;
         BlockPackedColumn?[]?[] perOrder = new BlockPackedColumn?[Permutations.Length][];
         Span<byte> checksumScratch = stackalloc byte[ChecksumAlgorithm.MaximumByteWidth];
+
+        //The front-matter checksum, when present, is verified before the directory entries and delta
+        //it covers are trusted, so corruption in the bytes the per-blob digests do not reach is caught.
+        if(hasFrontMatterChecksum)
+        {
+            if(checksum is null)
+            {
+                throw new InvalidDataException("The columnar index image flags a front-matter checksum but selects no checksum algorithm.");
+            }
+
+            int frontMatterEnd = checksumSectionOffset + (entryCount * checksum.ByteWidth);
+            if((long)frontMatterEnd + checksum.ByteWidth > source.Length)
+            {
+                throw new InvalidDataException("The columnar index front-matter checksum is beyond the image bounds.");
+            }
+
+            if(!VerifyBlob(source[..frontMatterEnd], checksum, source.Slice(source.Length - checksum.ByteWidth, checksum.ByteWidth), checksumScratch))
+            {
+                throw new InvalidDataException("The columnar index front matter failed its checksum.");
+            }
+        }
+
         for(int e = 0; e < entryCount; e++)
         {
             byte orderIndex = source[p++];

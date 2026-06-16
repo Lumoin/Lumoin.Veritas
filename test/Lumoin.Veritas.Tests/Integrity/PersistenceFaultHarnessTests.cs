@@ -182,4 +182,23 @@ internal sealed class PersistenceFaultHarnessTests
 
         Assert.ThrowsExactly<NotSupportedException>(() => { _ = ColumnarTripleIndex.RunVerifyRound(image); });
     }
+
+    /// <summary>I1 (front matter): a byte corrupted in the persisted delta — which the per-blob checksums do not cover — is caught by the front-matter checksum: reported by the verify round and refused by the warm reader before the delta is used.</summary>
+    [TestMethod]
+    public void FrontMatterCorruptionIsDetected()
+    {
+        ColumnarTripleIndex withDelta = ColumnarTripleIndex.Build(SampleTriples()).Apply([EncodedTriple.FromEncoded(900_000, 1, 2)], []);
+        byte[] clean = ToImage(withDelta);
+
+        //A byte inside the added-delta triple data: header (19) + scalars (8) + added-count (4) = 31.
+        byte[] corrupt = [.. clean];
+        corrupt[31] ^= 0xFF;
+
+        VerifyRoundReport report = ColumnarTripleIndex.RunVerifyRound(corrupt);
+        Assert.IsFalse(report.FrontMatterValid);
+        Assert.IsFalse(report.IsClean);
+
+        using VeritasMemoryPool<EncodedTriple> deltaPool = new();
+        Assert.ThrowsExactly<InvalidDataException>(() => { _ = ColumnarTripleIndex.ReadFrom(corrupt, deltaPool); });
+    }
 }

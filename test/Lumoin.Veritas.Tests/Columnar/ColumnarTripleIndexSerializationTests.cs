@@ -186,8 +186,10 @@ internal sealed class ColumnarTripleIndexSerializationTests
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(triples);
         byte[] image = ToImage(index, ChecksumAlgorithm.XxHash3);
 
-        //The last byte is the last byte of the last column blob; flipping it must fail that blob's checksum.
-        image[^1] ^= 0xFF;
+        //Corrupt the first byte of the first column blob (located via a verify round, since the image
+        //now ends with a front-matter checksum trailer rather than a blob); that blob's checksum fails.
+        VerifyRoundReport report = ColumnarTripleIndex.RunVerifyRound(image);
+        image[(int)report.Blobs[0].ByteOffset] ^= 0xFF;
 
         using VeritasMemoryPool<EncodedTriple> deltaPool = new();
         Assert.ThrowsExactly<InvalidDataException>(() => { _ = ColumnarTripleIndex.ReadFrom(image, deltaPool); });
