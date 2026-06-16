@@ -23,6 +23,17 @@ namespace Lumoin.Veritas.Core.Execution;
 /// and a deployment with measured error rates is expected to supply its
 /// own estimator.
 /// </para>
+/// <para>
+/// Two consequences of the linear model are the estimator's contract rather
+/// than incidental, and are what the validation tests pin. First, the interval
+/// is inversely proportional to the item count, so the expected number of
+/// undetected corruptions per period is held constant as the data grows — ten
+/// times the data yields one tenth the interval. Second, error-corrected memory
+/// divides the per-item intensity by <see cref="ProtectedIntensityReductionFactor"/>,
+/// so a protected node's interval is longer by that same factor. Both relations
+/// hold only where the result stays inside the <see cref="MinimumCadence"/>–<see cref="MaximumCadence"/>
+/// band that clamps the arithmetic at each end.
+/// </para>
 /// </remarks>
 public static class ScrubCadenceEstimators
 {
