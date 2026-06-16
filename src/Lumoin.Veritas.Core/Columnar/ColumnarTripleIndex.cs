@@ -41,6 +41,22 @@ namespace Lumoin.Veritas.Core.Columnar;
 /// permutation and emits each level in a single pass — no
 /// per-triple intermediate structures.
 /// </para>
+/// <para>
+/// <b>Why this type is partial.</b> The implementation is split
+/// across concern-focused files — the build and query core here,
+/// the on-disk codec in <c>.Serialization.cs</c>, the integrity
+/// verify round in <c>.Verify.cs</c> — that share this type's
+/// private state, so each concern reaches the internals directly
+/// without widening the public surface. The split is
+/// organisational, not a variation point: a partial holds the one
+/// fixed implementation of a concern, whereas a concern that
+/// genuinely varies is composed instead through an injected named
+/// delegate (the hash a verify reaches for is a
+/// <see cref="Lumoin.Veritas.Core.Integrity.ChecksumComputeDelegate"/>,
+/// while the framing around it stays a partial method). A concern
+/// graduates from a partial to an injected delegate the day it has
+/// more than one implementation.
+/// </para>
 /// </remarks>
 [DebuggerDisplay("ColumnarTripleIndex Triples={TripleCount}")]
 public sealed partial class ColumnarTripleIndex
