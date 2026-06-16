@@ -20,26 +20,31 @@
       },
       "Lumoin.Verisync.Cbor": {
         "type": "Direct",
-        "requested": "[0.0.2, )",
-        "resolved": "0.0.2",
-        "contentHash": "IAF/ztmaqqVtDKQHRlaPqNayQ+ZVvd3D/3i2xfW8gmcHDinnhOCUEa4E0G8y+eqBKL1BfoWNe8lpXc3w9kAbnw==",
+        "requested": "[0.0.3, )",
+        "resolved": "0.0.3",
+        "contentHash": "EQaLUwBZnrkY54G1ud2B9u/8iqiUtJJyI/eAkHu6pmKUg6qm1zLiGLKjY/lsgUzpF4FNY8k3Vpais7qiGVzOHA==",
         "dependencies": {
-          "Lumoin.Verisync.Core": "0.0.2"
+          "Lumoin.Base": "0.0.2",
+          "Lumoin.Verisync.Core": "0.0.3"
         }
       },
       "Lumoin.Verisync.Core": {
         "type": "Direct",
-        "requested": "[0.0.2, )",
-        "resolved": "0.0.2",
-        "contentHash": "3J22EzNeKg93qH1ZVmpSAHnS+6EM9fTOTf8XPP7N9RTXMOlSypuNvD+kMP60cRgxWTf24glkDh2RY9jmetCuIw=="
+        "requested": "[0.0.3, )",
+        "resolved": "0.0.3",
+        "contentHash": "nUFHbA9AD0LJMti/9QNCH0eQiRX3O5Q6QwWYUa3+tfAQeUxMADxfNs6LVNd91gkSbC4pnqZFPwVwPRdHdg1hGA==",
+        "dependencies": {
+          "Lumoin.Base": "0.0.2"
+        }
       },
       "Lumoin.Verisync.Json": {
         "type": "Direct",
-        "requested": "[0.0.2, )",
-        "resolved": "0.0.2",
-        "contentHash": "l6Elv3sDe4XGgczDbsgA27Xn+UEMz6w2O/vUPKT3MLY+AHkQy4d5v0TIEE38uZnyts8upQ14IKFF7Q07QIz7mw==",
+        "requested": "[0.0.3, )",
+        "resolved": "0.0.3",
+        "contentHash": "3iq9iryXV2NzWh9WCW8l36ykmaLdVzfuhFF2WfznDVgPvHMTYPPxDqSaTFlioMM2xmnujP4qcEk/UOHtZwYz9Q==",
         "dependencies": {
-          "Lumoin.Verisync.Core": "0.0.2"
+          "Lumoin.Base": "0.0.2",
+          "Lumoin.Verisync.Core": "0.0.3"
         }
       },
       "Microsoft.CodeAnalysis.BannedApiAnalyzers": {
@@ -188,6 +193,11 @@
           "Microsoft.TestPlatform.ObjectModel": "16.9.1",
           "System.ComponentModel.Annotations": "5.0.0"
         }
+      },
+      "Lumoin.Base": {
+        "type": "Transitive",
+        "resolved": "0.0.2",
+        "contentHash": "mFsXJq9SVg0poCevJ13u40iETZ6/fhNgsY/jFV+47PCqyTLz1KAQcjaM12dwUFba4GVcBqAOeNw2QseqOU6X2g=="
       },
       "Markdig.Signed": {
         "type": "Transitive",
