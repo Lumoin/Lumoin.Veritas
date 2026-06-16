@@ -376,10 +376,8 @@ public sealed partial class ColumnarTripleIndex
             ReadOnlySpan<byte> blobBytes = source.Slice((int)byteOffset, (int)byteLength);
             if(checksum is not null)
             {
-                Span<byte> computed = checksumScratch[..checksum.ByteWidth];
-                checksum.Compute(blobBytes, computed);
                 ReadOnlySpan<byte> expected = source.Slice(checksumSectionOffset + (e * checksum.ByteWidth), checksum.ByteWidth);
-                if(!computed.SequenceEqual(expected))
+                if(!VerifyBlob(blobBytes, checksum, expected, checksumScratch))
                 {
                     throw new InvalidDataException($"Checksum mismatch for a column blob (order {orderIndex}, level {level}, role {role}).");
                 }

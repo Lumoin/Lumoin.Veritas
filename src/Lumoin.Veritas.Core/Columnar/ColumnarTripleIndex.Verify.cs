@@ -122,16 +122,28 @@ public sealed partial class ColumnarTripleIndex
             bool valid = true;
             if(checksum is not null)
             {
-                Span<byte> computed = checksumScratch[..checksum.ByteWidth];
-                checksum.Compute(image.Slice((int)byteOffset, (int)byteLength), computed);
                 ReadOnlySpan<byte> expected = image.Slice(checksumSectionOffset + (e * checksum.ByteWidth), checksum.ByteWidth);
-                valid = computed.SequenceEqual(expected);
+                valid = VerifyBlob(image.Slice((int)byteOffset, (int)byteLength), checksum, expected, checksumScratch);
             }
 
             verdicts[e] = new BlobVerdict(e, orderIndex, level, role, (long)byteOffset, (long)byteLength, valid);
         }
 
         return new VerifyRoundReport(checksumAlgorithmId, checksum is not null, verdicts);
+    }
+
+    /// <summary>Recomputes a column blob's checksum into <paramref name="scratch"/> and compares it to the stored digest — the single per-blob verify both the decode-free round and the warm reader use, so detection is sourced once.</summary>
+    /// <param name="blobBytes">The serialized column blob.</param>
+    /// <param name="checksum">The resolved checksum algorithm.</param>
+    /// <param name="expectedDigest">The stored digest for this blob, exactly <see cref="ChecksumAlgorithm.ByteWidth"/> bytes.</param>
+    /// <param name="scratch">A scratch buffer of at least <see cref="ChecksumAlgorithm.MaximumByteWidth"/> bytes.</param>
+    /// <returns><see langword="true"/> when the recomputed checksum matches the stored digest.</returns>
+    private static bool VerifyBlob(ReadOnlySpan<byte> blobBytes, ChecksumAlgorithm checksum, ReadOnlySpan<byte> expectedDigest, Span<byte> scratch)
+    {
+        Span<byte> computed = scratch[..checksum.ByteWidth];
+        checksum.Compute(blobBytes, computed);
+
+        return computed.SequenceEqual(expectedDigest);
     }
 
     /// <summary>Skips a delta triple set written by the serializer and returns the bytes it occupies; validates the count lies within bounds.</summary>
