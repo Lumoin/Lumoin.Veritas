@@ -141,6 +141,16 @@ See full changelog at https://github.com/lumoin/Veritas/blob/main/CHANGELOG.md.]
     Core RandomSources synthetic-graph seam, and the sanctioned
     VeritasRandomness / VeritasIdentifiers producers) suppresses RS0030
     with justification.
+
+    BannedSymbols.Streams.txt bans System.IO.FileStream (and BufferedStream)
+    so durable file I/O in production code goes through a SafeFileHandle +
+    RandomAccess (write-at-offset + FlushToDisk) or a MemoryMappedFile rather
+    than a buffered, position-cursor stream — a FileStream's managed write
+    buffer is the wrong model for a fsync-per-record append store. It is added
+    to every production project; the test, benchmark, and workbench harnesses
+    are exempt, where reading a corpus file as a FileStream is fine. The
+    format-serialization use of MemoryStream/StreamReader/StreamWriter is a
+    separate concern not covered by this ban.
   -->
   <ItemGroup>
     <PackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers">
@@ -171,6 +181,10 @@ See full changelog at https://github.com/lumoin/Veritas/blob/main/CHANGELOG.md.]
 
   <ItemGroup Condition="'$(MSBuildProjectName)' != 'Lumoin.Veritas.Benchmarks' AND '$(MSBuildProjectName)' != 'Lumoin.Veritas.Workbench'">
     <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.Entropy.txt" />
+  </ItemGroup>
+
+  <ItemGroup Condition="!$(MSBuildProjectName.EndsWith('.Tests')) AND '$(MSBuildProjectName)' != 'Lumoin.Veritas.Benchmarks' AND '$(MSBuildProjectName)' != 'Lumoin.Veritas.Workbench'">
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.Streams.txt" />
   </ItemGroup>
 
   <!-- Pack the NuGet logo and the repository readme into packable (non-test) projects. -->

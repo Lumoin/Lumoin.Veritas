@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using Microsoft.Win32.SafeHandles;
 
 namespace Lumoin.Veritas.Core.Persistence;
 
@@ -45,9 +46,9 @@ public static class AtomicPublish
     {
         ArgumentNullException.ThrowIfNull(path);
 
-        using FileStream stream = new(path, FileMode.Create, FileAccess.Write, FileShare.None);
-        stream.Write(content);
-        stream.Flush(flushToDisk: true);
+        using SafeFileHandle handle = File.OpenHandle(path, FileMode.Create, FileAccess.Write, FileShare.None);
+        RandomAccess.Write(handle, content, 0);
+        RandomAccess.FlushToDisk(handle);
     }
 
     /// <summary>Makes <paramref name="stagedPath"/> live at <paramref name="finalPath"/> by an atomic rename, then flushes the target directory through <paramref name="barrier"/> — the single commit point.</summary>
