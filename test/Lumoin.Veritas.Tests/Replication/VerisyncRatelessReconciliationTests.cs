@@ -4,6 +4,7 @@ using System.Linq;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.ContentAddressing;
+using Lumoin.Veritas.Core.Reconciliation;
 using Lumoin.Verisync.Core;
 
 namespace Lumoin.Veritas.Tests.Replication;
@@ -23,30 +24,6 @@ internal sealed class VerisyncRatelessReconciliationTests
 {
     /// <summary>The MSTest execution context.</summary>
     public TestContext TestContext { get; set; } = null!;
-
-    /// <summary>
-    /// The pure, injective, invertible structural projection of one triple to a 16-byte content
-    /// key: the three 32-bit identifiers pack losslessly into the two key words (the object's top
-    /// 32 bits stay zero), so distinct triples yield distinct keys and the key recovers the triple
-    /// with no side map. This is the reconciliation item domain a Veritas graph exposes.
-    /// </summary>
-    /// <param name="triple">The triple to project.</param>
-    /// <returns>The triple's content key.</returns>
-    private static ContentKey128 KeyOf(EncodedTriple triple)
-    {
-        ulong low = triple.Subject.Encoded | ((ulong)triple.Predicate.Encoded << 32);
-        ulong high = triple.Object.Encoded;
-
-        return new ContentKey128(low, high);
-    }
-
-    /// <summary>Recovers the triple a structural content key was projected from.</summary>
-    /// <param name="key">The content key.</param>
-    /// <returns>The triple.</returns>
-    private static EncodedTriple TripleOf(ContentKey128 key)
-    {
-        return EncodedTriple.FromEncoded((uint)key.Low, (uint)(key.Low >> 32), (uint)key.High);
-    }
 
     /// <summary>A line of triples with a shared predicate: subjects <c>[start, start + count)</c>, each linked to the next identifier.</summary>
     /// <param name="start">The first subject identifier.</param>
@@ -72,7 +49,7 @@ internal sealed class VerisyncRatelessReconciliationTests
         Span<byte> item = stackalloc byte[ContentKey128.ByteWidth];
         foreach(EncodedTriple triple in graph.EnumerateTriples())
         {
-            KeyOf(triple).WriteBytes(item);
+            StructuralReconciliationProjection.Project(triple).WriteBytes(item);
             encoder.Add(item);
         }
     }
@@ -110,12 +87,12 @@ internal sealed class VerisyncRatelessReconciliationTests
     {
         EncodedTriple[] triples = Line(0, 1000);
 
-        HashSet<ContentKey128> keys = [.. triples.Select(KeyOf)];
+        HashSet<ContentKey128> keys = [.. triples.Select(StructuralReconciliationProjection.Project)];
         Assert.HasCount(triples.Length, keys, "Distinct triples must project to distinct content keys.");
 
         foreach(EncodedTriple triple in triples)
         {
-            Assert.AreEqual(triple, TripleOf(KeyOf(triple)), "A structural content key must recover its triple exactly.");
+            Assert.AreEqual(triple, StructuralReconciliationProjection.Invert(StructuralReconciliationProjection.Project(triple)), "A structural content key must recover its triple exactly.");
         }
     }
 
@@ -137,13 +114,13 @@ internal sealed class VerisyncRatelessReconciliationTests
 
         HashSet<ContentKey128> recovered = ReconcileDifference(contract, replicaA, replicaB);
 
-        HashSet<ContentKey128> expected = [.. triplesA.Select(KeyOf)];
-        expected.SymmetricExceptWith(triplesB.Select(KeyOf));
+        HashSet<ContentKey128> expected = [.. triplesA.Select(StructuralReconciliationProjection.Project)];
+        expected.SymmetricExceptWith(triplesB.Select(StructuralReconciliationProjection.Project));
         Assert.IsTrue(expected.SetEquals(recovered), "The rateless tier must recover exactly the symmetric difference of the two replicas.");
 
         //Repair-as-ingest: applying the recovered triples to BOTH replicas converges them — Apply
         //is idempotent, so each side ignores the triples it already holds and admits the ones it lacks.
-        EncodedTriple[] recoveredTriples = [.. recovered.Select(TripleOf)];
+        EncodedTriple[] recoveredTriples = [.. recovered.Select(StructuralReconciliationProjection.Invert)];
         ColumnarTripleIndex convergedA = replicaA.Apply(recoveredTriples, []);
         ColumnarTripleIndex convergedB = replicaB.Apply(recoveredTriples, []);
 
