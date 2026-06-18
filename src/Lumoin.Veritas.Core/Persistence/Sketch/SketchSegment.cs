@@ -293,6 +293,36 @@ public sealed class SketchSegment
         return symbols;
     }
 
+    /// <summary>Reads back the symbol geometry (symbol width and symbols per block) an image was written with, without verifying its checksums or copying its symbols — the cheap geometry peek a verifying loader uses to confirm a sketch matches an expected contract.</summary>
+    /// <param name="source">The byte image.</param>
+    /// <returns>The stored symbol width and symbols per block.</returns>
+    /// <exception cref="InvalidDataException">The bytes are not a sketch segment image or are too short to carry the scalars.</exception>
+    /// <exception cref="NotSupportedException">The major version is unsupported, or the host is big-endian.</exception>
+    public static (int SymbolWidth, int SymbolsPerBlock) ReadGeometry(ReadOnlySpan<byte> source)
+    {
+        LittleEndianBuffer.EnsureLittleEndian();
+        if(source.Length < HeaderSize + ScalarSize)
+        {
+            throw new InvalidDataException("The bytes are too short to be a sketch segment image.");
+        }
+
+        if(!source[..SketchMagic.Length].SequenceEqual(SketchMagic))
+        {
+            throw new InvalidDataException("The bytes are not a sketch segment image (magic mismatch).");
+        }
+
+        byte versionMajor = source[SketchMagic.Length];
+        if(versionMajor != FormatVersionMajor)
+        {
+            throw new NotSupportedException($"Sketch segment format major version {versionMajor} is not supported; this build reads major version {FormatVersionMajor}.");
+        }
+
+        int symbolsPerBlock = BinaryPrimitives.ReadInt32LittleEndian(source[(HeaderSize + sizeof(int))..]);
+        int symbolWidth = BinaryPrimitives.ReadInt32LittleEndian(source[(HeaderSize + (2 * sizeof(int)))..]);
+
+        return (symbolWidth, symbolsPerBlock);
+    }
+
     /// <summary>The byte size of the header, scalars, and per-block checksum section — everything the front-matter trailer covers, before the first aligned block.</summary>
     /// <param name="blockCount">The number of blocks.</param>
     /// <param name="checksum">The per-block checksum algorithm, or <see langword="null"/> for none.</param>
