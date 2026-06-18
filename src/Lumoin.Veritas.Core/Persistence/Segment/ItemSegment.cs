@@ -27,7 +27,7 @@ namespace Lumoin.Veritas.Core.Persistence.Segment;
 /// two blocks; the alignment padding is inert zero-fill and is not part of any checksum.
 /// </para>
 /// </remarks>
-public sealed class ItemSegment
+public sealed partial class ItemSegment
 {
     /// <summary>The 8-byte magic identifying a Veritas system-of-record item segment image.</summary>
     private static ReadOnlySpan<byte> SegmentMagic => "VTSSOR01"u8;
@@ -163,13 +163,37 @@ public sealed class ItemSegment
         }
     }
 
-    /// <summary>Reconstructs a segment's triples from an image written by <see cref="WriteTo"/>, verifying the front-matter trailer and every block's checksum before its bytes are decoded.</summary>
+    /// <summary>Reconstructs a segment's triples from an image written by <see cref="WriteTo"/>, verifying the front-matter trailer and every block's checksum before its bytes are decoded; the first block that fails is refused (an all-or-nothing read). The report-not-throw counterpart that excludes a corrupt block and continues is <see cref="ReadVerifiedItems"/>.</summary>
     /// <param name="source">The byte image.</param>
     /// <param name="resolveChecksum">Resolves the image's checksum-algorithm id; <see langword="null"/> uses <see cref="ChecksumAlgorithm.DefaultResolver"/>.</param>
     /// <returns>The canonical triples, in stored order.</returns>
     /// <exception cref="InvalidDataException">The image is not an item segment, is malformed, or a block or the front matter fails its checksum.</exception>
     /// <exception cref="NotSupportedException">The major version, a required feature, or the checksum algorithm is unsupported, or the host is big-endian.</exception>
     public static EncodedTriple[] ReadFrom(ReadOnlySpan<byte> source, ResolveChecksumAlgorithmDelegate? resolveChecksum = null)
+    {
+        SegmentLayout layout = ParseAndVerifyFrontMatter(source, resolveChecksum);
+        EncodedTriple[] triples = new EncodedTriple[layout.ItemCount];
+        Span<byte> scratch = stackalloc byte[ChecksumAlgorithm.MaximumByteWidth];
+        for(int block = 0; block < layout.BlockCount; block++)
+        {
+            if(!VerifyBlock(source, layout, block, scratch, out int start, out int itemsInBlock, out long blockOffset))
+            {
+                throw new InvalidDataException($"Item block {block} (items [{start}, {start + itemsInBlock})) failed its checksum (at-rest corruption).");
+            }
+
+            DecodeBlock(source, blockOffset, itemsInBlock, triples.AsSpan(start, itemsInBlock));
+        }
+
+        return triples;
+    }
+
+    /// <summary>Parses an image's framing and verifies its front-matter trailer, returning the geometry needed to locate and verify every block; framing, version, feature, algorithm, truncation, and front-matter damage are refused here so the block walk that follows can trust the geometry.</summary>
+    /// <param name="source">The byte image.</param>
+    /// <param name="resolveChecksum">Resolves the image's checksum-algorithm id; <see langword="null"/> uses <see cref="ChecksumAlgorithm.DefaultResolver"/>.</param>
+    /// <returns>The verified layout.</returns>
+    /// <exception cref="InvalidDataException">The image is not an item segment, is malformed, truncated, or fails its front-matter checksum.</exception>
+    /// <exception cref="NotSupportedException">The major version, a required feature, or the checksum algorithm is unsupported, or the host is big-endian.</exception>
+    private static SegmentLayout ParseAndVerifyFrontMatter(ReadOnlySpan<byte> source, ResolveChecksumAlgorithmDelegate? resolveChecksum)
     {
         LittleEndianBuffer.EnsureLittleEndian();
         if(source.Length < HeaderSize + ScalarSize)
@@ -233,9 +257,9 @@ public sealed class ItemSegment
             throw new InvalidDataException("The item segment is truncated: its declared blocks run past the image.");
         }
 
-        Span<byte> computed = stackalloc byte[ChecksumAlgorithm.MaximumByteWidth];
         if(checksum is not null)
         {
+            Span<byte> computed = stackalloc byte[ChecksumAlgorithm.MaximumByteWidth];
             checksum.Compute(source[..(int)frontMatterEnd], computed[..checksum.ByteWidth]);
             if(!computed[..checksum.ByteWidth].SequenceEqual(source.Slice((int)(total - checksum.ByteWidth), checksum.ByteWidth)))
             {
@@ -243,35 +267,50 @@ public sealed class ItemSegment
             }
         }
 
-        EncodedTriple[] triples = new EncodedTriple[itemCount];
-        int checksumSectionOffset = HeaderSize + ScalarSize;
-        for(int block = 0; block < blockCount; block++)
+        return new SegmentLayout(itemCount, blockItemCount, blockCount, checksum, HeaderSize + ScalarSize, firstBlock, blockBytes);
+    }
+
+    /// <summary>Recomputes block <paramref name="block"/>'s checksum and compares it to the stored digest, reporting the verdict rather than throwing so a caller can either refuse the image or exclude the block; the block's item range and byte offset are set regardless of the verdict.</summary>
+    /// <param name="source">The byte image.</param>
+    /// <param name="layout">The verified layout.</param>
+    /// <param name="block">The block index.</param>
+    /// <param name="scratch">Scratch at least <see cref="ChecksumAlgorithm.MaximumByteWidth"/> bytes long for the recomputed digest.</param>
+    /// <param name="start">The block's first item index.</param>
+    /// <param name="itemsInBlock">The number of triples the block covers.</param>
+    /// <param name="blockOffset">The block's byte offset in the image.</param>
+    /// <returns>Whether the block's checksum matched; always <see langword="true"/> when the image carries no checksums.</returns>
+    private static bool VerifyBlock(ReadOnlySpan<byte> source, in SegmentLayout layout, int block, Span<byte> scratch, out int start, out int itemsInBlock, out long blockOffset)
+    {
+        start = block * layout.BlockItemCount;
+        itemsInBlock = Math.Min(layout.BlockItemCount, layout.ItemCount - start);
+        blockOffset = layout.FirstBlock + (block * layout.BlockBytes);
+        if(layout.Checksum is null)
         {
-            long blockOffset = firstBlock + (block * blockBytes);
-            int start = block * blockItemCount;
-            int itemsInBlock = Math.Min(blockItemCount, itemCount - start);
-            ReadOnlySpan<byte> blockItems = source.Slice((int)blockOffset, itemsInBlock * ItemByteSize);
-
-            if(checksum is not null)
-            {
-                checksum.Compute(blockItems, computed[..checksum.ByteWidth]);
-                if(!computed[..checksum.ByteWidth].SequenceEqual(source.Slice(checksumSectionOffset + (block * checksum.ByteWidth), checksum.ByteWidth)))
-                {
-                    throw new InvalidDataException($"Item block {block} (items [{start}, {start + itemsInBlock})) failed its checksum (at-rest corruption).");
-                }
-            }
-
-            for(int i = 0; i < itemsInBlock; i++)
-            {
-                int itemOffset = i * ItemByteSize;
-                uint subject = BinaryPrimitives.ReadUInt32LittleEndian(blockItems[itemOffset..]);
-                uint predicate = BinaryPrimitives.ReadUInt32LittleEndian(blockItems[(itemOffset + sizeof(uint))..]);
-                uint @object = BinaryPrimitives.ReadUInt32LittleEndian(blockItems[(itemOffset + (2 * sizeof(uint)))..]);
-                triples[start + i] = EncodedTriple.FromEncoded(subject, predicate, @object);
-            }
+            return true;
         }
 
-        return triples;
+        ReadOnlySpan<byte> blockItems = source.Slice((int)blockOffset, itemsInBlock * ItemByteSize);
+        layout.Checksum.Compute(blockItems, scratch[..layout.Checksum.ByteWidth]);
+
+        return scratch[..layout.Checksum.ByteWidth].SequenceEqual(source.Slice(layout.ChecksumSectionOffset + (block * layout.Checksum.ByteWidth), layout.Checksum.ByteWidth));
+    }
+
+    /// <summary>Decodes a verified block's row-major records into <paramref name="destination"/> as triples.</summary>
+    /// <param name="source">The byte image.</param>
+    /// <param name="blockOffset">The block's byte offset in the image.</param>
+    /// <param name="itemsInBlock">The number of triples the block covers.</param>
+    /// <param name="destination">The span to decode into; exactly <paramref name="itemsInBlock"/> long.</param>
+    private static void DecodeBlock(ReadOnlySpan<byte> source, long blockOffset, int itemsInBlock, Span<EncodedTriple> destination)
+    {
+        ReadOnlySpan<byte> blockItems = source.Slice((int)blockOffset, itemsInBlock * ItemByteSize);
+        for(int i = 0; i < itemsInBlock; i++)
+        {
+            int itemOffset = i * ItemByteSize;
+            uint subject = BinaryPrimitives.ReadUInt32LittleEndian(blockItems[itemOffset..]);
+            uint predicate = BinaryPrimitives.ReadUInt32LittleEndian(blockItems[(itemOffset + sizeof(uint))..]);
+            uint @object = BinaryPrimitives.ReadUInt32LittleEndian(blockItems[(itemOffset + (2 * sizeof(uint)))..]);
+            destination[i] = EncodedTriple.FromEncoded(subject, predicate, @object);
+        }
     }
 
     /// <summary>The byte size of the header, scalars, and per-block checksum section — everything the front-matter trailer covers, before the first aligned block.</summary>
@@ -317,5 +356,49 @@ public sealed class ItemSegment
     private static long Align(long value, long alignment)
     {
         return (value + alignment - 1) / alignment * alignment;
+    }
+
+    /// <summary>The framing-verified geometry of an item-segment image: everything needed to locate and checksum-verify every block once the header and front-matter trailer have passed.</summary>
+    private readonly struct SegmentLayout
+    {
+        /// <summary>Creates a layout.</summary>
+        /// <param name="itemCount">The number of triples the segment holds.</param>
+        /// <param name="blockItemCount">The number of triples per block.</param>
+        /// <param name="blockCount">The number of blocks.</param>
+        /// <param name="checksum">The per-block checksum algorithm, or <see langword="null"/> when the image carries none.</param>
+        /// <param name="checksumSectionOffset">The byte offset of the per-block checksum section.</param>
+        /// <param name="firstBlock">The byte offset of the first aligned block.</param>
+        /// <param name="blockBytes">The aligned byte stride between block starts.</param>
+        internal SegmentLayout(int itemCount, int blockItemCount, int blockCount, ChecksumAlgorithm? checksum, int checksumSectionOffset, long firstBlock, long blockBytes)
+        {
+            ItemCount = itemCount;
+            BlockItemCount = blockItemCount;
+            BlockCount = blockCount;
+            Checksum = checksum;
+            ChecksumSectionOffset = checksumSectionOffset;
+            FirstBlock = firstBlock;
+            BlockBytes = blockBytes;
+        }
+
+        /// <summary>The number of triples the segment holds.</summary>
+        internal int ItemCount { get; }
+
+        /// <summary>The number of triples per block.</summary>
+        internal int BlockItemCount { get; }
+
+        /// <summary>The number of blocks.</summary>
+        internal int BlockCount { get; }
+
+        /// <summary>The per-block checksum algorithm, or <see langword="null"/> when the image carries none.</summary>
+        internal ChecksumAlgorithm? Checksum { get; }
+
+        /// <summary>The byte offset of the per-block checksum section.</summary>
+        internal int ChecksumSectionOffset { get; }
+
+        /// <summary>The byte offset of the first aligned block.</summary>
+        internal long FirstBlock { get; }
+
+        /// <summary>The aligned byte stride between block starts.</summary>
+        internal long BlockBytes { get; }
     }
 }

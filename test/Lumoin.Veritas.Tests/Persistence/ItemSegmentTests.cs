@@ -307,4 +307,171 @@ internal sealed class ItemSegmentTests
         HashSet<EncodedTriple> actual = [.. sidecar.EnumerateTriples()];
         Assert.IsTrue(expected.SetEquals(actual), "The columnar sidecar rebuilt from the segment differs from the system-of-record triples.");
     }
+
+    /// <summary>The byte size of one row-major item record: subject, predicate, object as three little-endian 32-bit ids.</summary>
+    private const int ItemByteSize = 3 * sizeof(uint);
+
+    /// <summary>The aligned byte stride between block starts for the given geometry.</summary>
+    /// <param name="blockItemCount">The triples per block.</param>
+    /// <param name="alignment">The block alignment.</param>
+    /// <returns>The block stride.</returns>
+    private static long BlockStride(int blockItemCount, int alignment)
+    {
+        return (((long)blockItemCount * ItemByteSize) + alignment - 1) / alignment * alignment;
+    }
+
+    /// <summary>The checksum-gated feed read returns every triple in stored order, with no exclusions, when every block passes.</summary>
+    [TestMethod]
+    public void ReadVerifiedItemsReturnsAllTriplesWhenClean()
+    {
+        EncodedTriple[] triples = SampleTriples(100);
+        ItemSegment segment = new(triples, blockItemCount: 7, blockAlignment: 64);
+        byte[] image = ToImage(segment, ChecksumAlgorithm.XxHash3);
+
+        using VeritasMemoryPool<EncodedTriple> pool = new();
+        using ItemSegmentFeed feed = ItemSegment.ReadVerifiedItems(image, pool);
+
+        Assert.AreEqual(triples.Length, feed.VerifiedCount);
+        Assert.IsTrue(feed.IsClean);
+        Assert.IsTrue(feed.WasChecksumGated, "A checksummed segment's clean read must report itself as gated.");
+        Assert.IsEmpty(feed.SkippedRanges);
+        Assert.IsTrue(triples.AsSpan().SequenceEqual(feed.VerifiedItems.Span), "The clean feed read did not return the triples in stored order.");
+    }
+
+    /// <summary>I2 feed face: a byte flipped in one block's items excludes exactly that block — its item range is named and its triples are absent, while every other block's triples are returned in order.</summary>
+    [TestMethod]
+    public void ReadVerifiedItemsExcludesACorruptBlockAndNamesItsRange()
+    {
+        EncodedTriple[] triples = SampleTriples(30);
+        ItemSegment segment = new(triples, blockItemCount: 10, blockAlignment: 64);
+        byte[] image = ToImage(segment, ChecksumAlgorithm.XxHash3);
+
+        //Flip the first item byte of block 1 — items [10, 20).
+        int firstBlock = FirstBlockOffset(segment.BlockCount, ChecksumAlgorithm.XxHash3.ByteWidth, 64);
+        image[firstBlock + (int)BlockStride(10, 64)] ^= 0xFF;
+
+        using VeritasMemoryPool<EncodedTriple> pool = new();
+        using ItemSegmentFeed feed = ItemSegment.ReadVerifiedItems(image, pool);
+
+        Assert.AreEqual(20, feed.VerifiedCount, "The corrupt block's ten items must be excluded.");
+        Assert.IsFalse(feed.IsClean);
+        Assert.HasCount(1, feed.SkippedRanges);
+        Assert.AreEqual(new SkippedItemRange(1, 10, 10), feed.SkippedRanges[0], "The excluded block's range was not named exactly.");
+
+        //The surviving triples are blocks 0 and 2 — items [0, 10) followed by [20, 30) — in order.
+        EncodedTriple[] expected = [.. triples[..10], .. triples[20..]];
+        Assert.IsTrue(expected.AsSpan().SequenceEqual(feed.VerifiedItems.Span), "The surviving triples are not the clean blocks in order.");
+    }
+
+    /// <summary>Two corrupt blocks are both excluded and both named; only the clean blocks' triples survive.</summary>
+    [TestMethod]
+    public void ReadVerifiedItemsExcludesMultipleCorruptBlocks()
+    {
+        EncodedTriple[] triples = SampleTriples(50);
+        ItemSegment segment = new(triples, blockItemCount: 10, blockAlignment: 64);
+        byte[] image = ToImage(segment, ChecksumAlgorithm.XxHash3);
+
+        //Flip the first item byte of blocks 0 and 3 — items [0, 10) and [30, 40).
+        int firstBlock = FirstBlockOffset(segment.BlockCount, ChecksumAlgorithm.XxHash3.ByteWidth, 64);
+        long stride = BlockStride(10, 64);
+        image[firstBlock] ^= 0xFF;
+        image[firstBlock + (int)(3 * stride)] ^= 0xFF;
+
+        using VeritasMemoryPool<EncodedTriple> pool = new();
+        using ItemSegmentFeed feed = ItemSegment.ReadVerifiedItems(image, pool);
+
+        Assert.AreEqual(30, feed.VerifiedCount);
+        Assert.HasCount(2, feed.SkippedRanges);
+        Assert.AreEqual(new SkippedItemRange(0, 0, 10), feed.SkippedRanges[0]);
+        Assert.AreEqual(new SkippedItemRange(3, 30, 10), feed.SkippedRanges[1]);
+
+        EncodedTriple[] expected = [.. triples[10..30], .. triples[40..]];
+        Assert.IsTrue(expected.AsSpan().SequenceEqual(feed.VerifiedItems.Span));
+    }
+
+    /// <summary>An image with no checksums cannot gate per block, so the feed read returns every triple with no exclusions — the gate exists only where there is a digest to verify against.</summary>
+    [TestMethod]
+    public void ReadVerifiedItemsWithoutChecksumsReturnsAll()
+    {
+        EncodedTriple[] triples = SampleTriples(30);
+        ItemSegment segment = new(triples, blockItemCount: 10, blockAlignment: 64);
+        byte[] image = ToImage(segment, null);
+
+        using VeritasMemoryPool<EncodedTriple> pool = new();
+        using ItemSegmentFeed feed = ItemSegment.ReadVerifiedItems(image, pool);
+
+        Assert.AreEqual(triples.Length, feed.VerifiedCount);
+        Assert.IsTrue(feed.IsClean);
+        Assert.IsFalse(feed.WasChecksumGated, "Without per-block checksums nothing can be gated, and the read must say so rather than appear verified.");
+        Assert.IsTrue(triples.AsSpan().SequenceEqual(feed.VerifiedItems.Span));
+    }
+
+    /// <summary>Front-matter rot is untrusted geometry the feed read refuses outright — it does not skip-and-continue, because a corrupt block geometry cannot be safely walked.</summary>
+    [TestMethod]
+    public void ReadVerifiedItemsRefusesFrontMatterDamage()
+    {
+        EncodedTriple[] triples = SampleTriples(30);
+        ItemSegment segment = new(triples, blockItemCount: 10, blockAlignment: 64);
+        byte[] image = ToImage(segment, ChecksumAlgorithm.XxHash3);
+        image[FrontMatterBase] ^= 0xFF;
+
+        using VeritasMemoryPool<EncodedTriple> pool = new();
+        Assert.ThrowsExactly<InvalidDataException>(() => { using ItemSegmentFeed feed = ItemSegment.ReadVerifiedItems(image, pool); });
+    }
+
+    /// <summary>A magic mismatch is refused by the feed read, not read as a degraded segment.</summary>
+    [TestMethod]
+    public void ReadVerifiedItemsRefusesForeignImage()
+    {
+        EncodedTriple[] triples = SampleTriples(30);
+        ItemSegment segment = new(triples, blockItemCount: 10, blockAlignment: 64);
+        byte[] image = ToImage(segment, ChecksumAlgorithm.XxHash3);
+        image[0] ^= 0xFF;
+
+        using VeritasMemoryPool<EncodedTriple> pool = new();
+        Assert.ThrowsExactly<InvalidDataException>(() => { using ItemSegmentFeed feed = ItemSegment.ReadVerifiedItems(image, pool); });
+    }
+
+    /// <summary>A truncated image is refused by the feed read rather than walked past its end.</summary>
+    [TestMethod]
+    public void ReadVerifiedItemsRefusesTruncation()
+    {
+        EncodedTriple[] triples = SampleTriples(30);
+        ItemSegment segment = new(triples, blockItemCount: 10, blockAlignment: 64);
+        byte[] image = ToImage(segment, ChecksumAlgorithm.XxHash3);
+        byte[] truncated = image.AsSpan(0, image.Length - 100).ToArray();
+
+        using VeritasMemoryPool<EncodedTriple> pool = new();
+        Assert.ThrowsExactly<InvalidDataException>(() => { using ItemSegmentFeed feed = ItemSegment.ReadVerifiedItems(truncated, pool); });
+    }
+
+    /// <summary>An empty segment feeds no triples and reports clean.</summary>
+    [TestMethod]
+    public void ReadVerifiedItemsOnEmptySegment()
+    {
+        ItemSegment segment = new([], blockItemCount: 8, blockAlignment: 64);
+        byte[] image = ToImage(segment, ChecksumAlgorithm.XxHash3);
+
+        using VeritasMemoryPool<EncodedTriple> pool = new();
+        using ItemSegmentFeed feed = ItemSegment.ReadVerifiedItems(image, pool);
+
+        Assert.AreEqual(0, feed.VerifiedCount);
+        Assert.IsTrue(feed.IsClean);
+        Assert.IsEmpty(feed.VerifiedItems.Span.ToArray());
+    }
+
+    /// <summary>The pooled feed buffer is returned on dispose, and reading the verified items afterward is refused rather than reading recycled memory.</summary>
+    [TestMethod]
+    public void ReadVerifiedItemsThrowsAfterDispose()
+    {
+        EncodedTriple[] triples = SampleTriples(30);
+        ItemSegment segment = new(triples, blockItemCount: 10, blockAlignment: 64);
+        byte[] image = ToImage(segment, ChecksumAlgorithm.XxHash3);
+
+        using VeritasMemoryPool<EncodedTriple> pool = new();
+        ItemSegmentFeed feed = ItemSegment.ReadVerifiedItems(image, pool);
+        feed.Dispose();
+
+        Assert.ThrowsExactly<ObjectDisposedException>(() => { _ = feed.VerifiedItems; });
+    }
 }
