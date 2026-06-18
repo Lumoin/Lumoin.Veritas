@@ -279,45 +279,40 @@ public static class JsonataExpressionWalker
         hash.Add(node.GetType());
         switch(node)
         {
-            case LiteralExpression literal:
+            case(LiteralExpression literal):
             {
                 hash.Add(literal.Kind);
                 hash.Add(literal.Value);
 
                 break;
             }
-
-            case RegexExpression regex:
+            case(RegexExpression regex):
             {
                 hash.Add(regex.Pattern);
                 hash.Add(regex.Flags);
 
                 break;
             }
-
-            case NameExpression name:
+            case(NameExpression name):
             {
                 hash.Add(name.Name);
 
                 break;
             }
-
-            case VariableExpression variable:
+            case(VariableExpression variable):
             {
                 hash.Add(variable.Form);
                 hash.Add(variable.Name);
 
                 break;
             }
-
-            case BindExpression bind:
+            case(BindExpression bind):
             {
                 hash.Add(bind.VariableName);
 
                 break;
             }
-
-            case LambdaExpression lambda:
+            case(LambdaExpression lambda):
             {
                 //The parameter names and the type signature are the lambda's scalar data; fold each so two
                 //lambdas differing only in their parameter names or their signature hash apart, consistent
@@ -331,43 +326,37 @@ public static class JsonataExpressionWalker
 
                 break;
             }
-
-            case DefaultExpression def:
+            case(DefaultExpression def):
             {
                 hash.Add(def.Operator);
 
                 break;
             }
-
-            case BinaryExpression binary:
+            case(BinaryExpression binary):
             {
                 hash.Add(binary.Operator);
 
                 break;
             }
-
-            case UnaryExpression unary:
+            case(UnaryExpression unary):
             {
                 hash.Add(unary.Operator);
 
                 break;
             }
-
-            case ConditionalExpression conditional:
+            case(ConditionalExpression conditional):
             {
                 hash.Add(conditional.WhenFalse is null);
 
                 break;
             }
-
-            case ErrorExpression error:
+            case(ErrorExpression error):
             {
                 hash.Add(error.ExpectedProduction);
 
                 break;
             }
-
-            case ObjectConstructorExpression obj:
+            case(ObjectConstructorExpression obj):
             {
                 //Whether the constructor carries a grouping source is its only scalar field; fold it so the
                 //led path-step form and the prefix form hash apart, consistent with ShallowEqual.
@@ -375,8 +364,7 @@ public static class JsonataExpressionWalker
 
                 break;
             }
-
-            case ArrayConstructorExpression array:
+            case(ArrayConstructorExpression array):
             {
                 //Whether the constructor is a path step (the cons marker) is its only scalar field; fold it so
                 //a cons-marked constructor and a plain one hash apart, consistent with ShallowEqual.
@@ -384,22 +372,19 @@ public static class JsonataExpressionWalker
 
                 break;
             }
-
-            case ContextBindExpression contextBind:
+            case(ContextBindExpression contextBind):
             {
                 hash.Add(contextBind.Variable);
 
                 break;
             }
-
-            case IndexBindExpression indexBind:
+            case(IndexBindExpression indexBind):
             {
                 hash.Add(indexBind.Variable);
 
                 break;
             }
-
-            case ParentExpression parent:
+            case(ParentExpression parent):
             {
                 //The resolved slot label is the parent node's only eval-relevant scalar datum, consistent with
                 //ShallowEqual.
@@ -407,8 +392,7 @@ public static class JsonataExpressionWalker
 
                 break;
             }
-
-            case PathExpression path:
+            case(PathExpression path):
             {
                 //Fold the path-level flags and each step's tuple markers (the scalar data ShallowEqual
                 //compares); the step / filter / group expressions are folded by the pre-order walk over the
@@ -429,7 +413,6 @@ public static class JsonataExpressionWalker
 
                 break;
             }
-
             default:
             {
                 break;

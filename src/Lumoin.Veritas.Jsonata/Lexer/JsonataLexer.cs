@@ -373,112 +373,90 @@ public sealed class JsonataLexer
             {
                 return LexString(ref reader, (byte)'"', out token);
             }
-
             case (byte)'\'':
             {
                 return LexString(ref reader, (byte)'\'', out token);
             }
-
             case (byte)'`':
             {
                 return LexBacktickName(ref reader, out token);
             }
-
             case (byte)'$':
             {
                 return LexVariable(ref reader, out token);
             }
-
             case (byte)'.':
             {
                 return LexDotOrRange(ref reader, out token);
             }
-
             case (byte)':':
             {
                 return LexColonOrAssign(ref reader, out token);
             }
-
             case (byte)'*':
             {
                 return LexStarOrPower(ref reader, out token);
             }
-
             case (byte)'!':
             {
                 return LexBang(ref reader, out token);
             }
-
             case (byte)'~':
             {
                 return LexTilde(ref reader, out token);
             }
-
             case (byte)'<':
             {
                 return LexLessThan(ref reader, out token);
             }
-
             case (byte)'>':
             {
                 return LexGreaterThan(ref reader, out token);
             }
-
             case (byte)'?':
             {
                 return LexQuestion(ref reader, out token);
             }
-
             case (byte)'[':
             {
                 return LexSinglePunctuation(ref reader, JsonataTokenKind.OpenBracket, out token);
             }
-
             case (byte)']':
             {
                 return LexSinglePunctuation(ref reader, JsonataTokenKind.CloseBracket, out token);
             }
-
             case (byte)'{':
             {
                 return LexSinglePunctuation(ref reader, JsonataTokenKind.OpenBrace, out token);
             }
-
             case (byte)'}':
             {
                 return LexSinglePunctuation(ref reader, JsonataTokenKind.CloseBrace, out token);
             }
-
             case (byte)'(':
             {
                 return LexSinglePunctuation(ref reader, JsonataTokenKind.OpenParen, out token);
             }
-
             case (byte)')':
             {
                 return LexSinglePunctuation(ref reader, JsonataTokenKind.CloseParen, out token);
             }
-
             case (byte)',':
             {
                 return LexSinglePunctuation(ref reader, JsonataTokenKind.Comma, out token);
             }
-
             case (byte)';':
             {
                 return LexSinglePunctuation(ref reader, JsonataTokenKind.Semicolon, out token);
             }
-
             case (byte)'+':
             {
                 return LexSinglePunctuation(ref reader, JsonataTokenKind.Plus, out token);
             }
-
             case (byte)'-':
             {
                 return LexSinglePunctuation(ref reader, JsonataTokenKind.Minus, out token);
             }
-
             case (byte)'/':
             {
                 //A '/' begins a regular-expression literal in prefix position (the previous significant token
@@ -488,47 +466,38 @@ public sealed class JsonataLexer
                     ? LexSinglePunctuation(ref reader, JsonataTokenKind.Slash, out token)
                     : LexRegex(ref reader, out token);
             }
-
             case (byte)'%':
             {
                 return LexSinglePunctuation(ref reader, JsonataTokenKind.Percent, out token);
             }
-
             case (byte)'&':
             {
                 return LexSinglePunctuation(ref reader, JsonataTokenKind.Ampersand, out token);
             }
-
             case (byte)'=':
             {
                 return LexSinglePunctuation(ref reader, JsonataTokenKind.Equal, out token);
             }
-
             case (byte)'^':
             {
                 return LexSinglePunctuation(ref reader, JsonataTokenKind.Caret, out token);
             }
-
             case (byte)'|':
             {
                 return LexSinglePunctuation(ref reader, JsonataTokenKind.Pipe, out token);
             }
-
             case (byte)'@':
             {
                 return LexSinglePunctuation(ref reader, JsonataTokenKind.At, out token);
             }
-
             case (byte)'#':
             {
                 return LexSinglePunctuation(ref reader, JsonataTokenKind.Hash, out token);
             }
-
-            case >= (byte)'0' and <= (byte)'9':
+            case(>= (byte)'0' and <= (byte)'9'):
             {
                 return LexNumber(ref reader, out token);
             }
-
             default:
             {
                 return LexNameOrLambda(ref reader, out token);
@@ -1135,52 +1104,42 @@ public sealed class JsonataLexer
             {
                 return AppendSimpleEscape(ref reader, ref owner, ref written, (byte)'"');
             }
-
             case (byte)'\'':
             {
                 return AppendSimpleEscape(ref reader, ref owner, ref written, (byte)'\'');
             }
-
             case (byte)'\\':
             {
                 return AppendSimpleEscape(ref reader, ref owner, ref written, (byte)'\\');
             }
-
             case (byte)'/':
             {
                 return AppendSimpleEscape(ref reader, ref owner, ref written, (byte)'/');
             }
-
             case (byte)'b':
             {
                 return AppendSimpleEscape(ref reader, ref owner, ref written, 0x08);
             }
-
             case (byte)'f':
             {
                 return AppendSimpleEscape(ref reader, ref owner, ref written, 0x0C);
             }
-
             case (byte)'n':
             {
                 return AppendSimpleEscape(ref reader, ref owner, ref written, (byte)'\n');
             }
-
             case (byte)'r':
             {
                 return AppendSimpleEscape(ref reader, ref owner, ref written, (byte)'\r');
             }
-
             case (byte)'t':
             {
                 return AppendSimpleEscape(ref reader, ref owner, ref written, (byte)'\t');
             }
-
             case (byte)'u':
             {
                 return DecodeUnicodeEscape(ref reader, ref owner, ref written);
             }
-
             default:
             {
                 return Fail(

@@ -102,28 +102,24 @@ internal static class JsonataStringSerializer
 
                 break;
             }
-
             case JsonataValueKind.Boolean:
             {
                 buffer.Write(value.AsBoolean ? TrueLiteral : FalseLiteral);
 
                 break;
             }
-
             case JsonataValueKind.Number:
             {
                 WriteNumber(ref buffer, value.AsNumber);
 
                 break;
             }
-
             case JsonataValueKind.String:
             {
                 WriteString(ref buffer, value.AsString);
 
                 break;
             }
-
             case JsonataValueKind.Function:
             {
                 //A function value inside a structure renders as the empty string (the reference's replacer).
@@ -131,7 +127,6 @@ internal static class JsonataStringSerializer
 
                 break;
             }
-
             case JsonataValueKind.Array:
             {
                 buffer.WriteByte((byte)'[');
@@ -139,7 +134,6 @@ internal static class JsonataStringSerializer
 
                 break;
             }
-
             case JsonataValueKind.Object:
             {
                 buffer.WriteByte((byte)'{');
@@ -147,7 +141,6 @@ internal static class JsonataStringSerializer
 
                 break;
             }
-
             default:
             {
                 //Undefined cannot reach here (the cursor skips it) and the internal tuple-stream carrier never
@@ -236,49 +229,42 @@ internal static class JsonataStringSerializer
 
                 break;
             }
-
             case '\\':
             {
                 buffer.Write("\\\\"u8);
 
                 break;
             }
-
             case '\b':
             {
                 buffer.Write("\\b"u8);
 
                 break;
             }
-
             case '\f':
             {
                 buffer.Write("\\f"u8);
 
                 break;
             }
-
             case '\n':
             {
                 buffer.Write("\\n"u8);
 
                 break;
             }
-
             case '\r':
             {
                 buffer.Write("\\r"u8);
 
                 break;
             }
-
             case '\t':
             {
                 buffer.Write("\\t"u8);
 
                 break;
             }
-
             default:
             {
                 WriteUnicodeEscape(ref buffer, c);

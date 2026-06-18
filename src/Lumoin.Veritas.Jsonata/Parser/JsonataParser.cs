@@ -349,19 +349,16 @@ public sealed class JsonataParser
 
                     break;
                 }
-
                 case StepAction.Push:
                 {
                     frames.Push(step.NewFrame!);
 
                     break;
                 }
-
                 case StepAction.Continue:
                 {
                     break;
                 }
-
                 default:
                 {
                     throw new JsonataParseException("Parser driver reached an undefined state.", Current.Span);

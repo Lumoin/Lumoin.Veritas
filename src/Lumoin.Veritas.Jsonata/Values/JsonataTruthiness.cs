@@ -85,40 +85,34 @@ internal static class JsonataTruthiness
 
                 return false;
             }
-
             case JsonataValueKind.Number:
             {
                 truthiness = value.AsNumber != 0;
 
                 return false;
             }
-
             case JsonataValueKind.String:
             {
                 truthiness = value.AsString.Length > 0;
 
                 return false;
             }
-
             case JsonataValueKind.Object:
             {
                 truthiness = value.AsObject.Count > 0;
 
                 return false;
             }
-
             case JsonataValueKind.Array:
             {
                 return TryScheduleArrayTruthiness(value.AsArray, pending, depth, out truthiness);
             }
-
             case JsonataValueKind.TupleStream:
             {
                 //The tuple-stream carrier is internal to the path-stream cursor and is consumed by its enclosing
                 //tuple step; reaching truthiness means it escaped — fail loud rather than treat it as falsy.
                 throw new System.InvalidOperationException("The internal tuple-stream carrier reached truthiness evaluation; it must be consumed by its enclosing path step.");
             }
-
             default:
             {
                 //Undefined, null, and function are all falsy.

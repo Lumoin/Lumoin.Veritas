@@ -150,7 +150,6 @@ public static partial class JsonataEvaluator
 
                     break;
                 }
-
                 case EvalFrameKind.Combine:
                 {
                     work.Pop();
@@ -158,70 +157,60 @@ public static partial class JsonataEvaluator
 
                     break;
                 }
-
                 case EvalFrameKind.Map:
                 {
                     StepMapFrame(frame, work, results);
 
                     break;
                 }
-
                 case EvalFrameKind.Predicate:
                 {
                     StepPredicateFrame(frame, work, results);
 
                     break;
                 }
-
                 case EvalFrameKind.GroupBy:
                 {
                     StepGroupByFrame(frame, work, results);
 
                     break;
                 }
-
                 case EvalFrameKind.Block:
                 {
                     StepBlockFrame(frame, work, results);
 
                     break;
                 }
-
                 case EvalFrameKind.HigherOrder:
                 {
                     StepHigherOrderFrame(frame, work, results);
 
                     break;
                 }
-
                 case EvalFrameKind.Transform:
                 {
                     StepTransformFrame(frame, work, results);
 
                     break;
                 }
-
                 case EvalFrameKind.OrderBy:
                 {
                     StepOrderByFrame(frame, work, results);
 
                     break;
                 }
-
                 case EvalFrameKind.RegexReplace:
                 {
                     StepRegexReplaceFrame(frame, work, results);
 
                     break;
                 }
-
                 case EvalFrameKind.PathStream:
                 {
                     StepPathStreamFrame(frame, work, results);
 
                     break;
                 }
-
                 case EvalFrameKind.Boolize:
                 {
                     work.Pop();
@@ -229,7 +218,6 @@ public static partial class JsonataEvaluator
 
                     break;
                 }
-
                 default:
                 {
                     throw new InvalidOperationException("The JSONata evaluator reached an undefined frame kind.");
@@ -252,14 +240,13 @@ public static partial class JsonataEvaluator
     {
         switch(frame.Node)
         {
-            case LiteralExpression or NameExpression or VariableExpression or ErrorExpression:
+            case(LiteralExpression or NameExpression or VariableExpression or ErrorExpression):
             {
                 results.Push(EvaluateLeaf(frame.Node, frame.Context));
 
                 break;
             }
-
-            case PlaceholderExpression:
+            case(PlaceholderExpression):
             {
                 //A partial-application placeholder '?' does not evaluate to a JSONata value: it pushes the
                 //internal placeholder marker so the enclosing call/chain combine detects the unbound slot and
@@ -269,8 +256,7 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
-            case RegexExpression regex:
+            case(RegexExpression regex):
             {
                 //Leaf-like: compile the pattern once into a first-class regex function value (an invalid
                 //pattern surfaces as a JSONata error, not a leaked regex-compilation exception).
@@ -278,22 +264,19 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
-            case MapExpression map:
+            case(MapExpression map):
             {
                 BeginCursor(frame, EvalFrameKind.Map, map.Source, work);
 
                 break;
             }
-
-            case PredicateExpression predicate:
+            case(PredicateExpression predicate):
             {
                 BeginCursor(frame, EvalFrameKind.Predicate, predicate.Source, work);
 
                 break;
             }
-
-            case KeepArrayExpression keepArray:
+            case(KeepArrayExpression keepArray):
             {
                 //The keep-array marker '[]' evaluates its source step, then the combine keeps the result an
                 //array (the JSONata keepSingleton marker); a singleton therefore stays an array.
@@ -302,15 +285,13 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
-            case SortExpression sort:
+            case(SortExpression sort):
             {
                 BeginCursor(frame, EvalFrameKind.OrderBy, sort.Source, work);
 
                 break;
             }
-
-            case ConditionalExpression conditional:
+            case(ConditionalExpression conditional):
             {
                 //Short-circuit: schedule the combine, then only the condition. The combine selects and
                 //pushes the chosen branch, whose result becomes the conditional's value.
@@ -319,8 +300,7 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
-            case DefaultExpression def:
+            case(DefaultExpression def):
             {
                 //Short-circuit: schedule the combine, then only the left operand. The combine keeps the left
                 //value when it qualifies, or schedules the right operand (the fallback) otherwise.
@@ -329,8 +309,7 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
-            case BinaryExpression binary:
+            case(BinaryExpression binary):
             {
                 work.Push(new EvalFrame { Kind = EvalFrameKind.Combine, Node = frame.Node, Context = frame.Context });
 
@@ -345,16 +324,14 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
-            case UnaryExpression unary:
+            case(UnaryExpression unary):
             {
                 work.Push(new EvalFrame { Kind = EvalFrameKind.Combine, Node = frame.Node, Context = frame.Context });
                 work.Push(new EvalFrame { Kind = EvalFrameKind.Expand, Node = unary.Operand, Context = frame.Context });
 
                 break;
             }
-
-            case BindExpression bind:
+            case(BindExpression bind):
             {
                 //The bind evaluates its value in the current (pre-bind) frame, then the combine installs the
                 //binding and yields the value — so a self-reference ($x := $x + 1) reads the old value.
@@ -363,8 +340,7 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
-            case BlockExpression:
+            case(BlockExpression):
             {
                 //A block opens its own variable scope and runs its statements in order; turn the frame into a
                 //resident Block cursor whose seed phase pushes the child frame before the first statement.
@@ -374,8 +350,7 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
-            case ParentExpression parent:
+            case(ParentExpression parent):
             {
                 //The parent operator '%' reads the ancestor value the tuple-stream capture step bound under the
                 //slot's reserved frame key; when the slot was never bound (a non-tuple context, or an
@@ -385,8 +360,7 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
-            case PathExpression:
+            case(PathExpression):
             {
                 //The flattened tuple-stream path turns into a resident PathStream cursor (the port of the
                 //reference's evaluatePath / evaluateTupleStep / tuple-aware evaluateFilter). The path processor
@@ -398,22 +372,19 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
-            case WildcardExpression:
+            case(WildcardExpression):
             {
                 results.Push(EvaluateWildcard(frame.Context.Focus));
 
                 break;
             }
-
-            case DescendantExpression:
+            case(DescendantExpression):
             {
                 results.Push(EvaluateDescendant(frame.Context.Focus));
 
                 break;
             }
-
-            case LambdaExpression lambda:
+            case(LambdaExpression lambda):
             {
                 //Leaf-like: the body is NOT evaluated at definition. The lambda value snapshots the CURRENT
                 //binding frame and the CURRENT focus, so a later call evaluates the body against exactly the
@@ -425,8 +396,7 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
-            case RangeExpression range:
+            case(RangeExpression range):
             {
                 //Two-operand node: schedule both bounds then a combine, exactly like BinaryExpression.
                 work.Push(new EvalFrame { Kind = EvalFrameKind.Combine, Node = frame.Node, Context = frame.Context });
@@ -435,8 +405,7 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
-            case ArrayConstructorExpression array:
+            case(ArrayConstructorExpression array):
             {
                 //N-ary node: schedule the combine, then each element in reverse so the results pop
                 //left-to-right. The combine folds the element values into the constructed array.
@@ -448,8 +417,7 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
-            case CallExpression call:
+            case(CallExpression call):
             {
                 //N-ary node: schedule the combine, then the argument values in reverse and the procedure
                 //last, so the procedure expands first and the arguments pop left-to-right after it. The
@@ -465,15 +433,13 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
-            case ApplyExpression apply:
+            case(ApplyExpression apply):
             {
                 ExpandApply(apply, frame.Context, work);
 
                 break;
             }
-
-            case TransformExpression transform:
+            case(TransformExpression transform):
             {
                 //Leaf-like: the clauses are NOT evaluated at definition. The transformer value snapshots the
                 //CURRENT binding frame, so a later application evaluates the pattern/update/delete clauses
@@ -482,8 +448,7 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
-            case ObjectConstructorExpression { Source: { } source }:
+            case(ObjectConstructorExpression { Source: { } source }):
             {
                 //The led path-step form 'path{ ... }' groups the source's RESULT, not the current focus: the
                 //source is evaluated first (like the dot/map source), then the resident GroupBy cursor seeds
@@ -496,8 +461,7 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
-            case ObjectConstructorExpression:
+            case(ObjectConstructorExpression):
             {
                 //The prefix object constructor groups the CURRENT focus — there is no source child to evaluate
                 //first (unlike the dot/map). Turn the frame into a resident GroupBy cursor seeded straight
@@ -508,7 +472,6 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
             default:
             {
                 throw new InvalidOperationException(
@@ -721,14 +684,12 @@ public static partial class JsonataEvaluator
 
                     break;
                 }
-
                 case JsonataValueKind.Object:
                 {
                     AppendFlattened(mapped, LookupObjectField(item, name));
 
                     break;
                 }
-
                 default:
                 {
                     //A scalar element contributes nothing to the mapped lookup.
@@ -788,21 +749,19 @@ public static partial class JsonataEvaluator
     {
         switch(frame.Node)
         {
-            case ConditionalExpression conditional:
+            case(ConditionalExpression conditional):
             {
                 CombineConditional(conditional, frame.Context, work, results);
 
                 break;
             }
-
-            case DefaultExpression def:
+            case(DefaultExpression def):
             {
                 CombineDefault(def, frame.Context, work, results);
 
                 break;
             }
-
-            case BinaryExpression binary:
+            case(BinaryExpression binary):
             {
                 //'and'/'or' short-circuit, so only the left operand is on the stack; the dedicated combine
                 //decides whether the right is evaluated. Every other operator has both operands ready.
@@ -819,16 +778,14 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
-            case UnaryExpression unary:
+            case(UnaryExpression unary):
             {
                 JsonataValue operand = results.Pop();
                 results.Push(ApplyUnary(unary.Operator, operand));
 
                 break;
             }
-
-            case KeepArrayExpression:
+            case(KeepArrayExpression):
             {
                 //Keep the source step's result an array (the JSONata keepSingleton marker): a singleton stays
                 //an array and the marker rides on the value to the enclosing dot/map steps; undefined stays
@@ -837,8 +794,7 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
-            case BindExpression bind:
+            case(BindExpression bind):
             {
                 //Install the value into the current frame and yield it: a bind is its bound value, and a
                 //re-bind in the same frame overwrites the previous binding.
@@ -848,8 +804,7 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
-            case RangeExpression:
+            case(RangeExpression):
             {
                 JsonataValue high = results.Pop();
                 JsonataValue low = results.Pop();
@@ -857,28 +812,24 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
-            case ArrayConstructorExpression array:
+            case(ArrayConstructorExpression array):
             {
                 results.Push(BuildArrayConstructor(array, results));
 
                 break;
             }
-
-            case CallExpression call:
+            case(CallExpression call):
             {
                 ApplyCall(call, frame.Context, work, results);
 
                 break;
             }
-
-            case ApplyExpression apply:
+            case(ApplyExpression apply):
             {
                 CombineApply(apply, frame.Context, work, results);
 
                 break;
             }
-
             default:
             {
                 throw new InvalidOperationException(
@@ -1135,7 +1086,6 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
             case JsonataValueKind.Object:
             {
                 IReadOnlyList<KeyValuePair<string, JsonataValue>> entries = value.AsObject;
@@ -1146,7 +1096,6 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
             default:
             {
                 //A scalar has no children to visit.
@@ -2052,28 +2001,24 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
             case GroupByPhase.Seed:
             {
                 SeedGroupBy(frame, work, results);
 
                 break;
             }
-
             case GroupByPhase.Bucketing:
             {
                 BucketGroupByKey(frame, work, results);
 
                 break;
             }
-
             case GroupByPhase.Valuing:
             {
                 ValueGroupByGroup(frame, work, results);
 
                 break;
             }
-
             default:
             {
                 throw new InvalidOperationException("The JSONata group-by cursor reached an undefined phase.");
@@ -2396,21 +2341,18 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
             case TransformPhase.Update:
             {
                 ApplyTransformUpdate(frame, work, results);
 
                 break;
             }
-
             case TransformPhase.Delete:
             {
                 ApplyTransformDelete(frame, work, results);
 
                 break;
             }
-
             default:
             {
                 throw new InvalidOperationException("The JSONata transform cursor reached an undefined phase.");
@@ -3017,14 +2959,12 @@ public static partial class JsonataEvaluator
 
                 return;
             }
-
             case HigherOrderKind.Sort:
             {
                 BeginSort(source, arguments, context, work, results);
 
                 return;
             }
-
             default:
             {
                 BeginArrayHigherOrder(higherOrder.Kind, source, arguments, context, work, results);
@@ -3380,14 +3320,12 @@ public static partial class JsonataEvaluator
 
                 return;
             }
-
             case HigherOrderKind.Sort:
             {
                 StepSortFrame(frame, work, results);
 
                 return;
             }
-
             default:
             {
                 StepArrayHigherOrderFrame(frame, work, results);
@@ -3704,7 +3642,6 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
             case HigherOrderKind.Filter:
             {
                 if(JsonataTruthiness.IsTruthy(result))
@@ -3714,14 +3651,12 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
             case HigherOrderKind.Single:
             {
                 FoldSingleResult(frame, element, result);
 
                 break;
             }
-
             default:
             {
                 //$reduce: the result becomes the running accumulator for the next step.
@@ -3805,7 +3740,6 @@ public static partial class JsonataEvaluator
             {
                 return new JsonataSequence(frame.Accumulator, KeepArray: false).Normalize();
             }
-
             case HigherOrderKind.Single:
             {
                 if(!frame.HasSingleMatch)
@@ -3815,7 +3749,6 @@ public static partial class JsonataEvaluator
 
                 return frame.SingleMatch;
             }
-
             default:
             {
                 //$reduce: the running accumulator is the fold's result.

@@ -230,7 +230,6 @@ public readonly record struct JsonataValue
                 {
                     break;
                 }
-
                 case JsonataValueKind.Boolean:
                 {
                     if(a.AsBoolean != b.AsBoolean)
@@ -240,7 +239,6 @@ public readonly record struct JsonataValue
 
                     break;
                 }
-
                 case JsonataValueKind.Number:
                 {
                     if(a.AsNumber != b.AsNumber)
@@ -250,7 +248,6 @@ public readonly record struct JsonataValue
 
                     break;
                 }
-
                 case JsonataValueKind.String:
                 {
                     if(!string.Equals(a.AsString, b.AsString, StringComparison.Ordinal))
@@ -260,7 +257,6 @@ public readonly record struct JsonataValue
 
                     break;
                 }
-
                 case JsonataValueKind.Array:
                 {
                     if(!ScheduleArrayChildren(a.AsArray, b.AsArray, pending))
@@ -270,7 +266,6 @@ public readonly record struct JsonataValue
 
                     break;
                 }
-
                 case JsonataValueKind.Object:
                 {
                     if(!ScheduleObjectChildren(a.AsObject, b.AsObject, pending))
@@ -280,7 +275,6 @@ public readonly record struct JsonataValue
 
                     break;
                 }
-
                 case JsonataValueKind.TupleStream:
                 {
                     //The tuple-stream carrier is internal to the path-stream cursor's nested-step plumbing and is
@@ -288,7 +282,6 @@ public readonly record struct JsonataValue
                     //rather than return a silently-wrong answer.
                     throw new System.InvalidOperationException("The internal tuple-stream carrier reached deep-equality; it must be consumed by its enclosing path step.");
                 }
-
                 default:
                 {
                     //Functions have no JSONata value equality; they are never deep-equal.

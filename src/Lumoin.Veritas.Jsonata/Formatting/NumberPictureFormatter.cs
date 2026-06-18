@@ -964,55 +964,46 @@ internal static class NumberPictureFormatter
                             decimalSeparator = overrideValue;
                             break;
                         }
-
                         case "grouping-separator":
                         {
                             groupingSeparator = overrideValue;
                             break;
                         }
-
                         case "exponent-separator":
                         {
                             exponentSeparator = overrideValue;
                             break;
                         }
-
                         case "minus-sign":
                         {
                             minusSign = overrideValue;
                             break;
                         }
-
                         case "percent":
                         {
                             percent = overrideValue;
                             break;
                         }
-
                         case "per-mille":
                         {
                             perMille = overrideValue;
                             break;
                         }
-
                         case "zero-digit":
                         {
                             zeroDigit = overrideValue;
                             break;
                         }
-
                         case "digit":
                         {
                             digit = overrideValue;
                             break;
                         }
-
                         case "pattern-separator":
                         {
                             patternSeparator = overrideValue;
                             break;
                         }
-
                         default:
                         {
                             break;

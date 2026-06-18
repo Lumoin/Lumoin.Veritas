@@ -247,14 +247,12 @@ internal static class JsonataObjectFunctions
 
                     break;
                 }
-
                 case JsonataValueKind.Object:
                 {
                     CollectObjectKeys(item, orderedKeys, seen);
 
                     break;
                 }
-
                 default:
                 {
                     //A scalar element contributes no keys.
@@ -311,14 +309,12 @@ internal static class JsonataObjectFunctions
 
                     break;
                 }
-
                 case JsonataValueKind.Object:
                 {
                     AppendFlattened(mapped, LookupObjectKey(item, key));
 
                     break;
                 }
-
                 default:
                 {
                     //A scalar element contributes nothing to the mapped lookup.
@@ -387,14 +383,12 @@ internal static class JsonataObjectFunctions
 
                     break;
                 }
-
                 case JsonataValueKind.Object:
                 {
                     SpreadObject(item, singleKeyObjects);
 
                     break;
                 }
-
                 default:
                 {
                     //A scalar element is dropped: spreading produces single-key objects only.

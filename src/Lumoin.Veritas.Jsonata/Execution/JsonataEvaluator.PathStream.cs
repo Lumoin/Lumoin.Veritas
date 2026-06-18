@@ -49,63 +49,54 @@ public static partial class JsonataEvaluator
 
                 break;
             }
-
             case PathStreamPhase.FlatStep:
             {
                 AdvancePathFlatStep(frame, work, results);
 
                 break;
             }
-
             case PathStreamPhase.FlatStage:
             {
                 AdvancePathFlatStage(frame, work, results);
 
                 break;
             }
-
             case PathStreamPhase.TupleStep:
             {
                 AdvancePathTupleStep(frame, work, results);
 
                 break;
             }
-
             case PathStreamPhase.TupleStage:
             {
                 AdvancePathTupleStage(frame, work, results);
 
                 break;
             }
-
             case PathStreamPhase.TupleSort:
             {
                 AdvancePathTupleSort(frame, work, results);
 
                 break;
             }
-
             case PathStreamPhase.FlatSort:
             {
                 AdvancePathFlatSort(frame, work, results);
 
                 break;
             }
-
             case PathStreamPhase.GroupBucketing:
             {
                 AdvancePathGroupBucketing(frame, work, results);
 
                 break;
             }
-
             case PathStreamPhase.GroupValuing:
             {
                 AdvancePathGroupValuing(frame, work, results);
 
                 break;
             }
-
             default:
             {
                 throw new InvalidOperationException("The JSONata path-stream cursor reached an undefined phase.");

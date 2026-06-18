@@ -115,28 +115,24 @@ public static class JsonataJsonWriter
 
                 break;
             }
-
             case JsonataValueKind.Boolean:
             {
                 buffer.Write(value.AsBoolean ? TrueLiteral : FalseLiteral);
 
                 break;
             }
-
             case JsonataValueKind.Number:
             {
                 WriteNumber(ref buffer, value.AsNumber);
 
                 break;
             }
-
             case JsonataValueKind.String:
             {
                 WriteString(ref buffer, value.AsString);
 
                 break;
             }
-
             case JsonataValueKind.Array:
             {
                 buffer.WriteByte((byte)'[');
@@ -144,7 +140,6 @@ public static class JsonataJsonWriter
 
                 break;
             }
-
             case JsonataValueKind.Object:
             {
                 buffer.WriteByte((byte)'{');
@@ -152,21 +147,18 @@ public static class JsonataJsonWriter
 
                 break;
             }
-
             case JsonataValueKind.Undefined:
             {
                 //An undefined element/member is dropped by the cursor before it reaches here; a bare
                 //undefined value is handled by the caller. Reaching here is a writer invariant breach.
                 throw new InvalidOperationException("An undefined JSONata value reached the JSON writer.");
             }
-
             case JsonataValueKind.TupleStream:
             {
                 //The internal tuple-stream carrier is consumed by its enclosing path step; reaching the writer
                 //means it escaped — a writer invariant breach, not a user-facing function-value rejection.
                 throw new InvalidOperationException("The internal tuple-stream carrier reached the JSON writer; it must be consumed by its enclosing path step.");
             }
-
             default:
             {
                 throw new JsonataErrorException("A JSONata function value has no JSON representation.");
@@ -257,49 +249,42 @@ public static class JsonataJsonWriter
 
                 break;
             }
-
             case '\\':
             {
                 buffer.Write("\\\\"u8);
 
                 break;
             }
-
             case '\b':
             {
                 buffer.Write("\\b"u8);
 
                 break;
             }
-
             case '\f':
             {
                 buffer.Write("\\f"u8);
 
                 break;
             }
-
             case '\n':
             {
                 buffer.Write("\\n"u8);
 
                 break;
             }
-
             case '\r':
             {
                 buffer.Write("\\r"u8);
 
                 break;
             }
-
             case '\t':
             {
                 buffer.Write("\\t"u8);
 
                 break;
             }
-
             default:
             {
                 WriteUnicodeEscape(ref buffer, c);

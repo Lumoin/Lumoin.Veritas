@@ -51,28 +51,24 @@ public static class JsonataValueAdapter
 
                     break;
                 }
-
                 case JsonNodeKind.True:
                 {
                     rootResult = Complete(stack, frame, JsonataValue.Boolean(true), rootResult);
 
                     break;
                 }
-
                 case JsonNodeKind.False:
                 {
                     rootResult = Complete(stack, frame, JsonataValue.Boolean(false), rootResult);
 
                     break;
                 }
-
                 case JsonNodeKind.String:
                 {
                     rootResult = Complete(stack, frame, JsonataValue.String(navigator.GetString(handle)), rootResult);
 
                     break;
                 }
-
                 case JsonNodeKind.Number:
                 {
                     double parsed = double.Parse(navigator.GetRawNumber(handle), NumberStyles.Float, CultureInfo.InvariantCulture);
@@ -80,21 +76,18 @@ public static class JsonataValueAdapter
 
                     break;
                 }
-
                 case JsonNodeKind.Array:
                 {
                     rootResult = StepArray(stack, frame, navigator, handle, rootResult);
 
                     break;
                 }
-
                 case JsonNodeKind.Object:
                 {
                     rootResult = StepObject(stack, frame, navigator, handle, rootResult);
 
                     break;
                 }
-
                 default:
                 {
                     throw new InvalidOperationException(

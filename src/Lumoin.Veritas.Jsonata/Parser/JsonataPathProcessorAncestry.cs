@@ -40,14 +40,13 @@ internal sealed partial class JsonataPathProcessor
         {
             switch(step.Step)
             {
-                case LiteralExpression { Kind: JsonataLiteralKind.String } literal:
+                case(LiteralExpression { Kind: JsonataLiteralKind.String } literal):
                 {
                     step.Step = new NameExpression(literal.Span, literal.Value);
 
                     break;
                 }
-
-                case LiteralExpression { Kind: JsonataLiteralKind.Number or JsonataLiteralKind.Boolean or JsonataLiteralKind.Null }:
+                case(LiteralExpression { Kind: JsonataLiteralKind.Number or JsonataLiteralKind.Boolean or JsonataLiteralKind.Null }):
                 {
                     //NormalizeSteps re-scans the whole step list on every map combine; report each non-navigable
                     //step once (it stays a LiteralExpression, so unlike the idempotent string->name conversion a
@@ -59,7 +58,6 @@ internal sealed partial class JsonataPathProcessor
 
                     break;
                 }
-
                 default:
                 {
                     break;
@@ -157,7 +155,7 @@ internal sealed partial class JsonataPathProcessor
     {
         switch(step.Step)
         {
-            case NameExpression or WildcardExpression:
+            case(NameExpression or WildcardExpression):
             {
                 slot.Level--;
                 if(slot.Level == 0)
@@ -180,15 +178,13 @@ internal sealed partial class JsonataPathProcessor
 
                 break;
             }
-
-            case ParentExpression:
+            case(ParentExpression):
             {
                 slot.Level++;
 
                 break;
             }
-
-            case BlockExpression:
+            case(BlockExpression):
             {
                 //The verbatim seekParent 'block'/'path' cases set node.tuple = true on the container they
                 //descend into; mark the container step a tuple step so the cursor treats the block / nested
@@ -200,15 +196,13 @@ internal sealed partial class JsonataPathProcessor
 
                 break;
             }
-
-            case SortMarkerExpression:
+            case(SortMarkerExpression):
             {
                 //A sort step is not a structural ancestor; the slot cannot derive an ancestor from it.
                 ReportUnresolved(slot, step.Step.Span);
 
                 break;
             }
-
             default:
             {
                 //Any other step kind (a variable such as $ / $$, an object constructor, a call, ...) cannot
