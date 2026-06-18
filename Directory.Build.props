@@ -22,7 +22,7 @@
     <ILLinkTreatWarningsAsErrors>true</ILLinkTreatWarningsAsErrors>
   </PropertyGroup>
 
-  <ItemGroup Condition="!$(MSBuildProjectName.EndsWith('.Tests'))AND !$(MSBuildProjectName.EndsWith('.Benchmarks'))">
+  <ItemGroup Condition="'$(IsTestApplication)' != 'true' AND !$(MSBuildProjectName.EndsWith('.Benchmarks'))">
     <SupportedPlatform Include="browser" />
   </ItemGroup>
 
@@ -153,11 +153,11 @@ See full changelog at https://github.com/lumoin/Veritas/blob/main/CHANGELOG.md.]
     <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.txt" />
   </ItemGroup>
 
-  <ItemGroup Condition="!$(MSBuildProjectName.EndsWith('.Tests'))">
+  <ItemGroup Condition="'$(IsTestApplication)' != 'true'">
     <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.Linq.txt" />
   </ItemGroup>
 
-  <ItemGroup Condition="'$(MSBuildProjectName)' != 'Lumoin.Veritas.Json.Stj' AND '$(MSBuildProjectName)' != 'Lumoin.Veritas.Rdf.Json' AND '$(MSBuildProjectName)' != 'Lumoin.Veritas.Cbor' AND !$(MSBuildProjectName.EndsWith('.Tests'))">
+  <ItemGroup Condition="'$(MSBuildProjectName)' != 'Lumoin.Veritas.Json.Stj' AND '$(MSBuildProjectName)' != 'Lumoin.Veritas.Rdf.Json' AND '$(MSBuildProjectName)' != 'Lumoin.Veritas.Cbor' AND '$(IsTestApplication)' != 'true'">
     <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.Serialization.txt" />
   </ItemGroup>
 
@@ -165,7 +165,7 @@ See full changelog at https://github.com/lumoin/Veritas/blob/main/CHANGELOG.md.]
     <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.Xml.txt" />
   </ItemGroup>
 
-  <ItemGroup Condition="'$(MSBuildProjectName)' != 'Lumoin.Veritas.Cbor' AND !$(MSBuildProjectName.EndsWith('.Tests'))">
+  <ItemGroup Condition="'$(MSBuildProjectName)' != 'Lumoin.Veritas.Cbor' AND '$(IsTestApplication)' != 'true'">
     <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.Cbor.txt" />
   </ItemGroup>
 
@@ -192,6 +192,7 @@ See full changelog at https://github.com/lumoin/Veritas/blob/main/CHANGELOG.md.]
 
   <ItemGroup>
     <InternalsVisibleTo Include="Lumoin.Veritas.Tests" />
+    <InternalsVisibleTo Include="Lumoin.Veritas.ParserTests" />
     <InternalsVisibleTo Include="Lumoin.Veritas.Benchmarks" />
   </ItemGroup>
 
