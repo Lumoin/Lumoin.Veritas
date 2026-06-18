@@ -146,4 +146,38 @@ internal sealed class SparqlResultsJsonReaderTests
         Assert.IsTrue(trueResult.Boolean!.Value);
         Assert.IsFalse(falseResult.Boolean!.Value);
     }
+
+    /// <summary>The <see cref="System.IO.Stream"/> overload (the stream-source production path, e.g. an HTTP response body) parses the same result as the byte overload.</summary>
+    [TestMethod]
+    public void ReadsFromStream()
+    {
+        const string json =
+            """
+            {
+              "head": { "vars": [ "iri", "n" ] },
+              "results": { "bindings": [
+                { "iri": { "type": "uri", "value": "http://example/a" },
+                  "n":   { "type": "literal", "value": "42", "datatype": "http://www.w3.org/2001/XMLSchema#integer" } }
+              ] }
+            }
+            """;
+
+        using MemoryStream stream = new(Encoding.UTF8.GetBytes(json), writable: false);
+        SparqlResultSet result = SparqlResultsJsonReader.Read(stream);
+
+        Assert.HasCount(2, result.Variables);
+        Assert.HasCount(1, result.Solutions);
+        Assert.AreEqual(new NamedNode(Utf8String.FromString("http://example/a")), Value(result.Solutions[0], "iri"));
+
+        Literal number = (Literal)Value(result.Solutions[0], "n");
+        Assert.AreEqual("42", number.Value.ToString());
+        Assert.AreEqual("http://www.w3.org/2001/XMLSchema#integer", number.Datatype.Iri.ToString());
+    }
+
+    /// <summary>The <see cref="System.IO.Stream"/> overload rejects a null stream.</summary>
+    [TestMethod]
+    public void ReadFromNullStreamThrows()
+    {
+        Assert.ThrowsExactly<ArgumentNullException>(() => SparqlResultsJsonReader.Read((Stream)null!));
+    }
 }

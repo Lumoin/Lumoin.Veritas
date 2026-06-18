@@ -1,11 +1,11 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
-using System.IO;
 using System.IO.Pipelines;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Encoding;
 
 namespace Lumoin.Veritas.Turtle;
 
@@ -104,40 +104,36 @@ public static class TurtleWriter
     {
         Dictionary<string, string> prefixes = BuildPrefixes(quads, options);
 
-        //The serialisation is text-based; drive the existing StreamWriter logic over a Stream view
-        //of the pipe. leaveOpen keeps pipe completion the caller-facing method's responsibility.
-        using Stream stream = output.AsStream(leaveOpen: true);
-        using StreamWriter writer = new(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), bufferSize: 8192, leaveOpen: true);
-        writer.NewLine = "\n";
-
+        //The output is already an IBufferWriter<byte>; UTF-8 bytes are written straight into the
+        //pipe's buffer. The caller-facing method owns the pipe's flush/complete.
         if(options.BaseIri is { } baseIri)
         {
-            writer.Write("@base <");
-            writer.Write(baseIri.ToString());
-            writer.Write("> .\n");
+            output.WriteUtf8Literal("@base <"u8);
+            output.WriteUtf8String(baseIri);
+            output.WriteUtf8Literal("> .\n"u8);
         }
 
         foreach(KeyValuePair<string, string> kv in prefixes)
         {
-            writer.Write("@prefix ");
-            writer.Write(kv.Value);
-            writer.Write(": <");
-            writer.Write(kv.Key);
-            writer.Write("> .\n");
+            output.WriteUtf8Literal("@prefix "u8);
+            output.WriteUtf8(kv.Value);
+            output.WriteUtf8Literal(": <"u8);
+            output.WriteUtf8(kv.Key);
+            output.WriteUtf8Literal("> .\n"u8);
         }
 
         if(prefixes.Count > 0 || options.BaseIri is not null)
         {
-            writer.Write("\n");
+            output.WriteByte((byte)'\n');
         }
 
         if(syntax == TurtleSyntax.TriG)
         {
-            WriteTriG(writer, quads, prefixes, options);
+            WriteTriG(output, quads, prefixes, options);
         }
         else
         {
-            WriteTurtle(writer, quads, prefixes, options);
+            WriteTurtle(output, quads, prefixes, options);
         }
     }
 
@@ -185,26 +181,23 @@ public static class TurtleWriter
     {
         switch(term)
         {
-            case NamedNode named:
+            case(NamedNode named):
             {
                 sink.Add(NamespaceOf(named.Iri.ToString()));
                 break;
             }
-
-            case Literal literal:
+            case(Literal literal):
             {
                 sink.Add(NamespaceOf(literal.Datatype.Iri.ToString()));
                 break;
             }
-
-            case TripleTerm tripleTerm:
+            case(TripleTerm tripleTerm):
             {
                 CollectNamespaces(tripleTerm.Subject, sink);
                 sink.Add(NamespaceOf(tripleTerm.Predicate.Iri.ToString()));
                 CollectNamespaces(tripleTerm.Object, sink);
                 break;
             }
-
             default:
             {
                 break;
@@ -222,16 +215,16 @@ public static class TurtleWriter
     }
 
     private static void WriteTurtle(
-        StreamWriter writer,
+        IBufferWriter<byte> output,
         IReadOnlyList<Quad> quads,
         Dictionary<string, string> prefixes,
         TurtleWriterOptions options)
     {
-        WriteGroup(writer, quads, prefixes, options, indent: "");
+        WriteGroup(output, quads, prefixes, options, indent: "");
     }
 
     private static void WriteTriG(
-        StreamWriter writer,
+        IBufferWriter<byte> output,
         IReadOnlyList<Quad> quads,
         Dictionary<string, string> prefixes,
         TurtleWriterOptions options)
@@ -267,16 +260,16 @@ public static class TurtleWriter
 
         if(defaultBucket.TryGetValue(string.Empty, out List<Quad>? defaultList) && defaultList.Count > 0)
         {
-            WriteGroup(writer, defaultList, prefixes, options, indent: "");
-            writer.Write("\n");
+            WriteGroup(output, defaultList, prefixes, options, indent: "");
+            output.WriteByte((byte)'\n');
         }
 
         foreach(KeyValuePair<string, (RdfTerm Graph, List<Quad> Quads)> entry in namedBuckets)
         {
-            WriteTermInline(writer, entry.Value.Graph, prefixes);
-            writer.Write(" {\n");
-            WriteGroup(writer, entry.Value.Quads, prefixes, options, indent: options.Indent);
-            writer.Write("}\n\n");
+            WriteTermInline(output, entry.Value.Graph, prefixes);
+            output.WriteUtf8Literal(" {\n"u8);
+            WriteGroup(output, entry.Value.Quads, prefixes, options, indent: options.Indent);
+            output.WriteUtf8Literal("}\n\n"u8);
         }
     }
 
@@ -291,7 +284,7 @@ public static class TurtleWriter
     }
 
     private static void WriteGroup(
-        StreamWriter writer,
+        IBufferWriter<byte> output,
         IReadOnlyList<Quad> quads,
         Dictionary<string, string> prefixes,
         TurtleWriterOptions options,
@@ -326,90 +319,86 @@ public static class TurtleWriter
         foreach(string subjectKey in subjectOrder)
         {
             (RdfTerm Subject, Dictionary<string, (NamedNode Predicate, List<RdfTerm> Objects)> Predicates) subjectEntry = bySubject[subjectKey];
-            writer.Write(indent);
-            WriteTermInline(writer, subjectEntry.Subject, prefixes);
+            output.WriteUtf8(indent);
+            WriteTermInline(output, subjectEntry.Subject, prefixes);
 
             bool firstPredicate = true;
             foreach(KeyValuePair<string, (NamedNode Predicate, List<RdfTerm> Objects)> predicateEntry in subjectEntry.Predicates)
             {
                 if(firstPredicate)
                 {
-                    writer.Write(" ");
+                    output.WriteByte((byte)' ');
                     firstPredicate = false;
                 }
                 else
                 {
-                    writer.Write(" ;\n");
-                    writer.Write(indent);
-                    writer.Write(options.Indent);
+                    output.WriteUtf8Literal(" ;\n"u8);
+                    output.WriteUtf8(indent);
+                    output.WriteUtf8(options.Indent);
                 }
 
-                WriteTermInline(writer, predicateEntry.Value.Predicate, prefixes);
-                writer.Write(" ");
+                WriteTermInline(output, predicateEntry.Value.Predicate, prefixes);
+                output.WriteByte((byte)' ');
 
                 for(int oi = 0; oi < predicateEntry.Value.Objects.Count; oi++)
                 {
                     if(oi > 0)
                     {
-                        writer.Write(" , ");
+                        output.WriteUtf8Literal(" , "u8);
                     }
 
-                    WriteTermInline(writer, predicateEntry.Value.Objects[oi], prefixes);
+                    WriteTermInline(output, predicateEntry.Value.Objects[oi], prefixes);
                 }
             }
 
-            writer.Write(" .\n");
+            output.WriteUtf8Literal(" .\n"u8);
         }
     }
 
     private static void WriteTermInline(
-        StreamWriter writer,
+        IBufferWriter<byte> output,
         RdfTerm term,
         Dictionary<string, string> prefixes)
     {
         switch(term)
         {
-            case NamedNode named:
+            case(NamedNode named):
             {
-                WriteNamedNode(writer, named, prefixes);
+                WriteNamedNode(output, named, prefixes);
                 break;
             }
-
-            case BlankNode blank:
+            case(BlankNode blank):
             {
-                writer.Write("_:");
-                writer.Write(blank.Label.ToString());
+                output.WriteUtf8Literal("_:"u8);
+                output.WriteUtf8String(blank.Label);
                 break;
             }
-
-            case Literal literal:
+            case(Literal literal):
             {
-                WriteLiteral(writer, literal, prefixes);
+                WriteLiteral(output, literal, prefixes);
                 break;
             }
-
-            case TripleTerm tripleTerm:
+            case(TripleTerm tripleTerm):
             {
-                writer.Write("<<( ");
-                WriteTermInline(writer, tripleTerm.Subject, prefixes);
-                writer.Write(" ");
-                WriteNamedNode(writer, tripleTerm.Predicate, prefixes);
-                writer.Write(" ");
-                WriteTermInline(writer, tripleTerm.Object, prefixes);
-                writer.Write(" )>>");
+                output.WriteUtf8Literal("<<( "u8);
+                WriteTermInline(output, tripleTerm.Subject, prefixes);
+                output.WriteByte((byte)' ');
+                WriteNamedNode(output, tripleTerm.Predicate, prefixes);
+                output.WriteByte((byte)' ');
+                WriteTermInline(output, tripleTerm.Object, prefixes);
+                output.WriteUtf8Literal(" )>>"u8);
                 break;
             }
-
             default:
             {
-                writer.Write(term.ToString());
+                output.WriteUtf8(term.ToString());
                 break;
             }
         }
     }
 
     private static void WriteNamedNode(
-        StreamWriter writer,
+        IBufferWriter<byte> output,
         NamedNode named,
         Dictionary<string, string> prefixes)
     {
@@ -420,16 +409,16 @@ public static class TurtleWriter
             string local = iri[ns.Length..];
             if(IsSimpleLocal(local))
             {
-                writer.Write(prefix);
-                writer.Write(':');
-                writer.Write(local);
+                output.WriteUtf8(prefix);
+                output.WriteByte((byte)':');
+                output.WriteUtf8(local);
                 return;
             }
         }
 
-        writer.Write('<');
-        writer.Write(iri);
-        writer.Write('>');
+        output.WriteByte((byte)'<');
+        output.WriteUtf8String(named.Iri);
+        output.WriteByte((byte)'>');
     }
 
     private static bool IsSimpleLocal(string local)
@@ -455,84 +444,68 @@ public static class TurtleWriter
         return true;
     }
 
-    private static void WriteLiteral(StreamWriter writer, Literal literal, Dictionary<string, string> prefixes)
+    private static void WriteLiteral(IBufferWriter<byte> output, Literal literal, Dictionary<string, string> prefixes)
     {
-        writer.Write('"');
-        AppendEscapedString(writer, literal.Value.ToString());
-        writer.Write('"');
+        output.WriteByte((byte)'"');
+        AppendEscapedString(output, literal.Value.Span);
+        output.WriteByte((byte)'"');
 
         if(literal.Language is { } lang)
         {
-            writer.Write('@');
-            writer.Write(lang.ToString());
+            output.WriteByte((byte)'@');
+            output.WriteUtf8String(lang);
             if(literal.BaseDirection is { } direction)
             {
-                writer.Write("--");
-                writer.Write(direction switch
+                output.WriteUtf8Literal("--"u8);
+                output.WriteUtf8Literal(direction switch
                 {
-                    TextDirection.Ltr => "ltr",
-                    TextDirection.Rtl => "rtl",
-                    _ => "ltr"
+                    TextDirection.Ltr => "ltr"u8,
+                    TextDirection.Rtl => "rtl"u8,
+                    _ => "ltr"u8
                 });
             }
 
             return;
         }
 
-        string datatypeIri = literal.Datatype.Iri.ToString();
-        if(string.Equals(datatypeIri, "http://www.w3.org/2001/XMLSchema#string", StringComparison.Ordinal))
+        if(literal.Datatype.Iri.Span.SequenceEqual("http://www.w3.org/2001/XMLSchema#string"u8))
         {
             return;
         }
 
-        writer.Write("^^");
-        WriteNamedNode(writer, literal.Datatype, prefixes);
+        output.WriteUtf8Literal("^^"u8);
+        WriteNamedNode(output, literal.Datatype, prefixes);
     }
 
-    private static void AppendEscapedString(StreamWriter writer, string value)
+    private static void AppendEscapedString(IBufferWriter<byte> output, ReadOnlySpan<byte> value)
     {
+        //Scan the UTF-8 bytes, copying maximal runs that need no escaping and emitting the
+        //two-byte escape for each of the five Turtle string-escape bytes. The escaped bytes are
+        //all ASCII, so they never occur inside a multi-byte UTF-8 sequence and runs stay intact.
+        int runStart = 0;
         for(int i = 0; i < value.Length; i++)
         {
-            char c = value[i];
-            switch(c)
+            ReadOnlySpan<byte> escape = value[i] switch
             {
-                case '\\':
-                {
-                    writer.Write("\\\\");
-                    break;
-                }
+                (byte)'\\' => "\\\\"u8,
+                (byte)'"' => "\\\""u8,
+                (byte)'\n' => "\\n"u8,
+                (byte)'\r' => "\\r"u8,
+                (byte)'\t' => "\\t"u8,
+                _ => default
+            };
 
-                case '"':
-                {
-                    writer.Write("\\\"");
-                    break;
-                }
-
-                case '\n':
-                {
-                    writer.Write("\\n");
-                    break;
-                }
-
-                case '\r':
-                {
-                    writer.Write("\\r");
-                    break;
-                }
-
-                case '\t':
-                {
-                    writer.Write("\\t");
-                    break;
-                }
-
-                default:
-                {
-                    writer.Write(c);
-                    break;
-                }
+            if(escape.IsEmpty)
+            {
+                continue;
             }
+
+            output.WriteUtf8Literal(value[runStart..i]);
+            output.WriteUtf8Literal(escape);
+            runStart = i + 1;
         }
+
+        output.WriteUtf8Literal(value[runStart..]);
     }
 
     private static string TermKey(RdfTerm term)

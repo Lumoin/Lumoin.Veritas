@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO.Pipelines;
 using System.Text;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
@@ -114,6 +115,30 @@ internal sealed class SparqlResultsDelimitedWriterTests
         Assert.AreEqual(3, lineCount);
         Assert.AreEqual("?s\t?age\t?name\t?b\n", firstLine);
         Assert.AreEqual(SparqlResultsDelimitedWriter.WriteToString(results, SparqlDelimitedResultsFormat.Tsv), streamed.ToString());
+    }
+
+    /// <summary>The byte-native <see cref="PipeWriter"/> overload writes the same bytes (both formats) as the materialized serialization.</summary>
+    [TestMethod]
+    public async Task WriteAsyncToPipeReproducesMaterializedOutput()
+    {
+        SparqlResultSet results = SampleSelect();
+
+        await AssertPipeMatchesString(results, SparqlDelimitedResultsFormat.Tsv).ConfigureAwait(false);
+        await AssertPipeMatchesString(results, SparqlDelimitedResultsFormat.Csv).ConfigureAwait(false);
+    }
+
+    /// <summary>Writes a result set through the <see cref="PipeWriter"/> overload and asserts the bytes equal the materialized text.</summary>
+    /// <param name="results">The result set to serialize.</param>
+    /// <param name="format">The delimited format to emit.</param>
+    /// <returns>The asynchronous assertion.</returns>
+    private async Task AssertPipeMatchesString(SparqlResultSet results, SparqlDelimitedResultsFormat format)
+    {
+        using MemoryStream destination = new();
+        await SparqlResultsDelimitedWriter.WriteAsync(results, PipeWriter.Create(destination, new StreamPipeWriterOptions(leaveOpen: true)), format, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(
+            SparqlResultsDelimitedWriter.WriteToString(results, format),
+            Encoding.UTF8.GetString(destination.ToArray()));
     }
 
     /// <summary>Adapts a solution list to an async sequence for the streaming writer.</summary>

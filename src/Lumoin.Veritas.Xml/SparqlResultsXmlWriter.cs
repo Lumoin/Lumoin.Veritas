@@ -39,11 +39,15 @@ public static class SparqlResultsXmlWriter
         return new Utf8String(stream.ToArray());
     }
 
-    /// <summary>Writes a result set as SPARQL Results XML to a stream.</summary>
+    /// <summary>
+    /// Writes the SPARQL Results XML document to a stream: the internal sink behind <see cref="WriteToUtf8String"/>,
+    /// kept private because <see cref="XmlWriter"/> serializes only to a <see cref="Stream"/> (not to an
+    /// <see cref="System.Buffers.IBufferWriter{T}"/>), so the <see cref="Stream"/> is the localized framework boundary.
+    /// </summary>
     /// <param name="results">The result set to serialize.</param>
     /// <param name="stream">The destination stream.</param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public static void Write(SparqlResultSet results, Stream stream)
+    private static void Write(SparqlResultSet results, Stream stream)
     {
         ArgumentNullException.ThrowIfNull(results);
         ArgumentNullException.ThrowIfNull(stream);

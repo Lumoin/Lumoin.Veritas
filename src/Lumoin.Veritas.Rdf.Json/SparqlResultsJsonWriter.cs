@@ -1,8 +1,9 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
-using System.IO;
 using System.Text.Json;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Memory;
 using Lumoin.Veritas.Sparql.Execution;
 using Lumoin.Veritas.Sparql.Results;
 using TripleTerm = Lumoin.Veritas.Core.TripleTerm;
@@ -31,23 +32,26 @@ public static class SparqlResultsJsonWriter
     {
         ArgumentNullException.ThrowIfNull(results);
 
-        using MemoryStream stream = new();
-        Write(results, stream, indented);
+        using SlabBufferWriter buffer = new(VeritasMemoryPool<byte>.Shared);
+        Write(results, buffer, indented);
 
-        return new Utf8String(stream.ToArray());
+        int length = buffer.BytesWritten;
+        using IMemoryOwner<byte> owned = buffer.Detach();
+
+        return new Utf8String(owned.Memory.Span[..length].ToArray());
     }
 
-    /// <summary>Writes a result set as SPARQL Results JSON to a stream.</summary>
+    /// <summary>Writes a result set as SPARQL Results JSON into a byte-buffer writer.</summary>
     /// <param name="results">The result set to serialize.</param>
-    /// <param name="stream">The destination stream.</param>
+    /// <param name="bufferWriter">The destination buffer writer; a <see cref="System.IO.Pipelines.PipeWriter"/> or any pooled sink.</param>
     /// <param name="indented">Whether to pretty-print the JSON.</param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public static void Write(SparqlResultSet results, Stream stream, bool indented = true)
+    public static void Write(SparqlResultSet results, IBufferWriter<byte> bufferWriter, bool indented = true)
     {
         ArgumentNullException.ThrowIfNull(results);
-        ArgumentNullException.ThrowIfNull(stream);
+        ArgumentNullException.ThrowIfNull(bufferWriter);
 
-        using Utf8JsonWriter writer = new(stream, new JsonWriterOptions { Indented = indented });
+        using Utf8JsonWriter writer = new(bufferWriter, new JsonWriterOptions { Indented = indented });
         writer.WriteStartObject();
 
         writer.WritePropertyName(SparqlResultsJsonNames.Head);
