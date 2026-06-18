@@ -156,6 +156,18 @@ public static class WellKnownDiagnostics
         /// <summary>A backslash escape inside a prefixed name named a character outside the <c>PN_LOCAL_ESC</c> reserved set.</summary>
         /// <remarks>Lexer rule for <c>PN_LOCAL_ESC</c>. See <see href="https://www.w3.org/TR/sparql12-query/#rPN_LOCAL_ESC">SPARQL 1.2 §19.8 [PN_LOCAL_ESC]</see>.</remarks>
         public static Utf8String InvalidPrefixedNameEscape { get; } = new("LX0031"u8.ToArray());
+
+        /// <summary>A block comment was opened with <c>/*</c> but never closed with <c>*/</c> before end of input.</summary>
+        /// <remarks>Lexer rule for the JSONata block-comment trivia <c>/* … */</c>. See <see href="https://docs.jsonata.org/">the JSONata language reference</see>.</remarks>
+        public static Utf8String UnterminatedBlockComment { get; } = new("LX0032"u8.ToArray());
+
+        /// <summary>A regular-expression literal had no pattern between its opening and closing slash.</summary>
+        /// <remarks>Lexer rule for the JSONata regular-expression literal <c>/pattern/flags</c>. See <see href="https://docs.jsonata.org/regex">the JSONata regular-expressions reference</see>.</remarks>
+        public static Utf8String EmptyRegex { get; } = new("LX0033"u8.ToArray());
+
+        /// <summary>A regular-expression literal was opened with <c>/</c> but never closed before end of input.</summary>
+        /// <remarks>Lexer rule for the JSONata regular-expression literal <c>/pattern/flags</c>. See <see href="https://docs.jsonata.org/regex">the JSONata regular-expressions reference</see>.</remarks>
+        public static Utf8String UnterminatedRegex { get; } = new("LX0034"u8.ToArray());
     }
 
     /// <summary>Turtle parser diagnostics (<c>TT</c> prefix).</summary>
@@ -482,6 +494,81 @@ public static class WellKnownDiagnostics
         /// <summary>The per-parse diagnostic cap was reached; further parser diagnostics are suppressed (the AST still assembles).</summary>
         /// <remarks>Parser-internal bound (see the parser's <c>MaxDiagnostics</c> option), not a grammar production.</remarks>
         public static Utf8String ExcessDiagnostics { get; } = new("SP9999"u8.ToArray());
+    }
+
+    /// <summary>JSONata parser diagnostics (<c>JS</c> prefix).</summary>
+    /// <remarks>
+    /// One code per distinct parser-error condition the JSONata parser recovers from. The lexer keeps
+    /// its shared <c>LX</c> codes (bridged into the same bag); these <c>JS</c> codes cover only the
+    /// grammar-level conditions the parser raises. Codes are stable and never renumbered; new conditions
+    /// append a higher number. See <see href="https://docs.jsonata.org/">the JSONata language reference</see>.
+    /// </remarks>
+    [SuppressMessage("Design", "CA1034:Nested types should not be visible", Justification = "WellKnownDiagnostics.Jsonata.X is the intended usage pattern.")]
+    public static class Jsonata
+    {
+        /// <summary>An expression was expected at the cursor.</summary>
+        /// <remarks>JSONata <c>expression</c>. See <see href="https://docs.jsonata.org/">the JSONata language reference</see>.</remarks>
+        public static Utf8String ExpectedExpression { get; } = new("JS0001"u8.ToArray());
+
+        /// <summary>A token appeared where the grammar permits none (generic unexpected-token).</summary>
+        /// <remarks>No applicable production at the cursor. See <see href="https://docs.jsonata.org/">the JSONata language reference</see>.</remarks>
+        public static Utf8String UnexpectedToken { get; } = new("JS0002"u8.ToArray());
+
+        /// <summary>A construct the grammar defines but this build does not yet parse was encountered.</summary>
+        /// <remarks>Parser coverage bound, not a grammar error; the message names the construct. See <see href="https://docs.jsonata.org/">the JSONata language reference</see>.</remarks>
+        public static Utf8String UnsupportedConstruct { get; } = new("JS0003"u8.ToArray());
+
+        /// <summary>An expected closing token (for example <c>)</c> or <c>]</c>) was missing.</summary>
+        /// <remarks>JSONata bracketed / predicate productions. See <see href="https://docs.jsonata.org/path-operators">the JSONata path-operators reference</see>.</remarks>
+        public static Utf8String MissingCloser { get; } = new("JS0004"u8.ToArray());
+
+        /// <summary>The expression continued past its complete form (trailing tokens after the program).</summary>
+        /// <remarks>JSONata <c>expression</c> end. See <see href="https://docs.jsonata.org/">the JSONata language reference</see>.</remarks>
+        public static Utf8String ExpectedEndOfExpression { get; } = new("JS0005"u8.ToArray());
+
+        /// <summary>The left side of the bind operator <c>:=</c> was not a variable name (it must start with <c>$</c>).</summary>
+        /// <remarks>JSONata bind <c>:=</c>; corresponds to the reference parser's <c>S0212</c>. See <see href="https://docs.jsonata.org/programming">the JSONata programming reference</see>.</remarks>
+        public static Utf8String BindLeftNotVariable { get; } = new("JS0006"u8.ToArray());
+
+        /// <summary>A lambda parameter was not a variable name (each parameter must be a <c>$name</c>).</summary>
+        /// <remarks>JSONata function definition <c>function(...){...}</c>; corresponds to the reference parser's <c>S0208</c>. See <see href="https://docs.jsonata.org/programming">the JSONata programming reference</see>.</remarks>
+        public static Utf8String LambdaParameterNotVariable { get; } = new("JS0007"u8.ToArray());
+
+        /// <summary>A lambda's bracketed type signature <c>&lt;...&gt;</c> was malformed (a parameterised type on a non-container, a bracket nested in a union, or too many parameters).</summary>
+        /// <remarks>JSONata function-signature syntax <c>function(...)&lt;sig&gt;{...}</c>; corresponds to the reference parser's <c>S0401</c> / <c>S0402</c> signature codes. See <see href="https://docs.jsonata.org/programming">the JSONata programming reference</see>.</remarks>
+        public static Utf8String InvalidFunctionSignature { get; } = new("JS0008"u8.ToArray());
+
+        /// <summary>A grouping path step <c>path{ ... }</c> was followed by a predicate <c>[ ... ]</c> or by another grouping, both of which are invalid in a single step.</summary>
+        /// <remarks>JSONata path grammar; corresponds to the reference parser's <c>S0209</c> (predicate after a grouping) and <c>S0210</c> (more than one grouping in a step) codes. See <see href="https://docs.jsonata.org/sorting-grouping">the JSONata grouping reference</see>.</remarks>
+        public static Utf8String InvalidGroupingStep { get; } = new("JS0009"u8.ToArray());
+
+        /// <summary>A path step was a number or a value literal (<c>true</c> / <c>false</c> / <c>null</c>), which is not a valid navigation step.</summary>
+        /// <remarks>JSONata path grammar; corresponds to the reference parser's <c>S0213</c>. Raised by the post-parse path-processing pass. See <see href="https://docs.jsonata.org/path-operators">the JSONata path-operators reference</see>.</remarks>
+        public static Utf8String PathStepNotNavigable { get; } = new("JS0010"u8.ToArray());
+
+        /// <summary>The right-hand side of a context bind <c>@</c> or a positional bind <c>#</c> was not a variable name (it must be a <c>$name</c>); the message names the offending operator token.</summary>
+        /// <remarks>JSONata joins grammar; corresponds to the reference parser's <c>S0214</c>. The bound side of <c>@</c> / <c>#</c> must be a variable. See <see href="https://docs.jsonata.org/sorting-grouping#joins">the JSONata joins reference</see>.</remarks>
+        public static Utf8String BindRightNotVariable { get; } = new("JS0011"u8.ToArray());
+
+        /// <summary>A context bind <c>@</c> was applied after a predicate, which the grammar forbids in a single step.</summary>
+        /// <remarks>JSONata joins grammar; corresponds to the reference parser's <c>S0215</c>. Raised by the post-parse path-processing pass. See <see href="https://docs.jsonata.org/sorting-grouping#joins">the JSONata joins reference</see>.</remarks>
+        public static Utf8String ContextBindAfterPredicate { get; } = new("JS0012"u8.ToArray());
+
+        /// <summary>A context bind <c>@</c> or positional bind <c>#</c> was applied after an order-by clause, which the grammar forbids in a single step.</summary>
+        /// <remarks>JSONata joins grammar; corresponds to the reference parser's <c>S0216</c>. Raised by the post-parse path-processing pass. See <see href="https://docs.jsonata.org/sorting-grouping#joins">the JSONata joins reference</see>.</remarks>
+        public static Utf8String BindAfterSort { get; } = new("JS0013"u8.ToArray());
+
+        /// <summary>A parent operator <c>%</c> could not derive an ancestor — there is no structural step it can climb to (a bare or over-deep parent, or a parent over a non-navigable step).</summary>
+        /// <remarks>JSONata parent-operator grammar; corresponds to the reference parser's <c>S0217</c>. Raised by the post-parse ancestry pass. See <see href="https://docs.jsonata.org/path-operators#navigate-to-the-parent">the JSONata path-operators reference</see>.</remarks>
+        public static Utf8String CannotDeriveAncestor { get; } = new("JS0014"u8.ToArray());
+
+        /// <summary>A numeric literal's magnitude is outside the representable IEEE-754 double range.</summary>
+        /// <remarks>JSONata number-literal grammar; corresponds to the reference parser's <c>S0102</c> (number out of range). See <see href="https://docs.jsonata.org/simple">the JSONata simple-queries reference</see>.</remarks>
+        public static Utf8String NumberOutOfRange { get; } = new("JS0015"u8.ToArray());
+
+        /// <summary>The per-parse diagnostic cap was reached; further parser diagnostics are suppressed (the AST still assembles).</summary>
+        /// <remarks>Parser-internal bound (see the parser's <c>MaxDiagnostics</c> option), not a grammar production.</remarks>
+        public static Utf8String ExcessDiagnostics { get; } = new("JS9999"u8.ToArray());
     }
 
     /// <summary>
