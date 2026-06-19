@@ -52,20 +52,23 @@ internal sealed class ComputeLaneTests
     public async Task ThreadedLaneRunsAdmittedWorkAsATurn()
     {
         FakeTimeProvider time = new();
-        using ManualResetEventSlim ran = new(false);
+        TaskCompletionSource ran = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         ThreadedComputeLane lane = new(ExecutionPolicy.Default, () => Env(4), time);
         await using var laneScope = lane.ConfigureAwait(false);
 
         ComputeAdmission admission = lane.Admit(ComputeWorkClass.ViewBuild, _ =>
         {
-            ran.Set();
+            ran.TrySetResult();
 
             return ValueTask.CompletedTask;
         });
 
         Assert.AreEqual(ComputeAdmission.Admitted, admission);
-        Assert.IsTrue(ran.Wait(ConditionTimeout, TestContext.CancellationToken), "Expected the admitted turn to run.");
+
+        //Await the turn's completion signal, bounded only by the test's cancellation token: this asserts
+        //the turn ran (correctness), not that it ran inside an arbitrary wall-clock window (latency).
+        await ran.Task.WaitAsync(TestContext.CancellationToken).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -99,7 +102,7 @@ internal sealed class ComputeLaneTests
     public async Task AFullBoundedQueueShedsWithAVerdict()
     {
         FakeTimeProvider time = new();
-        using ManualResetEventSlim started = new(false);
+        TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
         TaskCompletionSource release = new();
 
         //One worker, queue capacity two: occupy the worker, fill the queue, then the next sheds.
@@ -109,11 +112,11 @@ internal sealed class ComputeLaneTests
 
         lane.Admit(ComputeWorkClass.ViewBuild, async _ =>
         {
-            started.Set();
+            started.TrySetResult();
             await release.Task.ConfigureAwait(false);
         });
 
-        Assert.IsTrue(started.Wait(ConditionTimeout, TestContext.CancellationToken), "Expected the first turn to occupy the worker.");
+        await started.Task.WaitAsync(TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.AreEqual(ComputeAdmission.Admitted, lane.Admit(ComputeWorkClass.ViewBuild, Nothing));
         Assert.AreEqual(ComputeAdmission.Admitted, lane.Admit(ComputeWorkClass.ViewBuild, Nothing));
@@ -214,7 +217,7 @@ internal sealed class ComputeLaneTests
     public async Task AFaultingTurnDoesNotTearDownItsWorker()
     {
         FakeTimeProvider time = new();
-        using ManualResetEventSlim ran = new(false);
+        TaskCompletionSource ran = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         ExecutionPolicy policy = ExecutionPolicy.Default with { ComputeLaneWorkers = 1, ComputeQueueCapacity = 16 };
         ThreadedComputeLane lane = new(policy, () => Env(8), time);
@@ -223,19 +226,19 @@ internal sealed class ComputeLaneTests
         lane.Admit(ComputeWorkClass.Reasoning, _ => throw new InvalidOperationException("turn fault"));
         lane.Admit(ComputeWorkClass.Reasoning, _ =>
         {
-            ran.Set();
+            ran.TrySetResult();
 
             return ValueTask.CompletedTask;
         });
 
         //The consumer survived the faulting turn and ran the next one.
-        Assert.IsTrue(ran.Wait(ConditionTimeout, TestContext.CancellationToken), "Expected the consumer to survive a faulting turn and run the next.");
+        await ran.Task.WaitAsync(TestContext.CancellationToken).ConfigureAwait(false);
     }
 
     [TestMethod]
     public async Task CooperativeLaneRunsTurnsOnItsSinglePump()
     {
-        using ManualResetEventSlim ran = new(false);
+        TaskCompletionSource ran = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         CooperativeComputeLane lane = new(ExecutionPolicy.Default, () => Env(8), TimeProvider.System);
         await using var laneScope = lane.ConfigureAwait(false);
@@ -245,19 +248,19 @@ internal sealed class ComputeLaneTests
 
         ComputeAdmission admission = lane.Admit(ComputeWorkClass.ViewBuild, _ =>
         {
-            ran.Set();
+            ran.TrySetResult();
 
             return ValueTask.CompletedTask;
         });
 
         Assert.AreEqual(ComputeAdmission.Admitted, admission);
-        Assert.IsTrue(ran.Wait(ConditionTimeout, TestContext.CancellationToken), "Expected the cooperative pump to run the admitted turn.");
+        await ran.Task.WaitAsync(TestContext.CancellationToken).ConfigureAwait(false);
     }
 
     [TestMethod]
     public async Task CooperativeLaneShedsAFullQueueWithAVerdict()
     {
-        using ManualResetEventSlim started = new(false);
+        TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
         TaskCompletionSource release = new();
 
         ExecutionPolicy policy = ExecutionPolicy.Default with { ComputeQueueCapacity = 2 };
@@ -266,11 +269,11 @@ internal sealed class ComputeLaneTests
 
         lane.Admit(ComputeWorkClass.ViewBuild, async _ =>
         {
-            started.Set();
+            started.TrySetResult();
             await release.Task.ConfigureAwait(false);
         });
 
-        Assert.IsTrue(started.Wait(ConditionTimeout, TestContext.CancellationToken), "Expected the first turn to occupy the pump.");
+        await started.Task.WaitAsync(TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.AreEqual(ComputeAdmission.Admitted, lane.Admit(ComputeWorkClass.ViewBuild, Nothing));
         Assert.AreEqual(ComputeAdmission.Admitted, lane.Admit(ComputeWorkClass.ViewBuild, Nothing));

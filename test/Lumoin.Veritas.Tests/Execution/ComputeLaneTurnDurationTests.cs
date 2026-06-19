@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.Metrics;
-using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Execution;
@@ -20,8 +19,8 @@ namespace Lumoin.Veritas.Tests.Execution;
 [TestClass]
 internal sealed class ComputeLaneTurnDurationTests
 {
-    /// <summary>The safety bound for waiting on the lane to reach a known state; a timeout means a real defect.</summary>
-    private static readonly TimeSpan ConditionTimeout = TimeSpan.FromSeconds(10);
+    /// <summary>The MSTest-supplied per-test context.</summary>
+    public TestContext TestContext { get; set; } = null!;
 
     /// <summary>Builds a non-browser environment snapshot.</summary>
     /// <param name="processorCount">The logical processor count.</param>
@@ -39,12 +38,15 @@ internal sealed class ComputeLaneTurnDurationTests
 
         List<(ComputeWorkClass WorkClass, double Milliseconds)> recorded = [];
         object recordLock = new();
+        TaskCompletionSource recordedOnce = new(TaskCreationOptions.RunContinuationsAsynchronously);
         RecordTurnDurationDelegate recorder = (workClass, milliseconds) =>
         {
             lock(recordLock)
             {
                 recorded.Add((workClass, milliseconds));
             }
+
+            recordedOnce.TrySetResult();
         };
 
         ThreadedComputeLane lane = new(policy, () => Env(8), time, recorder);
@@ -61,7 +63,9 @@ internal sealed class ComputeLaneTurnDurationTests
             return ValueTask.CompletedTask;
         });
 
-        Assert.IsTrue(SpinWait.SpinUntil(() => lane.TurnsCompleted == 1, ConditionTimeout), $"Expected one completed turn, saw {lane.TurnsCompleted}.");
+        //The injected recorder runs as each turn completes, so awaiting it (bounded by the test's
+        //cancellation token) asserts the recording happened — no wall-clock spin.
+        await recordedOnce.Task.WaitAsync(TestContext.CancellationToken).ConfigureAwait(false);
 
         lock(recordLock)
         {
