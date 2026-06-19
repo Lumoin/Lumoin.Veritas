@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Encoding;
+using Lumoin.Veritas.Core.Parsing;
 
 namespace Lumoin.Veritas.Turtle;
 
@@ -179,28 +180,43 @@ public static class TurtleWriter
 
     private static void CollectNamespaces(RdfTerm? term, HashSet<string> sink)
     {
-        switch(term)
+        //Walk over an explicit stack (no recursion); a quoted triple's per-frame depth bounds nesting with a
+        //catchable exception. Push order is irrelevant — the sink is an unordered set.
+        Stack<NamespaceWalkStep> work = new();
+        work.Push(new NamespaceWalkStep(term, 0));
+
+        while(work.Count > 0)
         {
-            case(NamedNode named):
+            NamespaceWalkStep step = work.Pop();
+            switch(step.Term)
             {
-                sink.Add(NamespaceOf(named.Iri.ToString()));
-                break;
-            }
-            case(Literal literal):
-            {
-                sink.Add(NamespaceOf(literal.Datatype.Iri.ToString()));
-                break;
-            }
-            case(TripleTerm tripleTerm):
-            {
-                CollectNamespaces(tripleTerm.Subject, sink);
-                sink.Add(NamespaceOf(tripleTerm.Predicate.Iri.ToString()));
-                CollectNamespaces(tripleTerm.Object, sink);
-                break;
-            }
-            default:
-            {
-                break;
+                case(NamedNode named):
+                {
+                    sink.Add(NamespaceOf(named.Iri.ToString()));
+                    break;
+                }
+                case(Literal literal):
+                {
+                    sink.Add(NamespaceOf(literal.Datatype.Iri.ToString()));
+                    break;
+                }
+                case(TripleTerm tripleTerm):
+                {
+                    int next = step.Depth + 1;
+                    if(next > QuotedTripleLimits.MaxNestingDepth)
+                    {
+                        throw new TripleTermDepthLimitException(next, QuotedTripleLimits.MaxNestingDepth);
+                    }
+
+                    sink.Add(NamespaceOf(tripleTerm.Predicate.Iri.ToString()));
+                    work.Push(new NamespaceWalkStep(tripleTerm.Subject, next));
+                    work.Push(new NamespaceWalkStep(tripleTerm.Object, next));
+                    break;
+                }
+                default:
+                {
+                    break;
+                }
             }
         }
     }
@@ -360,6 +376,83 @@ public static class TurtleWriter
         RdfTerm term,
         Dictionary<string, string> prefixes)
     {
+        //A quoted triple is the only nesting term; everything else is a leaf written directly. Walking the
+        //triple over an explicit stack keeps deep nesting off the call stack; the depth guard turns a
+        //pathological term into a catchable exception. The predicate stays prefix-aware via WriteNamedNode.
+        if(term is not TripleTerm root)
+        {
+            WriteLeafInline(output, term, prefixes);
+
+            return;
+        }
+
+        Stack<TermStep> work = new();
+        work.Push(new TermStep(StepKind.Term, root, null));
+        int depth = 0;
+
+        while(work.Count > 0)
+        {
+            TermStep step = work.Pop();
+            switch(step.Kind)
+            {
+                case(StepKind.Term):
+                {
+                    if(step.Term is TripleTerm triple)
+                    {
+                        depth++;
+                        if(depth > QuotedTripleLimits.MaxNestingDepth)
+                        {
+                            throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
+                        }
+
+                        //Push the components in reverse so they pop in serialization order:
+                        //<<( subject SPACE predicate SPACE object )>>.
+                        work.Push(new TermStep(StepKind.Close, null, null));
+                        work.Push(new TermStep(StepKind.Term, triple.Object, null));
+                        work.Push(new TermStep(StepKind.Space, null, null));
+                        work.Push(new TermStep(StepKind.Predicate, null, triple.Predicate));
+                        work.Push(new TermStep(StepKind.Space, null, null));
+                        work.Push(new TermStep(StepKind.Term, triple.Subject, null));
+                        work.Push(new TermStep(StepKind.Open, null, null));
+                    }
+                    else
+                    {
+                        WriteLeafInline(output, step.Term!, prefixes);
+                    }
+
+                    break;
+                }
+                case(StepKind.Open):
+                {
+                    output.WriteUtf8Literal("<<( "u8);
+                    break;
+                }
+                case(StepKind.Space):
+                {
+                    output.WriteByte((byte)' ');
+                    break;
+                }
+                case(StepKind.Predicate):
+                {
+                    WriteNamedNode(output, step.Predicate!, prefixes);
+                    break;
+                }
+                default:
+                {
+                    //StepKind.Close: the triple's components are written; close it and unwind one nesting level.
+                    output.WriteUtf8Literal(" )>>"u8);
+                    depth--;
+                    break;
+                }
+            }
+        }
+    }
+
+    private static void WriteLeafInline(
+        IBufferWriter<byte> output,
+        RdfTerm term,
+        Dictionary<string, string> prefixes)
+    {
         switch(term)
         {
             case(NamedNode named):
@@ -376,17 +469,6 @@ public static class TurtleWriter
             case(Literal literal):
             {
                 WriteLiteral(output, literal, prefixes);
-                break;
-            }
-            case(TripleTerm tripleTerm):
-            {
-                output.WriteUtf8Literal("<<( "u8);
-                WriteTermInline(output, tripleTerm.Subject, prefixes);
-                output.WriteByte((byte)' ');
-                WriteNamedNode(output, tripleTerm.Predicate, prefixes);
-                output.WriteByte((byte)' ');
-                WriteTermInline(output, tripleTerm.Object, prefixes);
-                output.WriteUtf8Literal(" )>>"u8);
                 break;
             }
             default:
@@ -510,13 +592,95 @@ public static class TurtleWriter
 
     private static string TermKey(RdfTerm term)
     {
+        //A non-triple term keys directly. A quoted triple is folded post-order over an explicit stack so a
+        //deeply-nested term cannot overflow: each level is expanded (children scheduled) then combined once its
+        //children's keys are memoised. The memo is keyed by reference only — distinct value-equal instances
+        //miss the cache and recompute the identical key, so grouping is preserved; it never returns a wrong key.
+        if(term is not TripleTerm root)
+        {
+            return LeafKey(term);
+        }
+
+        Dictionary<RdfTerm, string> done = new(ReferenceEqualityComparer.Instance);
+        Stack<KeyStep> work = new();
+        work.Push(new KeyStep(root, false, 0));
+
+        while(work.Count > 0)
+        {
+            KeyStep step = work.Pop();
+            if(step.Term is not TripleTerm triple)
+            {
+                done[step.Term] = LeafKey(step.Term);
+
+                continue;
+            }
+
+            if(!step.Expanded)
+            {
+                int next = step.Depth + 1;
+                if(next > QuotedTripleLimits.MaxNestingDepth)
+                {
+                    throw new TripleTermDepthLimitException(next, QuotedTripleLimits.MaxNestingDepth);
+                }
+
+                work.Push(new KeyStep(triple, true, step.Depth));
+                work.Push(new KeyStep(triple.Subject, false, next));
+                work.Push(new KeyStep(triple.Object, false, next));
+            }
+            else
+            {
+                //The predicate stays inlined (its raw IRI), not routed through LeafKey, to keep the key bytes.
+                done[triple] = "t:" + done[triple.Subject] + "|" + triple.Predicate.Iri.ToString() + "|" + done[triple.Object];
+            }
+        }
+
+        return done[root];
+    }
+
+    private static string LeafKey(RdfTerm term)
+    {
         return term switch
         {
             NamedNode named => "i:" + named.Iri.ToString(),
             BlankNode blank => "b:" + blank.Label.ToString(),
             Literal lit => "l:" + lit.Value.ToString() + ":" + (lit.Language?.ToString() ?? string.Empty) + ":" + lit.Datatype.Iri.ToString(),
-            TripleTerm tt => "t:" + TermKey(tt.Subject) + "|" + tt.Predicate.Iri.ToString() + "|" + TermKey(tt.Object),
             _ => "x:" + term.ToString()
         };
     }
+
+    /// <summary>One step on the namespace-collection work-stack; depth bounds quoted-triple nesting.</summary>
+    /// <param name="Term">The term whose namespaces to collect, or <see langword="null"/>.</param>
+    /// <param name="Depth">The quoted-triple nesting depth at which this term was scheduled.</param>
+    private readonly record struct NamespaceWalkStep(RdfTerm? Term, int Depth);
+
+    /// <summary>One step on the grouping-key work-stack: a term to key, in either its expand or its combine phase.</summary>
+    /// <param name="Term">The term to key.</param>
+    /// <param name="Expanded">Whether the term's components have been scheduled (the combine phase).</param>
+    /// <param name="Depth">The quoted-triple nesting depth at which this term was scheduled.</param>
+    private readonly record struct KeyStep(RdfTerm Term, bool Expanded, int Depth);
+
+    /// <summary>The kind of step on the inline-term serialization work-stack.</summary>
+    private enum StepKind
+    {
+        /// <summary>Visit a term: write a leaf directly, or expand a quoted triple into its component steps.</summary>
+        Term,
+
+        /// <summary>Write the quoted-triple opening delimiter.</summary>
+        Open,
+
+        /// <summary>Write a single component separator.</summary>
+        Space,
+
+        /// <summary>Write a quoted triple's predicate, which is always a named node.</summary>
+        Predicate,
+
+        /// <summary>Write the quoted-triple closing delimiter and unwind one nesting level.</summary>
+        Close
+    }
+
+    /// <summary>One step on the inline-term serialization work-stack.</summary>
+    /// <param name="Kind">The step kind.</param>
+    /// <param name="Term">The term to visit; set only for a <c>Term</c> step.</param>
+    /// <param name="Predicate">The predicate to write; set only for a <c>Predicate</c> step.</param>
+    private readonly record struct TermStep(StepKind Kind, RdfTerm? Term, NamedNode? Predicate);
 }
