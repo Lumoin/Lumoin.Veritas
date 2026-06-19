@@ -26,13 +26,14 @@ public static class SparqlResultsJsonWriter
     /// <summary>Serializes a result set to its <c>.srj</c> document as an owned UTF-8 string.</summary>
     /// <param name="results">The result set to serialize.</param>
     /// <param name="indented">Whether to pretty-print the JSON.</param>
+    /// <param name="pool">The buffer pool to rent the serialization scratch from; <see langword="null"/> uses the shared pool.</param>
     /// <returns>The <c>.srj</c> document as a <see cref="Utf8String"/>.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="results"/> is <see langword="null"/>.</exception>
-    public static Utf8String WriteToUtf8String(SparqlResultSet results, bool indented = true)
+    public static Utf8String WriteToUtf8String(SparqlResultSet results, bool indented = true, VeritasMemoryPool<byte>? pool = null)
     {
         ArgumentNullException.ThrowIfNull(results);
 
-        using SlabBufferWriter buffer = new(VeritasMemoryPool<byte>.Shared);
+        using SlabBufferWriter buffer = new(pool ?? VeritasMemoryPool<byte>.Shared);
         Write(results, buffer, indented);
 
         int length = buffer.BytesWritten;
