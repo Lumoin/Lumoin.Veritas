@@ -5494,21 +5494,57 @@ public sealed class SparqlParser
     /// Converts a parsed <c>TripleTermData</c> term into its ground <see cref="Core.TripleTerm"/> value.
     /// The data form is variable-free, so every component is a constant or a nested triple term; a term
     /// that is not ground (an error node from recovery) yields <see langword="null"/> — an unbound cell —
-    /// with its diagnostic already recorded.
+    /// with its diagnostic already recorded. The nested terms are grounded over an explicit post-order
+    /// stack (no recursion); the parser caps quoted-triple nesting, so the stack stays bounded.
     /// </summary>
-    /// <param name="term">The parsed triple-term value.</param>
+    /// <param name="root">The parsed triple-term value.</param>
     /// <returns>The ground triple-term value, or <see langword="null"/> when a component is not ground.</returns>
-    private static RdfTerm? GroundTripleTermValue(TriplePatternTerm term)
-        => term switch
+    private static RdfTerm? GroundTripleTermValue(TriplePatternTerm root)
+    {
+        Dictionary<TriplePatternTerm, RdfTerm?> grounded = new(ReferenceEqualityComparer.Instance);
+        Stack<(TriplePatternTerm Term, bool Combine)> work = new();
+        work.Push((root, false));
+
+        while(work.Count > 0)
         {
-            ConstantTerm constant => constant.Term,
-            Ast.TripleTerm tripleTerm
-                when GroundTripleTermValue(tripleTerm.Inner.Subject) is { } subject
-                    && GroundTripleTermValue(tripleTerm.Inner.Predicate) is NamedNode predicate
-                    && GroundTripleTermValue(tripleTerm.Inner.Object) is { } objectValue
-                => new Core.TripleTerm(subject, predicate, objectValue),
-            _ => null
-        };
+            (TriplePatternTerm term, bool combine) = work.Pop();
+            switch(term)
+            {
+                case(ConstantTerm constant):
+                {
+                    grounded[term] = constant.Term;
+                    break;
+                }
+                case(Ast.TripleTerm tripleTerm):
+                {
+                    if(!combine)
+                    {
+                        work.Push((tripleTerm, true));
+                        work.Push((tripleTerm.Inner.Subject, false));
+                        work.Push((tripleTerm.Inner.Predicate, false));
+                        work.Push((tripleTerm.Inner.Object, false));
+                    }
+                    else
+                    {
+                        grounded[term] = grounded[tripleTerm.Inner.Subject] is { } subject
+                            && grounded[tripleTerm.Inner.Predicate] is NamedNode predicate
+                            && grounded[tripleTerm.Inner.Object] is { } objectValue
+                                ? new Core.TripleTerm(subject, predicate, objectValue)
+                                : null;
+                    }
+
+                    break;
+                }
+                default:
+                {
+                    grounded[term] = null;
+                    break;
+                }
+            }
+        }
+
+        return grounded[root];
+    }
 
     /// <summary>Consumes the <c>UNDEF</c> keyword, returning a null value.</summary>
     /// <returns><see langword="null"/>.</returns>
