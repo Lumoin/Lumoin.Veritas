@@ -1,6 +1,6 @@
 using System.Buffers;
-using System.Text;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Json;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
@@ -23,7 +23,7 @@ internal sealed class SparqlResultsJsonReaderTests
     /// <returns>The parsed result set.</returns>
     private static SparqlResultSet Read(string json)
     {
-        return SparqlResultsJsonReader.Read(Encoding.UTF8.GetBytes(json));
+        return SparqlResultsJsonReader.Read(Utf8String.FromString(json).Memory);
     }
 
     /// <summary>Returns the value bound to a variable in a solution.</summary>
@@ -163,7 +163,7 @@ internal sealed class SparqlResultsJsonReaderTests
             }
             """;
 
-        using MemoryStream stream = new(Encoding.UTF8.GetBytes(json), writable: false);
+        using ReadOnlyMemoryStream stream = new(Utf8String.FromString(json).Memory);
         SparqlResultSet result = SparqlResultsJsonReader.Read(stream);
 
         Assert.HasCount(2, result.Variables);
@@ -186,7 +186,7 @@ internal sealed class SparqlResultsJsonReaderTests
     [TestMethod]
     public void ReadsFromSegmentedSequence()
     {
-        byte[] json = Encoding.UTF8.GetBytes(
+        ReadOnlyMemory<byte> json = Utf8String.FromString(
             """
             {
               "head": { "vars": [ "iri", "n" ] },
@@ -195,7 +195,7 @@ internal sealed class SparqlResultsJsonReaderTests
                   "n":   { "type": "literal", "value": "42", "datatype": "http://www.w3.org/2001/XMLSchema#integer" } }
               ] }
             }
-            """);
+            """).Memory;
 
         ReadOnlySequence<byte> sequence = Segmented(json, json.Length / 2);
         Assert.IsFalse(sequence.IsSingleSegment, "The test must exercise the multi-segment path.");
@@ -215,10 +215,10 @@ internal sealed class SparqlResultsJsonReaderTests
     /// <param name="bytes">The bytes to wrap.</param>
     /// <param name="firstSegmentLength">The length of the first segment.</param>
     /// <returns>A two-segment sequence over the bytes.</returns>
-    private static ReadOnlySequence<byte> Segmented(byte[] bytes, int firstSegmentLength)
+    private static ReadOnlySequence<byte> Segmented(ReadOnlyMemory<byte> bytes, int firstSegmentLength)
     {
-        SequenceSegment first = new(bytes.AsMemory(0, firstSegmentLength));
-        SequenceSegment second = first.Append(bytes.AsMemory(firstSegmentLength));
+        SequenceSegment first = new(bytes[..firstSegmentLength]);
+        SequenceSegment second = first.Append(bytes[firstSegmentLength..]);
 
         return new ReadOnlySequence<byte>(first, 0, second, second.Memory.Length);
     }
