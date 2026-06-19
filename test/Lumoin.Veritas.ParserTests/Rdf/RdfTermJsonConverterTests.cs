@@ -49,6 +49,80 @@ internal sealed class RdfTermJsonConverterTests
         Assert.AreEqual(QuotedTripleLimits.MaxNestingDepth, exception.Limit);
     }
 
+    /// <summary>A nested quoted triple round-trips through serialize then deserialize unchanged.</summary>
+    [TestMethod]
+    public void NestedTripleTermRoundTrips()
+    {
+        RdfTerm term = NestSubject(3);
+
+        string json = JsonSerializer.Serialize(term, Options);
+        RdfTerm? back = JsonSerializer.Deserialize<RdfTerm>(json, Options);
+
+        Assert.AreEqual(term, back);
+    }
+
+    /// <summary>A triple term whose <c>type</c> discriminator appears after its components still parses (term built at the closing brace).</summary>
+    [TestMethod]
+    public void TripleTermParsesWithTypePropertyLast()
+    {
+        string json = "{\"subject\":{\"type\":\"uri\",\"value\":\"http://example/s\"},"
+            + "\"predicate\":{\"type\":\"uri\",\"value\":\"http://example/p\"},"
+            + "\"object\":{\"type\":\"uri\",\"value\":\"http://example/o\"},\"type\":\"triple\"}";
+
+        RdfTerm? term = JsonSerializer.Deserialize<RdfTerm>(json, Options);
+
+        Assert.AreEqual(new TripleTerm(Iri("s"), Iri("p"), Iri("o")), term);
+    }
+
+    /// <summary>Unknown properties — scalar and nested-object alike — are skipped, not parsed as components or pushed onto the stack.</summary>
+    [TestMethod]
+    public void UnknownPropertiesAreSkipped()
+    {
+        string json = "{\"type\":\"uri\",\"value\":\"http://example/s\",\"extra\":42,\"nested\":{\"a\":{\"b\":1}}}";
+
+        RdfTerm? term = JsonSerializer.Deserialize<RdfTerm>(json, Options);
+
+        Assert.AreEqual(Iri("s"), term);
+    }
+
+    /// <summary>A quad with quoted triples in subject and object round-trips through the quad converter, proving the term reader leaves the cursor on each term's closing brace so the four delegated reads stay in sync.</summary>
+    [TestMethod]
+    public void QuadWithTripleTermsRoundTripsThroughQuadConverter()
+    {
+        Quad quad = new(
+            new TripleTerm(Iri("s1"), Iri("p1"), Iri("o1")),
+            Iri("p"),
+            new TripleTerm(Iri("s2"), Iri("p2"), Iri("o2")),
+            Iri("g"));
+
+        string json = JsonSerializer.Serialize(quad, Options);
+        Quad? back = JsonSerializer.Deserialize<Quad>(json, Options);
+
+        Assert.AreEqual(quad, back);
+    }
+
+    /// <summary>Serializer options with the RDF term and quad converters registered.</summary>
+    private static JsonSerializerOptions Options { get; } = CreateOptions();
+
+    /// <summary>Builds the serializer options used by the round-trip tests.</summary>
+    /// <returns>The options.</returns>
+    private static JsonSerializerOptions CreateOptions()
+    {
+        JsonSerializerOptions options = new();
+        options.Converters.Add(new RdfTermJsonConverter());
+        options.Converters.Add(new QuadJsonConverter());
+
+        return options;
+    }
+
+    /// <summary>Builds an example named node from a local name.</summary>
+    /// <param name="local">The local name appended to the example namespace.</param>
+    /// <returns>The named node.</returns>
+    private static NamedNode Iri(string local)
+    {
+        return new NamedNode(Utf8String.FromString("http://example/" + local));
+    }
+
     /// <summary>Serializes a term to compact RDF/JSON by invoking the converter directly.</summary>
     /// <param name="term">The term to serialize.</param>
     /// <returns>The RDF/JSON text.</returns>
