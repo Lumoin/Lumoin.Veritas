@@ -553,6 +553,15 @@ public static class RdfXmlReader
 
                 if(property.Attribute(Rdf + "parseType")?.Value == "Triple")
                 {
+                    //The triple currently at depth pending.Count + 1 cannot nest a deeper one without exceeding
+                    //the quoted-triple nesting cap; recording a diagnostic and stopping keeps the pending chain bounded.
+                    if(pending.Count + 1 >= QuotedTripleLimits.MaxNestingDepth)
+                    {
+                        Report(Diagnostics, "An RDF 1.2 quoted triple (rdf:parseType=\"Triple\") is nested deeper than the maximum nesting depth.");
+
+                        return null;
+                    }
+
                     pending.Push((subject, predicate));
                     currentProperty = property;
                     currentBase = innerBase;
