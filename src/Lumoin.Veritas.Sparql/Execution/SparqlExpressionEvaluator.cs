@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Iris;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Rdf.Values;
 using Lumoin.Veritas.Sparql.Ast;
 
@@ -136,12 +137,12 @@ public static class SparqlExpressionEvaluator
         //order — no call-stack recursion: a triple-term pair expands to its three component pairs, pushed so the
         //subject is taken first, and the first component that differs decides the whole comparison. Non-triple
         //terms compare by category rank, then within a rank by label / IRI / literal value.
-        Stack<(RdfTerm? Left, RdfTerm? Right)> pending = new();
-        pending.Push((left, right));
+        Stack<(RdfTerm? Left, RdfTerm? Right, int Depth)> pending = new();
+        pending.Push((left, right, 1));
 
         while(pending.Count > 0)
         {
-            (RdfTerm? leftTerm, RdfTerm? rightTerm) = pending.Pop();
+            (RdfTerm? leftTerm, RdfTerm? rightTerm, int depth) = pending.Pop();
             int leftRank = OrderRank(leftTerm);
             int rightRank = OrderRank(rightTerm);
             if(leftRank != rightRank)
@@ -154,7 +155,7 @@ public static class SparqlExpressionEvaluator
                 1 => ((BlankNode)leftTerm!).Label.CompareTo(((BlankNode)rightTerm!).Label),
                 2 => ((NamedNode)leftTerm!).Iri.CompareTo(((NamedNode)rightTerm!).Iri),
                 3 => CompareLiterals((Literal)leftTerm!, (Literal)rightTerm!),
-                4 => ExpandTripleTermComparison(pending, (Lumoin.Veritas.Core.TripleTerm)leftTerm!, (Lumoin.Veritas.Core.TripleTerm)rightTerm!),
+                4 => ExpandTripleTermComparison(pending, (Lumoin.Veritas.Core.TripleTerm)leftTerm!, (Lumoin.Veritas.Core.TripleTerm)rightTerm!, depth),
 
                 //Both unbound (0): equal at this position.
                 _ => 0
@@ -168,16 +169,22 @@ public static class SparqlExpressionEvaluator
         return 0;
     }
 
-    /// <summary>Pushes a triple-term pair's object, predicate, and subject component comparisons (subject on top, so it is taken first) onto the pending stack and yields 0, deferring the decision to those components.</summary>
+    /// <summary>Pushes a triple-term pair's object, predicate, and subject component comparisons (subject on top, so it is taken first) onto the pending stack and yields 0, deferring the decision to those components. Nesting beyond <see cref="QuotedTripleLimits.MaxNestingDepth"/> raises <see cref="TripleTermDepthLimitException"/>.</summary>
     /// <param name="pending">The pending-comparison stack to push the three component pairs onto.</param>
     /// <param name="left">The left triple term.</param>
     /// <param name="right">The right triple term.</param>
+    /// <param name="depth">The quoted-triple nesting depth of this pair.</param>
     /// <returns>Always 0 — the comparison is decided by the pushed component pairs.</returns>
-    private static int ExpandTripleTermComparison(Stack<(RdfTerm? Left, RdfTerm? Right)> pending, Lumoin.Veritas.Core.TripleTerm left, Lumoin.Veritas.Core.TripleTerm right)
+    private static int ExpandTripleTermComparison(Stack<(RdfTerm? Left, RdfTerm? Right, int Depth)> pending, Lumoin.Veritas.Core.TripleTerm left, Lumoin.Veritas.Core.TripleTerm right, int depth)
     {
-        pending.Push((left.Object, right.Object));
-        pending.Push((left.Predicate, right.Predicate));
-        pending.Push((left.Subject, right.Subject));
+        if(depth > QuotedTripleLimits.MaxNestingDepth)
+        {
+            throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
+        }
+
+        pending.Push((left.Object, right.Object, depth + 1));
+        pending.Push((left.Predicate, right.Predicate, depth + 1));
+        pending.Push((left.Subject, right.Subject, depth + 1));
 
         return 0;
     }
@@ -894,12 +901,12 @@ public static class SparqlExpressionEvaluator
     private static RdfTerm? ResolveTripleTermComponent(TriplePatternTerm root, SparqlSolution solution)
     {
         Dictionary<TriplePatternTerm, RdfTerm?> resolved = new(ReferenceEqualityComparer.Instance);
-        Stack<(TriplePatternTerm Term, bool Combine)> work = new();
-        work.Push((root, Combine: false));
+        Stack<(TriplePatternTerm Term, bool Combine, int Depth)> work = new();
+        work.Push((root, Combine: false, Depth: 1));
 
         while(work.Count > 0)
         {
-            (TriplePatternTerm term, bool combine) = work.Pop();
+            (TriplePatternTerm term, bool combine, int depth) = work.Pop();
             if(combine)
             {
                 Lumoin.Veritas.Sparql.Ast.TripleTerm nested = (Lumoin.Veritas.Sparql.Ast.TripleTerm)term;
@@ -926,10 +933,15 @@ public static class SparqlExpressionEvaluator
 
                 case Lumoin.Veritas.Sparql.Ast.TripleTerm nested:
                 {
-                    work.Push((term, Combine: true));
-                    work.Push((nested.Inner.Object, Combine: false));
-                    work.Push((nested.Inner.Predicate, Combine: false));
-                    work.Push((nested.Inner.Subject, Combine: false));
+                    if(depth > QuotedTripleLimits.MaxNestingDepth)
+                    {
+                        throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
+                    }
+
+                    work.Push((term, Combine: true, depth));
+                    work.Push((nested.Inner.Object, Combine: false, depth + 1));
+                    work.Push((nested.Inner.Predicate, Combine: false, depth + 1));
+                    work.Push((nested.Inner.Subject, Combine: false, depth + 1));
 
                     break;
                 }
@@ -2097,19 +2109,24 @@ public static class SparqlExpressionEvaluator
     /// <returns><see langword="true"/>/<see langword="false"/> for a decided comparison, or <see langword="null"/> for a type error.</returns>
     private static bool? TripleTermValueEqual(Lumoin.Veritas.Core.TripleTerm left, Lumoin.Veritas.Core.TripleTerm right)
     {
-        Stack<(RdfTerm Left, RdfTerm Right)> work = new();
-        work.Push((left, right));
+        Stack<(RdfTerm Left, RdfTerm Right, int Depth)> work = new();
+        work.Push((left, right, 1));
 
         while(work.Count > 0)
         {
-            (RdfTerm a, RdfTerm b) = work.Pop();
+            (RdfTerm a, RdfTerm b, int depth) = work.Pop();
             switch(a)
             {
                 case Lumoin.Veritas.Core.TripleTerm at when b is Lumoin.Veritas.Core.TripleTerm bt:
                 {
-                    work.Push((at.Subject, bt.Subject));
-                    work.Push((at.Predicate, bt.Predicate));
-                    work.Push((at.Object, bt.Object));
+                    if(depth > QuotedTripleLimits.MaxNestingDepth)
+                    {
+                        throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
+                    }
+
+                    work.Push((at.Subject, bt.Subject, depth + 1));
+                    work.Push((at.Predicate, bt.Predicate, depth + 1));
+                    work.Push((at.Object, bt.Object, depth + 1));
                     break;
                 }
                 case Lumoin.Veritas.Core.TripleTerm:
