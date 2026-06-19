@@ -1,12 +1,11 @@
 using System.Collections.Generic;
 using System.Globalization;
-using System.IO;
 using System.IO.Pipelines;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Turtle;
 using Lumoin.Veritas.Turtle.Ast;
@@ -85,7 +84,7 @@ internal sealed class TurtleReaderStreamingTests
     {
         foreach(string source in (string[])["@prefix ex: <http://example.org/> .\nex:s ex:p ex:o , ex:o2 ; ex:q \"v\"@en .\n", ""])
         {
-            byte[] bytes = Encoding.UTF8.GetBytes(source);
+            ReadOnlyMemory<byte> bytes = Utf8String.FromString(source).Memory;
 
             List<Quad> expected = await CollectAsync(
                 TurtleReader.ReadWithSourceAsync(bytes, TurtleSyntax.Turtle, new DocumentId(1), cancellationToken: TestContext.CancellationToken).Quads).ConfigureAwait(false);
@@ -103,7 +102,7 @@ internal sealed class TurtleReaderStreamingTests
 
     private async Task AssertStreamingMatchesWhole(string source, TurtleSyntax syntax)
     {
-        byte[] bytes = Encoding.UTF8.GetBytes(source);
+        ReadOnlyMemory<byte> bytes = Utf8String.FromString(source).Memory;
         List<Quad> expected = WholeDocumentQuads(bytes, syntax);
 
         //Chunk size 1 forces every statement to straddle read boundaries and suspend at the finest
@@ -131,7 +130,7 @@ internal sealed class TurtleReaderStreamingTests
         }
     }
 
-    private static List<Quad> WholeDocumentQuads(byte[] bytes, TurtleSyntax syntax)
+    private static List<Quad> WholeDocumentQuads(ReadOnlyMemory<byte> bytes, TurtleSyntax syntax)
     {
         //The whole-document parse-and-emit is the ground truth the streaming reader must reproduce.
         using Utf8StringPool pool = new();
@@ -149,9 +148,9 @@ internal sealed class TurtleReaderStreamingTests
         return quads;
     }
 
-    private static PipeReader Fragmented(byte[] bytes, int chunkSize)
+    private static PipeReader Fragmented(ReadOnlyMemory<byte> bytes, int chunkSize)
     {
-        return PipeReader.Create(new MemoryStream(bytes), new StreamPipeReaderOptions(bufferSize: chunkSize, minimumReadSize: 1));
+        return PipeReader.Create(new ReadOnlyMemoryStream(bytes), new StreamPipeReaderOptions(bufferSize: chunkSize, minimumReadSize: 1));
     }
 
     /// <summary>Collects the quads from a source-tagged quad stream in emission order.</summary>
