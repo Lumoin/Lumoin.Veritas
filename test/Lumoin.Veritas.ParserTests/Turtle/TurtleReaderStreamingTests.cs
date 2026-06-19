@@ -75,6 +75,32 @@ internal sealed class TurtleReaderStreamingTests
             TurtleSyntax.TriG).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// The pipe-driven whole-document overload (which drains the pipe into a pooled buffer that is released
+    /// right after the parse) yields the same source-tagged quads as the in-memory overload, including for an
+    /// empty document (which exercises the zero-length rental guard).
+    /// </summary>
+    [TestMethod]
+    public async Task ReadWithSourceFromPipeMatchesInMemory()
+    {
+        foreach(string source in (string[])["@prefix ex: <http://example.org/> .\nex:s ex:p ex:o , ex:o2 ; ex:q \"v\"@en .\n", ""])
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(source);
+
+            List<Quad> expected = await CollectAsync(
+                TurtleReader.ReadWithSourceAsync(bytes, TurtleSyntax.Turtle, new DocumentId(1), cancellationToken: TestContext.CancellationToken).Quads).ConfigureAwait(false);
+
+            List<Quad> actual = await CollectAsync(
+                (await TurtleReader.ReadWithSourceAsync(Fragmented(bytes, chunkSize: 3), TurtleSyntax.Turtle, new DocumentId(1), cancellationToken: TestContext.CancellationToken).ConfigureAwait(false)).Quads).ConfigureAwait(false);
+
+            Assert.HasCount(expected.Count, actual);
+            for(int i = 0; i < expected.Count; i++)
+            {
+                Assert.AreEqual(expected[i], actual[i]);
+            }
+        }
+    }
+
     private async Task AssertStreamingMatchesWhole(string source, TurtleSyntax syntax)
     {
         byte[] bytes = Encoding.UTF8.GetBytes(source);
@@ -126,5 +152,19 @@ internal sealed class TurtleReaderStreamingTests
     private static PipeReader Fragmented(byte[] bytes, int chunkSize)
     {
         return PipeReader.Create(new MemoryStream(bytes), new StreamPipeReaderOptions(bufferSize: chunkSize, minimumReadSize: 1));
+    }
+
+    /// <summary>Collects the quads from a source-tagged quad stream in emission order.</summary>
+    /// <param name="quads">The source-tagged quad stream.</param>
+    /// <returns>The quads in emission order.</returns>
+    private static async Task<List<Quad>> CollectAsync(IAsyncEnumerable<EmittedQuad> quads)
+    {
+        List<Quad> result = [];
+        await foreach(EmittedQuad emitted in quads.ConfigureAwait(false))
+        {
+            result.Add(emitted.Quad);
+        }
+
+        return result;
     }
 }
