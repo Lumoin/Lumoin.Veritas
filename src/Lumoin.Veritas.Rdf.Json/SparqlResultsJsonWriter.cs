@@ -163,8 +163,8 @@ public static class SparqlResultsJsonWriter
 
                         //CloseTriple pops last (closes the outer term object) and unwinds the depth; the plain
                         //EndObject pops just after the components and closes the inner value object.
-                        work.Push(new JsonOp(JsonOpKind.CloseTriple, null, null));
-                        work.Push(new JsonOp(JsonOpKind.EndObject, null, null));
+                        work.Push(JsonOp.CloseTriple);
+                        work.Push(JsonOp.EndObject);
                         PushComponent(work, SparqlResultsJsonNames.Object, triple.Object);
                         PushComponent(work, SparqlResultsJsonNames.Predicate, triple.Predicate);
                         PushComponent(work, SparqlResultsJsonNames.Subject, triple.Subject);
@@ -260,5 +260,12 @@ public static class SparqlResultsJsonWriter
     /// <param name="Kind">Whether to write a term, a property name, or close an object.</param>
     /// <param name="Term">The term to write (for <see cref="JsonOpKind.Term"/>).</param>
     /// <param name="Property">The property name to write (for <see cref="JsonOpKind.PropertyName"/>).</param>
-    private readonly record struct JsonOp(JsonOpKind Kind, RdfTerm? Term, string? Property);
+    private readonly record struct JsonOp(JsonOpKind Kind, RdfTerm? Term, string? Property)
+    {
+        /// <summary>The payload-less op that closes the current object.</summary>
+        public static JsonOp EndObject { get; } = new(JsonOpKind.EndObject, null, null);
+
+        /// <summary>The payload-less op that closes a quoted triple's outer value object and unwinds one nesting level.</summary>
+        public static JsonOp CloseTriple { get; } = new(JsonOpKind.CloseTriple, null, null);
+    }
 }

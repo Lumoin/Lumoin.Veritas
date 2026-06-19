@@ -407,13 +407,13 @@ public static class TurtleWriter
 
                         //Push the components in reverse so they pop in serialization order:
                         //<<( subject SPACE predicate SPACE object )>>.
-                        work.Push(new TermStep(StepKind.Close, null, null));
+                        work.Push(TermStep.Close);
                         work.Push(new TermStep(StepKind.Term, triple.Object, null));
-                        work.Push(new TermStep(StepKind.Space, null, null));
+                        work.Push(TermStep.Space);
                         work.Push(new TermStep(StepKind.Predicate, null, triple.Predicate));
-                        work.Push(new TermStep(StepKind.Space, null, null));
+                        work.Push(TermStep.Space);
                         work.Push(new TermStep(StepKind.Term, triple.Subject, null));
-                        work.Push(new TermStep(StepKind.Open, null, null));
+                        work.Push(TermStep.Open);
                     }
                     else
                     {
@@ -424,7 +424,7 @@ public static class TurtleWriter
                 }
                 case(StepKind.Open):
                 {
-                    output.WriteUtf8Literal("<<( "u8);
+                    output.WriteUtf8Literal(TripleTermOpen);
                     break;
                 }
                 case(StepKind.Space):
@@ -440,7 +440,7 @@ public static class TurtleWriter
                 default:
                 {
                     //StepKind.Close: the triple's components are written; close it and unwind one nesting level.
-                    output.WriteUtf8Literal(" )>>"u8);
+                    output.WriteUtf8Literal(TripleTermClose);
                     depth--;
                     break;
                 }
@@ -659,6 +659,12 @@ public static class TurtleWriter
     /// <param name="Depth">The quoted-triple nesting depth at which this term was scheduled.</param>
     private readonly record struct KeyStep(RdfTerm Term, bool Expanded, int Depth);
 
+    /// <summary>The RDF-star quoted-triple opening delimiter <c>&lt;&lt;( </c>.</summary>
+    private static ReadOnlySpan<byte> TripleTermOpen => "<<( "u8;
+
+    /// <summary>The RDF-star quoted-triple closing delimiter <c> )&gt;&gt;</c>.</summary>
+    private static ReadOnlySpan<byte> TripleTermClose => " )>>"u8;
+
     /// <summary>The kind of step on the inline-term serialization work-stack.</summary>
     private enum StepKind
     {
@@ -682,5 +688,15 @@ public static class TurtleWriter
     /// <param name="Kind">The step kind.</param>
     /// <param name="Term">The term to visit; set only for a <c>Term</c> step.</param>
     /// <param name="Predicate">The predicate to write; set only for a <c>Predicate</c> step.</param>
-    private readonly record struct TermStep(StepKind Kind, RdfTerm? Term, NamedNode? Predicate);
+    private readonly record struct TermStep(StepKind Kind, RdfTerm? Term, NamedNode? Predicate)
+    {
+        /// <summary>The payload-less step that writes the quoted-triple opening delimiter.</summary>
+        public static TermStep Open { get; } = new(StepKind.Open, null, null);
+
+        /// <summary>The payload-less step that writes a single component separator.</summary>
+        public static TermStep Space { get; } = new(StepKind.Space, null, null);
+
+        /// <summary>The payload-less step that writes the quoted-triple closing delimiter and unwinds one nesting level.</summary>
+        public static TermStep Close { get; } = new(StepKind.Close, null, null);
+    }
 }

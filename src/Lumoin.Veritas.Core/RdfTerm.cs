@@ -380,13 +380,13 @@ public sealed record TripleTerm(RdfTerm Subject, NamedNode Predicate, RdfTerm Ob
                     {
                         //Push in reverse so they pop in render order: <<subject predicate object>>. The predicate
                         //is a leaf named node, so it renders through the same Term step.
-                        work.Push(new RenderStep(RenderMarker.Close, null));
+                        work.Push(RenderStep.Close);
                         work.Push(new RenderStep(RenderMarker.Term, triple.Object));
-                        work.Push(new RenderStep(RenderMarker.Space, null));
+                        work.Push(RenderStep.Space);
                         work.Push(new RenderStep(RenderMarker.Term, triple.Predicate));
-                        work.Push(new RenderStep(RenderMarker.Space, null));
+                        work.Push(RenderStep.Space);
                         work.Push(new RenderStep(RenderMarker.Term, triple.Subject));
-                        work.Push(new RenderStep(RenderMarker.Open, null));
+                        work.Push(RenderStep.Open);
                     }
                     else
                     {
@@ -436,5 +436,15 @@ public sealed record TripleTerm(RdfTerm Subject, NamedNode Predicate, RdfTerm Ob
     /// <summary>One step on the <see cref="ToString"/> render work-stack.</summary>
     /// <param name="Marker">The step kind.</param>
     /// <param name="Term">The term to render; set only for a <c>Term</c> step.</param>
-    private readonly record struct RenderStep(RenderMarker Marker, RdfTerm? Term);
+    private readonly record struct RenderStep(RenderMarker Marker, RdfTerm? Term)
+    {
+        /// <summary>The payload-less step that renders the quoted-triple opening delimiter.</summary>
+        public static RenderStep Open { get; } = new(RenderMarker.Open, null);
+
+        /// <summary>The payload-less step that renders a single component separator.</summary>
+        public static RenderStep Space { get; } = new(RenderMarker.Space, null);
+
+        /// <summary>The payload-less step that renders the quoted-triple closing delimiter and unwinds one nesting level.</summary>
+        public static RenderStep Close { get; } = new(RenderMarker.Close, null);
+    }
 }

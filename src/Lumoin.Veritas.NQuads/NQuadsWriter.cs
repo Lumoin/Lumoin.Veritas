@@ -167,13 +167,13 @@ public static class NQuadsWriter
 
                         //Push the components in reverse so they pop in serialization (left-to-right) order:
                         //<<( subject SPACE predicate SPACE object )>>.
-                        work.Push(new TermStep(StepKind.Close, null, null));
+                        work.Push(TermStep.Close);
                         work.Push(new TermStep(StepKind.Term, triple.Object, null));
-                        work.Push(new TermStep(StepKind.Space, null, null));
+                        work.Push(TermStep.Space);
                         work.Push(new TermStep(StepKind.Predicate, null, triple.Predicate));
-                        work.Push(new TermStep(StepKind.Space, null, null));
+                        work.Push(TermStep.Space);
                         work.Push(new TermStep(StepKind.Term, triple.Subject, null));
-                        work.Push(new TermStep(StepKind.Open, null, null));
+                        work.Push(TermStep.Open);
                     }
                     else
                     {
@@ -399,5 +399,15 @@ public static class NQuadsWriter
     /// <param name="Kind">The step kind.</param>
     /// <param name="Term">The term to visit; set only for a <c>Term</c> step.</param>
     /// <param name="Predicate">The predicate to write; set only for a <c>Predicate</c> step.</param>
-    private readonly record struct TermStep(StepKind Kind, RdfTerm? Term, NamedNode? Predicate);
+    private readonly record struct TermStep(StepKind Kind, RdfTerm? Term, NamedNode? Predicate)
+    {
+        /// <summary>The payload-less step that writes the quoted-triple opening delimiter.</summary>
+        public static TermStep Open { get; } = new(StepKind.Open, null, null);
+
+        /// <summary>The payload-less step that writes a single component separator.</summary>
+        public static TermStep Space { get; } = new(StepKind.Space, null, null);
+
+        /// <summary>The payload-less step that writes the quoted-triple closing delimiter and unwinds one nesting level.</summary>
+        public static TermStep Close { get; } = new(StepKind.Close, null, null);
+    }
 }

@@ -246,14 +246,14 @@ public sealed class RdfTermJsonConverter: JsonConverter<RdfTerm>
                         }
 
                         //Push in reverse so they pop in emission order: { type, subject, predicate, object }.
-                        work.Push(new TermStep(JsonStepKind.EndObject, null));
+                        work.Push(TermStep.EndObject);
                         work.Push(new TermStep(JsonStepKind.Term, triple.Object));
-                        work.Push(new TermStep(JsonStepKind.ObjectName, null));
+                        work.Push(TermStep.ObjectName);
                         work.Push(new TermStep(JsonStepKind.Term, triple.Predicate));
-                        work.Push(new TermStep(JsonStepKind.PredicateName, null));
+                        work.Push(TermStep.PredicateName);
                         work.Push(new TermStep(JsonStepKind.Term, triple.Subject));
-                        work.Push(new TermStep(JsonStepKind.SubjectName, null));
-                        work.Push(new TermStep(JsonStepKind.StartTripleObject, null));
+                        work.Push(TermStep.SubjectName);
+                        work.Push(TermStep.StartTripleObject);
                     }
                     else
                     {
@@ -381,7 +381,23 @@ public sealed class RdfTermJsonConverter: JsonConverter<RdfTerm>
     /// <summary>One step on the quoted-triple serialization work-stack.</summary>
     /// <param name="Kind">The step kind.</param>
     /// <param name="Term">The term to write; set only for a <c>Term</c> step.</param>
-    private readonly record struct TermStep(JsonStepKind Kind, RdfTerm? Term);
+    private readonly record struct TermStep(JsonStepKind Kind, RdfTerm? Term)
+    {
+        /// <summary>The payload-less step that opens a quoted triple's object and writes its <c>type</c> discriminator.</summary>
+        public static TermStep StartTripleObject { get; } = new(JsonStepKind.StartTripleObject, null);
+
+        /// <summary>The payload-less step that writes the <c>subject</c> property name.</summary>
+        public static TermStep SubjectName { get; } = new(JsonStepKind.SubjectName, null);
+
+        /// <summary>The payload-less step that writes the <c>predicate</c> property name.</summary>
+        public static TermStep PredicateName { get; } = new(JsonStepKind.PredicateName, null);
+
+        /// <summary>The payload-less step that writes the <c>object</c> property name.</summary>
+        public static TermStep ObjectName { get; } = new(JsonStepKind.ObjectName, null);
+
+        /// <summary>The payload-less step that closes a quoted triple's object and unwinds one nesting level.</summary>
+        public static TermStep EndObject { get; } = new(JsonStepKind.EndObject, null);
+    }
 
     /// <summary>The triple component a nested child term fills in its parent frame.</summary>
     private enum ChildSlot
