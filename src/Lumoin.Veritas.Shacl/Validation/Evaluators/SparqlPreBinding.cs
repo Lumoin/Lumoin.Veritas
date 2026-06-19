@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Sparql.Ast;
 using AstTripleTerm = Lumoin.Veritas.Sparql.Ast.TripleTerm;
 
@@ -368,6 +369,7 @@ internal static class SparqlPreBinding
     /// <param name="term">The term.</param>
     /// <param name="bindings">The variable→value map.</param>
     /// <returns>The substituted term.</returns>
+    /// <exception cref="TripleTermDepthLimitException">A quoted triple term is nested deeper than <see cref="QuotedTripleLimits.MaxNestingDepth"/> (this rebuilds AST triple terms outside the parser, so it enforces the same bound).</exception>
     private static TriplePatternTerm SubstituteTerm(TriplePatternTerm term, Dictionary<SparqlVariable, RdfTerm> bindings)
     {
         if(term is VariableTerm { Variable: { } variable } variableTerm && bindings.TryGetValue(variable, out RdfTerm? value))
@@ -382,25 +384,30 @@ internal static class SparqlPreBinding
 
         //Quoted triple term: substitute its components bottom-up. Build each nested term once its components are ready.
         Dictionary<AstTripleTerm, AstTripleTerm> built = new(ReferenceEqualityComparer.Instance);
-        Stack<(AstTripleTerm Term, bool Build)> work = new();
-        work.Push(((AstTripleTerm)term, Build: false));
+        Stack<(AstTripleTerm Term, bool Build, int Depth)> work = new();
+        work.Push(((AstTripleTerm)term, Build: false, Depth: 1));
 
         while(work.Count > 0)
         {
-            (AstTripleTerm current, bool build) = work.Pop();
+            (AstTripleTerm current, bool build, int depth) = work.Pop();
             TriplePattern inner = current.Inner;
 
             if(!build)
             {
-                work.Push((current, Build: true));
+                if(depth > QuotedTripleLimits.MaxNestingDepth)
+                {
+                    throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
+                }
+
+                work.Push((current, Build: true, depth));
                 if(inner.Subject is AstTripleTerm nestedSubject)
                 {
-                    work.Push((nestedSubject, Build: false));
+                    work.Push((nestedSubject, Build: false, depth + 1));
                 }
 
                 if(inner.Object is AstTripleTerm nestedObject)
                 {
-                    work.Push((nestedObject, Build: false));
+                    work.Push((nestedObject, Build: false, depth + 1));
                 }
 
                 continue;
