@@ -168,7 +168,10 @@ public static class SparqlResultsJsonReader
 
     /// <summary>
     /// Parses a binding value object to an RDF term over an explicit post-order work stack, so a deeply-nested
-    /// triple term cannot overflow the call stack.
+    /// triple term cannot overflow the call stack. The reachable depth is already bounded by
+    /// <see cref="JsonDocument"/>'s own nesting cap (a triple term nests roughly two JSON object levels per
+    /// quoted-triple level, so deeper input throws <see cref="System.Text.Json.JsonException"/> at parse before
+    /// this walk runs); no further quoted-triple cap is enforced here.
     /// </summary>
     /// <param name="value">The binding value object.</param>
     /// <returns>The parsed term.</returns>

@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Text.Json;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Memory;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Sparql.Execution;
 using Lumoin.Veritas.Sparql.Results;
 using TripleTerm = Lumoin.Veritas.Core.TripleTerm;
@@ -112,20 +113,29 @@ public static class SparqlResultsJsonWriter
     /// <summary>
     /// Writes a binding value object, descending into triple terms over an explicit op stack (no recursion). The
     /// forward-only writer needs ordered calls, so the stack carries explicit end-object and property-name ops
-    /// around each nested component.
+    /// around each nested component. Quoted-triple nesting beyond
+    /// <see cref="QuotedTripleLimits.MaxNestingDepth"/> raises <see cref="TripleTermDepthLimitException"/>.
     /// </summary>
     /// <param name="writer">The JSON writer.</param>
     /// <param name="root">The term to write.</param>
+    /// <exception cref="TripleTermDepthLimitException">A quoted triple is nested beyond <see cref="QuotedTripleLimits.MaxNestingDepth"/>.</exception>
     private static void WriteTerm(Utf8JsonWriter writer, RdfTerm root)
     {
         Stack<JsonOp> work = new();
         work.Push(new JsonOp(JsonOpKind.Term, root, null));
+        int depth = 0;
 
         while(work.Count > 0)
         {
             JsonOp op = work.Pop();
             switch(op.Kind)
             {
+                case JsonOpKind.CloseTriple:
+                {
+                    writer.WriteEndObject();
+                    depth--;
+                    break;
+                }
                 case JsonOpKind.EndObject:
                 {
                     writer.WriteEndObject();
@@ -140,11 +150,20 @@ public static class SparqlResultsJsonWriter
                 {
                     if(op.Term is TripleTerm triple)
                     {
+                        depth++;
+                        if(depth > QuotedTripleLimits.MaxNestingDepth)
+                        {
+                            throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
+                        }
+
                         writer.WriteStartObject();
                         writer.WriteString(SparqlResultsJsonNames.TypeUtf8, SparqlResultsJsonNames.TripleUtf8);
                         writer.WritePropertyName(SparqlResultsJsonNames.ValueUtf8);
                         writer.WriteStartObject();
-                        work.Push(new JsonOp(JsonOpKind.EndObject, null, null));
+
+                        //CloseTriple pops last (closes the outer term object) and unwinds the depth; the plain
+                        //EndObject pops just after the components and closes the inner value object.
+                        work.Push(new JsonOp(JsonOpKind.CloseTriple, null, null));
                         work.Push(new JsonOp(JsonOpKind.EndObject, null, null));
                         PushComponent(work, SparqlResultsJsonNames.Object, triple.Object);
                         PushComponent(work, SparqlResultsJsonNames.Predicate, triple.Predicate);
@@ -231,7 +250,10 @@ public static class SparqlResultsJsonWriter
         PropertyName,
 
         /// <summary>Close the current object.</summary>
-        EndObject
+        EndObject,
+
+        /// <summary>Close a quoted triple's outer value object and unwind one nesting level.</summary>
+        CloseTriple
     }
 
     /// <summary>One operation on the explicit term-writing stack.</summary>

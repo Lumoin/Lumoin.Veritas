@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Json;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
@@ -74,5 +75,48 @@ internal sealed class SparqlResultsJsonWriterTests
         SparqlResultSet roundTrip = SparqlResultsJsonReader.Read(SparqlResultsJsonWriter.WriteToUtf8String(SparqlResultSet.ForAsk(false)).Memory);
         Assert.IsTrue(roundTrip.IsBoolean);
         Assert.IsFalse(roundTrip.Boolean!.Value);
+    }
+
+    /// <summary>A triple-term binding nested at the depth limit serializes to completion (one "triple" marker per level).</summary>
+    [TestMethod]
+    public void DeepTripleTermBindingAtTheNestingLimitWrites()
+    {
+        SparqlSolution solution = new([Bind("t", NestSubject(QuotedTripleLimits.MaxNestingDepth))]);
+        SparqlResultSet original = SparqlResultSet.ForSelect([Utf8String.FromString("t")], [solution]);
+
+        string json = SparqlResultsJsonWriter.WriteToUtf8String(original).ToString();
+
+        Assert.AreEqual(QuotedTripleLimits.MaxNestingDepth, json.Split("\"triple\"").Length - 1);
+    }
+
+    /// <summary>A triple-term binding nested beyond the limit throws the catchable depth exception, not a stack overflow.</summary>
+    [TestMethod]
+    public void DeepTripleTermBindingBeyondTheNestingLimitThrows()
+    {
+        SparqlSolution solution = new([Bind("t", NestSubject(QuotedTripleLimits.MaxNestingDepth + 1))]);
+        SparqlResultSet original = SparqlResultSet.ForSelect([Utf8String.FromString("t")], [solution]);
+
+        TripleTermDepthLimitException exception = Assert.ThrowsExactly<TripleTermDepthLimitException>(
+            () => SparqlResultsJsonWriter.WriteToUtf8String(original));
+
+        Assert.AreEqual(QuotedTripleLimits.MaxNestingDepth + 1, exception.Depth);
+        Assert.AreEqual(QuotedTripleLimits.MaxNestingDepth, exception.Limit);
+    }
+
+    /// <summary>Builds a triple term nested <paramref name="depth"/> quoted triples deep through the subject.</summary>
+    /// <param name="depth">The number of quoted-triple nesting levels.</param>
+    /// <returns>The nested term.</returns>
+    private static RdfTerm NestSubject(int depth)
+    {
+        NamedNode predicate = Iri("http://example/p");
+        RdfTerm leaf = Typed("o", "http://www.w3.org/2001/XMLSchema#string");
+
+        RdfTerm term = leaf;
+        for(int i = 0; i < depth; i++)
+        {
+            term = new TripleTerm(term, predicate, leaf);
+        }
+
+        return term;
     }
 }
