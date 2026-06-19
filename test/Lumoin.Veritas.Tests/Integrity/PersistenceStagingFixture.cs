@@ -220,6 +220,47 @@ internal static class PersistenceStagingFixture
         image.WritableBytes[ChecksumAlgorithmIdOffset] = ForeignChecksumAlgorithmId;
     }
 
+    /// <summary>The header byte offset of the checksum-algorithm id in the manifest and CURRENT-pointer images, which carry no feature mask: magic (8) + version major (1) + version minor (1).</summary>
+    internal const int ManifestChecksumAlgorithmIdOffset = 8 + 1 + 1;
+
+    /// <summary>Flips a generation byte of the live CURRENT pointer in the store so its self-checksum fails — at-rest CURRENT-pointer rot recovery's retained fallback recovers past.</summary>
+    /// <param name="store">The store holding the live CURRENT pointer.</param>
+    internal static void CorruptCurrentPointer(PersistenceStore store)
+    {
+        byte[] pointer = store.Read(ManifestNaming.CurrentPointerName) ?? throw new InvalidOperationException("The live CURRENT pointer is missing.");
+        pointer[12] ^= 0xFF;
+        store.WriteStaged(ManifestNaming.CurrentPointerName, pointer);
+    }
+
+    /// <summary>Flips a byte of a generation's manifest image in the store so its self-checksum fails — at-rest manifest rot recovery skips past to an earlier committed generation.</summary>
+    /// <param name="store">The store holding the manifest image.</param>
+    /// <param name="generation">The generation whose manifest is corrupted.</param>
+    internal static void CorruptManifestBlob(PersistenceStore store, long generation)
+    {
+        byte[] manifest = store.Read(ManifestNaming.ManifestName(generation)) ?? throw new InvalidOperationException($"The manifest for generation {generation} is missing.");
+        manifest[12] ^= 0xFF;
+        store.WriteStaged(ManifestNaming.ManifestName(generation), manifest);
+    }
+
+    /// <summary>Stamps the live CURRENT pointer with a foreign checksum-algorithm id no resolver maps, so recovery refuses it as an unsupported epoch rather than masking it as at-rest rot.</summary>
+    /// <param name="store">The store holding the live CURRENT pointer.</param>
+    internal static void SetForeignCurrentAlgorithmId(PersistenceStore store)
+    {
+        byte[] pointer = store.Read(ManifestNaming.CurrentPointerName) ?? throw new InvalidOperationException("The live CURRENT pointer is missing.");
+        pointer[ManifestChecksumAlgorithmIdOffset] = ForeignChecksumAlgorithmId;
+        store.WriteStaged(ManifestNaming.CurrentPointerName, pointer);
+    }
+
+    /// <summary>Stamps a generation's manifest image with a foreign checksum-algorithm id, so recovery refuses it as an unsupported epoch rather than skipping past it as at-rest rot.</summary>
+    /// <param name="store">The store holding the manifest image.</param>
+    /// <param name="generation">The generation whose manifest is stamped.</param>
+    internal static void SetForeignManifestAlgorithmId(PersistenceStore store, long generation)
+    {
+        byte[] manifest = store.Read(ManifestNaming.ManifestName(generation)) ?? throw new InvalidOperationException($"The manifest for generation {generation} is missing.");
+        manifest[ManifestChecksumAlgorithmIdOffset] = ForeignChecksumAlgorithmId;
+        store.WriteStaged(ManifestNaming.ManifestName(generation), manifest);
+    }
+
     /// <summary>A directory durability barrier that does nothing.</summary>
     /// <param name="directoryPath">The directory whose metadata would be flushed.</param>
     internal static void NoOpBarrier(string directoryPath)
@@ -254,8 +295,21 @@ internal static class PersistenceStagingFixture
     {
         directory = Directory.CreateTempSubdirectory("veritas-staging-").FullName;
         FileSystemPersistenceStore store = new(directory, NoOpBarrier);
-        int digestWidth = ChecksumAlgorithm.XxHash3.ByteWidth;
+        CommitGeneration(store, generation, segment, sidecar, sketch, pool);
 
+        return store;
+    }
+
+    /// <summary>Stages the three artifacts under their generation-stamped names into an existing store and commits a manifest naming them — the recovery cells commit several generations into one store, and a wrapping fault store models a torn publish.</summary>
+    /// <param name="store">The store committed into.</param>
+    /// <param name="generation">The commit generation.</param>
+    /// <param name="segment">The data-segment image.</param>
+    /// <param name="sidecar">The sidecar image.</param>
+    /// <param name="sketch">The sketch image.</param>
+    /// <param name="pool">The pool the manifest writer and digest buffers are rented from.</param>
+    internal static void CommitGeneration(PersistenceStore store, long generation, ArtifactImage segment, ArtifactImage sidecar, ArtifactImage sketch, MemoryPool<byte> pool)
+    {
+        int digestWidth = ChecksumAlgorithm.XxHash3.ByteWidth;
         string segmentName = $"segment-{generation:D20}.dat";
         string sidecarName = $"sidecar-{generation:D20}.idx";
         string sketchName = $"sketch-{generation:D20}.skt";
@@ -274,8 +328,6 @@ internal static class PersistenceStagingFixture
         ];
         new ManifestWriter(store, ChecksumAlgorithm.XxHash3, pool, retainedCurrentPointerCount: 4)
             .Commit(new Manifest(generation, generation * 11, generation * 13, entries));
-
-        return store;
     }
 
     /// <summary>Computes an artifact's whole-image XxHash3 manifest-entry digest into a buffer rented from <paramref name="pool"/>, valid until the rented owner is returned (after the manifest is committed). Shared with the scrub tests' two-artifact staging.</summary>

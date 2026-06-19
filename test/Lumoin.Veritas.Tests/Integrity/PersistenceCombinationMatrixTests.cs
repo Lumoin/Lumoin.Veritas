@@ -12,6 +12,7 @@ using Lumoin.Veritas.Core.Persistence;
 using Lumoin.Veritas.Core.Persistence.Manifest;
 using Lumoin.Veritas.Core.Persistence.Segment;
 using Lumoin.Veritas.Core.Persistence.Sketch;
+using Lumoin.Veritas.Tests.Persistence;
 using Microsoft.Extensions.Time.Testing;
 using static Lumoin.Veritas.Tests.Integrity.PersistenceStagingFixture;
 
@@ -65,11 +66,23 @@ internal sealed class PersistenceCombinationMatrixTests
     /// <summary>The number of trailing bytes a truncation cell drops, enough that the declared geometry runs past the end of every artifact format at this scale.</summary>
     private const int TruncateDropBytes = 256;
 
-    /// <summary>The size of the enumerated cross-product: the active sites × kinds × rungs.</summary>
-    private const int ExpectedCellCount = 64;
+    /// <summary>The first committed generation a recovery cell stages; recovery follows the CURRENT pointer to it.</summary>
+    private const long RecoveryFirstGeneration = 1;
 
-    /// <summary>The pinned number of valid single-node cells in this slice, so adding or removing one is a deliberate change.</summary>
-    private const int ExpectedValidCellCount = 12;
+    /// <summary>The second generation a recovery cell stages or attempts; a torn publish of it leaves the first in force, and its at-rest manifest rot is recovered past.</summary>
+    private const long RecoverySecondGeneration = 2;
+
+    /// <summary>The triple count a recovery generation stages — small, since recovery reads the manifest and CURRENT pointer, never the artifacts.</summary>
+    private const uint RecoveryTripleCount = 30;
+
+    /// <summary>The sketch symbol count a recovery generation stages.</summary>
+    private const int RecoverySketchSymbolCount = 10;
+
+    /// <summary>The size of the enumerated cross-product: the active sites × kinds × rungs (6 × 7 × 4).</summary>
+    private const int ExpectedCellCount = 168;
+
+    /// <summary>The pinned number of valid single-node cells in this slice (12 per-artifact + 6 manifest/CURRENT recovery), so adding or removing one is a deliberate change.</summary>
+    private const int ExpectedValidCellCount = 18;
 
     /// <summary>The generation's triples, built once: every cell stages a fresh image trio over these.</summary>
     private static readonly EncodedTriple[] Triples = SampleTriples(TripleCount);
@@ -133,11 +146,11 @@ internal sealed class PersistenceCombinationMatrixTests
     /// <param name="Rung">The repair-ladder rung this cell is classified under.</param>
     internal readonly record struct MatrixCell(DamageSite Site, DamageKind Kind, RepairRung Rung);
 
-    /// <summary>The damage sites this slice enumerates: the three read-path artifacts plus the always-skipped parity tier.</summary>
-    private static readonly DamageSite[] ActiveSites = [DamageSite.Sidecar, DamageSite.DataSegment, DamageSite.Sketch, DamageSite.Parity];
+    /// <summary>The damage sites this slice enumerates: the three read-path artifacts, the always-skipped parity tier, and the manifest/CURRENT recovery sites. The journal recovery site lands with its own cells.</summary>
+    private static readonly DamageSite[] ActiveSites = [DamageSite.Sidecar, DamageSite.DataSegment, DamageSite.Sketch, DamageSite.Parity, DamageSite.Manifest, DamageSite.Current];
 
-    /// <summary>The damage kinds this slice enumerates: the byte-level kinds the read-path artifacts admit.</summary>
-    private static readonly DamageKind[] ActiveKinds = [DamageKind.BitFlip, DamageKind.WholeBlockGarbage, DamageKind.Truncate, DamageKind.StaleEpoch];
+    /// <summary>The damage kinds this slice enumerates: the read-path byte-level kinds plus the manifest/CURRENT publish-path kinds. The checksum-field mutation lands with the g3 mutation pass.</summary>
+    private static readonly DamageKind[] ActiveKinds = [DamageKind.BitFlip, DamageKind.WholeBlockGarbage, DamageKind.Truncate, DamageKind.StaleEpoch, DamageKind.TornPublishPreRename, DamageKind.TornPublishPreCurrent, DamageKind.CurrentRot];
 
     /// <summary>The repair-ladder rungs, the cross-product's third axis; all but the cell's terminal rung are skipped per artifact class.</summary>
     private static readonly RepairRung[] AllRungs = [RepairRung.RederiveLocally, RepairRung.LocalParity, RepairRung.PeerReconciliation, RepairRung.NamedLoss];
@@ -221,8 +234,15 @@ internal sealed class PersistenceCombinationMatrixTests
             return (false, "R2 peer: peer reconciliation belongs to the replication arc, not the single-node gate.");
         }
 
-        //R3 — torn-publish and CURRENT-rot damage only the manifest/CURRENT publish path.
-        if(IsPublishKind(cell.Kind) && cell.Site != DamageSite.Manifest && cell.Site != DamageSite.Current)
+        //The manifest/CURRENT recovery sites are validated by ManifestRecovery, not the repair-ladder scrub, so
+        //their kind applicability and nominal rung are classified on their own path.
+        if(cell.Site == DamageSite.Manifest || cell.Site == DamageSite.Current)
+        {
+            return ClassifyRecoverySite(cell);
+        }
+
+        //R3 — torn-publish and CURRENT-rot are publish-path kinds; on a read-path artifact they do not apply.
+        if(IsPublishKind(cell.Kind))
         {
             return (false, "R3 publish-path: torn-publish / CURRENT-rot kinds apply only to the manifest/CURRENT publish path.");
         }
@@ -249,7 +269,38 @@ internal sealed class PersistenceCombinationMatrixTests
         return (true, string.Empty);
     }
 
-    /// <summary>The persistence invariants a valid cell asserts, fixed by its site and kind. A foreign epoch is a detection-time refusal (I1 + I5); otherwise the re-derivable sidecar/sketch cells assert faithful, ordinary-ingest repair (I1/I2/I3/I6) and the system-of-record cells assert a named loss (I1 + I7).</summary>
+    /// <summary>Classifies a manifest/CURRENT recovery cell: recovery recovers from a local surviving copy (the nominal <see cref="RepairRung.RederiveLocally"/> rung), and each site admits only the kinds whose recovery it exercises — the manifest admits torn-publish, at-rest blob rot (BitFlip), and the foreign-epoch refusal; the CURRENT pointer admits its at-rest rot (CurrentRot) and the foreign-epoch refusal; other byte-damage kinds skip as represented by those single cells.</summary>
+    /// <param name="cell">The recovery cell; its site is <see cref="DamageSite.Manifest"/> or <see cref="DamageSite.Current"/>.</param>
+    /// <returns>Whether the cell is valid, and the skip reason when it is not.</returns>
+    private static (bool Valid, string Reason) ClassifyRecoverySite(MatrixCell cell)
+    {
+        if(cell.Rung != RepairRung.RederiveLocally)
+        {
+            return (false, $"R6 rung: recovery recovers from a local surviving CURRENT/manifest copy at {RepairRung.RederiveLocally}, not via {cell.Rung}.");
+        }
+
+        if(cell.Site == DamageSite.Manifest)
+        {
+            return cell.Kind switch
+            {
+                DamageKind.TornPublishPreRename or DamageKind.TornPublishPreCurrent => (true, string.Empty),
+                DamageKind.BitFlip => (true, string.Empty),
+                DamageKind.StaleEpoch => (true, string.Empty),
+                DamageKind.CurrentRot => (false, "Rm manifest: CURRENT-rot is the CURRENT-pointer fault, surfaced at the Current site."),
+                _ => (false, "Rm manifest: at-rest manifest rot is represented by the BitFlip cell; any image byte damage fails the self-checksum identically."),
+            };
+        }
+
+        return cell.Kind switch
+        {
+            DamageKind.CurrentRot => (true, string.Empty),
+            DamageKind.StaleEpoch => (true, string.Empty),
+            DamageKind.TornPublishPreRename or DamageKind.TornPublishPreCurrent => (false, "Rc current: torn-publish is a manifest-publish fault, surfaced at the Manifest site."),
+            _ => (false, "Rc current: CURRENT-pointer at-rest rot is represented by the CurrentRot cell; the pointer is a single self-checksummed record."),
+        };
+    }
+
+    /// <summary>The persistence invariants a valid cell asserts, fixed by its site and kind. A foreign epoch is a detection-time refusal (I1 + I5); the re-derivable sidecar/sketch cells assert faithful, ordinary-ingest repair (I1/I2/I3/I6); the system-of-record cells assert a named loss (I1 + I7); and the manifest/CURRENT recovery cells assert atomic-publish recovery (I1 + I4).</summary>
     /// <param name="cell">The valid cell.</param>
     /// <returns>The cited invariants.</returns>
     private static PersistenceInvariant[] CitedInvariants(MatrixCell cell)
@@ -264,6 +315,8 @@ internal sealed class PersistenceCombinationMatrixTests
             DamageSite.Sidecar => [PersistenceInvariant.DetectionPrecedesUse, PersistenceInvariant.RepairIsFaithful, PersistenceInvariant.RepairIsOrdinaryIngest],
             DamageSite.Sketch => [PersistenceInvariant.DetectionPrecedesUse, PersistenceInvariant.DetectionPrecedesXor, PersistenceInvariant.RepairIsFaithful, PersistenceInvariant.RepairIsOrdinaryIngest],
             DamageSite.DataSegment => [PersistenceInvariant.DetectionPrecedesUse, PersistenceInvariant.LossIsNamed],
+            DamageSite.Manifest => [PersistenceInvariant.DetectionPrecedesUse, PersistenceInvariant.PublishIsAtomic],
+            DamageSite.Current => [PersistenceInvariant.DetectionPrecedesUse, PersistenceInvariant.PublishIsAtomic],
             _ => [],
         };
     }
@@ -312,10 +365,17 @@ internal sealed class PersistenceCombinationMatrixTests
         Drive(cell);
     }
 
-    /// <summary>Stages a generation with the cell's targeted artifact damaged, then asserts the verdict, the repair outcome, and the differential twin.</summary>
+    /// <summary>Stages a generation with the cell's targeted artifact damaged, then asserts the verdict, the repair outcome, and the differential twin; a manifest/CURRENT recovery cell takes the recovery path instead of the scrub path.</summary>
     /// <param name="cell">The valid cell to drive.</param>
     private static void Drive(MatrixCell cell)
     {
+        if(cell.Site == DamageSite.Manifest || cell.Site == DamageSite.Current)
+        {
+            DriveRecovery(cell);
+
+            return;
+        }
+
         using VeritasMemoryPool<byte> bytePool = new();
         using VeritasMemoryPool<EncodedTriple> triplePool = new();
         using ArtifactImage segment = cell.Site == DamageSite.DataSegment ? BuildDamagedSegment(cell.Kind, bytePool) : SegmentImage(Triples, bytePool);
@@ -666,5 +726,135 @@ internal sealed class PersistenceCombinationMatrixTests
         Assert.AreEqual(BlockItemCount, loss.LostItemCount);
         //The named range — read from the repair report — names a real, in-bounds slice of the fixture it removes.
         Assert.IsTrue(loss.LostItemStart >= 0 && loss.LostItemStart + loss.LostItemCount <= Triples.Length, "The named loss range must lie within the fixture's item range.");
+    }
+
+    /// <summary>Drives a manifest/CURRENT recovery cell: it stages a first committed generation, injects the cell's fault, and asserts how <see cref="ManifestRecovery"/> follows the CURRENT pointer to a committed generation — leaving the prior generation in force on a torn publish (I4), falling back to a retained CURRENT past pointer rot (I4), skipping at-rest manifest rot to an earlier generation, or refusing a foreign epoch (I5).</summary>
+    /// <param name="cell">The recovery cell to drive (its site is Manifest or Current).</param>
+    private static void DriveRecovery(MatrixCell cell)
+    {
+        using VeritasMemoryPool<byte> bytePool = new();
+        EncodedTriple[] triples = SampleTriples(RecoveryTripleCount);
+        using ArtifactImage segment = SegmentImage(triples, bytePool);
+        using ArtifactImage sidecar = SidecarImage(triples, bytePool);
+        using ArtifactImage sketch = SketchImage(RecoverySketchSymbolCount, bytePool);
+        FileSystemPersistenceStore store = StageGeneration(RecoveryFirstGeneration, segment, sidecar, sketch, bytePool, out string directory);
+        try
+        {
+            if(cell.Site == DamageSite.Manifest)
+            {
+                AssertManifestRecovery(cell.Kind, store, segment, sidecar, sketch, bytePool);
+            }
+            else
+            {
+                AssertCurrentRecovery(cell.Kind, store, segment, sidecar, sketch, bytePool);
+            }
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>Asserts the manifest-site recovery outcome for a kind: torn-publish leaves the prior generation in force (I4); at-rest blob rot is skipped to the earlier generation; a foreign epoch is refused (I5).</summary>
+    /// <param name="kind">The damage kind.</param>
+    /// <param name="store">The store holding the first committed generation.</param>
+    /// <param name="segment">The data-segment image a second generation is staged from.</param>
+    /// <param name="sidecar">The sidecar image a second generation is staged from.</param>
+    /// <param name="sketch">The sketch image a second generation is staged from.</param>
+    /// <param name="bytePool">The pool the second generation's commit rents from.</param>
+    private static void AssertManifestRecovery(DamageKind kind, FileSystemPersistenceStore store, ArtifactImage segment, ArtifactImage sidecar, ArtifactImage sketch, MemoryPool<byte> bytePool)
+    {
+        switch(kind)
+        {
+            case DamageKind.TornPublishPreRename:
+            {
+                AssertTornPublishLeavesPriorInForce(store, segment, sidecar, sketch, bytePool, PublishFailStep.BeforeRename);
+
+                break;
+            }
+            case DamageKind.TornPublishPreCurrent:
+            {
+                AssertTornPublishLeavesPriorInForce(store, segment, sidecar, sketch, bytePool, PublishFailStep.BeforeCurrentStaging);
+
+                break;
+            }
+            case DamageKind.BitFlip:
+            {
+                CommitGeneration(store, RecoverySecondGeneration, segment, sidecar, sketch, bytePool);
+                CorruptManifestBlob(store, RecoverySecondGeneration);
+                RecoveryResult recovered = new ManifestRecovery(store).Recover();
+                Assert.AreEqual(RecoveryFirstGeneration, recovered.Manifest.CommitGeneration, "At-rest manifest rot is skipped; recovery returns the earlier committed generation.");
+                Assert.IsFalse(recovered.IsDegraded);
+
+                break;
+            }
+            case DamageKind.StaleEpoch:
+            {
+                SetForeignManifestAlgorithmId(store, RecoveryFirstGeneration);
+                Assert.ThrowsExactly<NotSupportedException>(() => { _ = new ManifestRecovery(store).Recover(); });
+
+                break;
+            }
+            default:
+            {
+                throw new InvalidOperationException($"No manifest recovery drive for kind {kind}.");
+            }
+        }
+    }
+
+    /// <summary>Asserts the CURRENT-site recovery outcome: pointer rot falls back to the retained copy and recovers the committed generation (I4); a foreign epoch is refused (I5).</summary>
+    /// <param name="kind">The damage kind.</param>
+    /// <param name="store">The store holding the first committed generation.</param>
+    /// <param name="segment">The data-segment image a second generation is staged from.</param>
+    /// <param name="sidecar">The sidecar image a second generation is staged from.</param>
+    /// <param name="sketch">The sketch image a second generation is staged from.</param>
+    /// <param name="bytePool">The pool the second generation's commit rents from.</param>
+    private static void AssertCurrentRecovery(DamageKind kind, FileSystemPersistenceStore store, ArtifactImage segment, ArtifactImage sidecar, ArtifactImage sketch, MemoryPool<byte> bytePool)
+    {
+        switch(kind)
+        {
+            case DamageKind.CurrentRot:
+            {
+                CommitGeneration(store, RecoverySecondGeneration, segment, sidecar, sketch, bytePool);
+                CorruptCurrentPointer(store);
+                RecoveryResult recovered = new ManifestRecovery(store).Recover();
+                Assert.AreEqual(RecoverySecondGeneration, recovered.Manifest.CommitGeneration, "CURRENT-pointer rot falls back to the retained copy and recovers the latest committed generation.");
+                Assert.IsFalse(recovered.IsDegraded);
+
+                break;
+            }
+            case DamageKind.StaleEpoch:
+            {
+                SetForeignCurrentAlgorithmId(store);
+                Assert.ThrowsExactly<NotSupportedException>(() => { _ = new ManifestRecovery(store).Recover(); });
+
+                break;
+            }
+            default:
+            {
+                throw new InvalidOperationException($"No CURRENT recovery drive for kind {kind}.");
+            }
+        }
+    }
+
+    /// <summary>Asserts a torn publish of the second generation leaves the first committed generation wholly in force (I4): recovery follows the surviving CURRENT to the first generation, while the orphaned second-generation manifest exists on disk and surfaces only via the named-degraded direct scan — so the orphan is never mistaken for a committed generation.</summary>
+    /// <param name="store">The store holding the first committed generation.</param>
+    /// <param name="segment">The data-segment image the second generation is staged from.</param>
+    /// <param name="sidecar">The sidecar image the second generation is staged from.</param>
+    /// <param name="sketch">The sketch image the second generation is staged from.</param>
+    /// <param name="bytePool">The pool the second generation's commit rents from.</param>
+    /// <param name="failStep">The publish step the torn commit crashes before.</param>
+    private static void AssertTornPublishLeavesPriorInForce(FileSystemPersistenceStore store, ArtifactImage segment, ArtifactImage sidecar, ArtifactImage sketch, MemoryPool<byte> bytePool, PublishFailStep failStep)
+    {
+        FailAtStepStore crashing = new(store, failStep);
+        Assert.ThrowsExactly<IOException>(() => CommitGeneration(crashing, RecoverySecondGeneration, segment, sidecar, sketch, bytePool));
+
+        RecoveryResult recovered = new ManifestRecovery(store).Recover();
+        Assert.AreEqual(RecoveryFirstGeneration, recovered.Manifest.CommitGeneration, "A torn publish leaves the prior committed generation wholly in force (I4).");
+        Assert.IsFalse(recovered.IsDegraded);
+
+        RecoveryResult degraded = new ManifestRecovery(store).RecoverFromDegradedScan();
+        Assert.AreEqual(RecoverySecondGeneration, degraded.Manifest.CommitGeneration, "The orphaned generation's manifest exists on disk and surfaces only via the named-degraded scan.");
+        Assert.IsTrue(degraded.IsDegraded);
     }
 }
