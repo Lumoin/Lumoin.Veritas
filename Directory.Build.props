@@ -183,7 +183,7 @@ See full changelog at https://github.com/lumoin/Veritas/blob/main/CHANGELOG.md.]
     <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.Entropy.txt" />
   </ItemGroup>
 
-  <ItemGroup Condition="!$(MSBuildProjectName.EndsWith('.Tests')) AND '$(MSBuildProjectName)' != 'Lumoin.Veritas.Benchmarks' AND '$(MSBuildProjectName)' != 'Lumoin.Veritas.Workbench'">
+  <ItemGroup Condition="'$(IsTestApplication)' != 'true' AND '$(MSBuildProjectName)' != 'Lumoin.Veritas.Benchmarks' AND '$(MSBuildProjectName)' != 'Lumoin.Veritas.Workbench'">
     <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.Streams.txt" />
   </ItemGroup>
 
