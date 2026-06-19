@@ -180,13 +180,61 @@ public sealed class SketchSegment
         }
     }
 
-    /// <summary>Reconstructs the flat coded-symbol bytes from an image written by <see cref="WriteTo"/>, verifying the front-matter trailer and every block's checksum before its bytes are copied out.</summary>
+    /// <summary>Reconstructs the flat coded-symbol bytes from an image written by <see cref="WriteTo"/>, verifying the front-matter trailer and every block's checksum before its bytes are copied out; the first block that fails is refused (an all-or-nothing read). The report-not-throw, decode-free counterpart is <see cref="RunVerifyRound"/>.</summary>
     /// <param name="source">The byte image.</param>
     /// <param name="resolveChecksum">Resolves the image's checksum-algorithm id; <see langword="null"/> uses <see cref="ChecksumAlgorithm.DefaultResolver"/>.</param>
     /// <returns>The flat coded-symbol bytes, in stored order.</returns>
     /// <exception cref="InvalidDataException">The image is not a sketch segment, is malformed, or a block or the front matter fails its checksum.</exception>
     /// <exception cref="NotSupportedException">The major version, a required feature, or the checksum algorithm is unsupported, or the host is big-endian.</exception>
     public static byte[] ReadFrom(ReadOnlySpan<byte> source, ResolveChecksumAlgorithmDelegate? resolveChecksum = null)
+    {
+        SketchLayout layout = ParseAndVerifyFrontMatter(source, resolveChecksum);
+        byte[] symbols = new byte[layout.SymbolCount * layout.SymbolWidth];
+        Span<byte> scratch = stackalloc byte[ChecksumAlgorithm.MaximumByteWidth];
+        for(int block = 0; block < layout.BlockCount; block++)
+        {
+            if(!VerifyBlock(source, layout, block, scratch, out int start, out int symbolsInBlock, out long blockOffset))
+            {
+                throw new InvalidDataException($"Sketch block {block} (symbols [{start}, {start + symbolsInBlock})) failed its checksum (at-rest corruption).");
+            }
+
+            int byteCount = symbolsInBlock * layout.SymbolWidth;
+            source.Slice((int)blockOffset, byteCount).CopyTo(symbols.AsSpan(start * layout.SymbolWidth, byteCount));
+        }
+
+        return symbols;
+    }
+
+    /// <summary>Verifies an image decode-free, reporting each block's at-rest checksum verdict and the front-matter verdict rather than throwing on a per-block or front-matter failure — the format-neutral scrub seam. Framing damage (a malformed, unsupported, or truncated image) is still refused, since a block geometry that cannot be parsed cannot be walked.</summary>
+    /// <param name="source">The byte image.</param>
+    /// <param name="resolveChecksum">Resolves the image's checksum-algorithm id; <see langword="null"/> uses <see cref="ChecksumAlgorithm.DefaultResolver"/>.</param>
+    /// <returns>The per-block and front-matter verdicts.</returns>
+    /// <exception cref="InvalidDataException">The image is not a sketch segment, is malformed, or is truncated.</exception>
+    /// <exception cref="NotSupportedException">The major version, a required feature, or the checksum algorithm is unsupported, or the host is big-endian.</exception>
+    public static ArtifactVerifyReport RunVerifyRound(ReadOnlySpan<byte> source, ResolveChecksumAlgorithmDelegate? resolveChecksum = null)
+    {
+        SketchLayout layout = ParseFraming(source, resolveChecksum);
+        bool frontMatterValid = VerifyFrontMatter(source, layout);
+        BlockVerdict[] verdicts = new BlockVerdict[layout.BlockCount];
+        Span<byte> scratch = stackalloc byte[ChecksumAlgorithm.MaximumByteWidth];
+        for(int block = 0; block < layout.BlockCount; block++)
+        {
+            bool valid = VerifyBlock(source, layout, block, scratch, out _, out int symbolsInBlock, out long blockOffset);
+            verdicts[block] = new BlockVerdict(block, blockOffset, (long)symbolsInBlock * layout.SymbolWidth, valid);
+        }
+
+        bool hasChecksums = layout.Checksum is not null;
+
+        return new ArtifactVerifyReport(layout.Checksum?.Id ?? ChecksumAlgorithmNone, hasChecksums, hasChecksums, frontMatterValid, verdicts);
+    }
+
+    /// <summary>Parses an image's framing — magic, version, feature mask, checksum-algorithm id, and block geometry — refusing a malformed, unsupported, or truncated image, and returns the geometry needed to locate and verify every block. It does NOT verify the front-matter trailer (that is <see cref="VerifyFrontMatter"/>), so a decode-free verify can report the front-matter verdict rather than throw.</summary>
+    /// <param name="source">The byte image.</param>
+    /// <param name="resolveChecksum">Resolves the image's checksum-algorithm id; <see langword="null"/> uses <see cref="ChecksumAlgorithm.DefaultResolver"/>.</param>
+    /// <returns>The parsed layout.</returns>
+    /// <exception cref="InvalidDataException">The image is not a sketch segment, is malformed, or is truncated.</exception>
+    /// <exception cref="NotSupportedException">The major version, a required feature, or the checksum algorithm is unsupported, or the host is big-endian.</exception>
+    private static SketchLayout ParseFraming(ReadOnlySpan<byte> source, ResolveChecksumAlgorithmDelegate? resolveChecksum)
     {
         LittleEndianBuffer.EnsureLittleEndian();
         if(source.Length < HeaderSize + ScalarSize)
@@ -258,39 +306,67 @@ public sealed class SketchSegment
             throw new InvalidDataException("The sketch segment is truncated: its declared blocks run past the image.");
         }
 
+        return new SketchLayout(symbolCount, symbolsPerBlock, symbolWidth, blockCount, checksum, HeaderSize + ScalarSize, firstBlock, blockBytes, frontMatterEnd, total);
+    }
+
+    /// <summary>Recomputes the front-matter trailer and compares it to the stored digest, reporting the verdict rather than throwing; <see langword="true"/> when the image carries no checksum.</summary>
+    /// <param name="source">The byte image.</param>
+    /// <param name="layout">The parsed layout.</param>
+    /// <returns>Whether the front-matter trailer matched its stored digest.</returns>
+    private static bool VerifyFrontMatter(ReadOnlySpan<byte> source, in SketchLayout layout)
+    {
+        if(layout.Checksum is null)
+        {
+            return true;
+        }
+
         Span<byte> computed = stackalloc byte[ChecksumAlgorithm.MaximumByteWidth];
-        if(checksum is not null)
+        layout.Checksum.Compute(source[..(int)layout.FrontMatterEnd], computed[..layout.Checksum.ByteWidth]);
+
+        return computed[..layout.Checksum.ByteWidth].SequenceEqual(source.Slice((int)(layout.Total - layout.Checksum.ByteWidth), layout.Checksum.ByteWidth));
+    }
+
+    /// <summary>Parses an image's framing and verifies its front-matter trailer, refusing front-matter damage so the block walk that follows can trust the geometry; the throwing counterpart used by the all-or-nothing read path.</summary>
+    /// <param name="source">The byte image.</param>
+    /// <param name="resolveChecksum">Resolves the image's checksum-algorithm id; <see langword="null"/> uses <see cref="ChecksumAlgorithm.DefaultResolver"/>.</param>
+    /// <returns>The verified layout.</returns>
+    /// <exception cref="InvalidDataException">The image is not a sketch segment, is malformed, truncated, or fails its front-matter checksum.</exception>
+    /// <exception cref="NotSupportedException">The major version, a required feature, or the checksum algorithm is unsupported, or the host is big-endian.</exception>
+    private static SketchLayout ParseAndVerifyFrontMatter(ReadOnlySpan<byte> source, ResolveChecksumAlgorithmDelegate? resolveChecksum)
+    {
+        SketchLayout layout = ParseFraming(source, resolveChecksum);
+        if(!VerifyFrontMatter(source, layout))
         {
-            checksum.Compute(source[..(int)frontMatterEnd], computed[..checksum.ByteWidth]);
-            if(!computed[..checksum.ByteWidth].SequenceEqual(source.Slice((int)(total - checksum.ByteWidth), checksum.ByteWidth)))
-            {
-                throw new InvalidDataException("The sketch segment failed its front-matter checksum (at-rest corruption).");
-            }
+            throw new InvalidDataException("The sketch segment failed its front-matter checksum (at-rest corruption).");
         }
 
-        byte[] symbols = new byte[(int)symbolBytesLength];
-        int checksumSectionOffset = HeaderSize + ScalarSize;
-        for(int block = 0; block < blockCount; block++)
+        return layout;
+    }
+
+    /// <summary>Recomputes block <paramref name="block"/>'s checksum and compares it to the stored digest, reporting the verdict rather than throwing; the block's symbol range and byte offset are set regardless of the verdict.</summary>
+    /// <param name="source">The byte image.</param>
+    /// <param name="layout">The parsed layout.</param>
+    /// <param name="block">The block index.</param>
+    /// <param name="scratch">Scratch at least <see cref="ChecksumAlgorithm.MaximumByteWidth"/> bytes long for the recomputed digest.</param>
+    /// <param name="start">The block's first symbol index.</param>
+    /// <param name="symbolsInBlock">The number of symbols the block covers.</param>
+    /// <param name="blockOffset">The block's byte offset in the image.</param>
+    /// <returns>Whether the block's checksum matched; always <see langword="true"/> when the image carries no checksums.</returns>
+    private static bool VerifyBlock(ReadOnlySpan<byte> source, in SketchLayout layout, int block, Span<byte> scratch, out int start, out int symbolsInBlock, out long blockOffset)
+    {
+        start = block * layout.SymbolsPerBlock;
+        symbolsInBlock = Math.Min(layout.SymbolsPerBlock, layout.SymbolCount - start);
+        blockOffset = layout.FirstBlock + (block * layout.BlockBytes);
+        if(layout.Checksum is null)
         {
-            long blockOffset = firstBlock + (block * blockBytes);
-            int start = block * symbolsPerBlock;
-            int symbolsInBlock = Math.Min(symbolsPerBlock, symbolCount - start);
-            int byteCount = symbolsInBlock * symbolWidth;
-            ReadOnlySpan<byte> blockSymbols = source.Slice((int)blockOffset, byteCount);
-
-            if(checksum is not null)
-            {
-                checksum.Compute(blockSymbols, computed[..checksum.ByteWidth]);
-                if(!computed[..checksum.ByteWidth].SequenceEqual(source.Slice(checksumSectionOffset + (block * checksum.ByteWidth), checksum.ByteWidth)))
-                {
-                    throw new InvalidDataException($"Sketch block {block} (symbols [{start}, {start + symbolsInBlock})) failed its checksum (at-rest corruption).");
-                }
-            }
-
-            blockSymbols.CopyTo(symbols.AsSpan(start * symbolWidth, byteCount));
+            return true;
         }
 
-        return symbols;
+        int byteCount = symbolsInBlock * layout.SymbolWidth;
+        ReadOnlySpan<byte> blockSymbols = source.Slice((int)blockOffset, byteCount);
+        layout.Checksum.Compute(blockSymbols, scratch[..layout.Checksum.ByteWidth]);
+
+        return scratch[..layout.Checksum.ByteWidth].SequenceEqual(source.Slice(layout.ChecksumSectionOffset + (block * layout.Checksum.ByteWidth), layout.Checksum.ByteWidth));
     }
 
     /// <summary>Reads back the symbol geometry (symbol width and symbols per block) an image was written with, without verifying its checksums or copying its symbols — the cheap geometry peek a verifying loader uses to confirm a sketch matches an expected contract.</summary>
@@ -349,5 +425,64 @@ public sealed class SketchSegment
     private static long Align(long value, long alignment)
     {
         return (value + alignment - 1) / alignment * alignment;
+    }
+
+    /// <summary>The framing-verified geometry of a sketch-segment image: everything needed to locate and checksum-verify every block once the header and front-matter trailer have passed.</summary>
+    private readonly struct SketchLayout
+    {
+        /// <summary>Creates a layout.</summary>
+        /// <param name="symbolCount">The number of coded symbols the segment holds.</param>
+        /// <param name="symbolsPerBlock">The number of symbols per block.</param>
+        /// <param name="symbolWidth">The byte width of one coded symbol.</param>
+        /// <param name="blockCount">The number of blocks.</param>
+        /// <param name="checksum">The per-block checksum algorithm, or <see langword="null"/> when the image carries none.</param>
+        /// <param name="checksumSectionOffset">The byte offset of the per-block checksum section.</param>
+        /// <param name="firstBlock">The byte offset of the first aligned block.</param>
+        /// <param name="blockBytes">The aligned byte stride between block starts.</param>
+        /// <param name="frontMatterEnd">The byte offset one past the front matter (header, scalars, and per-block section) the trailer covers.</param>
+        /// <param name="total">The total image byte size, whose tail holds the front-matter trailer.</param>
+        internal SketchLayout(int symbolCount, int symbolsPerBlock, int symbolWidth, int blockCount, ChecksumAlgorithm? checksum, int checksumSectionOffset, long firstBlock, long blockBytes, long frontMatterEnd, long total)
+        {
+            SymbolCount = symbolCount;
+            SymbolsPerBlock = symbolsPerBlock;
+            SymbolWidth = symbolWidth;
+            BlockCount = blockCount;
+            Checksum = checksum;
+            ChecksumSectionOffset = checksumSectionOffset;
+            FirstBlock = firstBlock;
+            BlockBytes = blockBytes;
+            FrontMatterEnd = frontMatterEnd;
+            Total = total;
+        }
+
+        /// <summary>The number of coded symbols the segment holds.</summary>
+        internal int SymbolCount { get; }
+
+        /// <summary>The number of symbols per block.</summary>
+        internal int SymbolsPerBlock { get; }
+
+        /// <summary>The byte width of one coded symbol.</summary>
+        internal int SymbolWidth { get; }
+
+        /// <summary>The number of blocks.</summary>
+        internal int BlockCount { get; }
+
+        /// <summary>The per-block checksum algorithm, or <see langword="null"/> when the image carries none.</summary>
+        internal ChecksumAlgorithm? Checksum { get; }
+
+        /// <summary>The byte offset of the per-block checksum section.</summary>
+        internal int ChecksumSectionOffset { get; }
+
+        /// <summary>The byte offset of the first aligned block.</summary>
+        internal long FirstBlock { get; }
+
+        /// <summary>The aligned byte stride between block starts.</summary>
+        internal long BlockBytes { get; }
+
+        /// <summary>The byte offset one past the front matter the trailer covers.</summary>
+        internal long FrontMatterEnd { get; }
+
+        /// <summary>The total image byte size, whose tail holds the front-matter trailer.</summary>
+        internal long Total { get; }
     }
 }

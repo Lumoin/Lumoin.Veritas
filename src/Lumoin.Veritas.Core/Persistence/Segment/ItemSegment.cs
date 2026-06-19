@@ -187,13 +187,36 @@ public sealed partial class ItemSegment
         return triples;
     }
 
-    /// <summary>Parses an image's framing and verifies its front-matter trailer, returning the geometry needed to locate and verify every block; framing, version, feature, algorithm, truncation, and front-matter damage are refused here so the block walk that follows can trust the geometry.</summary>
+    /// <summary>Verifies an image decode-free, reporting each block's at-rest checksum verdict and the front-matter verdict rather than throwing on a per-block or front-matter failure — the format-neutral scrub seam. Framing damage (a malformed, unsupported, or truncated image) is still refused, since a block geometry that cannot be parsed cannot be walked.</summary>
     /// <param name="source">The byte image.</param>
     /// <param name="resolveChecksum">Resolves the image's checksum-algorithm id; <see langword="null"/> uses <see cref="ChecksumAlgorithm.DefaultResolver"/>.</param>
-    /// <returns>The verified layout.</returns>
-    /// <exception cref="InvalidDataException">The image is not an item segment, is malformed, truncated, or fails its front-matter checksum.</exception>
+    /// <returns>The per-block and front-matter verdicts.</returns>
+    /// <exception cref="InvalidDataException">The image is not an item segment, is malformed, or is truncated.</exception>
     /// <exception cref="NotSupportedException">The major version, a required feature, or the checksum algorithm is unsupported, or the host is big-endian.</exception>
-    private static SegmentLayout ParseAndVerifyFrontMatter(ReadOnlySpan<byte> source, ResolveChecksumAlgorithmDelegate? resolveChecksum)
+    public static ArtifactVerifyReport RunVerifyRound(ReadOnlySpan<byte> source, ResolveChecksumAlgorithmDelegate? resolveChecksum = null)
+    {
+        SegmentLayout layout = ParseFraming(source, resolveChecksum);
+        bool frontMatterValid = VerifyFrontMatter(source, layout);
+        BlockVerdict[] verdicts = new BlockVerdict[layout.BlockCount];
+        Span<byte> scratch = stackalloc byte[ChecksumAlgorithm.MaximumByteWidth];
+        for(int block = 0; block < layout.BlockCount; block++)
+        {
+            bool valid = VerifyBlock(source, layout, block, scratch, out _, out int itemsInBlock, out long blockOffset);
+            verdicts[block] = new BlockVerdict(block, blockOffset, (long)itemsInBlock * ItemByteSize, valid);
+        }
+
+        bool hasChecksums = layout.Checksum is not null;
+
+        return new ArtifactVerifyReport(layout.Checksum?.Id ?? ChecksumAlgorithmNone, hasChecksums, hasChecksums, frontMatterValid, verdicts);
+    }
+
+    /// <summary>Parses an image's framing — magic, version, feature mask, checksum-algorithm id, and block geometry — refusing a malformed, unsupported, or truncated image, and returns the geometry needed to locate and verify every block. It does NOT verify the front-matter trailer (that is <see cref="VerifyFrontMatter"/>), so a decode-free verify can report the front-matter verdict rather than throw.</summary>
+    /// <param name="source">The byte image.</param>
+    /// <param name="resolveChecksum">Resolves the image's checksum-algorithm id; <see langword="null"/> uses <see cref="ChecksumAlgorithm.DefaultResolver"/>.</param>
+    /// <returns>The parsed layout.</returns>
+    /// <exception cref="InvalidDataException">The image is not an item segment, is malformed, or is truncated.</exception>
+    /// <exception cref="NotSupportedException">The major version, a required feature, or the checksum algorithm is unsupported, or the host is big-endian.</exception>
+    private static SegmentLayout ParseFraming(ReadOnlySpan<byte> source, ResolveChecksumAlgorithmDelegate? resolveChecksum)
     {
         LittleEndianBuffer.EnsureLittleEndian();
         if(source.Length < HeaderSize + ScalarSize)
@@ -257,17 +280,41 @@ public sealed partial class ItemSegment
             throw new InvalidDataException("The item segment is truncated: its declared blocks run past the image.");
         }
 
-        if(checksum is not null)
+        return new SegmentLayout(itemCount, blockItemCount, blockCount, checksum, HeaderSize + ScalarSize, firstBlock, blockBytes, frontMatterEnd, total);
+    }
+
+    /// <summary>Recomputes the front-matter trailer and compares it to the stored digest, reporting the verdict rather than throwing; <see langword="true"/> when the image carries no checksum.</summary>
+    /// <param name="source">The byte image.</param>
+    /// <param name="layout">The parsed layout.</param>
+    /// <returns>Whether the front-matter trailer matched its stored digest.</returns>
+    private static bool VerifyFrontMatter(ReadOnlySpan<byte> source, in SegmentLayout layout)
+    {
+        if(layout.Checksum is null)
         {
-            Span<byte> computed = stackalloc byte[ChecksumAlgorithm.MaximumByteWidth];
-            checksum.Compute(source[..(int)frontMatterEnd], computed[..checksum.ByteWidth]);
-            if(!computed[..checksum.ByteWidth].SequenceEqual(source.Slice((int)(total - checksum.ByteWidth), checksum.ByteWidth)))
-            {
-                throw new InvalidDataException("The item segment failed its front-matter checksum (at-rest corruption).");
-            }
+            return true;
         }
 
-        return new SegmentLayout(itemCount, blockItemCount, blockCount, checksum, HeaderSize + ScalarSize, firstBlock, blockBytes);
+        Span<byte> computed = stackalloc byte[ChecksumAlgorithm.MaximumByteWidth];
+        layout.Checksum.Compute(source[..(int)layout.FrontMatterEnd], computed[..layout.Checksum.ByteWidth]);
+
+        return computed[..layout.Checksum.ByteWidth].SequenceEqual(source.Slice((int)(layout.Total - layout.Checksum.ByteWidth), layout.Checksum.ByteWidth));
+    }
+
+    /// <summary>Parses an image's framing and verifies its front-matter trailer, refusing front-matter damage so the block walk that follows can trust the geometry; the throwing counterpart used by the all-or-nothing read paths.</summary>
+    /// <param name="source">The byte image.</param>
+    /// <param name="resolveChecksum">Resolves the image's checksum-algorithm id; <see langword="null"/> uses <see cref="ChecksumAlgorithm.DefaultResolver"/>.</param>
+    /// <returns>The verified layout.</returns>
+    /// <exception cref="InvalidDataException">The image is not an item segment, is malformed, truncated, or fails its front-matter checksum.</exception>
+    /// <exception cref="NotSupportedException">The major version, a required feature, or the checksum algorithm is unsupported, or the host is big-endian.</exception>
+    private static SegmentLayout ParseAndVerifyFrontMatter(ReadOnlySpan<byte> source, ResolveChecksumAlgorithmDelegate? resolveChecksum)
+    {
+        SegmentLayout layout = ParseFraming(source, resolveChecksum);
+        if(!VerifyFrontMatter(source, layout))
+        {
+            throw new InvalidDataException("The item segment failed its front-matter checksum (at-rest corruption).");
+        }
+
+        return layout;
     }
 
     /// <summary>Recomputes block <paramref name="block"/>'s checksum and compares it to the stored digest, reporting the verdict rather than throwing so a caller can either refuse the image or exclude the block; the block's item range and byte offset are set regardless of the verdict.</summary>
@@ -369,7 +416,9 @@ public sealed partial class ItemSegment
         /// <param name="checksumSectionOffset">The byte offset of the per-block checksum section.</param>
         /// <param name="firstBlock">The byte offset of the first aligned block.</param>
         /// <param name="blockBytes">The aligned byte stride between block starts.</param>
-        internal SegmentLayout(int itemCount, int blockItemCount, int blockCount, ChecksumAlgorithm? checksum, int checksumSectionOffset, long firstBlock, long blockBytes)
+        /// <param name="frontMatterEnd">The byte offset one past the front matter (header, scalars, and per-block section) the trailer covers.</param>
+        /// <param name="total">The total image byte size, whose tail holds the front-matter trailer.</param>
+        internal SegmentLayout(int itemCount, int blockItemCount, int blockCount, ChecksumAlgorithm? checksum, int checksumSectionOffset, long firstBlock, long blockBytes, long frontMatterEnd, long total)
         {
             ItemCount = itemCount;
             BlockItemCount = blockItemCount;
@@ -378,6 +427,8 @@ public sealed partial class ItemSegment
             ChecksumSectionOffset = checksumSectionOffset;
             FirstBlock = firstBlock;
             BlockBytes = blockBytes;
+            FrontMatterEnd = frontMatterEnd;
+            Total = total;
         }
 
         /// <summary>The number of triples the segment holds.</summary>
@@ -400,5 +451,11 @@ public sealed partial class ItemSegment
 
         /// <summary>The aligned byte stride between block starts.</summary>
         internal long BlockBytes { get; }
+
+        /// <summary>The byte offset one past the front matter the trailer covers.</summary>
+        internal long FrontMatterEnd { get; }
+
+        /// <summary>The total image byte size, whose tail holds the front-matter trailer.</summary>
+        internal long Total { get; }
     }
 }

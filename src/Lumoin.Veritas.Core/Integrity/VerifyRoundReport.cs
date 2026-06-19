@@ -64,6 +64,20 @@ internal readonly struct VerifyRoundReport
 
     /// <summary>Whether the image was verified and every blob and the front matter passed.</summary>
     internal bool IsClean => HasChecksums && CorruptCount == 0 && (!HasFrontMatterChecksum || FrontMatterValid);
+
+    /// <summary>Projects this columnar verdict onto the format-neutral <see cref="ArtifactVerifyReport"/> a scrub consumes, keeping each blob's image coordinates and validity and dropping the columnar-specific order, level, and role.</summary>
+    /// <returns>The format-neutral report.</returns>
+    internal ArtifactVerifyReport ToArtifactReport()
+    {
+        BlockVerdict[] blocks = new BlockVerdict[Blobs.Count];
+        for(int i = 0; i < Blobs.Count; i++)
+        {
+            BlobVerdict blob = Blobs[i];
+            blocks[i] = new BlockVerdict(blob.Index, blob.ByteOffset, blob.ByteLength, blob.IsValid);
+        }
+
+        return new ArtifactVerifyReport(ChecksumAlgorithmId, HasChecksums, HasFrontMatterChecksum, FrontMatterValid, blocks);
+    }
 }
 
 /// <summary>One column blob's verify verdict: where it lives in the image and the index, and whether its checksum matched.</summary>
