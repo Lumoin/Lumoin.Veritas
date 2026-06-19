@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Text;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Sparql;
 using Lumoin.Veritas.Sparql.Ast;
@@ -266,6 +267,92 @@ internal sealed class SparqlParserRecoveryTests
 
         Assert.IsLessThanOrEqualTo(2, realErrors, "parser diagnostics should be capped at MaxDiagnostics");
         Assert.IsTrue(sawExcess, "the ExcessDiagnostics marker should be recorded once the cap is reached");
+    }
+
+    [TestMethod]
+    public void QuotedTripleAtTheNestingLimitParsesWithoutADepthDiagnostic()
+    {
+        //A quoted triple nested exactly to the cap is legal: the parser must assemble it without the
+        //nesting diagnostic (strict '>' means depth MaxNestingDepth is allowed and only a deeper one trips).
+        using Utf8StringPool pool = new();
+        ParseResult<SparqlRequest> result = Parse(NestedTripleTermQuery(QuotedTripleLimits.MaxNestingDepth), pool);
+
+        Assert.IsFalse(result.HasErrors, "a quoted triple nested exactly to the limit is legal and must parse with no diagnostics");
+        Assert.IsFalse(HasCode(result, WellKnownDiagnostics.Sparql.QuotedTripleNestingTooDeep), "a quoted triple nested to the limit must parse without the nesting diagnostic");
+    }
+
+    [TestMethod]
+    public void QuotedTripleBeyondTheNestingLimitRecordsTheNestingDiagnostic()
+    {
+        //One level past the cap collapses the over-deep triple term to an error node and records the
+        //recoverable nesting diagnostic rather than throwing.
+        using Utf8StringPool pool = new();
+        ParseResult<SparqlRequest> result = Parse(NestedTripleTermQuery(QuotedTripleLimits.MaxNestingDepth + 1), pool);
+
+        Assert.IsTrue(result.HasErrors);
+        Assert.IsTrue(HasCode(result, WellKnownDiagnostics.Sparql.QuotedTripleNestingTooDeep), "a quoted triple nested beyond the limit must record the nesting diagnostic and recover");
+    }
+
+    [TestMethod]
+    public void DeeplyNestedQuotedTripleRecoversRatherThanOverflowing()
+    {
+        //A pathologically deep quoted triple must surface the nesting diagnostic and resynchronise, never
+        //exhaust the stack: the iterative parser bounds the work stack one frame past the cap.
+        using Utf8StringPool pool = new();
+        ParseResult<SparqlRequest> result = Parse(NestedTripleTermQuery(4000), pool);
+
+        Assert.IsTrue(result.HasErrors);
+        Assert.IsTrue(HasCode(result, WellKnownDiagnostics.Sparql.QuotedTripleNestingTooDeep));
+    }
+
+    [TestMethod]
+    public void DeeplyNestedCollectionRecordsTheNestingDiagnostic()
+    {
+        //RDF collections count toward the same unified nesting depth as quoted triples, so a collection
+        //nested beyond the cap records the same recoverable diagnostic.
+        using Utf8StringPool pool = new();
+        ParseResult<SparqlRequest> result = Parse(NestedCollectionQuery(QuotedTripleLimits.MaxNestingDepth + 1), pool);
+
+        Assert.IsTrue(result.HasErrors);
+        Assert.IsTrue(HasCode(result, WellKnownDiagnostics.Sparql.QuotedTripleNestingTooDeep));
+    }
+
+    private static string NestedTripleTermQuery(int depth)
+    {
+        StringBuilder builder = new("PREFIX : <http://e/> SELECT * WHERE { :s :p ");
+        for(int i = 0; i < depth; i++)
+        {
+            builder.Append("<<( :a :b ");
+        }
+
+        builder.Append(":o");
+        for(int i = 0; i < depth; i++)
+        {
+            builder.Append(" )>>");
+        }
+
+        builder.Append(" }");
+
+        return builder.ToString();
+    }
+
+    private static string NestedCollectionQuery(int depth)
+    {
+        StringBuilder builder = new("PREFIX : <http://e/> SELECT * WHERE { :s :p ");
+        for(int i = 0; i < depth; i++)
+        {
+            builder.Append('(');
+        }
+
+        builder.Append(" :o ");
+        for(int i = 0; i < depth; i++)
+        {
+            builder.Append(')');
+        }
+
+        builder.Append(" }");
+
+        return builder.ToString();
     }
 
     private static ParseResult<SparqlRequest> Parse(string text, Utf8StringPool pool)

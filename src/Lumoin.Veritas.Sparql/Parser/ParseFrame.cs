@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Lexer;
@@ -38,6 +39,14 @@ internal sealed class ParseFrame
 
     /// <summary>Gets or sets the source span of the first token that started this production.</summary>
     public SourceSpan StartSpan { get; set; }
+
+    /// <summary>
+    /// Gets or sets the RDF-star quoted-triple nesting depth of this frame: the count of enclosing
+    /// triple-term, reified-triple, collection, and blank-node-property-list frames including this one,
+    /// or zero for a production that opens no nesting level. The driver seeds it when the frame is pushed
+    /// so the parser can bound nesting at <see cref="QuotedTripleLimits.MaxNestingDepth"/>.
+    /// </summary>
+    public int NestingDepth { get; set; }
 
     /// <summary>Gets or sets the accumulated <c>BASE</c> declarations of the request prologue.</summary>
     public List<BaseDecl>? Bases { get; set; }

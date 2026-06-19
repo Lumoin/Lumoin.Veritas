@@ -5,6 +5,7 @@ using System.Globalization;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Iris;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Lexer;
@@ -384,7 +385,8 @@ public sealed class SparqlParser
 
                 case StepAction.Push:
                 {
-                    frames.Push(step.NewFrame!);
+                    step.NewFrame!.NestingDepth = top.NestingDepth + (IsTermNestingKind(step.NewFrame.Kind) ? 1 : 0);
+                    frames.Push(step.NewFrame);
 
                     break;
                 }
@@ -412,6 +414,14 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private StepResult Step(ParseFrame frame, object? incoming)
     {
+        //A nesting frame seeded past the depth cap is collapsed to an error term before it consumes its
+        //opening token, so a pathologically deep quoted triple, reified triple, collection, or blank-node
+        //property list raises one recoverable diagnostic and stops descending rather than growing the work stack.
+        if(frame.Stage == 0 && frame.NestingDepth > QuotedTripleLimits.MaxNestingDepth)
+        {
+            return RecoverOverNestedTerm(frame);
+        }
+
         return frame.Kind switch
         {
             ParseFrameKind.Request => StepRequest(frame, incoming),
@@ -447,6 +457,43 @@ public sealed class SparqlParser
             _ => throw new SparqlParseException($"Parser production '{frame.Kind}' is not yet implemented in this build.", frame.StartSpan)
         };
     }
+
+    /// <summary>
+    /// Tests whether <paramref name="kind"/> opens a new RDF-star quoted-triple nesting level — a triple
+    /// term, a reified triple, an RDF collection, or a blank-node property list — each counted against
+    /// <see cref="QuotedTripleLimits.MaxNestingDepth"/>. Every other production inherits its parent's depth.
+    /// </summary>
+    /// <param name="kind">The frame production kind.</param>
+    /// <returns><see langword="true"/> when the kind deepens the nesting level.</returns>
+    private static bool IsTermNestingKind(ParseFrameKind kind)
+        => kind is ParseFrameKind.TripleTerm
+            or ParseFrameKind.ReifiedTriple
+            or ParseFrameKind.Collection
+            or ParseFrameKind.BlankNodePropertyList;
+
+    /// <summary>
+    /// Collapses a quoted-triple nesting frame seeded beyond <see cref="QuotedTripleLimits.MaxNestingDepth"/>
+    /// to an error term: it records the recoverable <see cref="WellKnownDiagnostics.Sparql.QuotedTripleNestingTooDeep"/>
+    /// diagnostic and resynchronises past the over-deep construct so the descent stops and the work stack stays bounded.
+    /// </summary>
+    /// <param name="frame">The over-deep nesting frame, still at its opening token.</param>
+    /// <returns>The instruction for the driver; the error term is handed to the enclosing frame.</returns>
+    private StepResult RecoverOverNestedTerm(ParseFrame frame)
+    {
+        return StepResult.Done(RecoverTriplePatternTerm(frame.Kind, frame.StartSpan, WellKnownDiagnostics.Sparql.QuotedTripleNestingTooDeep, Current.Span, "Quoted-triple nesting exceeds the maximum nesting depth.", NestingProductionName(frame.Kind)));
+    }
+
+    /// <summary>Names the grammar production of an over-deep nesting <paramref name="kind"/> for its error node.</summary>
+    /// <param name="kind">The nesting frame kind.</param>
+    /// <returns>The grammar production name.</returns>
+    private static string NestingProductionName(ParseFrameKind kind)
+        => kind switch
+        {
+            ParseFrameKind.ReifiedTriple => "ReifiedTriple",
+            ParseFrameKind.Collection => "Collection",
+            ParseFrameKind.BlankNodePropertyList => "BlankNodePropertyListPath",
+            _ => "TripleTerm"
+        };
 
     /// <summary>
     /// Advances the top-level request: the prologue, the form dispatch, the dataset clauses, the
