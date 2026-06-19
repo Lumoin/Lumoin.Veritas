@@ -3,13 +3,19 @@ using System;
 namespace Lumoin.Veritas.Core.Diagnostics;
 
 /// <summary>
-/// What a storage scrub observed at one step: a per-block verify verdict or the outcome of a repair it
-/// queued. The kind is self-contained — it names the repair outcome (re-derive / re-ingest / named loss)
-/// without depending on the repair-source ladder's rung vocabulary — so the trace channel can narrate a
-/// scrub pass on its own.
+/// What a storage scrub observed at one step: a round lifecycle marker, a per-block verify verdict, or the
+/// outcome of a repair it queued. The kind is self-contained — it names the repair outcome (re-derive /
+/// re-ingest / named loss) without depending on the repair-source ladder's rung vocabulary — so the trace
+/// channel can narrate a scrub round on its own.
 /// </summary>
 public enum StorageTraceEventKind
 {
+    /// <summary>A scrub round began — the bracket-start marker a consumer renders the round's start and timing from. Round-level (role code 0); the generation it scrubs is resolved during the round and travels on the verdict events and the completion marker.</summary>
+    ScrubRoundBegan,
+
+    /// <summary>A scrub round completed — the bracket-end marker, carrying the scrubbed generation and the round's corrupt-block count.</summary>
+    ScrubRoundCompleted,
+
     /// <summary>A block's at-rest checksum matched; the block is intact.</summary>
     BlockVerified,
 
