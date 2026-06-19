@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Encoding;
+using Lumoin.Veritas.Core.Parsing;
 
 namespace Lumoin.Veritas.NQuads;
 
@@ -128,11 +129,90 @@ public static class NQuadsWriter
         output.WriteUtf8Literal(StatementEnd);
     }
 
-    /// <summary>Writes any RDF term, dispatching on its kind.</summary>
+    /// <summary>
+    /// Writes any RDF term. Leaves are written directly; a quoted triple (the only nesting term) is walked
+    /// over an explicit work-stack so deep nesting stays off the call stack, with a depth guard that turns a
+    /// pathological term into a catchable <see cref="TripleTermDepthLimitException"/> rather than unbounded growth.
+    /// </summary>
     /// <param name="output">The destination buffer writer.</param>
     /// <param name="term">The term to serialize.</param>
     /// <exception cref="InvalidOperationException">The term is of an unknown kind.</exception>
+    /// <exception cref="TripleTermDepthLimitException">A quoted triple is nested beyond <see cref="QuotedTripleLimits.MaxNestingDepth"/>.</exception>
     private static void WriteTerm(IBufferWriter<byte> output, RdfTerm term)
+    {
+        if(term is not TripleTerm root)
+        {
+            WriteLeaf(output, term);
+            return;
+        }
+
+        Stack<TermStep> work = new();
+        work.Push(new TermStep(StepKind.Term, root, null));
+        int depth = 0;
+
+        while(work.Count > 0)
+        {
+            TermStep step = work.Pop();
+            switch(step.Kind)
+            {
+                case(StepKind.Term):
+                {
+                    if(step.Term is TripleTerm triple)
+                    {
+                        depth++;
+                        if(depth > QuotedTripleLimits.MaxNestingDepth)
+                        {
+                            throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
+                        }
+
+                        //Push the components in reverse so they pop in serialization (left-to-right) order:
+                        //<<( subject SPACE predicate SPACE object )>>.
+                        work.Push(new TermStep(StepKind.Close, null, null));
+                        work.Push(new TermStep(StepKind.Term, triple.Object, null));
+                        work.Push(new TermStep(StepKind.Space, null, null));
+                        work.Push(new TermStep(StepKind.Predicate, null, triple.Predicate));
+                        work.Push(new TermStep(StepKind.Space, null, null));
+                        work.Push(new TermStep(StepKind.Term, triple.Subject, null));
+                        work.Push(new TermStep(StepKind.Open, null, null));
+                    }
+                    else
+                    {
+                        WriteLeaf(output, step.Term!);
+                    }
+
+                    break;
+                }
+                case(StepKind.Open):
+                {
+                    output.WriteUtf8Literal(TripleTermOpen);
+                    break;
+                }
+                case(StepKind.Space):
+                {
+                    output.WriteUtf8Literal(Space);
+                    break;
+                }
+                case(StepKind.Predicate):
+                {
+                    WriteNamedNode(output, step.Predicate!);
+                    break;
+                }
+                default:
+                {
+                    //StepKind.Close: the triple's components are written; close it and unwind one nesting level.
+                    output.WriteUtf8Literal(TripleTermClose);
+                    depth--;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// <summary>Writes a leaf term (named node, blank node, or literal).</summary>
+    /// <param name="output">The destination buffer writer.</param>
+    /// <param name="term">The leaf term to serialize.</param>
+    /// <exception cref="InvalidOperationException">The term is of an unknown kind.</exception>
+    private static void WriteLeaf(IBufferWriter<byte> output, RdfTerm term)
     {
         switch(term)
         {
@@ -151,34 +231,11 @@ public static class NQuadsWriter
                 WriteLiteral(output, literal);
                 break;
             }
-            case(TripleTerm tripleTerm):
-            {
-                WriteTripleTerm(output, tripleTerm);
-                break;
-            }
             default:
             {
                 throw new InvalidOperationException($"Unknown RDF term type: {term.GetType().Name}.");
             }
         }
-    }
-
-    /// <summary>Writes an RDF 1.2 quoted triple term: <c>&lt;&lt;( s p o )&gt;&gt;</c>.</summary>
-    /// <param name="output">The destination buffer writer.</param>
-    /// <param name="tripleTerm">The triple term to serialize.</param>
-    private static void WriteTripleTerm(IBufferWriter<byte> output, TripleTerm tripleTerm)
-    {
-        output.WriteUtf8Literal(TripleTermOpen);
-
-        WriteTerm(output, tripleTerm.Subject);
-        output.WriteUtf8Literal(Space);
-
-        WriteNamedNode(output, tripleTerm.Predicate);
-        output.WriteUtf8Literal(Space);
-
-        WriteTerm(output, tripleTerm.Object);
-
-        output.WriteUtf8Literal(TripleTermClose);
     }
 
     /// <summary>Writes a named node as <c>&lt;iri&gt;</c> with N-Quads IRI escaping.</summary>
@@ -318,4 +375,29 @@ public static class NQuadsWriter
 
         await Task.CompletedTask.ConfigureAwait(false);
     }
+
+    /// <summary>The kind of step on the quoted-triple serialization work-stack.</summary>
+    private enum StepKind
+    {
+        /// <summary>Visit a term: write a leaf directly, or expand a quoted triple into its component steps.</summary>
+        Term,
+
+        /// <summary>Write the quoted-triple opening delimiter.</summary>
+        Open,
+
+        /// <summary>Write a single component separator.</summary>
+        Space,
+
+        /// <summary>Write a quoted triple's predicate, which is always a named node.</summary>
+        Predicate,
+
+        /// <summary>Write the quoted-triple closing delimiter and unwind one nesting level.</summary>
+        Close
+    }
+
+    /// <summary>One step on the quoted-triple serialization work-stack.</summary>
+    /// <param name="Kind">The step kind.</param>
+    /// <param name="Term">The term to visit; set only for a <c>Term</c> step.</param>
+    /// <param name="Predicate">The predicate to write; set only for a <c>Predicate</c> step.</param>
+    private readonly record struct TermStep(StepKind Kind, RdfTerm? Term, NamedNode? Predicate);
 }
