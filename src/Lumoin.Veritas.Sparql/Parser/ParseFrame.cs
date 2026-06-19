@@ -42,9 +42,10 @@ internal sealed class ParseFrame
 
     /// <summary>
     /// Gets or sets the RDF-star quoted-triple nesting depth of this frame: the count of enclosing
-    /// triple-term, reified-triple, collection, and blank-node-property-list frames including this one,
-    /// or zero for a production that opens no nesting level. The driver seeds it when the frame is pushed
-    /// so the parser can bound nesting at <see cref="QuotedTripleLimits.MaxNestingDepth"/>.
+    /// triple-term and reified-triple frames including this one, or zero for a production that opens no
+    /// such nesting level. The driver seeds it when the frame is pushed so the parser can bound nesting at
+    /// <see cref="QuotedTripleLimits.MaxNestingDepth"/> — the depth at which a triple term's synthesized
+    /// record equality would otherwise recurse without bound.
     /// </summary>
     public int NestingDepth { get; set; }
 

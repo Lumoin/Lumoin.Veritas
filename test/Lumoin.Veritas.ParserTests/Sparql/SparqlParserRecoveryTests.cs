@@ -306,15 +306,16 @@ internal sealed class SparqlParserRecoveryTests
     }
 
     [TestMethod]
-    public void DeeplyNestedCollectionRecordsTheNestingDiagnostic()
+    public void DeeplyNestedCollectionIsNotCappedByTheQuotedTripleLimit()
     {
-        //RDF collections count toward the same unified nesting depth as quoted triples, so a collection
-        //nested beyond the cap records the same recoverable diagnostic.
+        //Collections are list-bearing AST nodes whose equality compares the item list by reference, so deep
+        //nesting cannot overflow; they parse iteratively to any depth and are not subject to the quoted-triple
+        //nesting cap (only triple terms and reified triples, whose AST embeds a record member, are bounded).
         using Utf8StringPool pool = new();
-        ParseResult<SparqlRequest> result = Parse(NestedCollectionQuery(QuotedTripleLimits.MaxNestingDepth + 1), pool);
+        ParseResult<SparqlRequest> result = Parse(NestedCollectionQuery(QuotedTripleLimits.MaxNestingDepth + 200), pool);
 
-        Assert.IsTrue(result.HasErrors);
-        Assert.IsTrue(HasCode(result, WellKnownDiagnostics.Sparql.QuotedTripleNestingTooDeep));
+        Assert.IsFalse(result.HasErrors, "a deeply nested collection is valid and must parse without errors");
+        Assert.IsFalse(HasCode(result, WellKnownDiagnostics.Sparql.QuotedTripleNestingTooDeep), "a deeply nested collection must not trigger the quoted-triple nesting cap");
     }
 
     private static string NestedTripleTermQuery(int depth)

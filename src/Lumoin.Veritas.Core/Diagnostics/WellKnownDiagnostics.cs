@@ -491,8 +491,8 @@ public static class WellKnownDiagnostics
         /// <remarks>SPARQL <c>ConstructQuery</c> short form (<c>CONSTRUCT WHERE { TriplesTemplate }</c>). See <see href="https://www.w3.org/TR/sparql12-query/#rConstructQuery">SPARQL 1.2 §19.8 [ConstructQuery]</see>.</remarks>
         public static Utf8String ConstructShortFormOnlyTriples { get; } = new("SP0051"u8.ToArray());
 
-        /// <summary>An RDF 1.2 quoted triple, reified triple, RDF collection, or blank-node property list was nested deeper than the permitted maximum.</summary>
-        /// <remarks>Parser-internal bound (<c>QuotedTripleLimits.MaxNestingDepth</c>), not a grammar production; the over-deep construct is collapsed to an error term and parsing resynchronises past it. See <see href="https://www.w3.org/TR/sparql12-query/#rTripleTerm">SPARQL 1.2 §19.8 [TripleTerm]</see>.</remarks>
+        /// <summary>An RDF 1.2 quoted triple or reified triple was nested deeper than the permitted maximum.</summary>
+        /// <remarks>Parser-internal bound (<c>QuotedTripleLimits.MaxNestingDepth</c>), not a grammar production; the over-deep term is collapsed to an error term and parsing resynchronises past it. Collections and blank-node property lists are not bounded here (their list-valued equality does not recurse). See <see href="https://www.w3.org/TR/sparql12-query/#rTripleTerm">SPARQL 1.2 §19.8 [TripleTerm]</see>.</remarks>
         public static Utf8String QuotedTripleNestingTooDeep { get; } = new("SP0052"u8.ToArray());
 
         /// <summary>The per-parse diagnostic cap was reached; further parser diagnostics are suppressed (the AST still assembles).</summary>

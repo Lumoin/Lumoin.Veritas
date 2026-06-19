@@ -415,8 +415,9 @@ public sealed class SparqlParser
     private StepResult Step(ParseFrame frame, object? incoming)
     {
         //A nesting frame seeded past the depth cap is collapsed to an error term before it consumes its
-        //opening token, so a pathologically deep quoted triple, reified triple, collection, or blank-node
-        //property list raises one recoverable diagnostic and stops descending rather than growing the work stack.
+        //opening token, so a pathologically deep quoted or reified triple raises one recoverable diagnostic
+        //and stops descending rather than growing the work stack (and the synthesized record equality of its
+        //AST node, which recurses through the inner triple, cannot overflow either).
         if(frame.Stage == 0 && frame.NestingDepth > QuotedTripleLimits.MaxNestingDepth)
         {
             return RecoverOverNestedTerm(frame);
@@ -459,17 +460,17 @@ public sealed class SparqlParser
     }
 
     /// <summary>
-    /// Tests whether <paramref name="kind"/> opens a new RDF-star quoted-triple nesting level — a triple
-    /// term, a reified triple, an RDF collection, or a blank-node property list — each counted against
-    /// <see cref="QuotedTripleLimits.MaxNestingDepth"/>. Every other production inherits its parent's depth.
+    /// Tests whether <paramref name="kind"/> opens a new RDF-star quoted-triple nesting level — a triple term
+    /// or a reified triple — counted against <see cref="QuotedTripleLimits.MaxNestingDepth"/>. These are the
+    /// only productions whose AST node embeds the nested term as a record member, so only their synthesized
+    /// equality and hash recurse through the nesting and need bounding. Collections and blank-node property
+    /// lists hold their members in a list (compared by reference, never recursing) and are not capped; every
+    /// other production inherits its parent's depth.
     /// </summary>
     /// <param name="kind">The frame production kind.</param>
     /// <returns><see langword="true"/> when the kind deepens the nesting level.</returns>
     private static bool IsTermNestingKind(ParseFrameKind kind)
-        => kind is ParseFrameKind.TripleTerm
-            or ParseFrameKind.ReifiedTriple
-            or ParseFrameKind.Collection
-            or ParseFrameKind.BlankNodePropertyList;
+        => kind is ParseFrameKind.TripleTerm or ParseFrameKind.ReifiedTriple;
 
     /// <summary>
     /// Collapses a quoted-triple nesting frame seeded beyond <see cref="QuotedTripleLimits.MaxNestingDepth"/>
@@ -487,13 +488,7 @@ public sealed class SparqlParser
     /// <param name="kind">The nesting frame kind.</param>
     /// <returns>The grammar production name.</returns>
     private static string NestingProductionName(ParseFrameKind kind)
-        => kind switch
-        {
-            ParseFrameKind.ReifiedTriple => "ReifiedTriple",
-            ParseFrameKind.Collection => "Collection",
-            ParseFrameKind.BlankNodePropertyList => "BlankNodePropertyListPath",
-            _ => "TripleTerm"
-        };
+        => kind is ParseFrameKind.ReifiedTriple ? "ReifiedTriple" : "TripleTerm";
 
     /// <summary>
     /// Advances the top-level request: the prologue, the form dispatch, the dataset clauses, the
