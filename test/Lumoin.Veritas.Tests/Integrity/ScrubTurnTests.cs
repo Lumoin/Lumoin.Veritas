@@ -26,7 +26,8 @@ namespace Lumoin.Veritas.Tests.Integrity;
 /// waits — the lane-cadence integration test defers to the deterministic turn-completion affordance), it
 /// brackets the round with began/completed lifecycle events, verifies and repairs the held generation, and
 /// hands both reports to the round-result sink, committing nothing. Every event of one round shares its
-/// correlation id. Staging and corruption helpers are shared via <see cref="PersistenceStagingFixture"/>.
+/// correlation id. Staging and corruption helpers are shared via <see cref="PersistenceStagingFixture"/>, with
+/// the artifact-image pool owned by the test and threaded into each builder.
 /// </summary>
 [TestClass]
 internal sealed class ScrubTurnTests
@@ -67,9 +68,12 @@ internal sealed class ScrubTurnTests
     public async Task CleanRoundBracketsAndHandsOffCleanReports()
     {
         EncodedTriple[] triples = SampleTriples(30);
-        FileSystemPersistenceStore store = StageGeneration(7, SegmentImage(triples), SidecarImage(triples), SketchImage(10), out string directory);
         using VeritasMemoryPool<byte> bytePool = new();
         using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        using ArtifactImage segment = SegmentImage(triples, bytePool);
+        using ArtifactImage sidecar = SidecarImage(triples, bytePool);
+        using ArtifactImage sketch = SketchImage(10, bytePool);
+        FileSystemPersistenceStore store = StageGeneration(7, segment, sidecar, sketch, bytePool, out string directory);
         try
         {
             StorageTraceCapture trace = new();
@@ -110,11 +114,13 @@ internal sealed class ScrubTurnTests
     public async Task CorruptRoundRepairsAndNarrates()
     {
         EncodedTriple[] triples = SampleTriples(30);
-        byte[] sidecar = SidecarImage(triples);
-        CorruptSidecarFrontMatter(sidecar);
-        FileSystemPersistenceStore store = StageGeneration(7, SegmentImage(triples), sidecar, SketchImage(10), out string directory);
         using VeritasMemoryPool<byte> bytePool = new();
         using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        using ArtifactImage segment = SegmentImage(triples, bytePool);
+        using ArtifactImage sidecar = SidecarImage(triples, bytePool);
+        CorruptSidecarFrontMatter(sidecar);
+        using ArtifactImage sketch = SketchImage(10, bytePool);
+        FileSystemPersistenceStore store = StageGeneration(7, segment, sidecar, sketch, bytePool, out string directory);
         try
         {
             StorageTraceCapture trace = new();
@@ -148,11 +154,13 @@ internal sealed class ScrubTurnTests
     {
         Guid roundId = Guid.Parse("0f0f0f0f-0f0f-0f0f-0f0f-0f0f0f0f0f0f");
         EncodedTriple[] triples = SampleTriples(30);
-        byte[] sidecar = SidecarImage(triples);
-        CorruptSidecarFrontMatter(sidecar);
-        FileSystemPersistenceStore store = StageGeneration(7, SegmentImage(triples), sidecar, SketchImage(10), out string directory);
         using VeritasMemoryPool<byte> bytePool = new();
         using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        using ArtifactImage segment = SegmentImage(triples, bytePool);
+        using ArtifactImage sidecar = SidecarImage(triples, bytePool);
+        CorruptSidecarFrontMatter(sidecar);
+        using ArtifactImage sketch = SketchImage(10, bytePool);
+        FileSystemPersistenceStore store = StageGeneration(7, segment, sidecar, sketch, bytePool, out string directory);
         try
         {
             StorageTraceCapture trace = new();

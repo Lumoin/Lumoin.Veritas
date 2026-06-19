@@ -5,6 +5,7 @@ using System.IO;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Integrity;
 using Lumoin.Veritas.Core.Memory;
+using Lumoin.Veritas.Core.Persistence.Manifest;
 using Lumoin.Veritas.Core.Persistence.Segment;
 using Lumoin.Veritas.Core.Persistence.Sketch;
 
@@ -17,7 +18,7 @@ namespace Lumoin.Veritas.Tests.Integrity;
 /// clean image reports every block valid; a corrupt block is reported (not thrown) so one walk records every
 /// failure; front-matter rot is reported, not thrown; an unchecksummed image reports itself ungated; and
 /// framing damage (an unparseable image) is still refused, since a geometry that cannot be parsed cannot be
-/// walked.
+/// walked. Every artifact image is an <see cref="ArtifactImage"/> over a buffer rented from the test's pool.
 /// </summary>
 [TestClass]
 internal sealed class ArtifactVerifyReportTests
@@ -45,45 +46,45 @@ internal sealed class ArtifactVerifyReportTests
         return triples;
     }
 
-    /// <summary>Serializes an item segment to a pool-rented image and returns the bytes.</summary>
+    /// <summary>Serializes an item segment into a pooled image.</summary>
     /// <param name="triples">The triples.</param>
     /// <param name="blockItemCount">The triples per block.</param>
     /// <param name="checksum">The per-block checksum algorithm, or <see langword="null"/> for none.</param>
-    /// <returns>The image bytes.</returns>
-    private static byte[] ItemImage(EncodedTriple[] triples, int blockItemCount, ChecksumAlgorithm? checksum)
+    /// <param name="pool">The pool the image is rented from.</param>
+    /// <returns>The pooled image.</returns>
+    private static ArtifactImage ItemImage(EncodedTriple[] triples, int blockItemCount, ChecksumAlgorithm? checksum, MemoryPool<byte> pool)
     {
         ItemSegment segment = new(triples, blockItemCount, blockAlignment: 64);
-        using VeritasMemoryPool<byte> pool = new();
         int size = (int)segment.ComputeSerializedSize(checksum);
-        using IMemoryOwner<byte> owner = pool.Rent(size);
-        Span<byte> image = owner.Memory.Span[..size];
-        segment.WriteTo(image, checksum);
+        IMemoryOwner<byte> owner = pool.Rent(size);
+        segment.WriteTo(owner.Memory.Span[..size], checksum);
 
-        return image.ToArray();
+        return ArtifactImage.Own(owner, size, ManifestFileRole.DataSegment);
     }
 
-    /// <summary>Serializes a sketch segment over deterministic opaque symbol bytes and returns the image.</summary>
+    /// <summary>Serializes a sketch segment over deterministic opaque symbol bytes into a pooled image.</summary>
     /// <param name="symbolCount">The number of symbols.</param>
     /// <param name="symbolWidth">The symbol byte width.</param>
     /// <param name="symbolsPerBlock">The symbols per block.</param>
     /// <param name="checksum">The per-block checksum algorithm, or <see langword="null"/> for none.</param>
-    /// <returns>The image bytes.</returns>
-    private static byte[] SketchImage(int symbolCount, int symbolWidth, int symbolsPerBlock, ChecksumAlgorithm? checksum)
+    /// <param name="pool">The pool the image is rented from.</param>
+    /// <returns>The pooled image.</returns>
+    private static ArtifactImage SketchImage(int symbolCount, int symbolWidth, int symbolsPerBlock, ChecksumAlgorithm? checksum, MemoryPool<byte> pool)
     {
-        byte[] symbols = new byte[symbolCount * symbolWidth];
+        int symbolBytes = symbolCount * symbolWidth;
+        using IMemoryOwner<byte> symbolOwner = pool.Rent(Math.Max(1, symbolBytes));
+        Span<byte> symbols = symbolOwner.Memory.Span[..symbolBytes];
         for(int i = 0; i < symbols.Length; i++)
         {
             symbols[i] = (byte)((i * 31) + 7);
         }
 
-        SketchSegment segment = new(symbols, symbolWidth, symbolsPerBlock, blockAlignment: 64);
-        using VeritasMemoryPool<byte> pool = new();
+        SketchSegment segment = new(symbolOwner.Memory[..symbolBytes], symbolWidth, symbolsPerBlock, blockAlignment: 64);
         int size = (int)segment.ComputeSerializedSize(checksum);
-        using IMemoryOwner<byte> owner = pool.Rent(size);
-        Span<byte> image = owner.Memory.Span[..size];
-        segment.WriteTo(image, checksum);
+        IMemoryOwner<byte> owner = pool.Rent(size);
+        segment.WriteTo(owner.Memory.Span[..size], checksum);
 
-        return image.ToArray();
+        return ArtifactImage.Own(owner, size, ManifestFileRole.Sketch);
     }
 
     /// <summary>The byte offset of the first block: the front matter plus the per-block checksum section, rounded up to the alignment.</summary>
@@ -112,10 +113,10 @@ internal sealed class ArtifactVerifyReportTests
     [TestMethod]
     public void ItemSegmentRunVerifyRoundCleanReportsAllBlocksValid()
     {
-        EncodedTriple[] triples = SampleTriples(30);
-        byte[] image = ItemImage(triples, blockItemCount: 10, ChecksumAlgorithm.XxHash3);
+        using VeritasMemoryPool<byte> pool = new();
+        using ArtifactImage image = ItemImage(SampleTriples(30), blockItemCount: 10, ChecksumAlgorithm.XxHash3, pool);
 
-        ArtifactVerifyReport report = ItemSegment.RunVerifyRound(image);
+        ArtifactVerifyReport report = ItemSegment.RunVerifyRound(image.Bytes);
 
         Assert.AreEqual(3, report.BlockCount);
         Assert.AreEqual(0, report.CorruptCount);
@@ -132,14 +133,14 @@ internal sealed class ArtifactVerifyReportTests
     [TestMethod]
     public void ItemSegmentRunVerifyRoundReportsACorruptBlockWithoutThrowing()
     {
-        EncodedTriple[] triples = SampleTriples(30);
-        byte[] image = ItemImage(triples, blockItemCount: 10, ChecksumAlgorithm.XxHash3);
+        using VeritasMemoryPool<byte> pool = new();
+        using ArtifactImage image = ItemImage(SampleTriples(30), blockItemCount: 10, ChecksumAlgorithm.XxHash3, pool);
 
         //Flip the first payload byte of block 1.
         int firstBlock = FirstBlockOffset(ItemFrontMatterBase, 3, ChecksumAlgorithm.XxHash3.ByteWidth, 64);
-        image[firstBlock + (int)BlockStride(10L * ItemByteSize, 64)] ^= 0xFF;
+        image.WritableBytes[firstBlock + (int)BlockStride(10L * ItemByteSize, 64)] ^= 0xFF;
 
-        ArtifactVerifyReport report = ItemSegment.RunVerifyRound(image);
+        ArtifactVerifyReport report = ItemSegment.RunVerifyRound(image.Bytes);
 
         Assert.IsFalse(report.IsClean);
         Assert.AreEqual(1, report.CorruptCount);
@@ -153,14 +154,14 @@ internal sealed class ArtifactVerifyReportTests
     [TestMethod]
     public void ItemSegmentRunVerifyRoundReportsFrontMatterRotWithoutThrowing()
     {
-        EncodedTriple[] triples = SampleTriples(30);
-        byte[] image = ItemImage(triples, blockItemCount: 10, ChecksumAlgorithm.XxHash3);
+        using VeritasMemoryPool<byte> pool = new();
+        using ArtifactImage image = ItemImage(SampleTriples(30), blockItemCount: 10, ChecksumAlgorithm.XxHash3, pool);
 
         //Corrupt the trailing front-matter digest itself — inside the trailer's coverage but outside every block
         //payload and the per-block section, so ONLY the front-matter verdict flips and every block stays valid.
-        image[^1] ^= 0xFF;
+        image.WritableBytes[^1] ^= 0xFF;
 
-        ArtifactVerifyReport report = ItemSegment.RunVerifyRound(image);
+        ArtifactVerifyReport report = ItemSegment.RunVerifyRound(image.Bytes);
 
         Assert.IsFalse(report.FrontMatterValid, "Front-matter rot must be reported, not thrown.");
         Assert.AreEqual(0, report.CorruptCount, "Only the front matter is corrupt; every block stays valid.");
@@ -175,21 +176,21 @@ internal sealed class ArtifactVerifyReportTests
     [TestMethod]
     public void ItemSegmentRunVerifyRoundRefusesFramingDamage()
     {
-        EncodedTriple[] triples = SampleTriples(30);
-        byte[] image = ItemImage(triples, blockItemCount: 10, ChecksumAlgorithm.XxHash3);
-        image[0] ^= 0xFF;
+        using VeritasMemoryPool<byte> pool = new();
+        using ArtifactImage image = ItemImage(SampleTriples(30), blockItemCount: 10, ChecksumAlgorithm.XxHash3, pool);
+        image.WritableBytes[0] ^= 0xFF;
 
-        Assert.ThrowsExactly<InvalidDataException>(() => { _ = ItemSegment.RunVerifyRound(image); });
+        Assert.ThrowsExactly<InvalidDataException>(() => { _ = ItemSegment.RunVerifyRound(image.Bytes); });
     }
 
     /// <summary>An unchecksummed image reports itself ungated: every block reads valid (nothing to verify against), but the report is not clean because it carried no checksums.</summary>
     [TestMethod]
     public void ItemSegmentRunVerifyRoundReportsNotGatedWithoutChecksums()
     {
-        EncodedTriple[] triples = SampleTriples(30);
-        byte[] image = ItemImage(triples, blockItemCount: 10, null);
+        using VeritasMemoryPool<byte> pool = new();
+        using ArtifactImage image = ItemImage(SampleTriples(30), blockItemCount: 10, null, pool);
 
-        ArtifactVerifyReport report = ItemSegment.RunVerifyRound(image);
+        ArtifactVerifyReport report = ItemSegment.RunVerifyRound(image.Bytes);
 
         Assert.IsFalse(report.HasChecksums);
         Assert.IsFalse(report.IsClean, "An unchecksummed image cannot be clean-because-verified.");
@@ -200,9 +201,10 @@ internal sealed class ArtifactVerifyReportTests
     [TestMethod]
     public void SketchSegmentRunVerifyRoundCleanReportsAllBlocksValid()
     {
-        byte[] image = SketchImage(symbolCount: 10, symbolWidth: 24, symbolsPerBlock: 4, ChecksumAlgorithm.XxHash3);
+        using VeritasMemoryPool<byte> pool = new();
+        using ArtifactImage image = SketchImage(symbolCount: 10, symbolWidth: 24, symbolsPerBlock: 4, ChecksumAlgorithm.XxHash3, pool);
 
-        ArtifactVerifyReport report = SketchSegment.RunVerifyRound(image);
+        ArtifactVerifyReport report = SketchSegment.RunVerifyRound(image.Bytes);
 
         Assert.AreEqual(3, report.BlockCount);
         Assert.AreEqual(0, report.CorruptCount);
@@ -215,13 +217,14 @@ internal sealed class ArtifactVerifyReportTests
     [TestMethod]
     public void SketchSegmentRunVerifyRoundReportsACorruptBlockWithoutThrowing()
     {
-        byte[] image = SketchImage(symbolCount: 10, symbolWidth: 24, symbolsPerBlock: 4, ChecksumAlgorithm.XxHash3);
+        using VeritasMemoryPool<byte> pool = new();
+        using ArtifactImage image = SketchImage(symbolCount: 10, symbolWidth: 24, symbolsPerBlock: 4, ChecksumAlgorithm.XxHash3, pool);
 
         //Flip the first payload byte of block 1 (symbols [4, 8)); a full block is 4 symbols × 24 bytes = 96 payload bytes.
         int firstBlock = FirstBlockOffset(SketchFrontMatterBase, 3, ChecksumAlgorithm.XxHash3.ByteWidth, 64);
-        image[firstBlock + (int)BlockStride(4L * 24, 64)] ^= 0xFF;
+        image.WritableBytes[firstBlock + (int)BlockStride(4L * 24, 64)] ^= 0xFF;
 
-        ArtifactVerifyReport report = SketchSegment.RunVerifyRound(image);
+        ArtifactVerifyReport report = SketchSegment.RunVerifyRound(image.Bytes);
 
         Assert.IsFalse(report.IsClean);
         Assert.AreEqual(1, report.CorruptCount);
@@ -234,22 +237,24 @@ internal sealed class ArtifactVerifyReportTests
     [TestMethod]
     public void SketchSegmentRunVerifyRoundRefusesFramingDamage()
     {
-        byte[] image = SketchImage(symbolCount: 10, symbolWidth: 24, symbolsPerBlock: 4, ChecksumAlgorithm.XxHash3);
-        image[0] ^= 0xFF;
+        using VeritasMemoryPool<byte> pool = new();
+        using ArtifactImage image = SketchImage(symbolCount: 10, symbolWidth: 24, symbolsPerBlock: 4, ChecksumAlgorithm.XxHash3, pool);
+        image.WritableBytes[0] ^= 0xFF;
 
-        Assert.ThrowsExactly<InvalidDataException>(() => { _ = SketchSegment.RunVerifyRound(image); });
+        Assert.ThrowsExactly<InvalidDataException>(() => { _ = SketchSegment.RunVerifyRound(image.Bytes); });
     }
 
     /// <summary>Front-matter rot in a sketch image is reported (the front-matter verdict is false) without throwing, leaving every block valid — the report-not-throw front-matter path on the second refactored format.</summary>
     [TestMethod]
     public void SketchSegmentRunVerifyRoundReportsFrontMatterRotWithoutThrowing()
     {
-        byte[] image = SketchImage(symbolCount: 10, symbolWidth: 24, symbolsPerBlock: 4, ChecksumAlgorithm.XxHash3);
+        using VeritasMemoryPool<byte> pool = new();
+        using ArtifactImage image = SketchImage(symbolCount: 10, symbolWidth: 24, symbolsPerBlock: 4, ChecksumAlgorithm.XxHash3, pool);
 
         //Corrupt the trailing front-matter digest — inside the trailer's coverage but outside every block payload.
-        image[^1] ^= 0xFF;
+        image.WritableBytes[^1] ^= 0xFF;
 
-        ArtifactVerifyReport report = SketchSegment.RunVerifyRound(image);
+        ArtifactVerifyReport report = SketchSegment.RunVerifyRound(image.Bytes);
 
         Assert.IsFalse(report.FrontMatterValid, "Front-matter rot must be reported, not thrown.");
         Assert.AreEqual(0, report.CorruptCount, "Only the front matter is corrupt; every block stays valid.");
@@ -260,9 +265,10 @@ internal sealed class ArtifactVerifyReportTests
     [TestMethod]
     public void SketchSegmentRunVerifyRoundReportsNotGatedWithoutChecksums()
     {
-        byte[] image = SketchImage(symbolCount: 10, symbolWidth: 24, symbolsPerBlock: 4, null);
+        using VeritasMemoryPool<byte> pool = new();
+        using ArtifactImage image = SketchImage(symbolCount: 10, symbolWidth: 24, symbolsPerBlock: 4, null, pool);
 
-        ArtifactVerifyReport report = SketchSegment.RunVerifyRound(image);
+        ArtifactVerifyReport report = SketchSegment.RunVerifyRound(image.Bytes);
 
         Assert.IsFalse(report.HasChecksums);
         Assert.IsFalse(report.IsClean, "An unchecksummed sketch image cannot be clean-because-verified.");
@@ -273,30 +279,32 @@ internal sealed class ArtifactVerifyReportTests
     [TestMethod]
     public void ItemSegmentRunVerifyRoundRefusesTruncation()
     {
-        EncodedTriple[] triples = SampleTriples(30);
-        byte[] image = ItemImage(triples, blockItemCount: 10, ChecksumAlgorithm.XxHash3);
-        byte[] truncated = image.AsSpan(0, image.Length - 100).ToArray();
+        using VeritasMemoryPool<byte> pool = new();
+        using ArtifactImage image = ItemImage(SampleTriples(30), blockItemCount: 10, ChecksumAlgorithm.XxHash3, pool);
+        using ArtifactImage truncated = image.Truncated(100, pool);
 
-        Assert.ThrowsExactly<InvalidDataException>(() => { _ = ItemSegment.RunVerifyRound(truncated); });
+        Assert.ThrowsExactly<InvalidDataException>(() => { _ = ItemSegment.RunVerifyRound(truncated.Bytes); });
     }
 
     /// <summary>A truncated sketch image is refused by the decode-free verify.</summary>
     [TestMethod]
     public void SketchSegmentRunVerifyRoundRefusesTruncation()
     {
-        byte[] image = SketchImage(symbolCount: 10, symbolWidth: 24, symbolsPerBlock: 4, ChecksumAlgorithm.XxHash3);
-        byte[] truncated = image.AsSpan(0, image.Length - 100).ToArray();
+        using VeritasMemoryPool<byte> pool = new();
+        using ArtifactImage image = SketchImage(symbolCount: 10, symbolWidth: 24, symbolsPerBlock: 4, ChecksumAlgorithm.XxHash3, pool);
+        using ArtifactImage truncated = image.Truncated(100, pool);
 
-        Assert.ThrowsExactly<InvalidDataException>(() => { _ = SketchSegment.RunVerifyRound(truncated); });
+        Assert.ThrowsExactly<InvalidDataException>(() => { _ = SketchSegment.RunVerifyRound(truncated.Bytes); });
     }
 
     /// <summary>An empty but checksummed item image is clean-because-verified: zero blocks, a valid front matter, and a clean report — distinct from the empty-ungated case where the absence of checksums forces not-clean.</summary>
     [TestMethod]
     public void ItemSegmentRunVerifyRoundEmptyGatedIsClean()
     {
-        byte[] image = ItemImage([], blockItemCount: 8, ChecksumAlgorithm.XxHash3);
+        using VeritasMemoryPool<byte> pool = new();
+        using ArtifactImage image = ItemImage([], blockItemCount: 8, ChecksumAlgorithm.XxHash3, pool);
 
-        ArtifactVerifyReport report = ItemSegment.RunVerifyRound(image);
+        ArtifactVerifyReport report = ItemSegment.RunVerifyRound(image.Bytes);
 
         Assert.AreEqual(0, report.BlockCount);
         Assert.IsTrue(report.HasChecksums);
@@ -308,9 +316,10 @@ internal sealed class ArtifactVerifyReportTests
     [TestMethod]
     public void SketchSegmentRunVerifyRoundEmptyGatedIsClean()
     {
-        byte[] image = SketchImage(symbolCount: 0, symbolWidth: 24, symbolsPerBlock: 4, ChecksumAlgorithm.XxHash3);
+        using VeritasMemoryPool<byte> pool = new();
+        using ArtifactImage image = SketchImage(symbolCount: 0, symbolWidth: 24, symbolsPerBlock: 4, ChecksumAlgorithm.XxHash3, pool);
 
-        ArtifactVerifyReport report = SketchSegment.RunVerifyRound(image);
+        ArtifactVerifyReport report = SketchSegment.RunVerifyRound(image.Bytes);
 
         Assert.AreEqual(0, report.BlockCount);
         Assert.IsTrue(report.HasChecksums);

@@ -25,7 +25,8 @@ namespace Lumoin.Veritas.Tests.Integrity;
 /// system-of-record block at the terminal rung, and emits a trace event per outcome — committing nothing (a
 /// generation-agnostic producer). A clean report is a no-op; a degraded snapshot is refused. Everything is
 /// synchronous and deterministic, so there are no waits. Staging and corruption helpers are shared via
-/// <see cref="PersistenceStagingFixture"/>.
+/// <see cref="PersistenceStagingFixture"/>, and the pool every artifact image is rented from is owned by the
+/// test and threaded into each builder.
 /// </summary>
 [TestClass]
 internal sealed class RepairPassTests
@@ -35,11 +36,13 @@ internal sealed class RepairPassTests
     public void CorruptSidecarIsRederivedAndVerifiesClean()
     {
         EncodedTriple[] triples = SampleTriples(30);
-        byte[] sidecar = SidecarImage(triples);
-        CorruptSidecarFrontMatter(sidecar);
-        FileSystemPersistenceStore store = StageGeneration(7, SegmentImage(triples), sidecar, SketchImage(10), out string directory);
         using VeritasMemoryPool<byte> bytePool = new();
         using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        using ArtifactImage segment = SegmentImage(triples, bytePool);
+        using ArtifactImage sidecar = SidecarImage(triples, bytePool);
+        CorruptSidecarFrontMatter(sidecar);
+        using ArtifactImage sketch = SketchImage(10, bytePool);
+        FileSystemPersistenceStore store = StageGeneration(7, segment, sidecar, sketch, bytePool, out string directory);
         try
         {
             ScrubRoundReport verify = ScrubRound.RunVerifyPass(store, null, null, Guid.Empty, new FakeTimeProvider());
@@ -71,11 +74,13 @@ internal sealed class RepairPassTests
     public void CorruptSketchIsRederivedAndVerifiesClean()
     {
         EncodedTriple[] triples = SampleTriples(30);
-        byte[] sketch = SketchImage(10);
-        CorruptSketchBlock(sketch, block: 1, blockCount: 3);
-        FileSystemPersistenceStore store = StageGeneration(7, SegmentImage(triples), SidecarImage(triples), sketch, out string directory);
         using VeritasMemoryPool<byte> bytePool = new();
         using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        using ArtifactImage segment = SegmentImage(triples, bytePool);
+        using ArtifactImage sidecar = SidecarImage(triples, bytePool);
+        using ArtifactImage sketch = SketchImage(10, bytePool);
+        CorruptSketchBlock(sketch, block: 1, blockCount: 3);
+        FileSystemPersistenceStore store = StageGeneration(7, segment, sidecar, sketch, bytePool, out string directory);
         try
         {
             ScrubRoundReport verify = ScrubRound.RunVerifyPass(store, null, null, Guid.Empty, new FakeTimeProvider());
@@ -103,11 +108,13 @@ internal sealed class RepairPassTests
     public void CorruptSystemOfRecordBlockIsNamedLoss()
     {
         EncodedTriple[] triples = SampleTriples(30);
-        byte[] segment = SegmentImage(triples);
-        CorruptSegmentBlock(segment, block: 1, blockCount: 3);
-        FileSystemPersistenceStore store = StageGeneration(7, segment, SidecarImage(triples), SketchImage(10), out string directory);
         using VeritasMemoryPool<byte> bytePool = new();
         using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        using ArtifactImage segment = SegmentImage(triples, bytePool);
+        CorruptSegmentBlock(segment, block: 1, blockCount: 3);
+        using ArtifactImage sidecar = SidecarImage(triples, bytePool);
+        using ArtifactImage sketch = SketchImage(10, bytePool);
+        FileSystemPersistenceStore store = StageGeneration(7, segment, sidecar, sketch, bytePool, out string directory);
         try
         {
             ScrubRoundReport verify = ScrubRound.RunVerifyPass(store, null, null, Guid.Empty, new FakeTimeProvider());
@@ -140,9 +147,12 @@ internal sealed class RepairPassTests
     public void CleanGenerationIsNoOp()
     {
         EncodedTriple[] triples = SampleTriples(30);
-        FileSystemPersistenceStore store = StageGeneration(7, SegmentImage(triples), SidecarImage(triples), SketchImage(10), out string directory);
         using VeritasMemoryPool<byte> bytePool = new();
         using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        using ArtifactImage segment = SegmentImage(triples, bytePool);
+        using ArtifactImage sidecar = SidecarImage(triples, bytePool);
+        using ArtifactImage sketch = SketchImage(10, bytePool);
+        FileSystemPersistenceStore store = StageGeneration(7, segment, sidecar, sketch, bytePool, out string directory);
         try
         {
             ScrubRoundReport verify = ScrubRound.RunVerifyPass(store, null, null, Guid.Empty, new FakeTimeProvider());
@@ -191,9 +201,12 @@ internal sealed class RepairPassTests
     public void StaleFindingsAreRefused()
     {
         EncodedTriple[] triples = SampleTriples(30);
-        FileSystemPersistenceStore store = StageGeneration(7, SegmentImage(triples), SidecarImage(triples), SketchImage(10), out string directory);
         using VeritasMemoryPool<byte> bytePool = new();
         using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        using ArtifactImage segment = SegmentImage(triples, bytePool);
+        using ArtifactImage sidecar = SidecarImage(triples, bytePool);
+        using ArtifactImage sketch = SketchImage(10, bytePool);
+        FileSystemPersistenceStore store = StageGeneration(7, segment, sidecar, sketch, bytePool, out string directory);
         try
         {
             ScrubRoundReport stale = new(commitGeneration: 6, isDegradedSnapshot: false, blocksVerified: 1, corruptBlocks: [new ScrubBlockFinding(ManifestFileRole.Sidecar.Code, "sidecar", 0, 0, 0, IsFrontMatter: false)]);
@@ -216,12 +229,14 @@ internal sealed class RepairPassTests
     public void SketchOnlyReportWithUnreadableSystemOfRecordIsRefused()
     {
         EncodedTriple[] triples = SampleTriples(30);
-        byte[] segment = SegmentImage(triples);
-        //Corrupt the magic: framing damage makes ReadVerifiedItems throw, which must become the refusal.
-        segment[0] ^= 0xFF;
-        FileSystemPersistenceStore store = StageGeneration(7, segment, SidecarImage(triples), SketchImage(10), out string directory);
         using VeritasMemoryPool<byte> bytePool = new();
         using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        using ArtifactImage segment = SegmentImage(triples, bytePool);
+        //Corrupt the magic: framing damage makes ReadVerifiedItems throw, which must become the refusal.
+        segment.WritableBytes[0] ^= 0xFF;
+        using ArtifactImage sidecar = SidecarImage(triples, bytePool);
+        using ArtifactImage sketch = SketchImage(10, bytePool);
+        FileSystemPersistenceStore store = StageGeneration(7, segment, sidecar, sketch, bytePool, out string directory);
         try
         {
             ScrubRoundReport sketchOnly = new(commitGeneration: 7, isDegradedSnapshot: false, blocksVerified: 0, corruptBlocks: [new ScrubBlockFinding(ManifestFileRole.Sketch.Code, "sketch", 0, 0, 0, IsFrontMatter: false)]);
@@ -244,9 +259,12 @@ internal sealed class RepairPassTests
     public void MissingSystemOfRecordIsRefused()
     {
         EncodedTriple[] triples = SampleTriples(30);
-        FileSystemPersistenceStore store = StageGeneration(7, SegmentImage(triples), SidecarImage(triples), SketchImage(10), out string directory);
         using VeritasMemoryPool<byte> bytePool = new();
         using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        using ArtifactImage segment = SegmentImage(triples, bytePool);
+        using ArtifactImage sidecar = SidecarImage(triples, bytePool);
+        using ArtifactImage sketch = SketchImage(10, bytePool);
+        FileSystemPersistenceStore store = StageGeneration(7, segment, sidecar, sketch, bytePool, out string directory);
         try
         {
             store.Delete($"segment-{7:D20}.dat");
@@ -268,9 +286,12 @@ internal sealed class RepairPassTests
     public void DegradedRecoveryIsRefused()
     {
         EncodedTriple[] triples = SampleTriples(30);
-        FileSystemPersistenceStore store = StageGeneration(7, SegmentImage(triples), SidecarImage(triples), SketchImage(10), out string directory);
         using VeritasMemoryPool<byte> bytePool = new();
         using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        using ArtifactImage segment = SegmentImage(triples, bytePool);
+        using ArtifactImage sidecar = SidecarImage(triples, bytePool);
+        using ArtifactImage sketch = SketchImage(10, bytePool);
+        FileSystemPersistenceStore store = StageGeneration(7, segment, sidecar, sketch, bytePool, out string directory);
         try
         {
             //Drop every CURRENT pointer so recovery falls to the degraded direct-manifest scan.

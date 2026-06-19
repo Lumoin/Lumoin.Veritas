@@ -11,6 +11,7 @@ using Lumoin.Veritas.Core.Persistence;
 using Lumoin.Veritas.Core.Persistence.Manifest;
 using Lumoin.Veritas.Core.Persistence.Segment;
 using Lumoin.Veritas.Core.Reconciliation;
+using Lumoin.Veritas.Tests.Integrity;
 using Lumoin.Verisync.Core;
 
 namespace Lumoin.Veritas.Tests.Persistence;
@@ -22,7 +23,8 @@ namespace Lumoin.Veritas.Tests.Persistence;
 /// reconciles against a peer's; a corrupt system-of-record block's items are excluded and named, never folded;
 /// framing damage is refused; and the staged sketch co-versions with the generation by being listed in the
 /// manifest before the single atomic CURRENT publish, so a crash at the publish leaves the prior generation —
-/// and its sketch — wholly in force.
+/// and its sketch — wholly in force. Every serialized artifact is an <see cref="ArtifactImage"/> over a buffer
+/// rented from the test's pool.
 /// </summary>
 [TestClass]
 internal sealed class SketchUpdateRoundTests
@@ -124,36 +126,35 @@ internal sealed class SketchUpdateRoundTests
         return decoded.Count;
     }
 
-    /// <summary>Serializes triples as a system-of-record item segment image.</summary>
+    /// <summary>Serializes triples as a system-of-record item-segment image into a buffer rented from <paramref name="pool"/>.</summary>
     /// <param name="triples">The canonical triples.</param>
     /// <param name="blockItemCount">The triples per block.</param>
     /// <param name="checksum">The per-block checksum algorithm, or <see langword="null"/> for an unchecksummed segment.</param>
-    /// <returns>The image bytes.</returns>
-    private static byte[] SerializeSegment(EncodedTriple[] triples, int blockItemCount, ChecksumAlgorithm? checksum)
+    /// <param name="pool">The pool the image is rented from.</param>
+    /// <returns>The pooled image.</returns>
+    private static ArtifactImage SerializeSegment(EncodedTriple[] triples, int blockItemCount, ChecksumAlgorithm? checksum, MemoryPool<byte> pool)
     {
         ItemSegment segment = new(triples, blockItemCount, blockAlignment: 64);
-        using VeritasMemoryPool<byte> pool = new();
         int size = (int)segment.ComputeSerializedSize(checksum);
-        using IMemoryOwner<byte> owner = pool.Rent(size);
-        Span<byte> image = owner.Memory.Span[..size];
-        segment.WriteTo(image, checksum);
+        IMemoryOwner<byte> owner = pool.Rent(size);
+        segment.WriteTo(owner.Memory.Span[..size], checksum);
 
-        return image.ToArray();
+        return ArtifactImage.Own(owner, size, ManifestFileRole.DataSegment);
     }
 
-    /// <summary>Runs the sketch-update round over a system-of-record image and returns the staged sketch bytes.</summary>
-    /// <param name="systemOfRecordImage">The system-of-record image.</param>
+    /// <summary>Runs the sketch-update round over a system-of-record image and returns the staged sketch as a pooled image.</summary>
+    /// <param name="systemOfRecord">The system-of-record image.</param>
     /// <param name="symbolBudget">The budgeted symbol cap.</param>
     /// <param name="checksum">The per-block checksum algorithm.</param>
+    /// <param name="bytePool">The byte pool the round and the produced image rent from.</param>
+    /// <param name="triplePool">The triple pool the feed rents from.</param>
     /// <param name="report">The round's verdict.</param>
-    /// <returns>The sketch image bytes.</returns>
-    private static byte[] RunRoundToArray(byte[] systemOfRecordImage, int symbolBudget, ChecksumAlgorithm checksum, out SketchUpdateRoundReport report)
+    /// <returns>The pooled sketch image.</returns>
+    private static ArtifactImage RunRound(ArtifactImage systemOfRecord, int symbolBudget, ChecksumAlgorithm checksum, MemoryPool<byte> bytePool, MemoryPool<EncodedTriple> triplePool, out SketchUpdateRoundReport report)
     {
-        using VeritasMemoryPool<byte> bytePool = new();
-        using VeritasMemoryPool<EncodedTriple> triplePool = new();
         ArrayBufferWriter<byte> writer = new();
         report = SketchPersistence.RunSketchUpdateRound(
-            systemOfRecordImage,
+            systemOfRecord.Bytes,
             SketchContract.Structural,
             symbolBudget,
             checksum,
@@ -163,21 +164,21 @@ internal sealed class SketchUpdateRoundTests
             HostEncode,
             writer);
 
-        return writer.WrittenSpan.ToArray();
+        return ArtifactImage.Copy(writer.WrittenSpan, ManifestFileRole.Sketch, bytePool);
     }
 
     /// <summary>Persists an explicit item set as a structural sketch image — the oracle the round's output is compared against.</summary>
     /// <param name="items">The items to encode.</param>
     /// <param name="symbolCount">The symbol budget.</param>
     /// <param name="checksum">The per-block checksum algorithm.</param>
-    /// <returns>The sketch image bytes.</returns>
-    private static byte[] PersistItems(ContentKey128[] items, int symbolCount, ChecksumAlgorithm checksum)
+    /// <param name="pool">The pool the image is rented from.</param>
+    /// <returns>The pooled sketch image.</returns>
+    private static ArtifactImage PersistItems(ContentKey128[] items, int symbolCount, ChecksumAlgorithm checksum, MemoryPool<byte> pool)
     {
-        using VeritasMemoryPool<byte> pool = new();
         ArrayBufferWriter<byte> writer = new();
         SketchPersistence.PersistSketch(items, SketchContract.Structural, symbolCount, checksum, pool, HostEncode, writer);
 
-        return writer.WrittenSpan.ToArray();
+        return ArtifactImage.Copy(writer.WrittenSpan, ManifestFileRole.Sketch, pool);
     }
 
     /// <summary>Loads both sketch images, reconciles them, and returns the recovered difference as a set.</summary>
@@ -185,10 +186,10 @@ internal sealed class SketchUpdateRoundTests
     /// <param name="imageB">The other replica's sketch image.</param>
     /// <param name="symbolCap">The decode symbol cap.</param>
     /// <returns>The recovered difference.</returns>
-    private static HashSet<ContentKey128> Reconcile(byte[] imageA, byte[] imageB, int symbolCap)
+    private static HashSet<ContentKey128> Reconcile(ArtifactImage imageA, ArtifactImage imageB, int symbolCap)
     {
-        VerifiedSketch left = SketchPersistence.LoadVerifiedSketch(imageA, SketchContract.Structural);
-        VerifiedSketch right = SketchPersistence.LoadVerifiedSketch(imageB, SketchContract.Structural);
+        VerifiedSketch left = SketchPersistence.LoadVerifiedSketch(imageA.Bytes, SketchContract.Structural);
+        VerifiedSketch right = SketchPersistence.LoadVerifiedSketch(imageB.Bytes, SketchContract.Structural);
         ContentKey128[] recovered = new ContentKey128[left.SymbolCount + right.SymbolCount];
         int n = HostDecode(left, right, symbolCap, recovered);
 
@@ -220,12 +221,16 @@ internal sealed class SketchUpdateRoundTests
     [TestMethod]
     public void SketchFromSystemOfRecordReconcilesToTheSymmetricDifference()
     {
+        using VeritasMemoryPool<byte> bytePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
         EncodedTriple[] triplesA = Line(0, 150);
         EncodedTriple[] triplesB = Line(50, 150);
         int budget = 100 + (20 * (triplesA.Length + triplesB.Length));
 
-        byte[] imageA = RunRoundToArray(SerializeSegment(triplesA, 16, ChecksumAlgorithm.XxHash3), budget, ChecksumAlgorithm.XxHash3, out SketchUpdateRoundReport reportA);
-        byte[] imageB = RunRoundToArray(SerializeSegment(triplesB, 16, ChecksumAlgorithm.XxHash3), budget, ChecksumAlgorithm.XxHash3, out SketchUpdateRoundReport reportB);
+        using ArtifactImage systemOfRecordA = SerializeSegment(triplesA, 16, ChecksumAlgorithm.XxHash3, bytePool);
+        using ArtifactImage imageA = RunRound(systemOfRecordA, budget, ChecksumAlgorithm.XxHash3, bytePool, triplePool, out SketchUpdateRoundReport reportA);
+        using ArtifactImage systemOfRecordB = SerializeSegment(triplesB, 16, ChecksumAlgorithm.XxHash3, bytePool);
+        using ArtifactImage imageB = RunRound(systemOfRecordB, budget, ChecksumAlgorithm.XxHash3, bytePool, triplePool, out SketchUpdateRoundReport reportB);
 
         Assert.AreEqual(triplesA.Length, reportA.ItemsFed);
         Assert.AreEqual(triplesB.Length, reportB.ItemsFed);
@@ -242,15 +247,17 @@ internal sealed class SketchUpdateRoundTests
     [TestMethod]
     public void CorruptSystemOfRecordBlockIsExcludedFromTheSketch()
     {
+        using VeritasMemoryPool<byte> bytePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
         EncodedTriple[] triples = Line(0, 30);
-        byte[] systemOfRecord = SerializeSegment(triples, 10, ChecksumAlgorithm.XxHash3);
+        using ArtifactImage systemOfRecord = SerializeSegment(triples, 10, ChecksumAlgorithm.XxHash3, bytePool);
         int budget = 100 + (20 * triples.Length);
 
         //Flip the first item byte of block 1 — items [10, 20).
         int firstBlock = FirstBlockOffset(blockCount: 3, ChecksumAlgorithm.XxHash3.ByteWidth, alignment: 64);
-        systemOfRecord[firstBlock + (int)BlockStride(10, 64)] ^= 0xFF;
+        systemOfRecord.WritableBytes[firstBlock + (int)BlockStride(10, 64)] ^= 0xFF;
 
-        byte[] roundImage = RunRoundToArray(systemOfRecord, budget, ChecksumAlgorithm.XxHash3, out SketchUpdateRoundReport report);
+        using ArtifactImage roundImage = RunRound(systemOfRecord, budget, ChecksumAlgorithm.XxHash3, bytePool, triplePool, out SketchUpdateRoundReport report);
 
         Assert.AreEqual(20, report.ItemsFed, "The corrupt block's ten items must not be fed.");
         Assert.HasCount(1, report.SkippedRanges);
@@ -258,12 +265,12 @@ internal sealed class SketchUpdateRoundTests
 
         //A sketch over ONLY the surviving items reconciles to nothing against the round's sketch — same set.
         ContentKey128[] survivors = [.. triples[..10].Concat(triples[20..]).Select(StructuralReconciliationProjection.Project)];
-        byte[] survivorImage = PersistItems(survivors, budget, ChecksumAlgorithm.XxHash3);
+        using ArtifactImage survivorImage = PersistItems(survivors, budget, ChecksumAlgorithm.XxHash3, bytePool);
         Assert.IsEmpty(Reconcile(roundImage, survivorImage, budget));
 
         //A sketch over the WHOLE set differs from the round's sketch by exactly the excluded block's items.
         ContentKey128[] all = [.. triples.Select(StructuralReconciliationProjection.Project)];
-        byte[] allImage = PersistItems(all, budget, ChecksumAlgorithm.XxHash3);
+        using ArtifactImage allImage = PersistItems(all, budget, ChecksumAlgorithm.XxHash3, bytePool);
         HashSet<ContentKey128> excluded = [.. triples[10..20].Select(StructuralReconciliationProjection.Project)];
         Assert.IsTrue(excluded.SetEquals(Reconcile(roundImage, allImage, budget)), "The round's sketch must differ from the whole-set sketch by exactly the excluded block's items.");
     }
@@ -272,10 +279,12 @@ internal sealed class SketchUpdateRoundTests
     [TestMethod]
     public void CleanSystemOfRecordFeedsEveryItem()
     {
+        using VeritasMemoryPool<byte> bytePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
         EncodedTriple[] triples = Line(0, 50);
-        byte[] systemOfRecord = SerializeSegment(triples, 10, ChecksumAlgorithm.XxHash3);
+        using ArtifactImage systemOfRecord = SerializeSegment(triples, 10, ChecksumAlgorithm.XxHash3, bytePool);
 
-        _ = RunRoundToArray(systemOfRecord, 100 + (20 * triples.Length), ChecksumAlgorithm.XxHash3, out SketchUpdateRoundReport report);
+        using ArtifactImage image = RunRound(systemOfRecord, 100 + (20 * triples.Length), ChecksumAlgorithm.XxHash3, bytePool, triplePool, out SketchUpdateRoundReport report);
 
         Assert.AreEqual(triples.Length, report.ItemsFed);
         Assert.IsTrue(report.IsClean);
@@ -287,10 +296,12 @@ internal sealed class SketchUpdateRoundTests
     [TestMethod]
     public void UnchecksummedSystemOfRecordReportsNotGated()
     {
+        using VeritasMemoryPool<byte> bytePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
         EncodedTriple[] triples = Line(0, 30);
-        byte[] systemOfRecord = SerializeSegment(triples, 10, null);
+        using ArtifactImage systemOfRecord = SerializeSegment(triples, 10, null, bytePool);
 
-        _ = RunRoundToArray(systemOfRecord, 100 + (20 * triples.Length), ChecksumAlgorithm.XxHash3, out SketchUpdateRoundReport report);
+        using ArtifactImage image = RunRound(systemOfRecord, 100 + (20 * triples.Length), ChecksumAlgorithm.XxHash3, bytePool, triplePool, out SketchUpdateRoundReport report);
 
         Assert.AreEqual(triples.Length, report.ItemsFed);
         Assert.IsTrue(report.IsClean);
@@ -301,14 +312,16 @@ internal sealed class SketchUpdateRoundTests
     [TestMethod]
     public void ZeroBudgetProducesAnEmptySketch()
     {
+        using VeritasMemoryPool<byte> bytePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
         EncodedTriple[] triples = Line(0, 20);
-        byte[] systemOfRecord = SerializeSegment(triples, 16, ChecksumAlgorithm.XxHash3);
+        using ArtifactImage systemOfRecord = SerializeSegment(triples, 16, ChecksumAlgorithm.XxHash3, bytePool);
 
-        byte[] image = RunRoundToArray(systemOfRecord, 0, ChecksumAlgorithm.XxHash3, out SketchUpdateRoundReport report);
+        using ArtifactImage image = RunRound(systemOfRecord, 0, ChecksumAlgorithm.XxHash3, bytePool, triplePool, out SketchUpdateRoundReport report);
 
         Assert.AreEqual(0, report.SymbolCount);
         Assert.AreEqual(triples.Length, report.ItemsFed);
-        VerifiedSketch verified = SketchPersistence.LoadVerifiedSketch(image, SketchContract.Structural);
+        VerifiedSketch verified = SketchPersistence.LoadVerifiedSketch(image.Bytes, SketchContract.Structural);
         Assert.AreEqual(0, verified.SymbolCount);
     }
 
@@ -316,14 +329,16 @@ internal sealed class SketchUpdateRoundTests
     [TestMethod]
     public void BudgetCapsTheProducedSymbolCount()
     {
+        using VeritasMemoryPool<byte> bytePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
         EncodedTriple[] triples = Line(0, 40);
-        byte[] systemOfRecord = SerializeSegment(triples, 16, ChecksumAlgorithm.XxHash3);
+        using ArtifactImage systemOfRecord = SerializeSegment(triples, 16, ChecksumAlgorithm.XxHash3, bytePool);
         const int Budget = 321;
 
-        byte[] image = RunRoundToArray(systemOfRecord, Budget, ChecksumAlgorithm.XxHash3, out SketchUpdateRoundReport report);
+        using ArtifactImage image = RunRound(systemOfRecord, Budget, ChecksumAlgorithm.XxHash3, bytePool, triplePool, out SketchUpdateRoundReport report);
 
         Assert.AreEqual(Budget, report.SymbolCount);
-        VerifiedSketch verified = SketchPersistence.LoadVerifiedSketch(image, SketchContract.Structural);
+        VerifiedSketch verified = SketchPersistence.LoadVerifiedSketch(image.Bytes, SketchContract.Structural);
         Assert.AreEqual(Budget, verified.SymbolCount);
     }
 
@@ -331,22 +346,26 @@ internal sealed class SketchUpdateRoundTests
     [TestMethod]
     public void FramingDamageInSystemOfRecordIsRefused()
     {
+        using VeritasMemoryPool<byte> bytePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
         EncodedTriple[] triples = Line(0, 30);
-        byte[] systemOfRecord = SerializeSegment(triples, 10, ChecksumAlgorithm.XxHash3);
-        systemOfRecord[0] ^= 0xFF;
+        using ArtifactImage systemOfRecord = SerializeSegment(triples, 10, ChecksumAlgorithm.XxHash3, bytePool);
+        systemOfRecord.WritableBytes[0] ^= 0xFF;
 
-        Assert.ThrowsExactly<InvalidDataException>(() => { _ = RunRoundToArray(systemOfRecord, 100, ChecksumAlgorithm.XxHash3, out _); });
+        Assert.ThrowsExactly<InvalidDataException>(() => { _ = RunRound(systemOfRecord, 100, ChecksumAlgorithm.XxHash3, bytePool, triplePool, out _); });
     }
 
     /// <summary>An empty system-of-record produces a sketch over no items; two such sketches reconcile to an empty difference.</summary>
     [TestMethod]
     public void EmptySystemOfRecordProducesAnEmptySketch()
     {
-        byte[] systemOfRecord = SerializeSegment([], 8, ChecksumAlgorithm.XxHash3);
+        using VeritasMemoryPool<byte> bytePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        using ArtifactImage systemOfRecord = SerializeSegment([], 8, ChecksumAlgorithm.XxHash3, bytePool);
         const int Budget = 200;
 
-        byte[] imageA = RunRoundToArray(systemOfRecord, Budget, ChecksumAlgorithm.XxHash3, out SketchUpdateRoundReport report);
-        byte[] imageB = RunRoundToArray(systemOfRecord, Budget, ChecksumAlgorithm.XxHash3, out _);
+        using ArtifactImage imageA = RunRound(systemOfRecord, Budget, ChecksumAlgorithm.XxHash3, bytePool, triplePool, out SketchUpdateRoundReport report);
+        using ArtifactImage imageB = RunRound(systemOfRecord, Budget, ChecksumAlgorithm.XxHash3, bytePool, triplePool, out _);
 
         Assert.AreEqual(0, report.ItemsFed);
         Assert.IsTrue(report.IsClean);
@@ -366,31 +385,37 @@ internal sealed class SketchUpdateRoundTests
     {
     }
 
-    /// <summary>Computes a file's whole-image checksum digest for its manifest entry.</summary>
+    /// <summary>Computes a file's whole-image checksum digest into a buffer rented from <paramref name="pool"/>, valid until the rented owner is returned.</summary>
     /// <param name="image">The file bytes.</param>
     /// <param name="checksum">The checksum algorithm.</param>
-    /// <returns>The digest, exactly the algorithm's byte width.</returns>
-    private static byte[] FileChecksum(byte[] image, ChecksumAlgorithm checksum)
+    /// <param name="pool">The pool the digest buffer is rented from.</param>
+    /// <returns>The rented digest owner; its first <see cref="ChecksumAlgorithm.ByteWidth"/> bytes are the digest.</returns>
+    private static IMemoryOwner<byte> Digest(ReadOnlySpan<byte> image, ChecksumAlgorithm checksum, MemoryPool<byte> pool)
     {
-        byte[] digest = new byte[checksum.ByteWidth];
-        checksum.Compute(image, digest);
+        IMemoryOwner<byte> owner = pool.Rent(checksum.ByteWidth);
+        checksum.Compute(image, owner.Memory.Span[..checksum.ByteWidth]);
 
-        return digest;
+        return owner;
     }
 
-    /// <summary>Builds a generation's manifest entries naming a staged data segment and its co-versioned sketch.</summary>
+    /// <summary>Commits a generation naming a staged data segment and its co-versioned sketch, renting each entry's digest from <paramref name="pool"/> for the duration of the commit.</summary>
+    /// <param name="writer">The manifest writer that publishes the generation.</param>
     /// <param name="generation">The commit generation.</param>
-    /// <param name="segmentImage">The staged data-segment image.</param>
-    /// <param name="sketchImage">The staged sketch image.</param>
+    /// <param name="segment">The staged data-segment image.</param>
+    /// <param name="sketch">The staged sketch image.</param>
     /// <param name="checksum">The checksum algorithm whose width the entry digests must match.</param>
-    /// <returns>The data-segment and sketch entries.</returns>
-    private static ManifestEntry[] GenerationEntries(long generation, byte[] segmentImage, byte[] sketchImage, ChecksumAlgorithm checksum)
+    /// <param name="pool">The pool the entry digests are rented from.</param>
+    private static void CommitGeneration(ManifestWriter writer, long generation, ArtifactImage segment, ArtifactImage sketch, ChecksumAlgorithm checksum, MemoryPool<byte> pool)
     {
-        return
+        int width = checksum.ByteWidth;
+        using IMemoryOwner<byte> segmentDigest = Digest(segment.Bytes, checksum, pool);
+        using IMemoryOwner<byte> sketchDigest = Digest(sketch.Bytes, checksum, pool);
+        ManifestEntry[] entries =
         [
-            new(ManifestFileRole.DataSegment, $"segment-{generation:D20}.dat", 0, segmentImage.Length, FileChecksum(segmentImage, checksum)),
-            new(ManifestFileRole.Sketch, $"sketch-{generation:D20}.skt", 0, sketchImage.Length, FileChecksum(sketchImage, checksum)),
+            new(ManifestFileRole.DataSegment, $"segment-{generation:D20}.dat", 0, segment.Length, segmentDigest.Memory[..width]),
+            new(ManifestFileRole.Sketch, $"sketch-{generation:D20}.skt", 0, sketch.Length, sketchDigest.Memory[..width]),
         ];
+        writer.Commit(new Manifest(generation, generation * 11, generation * 13, entries));
     }
 
     /// <summary>The sketch co-versions with its generation: produced and staged before the single atomic CURRENT publish, listed in the manifest, and recovered as part of the same committed generation.</summary>
@@ -400,24 +425,25 @@ internal sealed class SketchUpdateRoundTests
         string directory = CreateTempDirectory();
         try
         {
-            using VeritasMemoryPool<byte> pool = new();
+            using VeritasMemoryPool<byte> bytePool = new();
+            using VeritasMemoryPool<EncodedTriple> triplePool = new();
             FileSystemPersistenceStore store = new(directory, NoOpBarrier);
             ChecksumAlgorithm checksum = ChecksumAlgorithm.XxHash3;
             const long Generation = 7;
 
             EncodedTriple[] triples = Line(0, 120);
-            byte[] segmentImage = SerializeSegment(triples, 16, checksum);
+            using ArtifactImage segmentImage = SerializeSegment(triples, 16, checksum, bytePool);
             int budget = 100 + (20 * triples.Length);
-            byte[] sketchImage = RunRoundToArray(segmentImage, budget, checksum, out SketchUpdateRoundReport report);
+            using ArtifactImage sketchImage = RunRound(segmentImage, budget, checksum, bytePool, triplePool, out SketchUpdateRoundReport report);
             Assert.IsTrue(report.IsClean);
 
             //Stage both artifacts durably BEFORE the publish, then publish the generation atomically.
             string sketchName = $"sketch-{Generation:D20}.skt";
-            store.WriteStaged($"segment-{Generation:D20}.dat", segmentImage);
-            store.WriteStaged(sketchName, sketchImage);
+            store.WriteStaged($"segment-{Generation:D20}.dat", segmentImage.Bytes);
+            store.WriteStaged(sketchName, sketchImage.Bytes);
 
-            ManifestWriter writer = new(store, checksum, pool, retainedCurrentPointerCount: 4);
-            writer.Commit(new Manifest(Generation, Generation * 11, Generation * 13, GenerationEntries(Generation, segmentImage, sketchImage, checksum)));
+            ManifestWriter writer = new(store, checksum, bytePool, retainedCurrentPointerCount: 4);
+            CommitGeneration(writer, Generation, segmentImage, sketchImage, checksum, bytePool);
 
             RecoveryResult result = new ManifestRecovery(store).Recover();
             Assert.AreEqual(Generation, result.Manifest.CommitGeneration);
@@ -432,8 +458,8 @@ internal sealed class SketchUpdateRoundTests
             Assert.AreEqual(budget, verified.SymbolCount);
 
             //The manifest entry authenticates the file it names: its stored digest matches the persisted bytes.
-            byte[] recomputed = FileChecksum(persisted, checksum);
-            Assert.IsTrue(sketchEntry.Checksum.Span.SequenceEqual(recomputed), "The recovered manifest entry's checksum must authenticate the sketch file it names.");
+            using IMemoryOwner<byte> recomputed = Digest(persisted, checksum, bytePool);
+            Assert.IsTrue(sketchEntry.Checksum.Span.SequenceEqual(recomputed.Memory.Span[..checksum.ByteWidth]), "The recovered manifest entry's checksum must authenticate the sketch file it names.");
         }
         finally
         {
@@ -448,28 +474,29 @@ internal sealed class SketchUpdateRoundTests
         string directory = CreateTempDirectory();
         try
         {
-            using VeritasMemoryPool<byte> pool = new();
+            using VeritasMemoryPool<byte> bytePool = new();
+            using VeritasMemoryPool<EncodedTriple> triplePool = new();
             FileSystemPersistenceStore store = new(directory, NoOpBarrier);
             ChecksumAlgorithm checksum = ChecksumAlgorithm.XxHash3;
 
             //Generation 1 commits cleanly with its sketch.
             EncodedTriple[] triplesOne = Line(0, 80);
-            byte[] segmentOne = SerializeSegment(triplesOne, 16, checksum);
-            byte[] sketchOne = RunRoundToArray(segmentOne, 100 + (20 * triplesOne.Length), checksum, out _);
-            store.WriteStaged("segment-00000000000000000001.dat", segmentOne);
-            store.WriteStaged("sketch-00000000000000000001.skt", sketchOne);
-            new ManifestWriter(store, checksum, pool, retainedCurrentPointerCount: 4)
-                .Commit(new Manifest(1, 11, 13, GenerationEntries(1, segmentOne, sketchOne, checksum)));
+            using ArtifactImage segmentOne = SerializeSegment(triplesOne, 16, checksum, bytePool);
+            using ArtifactImage sketchOne = RunRound(segmentOne, 100 + (20 * triplesOne.Length), checksum, bytePool, triplePool, out _);
+            store.WriteStaged("segment-00000000000000000001.dat", segmentOne.Bytes);
+            store.WriteStaged("sketch-00000000000000000001.skt", sketchOne.Bytes);
+            ManifestWriter writerOne = new(store, checksum, bytePool, retainedCurrentPointerCount: 4);
+            CommitGeneration(writerOne, 1, segmentOne, sketchOne, checksum, bytePool);
 
             //Generation 2 stages its sketch, then the publish crashes: the generation is never committed.
             EncodedTriple[] triplesTwo = Line(0, 200);
-            byte[] segmentTwo = SerializeSegment(triplesTwo, 16, checksum);
-            byte[] sketchTwo = RunRoundToArray(segmentTwo, 100 + (20 * triplesTwo.Length), checksum, out _);
-            store.WriteStaged("segment-00000000000000000002.dat", segmentTwo);
-            store.WriteStaged("sketch-00000000000000000002.skt", sketchTwo);
+            using ArtifactImage segmentTwo = SerializeSegment(triplesTwo, 16, checksum, bytePool);
+            using ArtifactImage sketchTwo = RunRound(segmentTwo, 100 + (20 * triplesTwo.Length), checksum, bytePool, triplePool, out _);
+            store.WriteStaged("segment-00000000000000000002.dat", segmentTwo.Bytes);
+            store.WriteStaged("sketch-00000000000000000002.skt", sketchTwo.Bytes);
             PublishCrashStore crashing = new(store);
-            ManifestWriter crashingWriter = new(crashing, checksum, pool, retainedCurrentPointerCount: 4);
-            Assert.ThrowsExactly<IOException>(() => crashingWriter.Commit(new Manifest(2, 22, 26, GenerationEntries(2, segmentTwo, sketchTwo, checksum))));
+            ManifestWriter crashingWriter = new(crashing, checksum, bytePool, retainedCurrentPointerCount: 4);
+            Assert.ThrowsExactly<IOException>(() => CommitGeneration(crashingWriter, 2, segmentTwo, sketchTwo, checksum, bytePool));
 
             //Recovery follows CURRENT to generation 1; the orphaned generation-2 sketch is never named.
             RecoveryResult result = new ManifestRecovery(store).Recover();
