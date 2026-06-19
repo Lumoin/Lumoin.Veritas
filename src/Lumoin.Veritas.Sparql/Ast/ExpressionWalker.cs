@@ -246,6 +246,9 @@ public static class ExpressionWalker
             case ArithmeticExpression arithmetic: hash.Add(arithmetic.Op); break;
             case FunctionCallExpression call: hash.Add(call.Function); break;
             case BuiltInCallExpression call: hash.Add(call.Function); hash.Add(call.IsDistinct); break;
+            case TripleTermExpression tripleTerm: hash.Add(tripleTerm.Inner); break;
+            case ExistsExpression exists: hash.Add(exists.Inner); break;
+            case NotExistsExpression notExists: hash.Add(notExists.Inner); break;
             case AggregateExpression aggregate: hash.Add(aggregate.Function); hash.Add(aggregate.IsDistinct); hash.Add(aggregate.IsCountStar); hash.Add(aggregate.GroupConcatSeparator); break;
             default: break;
         }

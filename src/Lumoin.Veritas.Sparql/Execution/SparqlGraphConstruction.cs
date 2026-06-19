@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Parsing;
 using AstTriplePattern = Lumoin.Veritas.Sparql.Ast.TriplePattern;
 using AstTripleTerm = Lumoin.Veritas.Sparql.Ast.TripleTerm;
 using CoreTripleTerm = Lumoin.Veritas.Core.TripleTerm;
@@ -174,12 +175,12 @@ public static class SparqlGraphConstruction
     private static RdfTerm? Resolve(Ast.TriplePatternTerm root, SparqlSolution solution, Dictionary<Utf8String, BlankNode> rowBlanks, ref int blankCounter)
     {
         Dictionary<Ast.TriplePatternTerm, RdfTerm?> resolved = new(ReferenceEqualityComparer.Instance);
-        Stack<(Ast.TriplePatternTerm Term, bool Combine)> work = new();
-        work.Push((root, Combine: false));
+        Stack<(Ast.TriplePatternTerm Term, bool Combine, int Depth)> work = new();
+        work.Push((root, Combine: false, Depth: 1));
 
         while(work.Count > 0)
         {
-            (Ast.TriplePatternTerm term, bool combine) = work.Pop();
+            (Ast.TriplePatternTerm term, bool combine, int depth) = work.Pop();
             if(combine)
             {
                 AstTripleTerm tripleTerm = (AstTripleTerm)term;
@@ -216,11 +217,16 @@ public static class SparqlGraphConstruction
 
                 case AstTripleTerm tripleTerm:
                 {
+                    if(depth > QuotedTripleLimits.MaxNestingDepth)
+                    {
+                        throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
+                    }
+
                     //Resolve the three components first, then combine on the second visit.
-                    work.Push((term, Combine: true));
-                    work.Push((tripleTerm.Inner.Object, Combine: false));
-                    work.Push((tripleTerm.Inner.Predicate, Combine: false));
-                    work.Push((tripleTerm.Inner.Subject, Combine: false));
+                    work.Push((term, Combine: true, depth));
+                    work.Push((tripleTerm.Inner.Object, Combine: false, depth + 1));
+                    work.Push((tripleTerm.Inner.Predicate, Combine: false, depth + 1));
+                    work.Push((tripleTerm.Inner.Subject, Combine: false, depth + 1));
 
                     break;
                 }

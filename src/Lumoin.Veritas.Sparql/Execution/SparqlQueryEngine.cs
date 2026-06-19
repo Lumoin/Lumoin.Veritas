@@ -17,6 +17,7 @@ using Lumoin.Veritas.Core.Hypertrie.Execution;
 using Lumoin.Veritas.Core.Hypertrie.Planning;
 using Lumoin.Veritas.Core.Hypertrie.Query;
 using Lumoin.Veritas.Core.Hypertrie.Storage;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Rdf;
 using Lumoin.Veritas.Sparql.Algebra;
@@ -1788,27 +1789,32 @@ public sealed class SparqlQueryEngine
         //Post-order build: a position is either a constant (its RdfTerm taken directly), or a nested quoted triple
         //term (built first, then used as this term's subject/object). A predicate must resolve to a NamedNode.
         Dictionary<AstTripleTerm, Core.TripleTerm> built = new(ReferenceEqualityComparer.Instance);
-        Stack<(AstTripleTerm Term, bool Build)> work = new();
-        work.Push((tripleTerm, Build: false));
+        Stack<(AstTripleTerm Term, bool Build, int Depth)> work = new();
+        work.Push((tripleTerm, Build: false, Depth: 1));
 
         while(work.Count > 0)
         {
-            (AstTripleTerm term, bool build) = work.Pop();
+            (AstTripleTerm term, bool build, int depth) = work.Pop();
             AstTriplePattern inner = term.Inner;
 
             if(!build)
             {
-                work.Push((term, Build: true));
+                if(depth > QuotedTripleLimits.MaxNestingDepth)
+                {
+                    throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
+                }
+
+                work.Push((term, Build: true, depth));
 
                 //Only a nested quoted triple term needs to be built before this one; constants are read in place.
                 if(inner.Subject is AstTripleTerm nestedSubject)
                 {
-                    work.Push((nestedSubject, Build: false));
+                    work.Push((nestedSubject, Build: false, depth + 1));
                 }
 
                 if(inner.Object is AstTripleTerm nestedObject)
                 {
-                    work.Push((nestedObject, Build: false));
+                    work.Push((nestedObject, Build: false, depth + 1));
                 }
 
                 continue;
@@ -2005,6 +2011,7 @@ public sealed class SparqlQueryEngine
     /// <param name="rootActual">The actual term to unify against.</param>
     /// <param name="bindings">The bindings, extended in place when a variable component binds.</param>
     /// <returns><see langword="true"/> when the pattern unifies with the term.</returns>
+    /// <remarks>The descent is bounded by the <see cref="TripleTermComponent"/> pattern's depth (it advances only where the pattern is a nested component), and the pattern is built from a parser-produced AST whose quoted-triple nesting is capped at <see cref="QuotedTripleLimits.MaxNestingDepth"/>; an over-deep actual term mismatches against the bottomed-out pattern rather than driving the stack, so no independent depth cap is required here.</remarks>
     private bool TryUnifyTripleTermComponent(TripleTermComponent root, RdfTerm rootActual, List<VariableBinding> bindings)
     {
         Stack<(TripleTermComponent Component, RdfTerm Actual)> work = new();
