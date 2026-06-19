@@ -3,10 +3,10 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.IO.Pipelines;
 using System.Runtime.CompilerServices;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Encoding;
 
 namespace Lumoin.Veritas.NQuads;
 
@@ -23,8 +23,9 @@ namespace Lumoin.Veritas.NQuads;
 /// <c>subject predicate object [graph] .</c>
 /// </para>
 /// <para>
-/// All output is UTF-8. No .NET string allocation occurs in the hot path — terms
-/// are written directly from their <see cref="Utf8String"/> byte representations.
+/// All output is UTF-8, written directly into the pipe via <see cref="Utf8BufferWriter"/> —
+/// terms come straight from their <see cref="Utf8String"/> byte representations and no
+/// intermediate scratch array or .NET string is allocated.
 /// </para>
 /// </remarks>
 public static class NQuadsWriter
@@ -44,6 +45,9 @@ public static class NQuadsWriter
     private static ReadOnlySpan<byte> DirectionLtr => "--ltr"u8;
     private static ReadOnlySpan<byte> DirectionRtl => "--rtl"u8;
 
+    /// <summary>The number of quads written into the pipe between flushes; bounds buffering without a flush per line.</summary>
+    private const int FlushEveryQuads = 1024;
+
     /// <summary>
     /// Writes a sequence of quads to the given pipe in N-Quads format.
     /// </summary>
@@ -58,22 +62,18 @@ public static class NQuadsWriter
         ArgumentNullException.ThrowIfNull(quads);
         ArgumentNullException.ThrowIfNull(output);
 
-        //Serialize into a scratch buffer one quad at a time, then hand whole lines to the pipe
-        //and flush periodically to amortise the cost without unbounded buffering. The escaping
-        //helpers stay byte-array based; the pipe copies each batch into its own pooled memory.
-        byte[] buffer = ArrayPool<byte>.Shared.Rent(65536);
         try
         {
-            int position = 0;
-
+            //Each quad is written straight into the pipe's buffer; flushing every batch of quads
+            //amortises the flush cost while bounding how much accumulates before the reader sees it.
+            int sinceFlush = 0;
             await foreach(Quad quad in quads.WithCancellation(cancellationToken).ConfigureAwait(false))
             {
-                //A conservative 2048-byte-per-quad estimate; hand off the batch before a quad
-                //could overrun the scratch buffer.
-                if(position + 2048 > buffer.Length)
+                WriteQuad(output, quad);
+
+                if(++sinceFlush >= FlushEveryQuads)
                 {
-                    output.Write(buffer.AsSpan(0, position));
-                    position = 0;
+                    sinceFlush = 0;
 
                     FlushResult flush = await output.FlushAsync(cancellationToken).ConfigureAwait(false);
                     if(flush.IsCanceled || flush.IsCompleted)
@@ -81,21 +81,12 @@ public static class NQuadsWriter
                         break;
                     }
                 }
-
-                position = WriteQuad(quad, buffer, position);
-            }
-
-            if(position > 0)
-            {
-                output.Write(buffer.AsSpan(0, position));
             }
 
             await output.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(buffer);
-
             await output.CompleteAsync().ConfigureAwait(false);
         }
     }
@@ -115,256 +106,206 @@ public static class NQuadsWriter
         await WriteAsync(ToAsyncEnumerable(quads, cancellationToken), output, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// Writes a single quad into the scratch buffer. Returns the updated buffer position.
-    /// </summary>
-    /// <remarks>
-    /// Writes entirely into the pre-allocated buffer with no async state machine; the caller
-    /// hands completed batches to the pipe.
-    /// </remarks>
-    private static int WriteQuad(Quad quad, byte[] buffer, int position)
+    /// <summary>Writes a single quad — subject, predicate, object, optional graph, and the statement terminator.</summary>
+    /// <param name="output">The destination buffer writer.</param>
+    /// <param name="quad">The quad to serialize.</param>
+    private static void WriteQuad(IBufferWriter<byte> output, Quad quad)
     {
-        position = WriteTerm(quad.Subject, buffer, position);
-        buffer.AsSpan(position, Space.Length).CopyFrom(Space);
-        position += Space.Length;
+        WriteTerm(output, quad.Subject);
+        output.WriteUtf8Literal(Space);
 
-        position = WriteNamedNode(quad.Predicate, buffer, position);
-        buffer.AsSpan(position, Space.Length).CopyFrom(Space);
-        position += Space.Length;
+        WriteNamedNode(output, quad.Predicate);
+        output.WriteUtf8Literal(Space);
 
-        position = WriteTerm(quad.Object, buffer, position);
+        WriteTerm(output, quad.Object);
 
         if(quad.Graph is { } graph)
         {
-            buffer.AsSpan(position, Space.Length).CopyFrom(Space);
-            position += Space.Length;
-            position = WriteTerm(graph, buffer, position);
+            output.WriteUtf8Literal(Space);
+            WriteTerm(output, graph);
         }
 
-        buffer.AsSpan(position, StatementEnd.Length).CopyFrom(StatementEnd);
-        position += StatementEnd.Length;
-
-        return position;
+        output.WriteUtf8Literal(StatementEnd);
     }
 
-    private static int WriteTerm(RdfTerm term, byte[] buffer, int position)
+    /// <summary>Writes any RDF term, dispatching on its kind.</summary>
+    /// <param name="output">The destination buffer writer.</param>
+    /// <param name="term">The term to serialize.</param>
+    /// <exception cref="InvalidOperationException">The term is of an unknown kind.</exception>
+    private static void WriteTerm(IBufferWriter<byte> output, RdfTerm term)
     {
-        return term switch
+        switch(term)
         {
-            NamedNode namedNode => WriteNamedNode(namedNode, buffer, position),
-            BlankNode blankNode => WriteBlankNode(blankNode, buffer, position),
-            Literal literal => WriteLiteral(literal, buffer, position),
-            TripleTerm tripleTerm => WriteTripleTerm(tripleTerm, buffer, position),
-            _ => throw new InvalidOperationException($"Unknown RDF term type: {term.GetType().Name}.")
-        };
+            case(NamedNode namedNode):
+            {
+                WriteNamedNode(output, namedNode);
+                break;
+            }
+            case(BlankNode blankNode):
+            {
+                WriteBlankNode(output, blankNode);
+                break;
+            }
+            case(Literal literal):
+            {
+                WriteLiteral(output, literal);
+                break;
+            }
+            case(TripleTerm tripleTerm):
+            {
+                WriteTripleTerm(output, tripleTerm);
+                break;
+            }
+            default:
+            {
+                throw new InvalidOperationException($"Unknown RDF term type: {term.GetType().Name}.");
+            }
+        }
     }
 
-    private static int WriteTripleTerm(TripleTerm tripleTerm, byte[] buffer, int position)
+    /// <summary>Writes an RDF 1.2 quoted triple term: <c>&lt;&lt;( s p o )&gt;&gt;</c>.</summary>
+    /// <param name="output">The destination buffer writer.</param>
+    /// <param name="tripleTerm">The triple term to serialize.</param>
+    private static void WriteTripleTerm(IBufferWriter<byte> output, TripleTerm tripleTerm)
     {
-        buffer.AsSpan(position, TripleTermOpen.Length).CopyFrom(TripleTermOpen);
-        position += TripleTermOpen.Length;
+        output.WriteUtf8Literal(TripleTermOpen);
 
-        position = WriteTerm(tripleTerm.Subject, buffer, position);
-        buffer.AsSpan(position, Space.Length).CopyFrom(Space);
-        position += Space.Length;
+        WriteTerm(output, tripleTerm.Subject);
+        output.WriteUtf8Literal(Space);
 
-        position = WriteNamedNode(tripleTerm.Predicate, buffer, position);
-        buffer.AsSpan(position, Space.Length).CopyFrom(Space);
-        position += Space.Length;
+        WriteNamedNode(output, tripleTerm.Predicate);
+        output.WriteUtf8Literal(Space);
 
-        position = WriteTerm(tripleTerm.Object, buffer, position);
+        WriteTerm(output, tripleTerm.Object);
 
-        buffer.AsSpan(position, TripleTermClose.Length).CopyFrom(TripleTermClose);
-        position += TripleTermClose.Length;
-
-        return position;
+        output.WriteUtf8Literal(TripleTermClose);
     }
 
-    private static int WriteNamedNode(NamedNode node, byte[] buffer, int position)
+    /// <summary>Writes a named node as <c>&lt;iri&gt;</c> with N-Quads IRI escaping.</summary>
+    /// <param name="output">The destination buffer writer.</param>
+    /// <param name="node">The named node to serialize.</param>
+    private static void WriteNamedNode(IBufferWriter<byte> output, NamedNode node)
     {
-        buffer.AsSpan(position, LessThan.Length).CopyFrom(LessThan);
-        position += LessThan.Length;
-
-        //IRIs may contain characters that need escaping per the N-Quads spec.
-        //In practice, well-formed IRIs from JSON-LD and RDF sources contain
-        //only printable ASCII, so we write them directly.
-        position = WriteEscapedIri(node.Iri.Span, buffer, position);
-
-        buffer.AsSpan(position, GreaterThan.Length).CopyFrom(GreaterThan);
-        position += GreaterThan.Length;
-
-        return position;
+        output.WriteUtf8Literal(LessThan);
+        WriteEscapedIri(output, node.Iri.Span);
+        output.WriteUtf8Literal(GreaterThan);
     }
 
-    private static int WriteBlankNode(BlankNode node, byte[] buffer, int position)
+    /// <summary>Writes a blank node as <c>_:label</c>.</summary>
+    /// <param name="output">The destination buffer writer.</param>
+    /// <param name="node">The blank node to serialize.</param>
+    private static void WriteBlankNode(IBufferWriter<byte> output, BlankNode node)
     {
-        buffer.AsSpan(position, BlankNodePrefix.Length).CopyFrom(BlankNodePrefix);
-        position += BlankNodePrefix.Length;
-
-        node.Label.Span.CopyTo(buffer.AsSpan(position));
-        position += node.Label.Length;
-
-        return position;
+        output.WriteUtf8Literal(BlankNodePrefix);
+        output.WriteUtf8String(node.Label);
     }
 
-    private static int WriteLiteral(Literal literal, byte[] buffer, int position)
+    /// <summary>Writes a literal as a quoted, escaped value with its language tag (and optional base direction) or datatype.</summary>
+    /// <param name="output">The destination buffer writer.</param>
+    /// <param name="literal">The literal to serialize.</param>
+    private static void WriteLiteral(IBufferWriter<byte> output, Literal literal)
     {
-        buffer.AsSpan(position, Quote.Length).CopyFrom(Quote);
-        position += Quote.Length;
-
-        position = WriteEscapedLiteralValue(literal.Value.Span, buffer, position);
+        output.WriteUtf8Literal(Quote);
+        WriteEscapedLiteralValue(output, literal.Value.Span);
 
         if(literal.Language is { } language)
         {
-            buffer.AsSpan(position, LanguageMarker.Length).CopyFrom(LanguageMarker);
-            position += LanguageMarker.Length;
-
-            language.Span.CopyTo(buffer.AsSpan(position));
-            position += language.Length;
+            output.WriteUtf8Literal(LanguageMarker);
+            output.WriteUtf8String(language);
 
             if(literal.BaseDirection is { } direction)
             {
-                ReadOnlySpan<byte> directionMarker = direction == TextDirection.Ltr ? DirectionLtr : DirectionRtl;
-                buffer.AsSpan(position, directionMarker.Length).CopyFrom(directionMarker);
-                position += directionMarker.Length;
+                output.WriteUtf8Literal(direction == TextDirection.Ltr ? DirectionLtr : DirectionRtl);
             }
         }
         else
         {
-            buffer.AsSpan(position, DatatypeMarker.Length).CopyFrom(DatatypeMarker);
-            position += DatatypeMarker.Length;
-
-            position = WriteEscapedIri(literal.Datatype.Iri.Span, buffer, position);
-
-            buffer.AsSpan(position, GreaterThan.Length).CopyFrom(GreaterThan);
-            position += GreaterThan.Length;
+            output.WriteUtf8Literal(DatatypeMarker);
+            WriteEscapedIri(output, literal.Datatype.Iri.Span);
+            output.WriteUtf8Literal(GreaterThan);
         }
-
-        return position;
     }
 
     /// <summary>
-    /// Writes an IRI with N-Quads escape sequences applied.
+    /// Writes an IRI with N-Quads escape sequences applied: control characters and the backslash
+    /// become <c>\\uXXXX</c>, copying maximal runs of safe bytes verbatim. The escaped bytes are
+    /// ASCII, so they never split a multi-byte UTF-8 sequence.
     /// </summary>
-    /// <remarks>
-    /// Per the N-Quads spec, IRIs must have control characters and non-printable
-    /// characters escaped as \uXXXX or \UXXXXXXXX sequences.
-    /// Well-formed IRIs in practice contain only printable ASCII, so this fast-paths
-    /// through them without inspection where possible.
-    /// </remarks>
-    private static int WriteEscapedIri(ReadOnlySpan<byte> iri, byte[] buffer, int position)
+    /// <param name="output">The destination buffer writer.</param>
+    /// <param name="iri">The UTF-8 IRI bytes.</param>
+    private static void WriteEscapedIri(IBufferWriter<byte> output, ReadOnlySpan<byte> iri)
     {
-        //IRIs are ASCII-dominant in practice. Scan for characters that need escaping.
-        foreach(byte b in iri)
+        int runStart = 0;
+        for(int i = 0; i < iri.Length; i++)
         {
-            if(b < 0x20 || b == 0x5C)
+            byte b = iri[i];
+            if(b >= 0x20 && b != 0x5C)
             {
-                //Control character or backslash: needs escaping. Fall through to slow path.
-                return WriteEscapedIriSlow(iri, buffer, position);
+                continue;
             }
+
+            output.WriteUtf8Literal(iri[runStart..i]);
+            WriteUnicodeEscape(output, b);
+            runStart = i + 1;
         }
 
-        //Fast path: no escaping needed.
-        iri.CopyTo(buffer.AsSpan(position));
-        return position + iri.Length;
-    }
-
-    private static int WriteEscapedIriSlow(ReadOnlySpan<byte> iri, byte[] buffer, int position)
-    {
-        //Decode UTF-8 and re-encode with escaping. Rare path for malformed IRIs.
-        string decoded = Encoding.UTF8.GetString(iri);
-        foreach(char c in decoded)
-        {
-            if(c < 0x20 || c == '\\')
-            {
-                //Escape as \uXXXX.
-                Span<byte> escape = buffer.AsSpan(position, 6);
-                escape[0] = (byte)'\\';
-                escape[1] = (byte)'u';
-                WriteHex4((ushort)c, escape[2..]);
-                position += 6;
-            }
-            else
-            {
-                int written = Encoding.UTF8.GetBytes([c], buffer.AsSpan(position));
-                position += written;
-            }
-        }
-
-        return position;
+        output.WriteUtf8Literal(iri[runStart..]);
     }
 
     /// <summary>
-    /// Writes a literal value with N-Quads string escape sequences applied.
+    /// Writes a literal value with N-Quads string escaping (<c>\\t \\n \\r \\" \\\\</c>), copying maximal
+    /// runs of safe bytes verbatim. The escaped bytes are ASCII, so multi-byte UTF-8 sequences pass through.
     /// </summary>
-    /// <remarks>
-    /// N-Quads string escape sequences per spec:
-    /// \t, \n, \r, \", \\, \uXXXX, \UXXXXXXXX.
-    /// </remarks>
-    private static int WriteEscapedLiteralValue(ReadOnlySpan<byte> value, byte[] buffer, int position)
+    /// <param name="output">The destination buffer writer.</param>
+    /// <param name="value">The UTF-8 literal value bytes.</param>
+    private static void WriteEscapedLiteralValue(IBufferWriter<byte> output, ReadOnlySpan<byte> value)
     {
-        //Check if any escaping is needed: \n, \r, \t, \", \\.
-        bool needsEscaping = false;
-        foreach(byte b in value)
+        int runStart = 0;
+        for(int i = 0; i < value.Length; i++)
         {
-            if(b is (byte)'\n' or (byte)'\r' or (byte)'\t' or (byte)'"' or (byte)'\\')
+            ReadOnlySpan<byte> escape = value[i] switch
             {
-                needsEscaping = true;
-                break;
-            }
-        }
+                (byte)'\t' => "\\t"u8,
+                (byte)'\n' => "\\n"u8,
+                (byte)'\r' => "\\r"u8,
+                (byte)'"' => "\\\""u8,
+                (byte)'\\' => "\\\\"u8,
+                _ => default
+            };
 
-        if(!needsEscaping)
-        {
-            value.CopyTo(buffer.AsSpan(position));
-            return position + value.Length;
-        }
-
-        //Slow path: character-by-character with escaping.
-        string decoded = Encoding.UTF8.GetString(value);
-        foreach(char c in decoded)
-        {
-            switch(c)
+            if(escape.IsEmpty)
             {
-                case '\t':
-                    buffer[position++] = (byte)'\\';
-                    buffer[position++] = (byte)'t';
-                    break;
-                case '\n':
-                    buffer[position++] = (byte)'\\';
-                    buffer[position++] = (byte)'n';
-                    break;
-                case '\r':
-                    buffer[position++] = (byte)'\\';
-                    buffer[position++] = (byte)'r';
-                    break;
-                case '"':
-                    buffer[position++] = (byte)'\\';
-                    buffer[position++] = (byte)'"';
-                    break;
-                case '\\':
-                    buffer[position++] = (byte)'\\';
-                    buffer[position++] = (byte)'\\';
-                    break;
-                default:
-                    int written = Encoding.UTF8.GetBytes([c], buffer.AsSpan(position));
-                    position += written;
-                    break;
+                continue;
             }
+
+            output.WriteUtf8Literal(value[runStart..i]);
+            output.WriteUtf8Literal(escape);
+            runStart = i + 1;
         }
 
-        return position;
+        output.WriteUtf8Literal(value[runStart..]);
     }
 
-    private static void WriteHex4(ushort value, Span<byte> destination)
+    /// <summary>Writes the six-byte <c>\\u00XX</c> escape for a control byte or backslash, uppercase hex.</summary>
+    /// <param name="output">The destination buffer writer.</param>
+    /// <param name="value">The byte to escape; always less than <c>0x20</c> or the backslash <c>0x5C</c>.</param>
+    private static void WriteUnicodeEscape(IBufferWriter<byte> output, byte value)
     {
-        const string hex = "0123456789ABCDEF";
-        destination[0] = (byte)hex[(value >> 12) & 0xF];
-        destination[1] = (byte)hex[(value >> 8) & 0xF];
-        destination[2] = (byte)hex[(value >> 4) & 0xF];
-        destination[3] = (byte)hex[value & 0xF];
+        ReadOnlySpan<byte> hex = "0123456789ABCDEF"u8;
+        Span<byte> destination = output.GetSpan(6);
+        destination[0] = (byte)'\\';
+        destination[1] = (byte)'u';
+        destination[2] = (byte)'0';
+        destination[3] = (byte)'0';
+        destination[4] = hex[(value >> 4) & 0xF];
+        destination[5] = hex[value & 0xF];
+        output.Advance(6);
     }
 
+    /// <summary>Adapts a synchronous quad sequence to an async one for the streaming writer.</summary>
+    /// <param name="source">The quads.</param>
+    /// <param name="cancellationToken">A token to cancel enumeration.</param>
+    /// <returns>The quads as an async sequence.</returns>
     private static async IAsyncEnumerable<Quad> ToAsyncEnumerable(
         IEnumerable<Quad> source,
         [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -376,20 +317,5 @@ public static class NQuadsWriter
         }
 
         await Task.CompletedTask.ConfigureAwait(false);
-    }
-}
-
-/// <summary>
-/// Extension methods for working with byte spans in N-Quads output.
-/// </summary>
-internal static class SpanExtensions
-{
-    /// <summary>
-    /// Copies bytes from a <see cref="ReadOnlySpan{T}"/> into a <see cref="Span{T}"/>.
-    /// Named CopyFrom to distinguish call direction at the call site.
-    /// </summary>
-    internal static void CopyFrom(this Span<byte> destination, ReadOnlySpan<byte> source)
-    {
-        source.CopyTo(destination);
     }
 }
