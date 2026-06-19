@@ -136,7 +136,7 @@ internal sealed class ManifestPersistenceTests
             FileSystemPersistenceStore store = new(directory, NoOpBarrier);
             Commit(store, pool, 1, ChecksumAlgorithm.XxHash3, retainedCount: 4);
 
-            PublishCrashStore crashing = new(store);
+            FailAtStepStore crashing = new(store, PublishFailStep.BeforeRename);
             ManifestWriter writer = new(crashing, ChecksumAlgorithm.XxHash3, pool, retainedCurrentPointerCount: 4);
             Assert.ThrowsExactly<IOException>(() => writer.Commit(SampleManifest(2, ChecksumAlgorithm.XxHash3)));
 
@@ -508,7 +508,7 @@ internal sealed class ManifestPersistenceTests
         {
             using VeritasMemoryPool<byte> pool = new();
             FileSystemPersistenceStore store = new(directory, NoOpBarrier);
-            PublishCrashStore crashing = new(store);
+            FailAtStepStore crashing = new(store, PublishFailStep.BeforeRename);
             ManifestWriter writer = new(crashing, ChecksumAlgorithm.XxHash3, pool, retainedCurrentPointerCount: 4);
             Assert.ThrowsExactly<IOException>(() => writer.Commit(SampleManifest(1, ChecksumAlgorithm.XxHash3)));
 
@@ -543,57 +543,6 @@ internal sealed class ManifestPersistenceTests
         finally
         {
             Directory.Delete(directory, recursive: true);
-        }
-    }
-
-    /// <summary>
-    /// A <see cref="PersistenceStore"/> decorator that throws on <see cref="Publish"/> to model a crash
-    /// at the single commit point: the staged writes that precede the publish are forwarded, then the
-    /// rename fails, so the generation is never committed and the steps after the publish never run —
-    /// exactly what a crash between the staged writes and the atomic rename leaves behind.
-    /// </summary>
-    private sealed class PublishCrashStore : PersistenceStore
-    {
-        /// <summary>The real store the surviving operations are forwarded to.</summary>
-        private readonly PersistenceStore inner;
-
-        /// <summary>Creates a decorator over <paramref name="inner"/>.</summary>
-        /// <param name="inner">The real store the surviving operations are forwarded to.</param>
-        public PublishCrashStore(PersistenceStore inner)
-        {
-            ArgumentNullException.ThrowIfNull(inner);
-
-            this.inner = inner;
-        }
-
-        /// <inheritdoc/>
-        public override void WriteStaged(string name, ReadOnlySpan<byte> content)
-        {
-            inner.WriteStaged(name, content);
-        }
-
-        /// <inheritdoc/>
-        public override void Publish(string stagedName, string finalName)
-        {
-            throw new IOException("Simulated crash at the commit point before the CURRENT rename.");
-        }
-
-        /// <inheritdoc/>
-        public override byte[]? Read(string name)
-        {
-            return inner.Read(name);
-        }
-
-        /// <inheritdoc/>
-        public override IReadOnlyList<string> List(string prefix)
-        {
-            return inner.List(prefix);
-        }
-
-        /// <inheritdoc/>
-        public override void Delete(string name)
-        {
-            inner.Delete(name);
         }
     }
 }

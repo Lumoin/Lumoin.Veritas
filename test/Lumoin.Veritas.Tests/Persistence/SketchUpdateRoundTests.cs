@@ -494,7 +494,7 @@ internal sealed class SketchUpdateRoundTests
             using ArtifactImage sketchTwo = RunRound(segmentTwo, 100 + (20 * triplesTwo.Length), checksum, bytePool, triplePool, out _);
             store.WriteStaged("segment-00000000000000000002.dat", segmentTwo.Bytes);
             store.WriteStaged("sketch-00000000000000000002.skt", sketchTwo.Bytes);
-            PublishCrashStore crashing = new(store);
+            FailAtStepStore crashing = new(store, PublishFailStep.BeforeRename);
             ManifestWriter crashingWriter = new(crashing, checksum, bytePool, retainedCurrentPointerCount: 4);
             Assert.ThrowsExactly<IOException>(() => CommitGeneration(crashingWriter, 2, segmentTwo, sketchTwo, checksum, bytePool));
 
@@ -526,52 +526,6 @@ internal sealed class SketchUpdateRoundTests
         {
             bool isVerisync = name.Name is string assemblyName && assemblyName.StartsWith("Lumoin.Verisync", StringComparison.Ordinal);
             Assert.IsFalse(isVerisync, $"Lumoin.Veritas.Core must not reference {name.Name}; the round's encode seam is host-bound.");
-        }
-    }
-
-    /// <summary>A <see cref="PersistenceStore"/> decorator that throws on <see cref="Publish"/> to model a crash at the single commit point: staged writes are forwarded, the rename fails, and the generation is never committed.</summary>
-    private sealed class PublishCrashStore : PersistenceStore
-    {
-        /// <summary>The real store the surviving operations are forwarded to.</summary>
-        private readonly PersistenceStore inner;
-
-        /// <summary>Creates a decorator over <paramref name="inner"/>.</summary>
-        /// <param name="inner">The real store the surviving operations are forwarded to.</param>
-        public PublishCrashStore(PersistenceStore inner)
-        {
-            ArgumentNullException.ThrowIfNull(inner);
-
-            this.inner = inner;
-        }
-
-        /// <inheritdoc/>
-        public override void WriteStaged(string name, ReadOnlySpan<byte> content)
-        {
-            inner.WriteStaged(name, content);
-        }
-
-        /// <inheritdoc/>
-        public override void Publish(string stagedName, string finalName)
-        {
-            throw new IOException("Simulated crash at the commit point before the CURRENT rename.");
-        }
-
-        /// <inheritdoc/>
-        public override byte[]? Read(string name)
-        {
-            return inner.Read(name);
-        }
-
-        /// <inheritdoc/>
-        public override IReadOnlyList<string> List(string prefix)
-        {
-            return inner.List(prefix);
-        }
-
-        /// <inheritdoc/>
-        public override void Delete(string name)
-        {
-            inner.Delete(name);
         }
     }
 }
