@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
@@ -43,6 +44,23 @@ public static class SparqlResultsJsonReader
     /// <returns>The parsed result set.</returns>
     /// <exception cref="FormatException">The document is not well-formed SPARQL Results JSON.</exception>
     public static SparqlResultSet Read(ReadOnlyMemory<byte> bytes)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(bytes);
+            return ReadDocument(document);
+        }
+        catch(JsonException ex)
+        {
+            throw new FormatException($"Malformed SPARQL Results JSON: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>Reads a result set from a possibly-segmented in-memory JSON byte sequence, such as a pipe's buffer, with no contiguous copy.</summary>
+    /// <param name="bytes">The <c>.srj</c> document bytes, possibly spanning segments.</param>
+    /// <returns>The parsed result set.</returns>
+    /// <exception cref="FormatException">The document is not well-formed SPARQL Results JSON.</exception>
+    public static SparqlResultSet Read(ReadOnlySequence<byte> bytes)
     {
         try
         {

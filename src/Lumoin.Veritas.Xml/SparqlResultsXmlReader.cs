@@ -4,6 +4,7 @@ using System.IO;
 using System.Xml;
 using System.Xml.Linq;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
 using Lumoin.Veritas.Sparql.Results;
@@ -51,7 +52,7 @@ public static class SparqlResultsXmlReader
     /// <exception cref="FormatException">The document is not well-formed SPARQL Results XML.</exception>
     public static SparqlResultSet Read(ReadOnlyMemory<byte> bytes)
     {
-        using MemoryStream stream = new(bytes.ToArray(), writable: false);
+        using ReadOnlyMemoryStream stream = new(bytes);
 
         return Read(stream);
     }
