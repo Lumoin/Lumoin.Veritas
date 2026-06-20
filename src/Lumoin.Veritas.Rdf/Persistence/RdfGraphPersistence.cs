@@ -45,10 +45,10 @@ namespace Lumoin.Veritas.Rdf;
 /// synthetic and round-trip-test corpora this writer is intended for.
 /// </para>
 /// <para>
-/// <b>Encoding qualification.</b> All references to UTF-8 encoding
-/// inside this file are fully qualified as
-/// <c>System.Text.Encoding.UTF8</c> to avoid collision with
-/// <c>Lumoin.Veritas.Core.Encoding</c>, which is imported above for
+/// <b>Encoding.</b> UTF-8 text is written through the shared
+/// <see cref="Utf8BufferWriter"/> extensions over the pipe; byte-literal
+/// delimiters are copied verbatim. Both live in
+/// <c>Lumoin.Veritas.Core.Encoding</c>, imported above alongside
 /// <see cref="Utf8String"/>.
 /// </para>
 /// </remarks>
@@ -80,11 +80,11 @@ public static class RdfGraphPersistence
         await foreach((TermId src, IriId pred, TermId tgt) in source.Edges(cancellationToken).ConfigureAwait(false))
         {
             WriteTerm(writer, dictionary.Resolve(src));
-            WriteRaw(writer, Space);
+            writer.WriteUtf8Literal(Space);
             WriteTerm(writer, dictionary.Resolve(pred.Value));
-            WriteRaw(writer, Space);
+            writer.WriteUtf8Literal(Space);
             WriteTerm(writer, dictionary.Resolve(tgt));
-            WriteRaw(writer, EndTriple);
+            writer.WriteUtf8Literal(EndTriple);
             FlushResult flush = await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
             if(flush.IsCompleted || flush.IsCanceled)
             {
@@ -121,34 +121,34 @@ public static class RdfGraphPersistence
         {
             case NamedNode named:
             {
-                WriteRaw(writer, AngleOpen);
-                WriteUtf8(writer, named.Iri.ToString());
-                WriteRaw(writer, AngleClose);
+                writer.WriteUtf8Literal(AngleOpen);
+                writer.WriteUtf8(named.Iri.ToString());
+                writer.WriteUtf8Literal(AngleClose);
 
                 break;
             }
             case BlankNode blank:
             {
-                WriteRaw(writer, BlankPrefix);
-                WriteUtf8(writer, blank.Label.ToString());
+                writer.WriteUtf8Literal(BlankPrefix);
+                writer.WriteUtf8(blank.Label.ToString());
 
                 break;
             }
             case Literal literal:
             {
-                WriteRaw(writer, Quote);
+                writer.WriteUtf8Literal(Quote);
                 WriteEscapedLiteralValue(writer, literal.Value.ToString());
-                WriteRaw(writer, Quote);
+                writer.WriteUtf8Literal(Quote);
                 if(literal.Language is { } lang)
                 {
-                    WriteRaw(writer, AtSign);
-                    WriteUtf8(writer, lang.ToString());
+                    writer.WriteUtf8Literal(AtSign);
+                    writer.WriteUtf8(lang.ToString());
                 }
                 else
                 {
-                    WriteRaw(writer, DatatypePrefix);
-                    WriteUtf8(writer, literal.Datatype.Iri.ToString());
-                    WriteRaw(writer, AngleClose);
+                    writer.WriteUtf8Literal(DatatypePrefix);
+                    writer.WriteUtf8(literal.Datatype.Iri.ToString());
+                    writer.WriteUtf8Literal(AngleClose);
                 }
 
                 break;
@@ -194,46 +194,17 @@ public static class RdfGraphPersistence
             //Flush the clean run before the escape character.
             if(i > runStart)
             {
-                WriteUtf8Span(writer, value.AsSpan(runStart, i - runStart));
+                writer.WriteUtf8(value.AsSpan(runStart, i - runStart));
             }
-            WriteRaw(writer, escape);
+            writer.WriteUtf8Literal(escape);
             runStart = i + 1;
         }
 
         //Trailing clean run.
         if(runStart < value.Length)
         {
-            WriteUtf8Span(writer, value.AsSpan(runStart));
+            writer.WriteUtf8(value.AsSpan(runStart));
         }
     }
 
-    private static void WriteUtf8(PipeWriter writer, string value)
-    {
-        if(string.IsNullOrEmpty(value))
-        {
-            return;
-        }
-
-        WriteUtf8Span(writer, value.AsSpan());
-    }
-
-    private static void WriteUtf8Span(PipeWriter writer, ReadOnlySpan<char> chars)
-    {
-        if(chars.IsEmpty)
-        {
-            return;
-        }
-
-        int byteLength = System.Text.Encoding.UTF8.GetByteCount(chars);
-        Span<byte> destination = writer.GetSpan(byteLength);
-        int written = System.Text.Encoding.UTF8.GetBytes(chars, destination);
-        writer.Advance(written);
-    }
-
-    private static void WriteRaw(PipeWriter writer, ReadOnlySpan<byte> bytes)
-    {
-        Span<byte> destination = writer.GetSpan(bytes.Length);
-        bytes.CopyTo(destination);
-        writer.Advance(bytes.Length);
-    }
 }

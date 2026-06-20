@@ -5,6 +5,7 @@ using System.IO;
 using System.IO.Pipelines;
 using System.Threading;
 using System.Threading.Tasks;
+using Lumoin.Veritas.Core.Encoding;
 
 namespace Lumoin.Veritas.Core.Algebra;
 
@@ -32,11 +33,10 @@ namespace Lumoin.Veritas.Core.Algebra;
 /// graphs serialise at I/O speed without materialising in RAM.
 /// </para>
 /// <para>
-/// <b>Encoding qualification.</b> All references to UTF-8 encoding
-/// inside this file are fully qualified as
-/// <c>System.Text.Encoding.UTF8</c>. The unqualified name
-/// <c>Encoding</c> would collide with the project's
-/// <c>Lumoin.Veritas.Core.Encoding</c> namespace.
+/// UTF-8 text is written through the shared
+/// <see cref="Utf8BufferWriter"/> extensions over the pipe; the
+/// integer fast path <see cref="WriteInt32"/> formats ASCII digits
+/// directly via <see cref="Utf8Formatter"/>.
 /// </para>
 /// </remarks>
 public static class GraphPersistence
@@ -62,10 +62,10 @@ public static class GraphPersistence
 
         await foreach((TNode src, TNode tgt) in source.Edges(cancellationToken).ConfigureAwait(false))
         {
-            WriteUtf8(writer, formatNode(src));
-            WriteRaw(writer, Tab);
-            WriteUtf8(writer, formatNode(tgt));
-            WriteRaw(writer, Newline);
+            writer.WriteUtf8(formatNode(src));
+            writer.WriteUtf8Literal(Tab);
+            writer.WriteUtf8(formatNode(tgt));
+            writer.WriteUtf8Literal(Newline);
             FlushResult flush = await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
             if(flush.IsCompleted || flush.IsCanceled)
             {
@@ -111,12 +111,12 @@ public static class GraphPersistence
 
         await foreach((TNode src, TLabel lbl, TNode tgt) in source.Edges(cancellationToken).ConfigureAwait(false))
         {
-            WriteUtf8(writer, formatNode(src));
-            WriteRaw(writer, Tab);
-            WriteUtf8(writer, formatLabel(lbl));
-            WriteRaw(writer, Tab);
-            WriteUtf8(writer, formatNode(tgt));
-            WriteRaw(writer, Newline);
+            writer.WriteUtf8(formatNode(src));
+            writer.WriteUtf8Literal(Tab);
+            writer.WriteUtf8(formatLabel(lbl));
+            writer.WriteUtf8Literal(Tab);
+            writer.WriteUtf8(formatNode(tgt));
+            writer.WriteUtf8Literal(Newline);
             FlushResult flush = await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
             if(flush.IsCompleted || flush.IsCanceled)
             {
@@ -164,13 +164,13 @@ public static class GraphPersistence
         foreach(TNode node in nodes)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            WriteUtf8(writer, formatNode(node));
+            writer.WriteUtf8(formatNode(node));
             await foreach(TNode neighbour in source.Adjacency(node, cancellationToken).ConfigureAwait(false))
             {
-                WriteRaw(writer, Tab);
-                WriteUtf8(writer, formatNode(neighbour));
+                writer.WriteUtf8Literal(Tab);
+                writer.WriteUtf8(formatNode(neighbour));
             }
-            WriteRaw(writer, Newline);
+            writer.WriteUtf8Literal(Newline);
             FlushResult flush = await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
             if(flush.IsCompleted || flush.IsCanceled)
             {
@@ -194,32 +194,6 @@ public static class GraphPersistence
         ArgumentNullException.ThrowIfNull(stream);
         PipeWriter writer = PipeWriter.Create(stream, new StreamPipeWriterOptions(leaveOpen: true));
         return WriteAdjacencyListAsync(source, nodes, writer, formatNode, cancellationToken);
-    }
-
-    //WriteUtf8 — encodes a string into the pipe's owned buffer in one
-    //GetBytes call. No intermediate char[] or StringBuilder; the
-    //encoder writes directly into a span the pipe lent us. Encoding
-    //is fully qualified to avoid binding to Lumoin.Veritas.Core.Encoding.
-    private static void WriteUtf8(PipeWriter writer, string value)
-    {
-        if(string.IsNullOrEmpty(value))
-        {
-            return;
-        }
-
-        int byteLength = System.Text.Encoding.UTF8.GetByteCount(value);
-        Span<byte> destination = writer.GetSpan(byteLength);
-        int written = System.Text.Encoding.UTF8.GetBytes(value, destination);
-        writer.Advance(written);
-    }
-
-    //WriteRaw — copies pre-encoded UTF-8 bytes (a delimiter, usually)
-    //into the pipe's buffer.
-    private static void WriteRaw(PipeWriter writer, ReadOnlySpan<byte> bytes)
-    {
-        Span<byte> destination = writer.GetSpan(bytes.Length);
-        bytes.CopyTo(destination);
-        writer.Advance(bytes.Length);
     }
 
     //WriteInt32 — formats an int as ASCII digits directly into the
