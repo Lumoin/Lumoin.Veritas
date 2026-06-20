@@ -1,15 +1,11 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
-using System.Collections.Immutable;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
-using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.Execution;
-using Lumoin.Veritas.Core.Hypertrie.Editing;
-using Lumoin.Veritas.Core.Hypertrie.Storage;
 using Lumoin.Veritas.Core.Integrity;
 using Lumoin.Veritas.Core.Memory;
 using Lumoin.Veritas.Core.Persistence.Journal;
@@ -288,39 +284,6 @@ internal sealed class PersistenceDetectionMutationTests
         {
             Directory.Delete(directory, recursive: true);
         }
-    }
-
-    /// <summary>Appends a chain of <paramref name="count"/> non-mutating initial entries from the empty head, each pointing to the next, so the durable log holds a known number of intact records.</summary>
-    /// <param name="journal">The journal to append to.</param>
-    /// <param name="count">The number of records to append.</param>
-    /// <returns>The append task.</returns>
-    private static async Task AppendJournalChain(FileBackedJournal journal, int count)
-    {
-        NodeIdentifier previous = NodeIdentifier.Empty;
-        for(ulong i = 1; i <= (ulong)count; i++)
-        {
-            NodeIdentifier next = new(i);
-            await journal.AppendDelegate(MakeJournalEntry(previous, next), previous, CancellationToken.None).ConfigureAwait(false);
-            previous = next;
-        }
-    }
-
-    /// <summary>Builds a non-mutating initial journal entry from <paramref name="parent"/> to <paramref name="child"/>; the journal overwrites the placeholder sequence and timestamp on append.</summary>
-    /// <param name="parent">The parent identifier.</param>
-    /// <param name="child">The child identifier.</param>
-    /// <returns>The entry.</returns>
-    private static JournalEntry MakeJournalEntry(NodeIdentifier parent, NodeIdentifier child)
-    {
-        return new JournalEntry(
-            ParentId: parent,
-            ChildId: child,
-            EntryKind: EditSessionEntryKind.Initial,
-            SessionId: null,
-            EditCommitment: null,
-            Additions: ImmutableArray<EncodedTriple>.Empty,
-            Removals: ImmutableArray<EncodedTriple>.Empty,
-            Timestamp: default,
-            SequenceNumber: 0);
     }
 
     /// <summary>Serializes a one-entry generation manifest under <paramref name="checksum"/>, optionally tampers a generation byte covered by the self-checksum, and returns whether the self-verifying read accepts it. Under the real algorithm a tampered byte fails the self-checksum and the read refuses it; under the degenerate zero-checksum the tampered image verifies (zeros equal zeros), so the read accepts it — the mutation.</summary>

@@ -2,7 +2,6 @@ using System;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Generic;
-using System.Collections.Immutable;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -10,8 +9,6 @@ using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.Diagnostics;
-using Lumoin.Veritas.Core.Hypertrie.Editing;
-using Lumoin.Veritas.Core.Hypertrie.Storage;
 using Lumoin.Veritas.Core.Integrity;
 using Lumoin.Veritas.Core.Memory;
 using Lumoin.Veritas.Core.Persistence;
@@ -1000,7 +997,7 @@ internal sealed class PersistenceCombinationMatrixTests
             //Build a durable record chain, then close the handle before corrupting the file on disk.
             using(FileBackedJournal journal = new(path, ChecksumAlgorithm.XxHash3, clock, bytePool))
             {
-                await AppendChain(journal, JournalRecordCount).ConfigureAwait(false);
+                await AppendJournalChain(journal, JournalRecordCount).ConfigureAwait(false);
             }
 
             byte[] intact = await File.ReadAllBytesAsync(path, CancellationToken.None).ConfigureAwait(false);
@@ -1017,39 +1014,6 @@ internal sealed class PersistenceCombinationMatrixTests
         {
             Directory.Delete(directory, recursive: true);
         }
-    }
-
-    /// <summary>Appends a chain of <paramref name="count"/> non-mutating initial entries from the empty head, each pointing to the next, so the durable log holds a known number of intact records.</summary>
-    /// <param name="journal">The journal to append to.</param>
-    /// <param name="count">The number of records to append.</param>
-    /// <returns>The append task.</returns>
-    private static async Task AppendChain(FileBackedJournal journal, int count)
-    {
-        NodeIdentifier previous = NodeIdentifier.Empty;
-        for(ulong i = 1; i <= (ulong)count; i++)
-        {
-            NodeIdentifier next = new(i);
-            await journal.AppendDelegate(MakeEntry(previous, next), previous, CancellationToken.None).ConfigureAwait(false);
-            previous = next;
-        }
-    }
-
-    /// <summary>Builds a non-mutating initial journal entry from <paramref name="parent"/> to <paramref name="child"/>; the journal overwrites the placeholder sequence and timestamp on append.</summary>
-    /// <param name="parent">The parent identifier.</param>
-    /// <param name="child">The child identifier.</param>
-    /// <returns>The entry.</returns>
-    private static JournalEntry MakeEntry(NodeIdentifier parent, NodeIdentifier child)
-    {
-        return new JournalEntry(
-            ParentId: parent,
-            ChildId: child,
-            EntryKind: EditSessionEntryKind.Initial,
-            SessionId: null,
-            EditCommitment: null,
-            Additions: ImmutableArray<EncodedTriple>.Empty,
-            Removals: ImmutableArray<EncodedTriple>.Empty,
-            Timestamp: default,
-            SequenceNumber: 0);
     }
 
     /// <summary>Injects the cell's tail damage into the durable log and asserts replay recovers the intact prefix and names the operation-range loss: a flipped byte in the last record fails its checksum, and a final record cut short of its framed length, both drop the last operation; an appended garbage tail keeps every intact record and discards only the appended bytes. Each kind injects a distinct on-disk damage shape and asserts the file-state outcome it produces (the recovered length, the last intact sequence, and an exact or positive discarded byte count); no two kinds coincide in both the detection that fires and the outcome it yields, so all three are driven.</summary>
