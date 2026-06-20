@@ -307,7 +307,7 @@ public sealed class TurtleParser
             return RecoverStatement(ParseFrameKind.Statement, startSpan, WellKnownDiagnostics.Turtle.ExpectedDirectiveIri, Current.Span, "A prefix declaration must declare an IRI for its namespace.", "prefixID");
         }
 
-        IriTerm iri = NewNode(id => new IriTerm(id, Current.Span, Current.Value));
+        IriTerm iri = Register(new IriTerm(NextNodeId(), Current.Span, Current.Value));
         SourceSpan endSpan = Current.Span;
         Advance();
 
@@ -324,7 +324,7 @@ public sealed class TurtleParser
 
         SourceSpan totalSpan = CombineSpans(startSpan, endSpan);
 
-        return NewNode(id => new PrefixDeclaration(id, totalSpan, prefixText, iri));
+        return Register(new PrefixDeclaration(NextNodeId(), totalSpan, prefixText, iri));
     }
 
     private Statement ParseBaseDeclaration()
@@ -338,7 +338,7 @@ public sealed class TurtleParser
             return RecoverStatement(ParseFrameKind.Statement, startSpan, WellKnownDiagnostics.Turtle.ExpectedDirectiveIri, Current.Span, "A base declaration must declare an IRI.", "base");
         }
 
-        IriTerm iri = NewNode(id => new IriTerm(id, Current.Span, Current.Value));
+        IriTerm iri = Register(new IriTerm(NextNodeId(), Current.Span, Current.Value));
         SourceSpan endSpan = Current.Span;
         Advance();
 
@@ -355,7 +355,7 @@ public sealed class TurtleParser
 
         SourceSpan totalSpan = CombineSpans(startSpan, endSpan);
 
-        return NewNode(id => new BaseDeclaration(id, totalSpan, iri));
+        return Register(new BaseDeclaration(NextNodeId(), totalSpan, iri));
     }
 
     private Statement ParseVersionDeclaration()
@@ -391,7 +391,7 @@ public sealed class TurtleParser
 
         SourceSpan totalSpan = CombineSpans(startSpan, endSpan);
 
-        return NewNode(id => new VersionDeclaration(id, totalSpan, versionValue));
+        return Register(new VersionDeclaration(NextNodeId(), totalSpan, versionValue));
     }
 
     private bool IsGraphLabelLookahead()
@@ -517,7 +517,7 @@ public sealed class TurtleParser
         {
             if(reportedStray)
             {
-                return StepResult.Done(NewNode(id => new ErrorStatement(id, frame.StartSpan, Utf8String.FromString("statement"), [], ImmutableArray<TurtleToken>.Empty)));
+                return StepResult.Done(Register(new ErrorStatement(NextNodeId(), frame.StartSpan, Utf8String.FromString("statement"), [], ImmutableArray<TurtleToken>.Empty)));
             }
 
             //An empty document with the frame already pushed cannot occur (the driver only pushes the
@@ -609,7 +609,7 @@ public sealed class TurtleParser
                     Advance();
                     SourceSpan totalSpan = CombineSpans(frame.StartSpan, endSpan);
 
-                    return StepResult.Done(NewNode(id => new TripleStatement(id, totalSpan, subject, ImmutableArray<PredicateObject>.Empty)));
+                    return StepResult.Done(Register(new TripleStatement(NextNodeId(), totalSpan, subject, ImmutableArray<PredicateObject>.Empty)));
                 }
 
                 frame.Stage = 2;
@@ -629,7 +629,7 @@ public sealed class TurtleParser
                     SourceSpan braceEnd = predicates[^1].Span;
                     SourceSpan braceTotal = CombineSpans(frame.StartSpan, braceEnd);
 
-                    return StepResult.Done(NewNode(id => new TripleStatement(id, braceTotal, subject, predicates)));
+                    return StepResult.Done(Register(new TripleStatement(NextNodeId(), braceTotal, subject, predicates)));
                 }
 
                 //A missing terminator does not throw away the parsed triple: the diagnostic is recorded,
@@ -647,14 +647,14 @@ public sealed class TurtleParser
 
                     SourceSpan recoveredTotal = CombineSpans(frame.StartSpan, recoveredEnd);
 
-                    return StepResult.Done(NewNode(id => new TripleStatement(id, recoveredTotal, subject, predicates)));
+                    return StepResult.Done(Register(new TripleStatement(NextNodeId(), recoveredTotal, subject, predicates)));
                 }
 
                 SourceSpan periodSpan = Current.Span;
                 Advance();
                 SourceSpan total = CombineSpans(frame.StartSpan, periodSpan);
 
-                return StepResult.Done(NewNode(id => new TripleStatement(id, total, subject, predicates)));
+                return StepResult.Done(Register(new TripleStatement(NextNodeId(), total, subject, predicates)));
             }
 
             case 3:
@@ -740,7 +740,7 @@ public sealed class TurtleParser
             bool hasKeyword = frame.HasKeyword;
             ImmutableArray<TripleStatement> triples = ToImmutable(frame.Triples!);
 
-            return StepResult.Done(NewNode(id => new GraphBlockStatement(id, totalSpan, label, hasKeyword, triples)));
+            return StepResult.Done(Register(new GraphBlockStatement(NextNodeId(), totalSpan, label, hasKeyword, triples)));
         }
 
         //An unclosed graph block at end of input is finalised with the triples gathered so far, plus a
@@ -754,7 +754,7 @@ public sealed class TurtleParser
             bool eofHasKeyword = frame.HasKeyword;
             ImmutableArray<TripleStatement> eofTriples = ToImmutable(frame.Triples!);
 
-            return StepResult.Done(NewNode(id => new GraphBlockStatement(id, eofTotal, eofLabel, eofHasKeyword, eofTriples)));
+            return StepResult.Done(Register(new GraphBlockStatement(NextNodeId(), eofTotal, eofLabel, eofHasKeyword, eofTriples)));
         }
 
         return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.SubjectStatement, StartSpan = Current.Span });
@@ -877,7 +877,7 @@ public sealed class TurtleParser
             SourceSpan totalSpan = CombineSpans(frame.StartSpan, endSpan);
             ImmutableArray<Term> items = ToImmutable(frame.TermItems!);
 
-            Term built = NewNode(id => new CollectionTerm(id, totalSpan, items));
+            Term built = Register(new CollectionTerm(NextNodeId(), totalSpan, items));
 
             return StepResult.Done(built);
         }
@@ -892,7 +892,7 @@ public sealed class TurtleParser
             SourceSpan eofTotal = CombineSpans(frame.StartSpan, Current.Span);
             ImmutableArray<Term> eofItems = ToImmutable(frame.TermItems!);
 
-            return StepResult.Done(NewNode(id => new CollectionTerm(id, eofTotal, eofItems)));
+            return StepResult.Done(Register(new CollectionTerm(NextNodeId(), eofTotal, eofItems)));
         }
 
         return StepResult.Push(new ParseFrame { Kind = ParseFrameKind.Term, StartSpan = Current.Span });
@@ -961,7 +961,7 @@ public sealed class TurtleParser
         SourceSpan totalSpan = CombineSpans(frame.StartSpan, endSpan);
         ImmutableArray<PredicateObject> predicates = ToImmutable(frame.PredicateObjects!);
 
-        Term built = NewNode(id => new BlankNodePropertyListTerm(id, totalSpan, predicates));
+        Term built = Register(new BlankNodePropertyListTerm(NextNodeId(), totalSpan, predicates));
 
         return StepResult.Done(built);
     }
@@ -1004,7 +1004,7 @@ public sealed class TurtleParser
                 Term subject = frame.Subject!;
                 Term predicate = frame.Predicate!;
                 Term obj = frame.Object!;
-                Term built = NewNode(id => new TripleTermTerm(id, totalSpan, subject, predicate, obj));
+                Term built = Register(new TripleTermTerm(NextNodeId(), totalSpan, subject, predicate, obj));
 
                 return StepResult.Done(built);
             }
@@ -1065,7 +1065,7 @@ public sealed class TurtleParser
                 Term predicate = frame.Predicate!;
                 Term obj = frame.Object!;
                 Term? reifier = frame.Reifier;
-                Term built = NewNode(id => new ReifiedTripleTerm(id, totalSpan, subject, predicate, obj, reifier));
+                Term built = Register(new ReifiedTripleTerm(NextNodeId(), totalSpan, subject, predicate, obj, reifier));
 
                 return StepResult.Done(built);
             }
@@ -1137,7 +1137,7 @@ public sealed class TurtleParser
                 SourceSpan endSpan = objects[^1].Span;
                 SourceSpan totalSpan = CombineSpans(frame.StartSpan, endSpan);
                 Term predicate = frame.Predicate!;
-                PredicateObject built = NewNode(id => new PredicateObject(id, totalSpan, predicate, objects));
+                PredicateObject built = Register(new PredicateObject(NextNodeId(), totalSpan, predicate, objects));
 
                 return StepResult.Done(built);
             }
@@ -1228,7 +1228,7 @@ public sealed class TurtleParser
 
                 SourceSpan endSpan = annotations.Length > 0 ? annotations[^1].Span : obj.Span;
                 SourceSpan totalSpan = CombineSpans(obj.Span, endSpan);
-                AnnotatedObject built = NewNode(id => new AnnotatedObject(id, totalSpan, obj, annotations));
+                AnnotatedObject built = Register(new AnnotatedObject(NextNodeId(), totalSpan, obj, annotations));
 
                 return StepResult.Done(built);
             }
@@ -1297,7 +1297,7 @@ public sealed class TurtleParser
         SourceSpan totalSpan = CombineSpans(frame.StartSpan, endSpan);
         ImmutableArray<PredicateObject> predicates = ToImmutable(frame.PredicateObjects!);
 
-        Annotation built = NewNode(id => new AnnotationBlock(id, totalSpan, predicates));
+        Annotation built = Register(new AnnotationBlock(NextNodeId(), totalSpan, predicates));
 
         return StepResult.Done(built);
     }
@@ -1317,7 +1317,7 @@ public sealed class TurtleParser
 
         SourceSpan endSpan = identifier?.Span ?? frame.StartSpan;
         SourceSpan totalSpan = CombineSpans(frame.StartSpan, endSpan);
-        Annotation built = NewNode(id => new ReifierAnnotation(id, totalSpan, identifier));
+        Annotation built = Register(new ReifierAnnotation(NextNodeId(), totalSpan, identifier));
 
         return StepResult.Done(built);
     }
@@ -1427,7 +1427,7 @@ public sealed class TurtleParser
         Utf8String rdfType = Pool.Intern("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"u8);
         Advance();
 
-        return NewNode(id => new IriTerm(id, span, rdfType));
+        return Register(new IriTerm(NextNodeId(), span, rdfType));
     }
 
     private IriTerm ConsumeIri()
@@ -1436,7 +1436,7 @@ public sealed class TurtleParser
         Utf8String value = Current.Value;
         Advance();
 
-        return NewNode(id => new IriTerm(id, span, value));
+        return Register(new IriTerm(NextNodeId(), span, value));
     }
 
     private PrefixedNameTerm ConsumePrefixedName()
@@ -1455,7 +1455,7 @@ public sealed class TurtleParser
         Utf8String local = Pool.Intern(bytes[(colonIndex + 1)..]);
         Advance();
 
-        return NewNode(id => new PrefixedNameTerm(id, span, prefix, local));
+        return Register(new PrefixedNameTerm(NextNodeId(), span, prefix, local));
     }
 
     private BlankNodeTerm ConsumeBlankNodeLabel()
@@ -1464,7 +1464,7 @@ public sealed class TurtleParser
         Utf8String label = Current.Value;
         Advance();
 
-        return NewNode(id => new BlankNodeTerm(id, span, label));
+        return Register(new BlankNodeTerm(NextNodeId(), span, label));
     }
 
     private BlankNodeTerm ConsumeAnonymousBlankNode()
@@ -1474,7 +1474,7 @@ public sealed class TurtleParser
 
         Utf8String label = AllocateSyntheticBlankNodeLabel(span);
 
-        return NewNode(id => new BlankNodeTerm(id, span, label));
+        return Register(new BlankNodeTerm(NextNodeId(), span, label));
     }
 
     private Term ParseStringLiteral()
@@ -1573,7 +1573,7 @@ public sealed class TurtleParser
 
         SourceSpan totalSpan = CombineSpans(startSpan, endSpan);
 
-        return NewNode(id => new LiteralTerm(id, totalSpan, value, datatype, language, direction));
+        return Register(new LiteralTerm(NextNodeId(), totalSpan, value, datatype, language, direction));
     }
 
     private static TextDirection? ParseDirection(ReadOnlySpan<byte> directionBytes)
@@ -1605,9 +1605,9 @@ public sealed class TurtleParser
             _ => throw new TurtleParseException("Numeric kind out of range.", span)
         };
 
-        Term datatype = NewNode(id => new IriTerm(id, span, datatypeIri));
+        Term datatype = Register(new IriTerm(NextNodeId(), span, datatypeIri));
 
-        return NewNode(id => new LiteralTerm(id, span, text, datatype, language: null, direction: null));
+        return Register(new LiteralTerm(NextNodeId(), span, text, datatype, language: null, direction: null));
     }
 
     private LiteralTerm ParseBooleanLiteral()
@@ -1617,9 +1617,9 @@ public sealed class TurtleParser
         Advance();
 
         Utf8String datatypeIri = Pool.Intern("http://www.w3.org/2001/XMLSchema#boolean"u8);
-        Term datatype = NewNode(id => new IriTerm(id, span, datatypeIri));
+        Term datatype = Register(new IriTerm(NextNodeId(), span, datatypeIri));
 
-        return NewNode(id => new LiteralTerm(id, span, text, datatype, language: null, direction: null));
+        return Register(new LiteralTerm(NextNodeId(), span, text, datatype, language: null, direction: null));
     }
 
     private Utf8String AllocateSyntheticBlankNodeLabel(SourceSpan span)
@@ -1629,12 +1629,21 @@ public sealed class TurtleParser
         return blankNodes(in request);
     }
 
-    private TNode NewNode<TNode>(Func<int, TNode> factory)
+    /// <summary>Allocates and returns the next AST node id, unique within the parse.</summary>
+    /// <returns>A fresh node id.</returns>
+    private int NextNodeId()
+    {
+        return nextNodeId++;
+    }
+
+    /// <summary>Records a freshly-constructed AST node under its own id and returns it, so a construction site reads <c>Register(new XxxTerm(NextNodeId(), ...))</c> with no per-node closure.</summary>
+    /// <typeparam name="TNode">The node type.</typeparam>
+    /// <param name="node">The node, constructed with an id drawn from <see cref="NextNodeId"/>.</param>
+    /// <returns>The same node, for chaining at the construction site.</returns>
+    private TNode Register<TNode>(TNode node)
         where TNode: TurtleAstNode
     {
-        int id = nextNodeId++;
-        TNode node = factory(id);
-        Nodes[id] = node;
+        Nodes[node.NodeId] = node;
 
         return node;
     }
@@ -1762,7 +1771,7 @@ public sealed class TurtleParser
         ImmutableArray<Utf8String> codes = ReportRecoverable(code, errorSpan, message);
         ImmutableArray<TurtleToken> skipped = ResyncTo(frameKind, errorSpan, out SourceSpan endSpan);
 
-        return NewNode(id => new ErrorTerm(id, CombineSpans(startSpan, endSpan), Utf8String.FromString(expectedProduction), codes, skipped));
+        return Register(new ErrorTerm(NextNodeId(), CombineSpans(startSpan, endSpan), Utf8String.FromString(expectedProduction), codes, skipped));
     }
 
     //As RecoverTerm, for a broken statement; it also consumes a trailing '.' terminator (but leaves a
@@ -1778,7 +1787,7 @@ public sealed class TurtleParser
             Advance();
         }
 
-        return NewNode(id => new ErrorStatement(id, CombineSpans(startSpan, endSpan), Utf8String.FromString(expectedProduction), codes, skipped));
+        return Register(new ErrorStatement(NextNodeId(), CombineSpans(startSpan, endSpan), Utf8String.FromString(expectedProduction), codes, skipped));
     }
 
     //As RecoverTerm, for a broken annotation; it consumes a trailing '|}' close so the annotated-object
@@ -1794,7 +1803,7 @@ public sealed class TurtleParser
             Advance();
         }
 
-        return NewNode(id => new ErrorAnnotation(id, CombineSpans(startSpan, endSpan), Utf8String.FromString(expectedProduction), codes, skipped));
+        return Register(new ErrorAnnotation(NextNodeId(), CombineSpans(startSpan, endSpan), Utf8String.FromString(expectedProduction), codes, skipped));
     }
 
     /// <summary>
