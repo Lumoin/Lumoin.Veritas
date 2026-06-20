@@ -1,11 +1,21 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
+using Lumoin.Veritas.Core.Hypertrie.Editing;
+using Lumoin.Veritas.Core.Hypertrie.Storage;
 using Lumoin.Veritas.Core.Integrity;
 using Lumoin.Veritas.Core.Memory;
+using Lumoin.Veritas.Core.Persistence.Journal;
+using Lumoin.Veritas.Core.Persistence.Manifest;
 using Lumoin.Veritas.Core.Persistence.Segment;
 using Lumoin.Veritas.Core.Persistence.Sketch;
+using Microsoft.Extensions.Time.Testing;
 using static Lumoin.Veritas.Tests.Integrity.PersistenceStagingFixture;
 
 namespace Lumoin.Veritas.Tests.Integrity;
@@ -46,6 +56,18 @@ internal sealed class PersistenceDetectionMutationTests
     /// <summary>The middle block every exemplar corrupts, so the damaged range is a non-edge interval.</summary>
     private const int CorruptBlock = 1;
 
+    /// <summary>The number of records the journal exemplar appends before tampering one.</summary>
+    private const int JournalRecordCount = 3;
+
+    /// <summary>The file byte offset of the first journal record's parent-identifier field — past the four-byte length prefix and the version, sequence, and kind payload fields. The parent id carries no replay validation, so a flipped byte there is caught only by the record checksum (and decodes cleanly when the checksum is neutered, rather than tripping the sequence or kind validation).</summary>
+    private const int JournalFirstRecordParentByteOffset = 4 + 1 + 8 + 1;
+
+    /// <summary>The generation the manifest exemplar stamps; a small positive value so a tampered generation byte stays positive and parsing does not reject it before the self-checksum is checked.</summary>
+    private const long ManifestGeneration = 7;
+
+    /// <summary>The manifest byte the exemplar tampers — a generation byte covered by the self-checksum and past the algorithm-id, so a flip is caught only by the self-checksum.</summary>
+    private const int ManifestCorruptionOffset = 12;
+
     /// <summary>A test-only checksum-algorithm id this test's resolver maps to the degenerate algorithm — distinct from the foreign-epoch marker (99), which no resolver maps.</summary>
     private const byte DegenerateChecksumAlgorithmId = 200;
 
@@ -63,6 +85,12 @@ internal sealed class PersistenceDetectionMutationTests
 
         /// <summary>A columnar sidecar column blob.</summary>
         SidecarBlob,
+
+        /// <summary>A durable journal record's checksum.</summary>
+        JournalRecord,
+
+        /// <summary>A generation manifest's self-checksum.</summary>
+        ManifestSelf,
     }
 
     /// <summary>Writes an all-zero digest, ignoring the input — the degenerate compute that neuters detection.</summary>
@@ -91,28 +119,50 @@ internal sealed class PersistenceDetectionMutationTests
         }
     }
 
-    /// <summary>Proves the seam's at-rest detection is non-vacuous: under the real algorithm a clean image verifies clean and a corrupt image is detected; under the degenerate zero-checksum a clean image still verifies clean and the same corruption verifies clean — so the matrix's corresponding positive cell is not passing on a no-op verify.</summary>
+    /// <summary>Proves the seam's at-rest detection is non-vacuous: under the real algorithm a clean exemplar verifies clean and a corrupt one is detected; under the degenerate zero-checksum a clean exemplar still verifies clean and the same corruption verifies clean — so the matrix's corresponding positive cell is not passing on a no-op verify.</summary>
     /// <param name="seamId">The seam to prove.</param>
+    /// <returns>The proof task.</returns>
     [TestMethod]
     [DynamicData(nameof(SeamRows))]
-    public void MutationFlipsDetectedCorruptionToClean(string seamId)
+    public async Task MutationFlipsDetectedCorruptionToClean(string seamId)
     {
         MutationSeam seam = Enum.Parse<MutationSeam>(seamId);
         using VeritasMemoryPool<byte> pool = new();
 
-        Assert.IsTrue(VerifyIsClean(seam, ChecksumAlgorithm.XxHash3, corrupt: false, pool), "A clean image must verify clean under the real algorithm.");
-        Assert.IsFalse(VerifyIsClean(seam, ChecksumAlgorithm.XxHash3, corrupt: true, pool), "The real algorithm must detect the seam's corruption.");
-        Assert.IsTrue(VerifyIsClean(seam, Degenerate, corrupt: false, pool), "A clean degenerate image must verify clean, so the degenerate read path is exercised rather than refused.");
-        Assert.IsTrue(VerifyIsClean(seam, Degenerate, corrupt: true, pool), "The zero-checksum mutation must flip the detected corruption to clean, proving the positive matrix cells are non-vacuous.");
+        Assert.IsTrue(await VerifyIsClean(seam, ChecksumAlgorithm.XxHash3, corrupt: false, pool).ConfigureAwait(false), "A clean exemplar must verify clean under the real algorithm.");
+        Assert.IsFalse(await VerifyIsClean(seam, ChecksumAlgorithm.XxHash3, corrupt: true, pool).ConfigureAwait(false), "The real algorithm must detect the seam's corruption.");
+        Assert.IsTrue(await VerifyIsClean(seam, Degenerate, corrupt: false, pool).ConfigureAwait(false), "A clean degenerate exemplar must verify clean, so the degenerate read path is exercised rather than refused.");
+        Assert.IsTrue(await VerifyIsClean(seam, Degenerate, corrupt: true, pool).ConfigureAwait(false), "The zero-checksum mutation must flip the detected corruption to clean, proving the positive matrix cells are non-vacuous.");
     }
 
-    /// <summary>Stages the seam's artifact under <paramref name="checksum"/>, optionally applies the seam's block corruption, and returns whether a decode-free verify round — resolving both the real and degenerate ids — reports it clean.</summary>
-    /// <param name="seam">The seam.</param>
+    /// <summary>Dispatches the seam to its detector — the block seams run a decode-free verify round, the journal seam reopens a durable log, and the manifest seam re-reads a self-checksummed image, each resolving both the real and degenerate ids — and returns whether the detector reports the exemplar clean (no corruption surfaced).</summary>
+    /// <param name="seam">The seam to verify.</param>
+    /// <param name="checksum">The checksum algorithm the exemplar is written under.</param>
+    /// <param name="corrupt">Whether to corrupt the exemplar before verifying.</param>
+    /// <param name="pool">The pool the exemplar is rented from.</param>
+    /// <returns>Whether the detector reports the exemplar clean.</returns>
+    private static async Task<bool> VerifyIsClean(MutationSeam seam, ChecksumAlgorithm checksum, bool corrupt, MemoryPool<byte> pool)
+    {
+        if(seam == MutationSeam.JournalRecord)
+        {
+            return await VerifyJournalIsClean(checksum, corrupt, pool).ConfigureAwait(false);
+        }
+
+        if(seam == MutationSeam.ManifestSelf)
+        {
+            return VerifyManifestIsClean(checksum, corrupt, pool);
+        }
+
+        return VerifyBlockSeamIsClean(seam, checksum, corrupt, pool);
+    }
+
+    /// <summary>Stages the block seam's artifact under <paramref name="checksum"/>, optionally applies the seam's block corruption, and returns whether a decode-free verify round — resolving both the real and degenerate ids — reports it clean.</summary>
+    /// <param name="seam">The block seam.</param>
     /// <param name="checksum">The checksum algorithm the image is written under.</param>
     /// <param name="corrupt">Whether to corrupt the seam's block before verifying.</param>
     /// <param name="pool">The pool the image is rented from.</param>
     /// <returns>Whether the verify round reports the image clean.</returns>
-    private static bool VerifyIsClean(MutationSeam seam, ChecksumAlgorithm checksum, bool corrupt, MemoryPool<byte> pool)
+    private static bool VerifyBlockSeamIsClean(MutationSeam seam, ChecksumAlgorithm checksum, bool corrupt, MemoryPool<byte> pool)
     {
         using ArtifactImage image = BuildImage(seam, checksum, pool);
         if(corrupt)
@@ -125,7 +175,7 @@ internal sealed class PersistenceDetectionMutationTests
             MutationSeam.SystemOfRecordBlock => ItemSegment.RunVerifyRound(image.Bytes, DegenerateResolver).IsClean,
             MutationSeam.SketchBlock => SketchSegment.RunVerifyRound(image.Bytes, DegenerateResolver).IsClean,
             MutationSeam.SidecarBlob => ColumnarTripleIndex.RunVerifyRound(image.Bytes, DegenerateResolver).ToArtifactReport().IsClean,
-            _ => throw new InvalidOperationException($"Seam {seam} has no verify round."),
+            _ => throw new InvalidOperationException($"Seam {seam} is not a block seam."),
         };
     }
 
@@ -187,6 +237,108 @@ internal sealed class PersistenceDetectionMutationTests
         for(int i = (int)blob.ByteOffset; i < (int)(blob.ByteOffset + blob.ByteLength); i++)
         {
             bytes[i] = (byte)~bytes[i];
+        }
+    }
+
+    /// <summary>Builds a durable journal log under <paramref name="checksum"/>, optionally tampers the first record's parent-id byte, reopens under the same algorithm, and returns whether replay found the log intact (no recovery report). Under the real algorithm a tampered record fails its checksum so replay reports a recovered tail; under the degenerate zero-checksum the tampered record verifies (zeros equal zeros) and decodes cleanly, so replay finds the log intact — the mutation.</summary>
+    /// <param name="checksum">The record checksum algorithm.</param>
+    /// <param name="corrupt">Whether to tamper a record before reopening.</param>
+    /// <param name="pool">The pool the journal rents from.</param>
+    /// <returns>Whether the reopened journal reports no recovery.</returns>
+    private static async Task<bool> VerifyJournalIsClean(ChecksumAlgorithm checksum, bool corrupt, MemoryPool<byte> pool)
+    {
+        string directory = Directory.CreateTempSubdirectory("veritas-mutation-journal-").FullName;
+        try
+        {
+            string path = Path.Combine(directory, "journal.log");
+            FakeTimeProvider clock = new();
+            using(FileBackedJournal journal = new(path, checksum, clock, pool))
+            {
+                await AppendJournalChain(journal, JournalRecordCount).ConfigureAwait(false);
+            }
+
+            if(corrupt)
+            {
+                byte[] bytes = await File.ReadAllBytesAsync(path, CancellationToken.None).ConfigureAwait(false);
+                bytes[JournalFirstRecordParentByteOffset] ^= 0xFF;
+                await File.WriteAllBytesAsync(path, bytes, CancellationToken.None).ConfigureAwait(false);
+            }
+
+            using FileBackedJournal reopened = new(path, checksum, clock, pool);
+
+            return reopened.RecoveryReport is null;
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>Appends a chain of <paramref name="count"/> non-mutating initial entries from the empty head, each pointing to the next, so the durable log holds a known number of intact records.</summary>
+    /// <param name="journal">The journal to append to.</param>
+    /// <param name="count">The number of records to append.</param>
+    /// <returns>The append task.</returns>
+    private static async Task AppendJournalChain(FileBackedJournal journal, int count)
+    {
+        NodeIdentifier previous = NodeIdentifier.Empty;
+        for(ulong i = 1; i <= (ulong)count; i++)
+        {
+            NodeIdentifier next = new(i);
+            await journal.AppendDelegate(MakeJournalEntry(previous, next), previous, CancellationToken.None).ConfigureAwait(false);
+            previous = next;
+        }
+    }
+
+    /// <summary>Builds a non-mutating initial journal entry from <paramref name="parent"/> to <paramref name="child"/>; the journal overwrites the placeholder sequence and timestamp on append.</summary>
+    /// <param name="parent">The parent identifier.</param>
+    /// <param name="child">The child identifier.</param>
+    /// <returns>The entry.</returns>
+    private static JournalEntry MakeJournalEntry(NodeIdentifier parent, NodeIdentifier child)
+    {
+        return new JournalEntry(
+            ParentId: parent,
+            ChildId: child,
+            EntryKind: EditSessionEntryKind.Initial,
+            SessionId: null,
+            EditCommitment: null,
+            Additions: ImmutableArray<EncodedTriple>.Empty,
+            Removals: ImmutableArray<EncodedTriple>.Empty,
+            Timestamp: default,
+            SequenceNumber: 0);
+    }
+
+    /// <summary>Serializes a one-entry generation manifest under <paramref name="checksum"/>, optionally tampers a generation byte covered by the self-checksum, and returns whether the self-verifying read accepts it. Under the real algorithm a tampered byte fails the self-checksum and the read refuses it; under the degenerate zero-checksum the tampered image verifies (zeros equal zeros), so the read accepts it — the mutation.</summary>
+    /// <param name="checksum">The manifest self-checksum algorithm.</param>
+    /// <param name="corrupt">Whether to tamper a generation byte before reading.</param>
+    /// <param name="pool">The pool the manifest buffer and digest rent from.</param>
+    /// <returns>Whether the self-verifying read accepts the manifest.</returns>
+    private static bool VerifyManifestIsClean(ChecksumAlgorithm checksum, bool corrupt, MemoryPool<byte> pool)
+    {
+        int digestWidth = checksum.ByteWidth;
+        using IMemoryOwner<byte> digestOwner = pool.Rent(digestWidth);
+        digestOwner.Memory.Span[..digestWidth].Clear();
+        ManifestEntry[] entries = [new(ManifestFileRole.DataSegment, "segment.dat", 0, 100, digestOwner.Memory[..digestWidth])];
+        Manifest manifest = new(ManifestGeneration, ManifestGeneration * 11, ManifestGeneration * 13, entries);
+
+        int size = manifest.ComputeSerializedSize(checksum);
+        using IMemoryOwner<byte> owner = pool.Rent(size);
+        Span<byte> span = owner.Memory.Span[..size];
+        manifest.WriteTo(span, checksum);
+        byte[] bytes = span.ToArray();
+        if(corrupt)
+        {
+            bytes[ManifestCorruptionOffset] ^= 0xFF;
+        }
+
+        try
+        {
+            _ = Manifest.ReadFrom(bytes, DegenerateResolver);
+
+            return true;
+        }
+        catch(InvalidDataException)
+        {
+            return false;
         }
     }
 }
