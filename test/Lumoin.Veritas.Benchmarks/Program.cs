@@ -324,6 +324,16 @@ internal static class Program
             return;
         }
 
+        //Turtle ingest allocation/throughput soak: parses a representative generated corpus a fixed
+        //number of times and reports exact bytes/parse (GC.GetTotalAllocatedBytes) plus time — the
+        //anchor measurement for the parser performance pass.
+        if(args.Length > 0 && args[0] == "--profile-turtle-read")
+        {
+            TurtleReadSoak.RunTurtleReadSoak();
+
+            return;
+        }
+
         BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
     }
 }

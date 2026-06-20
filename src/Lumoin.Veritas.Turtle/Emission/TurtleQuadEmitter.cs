@@ -341,15 +341,29 @@ public sealed class TurtleQuadEmitter
         return ResolveTerm(term, graph: null, out _);
     }
 
+    //The shared empty auxiliary list returned for a leaf term: a leaf produces no auxiliary quads, and
+    //the callers only iterate the list, never mutate it, so one immutable instance is safe to share.
+    private static readonly List<EmittedQuad> NoAuxiliary = [];
+
     //Resolves a term tree to an RDF term, or to <see langword="null"/> when any part of it cannot be
     //resolved (an error node, an unresolvable IRI, or an undeclared prefix). The diagnostic for each
     //failure is recorded as it is found; the caller drops the quad the null term would have filled.
     private RdfTerm? ResolveTerm(Term term, RdfTerm? graph, out List<EmittedQuad> auxiliary)
     {
+        //Leaf fast path — the common case is a single IRI, prefixed name, blank node, literal, or error
+        //node, which resolves directly and produces no auxiliary quads. Returning here skips the sink,
+        //the resolved-by-node map, and the work-stack the compound term-tree walk below allocates.
+        if(TryResolveLeaf(term, out RdfTerm? leaf))
+        {
+            auxiliary = NoAuxiliary;
+
+            return leaf;
+        }
+
         List<EmittedQuad> sink = [];
         auxiliary = sink;
 
-        //Resolve the term tree bottom-up with an explicit stack: a compound term is combined
+        //Resolve the compound term tree bottom-up with an explicit stack: a compound term is combined
         //only after its child terms are resolved, so no production resolves another by recursion.
         //Auxiliary quads accumulate into the shared sink; each child's quads are appended when the
         //child is combined, which is before its parent — so order differs from a top-down walk, but
@@ -370,56 +384,71 @@ public sealed class TurtleQuadEmitter
                 continue;
             }
 
-            switch(current)
+            if(TryResolveLeaf(current, out RdfTerm? childLeaf))
             {
-                case IriTerm iri:
-                {
-                    resolved[current.NodeId] = ResolveIri(iri.Value, iri.Span) is { } iriValue ? new NamedNode(iriValue) : null;
-
-                    break;
-                }
-
-                case PrefixedNameTerm prefixed:
-                {
-                    resolved[current.NodeId] = ExpandPrefixedName(prefixed) is { } expanded ? new NamedNode(expanded) : null;
-
-                    break;
-                }
-
-                case BlankNodeTerm blank:
-                {
-                    resolved[current.NodeId] = new BlankNode(blank.Label);
-
-                    break;
-                }
-
-                case LiteralTerm literal:
-                {
-                    resolved[current.NodeId] = BuildLiteral(literal);
-
-                    break;
-                }
-
-                case ErrorTerm:
-                {
-                    //A parse error node carries its own diagnostic already; it resolves to nothing.
-                    resolved[current.NodeId] = null;
-
-                    break;
-                }
-
-                default:
-                {
-                    //A compound term is revisited (Expanded) once its children are resolved.
-                    stack.Push(new ResolveFrame(current, Expanded: true));
-                    PushResolveChildren(current, stack);
-
-                    break;
-                }
+                resolved[current.NodeId] = childLeaf;
+            }
+            else
+            {
+                //A compound term is revisited (Expanded) once its children are resolved.
+                stack.Push(new ResolveFrame(current, Expanded: true));
+                PushResolveChildren(current, stack);
             }
         }
 
         return resolved[term.NodeId];
+    }
+
+    //Resolves a leaf term (IRI, prefixed name, blank node, literal, or error node) directly, with no
+    //auxiliary quads, and returns true; returns false for a compound term, which the caller resolves
+    //over the work stack.
+    private bool TryResolveLeaf(Term term, out RdfTerm? resolved)
+    {
+        switch(term)
+        {
+            case(IriTerm iri):
+            {
+                resolved = ResolveIri(iri.Value, iri.Span) is { } iriValue ? new NamedNode(iriValue) : null;
+
+                return true;
+            }
+
+            case(PrefixedNameTerm prefixed):
+            {
+                resolved = ExpandPrefixedName(prefixed) is { } expanded ? new NamedNode(expanded) : null;
+
+                return true;
+            }
+
+            case(BlankNodeTerm blank):
+            {
+                resolved = new BlankNode(blank.Label);
+
+                return true;
+            }
+
+            case(LiteralTerm literal):
+            {
+                resolved = BuildLiteral(literal);
+
+                return true;
+            }
+
+            case(ErrorTerm):
+            {
+                //A parse error node carries its own diagnostic already; it resolves to nothing.
+                resolved = null;
+
+                return true;
+            }
+
+            default:
+            {
+                resolved = null;
+
+                return false;
+            }
+        }
     }
 
     private static void PushResolveChildren(Term term, Stack<ResolveFrame> stack)
