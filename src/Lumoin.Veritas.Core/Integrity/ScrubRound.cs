@@ -5,6 +5,7 @@ using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Persistence;
 using Lumoin.Veritas.Core.Persistence.Manifest;
+using Lumoin.Veritas.Core.Persistence.Parity;
 using Lumoin.Veritas.Core.Persistence.Segment;
 using Lumoin.Veritas.Core.Persistence.Sketch;
 
@@ -12,8 +13,9 @@ namespace Lumoin.Veritas.Core.Integrity;
 
 /// <summary>
 /// The storage scrub: it holds a committed manifest snapshot and walks the artifacts that generation names —
-/// the system-of-record segment, the columnar sidecar, and the integrity sketch — verifying each through the
-/// format-neutral <see cref="ArtifactVerifyReport"/> seam, emitting a <see cref="StorageTraceEvent"/> per
+/// the system-of-record segment, the columnar sidecar, the integrity sketch, and the local-parity sidecar —
+/// verifying each through the format-neutral <see cref="ArtifactVerifyReport"/> seam, emitting a
+/// <see cref="StorageTraceEvent"/> per
 /// block and front-matter verdict, and RECORDING every at-rest failure (rather than throwing) so one pass
 /// surfaces the whole damage set for the repair-source ladder to act on. A reader incompatibility (an unknown
 /// checksum-algorithm id or unsupported version) is NOT corruption and is not recorded — it propagates,
@@ -21,7 +23,7 @@ namespace Lumoin.Veritas.Core.Integrity;
 /// </summary>
 public static class ScrubRound
 {
-    /// <summary>Runs one verify pass over the committed generation: recovers a manifest snapshot, reads and verifies each artifact it names through the seam, emits a trace event per verdict, and returns the corrupt blocks found. A missing or framing-damaged artifact is recorded as a whole-artifact (front-matter) finding; roles the scrub does not verify (parity, stats) are skipped.</summary>
+    /// <summary>Runs one verify pass over the committed generation: recovers a manifest snapshot, reads and verifies each artifact it names through the seam, emits a trace event per verdict, and returns the corrupt blocks found. A missing or framing-damaged artifact is recorded as a whole-artifact (front-matter) finding; roles the scrub does not verify (stats) are skipped.</summary>
     /// <param name="store">The store holding the committed generation's artifacts.</param>
     /// <param name="resolveChecksum">Resolves a stored checksum-algorithm id; <see langword="null"/> uses the default resolver.</param>
     /// <param name="trace">The diagnostics sink each verdict is emitted to; <see langword="null"/> emits nothing.</param>
@@ -66,7 +68,7 @@ public static class ScrubRound
                 ArtifactVerifyReport? verifiedReport = Verify(entry.Role, image, resolveChecksum);
                 if(verifiedReport is null)
                 {
-                    //A role this scrub does not verify (parity / stats / unknown): no verdict, no record.
+                    //A role this scrub does not verify (stats / unknown): no verdict, no record.
                     continue;
                 }
 
@@ -238,7 +240,7 @@ public static class ScrubRound
         return null;
     }
 
-    /// <summary>Verifies one artifact through the format-neutral seam by its manifest role, or returns <see langword="null"/> for a role the scrub does not verify (parity, stats, or an unknown role).</summary>
+    /// <summary>Verifies one artifact through the format-neutral seam by its manifest role, or returns <see langword="null"/> for a role the scrub does not verify (stats or an unknown role).</summary>
     /// <param name="role">The artifact's manifest role.</param>
     /// <param name="image">The artifact's byte image.</param>
     /// <param name="resolveChecksum">Resolves a stored checksum-algorithm id; <see langword="null"/> uses the default resolver.</param>
@@ -258,6 +260,11 @@ public static class ScrubRound
         if(role == ManifestFileRole.Sketch)
         {
             return SketchSegment.RunVerifyRound(image, resolveChecksum);
+        }
+
+        if(role == ManifestFileRole.Parity)
+        {
+            return ParitySegment.RunVerifyRound(image, resolveChecksum);
         }
 
         return null;

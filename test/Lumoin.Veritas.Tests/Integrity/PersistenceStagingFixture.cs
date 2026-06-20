@@ -15,6 +15,7 @@ using Lumoin.Veritas.Core.Integrity;
 using Lumoin.Veritas.Core.Persistence;
 using Lumoin.Veritas.Core.Persistence.Journal;
 using Lumoin.Veritas.Core.Persistence.Manifest;
+using Lumoin.Veritas.Core.Persistence.Parity;
 using Lumoin.Veritas.Core.Persistence.Segment;
 using Lumoin.Veritas.Core.Persistence.Sketch;
 using Lumoin.Veritas.Core.Reconciliation;
@@ -161,6 +162,34 @@ internal static class PersistenceStagingFixture
         return ArtifactImage.Own(owner, size, ManifestFileRole.Sketch);
     }
 
+    /// <summary>Serializes a local-parity image over the same triples (the capacity-1 XOR of the system-of-record's 10-item blocks, 64-byte aligned) into a buffer rented from <paramref name="pool"/>.</summary>
+    /// <param name="triples">The triples whose system-of-record blocks the parity protects.</param>
+    /// <param name="pool">The pool the parity and image buffers are rented from.</param>
+    /// <returns>The pooled image.</returns>
+    internal static ArtifactImage ParityImage(EncodedTriple[] triples, MemoryPool<byte> pool)
+    {
+        return ParityImage(triples, pool, ChecksumAlgorithm.XxHash3);
+    }
+
+    /// <summary>Serializes a local-parity image under an explicit checksum algorithm, so a test can stage it under a degenerate algorithm to prove the at-rest detection is non-vacuous.</summary>
+    /// <param name="triples">The triples whose system-of-record blocks the parity protects.</param>
+    /// <param name="pool">The pool the parity and image buffers are rented from.</param>
+    /// <param name="checksum">The checksum algorithm the front matter and per-block digest are written under.</param>
+    /// <returns>The pooled image.</returns>
+    internal static ArtifactImage ParityImage(EncodedTriple[] triples, MemoryPool<byte> pool, ChecksumAlgorithm checksum)
+    {
+        ItemSegment systemOfRecord = new(triples, blockItemCount: 10, blockAlignment: 64);
+        using ParityBlock parity = ParityBlock.Rent(pool, systemOfRecord.MaxBlockPayloadByteCount);
+        int protectedBlockCount = ParitySegment.BuildParity(systemOfRecord, parity.WritableSpan, pool);
+
+        ParitySegment segment = new(parity.Memory, protectedBlockCount, blockAlignment: 64);
+        int size = (int)segment.ComputeSerializedSize(checksum);
+        IMemoryOwner<byte> owner = pool.Rent(size);
+        segment.WriteTo(owner.Memory.Span[..size], checksum);
+
+        return ArtifactImage.Own(owner, size, ManifestFileRole.Parity);
+    }
+
     /// <summary>Rounds up to the next 64-byte boundary.</summary>
     /// <param name="value">The value to align.</param>
     /// <returns>The aligned value.</returns>
@@ -234,6 +263,37 @@ internal static class PersistenceStagingFixture
         {
             bytes[start + i] = (byte)~bytes[start + i];
         }
+    }
+
+    /// <summary>Flips the first byte of the parity block — a capacity-1 parity is a single block, so its one checksum domain covers the whole parity.</summary>
+    /// <param name="image">The image to corrupt in place.</param>
+    internal static void CorruptParityBlock(ArtifactImage image)
+    {
+        Span<byte> bytes = image.WritableBytes;
+        int frontMatterEnd = 19 + 12 + ChecksumAlgorithm.XxHash3.ByteWidth;
+        int firstBlock = Align(frontMatterEnd);
+        bytes[firstBlock] ^= 0xFF;
+    }
+
+    /// <summary>Overwrites the parity block's whole payload (the 10-item block stride) with its bitwise complement, so every byte differs and the block's at-rest checksum fails.</summary>
+    /// <param name="image">The image to corrupt in place.</param>
+    internal static void GarbageParityBlock(ArtifactImage image)
+    {
+        Span<byte> bytes = image.WritableBytes;
+        int frontMatterEnd = 19 + 12 + ChecksumAlgorithm.XxHash3.ByteWidth;
+        int firstBlock = Align(frontMatterEnd);
+        int stride = 10 * 12;
+        for(int i = 0; i < stride; i++)
+        {
+            bytes[firstBlock + i] = (byte)~bytes[firstBlock + i];
+        }
+    }
+
+    /// <summary>Flips the low byte of the parity's protected-block-count scalar — front matter the trailer covers but the block digest and geometry parse do not — so the front-matter verdict fails while the block stays readable, the parity's front-matter detection seam.</summary>
+    /// <param name="image">The image to corrupt in place.</param>
+    internal static void CorruptParityFrontMatter(ArtifactImage image)
+    {
+        image.WritableBytes[19 + sizeof(int)] ^= 0xFF;
     }
 
     /// <summary>Overwrites the first column blob of a sidecar image with its bitwise complement, using the blob coordinates a clean verify round reports, so a real column blob (not padding) fails its per-blob checksum — the sidecar's per-blob detection seam, distinct from its front-matter seam.</summary>

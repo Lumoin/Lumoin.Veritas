@@ -91,6 +91,35 @@ public sealed partial class ItemSegment
     /// <summary>The number of item blocks: every full block holds <see cref="BlockItemCount"/> triples and the last holds the remainder.</summary>
     public int BlockCount => (int)(((long)items.Count + BlockItemCount - 1) / BlockItemCount);
 
+    /// <summary>The byte length of a full block's item payload (<see cref="BlockItemCount"/> triples) — the uniform stride a local-parity code zero-extends every block to.</summary>
+    public int MaxBlockPayloadByteCount => BlockItemCount * ItemByteSize;
+
+    /// <summary>The byte length of block <paramref name="block"/>'s item payload — a full <see cref="MaxBlockPayloadByteCount"/> except the last block, which holds the remainder.</summary>
+    /// <param name="block">The block index, in <c>[0, <see cref="BlockCount"/>)</c>.</param>
+    /// <returns>The block's item-payload byte length.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="block"/> is negative or not less than <see cref="BlockCount"/>.</exception>
+    public int BlockPayloadByteCount(int block)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(block);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(block, BlockCount);
+
+        return ItemsInBlock(block) * ItemByteSize;
+    }
+
+    /// <summary>Copies block <paramref name="block"/>'s item payload — its triples as row-major little-endian 32-bit ids, byte-identical to the bytes <see cref="WriteTo"/> lays down for that block — into <paramref name="destination"/>, so a local-parity build folds the same bytes a repair later reads from the image.</summary>
+    /// <param name="block">The block index, in <c>[0, <see cref="BlockCount"/>)</c>.</param>
+    /// <param name="destination">The buffer to copy into; at least <see cref="BlockPayloadByteCount"/> bytes for the block.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="block"/> is out of range, or <paramref name="destination"/> is shorter than the block's payload.</exception>
+    public void CopyBlockPayload(int block, Span<byte> destination)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(block);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(block, BlockCount);
+        int itemsInBlock = ItemsInBlock(block);
+        ArgumentOutOfRangeException.ThrowIfLessThan(destination.Length, itemsInBlock * ItemByteSize);
+
+        WriteBlockItems(destination, block, itemsInBlock);
+    }
+
     /// <summary>The number of bytes <see cref="WriteTo"/> writes under the given checksum selection.</summary>
     /// <param name="checksum">The per-block checksum algorithm whose section and self-trailer size the image, or <see langword="null"/> for none.</param>
     /// <returns>The image byte size.</returns>
