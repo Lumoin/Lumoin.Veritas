@@ -243,6 +243,26 @@ internal static class PersistenceStagingFixture
         }
     }
 
+    /// <summary>Flips a byte of the given item-segment block's STORED checksum digest — the per-block digest in the front-matter checksum section, not the block's payload — so the block's recomputed payload digest no longer matches its stored digest. The digest section is covered by the front-matter trailer, so this fails both the trailer and the block's own comparison: the digest-side detection seam, distinct from corrupting the payload.</summary>
+    /// <param name="image">The image to corrupt in place.</param>
+    /// <param name="block">The block whose stored digest is tampered.</param>
+    internal static void CorruptSegmentChecksumField(ArtifactImage image, int block)
+    {
+        Span<byte> bytes = image.WritableBytes;
+        int checksumSectionOffset = 19 + 12;
+        bytes[checksumSectionOffset + (block * ChecksumAlgorithm.XxHash3.ByteWidth)] ^= 0xFF;
+    }
+
+    /// <summary>Flips a byte of the given sketch block's STORED checksum digest — the per-block digest in the front-matter checksum section, not the block's payload — so the block's recomputed payload digest no longer matches its stored digest. The digest section is covered by the front-matter trailer, so this fails both the trailer and the block's own comparison.</summary>
+    /// <param name="image">The image to corrupt in place.</param>
+    /// <param name="block">The block whose stored digest is tampered.</param>
+    internal static void CorruptSketchChecksumField(ArtifactImage image, int block)
+    {
+        Span<byte> bytes = image.WritableBytes;
+        int checksumSectionOffset = 19 + 16;
+        bytes[checksumSectionOffset + (block * ChecksumAlgorithm.XxHash3.ByteWidth)] ^= 0xFF;
+    }
+
     /// <summary>Stamps the image's checksum-algorithm id with a foreign value no resolver maps, in place, so a reader refuses it under <see cref="PersistenceInvariant.EpochConsistency"/> before any block is verified. The id is read to select the algorithm before any checksum is recomputed, so the refusal precedes the front-matter and per-block verdicts.</summary>
     /// <param name="image">The image to stamp in place.</param>
     internal static void SetForeignChecksumAlgorithmId(ArtifactImage image)

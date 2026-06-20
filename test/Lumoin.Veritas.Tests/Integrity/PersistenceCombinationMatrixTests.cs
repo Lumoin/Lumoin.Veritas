@@ -100,11 +100,11 @@ internal sealed class PersistenceCombinationMatrixTests
     /// <summary>A payload-format version past every supported version, refused at detection rather than recovered.</summary>
     private const byte ForeignJournalPayloadVersion = 99;
 
-    /// <summary>The size of the enumerated cross-product: the active sites × kinds × rungs (7 × 7 × 4).</summary>
-    private const int ExpectedCellCount = 196;
+    /// <summary>The size of the enumerated cross-product: the active sites × kinds × rungs (7 × 8 × 4).</summary>
+    private const int ExpectedCellCount = 224;
 
-    /// <summary>The pinned number of valid cells in this slice (12 per-artifact + 6 manifest/CURRENT recovery + 4 journal recovery), so adding or removing one is a deliberate change.</summary>
-    private const int ExpectedValidCellCount = 22;
+    /// <summary>The pinned number of valid cells in this slice (12 per-artifact + 6 manifest/CURRENT recovery + 4 journal recovery + 2 checksum-field), so adding or removing one is a deliberate change.</summary>
+    private const int ExpectedValidCellCount = 24;
 
     /// <summary>The generation's triples, built once: every cell stages a fresh image trio over these.</summary>
     private static readonly EncodedTriple[] Triples = SampleTriples(TripleCount);
@@ -137,7 +137,7 @@ internal sealed class PersistenceCombinationMatrixTests
         JournalEntry,
     }
 
-    /// <summary>The kinds of physical damage a cell can inject. The first four are the byte-level kinds this slice drives; the last four are the publish-path and recovery kinds the recovery sites carry.</summary>
+    /// <summary>The kinds of physical damage a cell can inject. The first four are the read-path byte-level kinds this slice drives, ChecksumField tampers a stored per-block digest, and the last three are the publish-path and recovery kinds the recovery sites carry.</summary>
     internal enum DamageKind
     {
         /// <summary>A single payload byte flipped.</summary>
@@ -174,8 +174,8 @@ internal sealed class PersistenceCombinationMatrixTests
     /// <summary>The damage sites this slice enumerates: the three read-path artifacts, the always-skipped parity tier, and the manifest, CURRENT-pointer, and journal recovery sites.</summary>
     private static readonly DamageSite[] ActiveSites = [DamageSite.Sidecar, DamageSite.DataSegment, DamageSite.Sketch, DamageSite.Parity, DamageSite.Manifest, DamageSite.Current, DamageSite.JournalEntry];
 
-    /// <summary>The damage kinds this slice enumerates: the read-path byte-level kinds plus the manifest/CURRENT publish-path kinds. The checksum-field mutation lands with the g3 mutation pass.</summary>
-    private static readonly DamageKind[] ActiveKinds = [DamageKind.BitFlip, DamageKind.WholeBlockGarbage, DamageKind.Truncate, DamageKind.StaleEpoch, DamageKind.TornPublishPreRename, DamageKind.TornPublishPreCurrent, DamageKind.CurrentRot];
+    /// <summary>The damage kinds this slice enumerates: the read-path byte-level kinds, the stored-digest checksum-field kind, and the manifest/CURRENT publish-path kinds.</summary>
+    private static readonly DamageKind[] ActiveKinds = [DamageKind.BitFlip, DamageKind.WholeBlockGarbage, DamageKind.Truncate, DamageKind.StaleEpoch, DamageKind.ChecksumField, DamageKind.TornPublishPreRename, DamageKind.TornPublishPreCurrent, DamageKind.CurrentRot];
 
     /// <summary>The repair-ladder rungs, the cross-product's third axis; all but the cell's terminal rung are skipped per artifact class.</summary>
     private static readonly RepairRung[] AllRungs = [RepairRung.RederiveLocally, RepairRung.LocalParity, RepairRung.PeerReconciliation, RepairRung.NamedLoss];
@@ -288,6 +288,12 @@ internal sealed class PersistenceCombinationMatrixTests
         if(cell.Site == DamageSite.JournalEntry && !IsJournalApplicableKind(cell.Kind))
         {
             return (false, "R5 journal: the journal exercises torn/garbage tails and the foreign-epoch refusal; publish and checksum-field kinds are not applicable.");
+        }
+
+        //R7 — the checksum-field digest seam is driven on the segment formats whose per-block digest section the fixture can target; the sidecar's per-blob digest location is not exposed by the verify report, so it is represented by the system-of-record and sketch checksum-field cells.
+        if(cell.Kind == DamageKind.ChecksumField && cell.Site == DamageSite.Sidecar)
+        {
+            return (false, "R7 checksum-field: the sidecar's per-blob digest location is not exposed by the verify report; the digest-side detector is represented by the system-of-record and sketch checksum-field cells.");
         }
 
         //R6 — a rung applies only to the artifact class whose ladder terminates at it.
@@ -477,6 +483,12 @@ internal sealed class PersistenceCombinationMatrixTests
 
                 return clean;
             }
+            case DamageKind.ChecksumField:
+            {
+                CorruptSegmentChecksumField(clean, CorruptBlock);
+
+                return clean;
+            }
             case DamageKind.WholeBlockGarbage:
             {
                 GarbageSegmentBlock(clean, CorruptBlock, SegmentBlockCount);
@@ -571,6 +583,12 @@ internal sealed class PersistenceCombinationMatrixTests
 
                 return clean;
             }
+            case DamageKind.ChecksumField:
+            {
+                CorruptSketchChecksumField(clean, CorruptBlock);
+
+                return clean;
+            }
             case DamageKind.WholeBlockGarbage:
             {
                 GarbageSketchBlock(clean, CorruptBlock, SketchBlockCount);
@@ -635,11 +653,18 @@ internal sealed class PersistenceCombinationMatrixTests
         }
     }
 
-    /// <summary>Asserts the verify pass named the damaged artifact corrupt: a system-of-record block is named with its index (or a truncated system-of-record is a whole-artifact loss); a sidecar or sketch is reported corrupt by role.</summary>
+    /// <summary>Asserts the verify pass named the damaged artifact corrupt: a tampered stored digest is named at both the front-matter and the block grain; otherwise a system-of-record block is named with its index (or a truncated system-of-record is a whole-artifact loss) and a sidecar or sketch is reported corrupt by role.</summary>
     /// <param name="cell">The cell.</param>
     /// <param name="verify">The verify report.</param>
     private static void AssertDetectionVerdict(MatrixCell cell, ScrubRoundReport verify)
     {
+        if(cell.Kind == DamageKind.ChecksumField)
+        {
+            AssertChecksumFieldDetected(cell, verify);
+
+            return;
+        }
+
         switch(cell.Site)
         {
             case DamageSite.DataSegment:
@@ -677,7 +702,7 @@ internal sealed class PersistenceCombinationMatrixTests
         }
     }
 
-    /// <summary>Asserts the repair outcome at the cell's terminal rung: a sidecar or sketch re-derives clean (with its differential twin); a corrupt system-of-record block is named lost (with its range); a truncated system-of-record is refused as unreadable.</summary>
+    /// <summary>Asserts the repair outcome at the cell's terminal rung: a sidecar or sketch re-derives clean (with its differential twin); a corrupt system-of-record block is named lost (with its range); a truncated system-of-record is refused as unreadable; a tampered system-of-record digest is likewise refused while a tampered sketch digest re-derives clean from the surviving system-of-record.</summary>
     /// <param name="cell">The cell.</param>
     /// <param name="repair">The repair report.</param>
     /// <param name="trace">The captured repair trace.</param>
@@ -685,6 +710,13 @@ internal sealed class PersistenceCombinationMatrixTests
     /// <param name="triplePool">The triple pool the sidecar decode rents from.</param>
     private static void AssertRepairOutcome(MatrixCell cell, RepairPassReport repair, StorageTraceCapture trace, MemoryPool<byte> bytePool, MemoryPool<EncodedTriple> triplePool)
     {
+        if(cell.Kind == DamageKind.ChecksumField)
+        {
+            AssertChecksumFieldRepair(cell, repair, trace);
+
+            return;
+        }
+
         switch(cell.Site)
         {
             case DamageSite.Sidecar:
@@ -766,6 +798,39 @@ internal sealed class PersistenceCombinationMatrixTests
         Assert.AreEqual(BlockItemCount, loss.LostItemCount);
         //The named range — read from the repair report — names a real, in-bounds slice of the fixture it removes.
         Assert.IsTrue(loss.LostItemStart >= 0 && loss.LostItemStart + loss.LostItemCount <= Triples.Length, "The named loss range must lie within the fixture's item range.");
+    }
+
+    /// <summary>Asserts a tampered stored digest is named at both grains: the front-matter trailer covers the per-block digest section, so a flipped digest fails the trailer (a front-matter finding) and the block's own recompute (a block finding named with its index) — proving the stored digests cannot be forged to mask a corruption.</summary>
+    /// <param name="cell">The checksum-field cell; its site is the system-of-record or the sketch.</param>
+    /// <param name="verify">The verify report.</param>
+    private static void AssertChecksumFieldDetected(MatrixCell cell, ScrubRoundReport verify)
+    {
+        List<ScrubBlockFinding> findings = cell.Site == DamageSite.DataSegment
+            ? verify.CorruptBlocks.Where(static f => f.RoleCode == ManifestFileRole.DataSegment.Code).ToList()
+            : verify.CorruptBlocks.Where(static f => f.RoleCode == ManifestFileRole.Sketch.Code).ToList();
+        Assert.HasCount(2, findings, "A tampered stored digest is named at both the front-matter and the block grain.");
+        Assert.ContainsSingle(findings.Where(static f => f.IsFrontMatter));
+        ScrubBlockFinding block = findings.Single(static f => !f.IsFrontMatter);
+        Assert.AreEqual(CorruptBlock, block.BlockIndex, "The block whose stored digest was tampered is named with its index.");
+    }
+
+    /// <summary>Asserts the repair outcome for a tampered stored digest: the system-of-record's tampered digest fails its front-matter trailer, so its geometry is untrusted and the whole artifact is refused as unreadable; a tampered sketch digest re-derives clean from the surviving system-of-record, which the tampering never touched.</summary>
+    /// <param name="cell">The checksum-field cell; its site is the system-of-record or the sketch.</param>
+    /// <param name="repair">The repair report.</param>
+    /// <param name="trace">The captured repair trace.</param>
+    private static void AssertChecksumFieldRepair(MatrixCell cell, RepairPassReport repair, StorageTraceCapture trace)
+    {
+        if(cell.Site == DamageSite.DataSegment)
+        {
+            Assert.IsTrue(repair.Refused, "A tampered system-of-record digest leaves its geometry untrusted.");
+            Assert.AreEqual(RepairRefusalReason.SystemOfRecordUnreadable, repair.Refusal);
+            Assert.IsEmpty(repair.RederivedArtifacts);
+            Assert.IsEmpty(repair.NamedLosses);
+
+            return;
+        }
+
+        AssertSketchRederived(repair, trace);
     }
 
     /// <summary>Drives a manifest/CURRENT recovery cell: it stages a first committed generation, injects the cell's fault, and asserts how <see cref="ManifestRecovery"/> follows the CURRENT pointer to a committed generation — leaving the prior generation in force on a torn publish (I4), falling back to a retained CURRENT past pointer rot (I4), skipping at-rest manifest rot to an earlier generation, or refusing a foreign epoch (I5).</summary>
