@@ -385,6 +385,28 @@ internal sealed class PersistenceCombinationMatrixTests
         Assert.AreEqual(ExpectedValidCellCount, valid, "The valid single-node cell count is pinned so adding or removing a cell is a deliberate change.");
     }
 
+    /// <summary>The landing-gate completeness census: every named persistence invariant is certified by at least one valid cell, so a regression that drops the only cell asserting an invariant — or a newly named invariant left unexercised — fails here. I1 (detection-precedes-use), I2 (detection-precedes-xor), I3 (repair-is-faithful), I5 (epoch-consistency), and I7 (loss-is-named) are asserted directly by a damaged-then-verified cell; I4 (publish-is-atomic) by the manifest/CURRENT recovery cells; I6 (repair-is-ordinary-ingest) by the re-derive differential twins. (The deeper structural form of I6 — a full edit-session re-ingest — is a rung-2/3 follow-on, not a single-node cell.)</summary>
+    [TestMethod]
+    public void EveryNamedInvariantIsCertifiedByAValidCell()
+    {
+        HashSet<PersistenceInvariant> certified = [];
+        foreach(MatrixCell cell in Enumerate())
+        {
+            if(Classify(cell).Valid)
+            {
+                foreach(PersistenceInvariant invariant in CitedInvariants(cell))
+                {
+                    certified.Add(invariant);
+                }
+            }
+        }
+
+        foreach(PersistenceInvariant invariant in Enum.GetValues<PersistenceInvariant>())
+        {
+            Assert.Contains(invariant, certified, $"Invariant {invariant} must be cited by at least one valid cell, so the gate certifies it.");
+        }
+    }
+
     /// <summary>Drives one matrix cell: a valid cell is staged, damaged, and asserted end to end through its recovery seam; a skipped cell is enumerated with its named reason rather than silently dropped. The journal cells take the asynchronous file-backed replay seam; every other valid cell drives synchronously.</summary>
     /// <param name="cellId">The <c>site/kind/rung</c> identity of the cell to run.</param>
     /// <returns>The cell-drive task.</returns>

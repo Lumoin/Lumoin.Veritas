@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
+using Lumoin.Veritas.Core.Execution;
 using Lumoin.Veritas.Core.Hypertrie.Editing;
 using Lumoin.Veritas.Core.Hypertrie.Storage;
 using Lumoin.Veritas.Core.Integrity;
@@ -133,6 +134,21 @@ internal sealed class PersistenceDetectionMutationTests
         Assert.IsFalse(await VerifyIsClean(seam, ChecksumAlgorithm.XxHash3, corrupt: true, pool).ConfigureAwait(false), "The real algorithm must detect the seam's corruption.");
         Assert.IsTrue(await VerifyIsClean(seam, Degenerate, corrupt: false, pool).ConfigureAwait(false), "A clean degenerate exemplar must verify clean, so the degenerate read path is exercised rather than refused.");
         Assert.IsTrue(await VerifyIsClean(seam, Degenerate, corrupt: true, pool).ConfigureAwait(false), "The zero-checksum mutation must flip the detected corruption to clean, proving the positive matrix cells are non-vacuous.");
+    }
+
+    /// <summary>The ECC meta-cell: the operator's memory-protection assumption is a real, consumed policy knob — AssumeProtected and AssumeUnprotected resolve to opposite protection verdicts, which the scrub cadence then derives from — yet the at-rest verify takes no <see cref="ExecutionPolicy"/>, so a corrupt artifact is detected regardless of the assumption. ECC steers cadence, not correctness: it is correctness-inert for the verify verdict, so no detection cell needs to vary it.</summary>
+    [TestMethod]
+    public void EccAssumptionSteersProtectionNotTheVerifyVerdict()
+    {
+        ExecutionEnvironment environment = new(ProcessorCount: 8, CpuQuotaCores: null, IsBrowser: false, MemoryErrorCorrectionDetected: null);
+        ResolvedExecutionPlan protectedPlan = (ExecutionPolicy.Default with { EccAssumption = MemoryProtectionAssumption.AssumeProtected }).Resolve(environment);
+        ResolvedExecutionPlan unprotectedPlan = (ExecutionPolicy.Default with { EccAssumption = MemoryProtectionAssumption.AssumeUnprotected }).Resolve(environment);
+        Assert.AreNotEqual(protectedPlan.Protection.MemoryIsProtected, unprotectedPlan.Protection.MemoryIsProtected, "The ECC assumption must resolve the protection verdict, proving it is a consumed knob rather than dead.");
+
+        using VeritasMemoryPool<byte> pool = new();
+        using ArtifactImage segment = SegmentImage(SampleTriples(TripleCount), pool);
+        CorruptSegmentBlock(segment, CorruptBlock, SegmentBlockCount);
+        Assert.IsFalse(ItemSegment.RunVerifyRound(segment.Bytes).IsClean, "The at-rest verify takes no ExecutionPolicy, so corruption is detected regardless of the ECC assumption — it is correctness-inert.");
     }
 
     /// <summary>Dispatches the seam to its detector — the block seams run a decode-free verify round, the journal seam reopens a durable log, and the manifest seam re-reads a self-checksummed image, each resolving both the real and degenerate ids — and returns whether the detector reports the exemplar clean (no corruption surfaced).</summary>
