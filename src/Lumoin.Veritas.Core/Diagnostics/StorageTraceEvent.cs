@@ -33,6 +33,9 @@ public enum StorageTraceEventKind
 
     /// <summary>A corrupt system-of-record block could be restored from no source; its lost items are named rather than silently dropped.</summary>
     NamedLoss,
+
+    /// <summary>A healed generation was atomically published, superseding a damaged one; the marker carries the healed generation and the number of derived artifacts republished.</summary>
+    GenerationHealed,
 }
 
 /// <summary>
