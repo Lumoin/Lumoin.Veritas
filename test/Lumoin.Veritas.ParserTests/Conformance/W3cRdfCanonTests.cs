@@ -7,11 +7,11 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 namespace Lumoin.Veritas.ParserTests.Conformance;
 
 /// <summary>
-/// Runs the vendored W3C rdf-canon (RDFC-1.0) test suite: each <c>rdfc:RDFC10EvalTest</c> canonicalizes its input
-/// dataset and compares to the expected canonical N-Quads via <see cref="W3cRdfCanonRunner"/>. This is a
-/// red-baseline + ratchet gate — a wrong canonical output fails, so the failing count is the honest distance to full
-/// RDFC-1.0 conformance and may only go down. The issuer-map and negative (poison-graph) entries are reported
-/// Inconclusive.
+/// Runs the vendored W3C rdf-canon (RDFC-1.0) test suite via <see cref="W3cRdfCanonRunner"/>: an
+/// <c>rdfc:RDFC10EvalTest</c> compares the canonical N-Quads, an <c>rdfc:RDFC10MapTest</c> compares the
+/// issued-identifier map, and an <c>rdfc:RDFC10NegativeEvalTest</c> expects a poison graph to be rejected. This is a
+/// red-baseline + ratchet gate — a wrong canonical output, a wrong map, or a missing rejection fails, so the failing
+/// count is the honest distance to full RDFC-1.0 conformance and may only go down.
 /// </summary>
 [TestClass]
 internal sealed class W3cRdfCanonTests
