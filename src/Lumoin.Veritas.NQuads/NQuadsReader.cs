@@ -181,7 +181,7 @@ public static class NQuadsReader
     {
         //Declare before try so the finally block can always reach it.
         Utf8StringPool? ownedPool = null;
-        byte[]? lineBuffer = null;
+        IMemoryOwner<byte>? lineOwner = null;
 
         try
         {
@@ -199,7 +199,7 @@ public static class NQuadsReader
                 while(TryReadLine(ref buffer, out ReadOnlySequence<byte> line))
                 {
                     lineNumber++;
-                    if(ParseLineOrSkip(line, pool, lineNumber, ref lineBuffer) is { } quad)
+                    if(ParseLineOrSkip(line, pool, lineNumber, ref lineOwner) is { } quad)
                     {
                         yield return quad;
                     }
@@ -211,7 +211,7 @@ public static class NQuadsReader
                     if(!buffer.IsEmpty)
                     {
                         lineNumber++;
-                        if(ParseLineOrSkip(buffer, pool, lineNumber, ref lineBuffer) is { } quad)
+                        if(ParseLineOrSkip(buffer, pool, lineNumber, ref lineOwner) is { } quad)
                         {
                             yield return quad;
                         }
@@ -228,10 +228,7 @@ public static class NQuadsReader
         }
         finally
         {
-            if(lineBuffer is not null)
-            {
-                ArrayPool<byte>.Shared.Return(lineBuffer);
-            }
+            lineOwner?.Dispose();
 
             ownedPool?.Dispose();
 
@@ -247,7 +244,7 @@ public static class NQuadsReader
     {
         //Declare before try so the finally block can always reach it.
         Utf8StringPool? ownedPool = null;
-        byte[]? lineBuffer = null;
+        IMemoryOwner<byte>? lineOwner = null;
 
         try
         {
@@ -266,7 +263,7 @@ public static class NQuadsReader
                 while(TryReadLine(ref buffer, out ReadOnlySequence<byte> line))
                 {
                     lineNumber++;
-                    if(ParseLineOrSkip(line, pool, lineNumber, ref lineBuffer) is { } quad)
+                    if(ParseLineOrSkip(line, pool, lineNumber, ref lineOwner) is { } quad)
                     {
                         //Comments and blank lines do not consume a node index, so indexes are
                         //dense across the parsed quads.
@@ -280,7 +277,7 @@ public static class NQuadsReader
                     if(!buffer.IsEmpty)
                     {
                         lineNumber++;
-                        if(ParseLineOrSkip(buffer, pool, lineNumber, ref lineBuffer) is { } quad)
+                        if(ParseLineOrSkip(buffer, pool, lineNumber, ref lineOwner) is { } quad)
                         {
                             yield return new EmittedQuad(quad, new DocumentNodeRef(documentId, nodeIndex));
                             nodeIndex++;
@@ -297,10 +294,7 @@ public static class NQuadsReader
         }
         finally
         {
-            if(lineBuffer is not null)
-            {
-                ArrayPool<byte>.Shared.Return(lineBuffer);
-            }
+            lineOwner?.Dispose();
 
             ownedPool?.Dispose();
 
@@ -338,9 +332,9 @@ public static class NQuadsReader
         ReadOnlySequence<byte> line,
         Utf8StringPool pool,
         int lineNumber,
-        ref byte[]? lineBuffer)
+        ref IMemoryOwner<byte>? lineOwner)
     {
-        ReadOnlySpan<byte> span = Materialize(line, ref lineBuffer);
+        ReadOnlySpan<byte> span = Materialize(line, pool, ref lineOwner);
         if(span.Length > 0 && span[^1] == CarriageReturn)
         {
             span = span[..^1];
@@ -359,7 +353,7 @@ public static class NQuadsReader
     /// Returns the line as a contiguous span. A single-segment line is returned in place; a line
     /// spanning segments is copied into a pooled buffer grown as needed.
     /// </summary>
-    private static ReadOnlySpan<byte> Materialize(ReadOnlySequence<byte> line, ref byte[]? lineBuffer)
+    private static ReadOnlySpan<byte> Materialize(ReadOnlySequence<byte> line, Utf8StringPool pool, ref IMemoryOwner<byte>? lineOwner)
     {
         if(line.IsSingleSegment)
         {
@@ -367,19 +361,16 @@ public static class NQuadsReader
         }
 
         int length = (int)line.Length;
-        if(lineBuffer is null || lineBuffer.Length < length)
+        if(lineOwner is null || lineOwner.Memory.Length < length)
         {
-            if(lineBuffer is not null)
-            {
-                ArrayPool<byte>.Shared.Return(lineBuffer);
-            }
-
-            lineBuffer = ArrayPool<byte>.Shared.Rent(length);
+            lineOwner?.Dispose();
+            lineOwner = pool.RentScratch(length);
         }
 
-        line.CopyTo(lineBuffer);
+        Span<byte> destination = lineOwner.Memory.Span;
+        line.CopyTo(destination);
 
-        return lineBuffer.AsSpan(0, length);
+        return destination[..length];
     }
 
     /// <summary>
@@ -732,76 +723,72 @@ public static class NQuadsReader
         //Skip opening quote.
         pos++;
 
-        //Read the quoted value, handling escape sequences.
-        byte[] valueBuffer = ArrayPool<byte>.Shared.Rent(line.Length);
-        try
-        {
-            int valueLength = ReadQuotedString(line, ref pos, valueBuffer, lineNumber);
-            Utf8String value = pool.Intern(valueBuffer.AsSpan(0, valueLength));
+        //Read the quoted value, handling escape sequences. The scratch buffer comes from the
+        //interning pool (not a process-wide ArrayPool) and returns to it when this scope ends.
+        using IMemoryOwner<byte> valueOwner = pool.RentScratch(line.Length);
+        Span<byte> valueBuffer = valueOwner.Memory.Span;
 
-            //Skip closing quote.
-            if(pos >= line.Length || line[pos] != QuoteByte)
+        int valueLength = ReadQuotedString(line, ref pos, valueBuffer, lineNumber);
+        Utf8String value = pool.Intern(valueBuffer[..valueLength]);
+
+        //Skip closing quote.
+        if(pos >= line.Length || line[pos] != QuoteByte)
+        {
+            throw new NQuadsParseException($"Unterminated string literal on line {lineNumber}.", lineNumber);
+        }
+
+        pos++;
+
+        //The language tag and the datatype marker are separate tokens, so white space is
+        //permitted between the closing quote and an '@' or '^^'.
+        SkipWhitespace(line, ref pos);
+
+        //Check for language tag or datatype.
+        if(pos < line.Length && line[pos] == AtSign)
+        {
+            //Language tag: @lang, optionally with an RDF 1.2 base direction @lang--ltr / @lang--rtl.
+            //White space within the tag (after the '@') is not permitted; an empty tag is rejected
+            //downstream.
+            pos++;
+            int tagStart = pos;
+            while(pos < line.Length && !IsWhitespace(line[pos]) && line[pos] != Period)
             {
-                throw new NQuadsParseException($"Unterminated string literal on line {lineNumber}.", lineNumber);
+                pos++;
             }
 
-            pos++;
-
-            //The language tag and the datatype marker are separate tokens, so white space is
-            //permitted between the closing quote and an '@' or '^^'.
+            return ParseLanguageTaggedLiteral(value, line[tagStart..pos], pool, lineNumber);
+        }
+        else if(pos + 1 < line.Length && line[pos] == Caret && line[pos + 1] == Caret)
+        {
+            //Datatype: ^^<IRI>; white space is permitted between '^^' and the IRI.
+            pos += 2;
             SkipWhitespace(line, ref pos);
 
-            //Check for language tag or datatype.
-            if(pos < line.Length && line[pos] == AtSign)
+            if(pos >= line.Length || line[pos] != LessThan)
             {
-                //Language tag: @lang, optionally with an RDF 1.2 base direction @lang--ltr / @lang--rtl.
-                //White space within the tag (after the '@') is not permitted; an empty tag is rejected
-                //downstream.
-                pos++;
-                int tagStart = pos;
-                while(pos < line.Length && !IsWhitespace(line[pos]) && line[pos] != Period)
-                {
-                    pos++;
-                }
-
-                return ParseLanguageTaggedLiteral(value, line[tagStart..pos], pool, lineNumber);
+                throw new NQuadsParseException($"Expected IRI after '^^' on line {lineNumber}.", lineNumber);
             }
-            else if(pos + 1 < line.Length && line[pos] == Caret && line[pos + 1] == Caret)
+
+            NamedNode datatype = ParseIriRef(line, ref pos, pool, lineNumber);
+
+            //rdf:langString and rdf:dirLangString are the datatypes of language-tagged and
+            //direction-tagged strings respectively; they only arise from the @lang form and
+            //must never appear as an explicit ^^ datatype.
+            if(datatype.Iri.Span.SequenceEqual(Vocabulary.Rdf.LangString.Span)
+                || datatype.Iri.Span.SequenceEqual(Vocabulary.Rdf.DirLangString.Span))
             {
-                //Datatype: ^^<IRI>; white space is permitted between '^^' and the IRI.
-                pos += 2;
-                SkipWhitespace(line, ref pos);
-
-                if(pos >= line.Length || line[pos] != LessThan)
-                {
-                    throw new NQuadsParseException($"Expected IRI after '^^' on line {lineNumber}.", lineNumber);
-                }
-
-                NamedNode datatype = ParseIriRef(line, ref pos, pool, lineNumber);
-
-                //rdf:langString and rdf:dirLangString are the datatypes of language-tagged and
-                //direction-tagged strings respectively; they only arise from the @lang form and
-                //must never appear as an explicit ^^ datatype.
-                if(datatype.Iri.Span.SequenceEqual(Vocabulary.Rdf.LangString.Span)
-                    || datatype.Iri.Span.SequenceEqual(Vocabulary.Rdf.DirLangString.Span))
-                {
-                    throw new NQuadsParseException(
-                        $"rdf:langString and rdf:dirLangString require a language tag and cannot be used as an explicit datatype on line {lineNumber}.", lineNumber);
-                }
-
-                return new Literal(value, datatype);
+                throw new NQuadsParseException(
+                    $"rdf:langString and rdf:dirLangString require a language tag and cannot be used as an explicit datatype on line {lineNumber}.", lineNumber);
             }
-            else
-            {
-                //Plain literal: implicitly xsd:string.
-                NamedNode xsdString = new(pool.Intern(Vocabulary.Xsd.String.Span));
 
-                return new Literal(value, xsdString);
-            }
+            return new Literal(value, datatype);
         }
-        finally
+        else
         {
-            ArrayPool<byte>.Shared.Return(valueBuffer);
+            //Plain literal: implicitly xsd:string.
+            NamedNode xsdString = new(pool.Intern(Vocabulary.Xsd.String.Span));
+
+            return new Literal(value, xsdString);
         }
     }
 
@@ -930,7 +917,7 @@ public static class NQuadsReader
     /// Reads a quoted string body, processing N-Quads escape sequences.
     /// Returns the number of bytes written to <paramref name="output"/>.
     /// </summary>
-    private static int ReadQuotedString(ReadOnlySpan<byte> line, ref int pos, byte[] output, int lineNumber)
+    private static int ReadQuotedString(ReadOnlySpan<byte> line, ref int pos, Span<byte> output, int lineNumber)
     {
         int outPos = 0;
 
@@ -1022,7 +1009,7 @@ public static class NQuadsReader
 
                         int codePoint = ParseHex4(line[pos..(pos + 4)], lineNumber);
                         pos += 4;
-                        outPos += EncodeUtf8CodePoint(codePoint, output.AsSpan(outPos));
+                        outPos += EncodeUtf8CodePoint(codePoint, output[outPos..]);
 
                         break;
                     }
@@ -1037,7 +1024,7 @@ public static class NQuadsReader
 
                         int codePoint = ParseHex8(line[pos..(pos + 8)], lineNumber);
                         pos += 8;
-                        outPos += EncodeUtf8CodePoint(codePoint, output.AsSpan(outPos));
+                        outPos += EncodeUtf8CodePoint(codePoint, output[outPos..]);
 
                         break;
                     }
