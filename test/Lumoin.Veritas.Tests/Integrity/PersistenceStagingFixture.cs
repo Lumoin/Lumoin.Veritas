@@ -82,10 +82,20 @@ internal static class PersistenceStagingFixture
     /// <returns>The pooled image.</returns>
     internal static ArtifactImage SegmentImage(EncodedTriple[] triples, MemoryPool<byte> pool)
     {
+        return SegmentImage(triples, pool, ChecksumAlgorithm.XxHash3);
+    }
+
+    /// <summary>Serializes a system-of-record item-segment image under an explicit checksum algorithm, so a test can stage it under a degenerate algorithm to prove the at-rest detection is non-vacuous.</summary>
+    /// <param name="triples">The triples.</param>
+    /// <param name="pool">The pool the image buffer is rented from.</param>
+    /// <param name="checksum">The checksum algorithm the front matter and per-block digests are written under.</param>
+    /// <returns>The pooled image.</returns>
+    internal static ArtifactImage SegmentImage(EncodedTriple[] triples, MemoryPool<byte> pool, ChecksumAlgorithm checksum)
+    {
         ItemSegment segment = new(triples, blockItemCount: 10, blockAlignment: 64);
-        int size = (int)segment.ComputeSerializedSize(ChecksumAlgorithm.XxHash3);
+        int size = (int)segment.ComputeSerializedSize(checksum);
         IMemoryOwner<byte> owner = pool.Rent(size);
-        segment.WriteTo(owner.Memory.Span[..size], ChecksumAlgorithm.XxHash3);
+        segment.WriteTo(owner.Memory.Span[..size], checksum);
 
         return ArtifactImage.Own(owner, size, ManifestFileRole.DataSegment);
     }
@@ -96,9 +106,19 @@ internal static class PersistenceStagingFixture
     /// <returns>The pooled image.</returns>
     internal static ArtifactImage SidecarImage(EncodedTriple[] triples, MemoryPool<byte> pool)
     {
+        return SidecarImage(triples, pool, ChecksumAlgorithm.XxHash3);
+    }
+
+    /// <summary>Serializes a columnar sidecar image under an explicit checksum algorithm, so a test can stage it under a degenerate algorithm to prove the at-rest detection is non-vacuous.</summary>
+    /// <param name="triples">The triples.</param>
+    /// <param name="pool">The pool the image buffer is rented from.</param>
+    /// <param name="checksum">The checksum algorithm the front matter and per-blob digests are written under.</param>
+    /// <returns>The pooled image.</returns>
+    internal static ArtifactImage SidecarImage(EncodedTriple[] triples, MemoryPool<byte> pool, ChecksumAlgorithm checksum)
+    {
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(triples);
         ArrayBufferWriter<byte> writer = new();
-        ColumnarIndexFile.Write(index, writer, ChecksumAlgorithm.XxHash3);
+        ColumnarIndexFile.Write(index, writer, checksum);
 
         return ArtifactImage.Copy(writer.WrittenSpan, ManifestFileRole.Sidecar, pool);
     }
@@ -109,6 +129,16 @@ internal static class PersistenceStagingFixture
     /// <returns>The pooled image.</returns>
     internal static ArtifactImage SketchImage(int symbolCount, MemoryPool<byte> pool)
     {
+        return SketchImage(symbolCount, pool, ChecksumAlgorithm.XxHash3);
+    }
+
+    /// <summary>Serializes a sketch image under an explicit checksum algorithm, so a test can stage it under a degenerate algorithm to prove the at-rest detection is non-vacuous.</summary>
+    /// <param name="symbolCount">The number of symbols.</param>
+    /// <param name="pool">The pool the symbol and image buffers are rented from.</param>
+    /// <param name="checksum">The checksum algorithm the front matter and per-block digests are written under.</param>
+    /// <returns>The pooled image.</returns>
+    internal static ArtifactImage SketchImage(int symbolCount, MemoryPool<byte> pool, ChecksumAlgorithm checksum)
+    {
         int symbolBytes = symbolCount * 24;
         using IMemoryOwner<byte> symbolOwner = pool.Rent(Math.Max(1, symbolBytes));
         Span<byte> symbols = symbolOwner.Memory.Span[..symbolBytes];
@@ -118,9 +148,9 @@ internal static class PersistenceStagingFixture
         }
 
         SketchSegment segment = new(symbolOwner.Memory[..symbolBytes], symbolWidth: 24, symbolsPerBlock: 4, blockAlignment: 64);
-        int size = (int)segment.ComputeSerializedSize(ChecksumAlgorithm.XxHash3);
+        int size = (int)segment.ComputeSerializedSize(checksum);
         IMemoryOwner<byte> owner = pool.Rent(size);
-        segment.WriteTo(owner.Memory.Span[..size], ChecksumAlgorithm.XxHash3);
+        segment.WriteTo(owner.Memory.Span[..size], checksum);
 
         return ArtifactImage.Own(owner, size, ManifestFileRole.Sketch);
     }
