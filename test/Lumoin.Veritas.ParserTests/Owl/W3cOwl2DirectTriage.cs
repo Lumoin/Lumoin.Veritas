@@ -59,7 +59,10 @@ internal sealed class W3cOwl2DirectTriage
         string? outputPath = Environment.GetEnvironmentVariable(OutputPathVariable);
         if(string.IsNullOrWhiteSpace(outputPath))
         {
-            Assert.Inconclusive($"Set {OutputPathVariable} to an absolute output path to run the triage harness.");
+            //Opt-in measurement scaffolding, not a correctness gate: with no
+            //output path configured the harness has nothing to do and the test
+            //passes without measuring. Set VERITAS_DIRECT_TRIAGE to run it.
+            TestContext.WriteLine($"Skipping the triage harness: set {OutputPathVariable} to an absolute output path to run it.");
 
             return;
         }

@@ -20,21 +20,29 @@ namespace Lumoin.Veritas.ParserTests.Owl;
 /// is unsatisfiable.
 /// </summary>
 /// <remarks>
-/// Only tests stated for the Direct Semantics over DL-species documents run
-/// here, and only those the RL runner does not already decide — for
-/// RL-marked tests the RL rules are the prescribed complete calculus. The
-/// premise's <c>owl:imports</c> resolve against the test's supplied
-/// ontologies, so the reasoned-over unit is the imports closure. The
-/// runner's scope is the tests whose premise module lies wholly inside the
-/// tableau's fragment: a premise naming beyond-fragment constructs abstains
-/// up front, named, before any satisfiability search — its verdict could
-/// only ever be fragment-relative, and the search cost is unbounded while
-/// the outcome is foreclosed. Within scope, verdicts are whole-module;
-/// refutation checks whose synthesized counterexample falls outside the
-/// fragment abstain the same way. Honest skips: non-entailment/consistency
-/// kinds, RL-marked tests, RDF-Based-only tests, Full-only tests,
-/// beyond-fragment premises, conclusion axioms with no refutation encoding
-/// in the tableau's fragment.
+/// <para>
+/// Applicability is enforced at the data source
+/// (<see cref="Owl2TestRemit.DirectSemanticsDl"/>): only entailment and
+/// consistency tests stated for the Direct Semantics over DL-species
+/// documents, and not the RL rules runner's, ever materialise here — the
+/// out-of-remit cases are filtered before the row exists, so this arm makes no
+/// claim on them and reports no skip for them.
+/// </para>
+/// <para>
+/// Within remit every case decides, passes a pinned capability boundary, or
+/// fails. The tableau's reach is bounded — it interprets the ALC fragment, and
+/// the corpus reaches well beyond it — so the cases it cannot decide are an
+/// asserted census, not an inconclusive verdict: <see cref="FragmentGaps"/>
+/// (premises naming beyond-fragment constructs, which abstain at the survey
+/// gate before any search), <see cref="SnapshotPracticalReachGaps"/> (in
+/// fragment but beyond the snapshot engine's practical reach), and
+/// <see cref="RefutationGaps"/> (conclusion axioms with no refutation encoding
+/// in the fragment, refutations that fall outside it, a non-conclusion no
+/// axiom settles, or a premise that does not map). A case entering or leaving
+/// a census is a visible test change: a beyond-fragment premise that is not
+/// pinned (or a pinned one now inside the fragment) fails the run, as does a
+/// conclusion gap that is not pinned.
+/// </para>
 /// </remarks>
 [TestClass]
 internal sealed class W3cOwl2DirectTests
@@ -69,6 +77,197 @@ internal sealed class W3cOwl2DirectTests
         "WebOnt-description-logic-209",
     ];
 
+    /// <summary>
+    /// The in-remit premises whose axioms name constructs beyond the tableau's
+    /// ALC fragment, so the arm abstains at the survey gate before any
+    /// satisfiability search: its verdict could only ever be fragment-relative
+    /// while the search cost is unbounded and the outcome foreclosed. This is
+    /// the measured fragment boundary of the corpus, engine-independent (both
+    /// engines share the fragment); a premise that enters it without a pin, or
+    /// a pinned premise now inside the fragment, fails the run.
+    /// </summary>
+    private static HashSet<string> FragmentGaps { get; } =
+    [
+        "Consistent Datatype restrictions with Different Types",
+        "Consistent owl:real range with DataOneOf",
+        "Consistent-but-all-unsat",
+        "Consistent-dateTime",
+        "Contradicting datatype Restrictions",
+        "Contradicting-dateTime-restrictions",
+        "Datatype-DataComplementOf-001",
+        "Datatype-Float-Discrete-001",
+        "Different types in Datatype Restrictions and Complement",
+        "Inconsistent Byte Filler",
+        "Inconsistent Data Complement with the Restrictions",
+        "Inconsistent Disjoint Dataproperties",
+        "Inconsistent String Pattern with Disjoint Dataproperties",
+        "Minus Infinity is not in owl:real",
+        "New-Feature-BottomDataProperty-001",
+        "New-Feature-BottomObjectProperty-001",
+        "New-Feature-DataQCR-001",
+        "New-Feature-DisjointUnion-001",
+        "New-Feature-Keys-001",
+        "New-Feature-Keys-002",
+        "New-Feature-Keys-007",
+        "New-Feature-Rational-001",
+        "New-Feature-SelfRestriction-001",
+        "New-Feature-TopObjectProperty-001",
+        "Plus and Minus Zero Integer",
+        "Qualified-cardinality-boolean",
+        "Qualified-cardinality-restricted-int",
+        "WebOnt-I4.5-001",
+        "WebOnt-I4.5-002",
+        "WebOnt-I5.2-001",
+        "WebOnt-I5.2-002",
+        "WebOnt-I5.2-003",
+        "WebOnt-I5.2-004",
+        "WebOnt-I5.2-005",
+        "WebOnt-I5.2-006",
+        "WebOnt-I5.21-002",
+        "WebOnt-I5.3-008",
+        "WebOnt-I5.8-010",
+        "WebOnt-Restriction-003",
+        "WebOnt-Restriction-004",
+        "WebOnt-Restriction-005-direct",
+        "WebOnt-SymmetricProperty-002",
+        "WebOnt-Thing-004",
+        "WebOnt-TransitiveProperty-002",
+        "WebOnt-cardinality-001",
+        "WebOnt-cardinality-002",
+        "WebOnt-cardinality-003",
+        "WebOnt-cardinality-004",
+        "WebOnt-description-logic-003",
+        "WebOnt-description-logic-004",
+        "WebOnt-description-logic-005",
+        "WebOnt-description-logic-006",
+        "WebOnt-description-logic-007",
+        "WebOnt-description-logic-008",
+        "WebOnt-description-logic-009",
+        "WebOnt-description-logic-010",
+        "WebOnt-description-logic-011",
+        "WebOnt-description-logic-012",
+        "WebOnt-description-logic-013",
+        "WebOnt-description-logic-014",
+        "WebOnt-description-logic-015",
+        "WebOnt-description-logic-016",
+        "WebOnt-description-logic-017",
+        "WebOnt-description-logic-018",
+        "WebOnt-description-logic-019",
+        "WebOnt-description-logic-020",
+        "WebOnt-description-logic-021",
+        "WebOnt-description-logic-022",
+        "WebOnt-description-logic-023",
+        "WebOnt-description-logic-024",
+        "WebOnt-description-logic-025",
+        "WebOnt-description-logic-026",
+        "WebOnt-description-logic-027",
+        "WebOnt-description-logic-028",
+        "WebOnt-description-logic-029",
+        "WebOnt-description-logic-030",
+        "WebOnt-description-logic-031",
+        "WebOnt-description-logic-032",
+        "WebOnt-description-logic-033",
+        "WebOnt-description-logic-034",
+        "WebOnt-description-logic-035",
+        "WebOnt-description-logic-105",
+        "WebOnt-description-logic-106",
+        "WebOnt-description-logic-107",
+        "WebOnt-description-logic-108",
+        "WebOnt-description-logic-109",
+        "WebOnt-description-logic-111",
+        "WebOnt-description-logic-501",
+        "WebOnt-description-logic-502",
+        "WebOnt-description-logic-601",
+        "WebOnt-description-logic-602",
+        "WebOnt-description-logic-603",
+        "WebOnt-description-logic-604",
+        "WebOnt-description-logic-605",
+        "WebOnt-description-logic-606",
+        "WebOnt-description-logic-608",
+        "WebOnt-description-logic-609",
+        "WebOnt-description-logic-610",
+        "WebOnt-description-logic-611",
+        "WebOnt-description-logic-612",
+        "WebOnt-description-logic-613",
+        "WebOnt-description-logic-614",
+        "WebOnt-description-logic-615",
+        "WebOnt-description-logic-616",
+        "WebOnt-description-logic-617",
+        "WebOnt-description-logic-623",
+        "WebOnt-description-logic-624",
+        "WebOnt-description-logic-625",
+        "WebOnt-description-logic-626",
+        "WebOnt-description-logic-627",
+        "WebOnt-description-logic-628",
+        "WebOnt-description-logic-629",
+        "WebOnt-description-logic-630",
+        "WebOnt-description-logic-631",
+        "WebOnt-description-logic-632",
+        "WebOnt-description-logic-633",
+        "WebOnt-description-logic-634",
+        "WebOnt-description-logic-641",
+        "WebOnt-description-logic-642",
+        "WebOnt-description-logic-643",
+        "WebOnt-description-logic-644",
+        "WebOnt-description-logic-646",
+        "WebOnt-description-logic-650",
+        "WebOnt-description-logic-661",
+        "WebOnt-description-logic-665",
+        "WebOnt-description-logic-667",
+        "WebOnt-description-logic-905",
+        "WebOnt-description-logic-908",
+        "WebOnt-equivalentClass-004",
+        "WebOnt-equivalentClass-005",
+        "WebOnt-equivalentClass-009",
+        "WebOnt-equivalentProperty-001",
+        "WebOnt-equivalentProperty-004",
+        "WebOnt-maxCardinality-001",
+        "WebOnt-miscellaneous-001",
+        "WebOnt-miscellaneous-002",
+        "WebOnt-miscellaneous-202",
+        "WebOnt-miscellaneous-203",
+        "WebOnt-miscellaneous-204",
+        "WebOnt-oneOf-001",
+        "WebOnt-oneOf-004",
+        "WebOnt-unionOf-003",
+        "WebOnt-unionOf-004",
+        "consistent-dataproperty-disjointness",
+        "consistent-integer-filler",
+        "datatype-restriction-min-max-inconsistency",
+        "inconsistent-integer-filler",
+        "inconsistent_datatypes",
+        "one=two",
+        "owl2-rl-invalid-leftside-maxcard",
+        "owl2-rl-invalid-oneof",
+        "owl2-rl-invalid-owlreal",
+        "owl2-rl-valid-mincard",
+    ];
+
+    /// <summary>
+    /// In-fragment cases whose conclusion the tableau cannot refute within the
+    /// concept language, paired with the reason: a conclusion axiom kind with
+    /// no refutation encoding (role/data axioms, property assertions,
+    /// individual (in)equality, keys), a synthesized refutation that itself
+    /// names beyond-fragment constructs, a non-conclusion no axiom settles
+    /// either way, or a premise that does not map to structural form. A case
+    /// hitting one of these without a pin fails the run so the entry is added.
+    /// </summary>
+    private static Dictionary<string, string> RefutationGaps { get; } = new(StringComparer.Ordinal)
+    {
+        ["New-Feature-ObjectQCR-001"] = "a conclusion refutation lies beyond the tableau's fragment",
+        ["New-Feature-SelfRestriction-002"] = "a conclusion refutation lies beyond the tableau's fragment",
+        ["WebOnt-I5.26-009"] = "a conclusion refutation lies beyond the tableau's fragment",
+        ["WebOnt-description-logic-901"] = "a conclusion refutation lies beyond the tableau's fragment",
+        ["WebOnt-AnnotationProperty-002"] = "a conclusion axiom has no refutation encoding in the tableau's fragment",
+        ["WebOnt-disjointWith-001"] = "a conclusion axiom has no refutation encoding in the tableau's fragment",
+        ["WebOnt-someValuesFrom-003"] = "a conclusion axiom has no refutation encoding in the tableau's fragment",
+        ["somevaluesfrom2bnode"] = "a conclusion axiom has no refutation encoding in the tableau's fragment",
+        ["WebOnt-allValuesFrom-002"] = "no non-conclusion axiom settles either way within the fragment",
+        ["WebOnt-description-logic-902"] = "no non-conclusion axiom settles either way within the fragment",
+        ["New-Feature-Rational-002"] = "the premise does not map to structural form",
+        ["New-Feature-Rational-003"] = "the premise does not map to structural form",
+    };
+
     /// <summary>Whether the engine abstains on the test as a measured practical-reach gap: the snapshot engine does on the recorded set, the SAT-backed engine on none.</summary>
     /// <param name="engine">The deciding engine.</param>
     /// <param name="identifier">The test identifier.</param>
@@ -87,7 +286,7 @@ internal sealed class W3cOwl2DirectTests
     /// <summary>Runs one approved-status test case through the snapshot tableau — the reference baseline.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     [TestMethod]
-    [Owl2ManifestData("approved", "all.rdf")]
+    [Owl2ManifestData("approved", "all.rdf", Owl2TestRemit.DirectSemanticsDl)]
     public void RunApproved(Owl2TestCase testCase)
     {
         RunAndAssert(DirectEngine.Snapshot, testCase);
@@ -96,7 +295,7 @@ internal sealed class W3cOwl2DirectTests
     /// <summary>Runs one proposed-status test case through the snapshot tableau — the reference baseline.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     [TestMethod]
-    [Owl2ManifestData("proposed", "all.rdf")]
+    [Owl2ManifestData("proposed", "all.rdf", Owl2TestRemit.DirectSemanticsDl)]
     public void RunProposed(Owl2TestCase testCase)
     {
         RunAndAssert(DirectEngine.Snapshot, testCase);
@@ -105,7 +304,7 @@ internal sealed class W3cOwl2DirectTests
     /// <summary>Runs one approved-status test case through the SAT-backed sibling, the parametrized engine arm.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     [TestMethod]
-    [Owl2ManifestData("approved", "all.rdf")]
+    [Owl2ManifestData("approved", "all.rdf", Owl2TestRemit.DirectSemanticsDl)]
     public void RunApprovedSatBacked(Owl2TestCase testCase)
     {
         RunAndAssert(DirectEngine.SatBacked, testCase);
@@ -114,53 +313,39 @@ internal sealed class W3cOwl2DirectTests
     /// <summary>Runs one proposed-status test case through the SAT-backed sibling, the parametrized engine arm.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     [TestMethod]
-    [Owl2ManifestData("proposed", "all.rdf")]
+    [Owl2ManifestData("proposed", "all.rdf", Owl2TestRemit.DirectSemanticsDl)]
     public void RunProposedSatBacked(Owl2TestCase testCase)
     {
         RunAndAssert(DirectEngine.SatBacked, testCase);
     }
 
-    /// <summary>Applies the remit guard, loads and maps the test documents, and dispatches the test's kinds to the tableau arms through the selected engine.</summary>
+    /// <summary>Loads and maps the test documents and dispatches the test's kinds to the tableau arms through the selected engine; capability boundaries pass through the pinned census, everything else decides.</summary>
     /// <param name="engine">The engine to decide through.</param>
     /// <param name="testCase">The test case.</param>
     private void RunAndAssert(DirectEngine engine, Owl2TestCase testCase)
     {
         ArgumentNullException.ThrowIfNull(testCase);
 
+        //Applicability — entailment/consistency kind, Direct Semantics, DL
+        //species, not RL-marked — is enforced at the data source
+        //(Owl2TestRemit.DirectSemanticsDl), so every case reaching here is the
+        //tableau's to decide.
         bool isPositive = testCase.Kinds.Contains("PositiveEntailmentTest");
         bool isNegative = testCase.Kinds.Contains("NegativeEntailmentTest");
         bool isInconsistency = testCase.Kinds.Contains("InconsistencyTest");
         bool isConsistency = testCase.Kinds.Contains("ConsistencyTest");
 
-        if(!isPositive && !isNegative && !isInconsistency && !isConsistency)
-        {
-            Assert.Inconclusive("Not an entailment or consistency test; the tableau decides nothing here.");
-        }
-
-        if(testCase.Profiles.Contains("RL"))
-        {
-            Assert.Inconclusive("RL-marked; the RL rules runner decides it.");
-        }
-
-        if(!testCase.Semantics.Contains("DIRECT"))
-        {
-            Assert.Inconclusive("Not stated for the Direct Semantics.");
-        }
-
-        if(!testCase.Species.Contains("DL"))
-        {
-            Assert.Inconclusive("Not a DL-species test; a description-logic tableau makes no claim.");
-        }
-
         if(IsPracticalReachGap(engine, testCase.Identifier))
         {
-            Assert.Inconclusive("Beyond the snapshot tableau's practical reach; the SAT-backed sibling's workload.");
+            //Pinned, engine-relative gap: in fragment but beyond the snapshot
+            //engine's practical reach. The SAT-backed sibling decides it.
+            return;
         }
 
         List<Quad>? maybePremise = LoadQuads(testCase, testCase.RdfXmlPremise, testCase.FunctionalPremise);
         if(maybePremise is not List<Quad> premiseQuads)
         {
-            Assert.Inconclusive("The test declares no premise document in a syntax the harness reads.");
+            Assert.Fail($"{testCase.Identifier}: the test declares no premise document in a syntax the harness reads.");
 
             return;
         }
@@ -172,15 +357,17 @@ internal sealed class W3cOwl2DirectTests
         OwlOntologyDocument premise = OwlRdfMapper.Map(premiseQuads);
         if(premise.Diagnostics.HasErrors)
         {
-            Assert.Inconclusive("The premise did not map to structural form; the test cannot be set up.");
+            AssertKnownGap(testCase, "the premise does not map to structural form");
+
+            return;
         }
 
         //The scope gate: a beyond-fragment premise forecloses every arm's
         //decidable outcome, so it abstains before any tableau search runs.
         IReadOnlyList<string> remainder = AlcModuleReasoner.Survey(new ReasoningModule([.. premise.Axioms], Violations: []));
-        if(remainder.Count > 0)
+        if(AssertFragmentBoundary(testCase, beyondFragment: remainder.Count > 0))
         {
-            Assert.Inconclusive($"The premise lies beyond the tableau's fragment: {string.Join(", ", remainder.Distinct())}.");
+            return;
         }
 
         if(isInconsistency)
@@ -188,7 +375,11 @@ internal sealed class W3cOwl2DirectTests
             ModuleVerdict verdict = Decide(engine, premise, refutation: null);
             if(verdict.IsConsistent)
             {
-                AbstainWhenBeyondFragment(verdict);
+                if(AbstainWhenBeyondFragment(testCase, verdict))
+                {
+                    return;
+                }
+
                 Assert.Fail($"{testCase.Identifier}: the tableau should find the premise inconsistent.");
             }
 
@@ -200,7 +391,10 @@ internal sealed class W3cOwl2DirectTests
             ModuleVerdict verdict = Decide(engine, premise, refutation: null);
 
             Assert.IsTrue(verdict.IsConsistent, $"{testCase.Identifier}: the premise is consistent, but the tableau found a clash.");
-            AbstainWhenBeyondFragment(verdict);
+            if(AbstainWhenBeyondFragment(testCase, verdict))
+            {
+                return;
+            }
         }
 
         if(isPositive
@@ -220,8 +414,8 @@ internal sealed class W3cOwl2DirectTests
     /// The positive arm: every logical conclusion axiom must be entailed,
     /// each by all of its refutation checks coming back unsatisfiable. A
     /// satisfiable check over a fully supported module is a genuine
-    /// non-entailment and fails; one resting on beyond-fragment axioms
-    /// abstains.
+    /// non-entailment and fails; one resting on beyond-fragment axioms is a
+    /// pinned refutation gap.
     /// </summary>
     /// <param name="engine">The engine to decide through.</param>
     /// <param name="testCase">The test case.</param>
@@ -240,7 +434,7 @@ internal sealed class W3cOwl2DirectTests
 
             if(Refutations(axiom) is not List<OwlClassAssertionAxiom> checks)
             {
-                Assert.Inconclusive($"A conclusion {axiom.GetType().Name} has no refutation encoding in the tableau's fragment.");
+                AssertKnownGap(testCase, $"a conclusion {axiom.GetType().Name} has no refutation encoding in the tableau's fragment");
 
                 return;
             }
@@ -249,13 +443,19 @@ internal sealed class W3cOwl2DirectTests
             {
                 if(IsBeyondFragment(check))
                 {
-                    Assert.Inconclusive($"A conclusion {axiom.GetType().Name} refutation lies beyond the tableau's fragment.");
+                    AssertKnownGap(testCase, $"a conclusion {axiom.GetType().Name} refutation lies beyond the tableau's fragment");
+
+                    return;
                 }
 
                 ModuleVerdict verdict = Decide(engine, premise, check);
                 if(verdict.IsConsistent)
                 {
-                    AbstainWhenBeyondFragment(verdict);
+                    if(AbstainWhenBeyondFragment(testCase, verdict))
+                    {
+                        return;
+                    }
+
                     Assert.Fail($"{testCase.Identifier}: a conclusion {axiom.GetType().Name} does not follow from the premise.");
                 }
             }
@@ -267,7 +467,7 @@ internal sealed class W3cOwl2DirectTests
     /// logical axiom with a cleanly satisfiable refutation check witnesses.
     /// An axiom whose checks are all unsatisfiable is entailed; if every
     /// axiom is entailed the test fails, and a walk that could not settle
-    /// any axiom either way abstains.
+    /// any axiom either way is a pinned refutation gap.
     /// </summary>
     /// <param name="engine">The engine to decide through.</param>
     /// <param name="testCase">The test case.</param>
@@ -322,7 +522,9 @@ internal sealed class W3cOwl2DirectTests
 
         if(isUndecided)
         {
-            Assert.Inconclusive("No non-conclusion axiom settled either way within the tableau's fragment.");
+            AssertKnownGap(testCase, "no non-conclusion axiom settles either way within the tableau's fragment");
+
+            return;
         }
 
         Assert.Fail($"{testCase.Identifier}: the non-conclusion follows from the premise but must not.");
@@ -359,14 +561,64 @@ internal sealed class W3cOwl2DirectTests
         return AlcModuleReasoner.Survey(new ReasoningModule([check], Violations: [])).Count > 0;
     }
 
-    /// <summary>Abstains, naming the beyond-fragment constructs, when the verdict is fragment-relative rather than whole-module.</summary>
+    /// <summary>
+    /// Resolves a beyond-fragment premise against the pinned
+    /// <see cref="FragmentGaps"/> census: a pinned premise that is beyond the
+    /// fragment passes (returns <c>true</c> so the caller abstains); an
+    /// unpinned beyond-fragment premise, or a pinned premise now inside the
+    /// fragment, fails so the census stays exact.
+    /// </summary>
+    /// <param name="testCase">The test case.</param>
+    /// <param name="beyondFragment">Whether the survey found beyond-fragment constructs in the premise.</param>
+    /// <returns><c>true</c> when the premise is a pinned fragment gap and the caller should abstain.</returns>
+    private static bool AssertFragmentBoundary(Owl2TestCase testCase, bool beyondFragment)
+    {
+        bool pinned = FragmentGaps.Contains(testCase.Identifier);
+        if(beyondFragment)
+        {
+            if(!pinned)
+            {
+                Assert.Fail($"{testCase.Identifier}: the premise lies beyond the tableau's fragment but is not pinned; add it to FragmentGaps.");
+            }
+
+            return true;
+        }
+
+        if(pinned)
+        {
+            Assert.Fail($"{testCase.Identifier}: pinned as a fragment gap but the premise now lies inside the tableau's fragment; remove it from FragmentGaps.");
+        }
+
+        return false;
+    }
+
+    /// <summary>Resolves a fragment-relative verdict against the pinned <see cref="RefutationGaps"/> census: a pinned case abstains (returns <c>true</c>), an unpinned one fails.</summary>
+    /// <param name="testCase">The test case.</param>
     /// <param name="verdict">The verdict to inspect.</param>
-    private static void AbstainWhenBeyondFragment(ModuleVerdict verdict)
+    /// <returns><c>true</c> when the verdict is fragment-relative and the caller should abstain.</returns>
+    private static bool AbstainWhenBeyondFragment(Owl2TestCase testCase, ModuleVerdict verdict)
     {
         if(verdict.UnsupportedConstructs.Count > 0)
         {
-            Assert.Inconclusive($"Fragment-relative verdict; beyond the tableau: {string.Join(", ", verdict.UnsupportedConstructs.Distinct())}.");
+            AssertKnownGap(testCase, $"fragment-relative verdict; beyond the tableau: {string.Join(", ", verdict.UnsupportedConstructs.Distinct())}");
+
+            return true;
         }
+
+        return false;
+    }
+
+    /// <summary>Resolves a conclusion-level or setup-level capability boundary against the pinned <see cref="RefutationGaps"/> census: a pinned case passes, an unpinned one fails so the entry is added.</summary>
+    /// <param name="testCase">The test case.</param>
+    /// <param name="reason">The boundary the case hit, for the failure message when it is not pinned.</param>
+    private static void AssertKnownGap(Owl2TestCase testCase, string reason)
+    {
+        if(RefutationGaps.ContainsKey(testCase.Identifier))
+        {
+            return;
+        }
+
+        Assert.Fail($"{testCase.Identifier}: unpinned capability gap ({reason}); extend the tableau or pin it in RefutationGaps.");
     }
 
     /// <summary>An axiom with no logical content under the Direct Semantics: declarations and the annotation family.</summary>
@@ -473,10 +725,7 @@ internal sealed class W3cOwl2DirectTests
         if(functional is string text)
         {
             OwlOntologyDocument document = Lumoin.Veritas.Owl.Functional.OwlFunctionalSyntaxReader.Read(text);
-            if(document.Diagnostics.HasErrors)
-            {
-                Assert.Inconclusive("A test document did not parse as functional syntax; the test cannot be set up.");
-            }
+            Assert.IsFalse(document.Diagnostics.HasErrors, $"{testCase.Identifier}: a test document did not parse as functional syntax; the test cannot be set up.");
 
             return OwlStructuralToRdf.ToQuads(document);
         }
@@ -484,7 +733,7 @@ internal sealed class W3cOwl2DirectTests
         return null;
     }
 
-    /// <summary>Parses an inline RDF/XML document against the test's base IRI, abstaining when it does not parse.</summary>
+    /// <summary>Parses an inline RDF/XML document against the test's base IRI, failing when it does not parse — an unparseable corpus document is a setup failure, not a skip.</summary>
     /// <param name="testCase">The test case supplying the base IRI.</param>
     /// <param name="document">The inline RDF/XML.</param>
     /// <returns>The parsed triples.</returns>
@@ -492,10 +741,7 @@ internal sealed class W3cOwl2DirectTests
     {
         DiagnosticBag diagnostics = new();
         List<Quad> quads = [.. RdfXmlReader.Read(Encoding.UTF8.GetBytes(document), diagnostics, baseIri: testCase.Uri.AbsoluteUri)];
-        if(diagnostics.HasErrors)
-        {
-            Assert.Inconclusive("A test document did not parse as RDF/XML; the test cannot be set up.");
-        }
+        Assert.IsFalse(diagnostics.HasErrors, $"{testCase.Identifier}: a test document did not parse as RDF/XML; the test cannot be set up.");
 
         return quads;
     }

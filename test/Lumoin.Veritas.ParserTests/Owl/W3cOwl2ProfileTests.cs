@@ -128,7 +128,7 @@ internal sealed class W3cOwl2ProfileTests
 
         if(reports.Count == 0)
         {
-            Assert.Inconclusive("The test declares no document in a syntax the harness reads.");
+            Assert.Fail($"{testCase.Identifier}: the test declares no document in a syntax the harness reads.");
         }
 
         if(KnownGaps.Contains(testCase.Identifier))
@@ -138,7 +138,9 @@ internal sealed class W3cOwl2ProfileTests
                 Assert.Fail($"{testCase.Identifier} is a recorded known gap but now matches all profile claims; remove it from KnownGaps.");
             }
 
-            Assert.Inconclusive("Recorded corpus contradiction; see KnownGaps.");
+            //A pinned corpus contradiction the checker does not reproduce: an
+            //expected, passing capability boundary.
+            return;
         }
 
         AssertProfile(testCase, reports, "EL", OwlProfiles.El);
@@ -175,10 +177,7 @@ internal sealed class W3cOwl2ProfileTests
     {
         DiagnosticBag parseDiagnostics = new();
         List<Quad> quads = [.. RdfXmlReader.Read(Encoding.UTF8.GetBytes(document), parseDiagnostics, baseIri: testCase.Uri.AbsoluteUri)];
-        if(parseDiagnostics.HasErrors)
-        {
-            Assert.Inconclusive("A test document did not parse as RDF/XML; the test cannot be set up.");
-        }
+        Assert.IsFalse(parseDiagnostics.HasErrors, $"{testCase.Identifier}: a test document did not parse as RDF/XML; the test cannot be set up.");
 
         //Profile membership is a property of the ontology's axiom closure
         //(Profiles §2), so the document's owl:imports resolve against the
@@ -189,10 +188,7 @@ internal sealed class W3cOwl2ProfileTests
     private static OwlOntologyDocument ReadFunctional(string document)
     {
         OwlOntologyDocument read = Lumoin.Veritas.Owl.Functional.OwlFunctionalSyntaxReader.Read(document);
-        if(read.Diagnostics.HasErrors)
-        {
-            Assert.Inconclusive("A test document did not parse as functional syntax; the test cannot be set up.");
-        }
+        Assert.IsFalse(read.Diagnostics.HasErrors, "A test document did not parse as functional syntax; the test cannot be set up.");
 
         return read;
     }
