@@ -7,6 +7,7 @@ $projects = @(
     'Lumoin.Veritas.Core',
     'Lumoin.Veritas.Json',
     'Lumoin.Veritas.Json.Stj',
+    'Lumoin.Veritas.Jsonata',
     'Lumoin.Veritas.JsonLd',
     'Lumoin.Veritas.JsonPointer',
     'Lumoin.Veritas.JsonSchema',
