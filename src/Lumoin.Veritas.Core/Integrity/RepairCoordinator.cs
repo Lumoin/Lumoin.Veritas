@@ -7,6 +7,7 @@ using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.ContentAddressing;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Persistence.Manifest;
+using Lumoin.Veritas.Core.Persistence.Parity;
 using Lumoin.Veritas.Core.Persistence.Segment;
 using Lumoin.Veritas.Core.Reconciliation;
 
@@ -45,6 +46,12 @@ internal sealed class RepairCoordinator
     /// <summary>The local-parity restoring source for the system-of-record, or <see langword="null"/> when the generation carries no usable parity; borrowed for the pass.</summary>
     private readonly ParityRepairSource? paritySource;
 
+    /// <summary>The system-of-record's block geometry — the triples per block — a parity re-derive rebuilds the parity over, so the regenerated parity protects the same blocks the original did.</summary>
+    private int SystemOfRecordBlockItemCount { get; }
+
+    /// <summary>The system-of-record's block alignment — the page boundary its blocks begin on — a re-derived parity image is framed under, so it matches the alignment of the segment it co-versions.</summary>
+    private int SystemOfRecordBlockAlignment { get; }
+
     /// <summary>The derived artifacts regenerated this pass.</summary>
     private readonly List<RederivedArtifact> rederived = [];
 
@@ -67,6 +74,8 @@ internal sealed class RepairCoordinator
     /// <param name="trace">The diagnostics sink; <see langword="null"/> emits nothing.</param>
     /// <param name="correlationId">The correlation id shared by every event of this pass.</param>
     /// <param name="timestampTicks">The pass timestamp stamped on every emitted event.</param>
+    /// <param name="systemOfRecordBlockItemCount">The system-of-record's triples per block, so a parity re-derive rebuilds the parity over the same block geometry.</param>
+    /// <param name="systemOfRecordBlockAlignment">The system-of-record's block alignment, so a re-derived parity image is framed under the same alignment as the segment it co-versions.</param>
     /// <param name="paritySource">The local-parity restoring source for the system-of-record, or <see langword="null"/> when the generation carries no usable parity; borrowed for the pass.</param>
     internal RepairCoordinator(
         ItemSegmentFeed feed,
@@ -75,6 +84,8 @@ internal sealed class RepairCoordinator
         TraceHandler<StorageTraceEvent>? trace,
         Guid correlationId,
         long timestampTicks,
+        int systemOfRecordBlockItemCount,
+        int systemOfRecordBlockAlignment,
         ParityRepairSource? paritySource = null)
     {
         this.feed = feed;
@@ -83,6 +94,8 @@ internal sealed class RepairCoordinator
         this.trace = trace;
         this.correlationId = correlationId;
         this.timestampTicks = timestampTicks;
+        SystemOfRecordBlockItemCount = systemOfRecordBlockItemCount;
+        SystemOfRecordBlockAlignment = systemOfRecordBlockAlignment;
         this.paritySource = paritySource;
     }
 
@@ -123,7 +136,7 @@ internal sealed class RepairCoordinator
         return false;
     }
 
-    /// <summary>The re-derive rung: a damaged derived artifact (the sidecar, the sketch) is rebuilt from the verified system-of-record feed; the non-re-derivable system-of-record declines.</summary>
+    /// <summary>The re-derive rung: a damaged derived artifact (the sidecar, the sketch, or the local-parity sidecar) is rebuilt from the verified system-of-record feed; the non-re-derivable system-of-record declines.</summary>
     /// <returns><see langword="true"/> when the artifact was re-derived.</returns>
     private bool AttemptRederive()
     {
@@ -137,6 +150,13 @@ internal sealed class RepairCoordinator
         if(current == ManifestFileRole.Sketch)
         {
             RederiveSketch();
+
+            return true;
+        }
+
+        if(current == ManifestFileRole.Parity)
+        {
+            RederiveParity();
 
             return true;
         }
@@ -220,6 +240,20 @@ internal sealed class RepairCoordinator
         ArrayBufferWriter<byte> writer = new();
         SketchPersistence.PersistSketch(items, configuration.SketchContract, configuration.SymbolBudget, configuration.Checksum, configuration.BytePool, configuration.EncodeSketchSymbols, writer);
         Record(ManifestFileRole.Sketch, writer.WrittenMemory, count);
+    }
+
+    /// <summary>Rebuilds the local-parity sidecar from the verified system-of-record triples — folding the capacity-1 parity over the same block geometry the system-of-record uses — and records the fresh image.</summary>
+    private void RederiveParity()
+    {
+        ItemSegment systemOfRecord = new(RederiveItems, SystemOfRecordBlockItemCount, SystemOfRecordBlockAlignment);
+        using ParityBlock parity = ParityBlock.Rent(configuration.BytePool, systemOfRecord.MaxBlockPayloadByteCount);
+        int protectedBlockCount = ParitySegment.BuildParity(systemOfRecord, parity.WritableSpan, configuration.BytePool);
+        ParitySegment segment = new(parity.Memory, protectedBlockCount, SystemOfRecordBlockAlignment);
+        int size = (int)segment.ComputeSerializedSize(configuration.Checksum);
+        ArrayBufferWriter<byte> writer = new();
+        segment.WriteTo(writer.GetSpan(size)[..size], configuration.Checksum);
+        writer.Advance(size);
+        Record(ManifestFileRole.Parity, writer.WrittenMemory, RederiveItemCount);
     }
 
     /// <summary>Records a regenerated artifact and emits its re-derived outcome.</summary>

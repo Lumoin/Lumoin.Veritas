@@ -339,6 +339,47 @@ internal sealed class LocalParityRepairTests
         }
     }
 
+    /// <summary>A corrupt parity sidecar is re-derived from the verified system-of-record — it is re-derivable like a view — and the regenerated parity verifies clean and equals the parity over the system-of-record.</summary>
+    [TestMethod]
+    public void CorruptParityIsRederivedFromTheSystemOfRecord()
+    {
+        EncodedTriple[] triples = SampleTriples(30);
+        using VeritasMemoryPool<byte> bytePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        using ArtifactImage segment = SegmentImage(triples, bytePool);
+        using ArtifactImage sidecar = SidecarImage(triples, bytePool);
+        using ArtifactImage sketch = SketchImage(10, bytePool);
+        using ArtifactImage parity = ParityImage(triples, bytePool);
+        CorruptParityBlock(parity);
+        FileSystemPersistenceStore store = StageGeneration(7, segment, sidecar, sketch, parity, bytePool, out string directory);
+        try
+        {
+            ScrubRoundReport verify = ScrubRound.RunVerifyPass(store, null, null, Guid.Empty, new FakeTimeProvider());
+            bool parityDetected = verify.CorruptBlocks.Any(static f => f.RoleCode == ManifestFileRole.Parity.Code);
+            Assert.IsTrue(parityDetected, "Precondition: the parity must be detected corrupt.");
+
+            StorageTraceCapture trace = new();
+            RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, trace.Capture, Guid.Empty, new FakeTimeProvider());
+
+            Assert.IsTrue(repair.IsClean, "A re-derivable parity corruption is fully recoverable.");
+            Assert.IsEmpty(repair.NamedLosses);
+            RederivedArtifact rederived = repair.RederivedArtifacts.Single(static a => a.Role == ManifestFileRole.Parity);
+            Assert.IsTrue(ParitySegment.RunVerifyRound(rederived.Image.Span).IsClean, "The re-derived parity must verify clean.");
+
+            //The re-derived parity equals a fresh parity folded over the same system-of-record — the differential twin.
+            byte[] rederivedParity = ParitySegment.ReadFrom(rederived.Image.Span);
+            using ParityBlock reference = BuildParityBlock(triples, bytePool);
+            bool faithful = rederivedParity.AsSpan().SequenceEqual(reference.Span);
+            Assert.IsTrue(faithful, "The re-derived parity must equal the parity over the system-of-record.");
+            StorageTraceEvent rederivedEvent = trace.Events.Single(static e => e.Kind == StorageTraceEventKind.Rederived);
+            Assert.AreEqual(ManifestFileRole.Parity.Code, rederivedEvent.RoleCode);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     /// <summary>Builds the capacity-1 parity block over the triples' system-of-record blocks into a pooled block the caller disposes.</summary>
     /// <param name="triples">The triples whose system-of-record blocks the parity protects.</param>
     /// <param name="pool">The pool the parity and a transient scratch are rented from.</param>

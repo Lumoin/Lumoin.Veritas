@@ -108,7 +108,7 @@ public static class ScrubRound
         return new ScrubRoundReport(generation, recovery.IsDegraded, verified, corrupt);
     }
 
-    /// <summary>Runs one repair pass over a verify report's corrupt blocks: re-derives each damaged re-derivable artifact (the sidecar, the sketch) from the verified system-of-record, restores a single lost system-of-record block from a co-versioned parity sidecar when the generation carries one and it verifies clean, and names the item loss of each corrupt system-of-record block the parity cannot restore, emitting a <see cref="StorageTraceEvent"/> per outcome. It is a generation-agnostic producer — it returns the fresh artifact images and named losses but commits nothing; the caller stages the images and publishes a new generation. The pass declines without acting when the held snapshot is degraded, when the recovered generation no longer matches the report, or when the system-of-record cannot be read.</summary>
+    /// <summary>Runs one repair pass over a verify report's corrupt blocks: re-derives each damaged re-derivable artifact (the sidecar, the sketch, or the local-parity sidecar) from the verified system-of-record, restores a single lost system-of-record block from a co-versioned parity sidecar when the generation carries one and it verifies clean, and names the item loss of each corrupt system-of-record block the parity cannot restore, emitting a <see cref="StorageTraceEvent"/> per outcome. It is a generation-agnostic producer — it returns the fresh artifact images and named losses but commits nothing; the caller stages the images and publishes a new generation. The pass declines without acting when the held snapshot is degraded, when the recovered generation no longer matches the report, or when the system-of-record cannot be read.</summary>
     /// <remarks>The system-of-record is repaired before any derived view, so a view damaged in the same pass is re-derived from the healed item set — the parity-restored full set when a lost block was recovered, or the verified feed when a block was instead named lost — and every artifact in the published generation reflects the same items.</remarks>
     /// <param name="store">The store holding the committed generation's artifacts.</param>
     /// <param name="verifyReport">The verify pass's report whose corrupt blocks this pass repairs.</param>
@@ -162,6 +162,7 @@ public static class ScrubRound
         bool dataSegmentDamaged = false;
         bool sidecarDamaged = false;
         bool sketchDamaged = false;
+        bool parityDamaged = false;
         for(int i = 0; i < verifyReport.CorruptBlocks.Count; i++)
         {
             int roleCode = verifyReport.CorruptBlocks[i].RoleCode;
@@ -176,6 +177,10 @@ public static class ScrubRound
             else if(roleCode == ManifestFileRole.Sketch.Code)
             {
                 sketchDamaged = true;
+            }
+            else if(roleCode == ManifestFileRole.Parity.Code)
+            {
+                parityDamaged = true;
             }
         }
 
@@ -194,6 +199,7 @@ public static class ScrubRound
         try
         {
             feed = ItemSegment.ReadVerifiedItems(systemOfRecordImage, configuration.TriplePool, resolveChecksum);
+            (_, int systemOfRecordBlockItemCount, int systemOfRecordBlockAlignment) = ItemSegment.ReadGeometry(systemOfRecordImage);
 
             //A corrupt system-of-record block can be restored from a co-versioned parity sidecar, when the
             //generation carries one and it itself verifies clean at rest; a re-derivable view never needs it.
@@ -202,7 +208,7 @@ public static class ScrubRound
                 : null;
 
             long timestampTicks = timeProvider.GetUtcNow().UtcTicks;
-            RepairCoordinator coordinator = new(feed, configuration, manifest.CommitGeneration, trace, correlationId, timestampTicks, paritySource);
+            RepairCoordinator coordinator = new(feed, configuration, manifest.CommitGeneration, trace, correlationId, timestampTicks, systemOfRecordBlockItemCount, systemOfRecordBlockAlignment, paritySource);
             //Restore the system-of-record first: a co-damaged view re-derived afterward then folds the healed
             //full item set rather than the block-excluded feed, so every published tier reflects the same items.
             if(dataSegmentDamaged)
@@ -218,6 +224,15 @@ public static class ScrubRound
             if(sketchDamaged)
             {
                 coordinator.Repair(ManifestFileRole.Sketch);
+            }
+
+            //The local-parity sidecar is re-derivable from the system-of-record like a view, but only over an
+            //INTACT segment: a segment that was also damaged is either restored — which needs an undamaged parity,
+            //so the parity is not damaged here — or named lost with an incomplete item set, so a damaged or lossy
+            //segment's parity awaits a pruned re-derive rather than protecting fewer blocks than the segment carries.
+            if(parityDamaged && !dataSegmentDamaged)
+            {
+                coordinator.Repair(ManifestFileRole.Parity);
             }
 
             return new RepairPassReport(manifest.CommitGeneration, RepairRefusalReason.None, [.. coordinator.RederivedArtifacts], [.. coordinator.NamedLosses]);

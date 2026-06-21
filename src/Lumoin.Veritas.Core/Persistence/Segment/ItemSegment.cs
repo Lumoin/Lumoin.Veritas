@@ -60,18 +60,16 @@ public sealed partial class ItemSegment
     /// <summary>The default block alignment: one 4 KiB page, so each block is a whole-page checksum domain.</summary>
     public const int DefaultBlockAlignment = 4096;
 
-    /// <summary>The canonical triples this segment holds, in row-major item order.</summary>
-    private readonly IReadOnlyList<EncodedTriple> items;
+    /// <summary>The canonical triples this segment holds, in row-major item order; a held view over the caller's contiguous triple buffer, indexed by span without an interface hop.</summary>
+    private readonly ReadOnlyMemory<EncodedTriple> items;
 
     /// <summary>Creates a segment over the canonical triples.</summary>
-    /// <param name="items">The canonical triples, in the order they are stored.</param>
+    /// <param name="items">The canonical triples, in the order they are stored; held as a view, not copied.</param>
     /// <param name="blockItemCount">The number of triples per block; a block boundary is a triple boundary so a block's checksum names its exact item range.</param>
     /// <param name="blockAlignment">The byte alignment each block begins on (a page/sector multiple); <see cref="DefaultBlockAlignment"/> by default.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="items"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="blockItemCount"/> or <paramref name="blockAlignment"/> is not positive.</exception>
-    public ItemSegment(IReadOnlyList<EncodedTriple> items, int blockItemCount, int blockAlignment = DefaultBlockAlignment)
+    public ItemSegment(ReadOnlyMemory<EncodedTriple> items, int blockItemCount, int blockAlignment = DefaultBlockAlignment)
     {
-        ArgumentNullException.ThrowIfNull(items);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(blockItemCount);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(blockAlignment);
 
@@ -87,10 +85,10 @@ public sealed partial class ItemSegment
     public int BlockAlignment { get; }
 
     /// <summary>The number of triples in the segment.</summary>
-    public int ItemCount => items.Count;
+    public int ItemCount => items.Length;
 
     /// <summary>The number of item blocks: every full block holds <see cref="BlockItemCount"/> triples and the last holds the remainder.</summary>
-    public int BlockCount => (int)(((long)items.Count + BlockItemCount - 1) / BlockItemCount);
+    public int BlockCount => (int)(((long)items.Length + BlockItemCount - 1) / BlockItemCount);
 
     /// <summary>The byte length of a full block's item payload (<see cref="BlockItemCount"/> triples) — the uniform stride a local-parity code zero-extends every block to.</summary>
     public int MaxBlockPayloadByteCount => BlockItemCount * ItemByteSize;
@@ -152,7 +150,7 @@ public sealed partial class ItemSegment
         p += sizeof(ulong);
         destination[p++] = checksum?.Id ?? ChecksumAlgorithmNone;
 
-        BinaryPrimitives.WriteInt32LittleEndian(destination[p..], items.Count);
+        BinaryPrimitives.WriteInt32LittleEndian(destination[p..], items.Length);
         p += sizeof(int);
         BinaryPrimitives.WriteInt32LittleEndian(destination[p..], BlockItemCount);
         p += sizeof(int);
@@ -305,6 +303,37 @@ public sealed partial class ItemSegment
         }
 
         return repaired;
+    }
+
+    /// <summary>Reads back the block geometry (item count, triples per block, and block alignment) an image was written with, without verifying its checksums or decoding its triples — the cheap geometry peek a parity re-derive uses to rebuild the parity over the same blocks.</summary>
+    /// <param name="source">The byte image.</param>
+    /// <returns>The stored item count, triples per block, and block alignment.</returns>
+    /// <exception cref="InvalidDataException">The bytes are not an item segment image or are too short to carry the scalars.</exception>
+    /// <exception cref="NotSupportedException">The major version is unsupported, or the host is big-endian.</exception>
+    public static (int ItemCount, int BlockItemCount, int BlockAlignment) ReadGeometry(ReadOnlySpan<byte> source)
+    {
+        LittleEndianBuffer.EnsureLittleEndian();
+        if(source.Length < HeaderSize + ScalarSize)
+        {
+            throw new InvalidDataException("The bytes are too short to be an item segment image.");
+        }
+
+        if(!source[..SegmentMagic.Length].SequenceEqual(SegmentMagic))
+        {
+            throw new InvalidDataException("The bytes are not an item segment image (magic mismatch).");
+        }
+
+        byte versionMajor = source[SegmentMagic.Length];
+        if(versionMajor != FormatVersionMajor)
+        {
+            throw new NotSupportedException($"Item segment format major version {versionMajor} is not supported; this build reads major version {FormatVersionMajor}.");
+        }
+
+        int itemCount = BinaryPrimitives.ReadInt32LittleEndian(source[HeaderSize..]);
+        int blockItemCount = BinaryPrimitives.ReadInt32LittleEndian(source[(HeaderSize + sizeof(int))..]);
+        int blockAlignment = BinaryPrimitives.ReadInt32LittleEndian(source[(HeaderSize + (2 * sizeof(int)))..]);
+
+        return (itemCount, blockItemCount, blockAlignment);
     }
 
     /// <summary>Parses an image's framing — magic, version, feature mask, checksum-algorithm id, and block geometry — refusing a malformed, unsupported, or truncated image, and returns the geometry needed to locate and verify every block. It does NOT verify the front-matter trailer (that is <see cref="VerifyFrontMatter"/>), so a decode-free verify can report the front-matter verdict rather than throw.</summary>
@@ -473,7 +502,7 @@ public sealed partial class ItemSegment
     {
         int start = block * BlockItemCount;
 
-        return Math.Min(BlockItemCount, items.Count - start);
+        return Math.Min(BlockItemCount, items.Length - start);
     }
 
     /// <summary>Writes a block's triples row-major into <paramref name="destination"/> as three little-endian 32-bit ids each.</summary>
@@ -483,9 +512,10 @@ public sealed partial class ItemSegment
     private void WriteBlockItems(Span<byte> destination, int block, int itemsInBlock)
     {
         int start = block * BlockItemCount;
+        ReadOnlySpan<EncodedTriple> span = items.Span;
         for(int i = 0; i < itemsInBlock; i++)
         {
-            EncodedTriple triple = items[start + i];
+            EncodedTriple triple = span[start + i];
             int itemOffset = i * ItemByteSize;
             BinaryPrimitives.WriteUInt32LittleEndian(destination[itemOffset..], triple.Subject.Encoded);
             BinaryPrimitives.WriteUInt32LittleEndian(destination[(itemOffset + sizeof(uint))..], triple.Predicate.Encoded);

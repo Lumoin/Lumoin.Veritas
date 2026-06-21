@@ -247,7 +247,7 @@ internal sealed class ItemSegmentTests
     [TestMethod]
     public void EmptySegmentRoundTrips()
     {
-        ItemSegment segment = new([], blockItemCount: 8, blockAlignment: 64);
+        ItemSegment segment = new(ReadOnlyMemory<EncodedTriple>.Empty, blockItemCount: 8, blockAlignment: 64);
         int blockCount = segment.BlockCount;
         Assert.AreEqual(0, blockCount);
 
@@ -449,7 +449,7 @@ internal sealed class ItemSegmentTests
     [TestMethod]
     public void ReadVerifiedItemsOnEmptySegment()
     {
-        ItemSegment segment = new([], blockItemCount: 8, blockAlignment: 64);
+        ItemSegment segment = new(ReadOnlyMemory<EncodedTriple>.Empty, blockItemCount: 8, blockAlignment: 64);
         byte[] image = ToImage(segment, ChecksumAlgorithm.XxHash3);
 
         using VeritasMemoryPool<EncodedTriple> pool = new();
