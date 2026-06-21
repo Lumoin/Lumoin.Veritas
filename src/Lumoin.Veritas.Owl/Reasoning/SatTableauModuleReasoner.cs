@@ -211,7 +211,32 @@ internal sealed class SatTableauModuleReasoner
     /// <returns>The delegate for <see cref="ReasoningRendezvous"/> wiring.</returns>
     public static DescriptionLogicDelegate CreateDelegate(SatSearchMode searchMode = SatSearchMode.ConflictLearning, ReasoningBudget budget = default)
     {
-        return (module, cancellationToken) => ValueTask.FromResult(DecideModule(module, budget, searchMode, cancellationToken));
+        return new SatDecisionSeam(searchMode, budget).Decide;
+    }
+
+    /// <summary>
+    /// Wraps <see cref="DecideModule"/> as the SAT-backed <see cref="DescriptionLogicDelegate"/>, carrying
+    /// the search mode and budget as explicit state so the delegate is a bound method group rather than a
+    /// lambda closing over the enclosing parameters.
+    /// </summary>
+    /// <param name="searchMode">How the solver prunes within one world's boolean structure.</param>
+    /// <param name="budget">The work-based bound applied to each decision.</param>
+    private sealed class SatDecisionSeam(SatSearchMode searchMode, ReasoningBudget budget)
+    {
+        /// <summary>How the solver prunes within one world's boolean structure.</summary>
+        private SatSearchMode SearchMode { get; } = searchMode;
+
+        /// <summary>The work-based bound applied to each decision.</summary>
+        private ReasoningBudget Budget { get; } = budget;
+
+        /// <summary>Decides the module's ALC(H) fragment over the shared CNF.</summary>
+        /// <param name="module">The module to decide.</param>
+        /// <param name="cancellationToken">A token to cancel the decision.</param>
+        /// <returns>The module decision.</returns>
+        public ValueTask<ModuleDecision> Decide(ReasoningModule module, CancellationToken cancellationToken)
+        {
+            return ValueTask.FromResult(DecideModule(module, Budget, SearchMode, cancellationToken));
+        }
     }
 
     /// <summary>

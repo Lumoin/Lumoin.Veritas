@@ -508,8 +508,10 @@ internal sealed class OwlFunctionalSyntaxConverter
             }
             case "EquivalentClasses":
             {
-                ForEachPair(children, (first, second) =>
-                    Axioms.Add(new OwlEquivalentClassesAxiom(AsClass(first), AsClass(second)) { Origin = Origin }));
+                foreach((object? first, object? second) in Pairs(children))
+                {
+                    Axioms.Add(new OwlEquivalentClassesAxiom(AsClass(first), AsClass(second)) { Origin = Origin });
+                }
                 break;
             }
             case "DisjointClasses":
@@ -537,8 +539,10 @@ internal sealed class OwlFunctionalSyntaxConverter
             }
             case "EquivalentObjectProperties":
             {
-                ForEachPair(children, (first, second) =>
-                    Axioms.Add(new OwlEquivalentObjectPropertiesAxiom(AsObjectProperty(first), AsObjectProperty(second)) { Origin = Origin }));
+                foreach((object? first, object? second) in Pairs(children))
+                {
+                    Axioms.Add(new OwlEquivalentObjectPropertiesAxiom(AsObjectProperty(first), AsObjectProperty(second)) { Origin = Origin });
+                }
                 break;
             }
             case "DisjointObjectProperties":
@@ -591,8 +595,10 @@ internal sealed class OwlFunctionalSyntaxConverter
             }
             case "EquivalentDataProperties":
             {
-                ForEachPair(children, (first, second) =>
-                    Axioms.Add(new OwlEquivalentDataPropertiesAxiom(AsDataProperty(first), AsDataProperty(second)) { Origin = Origin }));
+                foreach((object? first, object? second) in Pairs(children))
+                {
+                    Axioms.Add(new OwlEquivalentDataPropertiesAxiom(AsDataProperty(first), AsDataProperty(second)) { Origin = Origin });
+                }
                 break;
             }
             case "DisjointDataProperties":
@@ -658,8 +664,10 @@ internal sealed class OwlFunctionalSyntaxConverter
             }
             case "SameIndividual":
             {
-                ForEachPair(children, (first, second) =>
-                    Axioms.Add(new OwlSameIndividualAxiom(AsIndividual(first), AsIndividual(second)) { Origin = Origin }));
+                foreach((object? first, object? second) in Pairs(children))
+                {
+                    Axioms.Add(new OwlSameIndividualAxiom(AsIndividual(first), AsIndividual(second)) { Origin = Origin });
+                }
                 break;
             }
             case "DifferentIndividuals":
@@ -753,13 +761,13 @@ internal sealed class OwlFunctionalSyntaxConverter
         }
     }
 
-    private static void ForEachPair(List<object?> values, Action<object?, object?> emit)
+    private static IEnumerable<(object? First, object? Second)> Pairs(List<object?> values)
     {
         for(int i = 0; i < values.Count; i++)
         {
             for(int j = i + 1; j < values.Count; j++)
             {
-                emit(values[i], values[j]);
+                yield return (values[i], values[j]);
             }
         }
     }

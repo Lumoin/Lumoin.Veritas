@@ -5,6 +5,18 @@ using Lumoin.Veritas.Core.Encoding;
 
 namespace Lumoin.Veritas.Owl.Rl;
 
+/// <summary>Tests a property of an ordered pair of literal term identifiers (distinctness, or a literal lying outside a datatype's value space).</summary>
+/// <param name="first">The first literal term identifier.</param>
+/// <param name="second">The second term identifier; a literal for the distinctness test, a datatype for the outside-datatype test.</param>
+/// <returns><see langword="true"/> when the tested property holds.</returns>
+public delegate bool LiteralPairPredicate(TermId first, TermId second);
+
+/// <summary>Returns the datatype-map members whose value space contains the intersection of two datatypes' spaces.</summary>
+/// <param name="first">The first datatype term identifier.</param>
+/// <param name="second">The second datatype term identifier.</param>
+/// <returns>The superset datatype identifiers; empty when unknown.</returns>
+public delegate IReadOnlyCollection<TermId> DatatypeRangeIntersection(TermId first, TermId second);
+
 /// <summary>
 /// The datatype knowledge the term-id-level RL closure consults from
 /// outside — the engine never inspects literal values or value spaces
@@ -17,9 +29,9 @@ namespace Lumoin.Veritas.Owl.Rl;
 /// <param name="RangeIntersectionSupersets">The datatype-map members whose value space contains the intersection of two datatypes' spaces — the <c>dt-range-intersection</c> extension derives them as additional ranges; empty means unknown.</param>
 [DebuggerDisplay("OwlRlDatatypeOracle")]
 public readonly record struct OwlRlDatatypeOracle(
-    Func<TermId, TermId, bool> LiteralsKnownDistinct,
-    Func<TermId, TermId, bool> LiteralOutsideDatatype,
-    Func<TermId, TermId, IReadOnlyCollection<TermId>> RangeIntersectionSupersets)
+    LiteralPairPredicate LiteralsKnownDistinct,
+    LiteralPairPredicate LiteralOutsideDatatype,
+    DatatypeRangeIntersection RangeIntersectionSupersets)
 {
     /// <summary>The oracle that knows nothing: no literal pair is distinct, no literal is outside any datatype, no intersection is known — the <c>dt-*</c> rules never fire.</summary>
     public static OwlRlDatatypeOracle None { get; } = new(static (_, _) => false, static (_, _) => false, static (_, _) => []);

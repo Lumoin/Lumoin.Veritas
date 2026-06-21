@@ -1153,8 +1153,10 @@ internal sealed class OwlManchesterSyntaxConverter
                     expressions.Add(AsClass(ConvertExpression(ExprKind.Description, items, lo, hi)));
                 }
 
-                ForEachPair(expressions.Count, (first, second) =>
-                    Axioms.Add(new OwlEquivalentClassesAxiom(expressions[first], expressions[second]) { Origin = Origin, Annotations = annotations }));
+                foreach((int first, int second) in IndexPairs(expressions.Count))
+                {
+                    Axioms.Add(new OwlEquivalentClassesAxiom(expressions[first], expressions[second]) { Origin = Origin, Annotations = annotations });
+                }
                 break;
             }
 
@@ -1185,9 +1187,12 @@ internal sealed class OwlManchesterSyntaxConverter
                 bool data = properties.Count > 0 && DeclaredDataProperties.Contains(properties[0]);
                 if(frame.Keyword.Text == "EquivalentProperties:")
                 {
-                    ForEachPair(properties.Count, (first, second) => Axioms.Add(data
-                        ? new OwlEquivalentDataPropertiesAxiom(new NamedNode(properties[first]), new NamedNode(properties[second])) { Origin = Origin, Annotations = annotations }
-                        : new OwlEquivalentObjectPropertiesAxiom(new OwlObjectPropertyReference(new NamedNode(properties[first])), new OwlObjectPropertyReference(new NamedNode(properties[second]))) { Origin = Origin, Annotations = annotations }));
+                    foreach((int first, int second) in IndexPairs(properties.Count))
+                    {
+                        Axioms.Add(data
+                            ? new OwlEquivalentDataPropertiesAxiom(new NamedNode(properties[first]), new NamedNode(properties[second])) { Origin = Origin, Annotations = annotations }
+                            : new OwlEquivalentObjectPropertiesAxiom(new OwlObjectPropertyReference(new NamedNode(properties[first])), new OwlObjectPropertyReference(new NamedNode(properties[second]))) { Origin = Origin, Annotations = annotations });
+                    }
                 }
                 else if(data)
                 {
@@ -1216,8 +1221,10 @@ internal sealed class OwlManchesterSyntaxConverter
             case "SameIndividual:":
             {
                 List<RdfTerm> individuals = CollectIndividuals(items, parts);
-                ForEachPair(individuals.Count, (first, second) =>
-                    Axioms.Add(new OwlSameIndividualAxiom(individuals[first], individuals[second]) { Origin = Origin, Annotations = annotations }));
+                foreach((int first, int second) in IndexPairs(individuals.Count))
+                {
+                    Axioms.Add(new OwlSameIndividualAxiom(individuals[first], individuals[second]) { Origin = Origin, Annotations = annotations });
+                }
                 break;
             }
 
@@ -1249,13 +1256,13 @@ internal sealed class OwlManchesterSyntaxConverter
         return individuals;
     }
 
-    private static void ForEachPair(int count, System.Action<int, int> emit)
+    private static IEnumerable<(int First, int Second)> IndexPairs(int count)
     {
         for(int i = 0; i < count; i++)
         {
             for(int j = i + 1; j < count; j++)
             {
-                emit(i, j);
+                yield return (i, j);
             }
         }
     }

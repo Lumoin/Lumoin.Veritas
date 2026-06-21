@@ -43,10 +43,48 @@ public static class OwlRlDatatypeOracles
     {
         System.ArgumentNullException.ThrowIfNull(dictionary);
 
-        return new OwlRlDatatypeOracle(
-            (first, second) => LiteralsKnownDistinct(dictionary, first, second),
-            (literal, datatype) => LiteralOutsideDatatype(dictionary, literal, datatype),
-            (first, second) => RangeIntersectionSupersets(dictionary, first, second));
+        DictionaryDatatypeOracle oracle = new(dictionary);
+
+        return new OwlRlDatatypeOracle(oracle.KnownDistinct, oracle.OutsideDatatype, oracle.Supersets);
+    }
+
+    /// <summary>
+    /// The standard datatype oracle bound to a term dictionary, carrying the dictionary as explicit
+    /// state so the oracle's delegate members are bound method groups rather than lambdas closing over
+    /// the enclosing dictionary.
+    /// </summary>
+    /// <param name="dictionary">The dictionary the term ids resolve through.</param>
+    private sealed class DictionaryDatatypeOracle(TermDictionary dictionary)
+    {
+        /// <summary>The dictionary the term ids resolve through.</summary>
+        private TermDictionary Dictionary { get; } = dictionary;
+
+        /// <summary>Whether two literal term ids denote known-distinct data values.</summary>
+        /// <param name="first">The first literal term id.</param>
+        /// <param name="second">The second literal term id.</param>
+        /// <returns><see langword="true"/> when the literals are known distinct.</returns>
+        public bool KnownDistinct(TermId first, TermId second)
+        {
+            return LiteralsKnownDistinct(Dictionary, first, second);
+        }
+
+        /// <summary>Whether a literal term id lies outside a datatype's value space.</summary>
+        /// <param name="literal">The literal term id.</param>
+        /// <param name="datatype">The datatype term id.</param>
+        /// <returns><see langword="true"/> when the literal is known to lie outside the datatype.</returns>
+        public bool OutsideDatatype(TermId literal, TermId datatype)
+        {
+            return LiteralOutsideDatatype(Dictionary, literal, datatype);
+        }
+
+        /// <summary>The datatype-map members whose value space contains the intersection of two datatypes' spaces.</summary>
+        /// <param name="first">The first datatype term id.</param>
+        /// <param name="second">The second datatype term id.</param>
+        /// <returns>The superset datatype ids; empty when unknown.</returns>
+        public IReadOnlyCollection<TermId> Supersets(TermId first, TermId second)
+        {
+            return RangeIntersectionSupersets(Dictionary, first, second);
+        }
     }
 
     private static bool LiteralsKnownDistinct(TermDictionary dictionary, TermId first, TermId second)
