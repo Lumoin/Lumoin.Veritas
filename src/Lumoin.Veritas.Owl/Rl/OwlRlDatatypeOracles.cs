@@ -81,7 +81,7 @@ public static class OwlRlDatatypeOracles
         /// <param name="first">The first datatype term id.</param>
         /// <param name="second">The second datatype term id.</param>
         /// <returns>The superset datatype ids; empty when unknown.</returns>
-        public IReadOnlyCollection<TermId> Supersets(TermId first, TermId second)
+        public List<TermId> Supersets(TermId first, TermId second)
         {
             return RangeIntersectionSupersets(Dictionary, first, second);
         }
