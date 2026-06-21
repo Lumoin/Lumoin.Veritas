@@ -38,27 +38,29 @@ public static class ComputeLaneInstruments
         ArgumentNullException.ThrowIfNull(meter);
         ArgumentNullException.ThrowIfNull(lane);
 
+        LaneObserver observer = new(lane);
+
         meter.CreateObservableUpDownCounter(
             VeritasMetrics.ComputeLaneWorkers,
-            () => lane.WorkerCount,
+            observer.ObserveWorkerCount,
             "workers",
             "Current compute-lane worker count.");
 
         meter.CreateObservableUpDownCounter(
             VeritasMetrics.ComputeLaneQueueDepth,
-            () => EnumerateQueueDepths(lane),
+            observer.ObserveQueueDepths,
             "items",
             "Queued compute-lane work depth per priority class.");
 
         meter.CreateObservableCounter(
             VeritasMetrics.ComputeLaneTurnsTotal,
-            () => lane.TurnsCompleted,
+            observer.ObserveTurnsCompleted,
             "turns",
             "Total compute-lane turns completed.");
 
         meter.CreateObservableCounter(
             VeritasMetrics.ComputeLaneShedTotal,
-            () => lane.ShedCount,
+            observer.ObserveShedCount,
             "admissions",
             "Total compute-lane admissions shed.");
     }
@@ -83,9 +85,7 @@ public static class ComputeLaneInstruments
             "ms",
             "Compute-lane turn durations in milliseconds, tagged by work class.");
 
-        return (workClass, elapsedMilliseconds) => turnDuration.Record(
-            elapsedMilliseconds,
-            new KeyValuePair<string, object?>("class", ComputeWorkClassNames.GetName(workClass)));
+        return new TurnDurationRecorder(turnDuration).Record;
     }
 
     /// <summary>Yields the current queued depth of each defined priority class as a class-tagged measurement.</summary>
@@ -97,6 +97,66 @@ public static class ComputeLaneInstruments
         {
             yield return new Measurement<int>(
                 lane.QueueDepthOf(workClass),
+                new KeyValuePair<string, object?>("class", ComputeWorkClassNames.GetName(workClass)));
+        }
+    }
+
+    /// <summary>
+    /// Reads a lane's live observable state, carrying the lane as explicit state so the meter
+    /// callbacks are bound method groups rather than lambdas closing over the enclosing lane.
+    /// </summary>
+    /// <param name="lane">The lane the instruments observe.</param>
+    private sealed class LaneObserver(IComputeLane lane)
+    {
+        /// <summary>The lane the instruments observe.</summary>
+        private IComputeLane Lane { get; } = lane;
+
+        /// <summary>Observes the lane's current worker count.</summary>
+        /// <returns>The current worker count.</returns>
+        public int ObserveWorkerCount()
+        {
+            return Lane.WorkerCount;
+        }
+
+        /// <summary>Observes the lane's queued depth per priority class.</summary>
+        /// <returns>One measurement per defined priority class.</returns>
+        public IEnumerable<Measurement<int>> ObserveQueueDepths()
+        {
+            return EnumerateQueueDepths(Lane);
+        }
+
+        /// <summary>Observes the lane's total completed turns.</summary>
+        /// <returns>The total completed turns.</returns>
+        public long ObserveTurnsCompleted()
+        {
+            return Lane.TurnsCompleted;
+        }
+
+        /// <summary>Observes the lane's total shed admissions.</summary>
+        /// <returns>The total shed admissions.</returns>
+        public long ObserveShedCount()
+        {
+            return Lane.ShedCount;
+        }
+    }
+
+    /// <summary>
+    /// Records each completed turn's duration into a histogram, carrying the histogram as explicit
+    /// state so the returned recorder is a bound method group rather than a lambda closing over it.
+    /// </summary>
+    /// <param name="turnDuration">The turn-duration histogram measurements are recorded into.</param>
+    private sealed class TurnDurationRecorder(Histogram<double> turnDuration)
+    {
+        /// <summary>The turn-duration histogram measurements are recorded into.</summary>
+        private Histogram<double> TurnDuration { get; } = turnDuration;
+
+        /// <summary>Records one completed turn's duration, tagged by its work class.</summary>
+        /// <param name="workClass">The completed turn's work class.</param>
+        /// <param name="elapsedMilliseconds">The turn's duration in milliseconds.</param>
+        public void Record(ComputeWorkClass workClass, double elapsedMilliseconds)
+        {
+            TurnDuration.Record(
+                elapsedMilliseconds,
                 new KeyValuePair<string, object?>("class", ComputeWorkClassNames.GetName(workClass)));
         }
     }
