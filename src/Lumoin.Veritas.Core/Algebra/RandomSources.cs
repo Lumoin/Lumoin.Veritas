@@ -40,7 +40,7 @@ public static class RandomSources
     /// generators emit empty graphs; constant-MaxValue typically emits
     /// dense ones).
     /// </summary>
-    public static RandomSourceDelegate Constant(ulong value) => () => value;
+    public static RandomSourceDelegate Constant(ulong value) => new ConstantRandomSource(value).Next;
 
     /// <summary>
     /// A source backed by a seeded <see cref="Random"/>. The same
@@ -48,18 +48,9 @@ public static class RandomSources
     /// graphs constructed with this source are reproducible from the
     /// seed alone.
     /// </summary>
-    [SuppressMessage(
-        "Security",
-        "CA5394:Do not use insecure randomness",
-        Justification = "Graph generation is not security-sensitive. Using System.Random is the correct choice — graphs are synthetic test data and benchmark fixtures, not security tokens. A cryptographic RNG would be wasteful and would prevent reproducibility from a seed, which is the entire point of this method.")]
-    [SuppressMessage(
-        "ApiDesign",
-        "RS0030:Do not use banned APIs",
-        Justification = "RandomSources is synthetic-graph generation, not query randomness, and exposes its own RandomSourceDelegate seam. System.Random here produces graph salt reproducible from the seed; routing it through the entropy ban would defeat the seed-reproducibility this method exists for.")]
     public static RandomSourceDelegate FromSeed(int seed)
     {
-        Random rng = new(seed);
-        return () => unchecked((ulong)rng.NextInt64());
+        return new SeededRandomSource(seed).Next;
     }
 
     /// <summary>
@@ -76,5 +67,37 @@ public static class RandomSources
         "ApiDesign",
         "RS0030:Do not use banned APIs",
         Justification = "RandomSources is synthetic-graph generation, not query randomness, and exposes its own RandomSourceDelegate seam. Random.Shared here produces graph salt, not identities or security tokens.")]
-    public static RandomSourceDelegate Shared() => () => unchecked((ulong)Random.Shared.NextInt64());
+    public static RandomSourceDelegate Shared() => static () => unchecked((ulong)Random.Shared.NextInt64());
+
+    /// <summary>Carries the constant returned by <see cref="Constant"/> as explicit state.</summary>
+    /// <param name="value">The constant value handed out on every call.</param>
+    private sealed class ConstantRandomSource(ulong value)
+    {
+        /// <summary>The constant value.</summary>
+        private ulong Value { get; } = value;
+
+        /// <summary>Returns the constant value.</summary>
+        /// <returns>The constant.</returns>
+        public ulong Next() => Value;
+    }
+
+    /// <summary>Carries the seeded <see cref="Random"/> behind <see cref="FromSeed"/> as explicit state.</summary>
+    /// <param name="seed">The seed; the same seed reproduces the same sequence across runs and machines.</param>
+    [SuppressMessage(
+        "Security",
+        "CA5394:Do not use insecure randomness",
+        Justification = "Graph generation is not security-sensitive. Using System.Random is the correct choice — graphs are synthetic test data and benchmark fixtures, not security tokens. A cryptographic RNG would be wasteful and would prevent reproducibility from a seed, which is the entire point of this method.")]
+    [SuppressMessage(
+        "ApiDesign",
+        "RS0030:Do not use banned APIs",
+        Justification = "RandomSources is synthetic-graph generation, not query randomness, and exposes its own RandomSourceDelegate seam. System.Random here produces graph salt reproducible from the seed; routing it through the entropy ban would defeat the seed-reproducibility this method exists for.")]
+    private sealed class SeededRandomSource(int seed)
+    {
+        /// <summary>The seeded pseudo-random generator.</summary>
+        private Random Rng { get; } = new(seed);
+
+        /// <summary>Draws the next value from the seeded generator.</summary>
+        /// <returns>The next pseudo-random <see cref="ulong"/>.</returns>
+        public ulong Next() => unchecked((ulong)Rng.NextInt64());
+    }
 }

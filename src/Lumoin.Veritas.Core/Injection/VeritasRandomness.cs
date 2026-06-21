@@ -29,7 +29,7 @@ public static class VeritasRandomness
     /// <returns>A deterministic randomness delegate.</returns>
     public static RandomnessDelegate Seeded(ulong seed)
     {
-        return (in RandomnessRequest request) => SeededImpl(seed, in request);
+        return new SeededRandomnessSource(seed).Next;
     }
 
     [SuppressMessage(
@@ -149,5 +149,24 @@ public static class VeritasRandomness
         z = (z ^ (z >> 27)) * 0x94D049BB133111EBUL;
 
         return z ^ (z >> 31);
+    }
+
+    /// <summary>
+    /// Carries the seed behind a <see cref="Seeded"/> delegate as explicit state so the
+    /// produced <see cref="RandomnessDelegate"/> closes over no enclosing local.
+    /// </summary>
+    /// <param name="seed">The seed mixed with each request's salt.</param>
+    private sealed class SeededRandomnessSource(ulong seed)
+    {
+        /// <summary>The seed mixed with each request's salt.</summary>
+        private ulong Seed { get; } = seed;
+
+        /// <summary>Derives the reproducible value for <paramref name="request"/>.</summary>
+        /// <param name="request">The randomness request whose salt is mixed with the seed.</param>
+        /// <returns>The deterministic value for the seed and the request's salt.</returns>
+        public RandomnessValue Next(in RandomnessRequest request)
+        {
+            return SeededImpl(Seed, in request);
+        }
     }
 }
