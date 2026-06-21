@@ -191,28 +191,50 @@ public sealed partial class ItemSegment
         }
     }
 
-    /// <summary>Reconstructs a segment's triples from an image written by <see cref="WriteTo"/>, verifying the front-matter trailer and every block's checksum before its bytes are decoded; the first block that fails is refused (an all-or-nothing read). The report-not-throw counterpart that excludes a corrupt block and continues is <see cref="ReadVerifiedItems"/>.</summary>
+    /// <summary>Reconstructs a segment's triples from an image written by <see cref="WriteTo"/> into an owned, pooled <see cref="DecodedItemSegment"/>, verifying the front-matter trailer and every block's checksum before its bytes are decoded; the first block that fails is refused (an all-or-nothing read). The caller owns and disposes the returned segment. The report-not-throw counterpart that excludes a corrupt block and continues is <see cref="ReadVerifiedItems"/>.</summary>
     /// <param name="source">The byte image.</param>
+    /// <param name="pool">The pool the returned triples' buffer is rented from; threaded in by the caller, who owns and disposes the segment.</param>
     /// <param name="resolveChecksum">Resolves the image's checksum-algorithm id; <see langword="null"/> uses <see cref="ChecksumAlgorithm.DefaultResolver"/>.</param>
-    /// <returns>The canonical triples, in stored order.</returns>
+    /// <returns>The owned, pooled canonical triples, in stored order.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="pool"/> is <see langword="null"/>.</exception>
     /// <exception cref="InvalidDataException">The image is not an item segment, is malformed, or a block or the front matter fails its checksum.</exception>
     /// <exception cref="NotSupportedException">The major version, a required feature, or the checksum algorithm is unsupported, or the host is big-endian.</exception>
-    public static EncodedTriple[] ReadFrom(ReadOnlySpan<byte> source, ResolveChecksumAlgorithmDelegate? resolveChecksum = null)
+    public static DecodedItemSegment ReadFrom(ReadOnlySpan<byte> source, MemoryPool<EncodedTriple> pool, ResolveChecksumAlgorithmDelegate? resolveChecksum = null)
     {
+        ArgumentNullException.ThrowIfNull(pool);
         SegmentLayout layout = ParseAndVerifyFrontMatter(source, resolveChecksum);
-        EncodedTriple[] triples = new EncodedTriple[layout.ItemCount];
-        Span<byte> scratch = stackalloc byte[ChecksumAlgorithm.MaximumByteWidth];
-        for(int block = 0; block < layout.BlockCount; block++)
+        int itemCount = layout.ItemCount;
+
+        //Rent at least one element so an empty segment is valid on any pool (some reject a zero-length rent); the
+        //items view is sliced to the exact, possibly-empty, count. The rent precedes the per-block verify loop,
+        //which throws on a corrupt block, so the success flag returns the buffer on a failure rather than leaking it.
+        IMemoryOwner<EncodedTriple> owner = pool.Rent(Math.Max(1, itemCount));
+        bool decoded = false;
+        try
         {
-            if(!VerifyBlock(source, layout, block, scratch, out int start, out int itemsInBlock, out long blockOffset))
+            Span<EncodedTriple> triples = owner.Memory.Span[..itemCount];
+            Span<byte> scratch = stackalloc byte[ChecksumAlgorithm.MaximumByteWidth];
+            for(int block = 0; block < layout.BlockCount; block++)
             {
-                throw new InvalidDataException($"Item block {block} (items [{start}, {start + itemsInBlock})) failed its checksum (at-rest corruption).");
+                if(!VerifyBlock(source, layout, block, scratch, out int start, out int itemsInBlock, out long blockOffset))
+                {
+                    throw new InvalidDataException($"Item block {block} (items [{start}, {start + itemsInBlock})) failed its checksum (at-rest corruption).");
+                }
+
+                DecodeBlock(source, blockOffset, itemsInBlock, triples.Slice(start, itemsInBlock));
             }
 
-            DecodeBlock(source, blockOffset, itemsInBlock, triples.AsSpan(start, itemsInBlock));
+            decoded = true;
+        }
+        finally
+        {
+            if(!decoded)
+            {
+                owner.Dispose();
+            }
         }
 
-        return triples;
+        return new DecodedItemSegment(owner, itemCount);
     }
 
     /// <summary>Verifies an image decode-free, reporting each block's at-rest checksum verdict and the front-matter verdict rather than throwing on a per-block or front-matter failure — the format-neutral scrub seam. Framing damage (a malformed, unsupported, or truncated image) is still refused, since a block geometry that cannot be parsed cannot be walked.</summary>

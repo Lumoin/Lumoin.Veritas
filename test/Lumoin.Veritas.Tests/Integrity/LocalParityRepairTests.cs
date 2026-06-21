@@ -158,8 +158,8 @@ internal sealed class LocalParityRepairTests
             Assert.IsEmpty(repair.NamedLosses);
             RederivedArtifact restored = repair.RederivedArtifacts.Single(static a => a.Role == ManifestFileRole.DataSegment);
             Assert.IsTrue(ItemSegment.RunVerifyRound(restored.Image.Span).IsClean, "The restored system-of-record must verify clean.");
-            EncodedTriple[] recovered = ItemSegment.ReadFrom(restored.Image.Span);
-            bool faithful = recovered.SequenceEqual(triples);
+            using DecodedItemSegment recovered = ItemSegment.ReadFrom(restored.Image.Span, triplePool);
+            bool faithful = recovered.Items.Span.SequenceEqual(triples);
             Assert.IsTrue(faithful, "The restored system-of-record must hold exactly the original triples (a faithful recovery).");
             StorageTraceEvent reingested = trace.Events.Single(static e => e.Kind == StorageTraceEventKind.Reingested);
             Assert.AreEqual(ManifestFileRole.DataSegment.Code, reingested.RoleCode);
@@ -193,8 +193,8 @@ internal sealed class LocalParityRepairTests
 
             Assert.IsTrue(repair.IsClean);
             RederivedArtifact restored = repair.RederivedArtifacts.Single(static a => a.Role == ManifestFileRole.DataSegment);
-            EncodedTriple[] recovered = ItemSegment.ReadFrom(restored.Image.Span);
-            bool faithful = recovered.SequenceEqual(triples);
+            using DecodedItemSegment recovered = ItemSegment.ReadFrom(restored.Image.Span, triplePool);
+            bool faithful = recovered.Items.Span.SequenceEqual(triples);
             Assert.IsTrue(faithful, "The restored short-last-block segment must hold all 25 original triples.");
             StorageTraceEvent reingested = trace.Events.Single(static e => e.Kind == StorageTraceEventKind.Reingested);
             Assert.AreEqual(25, reingested.ItemCount);
@@ -230,8 +230,8 @@ internal sealed class LocalParityRepairTests
             //The system-of-record is restored to all 30 items, and the co-damaged sidecar is re-derived from
             //that healed set — not the block-excluded feed — so both index exactly the same triples.
             RederivedArtifact restoredSegment = repair.RederivedArtifacts.Single(static a => a.Role == ManifestFileRole.DataSegment);
-            EncodedTriple[] recovered = ItemSegment.ReadFrom(restoredSegment.Image.Span);
-            bool segmentFaithful = recovered.SequenceEqual(triples);
+            using DecodedItemSegment recovered = ItemSegment.ReadFrom(restoredSegment.Image.Span, triplePool);
+            bool segmentFaithful = recovered.Items.Span.SequenceEqual(triples);
             Assert.IsTrue(segmentFaithful, "The restored system-of-record must hold all 30 triples.");
 
             RederivedArtifact rederivedSidecar = repair.RederivedArtifacts.Single(static a => a.Role == ManifestFileRole.Sidecar);

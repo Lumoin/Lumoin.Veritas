@@ -199,6 +199,7 @@ public static class ScrubRound
         //refusal. The pass owns the feed for its lifetime; the coordinator borrows it.
         ItemSegmentFeed? feed = null;
         ParityBlock? parityBlock = null;
+        RepairCoordinator? coordinator = null;
         try
         {
             feed = ItemSegment.ReadVerifiedItems(systemOfRecordImage, configuration.TriplePool, resolveChecksum);
@@ -213,7 +214,7 @@ public static class ScrubRound
                 : null;
 
             long timestampTicks = timeProvider.GetUtcNow().UtcTicks;
-            RepairCoordinator coordinator = new(feed, configuration, manifest.CommitGeneration, trace, correlationId, timestampTicks, systemOfRecordBlockItemCount, systemOfRecordBlockAlignment, paritySource);
+            coordinator = new(feed, configuration, manifest.CommitGeneration, trace, correlationId, timestampTicks, systemOfRecordBlockItemCount, systemOfRecordBlockAlignment, paritySource);
             //Restore the system-of-record first: a co-damaged view re-derived afterward then folds the healed
             //full item set rather than the block-excluded feed, so every published tier reflects the same items.
             if(dataSegmentDamaged)
@@ -248,6 +249,7 @@ public static class ScrubRound
         }
         finally
         {
+            coordinator?.Dispose();
             parityBlock?.Dispose();
             feed?.Dispose();
         }

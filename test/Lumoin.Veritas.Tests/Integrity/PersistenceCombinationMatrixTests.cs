@@ -847,8 +847,9 @@ internal sealed class PersistenceCombinationMatrixTests
         Assert.IsEmpty(repair.NamedLosses);
         RederivedArtifact restored = repair.RederivedArtifacts.Single(static a => a.Role == ManifestFileRole.DataSegment);
         Assert.IsTrue(ItemSegment.RunVerifyRound(restored.Image.Span).IsClean, "The restored system-of-record must verify clean.");
-        EncodedTriple[] recovered = ItemSegment.ReadFrom(restored.Image.Span);
-        bool faithful = recovered.SequenceEqual(Triples);
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        using DecodedItemSegment recovered = ItemSegment.ReadFrom(restored.Image.Span, triplePool);
+        bool faithful = recovered.Items.Span.SequenceEqual(Triples);
         Assert.IsTrue(faithful, "The restored system-of-record must hold exactly the original triples — the peel's differential twin (I3).");
         StorageTraceEvent reingested = trace.Events.Single(static e => e.Kind == StorageTraceEventKind.Reingested);
         Assert.AreEqual((long)TripleCount, reingested.ItemCount, "The healed system-of-record holds every item.");

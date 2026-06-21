@@ -23,7 +23,7 @@ namespace Lumoin.Veritas.Core.Integrity;
 /// stale parity) descends to a named loss at the terminal rung. Each outcome is emitted as a
 /// <see cref="StorageTraceEvent"/>.
 /// </summary>
-internal sealed class RepairCoordinator
+internal sealed class RepairCoordinator: IDisposable
 {
     /// <summary>The verified system-of-record feed every re-derive and loss-naming reads from; borrowed for the pass — the caller owns its lifetime.</summary>
     private readonly ItemSegmentFeed feed;
@@ -64,8 +64,8 @@ internal sealed class RepairCoordinator
     /// <summary>The artifact role currently under repair, read by <see cref="AttemptRung"/>.</summary>
     private ManifestFileRole current;
 
-    /// <summary>The full system-of-record item set after a parity restore healed the segment this pass, or <see langword="null"/> when the segment was not restored — a view re-derived after a restore folds these so every tier reflects the same items.</summary>
-    private ReadOnlyMemory<EncodedTriple>? restoredItems;
+    /// <summary>The owned, pooled full system-of-record item set after a parity restore healed the segment this pass, or <see langword="null"/> when the segment was not restored. A view re-derived after a restore folds these (via <see cref="RederiveItems"/>) so every tier reflects the same items; the coordinator disposes it at pass end, after those re-derives have run. It needs to be a mutable field because it is set during the pass and is the disposable resource the coordinator owns.</summary>
+    private DecodedItemSegment? restoredItemsOwner;
 
     /// <summary>Creates a coordinator for one repair pass.</summary>
     /// <param name="feed">The verified system-of-record feed every re-derive and loss-naming reads from; borrowed — the caller owns its lifetime.</param>
@@ -193,18 +193,20 @@ internal sealed class RepairCoordinator
         }
 
         //The healed image holds the full item set; a view re-derived after this folds it, not the pruned feed.
-        EncodedTriple[] healed = ItemSegment.ReadFrom(repaired, source.ResolveChecksum);
-        restoredItems = healed;
-        RecordRestored(ManifestFileRole.DataSegment, repaired, healed.Length);
+        //The decode is owned by the coordinator and disposed at pass end, after the co-damaged re-derives that
+        //fold restoredItems have run.
+        DecodedItemSegment healed = ItemSegment.ReadFrom(repaired, configuration.TriplePool, source.ResolveChecksum);
+        restoredItemsOwner = healed;
+        RecordRestored(ManifestFileRole.DataSegment, repaired, healed.Count);
 
         return true;
     }
 
     /// <summary>The system-of-record items a re-derive folds: the parity-restored full set when the segment was healed this pass, otherwise the verified feed, which excludes any block the segment lost.</summary>
-    private ReadOnlyMemory<EncodedTriple> RederiveItems => restoredItems ?? feed.VerifiedItems;
+    private ReadOnlyMemory<EncodedTriple> RederiveItems => restoredItemsOwner?.Items ?? feed.VerifiedItems;
 
     /// <summary>The number of system-of-record items a re-derive folds.</summary>
-    private int RederiveItemCount => restoredItems?.Length ?? feed.VerifiedCount;
+    private int RederiveItemCount => restoredItemsOwner?.Count ?? feed.VerifiedCount;
 
     /// <summary>Rebuilds the columnar sidecar from the verified system-of-record triples and records the fresh image.</summary>
     private void RederiveSidecar()
@@ -304,5 +306,11 @@ internal sealed class RepairCoordinator
         StorageTraceEvent evt = new(sequence, timestampTicks, correlationId, kind, generation, roleCode, blockIndex, 0, 0, itemCount);
         sequence++;
         trace(in evt);
+    }
+
+    /// <summary>Returns the pooled decode that backed a parity-restored item set to its pool; idempotent, and a no-op when no restore occurred. The borrowed feed and parity source are the caller's to dispose.</summary>
+    public void Dispose()
+    {
+        restoredItemsOwner?.Dispose();
     }
 }

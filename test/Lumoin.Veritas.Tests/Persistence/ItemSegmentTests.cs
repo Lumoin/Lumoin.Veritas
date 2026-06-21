@@ -3,6 +3,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.Integrity;
@@ -10,6 +11,7 @@ using Lumoin.Veritas.Core.Memory;
 using Lumoin.Veritas.Core.Persistence.Manifest;
 using Lumoin.Veritas.Core.Persistence.Segment;
 using Lumoin.Veritas.Tests.Integrity;
+using Lumoin.Veritas.Tests.MemoryPool;
 
 namespace Lumoin.Veritas.Tests.Persistence;
 
@@ -74,6 +76,7 @@ internal sealed class ItemSegmentTests
     public void RoundTripsInOrderAcrossChecksumSelections()
     {
         using VeritasMemoryPool<byte> imagePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
         foreach(ChecksumAlgorithm? checksum in (ChecksumAlgorithm?[])[null, ChecksumAlgorithm.XxHash3, ChecksumAlgorithm.Crc32])
         {
             EncodedTriple[] triples = SampleTriples(100);
@@ -82,10 +85,10 @@ internal sealed class ItemSegmentTests
             Assert.AreEqual(15, blockCount, $"100 triples in 7-item blocks is 15 blocks (algorithm {checksum?.Name ?? "none"}).");
 
             using ArtifactImage image = ToImage(segment, checksum, imagePool);
-            EncodedTriple[] restored = ItemSegment.ReadFrom(image.Bytes);
+            using DecodedItemSegment restored = ItemSegment.ReadFrom(image.Bytes, triplePool);
 
-            Assert.HasCount(triples.Length, restored);
-            Assert.IsTrue(triples.AsSpan().SequenceEqual(restored), $"The triples did not round-trip in order (algorithm {checksum?.Name ?? "none"}).");
+            Assert.AreEqual(triples.Length, restored.Count);
+            Assert.IsTrue(triples.AsSpan().SequenceEqual(restored.Items.Span), $"The triples did not round-trip in order (algorithm {checksum?.Name ?? "none"}).");
         }
     }
 
@@ -98,6 +101,7 @@ internal sealed class ItemSegmentTests
         (uint Count, int BlockItemCount)[] geometries = [(0u, 8), (14u, 7), (100u, 7)];
 
         using VeritasMemoryPool<byte> pool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
         foreach(ChecksumAlgorithm? checksum in (ChecksumAlgorithm?[])[null, ChecksumAlgorithm.XxHash3, ChecksumAlgorithm.Crc32])
         {
             foreach((uint count, int blockItemCount) in geometries)
@@ -120,9 +124,9 @@ internal sealed class ItemSegmentTests
 
                 //ReadFrom over the whole over-sized buffer recovers the triples, so it consumes exactly the
                 //declared total (== size) and tolerates the sentinel tail rather than reading to the end.
-                EncodedTriple[] restored = ItemSegment.ReadFrom(buffer);
-                Assert.HasCount(triples.Length, restored);
-                Assert.IsTrue(triples.AsSpan().SequenceEqual(restored), $"The exact-size image did not round-trip (algorithm {checksum?.Name ?? "none"}, {count}/{blockItemCount}).");
+                using DecodedItemSegment restored = ItemSegment.ReadFrom(buffer, triplePool);
+                Assert.AreEqual(triples.Length, restored.Count);
+                Assert.IsTrue(triples.AsSpan().SequenceEqual(restored.Items.Span), $"The exact-size image did not round-trip (algorithm {checksum?.Name ?? "none"}, {count}/{blockItemCount}).");
             }
         }
     }
@@ -132,6 +136,7 @@ internal sealed class ItemSegmentTests
     public void BlockCorruptionIsDetectedAndNamesTheItemRange()
     {
         using VeritasMemoryPool<byte> imagePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
         foreach(ChecksumAlgorithm checksum in (ChecksumAlgorithm[])[ChecksumAlgorithm.XxHash3, ChecksumAlgorithm.Crc32])
         {
             EncodedTriple[] triples = SampleTriples(30);
@@ -143,7 +148,7 @@ internal sealed class ItemSegmentTests
             long blockBytes = ((10L * 12) + 63) / 64 * 64;
             image.WritableBytes[firstBlock + (int)blockBytes] ^= 0xFF;
 
-            InvalidDataException thrown = Assert.ThrowsExactly<InvalidDataException>(() => { _ = ItemSegment.ReadFrom(image.Bytes); });
+            InvalidDataException thrown = Assert.ThrowsExactly<InvalidDataException>(() => ItemSegment.ReadFrom(image.Bytes, triplePool));
             Assert.IsTrue(thrown.Message.Contains("[10, 20)", StringComparison.Ordinal), $"The refusal did not name the corrupt block's item range (algorithm {checksum.Name}): {thrown.Message}");
         }
     }
@@ -154,6 +159,7 @@ internal sealed class ItemSegmentTests
     {
         //25 triples in 10-item blocks: blocks [0, 10), [10, 20), [20, 25) — the last holds the 5-item remainder.
         using VeritasMemoryPool<byte> imagePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
         EncodedTriple[] triples = SampleTriples(25);
         ItemSegment segment = new(triples, blockItemCount: 10, blockAlignment: 64);
         using ArtifactImage image = ToImage(segment, ChecksumAlgorithm.XxHash3, imagePool);
@@ -163,7 +169,7 @@ internal sealed class ItemSegmentTests
         long blockBytes = ((10L * 12) + 63) / 64 * 64;
         image.WritableBytes[firstBlock + (int)(2 * blockBytes)] ^= 0xFF;
 
-        InvalidDataException thrown = Assert.ThrowsExactly<InvalidDataException>(() => { _ = ItemSegment.ReadFrom(image.Bytes); });
+        InvalidDataException thrown = Assert.ThrowsExactly<InvalidDataException>(() => ItemSegment.ReadFrom(image.Bytes, triplePool));
         Assert.IsTrue(thrown.Message.Contains("[20, 25)", StringComparison.Ordinal), $"The refusal did not name the partial last block's remainder range: {thrown.Message}");
         Assert.IsFalse(thrown.Message.Contains("[20, 30)", StringComparison.Ordinal), $"The refusal named the block stride instead of the remainder: {thrown.Message}");
     }
@@ -174,6 +180,7 @@ internal sealed class ItemSegmentTests
     {
         //10-item blocks at 64-byte alignment: payload 120 bytes, stride Align(120, 64) = 128 — 8 padding bytes per block.
         using VeritasMemoryPool<byte> imagePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
         EncodedTriple[] triples = SampleTriples(30);
         ItemSegment segment = new(triples, blockItemCount: 10, blockAlignment: 64);
         using ArtifactImage image = ToImage(segment, ChecksumAlgorithm.XxHash3, imagePool);
@@ -183,8 +190,8 @@ internal sealed class ItemSegmentTests
         int firstBlock = FirstBlockOffset(segment.BlockCount, ChecksumAlgorithm.XxHash3.ByteWidth, 64);
         image.WritableBytes[firstBlock + (10 * 12)] ^= 0xFF;
 
-        EncodedTriple[] restored = ItemSegment.ReadFrom(image.Bytes);
-        Assert.IsTrue(triples.AsSpan().SequenceEqual(restored), "An inert padding-byte corruption was not tolerated, so the per-block checksum domain spans the padded stride rather than the payload.");
+        using DecodedItemSegment restored = ItemSegment.ReadFrom(image.Bytes, triplePool);
+        Assert.IsTrue(triples.AsSpan().SequenceEqual(restored.Items.Span), "An inert padding-byte corruption was not tolerated, so the per-block checksum domain spans the padded stride rather than the payload.");
     }
 
     /// <summary>A byte corrupted in the front matter (the per-block checksum section it covers) fails the front-matter trailer, under both the 8-byte and 4-byte checksum widths.</summary>
@@ -192,6 +199,7 @@ internal sealed class ItemSegmentTests
     public void FrontMatterCorruptionIsDetected()
     {
         using VeritasMemoryPool<byte> imagePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
         foreach(ChecksumAlgorithm checksum in (ChecksumAlgorithm[])[ChecksumAlgorithm.XxHash3, ChecksumAlgorithm.Crc32])
         {
             EncodedTriple[] triples = SampleTriples(30);
@@ -201,7 +209,7 @@ internal sealed class ItemSegmentTests
             //The per-block checksum section begins right after the scalars and is covered by the front-matter trailer.
             image.WritableBytes[FrontMatterBase] ^= 0xFF;
 
-            Assert.ThrowsExactly<InvalidDataException>(() => { _ = ItemSegment.ReadFrom(image.Bytes); });
+            Assert.ThrowsExactly<InvalidDataException>(() => ItemSegment.ReadFrom(image.Bytes, triplePool));
         }
     }
 
@@ -210,12 +218,13 @@ internal sealed class ItemSegmentTests
     public void TruncatedImageIsRefused()
     {
         using VeritasMemoryPool<byte> imagePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
         EncodedTriple[] triples = SampleTriples(30);
         ItemSegment segment = new(triples, blockItemCount: 10, blockAlignment: 64);
         using ArtifactImage image = ToImage(segment, ChecksumAlgorithm.XxHash3, imagePool);
         using ArtifactImage truncated = image.Truncated(100, imagePool);
 
-        Assert.ThrowsExactly<InvalidDataException>(() => { _ = ItemSegment.ReadFrom(truncated.Bytes); });
+        Assert.ThrowsExactly<InvalidDataException>(() => ItemSegment.ReadFrom(truncated.Bytes, triplePool));
     }
 
     /// <summary>An image stamped with a checksum-algorithm id no resolver knows is refused, not read under the wrong algorithm.</summary>
@@ -223,6 +232,7 @@ internal sealed class ItemSegmentTests
     public void ForeignChecksumAlgorithmIsRefused()
     {
         using VeritasMemoryPool<byte> imagePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
         EncodedTriple[] triples = SampleTriples(30);
         ItemSegment segment = new(triples, blockItemCount: 10, blockAlignment: 64);
         using ArtifactImage image = ToImage(segment, ChecksumAlgorithm.XxHash3, imagePool);
@@ -230,7 +240,7 @@ internal sealed class ItemSegmentTests
         //The checksum-algorithm id is the last header byte: magic (8) + major (1) + minor (1) + feature mask (8).
         image.WritableBytes[18] = 99;
 
-        Assert.ThrowsExactly<NotSupportedException>(() => { _ = ItemSegment.ReadFrom(image.Bytes); });
+        Assert.ThrowsExactly<NotSupportedException>(() => ItemSegment.ReadFrom(image.Bytes, triplePool));
     }
 
     /// <summary>The header's front-matter-checksum feature flag must agree with the presence of a checksum-algorithm id: a checksummed image with the flag cleared, or a no-checksum image with the flag set, is a header inconsistency the reader refuses.</summary>
@@ -238,18 +248,19 @@ internal sealed class ItemSegmentTests
     public void FeatureFlagDisagreeingWithChecksumIdIsRefused()
     {
         using VeritasMemoryPool<byte> imagePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
         EncodedTriple[] triples = SampleTriples(30);
         ItemSegment segment = new(triples, blockItemCount: 10, blockAlignment: 64);
 
         //A checksummed image with the feature bit cleared (the algorithm id still present) is inconsistent.
         using ArtifactImage flagCleared = ToImage(segment, ChecksumAlgorithm.XxHash3, imagePool);
         flagCleared.WritableBytes[FeatureMaskOffset] = 0;
-        Assert.ThrowsExactly<InvalidDataException>(() => { _ = ItemSegment.ReadFrom(flagCleared.Bytes); });
+        Assert.ThrowsExactly<InvalidDataException>(() => ItemSegment.ReadFrom(flagCleared.Bytes, triplePool));
 
         //A no-checksum image with the feature bit set (no algorithm id) is the symmetric inconsistency.
         using ArtifactImage flagSet = ToImage(segment, null, imagePool);
         flagSet.WritableBytes[FeatureMaskOffset] = 1;
-        Assert.ThrowsExactly<InvalidDataException>(() => { _ = ItemSegment.ReadFrom(flagSet.Bytes); });
+        Assert.ThrowsExactly<InvalidDataException>(() => ItemSegment.ReadFrom(flagSet.Bytes, triplePool));
     }
 
     /// <summary>An empty segment round-trips to an empty triple set.</summary>
@@ -257,14 +268,15 @@ internal sealed class ItemSegmentTests
     public void EmptySegmentRoundTrips()
     {
         using VeritasMemoryPool<byte> imagePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
         ItemSegment segment = new(ReadOnlyMemory<EncodedTriple>.Empty, blockItemCount: 8, blockAlignment: 64);
         int blockCount = segment.BlockCount;
         Assert.AreEqual(0, blockCount);
 
         using ArtifactImage image = ToImage(segment, ChecksumAlgorithm.XxHash3, imagePool);
-        EncodedTriple[] restored = ItemSegment.ReadFrom(image.Bytes);
+        using DecodedItemSegment restored = ItemSegment.ReadFrom(image.Bytes, triplePool);
 
-        Assert.IsEmpty(restored);
+        Assert.AreEqual(0, restored.Count);
     }
 
     /// <summary>Each item block begins on the default page boundary, so the image lays the blocks out page-aligned.</summary>
@@ -282,11 +294,12 @@ internal sealed class ItemSegmentTests
         Assert.AreEqual(expected, segment.ComputeSerializedSize(ChecksumAlgorithm.XxHash3));
 
         using VeritasMemoryPool<byte> pool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
         using IMemoryOwner<byte> owner = pool.Rent((int)expected);
         Span<byte> image = owner.Memory.Span[..(int)expected];
         segment.WriteTo(image, ChecksumAlgorithm.XxHash3);
-        EncodedTriple[] restored = ItemSegment.ReadFrom(image);
-        Assert.IsTrue(triples.AsSpan().SequenceEqual(restored));
+        using DecodedItemSegment restored = ItemSegment.ReadFrom(image, triplePool);
+        Assert.IsTrue(triples.AsSpan().SequenceEqual(restored.Items.Span));
 
         //Observe the page alignment directly in the bytes rather than only through the size formula: each
         //block begins on a 4 KiB multiple, and the first record of block k decodes to that block's first
@@ -307,16 +320,36 @@ internal sealed class ItemSegmentTests
     public void ColumnarIndexIsRederivableFromTheSegment()
     {
         using VeritasMemoryPool<byte> imagePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
         EncodedTriple[] triples = SampleTriples(100);
         ItemSegment segment = new(triples, blockItemCount: 7, blockAlignment: 64);
         using ArtifactImage image = ToImage(segment, ChecksumAlgorithm.XxHash3, imagePool);
 
-        EncodedTriple[] recovered = ItemSegment.ReadFrom(image.Bytes);
-        ColumnarTripleIndex sidecar = ColumnarTripleIndex.Build(recovered);
+        using DecodedItemSegment recovered = ItemSegment.ReadFrom(image.Bytes, triplePool);
+        ColumnarTripleIndex sidecar = ColumnarTripleIndex.Build(MemoryMarshal.ToEnumerable(recovered.Items));
 
         HashSet<EncodedTriple> expected = [.. triples];
         HashSet<EncodedTriple> actual = [.. sidecar.EnumerateTriples()];
         Assert.IsTrue(expected.SetEquals(actual), "The columnar sidecar rebuilt from the segment differs from the system-of-record triples.");
+    }
+
+    /// <summary>The all-or-nothing read hands back a pooled, owned segment that returns its buffer to the pool on dispose — proven under a poisoning pool that counts outstanding rentals.</summary>
+    [TestMethod]
+    public void ReadFromReturnsAnOwnedSegmentReleasedOnDispose()
+    {
+        using VeritasMemoryPool<byte> imagePool = new();
+        using PoisoningMemoryPool<EncodedTriple> triplePool = new();
+        EncodedTriple[] triples = SampleTriples(30);
+        ItemSegment segment = new(triples, blockItemCount: 10, blockAlignment: 64);
+        using ArtifactImage image = ToImage(segment, ChecksumAlgorithm.XxHash3, imagePool);
+
+        using(DecodedItemSegment decoded = ItemSegment.ReadFrom(image.Bytes, triplePool))
+        {
+            Assert.AreEqual(1, triplePool.OutstandingRentals);
+            Assert.AreEqual(triples.Length, decoded.Count);
+        }
+
+        Assert.AreEqual(0, triplePool.OutstandingRentals, "The decoded item segment must return its buffer to the pool on dispose.");
     }
 
     /// <summary>The byte size of one row-major item record: subject, predicate, object as three little-endian 32-bit ids.</summary>
