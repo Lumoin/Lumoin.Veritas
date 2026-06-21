@@ -29,18 +29,19 @@ namespace Lumoin.Veritas.Tests.Integrity;
 /// (<see cref="ScrubRound.RunVerifyPass"/> / <see cref="ScrubRound.RunRepairPass"/>), asserting three things —
 /// the at-rest verdict (a corrupt block reported with its role, or a framing/foreign-epoch refusal), the repair
 /// outcome at the artifact class's terminal rung (a re-derivable sidecar or sketch rebuilt clean; a
-/// system-of-record block named lost), and a differential twin (the re-derived sidecar decodes to exactly the
-/// system-of-record triples; the sketch re-derive folds every item; a named loss removes exactly its item
-/// range). A manifest or CURRENT-pointer cell runs <see cref="ManifestRecovery"/>, and a journal cell runs
+/// system-of-record block payload restored from the co-versioned parity, or a tamper that untrusts its geometry
+/// refused), and a differential twin (the re-derived sidecar decodes to exactly the system-of-record triples;
+/// the sketch re-derive folds every item; the parity-restored segment decodes to exactly the original triples).
+/// A manifest or CURRENT-pointer cell runs <see cref="ManifestRecovery"/>, and a journal cell runs
 /// <see cref="FileBackedJournal"/> replay; both assert how recovery follows a surviving copy or truncates a
 /// torn tail and names the loss. Each cell's <see cref="PersistenceInvariant"/> citations are fixed by
 /// construction (<see cref="CitedInvariants"/>): Sidecar → I1+I3+I6; Sketch → I1+I2+I3+I6; system-of-record
-/// loss → I1+I7; manifest/CURRENT recovery → I1+I4; journal tail loss → I1+I7; a foreign epoch → I1+I5.
+/// peel → I1+I3; manifest/CURRENT recovery → I1+I4; journal tail loss → I1+I7; a foreign epoch → I1+I5.
 /// <para>
 /// This complements the single-artifact detection sweep in <see cref="PersistenceFaultHarnessTests"/> (every
 /// column blob × byte-damage → detect): the matrix's grain is artifact × damage class × repair outcome over a
-/// staged generation, not per-blob detection. The cells the single-node gate does not admit — the unbuilt
-/// parity tier (P3-f), the replication-arc peer rung, and the damage kinds a given site does not exercise — are
+/// staged generation, not per-blob detection. The cells the single-node gate does not admit — the parity tier's
+/// own re-derive (a later increment), the replication-arc peer rung, and the damage kinds a given site does not exercise — are
 /// enumerated and skipped with a named reason, never silently dropped, so the dispatch table is auditable; the
 /// rules that partition every cell (R1-R6) are forward-complete, so a rule constraining a site not yet in the
 /// active set carries no live cell until that site activates.
@@ -52,11 +53,11 @@ internal sealed class PersistenceCombinationMatrixTests
     /// <summary>The generation's triple count: 3000 system-of-record items across 300 ten-item blocks.</summary>
     private const uint TripleCount = 3000;
 
-    /// <summary>The system-of-record block geometry: ten triples per block, so a corrupt block names a ten-item range.</summary>
+    /// <summary>The system-of-record block geometry: ten triples per block, so a corrupt block is a ten-item recovery unit.</summary>
     private const int BlockItemCount = 10;
 
     /// <summary>The system-of-record block count for the generation (<see cref="TripleCount"/> / <see cref="BlockItemCount"/>).</summary>
-    private const int SegmentBlockCount = 300;
+    private const int SegmentBlockCount = (int)TripleCount / BlockItemCount;
 
     /// <summary>The staged sketch's symbol count: forty symbols across ten four-symbol blocks.</summary>
     private const int SketchSymbolCount = 40;
@@ -109,7 +110,7 @@ internal sealed class PersistenceCombinationMatrixTests
     /// <summary>The garbage bytes a journal whole-block-garbage cell appends past its intact records; replay discards exactly these.</summary>
     private static readonly byte[] JournalGarbageTail = [1, 2, 3, 4, 5];
 
-    /// <summary>The damage sites a cell can land on. The first three are the per-artifact read-path sites this slice drives; <see cref="Parity"/> is the unbuilt parity tier (always skipped); the recovery sites land their cells with the manifest/CURRENT/journal tiers.</summary>
+    /// <summary>The damage sites a cell can land on. The first three are the per-artifact read-path sites this slice drives; <see cref="Parity"/> is the local-parity sidecar, whose own re-derive cell is a later increment (so it is skipped here, while the restore it enables is driven through the system-of-record's LocalParity cells); the recovery sites land their cells with the manifest/CURRENT/journal tiers.</summary>
     internal enum DamageSite
     {
         /// <summary>The re-derivable columnar sidecar.</summary>
@@ -121,7 +122,7 @@ internal sealed class PersistenceCombinationMatrixTests
         /// <summary>The re-derivable integrity sketch.</summary>
         Sketch,
 
-        /// <summary>The optional local-parity prefix (the unbuilt P3-f tier).</summary>
+        /// <summary>The optional local-parity sidecar.</summary>
         Parity,
 
         /// <summary>The generation manifest blob (a recovery site).</summary>
@@ -213,16 +214,26 @@ internal sealed class PersistenceCombinationMatrixTests
         return new MatrixCell(Enum.Parse<DamageSite>(parts[0]), Enum.Parse<DamageKind>(parts[1]), Enum.Parse<RepairRung>(parts[2]));
     }
 
-    /// <summary>The repair-ladder rung the artifact class at <paramref name="site"/> terminates at: a re-derivable artifact re-derives locally; the system-of-record and the durable journal are not re-derivable, so their corruption terminates at a named loss.</summary>
+    /// <summary>The repair-ladder rung the artifact class at <paramref name="site"/> terminates at for damage of <paramref name="kind"/>: a re-derivable artifact re-derives locally; a system-of-record block whose payload is lost (the front matter intact) is restored from the co-versioned parity at the local-parity rung, while a tamper that leaves its geometry untrusted, and the durable journal, terminate at a named loss.</summary>
     /// <param name="site">The site whose ladder terminal rung is taken.</param>
+    /// <param name="kind">The damage kind, which selects the system-of-record's rung between the parity-restorable payload loss and the un-restorable geometry tamper.</param>
     /// <returns>The terminal rung.</returns>
-    private static RepairRung TerminalRung(DamageSite site) => site switch
+    private static RepairRung TerminalRung(DamageSite site, DamageKind kind) => site switch
     {
         DamageSite.Sidecar => RepairRung.RederiveLocally,
         DamageSite.Sketch => RepairRung.RederiveLocally,
-        DamageSite.DataSegment => RepairRung.NamedLoss,
+        DamageSite.DataSegment => DataSegmentTerminalRung(kind),
         DamageSite.JournalEntry => RepairRung.NamedLoss,
         _ => throw new InvalidOperationException($"Site {site} has no scrub or journal terminal rung; the parity and manifest/CURRENT sites are classified on their own paths."),
+    };
+
+    /// <summary>The rung a corrupt system-of-record terminates at for a damage kind: a lost block payload (a bit flip or whole-block garbage, the front matter intact) is restored from the co-versioned parity at the local-parity rung; a tampered stored digest or truncated framing leaves the geometry untrusted and the foreign epoch is refused at detection, all filed at the named-loss terminal rung the system-of-record's ladder otherwise reaches.</summary>
+    /// <param name="kind">The system-of-record damage kind.</param>
+    /// <returns>The terminal rung.</returns>
+    private static RepairRung DataSegmentTerminalRung(DamageKind kind) => kind switch
+    {
+        DamageKind.BitFlip or DamageKind.WholeBlockGarbage => RepairRung.LocalParity,
+        _ => RepairRung.NamedLoss,
     };
 
     /// <summary>Whether the kind is a publish-path kind, which damages only the manifest/CURRENT publish path.</summary>
@@ -250,10 +261,11 @@ internal sealed class PersistenceCombinationMatrixTests
     /// <returns>Whether the cell is valid, and the skip reason when it is not.</returns>
     private static (bool Valid, string Reason) Classify(MatrixCell cell)
     {
-        //R1 — the local-parity tier is not built (P3-f); no parity image exists and the ladder declines LocalParity.
+        //R1 — driving a DAMAGED parity (its own re-derive) is a later increment; the local-parity restore the
+        //parity enables is exercised here by the system-of-record's payload-loss cells at the LocalParity rung.
         if(cell.Site == DamageSite.Parity)
         {
-            return (false, "R1 parity: the local-parity tier is not built (P3-f); the ladder declines LocalParity.");
+            return (false, "R1 parity: the damaged-parity re-derive cell is a later increment; the parity's restore capability is exercised by the system-of-record LocalParity cells.");
         }
 
         //R2 — peer recovery belongs to the replication arc, not this single-node gate.
@@ -293,11 +305,11 @@ internal sealed class PersistenceCombinationMatrixTests
             return (false, "R7 checksum-field: the sidecar's per-blob digest location is not exposed by the verify report; the digest-side detector is represented by the system-of-record and sketch checksum-field cells.");
         }
 
-        //R6 — a rung applies only to the artifact class whose ladder terminates at it.
-        RepairRung terminal = TerminalRung(cell.Site);
+        //R6 — a rung applies only to the artifact class (and, for the system-of-record, the damage kind) whose ladder terminates at it.
+        RepairRung terminal = TerminalRung(cell.Site, cell.Kind);
         if(cell.Rung != terminal)
         {
-            return (false, $"R6 rung: {cell.Rung} does not apply to {cell.Site}; the ladder terminates at {terminal}.");
+            return (false, $"R6 rung: {cell.Rung} does not apply to {cell.Site}/{cell.Kind}; the ladder terminates at {terminal}.");
         }
 
         return (true, string.Empty);
@@ -348,13 +360,22 @@ internal sealed class PersistenceCombinationMatrixTests
         {
             DamageSite.Sidecar => [PersistenceInvariant.DetectionPrecedesUse, PersistenceInvariant.RepairIsFaithful, PersistenceInvariant.RepairIsOrdinaryIngest],
             DamageSite.Sketch => [PersistenceInvariant.DetectionPrecedesUse, PersistenceInvariant.DetectionPrecedesXor, PersistenceInvariant.RepairIsFaithful, PersistenceInvariant.RepairIsOrdinaryIngest],
-            DamageSite.DataSegment => [PersistenceInvariant.DetectionPrecedesUse, PersistenceInvariant.LossIsNamed],
+            DamageSite.DataSegment => DataSegmentInvariants(cell.Kind),
             DamageSite.JournalEntry => [PersistenceInvariant.DetectionPrecedesUse, PersistenceInvariant.LossIsNamed],
             DamageSite.Manifest => [PersistenceInvariant.DetectionPrecedesUse, PersistenceInvariant.PublishIsAtomic],
             DamageSite.Current => [PersistenceInvariant.DetectionPrecedesUse, PersistenceInvariant.PublishIsAtomic],
             _ => [],
         };
     }
+
+    /// <summary>The invariants a system-of-record cell asserts by its damage kind: a parity-restored block payload (a bit flip or whole-block garbage) is recovered faithfully — detection precedes use (I1) and the peel is faithful (I3); a tampered stored digest or truncated framing is detected and refused (I1), naming no loss and re-deriving nothing.</summary>
+    /// <param name="kind">The system-of-record damage kind (a foreign epoch is cited on the epoch path before this is reached).</param>
+    /// <returns>The cited invariants.</returns>
+    private static PersistenceInvariant[] DataSegmentInvariants(DamageKind kind) => kind switch
+    {
+        DamageKind.BitFlip or DamageKind.WholeBlockGarbage => [PersistenceInvariant.DetectionPrecedesUse, PersistenceInvariant.RepairIsFaithful],
+        _ => [PersistenceInvariant.DetectionPrecedesUse],
+    };
 
     /// <summary>Every cell classifies to valid-or-named-skip, the cross-product is the pinned size, the valid count is pinned, and every valid cell cites at least one invariant — so the dispatch table cannot silently change or drop a cell.</summary>
     [TestMethod]
@@ -454,7 +475,20 @@ internal sealed class PersistenceCombinationMatrixTests
             _ => throw new InvalidOperationException($"Site {cell.Site} is not a per-artifact damage site."),
         };
 
-        FileSystemPersistenceStore store = StageGeneration(Generation, segment, sidecar, sketch, bytePool, out string directory);
+        //A system-of-record cell carries a co-versioned parity so a lost block payload is restored at the
+        //local-parity rung rather than named lost; the other sites do not exercise the parity, so they omit it.
+        using ArtifactImage? parity = cell.Site == DamageSite.DataSegment ? ParityImage(Triples, bytePool) : null;
+        FileSystemPersistenceStore store;
+        string directory;
+        if(parity is null)
+        {
+            store = StageGeneration(Generation, segment, sidecar, sketch, bytePool, out directory);
+        }
+        else
+        {
+            store = StageGeneration(Generation, segment, sidecar, sketch, parity, bytePool, out directory);
+        }
+
         try
         {
             FakeTimeProvider clock = new();
@@ -721,7 +755,7 @@ internal sealed class PersistenceCombinationMatrixTests
         }
     }
 
-    /// <summary>Asserts the repair outcome at the cell's terminal rung: a sidecar or sketch re-derives clean (with its differential twin); a corrupt system-of-record block is named lost (with its range); a truncated system-of-record is refused as unreadable; a tampered system-of-record digest is likewise refused while a tampered sketch digest re-derives clean from the surviving system-of-record.</summary>
+    /// <summary>Asserts the repair outcome at the cell's terminal rung: a sidecar or sketch re-derives clean (with its differential twin); a corrupt system-of-record block payload is restored from the co-versioned parity and re-ingested (with its differential twin); a truncated system-of-record is refused as unreadable; a tampered system-of-record digest is likewise refused while a tampered sketch digest re-derives clean from the surviving system-of-record.</summary>
     /// <param name="cell">The cell.</param>
     /// <param name="repair">The repair report.</param>
     /// <param name="trace">The captured repair trace.</param>
@@ -761,7 +795,7 @@ internal sealed class PersistenceCombinationMatrixTests
                 }
                 else
                 {
-                    AssertNamedLoss(repair);
+                    AssertDataSegmentRestored(repair, trace);
                 }
 
                 break;
@@ -803,20 +837,21 @@ internal sealed class PersistenceCombinationMatrixTests
         Assert.IsEmpty(repair.NamedLosses);
     }
 
-    /// <summary>Asserts the corrupt system-of-record block is named lost exactly — its generation, its contiguous ten-item range, and that the range lies within the fixture (I1 + I7). A system-of-record loss re-derives no artifact, so the named range read back from the repair report is itself the differential against the pre-damage fixture; there is no rebuilt image to decode, unlike the sidecar and sketch twins.</summary>
+    /// <summary>Asserts the corrupt system-of-record block is restored from the co-versioned parity and re-ingested faithfully: the repair is clean (no loss named), the healed image verifies clean and decodes to exactly the original triples (the peel's differential twin, I1 + I3), and a re-ingest outcome is emitted for the whole healed item set.</summary>
     /// <param name="repair">The repair report.</param>
-    private static void AssertNamedLoss(RepairPassReport repair)
+    /// <param name="trace">The captured repair trace.</param>
+    private static void AssertDataSegmentRestored(RepairPassReport repair, StorageTraceCapture trace)
     {
         Assert.IsFalse(repair.Refused);
-        Assert.IsFalse(repair.IsClean, "A named system-of-record loss is not a clean outcome.");
-        Assert.IsEmpty(repair.RederivedArtifacts);
-        UnrecoverableItemReport loss = repair.NamedLosses.Single();
-        Assert.AreEqual(UnrecoverableItemReportKind.ItemSet, loss.Kind);
-        Assert.AreEqual(Generation, loss.CommitGeneration);
-        Assert.AreEqual(CorruptBlock * BlockItemCount, loss.LostItemStart);
-        Assert.AreEqual(BlockItemCount, loss.LostItemCount);
-        //The named range — read from the repair report — names a real, in-bounds slice of the fixture it removes.
-        Assert.IsTrue(loss.LostItemStart >= 0 && loss.LostItemStart + loss.LostItemCount <= Triples.Length, "The named loss range must lie within the fixture's item range.");
+        Assert.IsTrue(repair.IsClean, "A parity-restorable system-of-record block is fully recoverable.");
+        Assert.IsEmpty(repair.NamedLosses);
+        RederivedArtifact restored = repair.RederivedArtifacts.Single(static a => a.Role == ManifestFileRole.DataSegment);
+        Assert.IsTrue(ItemSegment.RunVerifyRound(restored.Image.Span).IsClean, "The restored system-of-record must verify clean.");
+        EncodedTriple[] recovered = ItemSegment.ReadFrom(restored.Image.Span);
+        bool faithful = recovered.SequenceEqual(Triples);
+        Assert.IsTrue(faithful, "The restored system-of-record must hold exactly the original triples — the peel's differential twin (I3).");
+        StorageTraceEvent reingested = trace.Events.Single(static e => e.Kind == StorageTraceEventKind.Reingested);
+        Assert.AreEqual((long)TripleCount, reingested.ItemCount, "The healed system-of-record holds every item.");
     }
 
     /// <summary>Asserts a tampered stored digest is named at both grains: the front-matter trailer covers the per-block digest section, so a flipped digest fails the trailer (a front-matter finding) and the block's own recompute (a block finding named with its index) — proving the stored digests cannot be forged to mask a corruption.</summary>
