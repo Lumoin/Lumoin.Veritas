@@ -766,16 +766,45 @@ public sealed class CborWriter
 
     private static void SortEntries(List<(byte[] Key, byte[] Value)> entries, CborConformanceMode mode)
     {
-        Comparison<(byte[] Key, byte[] Value)> comparer = mode switch
+        IComparer<(byte[] Key, byte[] Value)> comparer = mode switch
         {
-            CborConformanceMode.Cde => static (a, b) => a.Key.AsSpan().SequenceCompareTo(b.Key.AsSpan()),
-            _ => static (a, b) =>
-            {
-                int lenCmp = a.Key.Length.CompareTo(b.Key.Length);
-                return lenCmp != 0 ? lenCmp : a.Key.AsSpan().SequenceCompareTo(b.Key.AsSpan());
-            }
+            CborConformanceMode.Cde => CdeKeyComparer.Instance,
+            _ => LengthFirstKeyComparer.Instance
         };
         entries.Sort(comparer);
+    }
+
+    /// <summary>Orders canonical-map entries by byte-lexicographic key comparison (the CDE order), carrying no state.</summary>
+    private sealed class CdeKeyComparer : IComparer<(byte[] Key, byte[] Value)>
+    {
+        /// <summary>The shared stateless instance.</summary>
+        public static CdeKeyComparer Instance { get; } = new();
+
+        /// <summary>Compares two entries by byte-lexicographic key order.</summary>
+        /// <param name="a">The first entry.</param>
+        /// <param name="b">The second entry.</param>
+        /// <returns>The sign of the byte-lexicographic key comparison.</returns>
+        public int Compare((byte[] Key, byte[] Value) a, (byte[] Key, byte[] Value) b)
+        {
+            return a.Key.AsSpan().SequenceCompareTo(b.Key.AsSpan());
+        }
+    }
+
+    /// <summary>Orders canonical-map entries by key length first, then byte-lexicographically (the non-CDE canonical order), carrying no state.</summary>
+    private sealed class LengthFirstKeyComparer : IComparer<(byte[] Key, byte[] Value)>
+    {
+        /// <summary>The shared stateless instance.</summary>
+        public static LengthFirstKeyComparer Instance { get; } = new();
+
+        /// <summary>Compares two entries by key length, then byte-lexicographically.</summary>
+        /// <param name="a">The first entry.</param>
+        /// <param name="b">The second entry.</param>
+        /// <returns>The sign of the length-then-byte key comparison.</returns>
+        public int Compare((byte[] Key, byte[] Value) a, (byte[] Key, byte[] Value) b)
+        {
+            int lenCmp = a.Key.Length.CompareTo(b.Key.Length);
+            return lenCmp != 0 ? lenCmp : a.Key.AsSpan().SequenceCompareTo(b.Key.AsSpan());
+        }
     }
 
     private string DescribeTopState()

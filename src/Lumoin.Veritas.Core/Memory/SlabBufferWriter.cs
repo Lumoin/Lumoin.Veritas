@@ -1,9 +1,8 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
-using Lumoin.Veritas.Core.Memory;
 
-namespace Lumoin.Veritas.Cbor.Internal;
+namespace Lumoin.Veritas.Core.Memory;
 
 /// <summary>
 /// An <see cref="IBufferWriter{T}"/> backed by slab-sized buffers rented
@@ -117,15 +116,22 @@ public sealed class SlabBufferWriter: IBufferWriter<byte>, IDisposable
     /// <summary>
     /// Concatenates the written bytes into a fresh pooled buffer of exactly
     /// <see cref="BytesWritten"/> length and returns it as an
-    /// <see cref="IMemoryOwner{T}"/>. The writer is reset to its initial
-    /// state and may be reused. The returned owner is the caller's
-    /// responsibility to dispose.
+    /// <see cref="IMemoryOwner{T}"/>; when nothing has been written it returns an
+    /// empty owner without renting. The writer is reset to its initial state and may
+    /// be reused. The returned owner is the caller's responsibility to dispose.
     /// </summary>
-    /// <returns>An owned buffer of exactly the written bytes.</returns>
+    /// <returns>An owned buffer of exactly the written bytes; empty when nothing was written.</returns>
     public IMemoryOwner<byte> Detach()
     {
         ThrowIfDisposed();
         int total = BytesWritten;
+        if(total == 0)
+        {
+            ReleaseAllSlabs();
+
+            return EmptyMemoryOwner.Instance;
+        }
+
         IMemoryOwner<byte> result = pool.Rent(total);
         Span<byte> output = result.Memory.Span[..total];
         int outIndex = 0;
@@ -203,5 +209,20 @@ public sealed class SlabBufferWriter: IBufferWriter<byte>, IDisposable
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(disposed, this);
+    }
+
+    /// <summary>An <see cref="IMemoryOwner{T}"/> over no bytes, returned by <see cref="Detach"/> when nothing was written so no pool rental is needed.</summary>
+    private sealed class EmptyMemoryOwner: IMemoryOwner<byte>
+    {
+        /// <summary>The shared empty owner; it holds no rented memory, so sharing and repeated disposal are safe.</summary>
+        public static EmptyMemoryOwner Instance { get; } = new();
+
+        /// <summary>Gets the empty backing memory.</summary>
+        public Memory<byte> Memory => Memory<byte>.Empty;
+
+        /// <summary>Does nothing; there is no rented memory to return.</summary>
+        public void Dispose()
+        {
+        }
     }
 }

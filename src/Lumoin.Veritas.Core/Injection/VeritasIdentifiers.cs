@@ -27,9 +27,7 @@ public static class VeritasIdentifiers
     /// <returns>A deterministic sequential identifier delegate.</returns>
     public static IdentifierDelegate Sequential()
     {
-        long counter = 0;
-
-        return (in IdentifierRequest _) => FromCounter(Interlocked.Increment(ref counter));
+        return new SequentialIdentifierSource().Next;
     }
 
     [SuppressMessage(
@@ -55,5 +53,24 @@ public static class VeritasIdentifiers
         BinaryPrimitives.WriteInt64BigEndian(bytes[8..], value);
 
         return new Guid(bytes);
+    }
+
+    /// <summary>
+    /// Holds the monotonic counter behind a <see cref="Sequential"/> delegate so the
+    /// produced <see cref="IdentifierDelegate"/> carries its state in an explicit field
+    /// rather than a captured local.
+    /// </summary>
+    private sealed class SequentialIdentifierSource
+    {
+        /// <summary>The most recently issued counter value; incremented atomically per request.</summary>
+        private long counter;
+
+        /// <summary>Issues the next deterministic, monotonically increasing identifier.</summary>
+        /// <param name="request">The identifier request; ignored, as the sequence is independent of any salt.</param>
+        /// <returns>The next identifier in the sequence.</returns>
+        public Guid Next(in IdentifierRequest request)
+        {
+            return FromCounter(Interlocked.Increment(ref counter));
+        }
     }
 }

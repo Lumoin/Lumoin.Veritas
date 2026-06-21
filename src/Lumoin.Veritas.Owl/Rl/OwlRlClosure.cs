@@ -504,14 +504,18 @@ public static class OwlRlClosure
                 if(characteristic == Terms.FunctionalProperty)
                 {
                     //prp-fp.
-                    ForEachSamePredicatePair(p, bySubject: true, (key, first, second) =>
-                        Add(first, Terms.SameAs, second, EntailmentRules.PrpFp, [typing, Fact(key, p, first), Fact(key, p, second)]));
+                    foreach((TermId key, TermId first, TermId second) in SamePredicatePairs(p, bySubject: true))
+                    {
+                        Add(first, Terms.SameAs, second, EntailmentRules.PrpFp, [typing, Fact(key, p, first), Fact(key, p, second)]);
+                    }
                 }
                 else if(characteristic == Terms.InverseFunctionalProperty)
                 {
                     //prp-ifp.
-                    ForEachSamePredicatePair(p, bySubject: false, (key, first, second) =>
-                        Add(first, Terms.SameAs, second, EntailmentRules.PrpIfp, [typing, Fact(first, p, key), Fact(second, p, key)]));
+                    foreach((TermId key, TermId first, TermId second) in SamePredicatePairs(p, bySubject: false))
+                    {
+                        Add(first, Terms.SameAs, second, EntailmentRules.PrpIfp, [typing, Fact(first, p, key), Fact(second, p, key)]);
+                    }
                 }
                 else if(characteristic == Terms.IrreflexiveProperty)
                 {
@@ -1378,11 +1382,15 @@ public static class OwlRlClosure
             return SingleObjectOf(subject, predicate) is TermId head ? ListOf(head) : null;
         }
 
-        //Fires the functional/inverse-functional pairing: for every two
-        //triples of the property sharing a subject (or object), the other
-        //ends equate; the callback receives the shared key so it can name
-        //its premises.
-        private void ForEachSamePredicatePair(TermId property, bool bySubject, Action<TermId, TermId, TermId> equate)
+        /// <summary>
+        /// Yields the functional/inverse-functional pairing triples: for every two triples of the
+        /// property sharing a subject (when <paramref name="bySubject"/>) or object, the shared key
+        /// and the two distinct other ends, so the caller can equate them and name its premises.
+        /// </summary>
+        /// <param name="property">The property whose triples are paired.</param>
+        /// <param name="bySubject">Whether to group by subject (functional) or object (inverse-functional).</param>
+        /// <returns>The (shared key, first end, second end) triples.</returns>
+        private IEnumerable<(TermId Key, TermId First, TermId Second)> SamePredicatePairs(TermId property, bool bySubject)
         {
             Dictionary<TermId, List<TermId>> groups = [];
             foreach((TermId s, TermId o) in Pairs(property))
@@ -1407,7 +1415,7 @@ public static class OwlRlClosure
                     {
                         if(values[i] != values[j])
                         {
-                            equate(group.Key, values[i], values[j]);
+                            yield return (group.Key, values[i], values[j]);
                         }
                     }
                 }

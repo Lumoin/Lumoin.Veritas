@@ -209,7 +209,7 @@ public static class GraphGenerators
     /// enumeration that drives the edge view.
     /// </summary>
     public static GraphSource<TNode> FromChildrenFunction<TNode>(
-        Func<TNode, IEnumerable<TNode>> children,
+        Adjacency<TNode> children,
         IEnumerable<TNode> allNodes)
         where TNode : IEquatable<TNode>
     {
@@ -603,7 +603,7 @@ public static class GraphGenerators
     //and Func references force boxing anyway; record struct gains
     //nothing here.
     private sealed record FromChildrenSpec<TNode>(
-        Func<TNode, IEnumerable<TNode>> Children,
+        Adjacency<TNode> Children,
         IEnumerable<TNode> AllNodes)
         where TNode : IEquatable<TNode>
     {

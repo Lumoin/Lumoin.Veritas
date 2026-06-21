@@ -1,11 +1,12 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
+using System.IO.Pipelines;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
 
@@ -65,24 +66,26 @@ public static class SparqlResultsDelimitedWriter
         }
     }
 
-    /// <summary>Writes a materialized SELECT result set to a stream (UTF-8, no BOM), one line at a time.</summary>
+    /// <summary>Writes a materialized SELECT result set to a pipe (UTF-8, no BOM), one line at a time, completing the pipe at the end.</summary>
     /// <param name="results">The result set to serialize.</param>
-    /// <param name="stream">The destination stream.</param>
+    /// <param name="writer">The destination pipe writer.</param>
     /// <param name="format">The delimited format to emit.</param>
     /// <param name="cancellationToken">A token that aborts writing.</param>
     /// <returns>The asynchronous write operation.</returns>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
     /// <exception cref="NotSupportedException"><paramref name="results"/> is an ASK (boolean) result.</exception>
-    public static async Task WriteAsync(SparqlResultSet results, Stream stream, SparqlDelimitedResultsFormat format, CancellationToken cancellationToken = default)
+    public static async Task WriteAsync(SparqlResultSet results, PipeWriter writer, SparqlDelimitedResultsFormat format, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(results);
-        ArgumentNullException.ThrowIfNull(stream);
+        ArgumentNullException.ThrowIfNull(writer);
 
         await foreach(string line in WriteLinesAsync(results.Variables, ToAsync(SelectSolutions(results)), format, cancellationToken).ConfigureAwait(false))
         {
-            byte[] bytes = Encoding.UTF8.GetBytes(line);
-            await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+            writer.WriteUtf8(line);
+            await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
+
+        await writer.CompleteAsync().ConfigureAwait(false);
     }
 
     /// <summary>Serializes a materialized SELECT result set to its delimited text.</summary>

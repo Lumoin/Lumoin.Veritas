@@ -3,6 +3,7 @@ using System.IO;
 using System.IO.Pipelines;
 using System.Text;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Turtle;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -80,12 +81,73 @@ internal sealed class TurtleWriterTests
         Assert.Contains('}', text);
     }
 
+    /// <summary>A quoted triple nested at the limit in object position writes inline to completion (one open per level).</summary>
+    [TestMethod]
+    public void DeepTripleTermObjectInlineWrites()
+    {
+        Quad quad = new(
+            new NamedNode(Utf8String.FromString("http://example.org/s")),
+            new NamedNode(Utf8String.FromString("http://example.org/p")),
+            NestSubject(QuotedTripleLimits.MaxNestingDepth));
+
+        string text = WriteQuads([quad], TurtleSyntax.Turtle);
+
+        Assert.AreEqual(QuotedTripleLimits.MaxNestingDepth, text.Split("<<( ").Length - 1);
+    }
+
+    /// <summary>A quoted triple nested beyond the limit throws the catchable depth exception from the writer, not a stack overflow.</summary>
+    [TestMethod]
+    public void DeepTripleTermBeyondTheNestingLimitThrows()
+    {
+        Quad quad = new(
+            new NamedNode(Utf8String.FromString("http://example.org/s")),
+            new NamedNode(Utf8String.FromString("http://example.org/p")),
+            NestSubject(QuotedTripleLimits.MaxNestingDepth + 1));
+
+        TripleTermDepthLimitException exception = Assert.ThrowsExactly<TripleTermDepthLimitException>(
+            () => WriteQuads([quad], TurtleSyntax.Turtle));
+
+        Assert.AreEqual(QuotedTripleLimits.MaxNestingDepth + 1, exception.Depth);
+        Assert.AreEqual(QuotedTripleLimits.MaxNestingDepth, exception.Limit);
+    }
+
+    /// <summary>Two quads with distinct-but-value-equal deep quoted-triple subjects group under one subject, proving the grouping key is structural.</summary>
+    [TestMethod]
+    public void ValueEqualDeepTripleTermSubjectsGroupUnderOneSubject()
+    {
+        Quad a = new(NestSubject(32), new NamedNode(Utf8String.FromString("http://example.org/p1")), new NamedNode(Utf8String.FromString("http://example.org/o1")));
+        Quad b = new(NestSubject(32), new NamedNode(Utf8String.FromString("http://example.org/p2")), new NamedNode(Utf8String.FromString("http://example.org/o2")));
+
+        string text = WriteQuads([a, b], TurtleSyntax.Turtle);
+
+        //Grouped: the shared subject (the only source of "<<( " here) is emitted exactly once, its predicates joined by ';'.
+        Assert.AreEqual(32, text.Split("<<( ").Length - 1);
+        Assert.Contains(";", text, System.StringComparison.Ordinal);
+    }
+
     private static Quad MakeIriQuad(string s, string p, string o)
     {
         return new Quad(
             new NamedNode(Utf8String.FromString("http://example.org/" + s)),
             new NamedNode(Utf8String.FromString("http://example.org/" + p)),
             new NamedNode(Utf8String.FromString("http://example.org/" + o)));
+    }
+
+    /// <summary>Builds a quoted triple nested <paramref name="depth"/> levels deep through the subject, with IRI leaves.</summary>
+    /// <param name="depth">The number of quoted-triple nesting levels.</param>
+    /// <returns>The nested term.</returns>
+    private static RdfTerm NestSubject(int depth)
+    {
+        NamedNode predicate = new(Utf8String.FromString("http://example.org/p"));
+        RdfTerm leaf = new NamedNode(Utf8String.FromString("http://example.org/o"));
+
+        RdfTerm term = leaf;
+        for(int i = 0; i < depth; i++)
+        {
+            term = new TripleTerm(term, predicate, leaf);
+        }
+
+        return term;
     }
 
     private static string WriteQuads(IReadOnlyList<Quad> quads, TurtleSyntax syntax)

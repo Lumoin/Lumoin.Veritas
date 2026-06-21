@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Parsing;
 
 namespace Lumoin.Veritas.Canonicalization;
 
@@ -83,55 +84,106 @@ internal static class NQuadsSerializer
 
     private static void AppendTerm(StringBuilder sb, RdfTerm term, IReadOnlyDictionary<string, string> blankNodeMap)
     {
+        //A quoted triple is the only nesting term; everything else is a leaf appended directly. Walking the
+        //triple over an explicit stack keeps deep nesting off the call stack, and the depth guard turns a
+        //pathological term into a catchable exception rather than unbounded growth.
+        if(term is not TripleTerm root)
+        {
+            AppendLeaf(sb, term, blankNodeMap);
+
+            return;
+        }
+
+        Stack<TermStep> work = new();
+        work.Push(new TermStep(StepKind.Term, root, null));
+        int depth = 0;
+
+        while(work.Count > 0)
+        {
+            TermStep step = work.Pop();
+            switch(step.Kind)
+            {
+                case(StepKind.Term):
+                {
+                    if(step.Term is TripleTerm triple)
+                    {
+                        depth++;
+                        if(depth > QuotedTripleLimits.MaxNestingDepth)
+                        {
+                            throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
+                        }
+
+                        //Push the components in reverse so they pop in serialization order:
+                        //<<( subject SPACE predicate SPACE object )>>.
+                        work.Push(TermStep.Close);
+                        work.Push(new TermStep(StepKind.Term, triple.Object, null));
+                        work.Push(TermStep.Space);
+                        work.Push(new TermStep(StepKind.Predicate, null, triple.Predicate));
+                        work.Push(TermStep.Space);
+                        work.Push(new TermStep(StepKind.Term, triple.Subject, null));
+                        work.Push(TermStep.Open);
+                    }
+                    else
+                    {
+                        AppendLeaf(sb, step.Term!, blankNodeMap);
+                    }
+
+                    break;
+                }
+                case(StepKind.Open):
+                {
+                    sb.Append(TripleTermOpen);
+                    break;
+                }
+                case(StepKind.Space):
+                {
+                    sb.Append(' ');
+                    break;
+                }
+                case(StepKind.Predicate):
+                {
+                    AppendNamedNode(sb, step.Predicate!);
+                    break;
+                }
+                default:
+                {
+                    //StepKind.Close: the triple's components are appended; close it and unwind one nesting level.
+                    sb.Append(TripleTermClose);
+                    depth--;
+                    break;
+                }
+            }
+        }
+    }
+
+    private static void AppendLeaf(StringBuilder sb, RdfTerm term, IReadOnlyDictionary<string, string> blankNodeMap)
+    {
         switch(term)
         {
-            case NamedNode namedNode:
+            case(NamedNode namedNode):
             {
                 AppendNamedNode(sb, namedNode);
-
                 break;
             }
-
-            case BlankNode blankNode:
+            case(BlankNode blankNode):
             {
                 string label = blankNode.Label.ToString();
                 string canonical = blankNodeMap.TryGetValue(label, out string? mapped) ? mapped : label;
                 sb.Append("_:");
                 sb.Append(canonical);
-
                 break;
             }
-
-            case Literal literal:
+            case(Literal literal):
             {
                 AppendLiteral(sb, literal);
-
                 break;
             }
-
-            case TripleTerm tripleTerm:
-            {
-                AppendTripleTerm(sb, tripleTerm, blankNodeMap);
-
-                break;
-            }
-
             default:
             {
+                //An unknown term kind appends nothing, preserving the original serializer's behaviour.
                 break;
             }
         }
-    }
-
-    private static void AppendTripleTerm(StringBuilder sb, TripleTerm tripleTerm, IReadOnlyDictionary<string, string> blankNodeMap)
-    {
-        sb.Append("<<( ");
-        AppendTerm(sb, tripleTerm.Subject, blankNodeMap);
-        sb.Append(' ');
-        AppendNamedNode(sb, tripleTerm.Predicate);
-        sb.Append(' ');
-        AppendTerm(sb, tripleTerm.Object, blankNodeMap);
-        sb.Append(" )>>");
     }
 
     private static void AppendNamedNode(StringBuilder sb, NamedNode node)
@@ -302,5 +354,46 @@ internal static class NQuadsSerializer
         return codePoint < UnicodeConstants.FirstNonControlCodePoint
             || codePoint == UnicodeConstants.Delete
             || UnicodeConstants.IsNoncharacter(codePoint);
+    }
+
+    /// <summary>The RDF-star quoted-triple opening delimiter <c>&lt;&lt;( </c>.</summary>
+    private const string TripleTermOpen = "<<( ";
+
+    /// <summary>The RDF-star quoted-triple closing delimiter <c> )&gt;&gt;</c>.</summary>
+    private const string TripleTermClose = " )>>";
+
+    /// <summary>The kind of step on the quoted-triple serialization work-stack.</summary>
+    private enum StepKind
+    {
+        /// <summary>Visit a term: append a leaf directly, or expand a quoted triple into its component steps.</summary>
+        Term,
+
+        /// <summary>Append the quoted-triple opening delimiter.</summary>
+        Open,
+
+        /// <summary>Append a single component separator.</summary>
+        Space,
+
+        /// <summary>Append a quoted triple's predicate, which is always a named node.</summary>
+        Predicate,
+
+        /// <summary>Append the quoted-triple closing delimiter and unwind one nesting level.</summary>
+        Close
+    }
+
+    /// <summary>One step on the quoted-triple serialization work-stack.</summary>
+    /// <param name="Kind">The step kind.</param>
+    /// <param name="Term">The term to visit; set only for a <c>Term</c> step.</param>
+    /// <param name="Predicate">The predicate to append; set only for a <c>Predicate</c> step.</param>
+    private readonly record struct TermStep(StepKind Kind, RdfTerm? Term, NamedNode? Predicate)
+    {
+        /// <summary>The payload-less step that appends the quoted-triple opening delimiter.</summary>
+        public static TermStep Open { get; } = new(StepKind.Open, null, null);
+
+        /// <summary>The payload-less step that appends a single component separator.</summary>
+        public static TermStep Space { get; } = new(StepKind.Space, null, null);
+
+        /// <summary>The payload-less step that appends the quoted-triple closing delimiter and unwinds one nesting level.</summary>
+        public static TermStep Close { get; } = new(StepKind.Close, null, null);
     }
 }

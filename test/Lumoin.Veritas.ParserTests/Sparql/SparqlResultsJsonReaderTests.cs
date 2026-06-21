@@ -1,5 +1,6 @@
-using System.Text;
+using System.Buffers;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Json;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
@@ -22,7 +23,7 @@ internal sealed class SparqlResultsJsonReaderTests
     /// <returns>The parsed result set.</returns>
     private static SparqlResultSet Read(string json)
     {
-        return SparqlResultsJsonReader.Read(Encoding.UTF8.GetBytes(json));
+        return SparqlResultsJsonReader.Read(Utf8String.FromString(json).Memory);
     }
 
     /// <summary>Returns the value bound to a variable in a solution.</summary>
@@ -145,5 +146,102 @@ internal sealed class SparqlResultsJsonReaderTests
         Assert.IsTrue(trueResult.IsBoolean);
         Assert.IsTrue(trueResult.Boolean!.Value);
         Assert.IsFalse(falseResult.Boolean!.Value);
+    }
+
+    /// <summary>The <see cref="System.IO.Stream"/> overload (the stream-source production path, e.g. an HTTP response body) parses the same result as the byte overload.</summary>
+    [TestMethod]
+    public void ReadsFromStream()
+    {
+        const string json =
+            """
+            {
+              "head": { "vars": [ "iri", "n" ] },
+              "results": { "bindings": [
+                { "iri": { "type": "uri", "value": "http://example/a" },
+                  "n":   { "type": "literal", "value": "42", "datatype": "http://www.w3.org/2001/XMLSchema#integer" } }
+              ] }
+            }
+            """;
+
+        using ReadOnlyMemoryStream stream = new(Utf8String.FromString(json).Memory);
+        SparqlResultSet result = SparqlResultsJsonReader.Read(stream);
+
+        Assert.HasCount(2, result.Variables);
+        Assert.HasCount(1, result.Solutions);
+        Assert.AreEqual(new NamedNode(Utf8String.FromString("http://example/a")), Value(result.Solutions[0], "iri"));
+
+        Literal number = (Literal)Value(result.Solutions[0], "n");
+        Assert.AreEqual("42", number.Value.ToString());
+        Assert.AreEqual("http://www.w3.org/2001/XMLSchema#integer", number.Datatype.Iri.ToString());
+    }
+
+    /// <summary>The <see cref="System.IO.Stream"/> overload rejects a null stream.</summary>
+    [TestMethod]
+    public void ReadFromNullStreamThrows()
+    {
+        Assert.ThrowsExactly<ArgumentNullException>(() => SparqlResultsJsonReader.Read((Stream)null!));
+    }
+
+    /// <summary>The byte-sequence overload (the pipe path) parses the same result as the byte overload, even across multiple segments.</summary>
+    [TestMethod]
+    public void ReadsFromSegmentedSequence()
+    {
+        ReadOnlyMemory<byte> json = Utf8String.FromString(
+            """
+            {
+              "head": { "vars": [ "iri", "n" ] },
+              "results": { "bindings": [
+                { "iri": { "type": "uri", "value": "http://example/a" },
+                  "n":   { "type": "literal", "value": "42", "datatype": "http://www.w3.org/2001/XMLSchema#integer" } }
+              ] }
+            }
+            """).Memory;
+
+        ReadOnlySequence<byte> sequence = Segmented(json, json.Length / 2);
+        Assert.IsFalse(sequence.IsSingleSegment, "The test must exercise the multi-segment path.");
+
+        SparqlResultSet result = SparqlResultsJsonReader.Read(sequence);
+
+        Assert.HasCount(2, result.Variables);
+        Assert.HasCount(1, result.Solutions);
+        Assert.AreEqual(new NamedNode(Utf8String.FromString("http://example/a")), Value(result.Solutions[0], "iri"));
+
+        Literal number = (Literal)Value(result.Solutions[0], "n");
+        Assert.AreEqual("42", number.Value.ToString());
+        Assert.AreEqual("http://www.w3.org/2001/XMLSchema#integer", number.Datatype.Iri.ToString());
+    }
+
+    /// <summary>Builds a two-segment <see cref="ReadOnlySequence{T}"/> over the bytes, split at <paramref name="firstSegmentLength"/>.</summary>
+    /// <param name="bytes">The bytes to wrap.</param>
+    /// <param name="firstSegmentLength">The length of the first segment.</param>
+    /// <returns>A two-segment sequence over the bytes.</returns>
+    private static ReadOnlySequence<byte> Segmented(ReadOnlyMemory<byte> bytes, int firstSegmentLength)
+    {
+        SequenceSegment first = new(bytes[..firstSegmentLength]);
+        SequenceSegment second = first.Append(bytes[firstSegmentLength..]);
+
+        return new ReadOnlySequence<byte>(first, 0, second, second.Memory.Length);
+    }
+
+    /// <summary>A linked <see cref="ReadOnlySequenceSegment{T}"/> for assembling a multi-segment test sequence.</summary>
+    private sealed class SequenceSegment: ReadOnlySequenceSegment<byte>
+    {
+        /// <summary>Initializes a segment over <paramref name="memory"/>.</summary>
+        /// <param name="memory">The segment's bytes.</param>
+        public SequenceSegment(ReadOnlyMemory<byte> memory)
+        {
+            Memory = memory;
+        }
+
+        /// <summary>Appends a following segment after this one and returns it.</summary>
+        /// <param name="memory">The next segment's bytes.</param>
+        /// <returns>The appended segment.</returns>
+        public SequenceSegment Append(ReadOnlyMemory<byte> memory)
+        {
+            SequenceSegment next = new(memory) { RunningIndex = RunningIndex + Memory.Length };
+            Next = next;
+
+            return next;
+        }
     }
 }

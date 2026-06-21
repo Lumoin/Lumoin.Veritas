@@ -45,7 +45,7 @@ internal static class Program
             .WithTools<VeritasMcpServer>();
 
         //MCP speaks JSON-RPC on stdout, so all logging must go to stderr to keep the protocol stream clean.
-        builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
+        builder.Logging.AddConsole(static options => options.LogToStandardErrorThreshold = LogLevel.Trace);
 
         await builder.Build().RunAsync().ConfigureAwait(false);
 
@@ -71,16 +71,7 @@ internal static class Program
         };
         root.Subcommands.Add(queryCommand);
 
-        queryCommand.SetAction(async (parseResult, cancellationToken) =>
-        {
-            string queryFile = parseResult.GetValue(queryFileArgument)!;
-            string[] dataPaths = parseResult.GetValue(queryDataOption) ?? [];
-            SparqlDelimitedResultsFormat format = ResolveFormat(parseResult.GetValue(formatOption));
-
-            OperationResult result = await VeritasOperations.RunQueryFileAsync(queryFile, dataPaths, format, cancellationToken).ConfigureAwait(false);
-
-            return await EmitAsync(result).ConfigureAwait(false);
-        });
+        queryCommand.SetAction(new QueryCommandHandler(queryFileArgument, queryDataOption, formatOption).InvokeAsync);
 
         Option<string[]> serveDataOption = new("--data", "-d") { Description = "RDF data file (.ttl/.nt/.trig/.nq) to serve; repeat for several.", AllowMultipleArgumentsPerToken = true };
         Option<int> portOption = new("--port", "-p") { Description = "Loopback port to listen on (default 3030)." };
@@ -92,13 +83,7 @@ internal static class Program
         };
         root.Subcommands.Add(serveCommand);
 
-        serveCommand.SetAction(async (parseResult, cancellationToken) =>
-        {
-            string[] dataPaths = parseResult.GetValue(serveDataOption) ?? [];
-            int port = parseResult.GetValue(portOption);
-
-            return await VeritasSparqlServer.RunAsync(dataPaths, port == 0 ? 3030 : port, cancellationToken).ConfigureAwait(false);
-        });
+        serveCommand.SetAction(new ServeCommandHandler(serveDataOption, portOption).InvokeAsync);
 
         return await root.Parse(args).InvokeAsync().ConfigureAwait(false);
     }
@@ -130,5 +115,68 @@ internal static class Program
         await Console.Error.WriteLineAsync(result.ErrorMessage).ConfigureAwait(false);
 
         return 1;
+    }
+
+    /// <summary>
+    /// Runs the <c>query</c> command, carrying its argument and options as explicit state so the action passed
+    /// to <see cref="Command.SetAction(System.Func{ParseResult, CancellationToken, Task{int}})"/> is a bound
+    /// method group rather than a lambda closing over the enclosing symbols.
+    /// </summary>
+    /// <param name="queryFileArgument">The query-file argument.</param>
+    /// <param name="queryDataOption">The data-files option.</param>
+    /// <param name="formatOption">The result-format option.</param>
+    private sealed class QueryCommandHandler(Argument<string> queryFileArgument, Option<string[]> queryDataOption, Option<string> formatOption)
+    {
+        /// <summary>The query-file argument.</summary>
+        private Argument<string> QueryFileArgument { get; } = queryFileArgument;
+
+        /// <summary>The data-files option.</summary>
+        private Option<string[]> QueryDataOption { get; } = queryDataOption;
+
+        /// <summary>The result-format option.</summary>
+        private Option<string> FormatOption { get; } = formatOption;
+
+        /// <summary>Runs the query file and emits its result.</summary>
+        /// <param name="parseResult">The parsed command line.</param>
+        /// <param name="cancellationToken">A token that cancels the run.</param>
+        /// <returns>The process exit code.</returns>
+        public async Task<int> InvokeAsync(ParseResult parseResult, CancellationToken cancellationToken)
+        {
+            string queryFile = parseResult.GetValue(QueryFileArgument)!;
+            string[] dataPaths = parseResult.GetValue(QueryDataOption) ?? [];
+            SparqlDelimitedResultsFormat format = ResolveFormat(parseResult.GetValue(FormatOption));
+
+            OperationResult result = await VeritasOperations.RunQueryFileAsync(queryFile, dataPaths, format, cancellationToken).ConfigureAwait(false);
+
+            return await EmitAsync(result).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Runs the <c>serve</c> command, carrying its options as explicit state so the action passed to
+    /// <see cref="Command.SetAction(System.Func{ParseResult, CancellationToken, Task{int}})"/> is a bound
+    /// method group rather than a lambda closing over the enclosing symbols.
+    /// </summary>
+    /// <param name="serveDataOption">The data-files option.</param>
+    /// <param name="portOption">The listen-port option.</param>
+    private sealed class ServeCommandHandler(Option<string[]> serveDataOption, Option<int> portOption)
+    {
+        /// <summary>The data-files option.</summary>
+        private Option<string[]> ServeDataOption { get; } = serveDataOption;
+
+        /// <summary>The listen-port option.</summary>
+        private Option<int> PortOption { get; } = portOption;
+
+        /// <summary>Starts the SPARQL HTTP endpoint over the served data files.</summary>
+        /// <param name="parseResult">The parsed command line.</param>
+        /// <param name="cancellationToken">A token that stops the server.</param>
+        /// <returns>The process exit code.</returns>
+        public async Task<int> InvokeAsync(ParseResult parseResult, CancellationToken cancellationToken)
+        {
+            string[] dataPaths = parseResult.GetValue(ServeDataOption) ?? [];
+            int port = parseResult.GetValue(PortOption);
+
+            return await VeritasSparqlServer.RunAsync(dataPaths, port == 0 ? 3030 : port, cancellationToken).ConfigureAwait(false);
+        }
     }
 }

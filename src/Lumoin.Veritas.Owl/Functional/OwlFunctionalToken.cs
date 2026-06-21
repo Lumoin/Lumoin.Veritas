@@ -1,3 +1,5 @@
+using Lumoin.Veritas.Core;
+
 namespace Lumoin.Veritas.Owl.Functional;
 
 /// <summary>The lexical classes of functional-syntax tokens.</summary>
@@ -30,9 +32,9 @@ internal enum OwlFunctionalTokenKind
 
 /// <summary>One lexed functional-syntax token.</summary>
 /// <param name="Kind">The token's lexical class.</param>
-/// <param name="Text">The token's value text: the IRI body, name, label, decoded literal value, or punctuation.</param>
+/// <param name="Text">The token's value text: the IRI body, name, label, decoded literal value, or — for punctuation — empty. Verbatim values are zero-copy windows over the reader's byte buffer; a decoded literal value is its own buffer.</param>
 /// <param name="LiteralDatatype">A literal's datatype as a prefixed name or a <c>&lt;</c>-prefixed IRI, or <see langword="null"/>.</param>
 /// <param name="LiteralLanguage">A literal's language tag, or <see langword="null"/>.</param>
-/// <param name="Start">The inclusive start character offset in the source.</param>
-/// <param name="End">The exclusive end character offset in the source.</param>
-internal readonly record struct OwlFunctionalToken(OwlFunctionalTokenKind Kind, string Text, string? LiteralDatatype, string? LiteralLanguage, int Start, int End);
+/// <param name="Start">The inclusive start byte offset in the source.</param>
+/// <param name="End">The exclusive end byte offset in the source.</param>
+internal readonly record struct OwlFunctionalToken(OwlFunctionalTokenKind Kind, Utf8String Text, Utf8String? LiteralDatatype, Utf8String? LiteralLanguage, int Start, int End);

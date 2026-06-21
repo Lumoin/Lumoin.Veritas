@@ -6,6 +6,7 @@ using System.Xml.Linq;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Iris;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Core.Sourcing;
 
 namespace Lumoin.Veritas.Xml;
@@ -64,7 +65,7 @@ public static class RdfXmlReader
         XDocument document;
         try
         {
-            using MemoryStreamLike stream = new(source);
+            using ReadOnlyMemoryStream stream = new(source);
 
             //RDF/XML documents in the wild abbreviate namespace IRIs through DOCTYPE
             //internal-subset entities (the W3C OWL corpus and 2000s-era ontologies do),
@@ -552,6 +553,15 @@ public static class RdfXmlReader
 
                 if(property.Attribute(Rdf + "parseType")?.Value == "Triple")
                 {
+                    //The triple currently at depth pending.Count + 1 cannot nest a deeper one without exceeding
+                    //the quoted-triple nesting cap; recording a diagnostic and stopping keeps the pending chain bounded.
+                    if(pending.Count + 1 >= QuotedTripleLimits.MaxNestingDepth)
+                    {
+                        Report(Diagnostics, "An RDF 1.2 quoted triple (rdf:parseType=\"Triple\") is nested deeper than the maximum nesting depth.");
+
+                        return null;
+                    }
+
                     pending.Push((subject, predicate));
                     currentProperty = property;
                     currentBase = innerBase;
@@ -895,49 +905,4 @@ public static class RdfXmlReader
         return @base is null ? Utf8String.FromString(reference) : Utf8String.FromString(IriResolver.ResolveIri(@base, reference));
     }
 
-    /// <summary>A minimal read-only stream over a byte buffer, so <see cref="XmlReader"/> can consume the source without an intermediate copy.</summary>
-    private sealed class MemoryStreamLike(ReadOnlyMemory<byte> buffer) : System.IO.Stream
-    {
-        private readonly ReadOnlyMemory<byte> buffer = buffer;
-        private int position;
-
-        /// <inheritdoc/>
-        public override bool CanRead => true;
-
-        /// <inheritdoc/>
-        public override bool CanSeek => false;
-
-        /// <inheritdoc/>
-        public override bool CanWrite => false;
-
-        /// <inheritdoc/>
-        public override long Length => buffer.Length;
-
-        /// <inheritdoc/>
-        public override long Position { get => position; set => throw new NotSupportedException(); }
-
-        /// <inheritdoc/>
-        public override int Read(byte[] target, int offset, int count)
-        {
-            int available = Math.Min(count, buffer.Length - position);
-            buffer.Span.Slice(position, available).CopyTo(target.AsSpan(offset));
-            position += available;
-
-            return available;
-        }
-
-        /// <inheritdoc/>
-        public override void Flush()
-        {
-        }
-
-        /// <inheritdoc/>
-        public override long Seek(long offset, System.IO.SeekOrigin origin) => throw new NotSupportedException();
-
-        /// <inheritdoc/>
-        public override void SetLength(long value) => throw new NotSupportedException();
-
-        /// <inheritdoc/>
-        public override void Write(byte[] source, int offset, int count) => throw new NotSupportedException();
-    }
 }

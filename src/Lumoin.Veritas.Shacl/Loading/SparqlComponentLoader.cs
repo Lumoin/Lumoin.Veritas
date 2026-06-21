@@ -268,7 +268,7 @@ internal static class SparqlComponentLoader
         return ConstraintComponentInfo.Create(
             definition.ComponentIri,
             primaryPath,
-            bag => BuildConstraint(bag, definition),
+            new SparqlComponentFactory(definition).Build,
             companions.ToImmutable().AsSpan());
     }
 
@@ -283,6 +283,26 @@ internal static class SparqlComponentLoader
         }
 
         return new SparqlComponentConstraint(definition, values.ToImmutable());
+    }
+
+    /// <summary>
+    /// Builds a SPARQL component constraint from a parameter bag, carrying the component definition as
+    /// explicit state so the <see cref="ConstraintComponentFactory"/> is a bound method group rather than
+    /// a lambda closing over the enclosing definition.
+    /// </summary>
+    /// <param name="definition">The SPARQL component definition the constraint is built from.</param>
+    private sealed class SparqlComponentFactory(SparqlComponentDefinition definition)
+    {
+        /// <summary>The SPARQL component definition the constraint is built from.</summary>
+        private SparqlComponentDefinition Definition { get; } = definition;
+
+        /// <summary>Builds the constraint for a shape's parameter values.</summary>
+        /// <param name="bag">The shape's parameter values.</param>
+        /// <returns>The built constraint.</returns>
+        public SparqlComponentConstraint Build(ParameterBag bag)
+        {
+            return BuildConstraint(bag, Definition);
+        }
     }
 
     /// <summary>Returns the local part of an IRI (the text after the last <c>#</c> or <c>/</c>), used as the SPARQL variable a parameter value pre-binds to.</summary>

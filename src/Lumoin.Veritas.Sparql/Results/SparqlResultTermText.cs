@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Text;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Parsing;
 
 namespace Lumoin.Veritas.Sparql.Results;
 
@@ -39,12 +40,12 @@ internal static class SparqlResultTermText
     private static string Render(RdfTerm root, bool csv)
     {
         Dictionary<RdfTerm, string> rendered = new(ReferenceEqualityComparer.Instance);
-        Stack<(RdfTerm Node, bool Combine)> work = new();
-        work.Push((root, Combine: false));
+        Stack<(RdfTerm Node, bool Combine, int Depth)> work = new();
+        work.Push((root, Combine: false, Depth: 1));
 
         while(work.Count > 0)
         {
-            (RdfTerm node, bool combine) = work.Pop();
+            (RdfTerm node, bool combine, int depth) = work.Pop();
             if(node is TripleTerm triple)
             {
                 if(combine)
@@ -54,10 +55,15 @@ internal static class SparqlResultTermText
                 }
                 else
                 {
-                    work.Push((node, Combine: true));
-                    work.Push((triple.Object, Combine: false));
-                    work.Push((triple.Predicate, Combine: false));
-                    work.Push((triple.Subject, Combine: false));
+                    if(depth > QuotedTripleLimits.MaxNestingDepth)
+                    {
+                        throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
+                    }
+
+                    work.Push((node, Combine: true, depth));
+                    work.Push((triple.Object, Combine: false, depth + 1));
+                    work.Push((triple.Predicate, Combine: false, depth + 1));
+                    work.Push((triple.Subject, Combine: false, depth + 1));
                 }
             }
             else

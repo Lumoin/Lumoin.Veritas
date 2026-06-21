@@ -992,9 +992,14 @@ public static class OwlRdfMapper
             return new OwlObjectOneOf(members);
         }
 
+        /// <summary>Constructs the n-ary class expression for two or more resolved operands.</summary>
+        /// <param name="operands">The two-or-more operands.</param>
+        /// <returns>The constructed n-ary class expression.</returns>
+        private delegate OwlClassExpression NaryClassConstructor(List<OwlClassExpression> operands);
+
         //A singleton intersection or union denotes its operand — the corpus
         //uses one-membered owl:intersectionOf lists as plain class wrappers.
-        private static OwlClassExpression? Normalized(List<OwlClassExpression> operands, Func<List<OwlClassExpression>, OwlClassExpression> constructor)
+        private static OwlClassExpression? Normalized(List<OwlClassExpression> operands, NaryClassConstructor constructor)
         {
             return operands.Count switch
             {

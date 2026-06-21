@@ -1,12 +1,11 @@
 using System.Collections.Generic;
 using System.Globalization;
-using System.IO;
 using System.IO.Pipelines;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Turtle;
 using Lumoin.Veritas.Turtle.Ast;
@@ -75,9 +74,35 @@ internal sealed class TurtleReaderStreamingTests
             TurtleSyntax.TriG).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// The pipe-driven whole-document overload (which drains the pipe into a pooled buffer that is released
+    /// right after the parse) yields the same source-tagged quads as the in-memory overload, including for an
+    /// empty document (which exercises the zero-length rental guard).
+    /// </summary>
+    [TestMethod]
+    public async Task ReadWithSourceFromPipeMatchesInMemory()
+    {
+        foreach(string source in (string[])["@prefix ex: <http://example.org/> .\nex:s ex:p ex:o , ex:o2 ; ex:q \"v\"@en .\n", ""])
+        {
+            ReadOnlyMemory<byte> bytes = Utf8String.FromString(source).Memory;
+
+            List<Quad> expected = await CollectAsync(
+                TurtleReader.ReadWithSourceAsync(bytes, TurtleSyntax.Turtle, new DocumentId(1), cancellationToken: TestContext.CancellationToken).Quads).ConfigureAwait(false);
+
+            List<Quad> actual = await CollectAsync(
+                (await TurtleReader.ReadWithSourceAsync(Fragmented(bytes, chunkSize: 3), TurtleSyntax.Turtle, new DocumentId(1), cancellationToken: TestContext.CancellationToken).ConfigureAwait(false)).Quads).ConfigureAwait(false);
+
+            Assert.HasCount(expected.Count, actual);
+            for(int i = 0; i < expected.Count; i++)
+            {
+                Assert.AreEqual(expected[i], actual[i]);
+            }
+        }
+    }
+
     private async Task AssertStreamingMatchesWhole(string source, TurtleSyntax syntax)
     {
-        byte[] bytes = Encoding.UTF8.GetBytes(source);
+        ReadOnlyMemory<byte> bytes = Utf8String.FromString(source).Memory;
         List<Quad> expected = WholeDocumentQuads(bytes, syntax);
 
         //Chunk size 1 forces every statement to straddle read boundaries and suspend at the finest
@@ -105,7 +130,7 @@ internal sealed class TurtleReaderStreamingTests
         }
     }
 
-    private static List<Quad> WholeDocumentQuads(byte[] bytes, TurtleSyntax syntax)
+    private static List<Quad> WholeDocumentQuads(ReadOnlyMemory<byte> bytes, TurtleSyntax syntax)
     {
         //The whole-document parse-and-emit is the ground truth the streaming reader must reproduce.
         using Utf8StringPool pool = new();
@@ -123,8 +148,22 @@ internal sealed class TurtleReaderStreamingTests
         return quads;
     }
 
-    private static PipeReader Fragmented(byte[] bytes, int chunkSize)
+    private static PipeReader Fragmented(ReadOnlyMemory<byte> bytes, int chunkSize)
     {
-        return PipeReader.Create(new MemoryStream(bytes), new StreamPipeReaderOptions(bufferSize: chunkSize, minimumReadSize: 1));
+        return PipeReader.Create(new ReadOnlyMemoryStream(bytes), new StreamPipeReaderOptions(bufferSize: chunkSize, minimumReadSize: 1));
+    }
+
+    /// <summary>Collects the quads from a source-tagged quad stream in emission order.</summary>
+    /// <param name="quads">The source-tagged quad stream.</param>
+    /// <returns>The quads in emission order.</returns>
+    private static async Task<List<Quad>> CollectAsync(IAsyncEnumerable<EmittedQuad> quads)
+    {
+        List<Quad> result = [];
+        await foreach(EmittedQuad emitted in quads.ConfigureAwait(false))
+        {
+            result.Add(emitted.Quad);
+        }
+
+        return result;
     }
 }

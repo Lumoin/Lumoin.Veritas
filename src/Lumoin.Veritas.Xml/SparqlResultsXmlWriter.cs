@@ -4,6 +4,7 @@ using System.IO;
 using System.Text;
 using System.Xml;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Sparql.Execution;
 using Lumoin.Veritas.Sparql.Results;
 using TripleTerm = Lumoin.Veritas.Core.TripleTerm;
@@ -39,11 +40,15 @@ public static class SparqlResultsXmlWriter
         return new Utf8String(stream.ToArray());
     }
 
-    /// <summary>Writes a result set as SPARQL Results XML to a stream.</summary>
+    /// <summary>
+    /// Writes the SPARQL Results XML document to a stream: the internal sink behind <see cref="WriteToUtf8String"/>,
+    /// kept private because <see cref="XmlWriter"/> serializes only to a <see cref="Stream"/> (not to an
+    /// <see cref="System.Buffers.IBufferWriter{T}"/>), so the <see cref="Stream"/> is the localized framework boundary.
+    /// </summary>
     /// <param name="results">The result set to serialize.</param>
     /// <param name="stream">The destination stream.</param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public static void Write(SparqlResultSet results, Stream stream)
+    private static void Write(SparqlResultSet results, Stream stream)
     {
         ArgumentNullException.ThrowIfNull(results);
         ArgumentNullException.ThrowIfNull(stream);
@@ -56,13 +61,13 @@ public static class SparqlResultsXmlWriter
 
         using XmlWriter writer = XmlWriter.Create(stream, settings);
         writer.WriteStartDocument();
-        writer.WriteStartElement("sparql", ResultsNamespace);
+        writer.WriteStartElement(SparqlResultsXmlNames.Sparql, ResultsNamespace);
 
-        writer.WriteStartElement("head", ResultsNamespace);
+        writer.WriteStartElement(SparqlResultsXmlNames.Head, ResultsNamespace);
         foreach(Utf8String variable in results.Variables)
         {
-            writer.WriteStartElement("variable", ResultsNamespace);
-            writer.WriteAttributeString("name", variable.ToString());
+            writer.WriteStartElement(SparqlResultsXmlNames.Variable, ResultsNamespace);
+            writer.WriteAttributeString(SparqlResultsXmlNames.Name, variable.ToString());
             writer.WriteEndElement();
         }
 
@@ -70,7 +75,7 @@ public static class SparqlResultsXmlWriter
 
         if(results.IsBoolean)
         {
-            writer.WriteStartElement("boolean", ResultsNamespace);
+            writer.WriteStartElement(SparqlResultsXmlNames.Boolean, ResultsNamespace);
             writer.WriteString(results.Boolean!.Value ? "true" : "false");
             writer.WriteEndElement();
         }
@@ -88,14 +93,14 @@ public static class SparqlResultsXmlWriter
     /// <param name="solutions">The solution sequence.</param>
     private static void WriteResults(XmlWriter writer, IReadOnlyList<SparqlSolution> solutions)
     {
-        writer.WriteStartElement("results", ResultsNamespace);
+        writer.WriteStartElement(SparqlResultsXmlNames.Results, ResultsNamespace);
         foreach(SparqlSolution solution in solutions)
         {
-            writer.WriteStartElement("result", ResultsNamespace);
+            writer.WriteStartElement(SparqlResultsXmlNames.Result, ResultsNamespace);
             foreach(SparqlBinding binding in solution.Bindings)
             {
-                writer.WriteStartElement("binding", ResultsNamespace);
-                writer.WriteAttributeString("name", binding.Variable.Name.ToString());
+                writer.WriteStartElement(SparqlResultsXmlNames.Binding, ResultsNamespace);
+                writer.WriteAttributeString(SparqlResultsXmlNames.Name, binding.Variable.Name.ToString());
                 WriteTerm(writer, binding.Value);
                 writer.WriteEndElement();
             }
@@ -117,12 +122,19 @@ public static class SparqlResultsXmlWriter
     {
         Stack<XmlOp> work = new();
         work.Push(new XmlOp(XmlOpKind.Term, root, null));
+        int depth = 0;
 
         while(work.Count > 0)
         {
             XmlOp op = work.Pop();
             switch(op.Kind)
             {
+                case XmlOpKind.CloseTriple:
+                {
+                    writer.WriteEndElement();
+                    depth--;
+                    break;
+                }
                 case XmlOpKind.End:
                 {
                     writer.WriteEndElement();
@@ -137,11 +149,19 @@ public static class SparqlResultsXmlWriter
                 {
                     if(op.Term is TripleTerm triple)
                     {
-                        writer.WriteStartElement("triple", ResultsNamespace);
-                        work.Push(new XmlOp(XmlOpKind.End, null, null));
-                        PushComponent(work, "object", triple.Object);
-                        PushComponent(work, "predicate", triple.Predicate);
-                        PushComponent(work, "subject", triple.Subject);
+                        depth++;
+                        if(depth > QuotedTripleLimits.MaxNestingDepth)
+                        {
+                            throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
+                        }
+
+                        writer.WriteStartElement(SparqlResultsXmlNames.Triple, ResultsNamespace);
+
+                        //CloseTriple pops last (closes the triple element) and unwinds the depth.
+                        work.Push(XmlOp.CloseTriple);
+                        PushComponent(work, SparqlResultsXmlNames.Object, triple.Object);
+                        PushComponent(work, SparqlResultsXmlNames.Predicate, triple.Predicate);
+                        PushComponent(work, SparqlResultsXmlNames.Subject, triple.Subject);
                     }
                     else
                     {
@@ -160,7 +180,7 @@ public static class SparqlResultsXmlWriter
     /// <param name="term">The component term.</param>
     private static void PushComponent(Stack<XmlOp> work, string element, RdfTerm term)
     {
-        work.Push(new XmlOp(XmlOpKind.End, null, null));
+        work.Push(XmlOp.End);
         work.Push(new XmlOp(XmlOpKind.Term, term, null));
         work.Push(new XmlOp(XmlOpKind.Start, null, element));
     }
@@ -175,21 +195,21 @@ public static class SparqlResultsXmlWriter
         {
             case NamedNode named:
             {
-                writer.WriteStartElement("uri", ResultsNamespace);
+                writer.WriteStartElement(SparqlResultsXmlNames.Uri, ResultsNamespace);
                 writer.WriteString(named.Iri.ToString());
                 writer.WriteEndElement();
                 break;
             }
             case BlankNode blank:
             {
-                writer.WriteStartElement("bnode", ResultsNamespace);
+                writer.WriteStartElement(SparqlResultsXmlNames.Bnode, ResultsNamespace);
                 writer.WriteString(blank.Label.ToString());
                 writer.WriteEndElement();
                 break;
             }
             case Literal literal:
             {
-                writer.WriteStartElement("literal", ResultsNamespace);
+                writer.WriteStartElement(SparqlResultsXmlNames.Literal, ResultsNamespace);
                 if(literal.Language is { } language)
                 {
                     writer.WriteAttributeString("xml", "lang", XmlNamespace, language.ToString());
@@ -202,7 +222,7 @@ public static class SparqlResultsXmlWriter
                 }
                 else if(!literal.Datatype.Iri.Equals(Vocabulary.Xsd.String))
                 {
-                    writer.WriteAttributeString("datatype", literal.Datatype.Iri.ToString());
+                    writer.WriteAttributeString(SparqlResultsXmlNames.Datatype, literal.Datatype.Iri.ToString());
                 }
 
                 writer.WriteString(literal.Value.ToString());
@@ -226,12 +246,22 @@ public static class SparqlResultsXmlWriter
         Start,
 
         /// <summary>Close the current element.</summary>
-        End
+        End,
+
+        /// <summary>Close a quoted triple's element and unwind one nesting level.</summary>
+        CloseTriple
     }
 
     /// <summary>One operation on the explicit term-writing stack.</summary>
     /// <param name="Kind">Whether to write a term, open an element, or close one.</param>
     /// <param name="Term">The term to write (for <see cref="XmlOpKind.Term"/>).</param>
     /// <param name="Element">The element name to open (for <see cref="XmlOpKind.Start"/>).</param>
-    private readonly record struct XmlOp(XmlOpKind Kind, RdfTerm? Term, string? Element);
+    private readonly record struct XmlOp(XmlOpKind Kind, RdfTerm? Term, string? Element)
+    {
+        /// <summary>The payload-less op that closes the current element.</summary>
+        public static XmlOp End { get; } = new(XmlOpKind.End, null, null);
+
+        /// <summary>The payload-less op that closes a quoted triple's element and unwinds one nesting level.</summary>
+        public static XmlOp CloseTriple { get; } = new(XmlOpKind.CloseTriple, null, null);
+    }
 }

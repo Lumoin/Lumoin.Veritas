@@ -18,14 +18,16 @@ namespace Lumoin.Veritas.ParserTests.Owl;
 /// closure (blank nodes existential, named terms and literals exact).
 /// </summary>
 /// <remarks>
-/// Only tests whose documents the corpus marks as RL run here — for those,
-/// the RL rules are the complete calculus the conformance document
-/// prescribes. The premise's <c>owl:imports</c> resolve against the test's
-/// supplied ontologies, so the reasoned-over unit is the imports closure.
-/// An entailment test stated for the Direct Semantics only differs from its
-/// RDF-Based form solely in the conclusion's annotations, which the Direct
-/// Semantics treats as non-logical; those are projected away and the same
-/// closure decides the remainder. Honest skips: non-RL tests.
+/// Applicability is enforced at the data source
+/// (<see cref="Owl2TestRemit.RlMarked"/>): only tests the corpus marks as RL
+/// materialise here — for those, the RL rules are the complete calculus the
+/// conformance document prescribes, and a non-RL case is another arm's job, so
+/// it never becomes a row and no skip is reported for it. The premise's
+/// <c>owl:imports</c> resolve against the test's supplied ontologies, so the
+/// reasoned-over unit is the imports closure. An entailment test stated for
+/// the Direct Semantics only differs from its RDF-Based form solely in the
+/// conclusion's annotations, which the Direct Semantics treats as non-logical;
+/// those are projected away and the same closure decides the remainder.
 /// </remarks>
 [TestClass]
 internal sealed class W3cOwl2RlTests
@@ -55,7 +57,7 @@ internal sealed class W3cOwl2RlTests
     /// <summary>Runs one approved-status, RL-marked OWL 2 test case through the RL closure.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     [TestMethod]
-    [Owl2ManifestData("approved", "all.rdf")]
+    [Owl2ManifestData("approved", "all.rdf", Owl2TestRemit.RlMarked)]
     public void RunApproved(Owl2TestCase testCase)
     {
         RunAndAssert(testCase);
@@ -64,7 +66,7 @@ internal sealed class W3cOwl2RlTests
     /// <summary>Runs one proposed-status, RL-marked OWL 2 test case through the RL closure.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     [TestMethod]
-    [Owl2ManifestData("proposed", "all.rdf")]
+    [Owl2ManifestData("proposed", "all.rdf", Owl2TestRemit.RlMarked)]
     public void RunProposed(Owl2TestCase testCase)
     {
         RunAndAssert(testCase);
@@ -73,11 +75,6 @@ internal sealed class W3cOwl2RlTests
     private void RunAndAssert(Owl2TestCase testCase)
     {
         ArgumentNullException.ThrowIfNull(testCase);
-
-        if(!testCase.Profiles.Contains("RL"))
-        {
-            Assert.Inconclusive("Not an RL-marked test; the RL rules make no completeness claim.");
-        }
 
         //An entailment test stated for the Direct Semantics only differs from
         //its RDF-Based form solely in the conclusion's annotations, which the
@@ -91,7 +88,7 @@ internal sealed class W3cOwl2RlTests
         List<Quad>? maybePremise = LoadQuads(testCase, testCase.RdfXmlPremise, testCase.FunctionalPremise);
         if(maybePremise is not List<Quad> premiseQuads)
         {
-            Assert.Inconclusive("The test declares no premise document in a syntax the harness reads.");
+            Assert.Fail($"{testCase.Identifier}: the test declares no premise document in a syntax the harness reads.");
 
             return;
         }
@@ -114,6 +111,8 @@ internal sealed class W3cOwl2RlTests
             if(isKnownGap)
             {
                 AssertKnownGap(testCase, holds: !result.IsConsistent);
+
+                return;
             }
 
             Assert.IsFalse(result.IsConsistent, $"{testCase.Identifier}: the RL rules should derive an inconsistency.");
@@ -146,6 +145,8 @@ internal sealed class W3cOwl2RlTests
             if(isKnownGap)
             {
                 AssertKnownGap(testCase, holds: entails);
+
+                return;
             }
 
             Assert.IsTrue(entails, $"{testCase.Identifier}: the conclusion does not follow from the RL closure.");
@@ -180,10 +181,7 @@ internal sealed class W3cOwl2RlTests
         if(functional is string text)
         {
             Lumoin.Veritas.Owl.Structural.OwlOntologyDocument document = Lumoin.Veritas.Owl.Functional.OwlFunctionalSyntaxReader.Read(text);
-            if(document.Diagnostics.HasErrors)
-            {
-                Assert.Inconclusive("A test document did not parse as functional syntax; the test cannot be set up.");
-            }
+            Assert.IsFalse(document.Diagnostics.HasErrors, $"{testCase.Identifier}: a test document did not parse as functional syntax; the test cannot be set up.");
 
             return Lumoin.Veritas.Owl.Structural.OwlStructuralToRdf.ToQuads(document);
         }
@@ -191,26 +189,22 @@ internal sealed class W3cOwl2RlTests
         return null;
     }
 
-    //A known-gap test reports inconclusive while the gap holds and fails
-    //loudly the moment it starts passing, so the list self-corrects.
+    //A known-gap test passes while the gap holds (a pinned, expected
+    //capability boundary) and fails loudly the moment it starts passing, so
+    //the list self-corrects.
     private static void AssertKnownGap(Owl2TestCase testCase, bool holds)
     {
         if(holds)
         {
             Assert.Fail($"{testCase.Identifier} is a recorded known gap but now passes; remove it from KnownGaps.");
         }
-
-        Assert.Inconclusive("Beyond the RL/RDF rules calculus; see KnownGaps.");
     }
 
     private static List<Quad> ParseDocument(Owl2TestCase testCase, string document)
     {
         DiagnosticBag diagnostics = new();
         List<Quad> quads = [.. RdfXmlReader.Read(Encoding.UTF8.GetBytes(document), diagnostics, baseIri: testCase.Uri.AbsoluteUri)];
-        if(diagnostics.HasErrors)
-        {
-            Assert.Inconclusive("A test document did not parse as RDF/XML; the test cannot be set up.");
-        }
+        Assert.IsFalse(diagnostics.HasErrors, $"{testCase.Identifier}: a test document did not parse as RDF/XML; the test cannot be set up.");
 
         return quads;
     }

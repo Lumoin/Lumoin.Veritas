@@ -5,6 +5,7 @@ using System.Globalization;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Iris;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Lexer;
@@ -384,7 +385,8 @@ public sealed class SparqlParser
 
                 case StepAction.Push:
                 {
-                    frames.Push(step.NewFrame!);
+                    step.NewFrame!.NestingDepth = top.NestingDepth + (IsTermNestingKind(step.NewFrame.Kind) ? 1 : 0);
+                    frames.Push(step.NewFrame);
 
                     break;
                 }
@@ -412,6 +414,15 @@ public sealed class SparqlParser
     /// <returns>The instruction for the driver.</returns>
     private StepResult Step(ParseFrame frame, object? incoming)
     {
+        //A nesting frame seeded past the depth cap is collapsed to an error term before it consumes its
+        //opening token, so a pathologically deep quoted or reified triple raises one recoverable diagnostic
+        //and stops descending rather than growing the work stack (and the synthesized record equality of its
+        //AST node, which recurses through the inner triple, cannot overflow either).
+        if(frame.Stage == 0 && frame.NestingDepth > QuotedTripleLimits.MaxNestingDepth)
+        {
+            return RecoverOverNestedTerm(frame);
+        }
+
         return frame.Kind switch
         {
             ParseFrameKind.Request => StepRequest(frame, incoming),
@@ -447,6 +458,37 @@ public sealed class SparqlParser
             _ => throw new SparqlParseException($"Parser production '{frame.Kind}' is not yet implemented in this build.", frame.StartSpan)
         };
     }
+
+    /// <summary>
+    /// Tests whether <paramref name="kind"/> opens a new RDF-star quoted-triple nesting level — a triple term
+    /// or a reified triple — counted against <see cref="QuotedTripleLimits.MaxNestingDepth"/>. These are the
+    /// only productions whose AST node embeds the nested term as a record member, so only their synthesized
+    /// equality and hash recurse through the nesting and need bounding. Collections and blank-node property
+    /// lists hold their members in a list (compared by reference, never recursing) and are not capped; every
+    /// other production inherits its parent's depth.
+    /// </summary>
+    /// <param name="kind">The frame production kind.</param>
+    /// <returns><see langword="true"/> when the kind deepens the nesting level.</returns>
+    private static bool IsTermNestingKind(ParseFrameKind kind)
+        => kind is ParseFrameKind.TripleTerm or ParseFrameKind.ReifiedTriple;
+
+    /// <summary>
+    /// Collapses a quoted-triple nesting frame seeded beyond <see cref="QuotedTripleLimits.MaxNestingDepth"/>
+    /// to an error term: it records the recoverable <see cref="WellKnownDiagnostics.Sparql.QuotedTripleNestingTooDeep"/>
+    /// diagnostic and resynchronises past the over-deep construct so the descent stops and the work stack stays bounded.
+    /// </summary>
+    /// <param name="frame">The over-deep nesting frame, still at its opening token.</param>
+    /// <returns>The instruction for the driver; the error term is handed to the enclosing frame.</returns>
+    private StepResult RecoverOverNestedTerm(ParseFrame frame)
+    {
+        return StepResult.Done(RecoverTriplePatternTerm(frame.Kind, frame.StartSpan, WellKnownDiagnostics.Sparql.QuotedTripleNestingTooDeep, Current.Span, "Quoted-triple nesting exceeds the maximum nesting depth.", NestingProductionName(frame.Kind)));
+    }
+
+    /// <summary>Names the grammar production of an over-deep nesting <paramref name="kind"/> for its error node.</summary>
+    /// <param name="kind">The nesting frame kind.</param>
+    /// <returns>The grammar production name.</returns>
+    private static string NestingProductionName(ParseFrameKind kind)
+        => kind is ParseFrameKind.ReifiedTriple ? "ReifiedTriple" : "TripleTerm";
 
     /// <summary>
     /// Advances the top-level request: the prologue, the form dispatch, the dataset clauses, the
@@ -1721,10 +1763,15 @@ public sealed class SparqlParser
             _ => RecoverGraphRef()
         };
 
+    /// <summary>Builds a graph reference from the consumed keyword's source span.</summary>
+    /// <param name="span">The consumed keyword's source span.</param>
+    /// <returns>The graph reference.</returns>
+    private delegate GraphRefTarget GraphRefFromSpan(SourceSpan span);
+
     /// <summary>Consumes a keyword graph reference (<c>DEFAULT</c>/<c>NAMED</c>/<c>ALL</c>) at the cursor.</summary>
     /// <param name="build">Builds the reference from the consumed keyword's span.</param>
     /// <returns>The graph reference.</returns>
-    private GraphRefTarget ConsumeKeywordGraphRef(System.Func<SourceSpan, GraphRefTarget> build)
+    private GraphRefTarget ConsumeKeywordGraphRef(GraphRefFromSpan build)
     {
         SourceSpan span = Current.Span;
         Advance();
@@ -5494,21 +5541,57 @@ public sealed class SparqlParser
     /// Converts a parsed <c>TripleTermData</c> term into its ground <see cref="Core.TripleTerm"/> value.
     /// The data form is variable-free, so every component is a constant or a nested triple term; a term
     /// that is not ground (an error node from recovery) yields <see langword="null"/> — an unbound cell —
-    /// with its diagnostic already recorded.
+    /// with its diagnostic already recorded. The nested terms are grounded over an explicit post-order
+    /// stack (no recursion); the parser caps quoted-triple nesting, so the stack stays bounded.
     /// </summary>
-    /// <param name="term">The parsed triple-term value.</param>
+    /// <param name="root">The parsed triple-term value.</param>
     /// <returns>The ground triple-term value, or <see langword="null"/> when a component is not ground.</returns>
-    private static RdfTerm? GroundTripleTermValue(TriplePatternTerm term)
-        => term switch
+    private static RdfTerm? GroundTripleTermValue(TriplePatternTerm root)
+    {
+        Dictionary<TriplePatternTerm, RdfTerm?> grounded = new(ReferenceEqualityComparer.Instance);
+        Stack<(TriplePatternTerm Term, bool Combine)> work = new();
+        work.Push((root, false));
+
+        while(work.Count > 0)
         {
-            ConstantTerm constant => constant.Term,
-            Ast.TripleTerm tripleTerm
-                when GroundTripleTermValue(tripleTerm.Inner.Subject) is { } subject
-                    && GroundTripleTermValue(tripleTerm.Inner.Predicate) is NamedNode predicate
-                    && GroundTripleTermValue(tripleTerm.Inner.Object) is { } objectValue
-                => new Core.TripleTerm(subject, predicate, objectValue),
-            _ => null
-        };
+            (TriplePatternTerm term, bool combine) = work.Pop();
+            switch(term)
+            {
+                case(ConstantTerm constant):
+                {
+                    grounded[term] = constant.Term;
+                    break;
+                }
+                case(Ast.TripleTerm tripleTerm):
+                {
+                    if(!combine)
+                    {
+                        work.Push((tripleTerm, true));
+                        work.Push((tripleTerm.Inner.Subject, false));
+                        work.Push((tripleTerm.Inner.Predicate, false));
+                        work.Push((tripleTerm.Inner.Object, false));
+                    }
+                    else
+                    {
+                        grounded[term] = grounded[tripleTerm.Inner.Subject] is { } subject
+                            && grounded[tripleTerm.Inner.Predicate] is NamedNode predicate
+                            && grounded[tripleTerm.Inner.Object] is { } objectValue
+                                ? new Core.TripleTerm(subject, predicate, objectValue)
+                                : null;
+                    }
+
+                    break;
+                }
+                default:
+                {
+                    grounded[term] = null;
+                    break;
+                }
+            }
+        }
+
+        return grounded[root];
+    }
 
     /// <summary>Consumes the <c>UNDEF</c> keyword, returning a null value.</summary>
     /// <returns><see langword="null"/>.</returns>

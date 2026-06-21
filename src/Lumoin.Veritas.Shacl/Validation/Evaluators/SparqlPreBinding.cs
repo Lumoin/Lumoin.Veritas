@@ -1,6 +1,6 @@
 using System.Collections.Generic;
-using System.Linq;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Sparql.Ast;
 using AstTripleTerm = Lumoin.Veritas.Sparql.Ast.TripleTerm;
 
@@ -242,7 +242,7 @@ internal static class SparqlPreBinding
     {
         return pattern switch
         {
-            GroupGraphPattern group => group with { Members = [.. group.Members.Select(member => rebuilt[member])] },
+            GroupGraphPattern group => group with { Members = [.. SubstituteMembers(group.Members, rebuilt)] },
             OptionalPattern optional => optional with { Inner = rebuilt[optional.Inner] },
             MinusPattern minus => minus with { Inner = rebuilt[minus.Inner] },
             UnionPattern union => union with { Left = rebuilt[union.Left], Right = rebuilt[union.Right] },
@@ -251,8 +251,8 @@ internal static class SparqlPreBinding
             SubSelectPattern subSelect => subSelect with { InnerQuery = RebuildSubSelect(subSelect.InnerQuery, rebuilt, bindings) },
             BasicGraphPatternBlock block => block with
             {
-                Triples = [.. block.Triples.Select(triple => SubstituteTriple(triple, bindings))],
-                StandaloneNodes = [.. block.StandaloneNodes.Select(node => SubstituteTerm(node, bindings))],
+                Triples = [.. SubstituteTriples(block.Triples, bindings)],
+                StandaloneNodes = [.. SubstituteTerms(block.StandaloneNodes, bindings)],
             },
             FilterPattern filter => filter with { Expression = SubstituteExpression(filter.Expression, bindings) },
             BindPattern bind => bind with { Expression = SubstituteExpression(bind.Expression, bindings) },
@@ -285,7 +285,7 @@ internal static class SparqlPreBinding
     {
         return form switch
         {
-            SelectQuery select => select with { Projections = [.. select.Projections.Select(projection => SubstituteProjection(projection, bindings))] },
+            SelectQuery select => select with { Projections = [.. SubstituteProjections(select.Projections, bindings)] },
             _ => form
         };
     }
@@ -310,13 +310,13 @@ internal static class SparqlPreBinding
     private static SolutionModifier SubstituteModifier(SolutionModifier modifier, Dictionary<SparqlVariable, RdfTerm> bindings)
     {
         GroupClause? group = modifier.Group is { } existingGroup
-            ? existingGroup with { Conditions = [.. existingGroup.Conditions.Select(condition => SubstituteGroupCondition(condition, bindings))] }
+            ? existingGroup with { Conditions = [.. SubstituteGroupConditions(existingGroup.Conditions, bindings)] }
             : null;
         HavingClause? having = modifier.Having is { } existingHaving
-            ? existingHaving with { Conditions = [.. existingHaving.Conditions.Select(expression => SubstituteExpression(expression, bindings))] }
+            ? existingHaving with { Conditions = [.. SubstituteExpressions(existingHaving.Conditions, bindings)] }
             : null;
         OrderClause? order = modifier.Order is { } existingOrder
-            ? existingOrder with { Conditions = [.. existingOrder.Conditions.Select(condition => SubstituteOrderCondition(condition, bindings))] }
+            ? existingOrder with { Conditions = [.. SubstituteOrderConditions(existingOrder.Conditions, bindings)] }
             : null;
 
         return modifier with { Group = group, Having = having, Order = order };
@@ -368,6 +368,7 @@ internal static class SparqlPreBinding
     /// <param name="term">The term.</param>
     /// <param name="bindings">The variable→value map.</param>
     /// <returns>The substituted term.</returns>
+    /// <exception cref="TripleTermDepthLimitException">A quoted triple term is nested deeper than <see cref="QuotedTripleLimits.MaxNestingDepth"/> (this rebuilds AST triple terms outside the parser, so it enforces the same bound).</exception>
     private static TriplePatternTerm SubstituteTerm(TriplePatternTerm term, Dictionary<SparqlVariable, RdfTerm> bindings)
     {
         if(term is VariableTerm { Variable: { } variable } variableTerm && bindings.TryGetValue(variable, out RdfTerm? value))
@@ -382,25 +383,30 @@ internal static class SparqlPreBinding
 
         //Quoted triple term: substitute its components bottom-up. Build each nested term once its components are ready.
         Dictionary<AstTripleTerm, AstTripleTerm> built = new(ReferenceEqualityComparer.Instance);
-        Stack<(AstTripleTerm Term, bool Build)> work = new();
-        work.Push(((AstTripleTerm)term, Build: false));
+        Stack<(AstTripleTerm Term, bool Build, int Depth)> work = new();
+        work.Push(((AstTripleTerm)term, Build: false, Depth: 1));
 
         while(work.Count > 0)
         {
-            (AstTripleTerm current, bool build) = work.Pop();
+            (AstTripleTerm current, bool build, int depth) = work.Pop();
             TriplePattern inner = current.Inner;
 
             if(!build)
             {
-                work.Push((current, Build: true));
+                if(depth > QuotedTripleLimits.MaxNestingDepth)
+                {
+                    throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
+                }
+
+                work.Push((current, Build: true, depth));
                 if(inner.Subject is AstTripleTerm nestedSubject)
                 {
-                    work.Push((nestedSubject, Build: false));
+                    work.Push((nestedSubject, Build: false, depth + 1));
                 }
 
                 if(inner.Object is AstTripleTerm nestedObject)
                 {
-                    work.Push((nestedObject, Build: false));
+                    work.Push((nestedObject, Build: false, depth + 1));
                 }
 
                 continue;
@@ -444,7 +450,7 @@ internal static class SparqlPreBinding
     /// <returns>The substituted expression.</returns>
     private static ExpressionNode SubstituteExpression(ExpressionNode expression, Dictionary<SparqlVariable, RdfTerm> bindings)
     {
-        return ExpressionWalker.Transform(expression, node => SubstituteExpressionNode(node, bindings));
+        return ExpressionWalker.Transform(expression, new ExpressionNodeSubstitution(bindings).Rewrite);
     }
 
     /// <summary>Substitutes one expression node: a pre-bound variable reference to its value, <c>BOUND(pre-bound)</c> to <c>true</c>, anything else unchanged.</summary>
@@ -463,4 +469,108 @@ internal static class SparqlPreBinding
 
     /// <summary>The literal <c>"true"^^xsd:boolean</c>, folded in for <c>BOUND</c> of a pre-bound variable.</summary>
     private static Literal BooleanTrue { get; } = new(Utf8String.FromString("true"), new NamedNode(Vocabulary.Xsd.Boolean));
+
+    /// <summary>Projects each group member through the rebuilt-pattern map, in order.</summary>
+    /// <param name="members">The original group members.</param>
+    /// <param name="rebuilt">The map of already-rebuilt child patterns.</param>
+    /// <returns>The rebuilt members, in order.</returns>
+    private static IEnumerable<GraphPattern> SubstituteMembers(IEnumerable<GraphPattern> members, Dictionary<GraphPattern, GraphPattern> rebuilt)
+    {
+        foreach(GraphPattern member in members)
+        {
+            yield return rebuilt[member];
+        }
+    }
+
+    /// <summary>Substitutes the pre-bindings in each triple pattern, in order.</summary>
+    /// <param name="triples">The original triple patterns.</param>
+    /// <param name="bindings">The variable→value map.</param>
+    /// <returns>The substituted triple patterns, in order.</returns>
+    private static IEnumerable<TriplePattern> SubstituteTriples(IEnumerable<TriplePattern> triples, Dictionary<SparqlVariable, RdfTerm> bindings)
+    {
+        foreach(TriplePattern triple in triples)
+        {
+            yield return SubstituteTriple(triple, bindings);
+        }
+    }
+
+    /// <summary>Substitutes the pre-bindings in each standalone node, in order.</summary>
+    /// <param name="nodes">The original standalone nodes.</param>
+    /// <param name="bindings">The variable→value map.</param>
+    /// <returns>The substituted nodes, in order.</returns>
+    private static IEnumerable<TriplePatternTerm> SubstituteTerms(IEnumerable<TriplePatternTerm> nodes, Dictionary<SparqlVariable, RdfTerm> bindings)
+    {
+        foreach(TriplePatternTerm node in nodes)
+        {
+            yield return SubstituteTerm(node, bindings);
+        }
+    }
+
+    /// <summary>Substitutes the pre-bindings in each projection, in order.</summary>
+    /// <param name="projections">The original projections.</param>
+    /// <param name="bindings">The variable→value map.</param>
+    /// <returns>The substituted projections, in order.</returns>
+    private static IEnumerable<SelectProjection> SubstituteProjections(IEnumerable<SelectProjection> projections, Dictionary<SparqlVariable, RdfTerm> bindings)
+    {
+        foreach(SelectProjection projection in projections)
+        {
+            yield return SubstituteProjection(projection, bindings);
+        }
+    }
+
+    /// <summary>Substitutes the pre-bindings in each <c>GROUP BY</c> condition, in order.</summary>
+    /// <param name="conditions">The original grouping conditions.</param>
+    /// <param name="bindings">The variable→value map.</param>
+    /// <returns>The substituted grouping conditions, in order.</returns>
+    private static IEnumerable<GroupCondition> SubstituteGroupConditions(IEnumerable<GroupCondition> conditions, Dictionary<SparqlVariable, RdfTerm> bindings)
+    {
+        foreach(GroupCondition condition in conditions)
+        {
+            yield return SubstituteGroupCondition(condition, bindings);
+        }
+    }
+
+    /// <summary>Substitutes the pre-bindings in each <c>HAVING</c> expression, in order.</summary>
+    /// <param name="expressions">The original having expressions.</param>
+    /// <param name="bindings">The variable→value map.</param>
+    /// <returns>The substituted having expressions, in order.</returns>
+    private static IEnumerable<ExpressionNode> SubstituteExpressions(IEnumerable<ExpressionNode> expressions, Dictionary<SparqlVariable, RdfTerm> bindings)
+    {
+        foreach(ExpressionNode expression in expressions)
+        {
+            yield return SubstituteExpression(expression, bindings);
+        }
+    }
+
+    /// <summary>Substitutes the pre-bindings in each <c>ORDER BY</c> condition, in order.</summary>
+    /// <param name="conditions">The original order conditions.</param>
+    /// <param name="bindings">The variable→value map.</param>
+    /// <returns>The substituted order conditions, in order.</returns>
+    private static IEnumerable<OrderCondition> SubstituteOrderConditions(IEnumerable<OrderCondition> conditions, Dictionary<SparqlVariable, RdfTerm> bindings)
+    {
+        foreach(OrderCondition condition in conditions)
+        {
+            yield return SubstituteOrderCondition(condition, bindings);
+        }
+    }
+
+    /// <summary>
+    /// Rewrites expression nodes by substituting pre-bound variables, carrying the bindings as explicit
+    /// state so the rewrite passed to <see cref="ExpressionWalker.Transform"/> is a bound method group
+    /// rather than a lambda closing over the enclosing bindings.
+    /// </summary>
+    /// <param name="bindings">The variable→value map.</param>
+    private sealed class ExpressionNodeSubstitution(Dictionary<SparqlVariable, RdfTerm> bindings)
+    {
+        /// <summary>The variable→value map.</summary>
+        private Dictionary<SparqlVariable, RdfTerm> Bindings { get; } = bindings;
+
+        /// <summary>Rewrites one expression node by substituting pre-bound variables.</summary>
+        /// <param name="node">The expression node.</param>
+        /// <returns>The substituted node.</returns>
+        public ExpressionNode Rewrite(ExpressionNode node)
+        {
+            return SubstituteExpressionNode(node, Bindings);
+        }
+    }
 }

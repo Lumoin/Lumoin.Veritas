@@ -1,9 +1,8 @@
 using System;
 using System.Buffers;
-using Lumoin.Veritas.Cbor.Internal;
 using Lumoin.Veritas.Core.Memory;
 
-namespace Lumoin.Veritas.ParserTests.Cbor;
+namespace Lumoin.Veritas.ParserTests.Memory;
 
 [TestClass]
 internal sealed class SlabBufferWriterTests
@@ -165,5 +164,18 @@ internal sealed class SlabBufferWriterTests
         using VeritasMemoryPool<byte> pool = new();
         Assert.Throws<ArgumentOutOfRangeException>(() => new SlabBufferWriter(pool, slabSize: 0));
         Assert.Throws<ArgumentOutOfRangeException>(() => new SlabBufferWriter(pool, slabSize: -1));
+    }
+
+    /// <summary><see cref="SlabBufferWriter.Detach"/> on a writer with nothing written returns an empty owner instead of throwing.</summary>
+    [TestMethod]
+    public void DetachOnEmptyWriterReturnsEmptyOwner()
+    {
+        using VeritasMemoryPool<byte> pool = new();
+        using SlabBufferWriter writer = new(pool, slabSize: 16);
+
+        using IMemoryOwner<byte> owned = writer.Detach();
+
+        Assert.AreEqual(0, owned.Memory.Length);
+        Assert.AreEqual(0, writer.BytesWritten);
     }
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Rdf;
 using Lumoin.Veritas.Sparql.Ast;
@@ -474,12 +475,12 @@ public sealed class SparqlNormalizer
         }
 
         Dictionary<TriplePatternTerm, TriplePatternTerm> cores = new(ReferenceEqualityComparer.Instance);
-        Stack<(TriplePatternTerm Term, bool Build)> pending = new();
-        pending.Push((root, Build: false));
+        Stack<(TriplePatternTerm Term, bool Build, int Depth)> pending = new();
+        pending.Push((root, Build: false, Depth: 1));
 
         while(pending.Count > 0)
         {
-            (TriplePatternTerm term, bool build) = pending.Pop();
+            (TriplePatternTerm term, bool build, int depth) = pending.Pop();
             if(build)
             {
                 cores[term] = BuildQuotedCore(term, cores, sink);
@@ -491,23 +492,33 @@ public sealed class SparqlNormalizer
             {
                 case AstTripleTerm tripleTerm:
                 {
-                    pending.Push((tripleTerm, Build: true));
-                    pending.Push((tripleTerm.Inner.Object, Build: false));
-                    pending.Push((tripleTerm.Inner.Subject, Build: false));
+                    if(depth > QuotedTripleLimits.MaxNestingDepth)
+                    {
+                        throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
+                    }
+
+                    pending.Push((tripleTerm, Build: true, depth));
+                    pending.Push((tripleTerm.Inner.Object, Build: false, depth + 1));
+                    pending.Push((tripleTerm.Inner.Subject, Build: false, depth + 1));
 
                     break;
                 }
 
                 case ReifiedTriple reified:
                 {
-                    pending.Push((reified, Build: true));
-                    if(reified.Reifier is not null)
+                    if(depth > QuotedTripleLimits.MaxNestingDepth)
                     {
-                        pending.Push((reified.Reifier, Build: false));
+                        throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
                     }
 
-                    pending.Push((reified.Inner.Object, Build: false));
-                    pending.Push((reified.Inner.Subject, Build: false));
+                    pending.Push((reified, Build: true, depth));
+                    if(reified.Reifier is not null)
+                    {
+                        pending.Push((reified.Reifier, Build: false, depth + 1));
+                    }
+
+                    pending.Push((reified.Inner.Object, Build: false, depth + 1));
+                    pending.Push((reified.Inner.Subject, Build: false, depth + 1));
 
                     break;
                 }

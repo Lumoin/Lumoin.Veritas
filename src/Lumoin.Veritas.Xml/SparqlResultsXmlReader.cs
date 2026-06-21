@@ -4,6 +4,7 @@ using System.IO;
 using System.Xml;
 using System.Xml.Linq;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
 using Lumoin.Veritas.Sparql.Results;
@@ -49,9 +50,10 @@ public static class SparqlResultsXmlReader
     /// <param name="bytes">The <c>.srx</c> document bytes.</param>
     /// <returns>The parsed result set.</returns>
     /// <exception cref="FormatException">The document is not well-formed SPARQL Results XML.</exception>
+    /// <exception cref="TripleTermDepthLimitException">A <c>triple</c> binding value is nested beyond <see cref="QuotedTripleLimits.MaxNestingDepth"/>.</exception>
     public static SparqlResultSet Read(ReadOnlyMemory<byte> bytes)
     {
-        using MemoryStream stream = new(bytes.ToArray(), writable: false);
+        using ReadOnlyMemoryStream stream = new(bytes);
 
         return Read(stream);
     }
@@ -61,6 +63,7 @@ public static class SparqlResultsXmlReader
     /// <returns>The parsed result set.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="stream"/> is <see langword="null"/>.</exception>
     /// <exception cref="FormatException">The document is not well-formed SPARQL Results XML.</exception>
+    /// <exception cref="TripleTermDepthLimitException">A <c>triple</c> binding value is nested beyond <see cref="QuotedTripleLimits.MaxNestingDepth"/>.</exception>
     public static SparqlResultSet Read(Stream stream)
     {
         ArgumentNullException.ThrowIfNull(stream);
@@ -83,24 +86,24 @@ public static class SparqlResultsXmlReader
         }
 
         XElement root = document.Root ?? throw new FormatException("SPARQL Results XML has no root element.");
-        if(root.Name != ResultsNamespace + "sparql")
+        if(root.Name != ResultsNamespace + SparqlResultsXmlNames.Sparql)
         {
             throw new FormatException($"Expected a <sparql> root in the SPARQL-results namespace; found <{root.Name}>.");
         }
 
         List<Utf8String> variables = ReadHeadVariables(root);
 
-        XElement? booleanElement = root.Element(ResultsNamespace + "boolean");
+        XElement? booleanElement = root.Element(ResultsNamespace + SparqlResultsXmlNames.Boolean);
         if(booleanElement is not null)
         {
             return SparqlResultSet.ForAsk(ParseBoolean(booleanElement.Value));
         }
 
-        XElement results = root.Element(ResultsNamespace + "results")
+        XElement results = root.Element(ResultsNamespace + SparqlResultsXmlNames.Results)
             ?? throw new FormatException("SPARQL SELECT results XML is missing its <results> element.");
 
         List<SparqlSolution> solutions = [];
-        foreach(XElement result in results.Elements(ResultsNamespace + "result"))
+        foreach(XElement result in results.Elements(ResultsNamespace + SparqlResultsXmlNames.Result))
         {
             solutions.Add(ReadSolution(result));
         }
@@ -114,15 +117,15 @@ public static class SparqlResultsXmlReader
     private static List<Utf8String> ReadHeadVariables(XElement root)
     {
         List<Utf8String> variables = [];
-        XElement? head = root.Element(ResultsNamespace + "head");
+        XElement? head = root.Element(ResultsNamespace + SparqlResultsXmlNames.Head);
         if(head is null)
         {
             return variables;
         }
 
-        foreach(XElement variable in head.Elements(ResultsNamespace + "variable"))
+        foreach(XElement variable in head.Elements(ResultsNamespace + SparqlResultsXmlNames.Variable))
         {
-            string? name = variable.Attribute("name")?.Value;
+            string? name = variable.Attribute(SparqlResultsXmlNames.Name)?.Value;
             if(name is not null)
             {
                 variables.Add(Utf8String.FromString(name));
@@ -138,9 +141,9 @@ public static class SparqlResultsXmlReader
     private static SparqlSolution ReadSolution(XElement result)
     {
         List<SparqlBinding> bindings = [];
-        foreach(XElement binding in result.Elements(ResultsNamespace + "binding"))
+        foreach(XElement binding in result.Elements(ResultsNamespace + SparqlResultsXmlNames.Binding))
         {
-            string name = binding.Attribute("name")?.Value
+            string name = binding.Attribute(SparqlResultsXmlNames.Name)?.Value
                 ?? throw new FormatException("A <binding> element is missing its 'name' attribute.");
             XElement value = OnlyChildElement(binding)
                 ?? throw new FormatException($"The <binding name=\"{name}\"> has no value element.");
@@ -153,19 +156,22 @@ public static class SparqlResultsXmlReader
 
     /// <summary>
     /// Parses a binding value element (<c>uri</c>/<c>literal</c>/<c>bnode</c>/<c>triple</c>) to an RDF term over an
-    /// explicit post-order work stack, so a deeply-nested triple term cannot overflow the call stack.
+    /// explicit post-order work stack carrying each frame's quoted-triple nesting depth, so a deeply-nested triple
+    /// term cannot overflow the call stack and a term nested beyond <see cref="QuotedTripleLimits.MaxNestingDepth"/>
+    /// raises a catchable <see cref="TripleTermDepthLimitException"/> (mirroring <see cref="SparqlResultsXmlWriter"/>).
     /// </summary>
     /// <param name="value">The binding value element.</param>
     /// <returns>The parsed term.</returns>
+    /// <exception cref="TripleTermDepthLimitException">A <c>triple</c> binding value is nested deeper than <see cref="QuotedTripleLimits.MaxNestingDepth"/>.</exception>
     private static RdfTerm ParseTerm(XElement value)
     {
         Dictionary<XElement, RdfTerm> results = new(ReferenceEqualityComparer.Instance);
-        Stack<(XElement Node, bool Combine)> work = new();
-        work.Push((value, Combine: false));
+        Stack<(XElement Node, bool Combine, int Depth)> work = new();
+        work.Push((value, Combine: false, Depth: 1));
 
         while(work.Count > 0)
         {
-            (XElement node, bool combine) = work.Pop();
+            (XElement node, bool combine, int depth) = work.Pop();
             if(combine)
             {
                 results[node] = CombineTriple(node, results);
@@ -173,13 +179,18 @@ public static class SparqlResultsXmlReader
                 continue;
             }
 
-            if(node.Name == ResultsNamespace + "triple")
+            if(node.Name == ResultsNamespace + SparqlResultsXmlNames.Triple)
             {
+                if(depth > QuotedTripleLimits.MaxNestingDepth)
+                {
+                    throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
+                }
+
                 (XElement subject, XElement predicate, XElement @object) = TripleChildren(node);
-                work.Push((node, Combine: true));
-                work.Push((@object, Combine: false));
-                work.Push((predicate, Combine: false));
-                work.Push((subject, Combine: false));
+                work.Push((node, Combine: true, depth));
+                work.Push((@object, Combine: false, depth + 1));
+                work.Push((predicate, Combine: false, depth + 1));
+                work.Push((subject, Combine: false, depth + 1));
             }
             else
             {
@@ -210,9 +221,9 @@ public static class SparqlResultsXmlReader
     /// <returns>The three inner term elements.</returns>
     private static (XElement Subject, XElement Predicate, XElement Object) TripleChildren(XElement triple)
     {
-        XElement subject = InnerTerm(triple, "subject");
-        XElement predicate = InnerTerm(triple, "predicate");
-        XElement @object = InnerTerm(triple, "object");
+        XElement subject = InnerTerm(triple, SparqlResultsXmlNames.Subject);
+        XElement predicate = InnerTerm(triple, SparqlResultsXmlNames.Predicate);
+        XElement @object = InnerTerm(triple, SparqlResultsXmlNames.Object);
 
         return (subject, predicate, @object);
     }
@@ -239,9 +250,9 @@ public static class SparqlResultsXmlReader
 
         return local switch
         {
-            "uri" => new NamedNode(Utf8String.FromString(value.Value)),
-            "bnode" => new BlankNode(Utf8String.FromString(value.Value)),
-            "literal" => ParseLiteral(value),
+            SparqlResultsXmlNames.Uri => new NamedNode(Utf8String.FromString(value.Value)),
+            SparqlResultsXmlNames.Bnode => new BlankNode(Utf8String.FromString(value.Value)),
+            SparqlResultsXmlNames.Literal => ParseLiteral(value),
             _ => throw new FormatException($"Unsupported SPARQL-results binding value element <{value.Name}>.")
         };
     }
@@ -265,7 +276,7 @@ public static class SparqlResultsXmlReader
             return new Literal(lexical, RdfLangString, tag);
         }
 
-        string? datatype = literal.Attribute("datatype")?.Value;
+        string? datatype = literal.Attribute(SparqlResultsXmlNames.Datatype)?.Value;
         if(datatype is not null)
         {
             return new Literal(lexical, new NamedNode(Utf8String.FromString(datatype)));

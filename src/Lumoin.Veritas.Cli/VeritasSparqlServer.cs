@@ -66,8 +66,9 @@ internal static class VeritasSparqlServer
         WebApplication app = builder.Build();
         app.Urls.Add($"http://localhost:{port}");
 
-        app.MapGet("/sparql", (HttpContext httpContext) => HandleAsync(httpContext, database!, httpContext.Request.Query["query"], cancellationToken));
-        app.MapPost("/sparql", (HttpContext httpContext) => HandlePostAsync(httpContext, database!, cancellationToken));
+        SparqlRequestHandler handler = new(database!, cancellationToken);
+        app.MapGet("/sparql", handler.HandleGet);
+        app.MapPost("/sparql", handler.HandlePost);
 
         await app.StartAsync(cancellationToken).ConfigureAwait(false);
 
@@ -85,6 +86,38 @@ internal static class VeritasSparqlServer
         await app.WaitForShutdownAsync(cancellationToken).ConfigureAwait(false);
 
         return 0;
+    }
+
+    /// <summary>
+    /// Answers SPARQL requests against the open database, carrying the database and the server-lifetime token
+    /// as explicit state so the minimal-API route handlers are bound method groups rather than lambdas closing
+    /// over the enclosing database and token.
+    /// </summary>
+    /// <param name="database">The open database the requests query.</param>
+    /// <param name="cancellationToken">The server-lifetime token that aborts in-flight requests on shutdown.</param>
+    private sealed class SparqlRequestHandler(VeritasEngine database, CancellationToken cancellationToken)
+    {
+        /// <summary>The open database the requests query.</summary>
+        private VeritasEngine Database { get; } = database;
+
+        /// <summary>The server-lifetime token that aborts in-flight requests on shutdown.</summary>
+        private CancellationToken CancellationToken { get; } = cancellationToken;
+
+        /// <summary>Answers a GET request, reading the query from the <c>query</c> query-string parameter.</summary>
+        /// <param name="httpContext">The request context.</param>
+        /// <returns>The asynchronous handling.</returns>
+        public Task HandleGet(HttpContext httpContext)
+        {
+            return HandleAsync(httpContext, Database, httpContext.Request.Query["query"], CancellationToken);
+        }
+
+        /// <summary>Answers a POST request, reading the query from the request body or a form field.</summary>
+        /// <param name="httpContext">The request context.</param>
+        /// <returns>The asynchronous handling.</returns>
+        public Task HandlePost(HttpContext httpContext)
+        {
+            return HandlePostAsync(httpContext, Database, CancellationToken);
+        }
     }
 
     /// <summary>Extracts the query from a POST (an <c>application/sparql-query</c> body or a form field) and answers it.</summary>

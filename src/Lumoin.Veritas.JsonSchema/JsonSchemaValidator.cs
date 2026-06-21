@@ -763,12 +763,18 @@ public static class JsonSchemaValidator
         return evaluated;
     }
 
+    /// <summary>Selects a child frame's evaluated set of the relevant kind (properties or items).</summary>
+    /// <typeparam name="T">The set element type.</typeparam>
+    /// <param name="frame">The frame to read the evaluated set from.</param>
+    /// <returns>The frame's evaluated set.</returns>
+    private delegate HashSet<T> EvaluatedSetSelector<T>(Frame frame);
+
     /// <summary>Unions the evaluated sets contributed by the selected <c>if</c>/<c>then</c>/<c>else</c> branches.</summary>
     /// <typeparam name="T">The set element type.</typeparam>
     /// <param name="frame">The frame.</param>
     /// <param name="evaluated">The accumulating evaluated set.</param>
     /// <param name="selector">Selects a child's evaluated set of the relevant kind.</param>
-    private static void UnionBranchEvaluated<T>(Frame frame, HashSet<T> evaluated, Func<Frame, HashSet<T>> selector)
+    private static void UnionBranchEvaluated<T>(Frame frame, HashSet<T> evaluated, EvaluatedSetSelector<T> selector)
     {
         Frame? conditional = FindChild(frame, JsonSchemaKeywords.If);
         if(conditional is null)

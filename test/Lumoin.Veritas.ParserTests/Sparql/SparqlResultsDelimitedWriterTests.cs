@@ -1,5 +1,7 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
+using System.IO.Pipelines;
 using System.Text;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
@@ -114,6 +116,59 @@ internal sealed class SparqlResultsDelimitedWriterTests
         Assert.AreEqual(3, lineCount);
         Assert.AreEqual("?s\t?age\t?name\t?b\n", firstLine);
         Assert.AreEqual(SparqlResultsDelimitedWriter.WriteToString(results, SparqlDelimitedResultsFormat.Tsv), streamed.ToString());
+    }
+
+    /// <summary>The byte-native <see cref="PipeWriter"/> overload writes the same bytes (both formats) as the materialized serialization.</summary>
+    [TestMethod]
+    public async Task WriteAsyncToPipeReproducesMaterializedOutput()
+    {
+        SparqlResultSet results = SampleSelect();
+
+        await AssertPipeMatchesString(results, SparqlDelimitedResultsFormat.Tsv).ConfigureAwait(false);
+        await AssertPipeMatchesString(results, SparqlDelimitedResultsFormat.Csv).ConfigureAwait(false);
+    }
+
+    /// <summary>Writes a result set through the <see cref="PipeWriter"/> overload and asserts the bytes equal the materialized text, captured over an in-memory pipe with no intermediate stream.</summary>
+    /// <param name="results">The result set to serialize.</param>
+    /// <param name="format">The delimited format to emit.</param>
+    /// <returns>The asynchronous assertion.</returns>
+    private async Task AssertPipeMatchesString(SparqlResultSet results, SparqlDelimitedResultsFormat format)
+    {
+        Pipe pipe = new();
+        await SparqlResultsDelimitedWriter.WriteAsync(results, pipe.Writer, format, TestContext.CancellationToken).ConfigureAwait(false);
+
+        ReadResult read = await pipe.Reader.ReadAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        Utf8String expected = Utf8String.FromString(SparqlResultsDelimitedWriter.WriteToString(results, format));
+
+        Assert.IsTrue(read.IsCompleted);
+        Assert.IsTrue(SequenceEquals(read.Buffer, expected.Span));
+
+        pipe.Reader.AdvanceTo(read.Buffer.End);
+    }
+
+    /// <summary>Determines whether a byte sequence equals an expected span, compared segment by segment with no contiguous copy.</summary>
+    /// <param name="sequence">The byte sequence, such as a pipe's read buffer.</param>
+    /// <param name="expected">The expected bytes.</param>
+    /// <returns><see langword="true"/> when the sequence equals <paramref name="expected"/>.</returns>
+    private static bool SequenceEquals(ReadOnlySequence<byte> sequence, ReadOnlySpan<byte> expected)
+    {
+        if(sequence.Length != expected.Length)
+        {
+            return false;
+        }
+
+        int offset = 0;
+        foreach(ReadOnlyMemory<byte> segment in sequence)
+        {
+            if(!segment.Span.SequenceEqual(expected.Slice(offset, segment.Length)))
+            {
+                return false;
+            }
+
+            offset += segment.Length;
+        }
+
+        return true;
     }
 
     /// <summary>Adapts a solution list to an async sequence for the streaming writer.</summary>

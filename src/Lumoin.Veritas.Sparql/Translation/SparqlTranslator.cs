@@ -264,9 +264,29 @@ public static class SparqlTranslator
     /// <returns>The rewritten expression, or the same instance when it holds no aggregate.</returns>
     private static ExpressionNode RewriteAggregates(ExpressionNode expression, Dictionary<ExpressionNode, SparqlVariable> bindings)
     {
-        return ExpressionWalker.Transform(expression, node => node is AggregateExpression aggregate && bindings.TryGetValue(aggregate, out SparqlVariable variable)
-            ? new VariableExpression(aggregate.Span, variable)
-            : node);
+        return ExpressionWalker.Transform(expression, new AggregateRewriter(bindings).Rewrite);
+    }
+
+    /// <summary>
+    /// Replaces an aggregate node with a reference to its result variable, carrying the aggregate-to-variable
+    /// lookup as explicit state so the rewrite passed to <see cref="ExpressionWalker.Transform"/> is a bound
+    /// method group rather than a lambda closing over the enclosing lookup.
+    /// </summary>
+    /// <param name="bindings">The aggregate-to-result-variable lookup.</param>
+    private sealed class AggregateRewriter(Dictionary<ExpressionNode, SparqlVariable> bindings)
+    {
+        /// <summary>The aggregate-to-result-variable lookup.</summary>
+        private Dictionary<ExpressionNode, SparqlVariable> Bindings { get; } = bindings;
+
+        /// <summary>Rewrites an aggregate node to a reference to its result variable; other nodes are left unchanged.</summary>
+        /// <param name="node">The expression node.</param>
+        /// <returns>The rewritten node.</returns>
+        public ExpressionNode Rewrite(ExpressionNode node)
+        {
+            return node is AggregateExpression aggregate && Bindings.TryGetValue(aggregate, out SparqlVariable variable)
+                ? new VariableExpression(aggregate.Span, variable)
+                : node;
+        }
     }
 
     /// <summary>Returns the key expression of an order condition, independent of its direction.</summary>

@@ -154,16 +154,30 @@ public sealed class Utf8StringPool: IDisposable
 
             meter.CreateObservableUpDownCounter(
                 VeritasMetrics.StringPoolUniqueCount,
-                () => Count,
+                ObserveUniqueCount,
                 "strings",
                 "Number of unique strings interned in the pool.");
 
             meter.CreateObservableUpDownCounter(
                 VeritasMetrics.StringPoolTotalBytesInterned,
-                () => TotalBytesInterned,
+                ObserveTotalBytesInterned,
                 "bytes",
                 "Total bytes interned in the pool.");
         }
+    }
+
+    /// <summary>Observes the pool's current count of unique interned strings.</summary>
+    /// <returns>The number of unique strings interned.</returns>
+    private int ObserveUniqueCount()
+    {
+        return Count;
+    }
+
+    /// <summary>Observes the total bytes interned in the pool.</summary>
+    /// <returns>The total bytes interned.</returns>
+    private long ObserveTotalBytesInterned()
+    {
+        return TotalBytesInterned;
     }
 
     /// <summary>

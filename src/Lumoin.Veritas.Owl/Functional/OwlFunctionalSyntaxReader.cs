@@ -37,7 +37,20 @@ namespace Lumoin.Veritas.Owl.Functional;
 public static class OwlFunctionalSyntaxReader
 {
     /// <summary>
-    /// Reads a functional-syntax ontology document.
+    /// Reads a functional-syntax ontology document from its UTF-8 bytes.
+    /// </summary>
+    /// <param name="utf8Text">The document's UTF-8 bytes.</param>
+    /// <returns>The structural document; parse errors are on its diagnostics.</returns>
+    public static OwlOntologyDocument Read(ReadOnlySpan<byte> utf8Text)
+    {
+        OwlFunctionalSyntaxIncrementalReader reader = new();
+        reader.Feed(utf8Text);
+
+        return reader.Complete();
+    }
+
+    /// <summary>
+    /// Reads a functional-syntax ontology document, encoding the text to UTF-8 once at the boundary.
     /// </summary>
     /// <param name="text">The document text.</param>
     /// <returns>The structural document; parse errors are on its diagnostics.</returns>
@@ -46,9 +59,6 @@ public static class OwlFunctionalSyntaxReader
     {
         ArgumentNullException.ThrowIfNull(text);
 
-        OwlFunctionalSyntaxIncrementalReader reader = new();
-        reader.Feed(text);
-
-        return reader.Complete();
+        return Read(System.Text.Encoding.UTF8.GetBytes(text));
     }
 }

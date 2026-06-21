@@ -33,11 +33,16 @@ namespace Lumoin.Veritas.Sparql.Execution;
 /// contributes no solutions — never the default graph.
 /// </para>
 /// </remarks>
+/// <summary>Resolves a named-graph term id to its store, or <see langword="null"/> when the dataset has no such graph.</summary>
+/// <param name="graph">The graph-name term id.</param>
+/// <returns>The named graph's store, or <see langword="null"/> when absent.</returns>
+public delegate HypertrieGraphStore? ResolveNamedGraphDelegate(TermId graph);
+
 public sealed class SparqlDataset
 {
     private readonly HashSet<TermId> graphNameSet;
 
-    private readonly Func<TermId, HypertrieGraphStore?> resolveNamed;
+    private readonly ResolveNamedGraphDelegate resolveNamed;
 
     /// <summary>The default graph — the store queried outside any <c>GRAPH</c> form.</summary>
     public HypertrieGraphStore DefaultGraph { get; }
@@ -94,7 +99,7 @@ public sealed class SparqlDataset
         Dictionary<TermId, HypertrieGraphStore> materialized = new(namedGraphs);
         graphNameSet = [.. materialized.Keys];
         GraphNames = [.. materialized.Keys];
-        resolveNamed = graph => materialized.TryGetValue(graph, out HypertrieGraphStore? store) ? store : null;
+        resolveNamed = new MaterializedGraphResolver(materialized).Resolve;
         NamedGraphGeneration = this;
         NamedGraphRendezvous = new GraphSetRendezvous(this, CollectNamedTriples, QueryEnginePolicy.Default);
     }
@@ -108,7 +113,7 @@ public sealed class SparqlDataset
     public SparqlDataset(
         HypertrieGraphStore defaultGraph,
         IReadOnlyCollection<TermId> graphNames,
-        Func<TermId, HypertrieGraphStore?> resolveNamedGraph,
+        ResolveNamedGraphDelegate resolveNamedGraph,
         QueryEngineRendezvous defaultGraphRendezvous,
         GraphSetRendezvous? namedGraphRendezvous = null,
         object? namedGraphGeneration = null)
@@ -125,6 +130,26 @@ public sealed class SparqlDataset
         resolveNamed = resolveNamedGraph;
         NamedGraphGeneration = namedGraphGeneration ?? this;
         NamedGraphRendezvous = namedGraphRendezvous ?? new GraphSetRendezvous(NamedGraphGeneration, CollectNamedTriples, QueryEnginePolicy.Default);
+    }
+
+    /// <summary>
+    /// Resolves named-graph stores from a materialized dictionary, carrying the dictionary as explicit state
+    /// so the dataset's <see cref="ResolveNamedGraphDelegate"/> is a bound method group rather than a lambda
+    /// closing over the enclosing dictionary.
+    /// </summary>
+    /// <param name="graphs">The materialized named graphs keyed by graph-name term id.</param>
+    private sealed class MaterializedGraphResolver(Dictionary<TermId, HypertrieGraphStore> graphs)
+    {
+        /// <summary>The materialized named graphs keyed by graph-name term id.</summary>
+        private Dictionary<TermId, HypertrieGraphStore> Graphs { get; } = graphs;
+
+        /// <summary>Resolves a graph-name term id to its materialized store.</summary>
+        /// <param name="graph">The graph-name term id.</param>
+        /// <returns>The named graph's store, or <see langword="null"/> when absent.</returns>
+        public HypertrieGraphStore? Resolve(TermId graph)
+        {
+            return Graphs.TryGetValue(graph, out HypertrieGraphStore? store) ? store : null;
+        }
     }
 
     /// <summary>

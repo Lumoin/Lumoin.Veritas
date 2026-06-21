@@ -182,7 +182,7 @@ public sealed class MutableSparqlDataset
         JournalRead = journalRead;
         Current = initial;
         DefaultGraphRendezvous = new QueryEngineRendezvous(initial.DefaultGraph, QueryEnginePolicy.Default);
-        NamedGraphRendezvous = new GraphSetRendezvous(initial, () => CollectGraphSetSource(initial), QueryEnginePolicy.Default);
+        NamedGraphRendezvous = new GraphSetRendezvous(initial, new GraphSetBuildSource(initial).Build, QueryEnginePolicy.Default);
     }
 
     /// <summary>
@@ -204,6 +204,24 @@ public sealed class MutableSparqlDataset
         }
 
         return graphs;
+    }
+
+    /// <summary>
+    /// A generation's deferred graph-set build, carrying the committed state as explicit state so the
+    /// rendezvous build source is a bound method group rather than a lambda closing over the enclosing state.
+    /// </summary>
+    /// <param name="state">The committed state the set describes.</param>
+    private sealed class GraphSetBuildSource(DatasetState state)
+    {
+        /// <summary>The committed state the set describes.</summary>
+        private DatasetState State { get; } = state;
+
+        /// <summary>Builds the named graphs' triples for the state.</summary>
+        /// <returns>The named graphs' triples keyed by graph id.</returns>
+        public Dictionary<TermId, IEnumerable<EncodedTriple>> Build()
+        {
+            return CollectGraphSetSource(State);
+        }
     }
 
     /// <summary>
@@ -464,7 +482,7 @@ public sealed class MutableSparqlDataset
             //The shared graph set described the previous generation;
             //drop it and rebuild lazily from the new state on the
             //next qualifying named-graph join.
-            NamedGraphRendezvous.Advance(state, () => CollectGraphSetSource(state));
+            NamedGraphRendezvous.Advance(state, new GraphSetBuildSource(state).Build);
         }
     }
 

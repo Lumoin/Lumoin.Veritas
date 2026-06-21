@@ -89,5 +89,5 @@ public abstract record Shape
     /// <see cref="ConstraintComponent.ReferencedShapeIds"/>.
     /// </remarks>
     public IEnumerable<TermId> ReferencedShapeIds
-        => Constraints.SelectMany(c => c.ReferencedShapeIds);
+        => Constraints.SelectMany(static c => c.ReferencedShapeIds);
 }

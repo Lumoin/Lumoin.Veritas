@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Iris;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Rdf.Values;
 using Lumoin.Veritas.Sparql.Ast;
 
@@ -136,12 +137,12 @@ public static class SparqlExpressionEvaluator
         //order — no call-stack recursion: a triple-term pair expands to its three component pairs, pushed so the
         //subject is taken first, and the first component that differs decides the whole comparison. Non-triple
         //terms compare by category rank, then within a rank by label / IRI / literal value.
-        Stack<(RdfTerm? Left, RdfTerm? Right)> pending = new();
-        pending.Push((left, right));
+        Stack<(RdfTerm? Left, RdfTerm? Right, int Depth)> pending = new();
+        pending.Push((left, right, 1));
 
         while(pending.Count > 0)
         {
-            (RdfTerm? leftTerm, RdfTerm? rightTerm) = pending.Pop();
+            (RdfTerm? leftTerm, RdfTerm? rightTerm, int depth) = pending.Pop();
             int leftRank = OrderRank(leftTerm);
             int rightRank = OrderRank(rightTerm);
             if(leftRank != rightRank)
@@ -154,7 +155,7 @@ public static class SparqlExpressionEvaluator
                 1 => ((BlankNode)leftTerm!).Label.CompareTo(((BlankNode)rightTerm!).Label),
                 2 => ((NamedNode)leftTerm!).Iri.CompareTo(((NamedNode)rightTerm!).Iri),
                 3 => CompareLiterals((Literal)leftTerm!, (Literal)rightTerm!),
-                4 => ExpandTripleTermComparison(pending, (Lumoin.Veritas.Core.TripleTerm)leftTerm!, (Lumoin.Veritas.Core.TripleTerm)rightTerm!),
+                4 => ExpandTripleTermComparison(pending, (Lumoin.Veritas.Core.TripleTerm)leftTerm!, (Lumoin.Veritas.Core.TripleTerm)rightTerm!, depth),
 
                 //Both unbound (0): equal at this position.
                 _ => 0
@@ -168,16 +169,22 @@ public static class SparqlExpressionEvaluator
         return 0;
     }
 
-    /// <summary>Pushes a triple-term pair's object, predicate, and subject component comparisons (subject on top, so it is taken first) onto the pending stack and yields 0, deferring the decision to those components.</summary>
+    /// <summary>Pushes a triple-term pair's object, predicate, and subject component comparisons (subject on top, so it is taken first) onto the pending stack and yields 0, deferring the decision to those components. Nesting beyond <see cref="QuotedTripleLimits.MaxNestingDepth"/> raises <see cref="TripleTermDepthLimitException"/>.</summary>
     /// <param name="pending">The pending-comparison stack to push the three component pairs onto.</param>
     /// <param name="left">The left triple term.</param>
     /// <param name="right">The right triple term.</param>
+    /// <param name="depth">The quoted-triple nesting depth of this pair.</param>
     /// <returns>Always 0 — the comparison is decided by the pushed component pairs.</returns>
-    private static int ExpandTripleTermComparison(Stack<(RdfTerm? Left, RdfTerm? Right)> pending, Lumoin.Veritas.Core.TripleTerm left, Lumoin.Veritas.Core.TripleTerm right)
+    private static int ExpandTripleTermComparison(Stack<(RdfTerm? Left, RdfTerm? Right, int Depth)> pending, Lumoin.Veritas.Core.TripleTerm left, Lumoin.Veritas.Core.TripleTerm right, int depth)
     {
-        pending.Push((left.Object, right.Object));
-        pending.Push((left.Predicate, right.Predicate));
-        pending.Push((left.Subject, right.Subject));
+        if(depth > QuotedTripleLimits.MaxNestingDepth)
+        {
+            throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
+        }
+
+        pending.Push((left.Object, right.Object, depth + 1));
+        pending.Push((left.Predicate, right.Predicate, depth + 1));
+        pending.Push((left.Subject, right.Subject, depth + 1));
 
         return 0;
     }
@@ -894,12 +901,12 @@ public static class SparqlExpressionEvaluator
     private static RdfTerm? ResolveTripleTermComponent(TriplePatternTerm root, SparqlSolution solution)
     {
         Dictionary<TriplePatternTerm, RdfTerm?> resolved = new(ReferenceEqualityComparer.Instance);
-        Stack<(TriplePatternTerm Term, bool Combine)> work = new();
-        work.Push((root, Combine: false));
+        Stack<(TriplePatternTerm Term, bool Combine, int Depth)> work = new();
+        work.Push((root, Combine: false, Depth: 1));
 
         while(work.Count > 0)
         {
-            (TriplePatternTerm term, bool combine) = work.Pop();
+            (TriplePatternTerm term, bool combine, int depth) = work.Pop();
             if(combine)
             {
                 Lumoin.Veritas.Sparql.Ast.TripleTerm nested = (Lumoin.Veritas.Sparql.Ast.TripleTerm)term;
@@ -926,10 +933,15 @@ public static class SparqlExpressionEvaluator
 
                 case Lumoin.Veritas.Sparql.Ast.TripleTerm nested:
                 {
-                    work.Push((term, Combine: true));
-                    work.Push((nested.Inner.Object, Combine: false));
-                    work.Push((nested.Inner.Predicate, Combine: false));
-                    work.Push((nested.Inner.Subject, Combine: false));
+                    if(depth > QuotedTripleLimits.MaxNestingDepth)
+                    {
+                        throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
+                    }
+
+                    work.Push((term, Combine: true, depth));
+                    work.Push((nested.Inner.Object, Combine: false, depth + 1));
+                    work.Push((nested.Inner.Predicate, Combine: false, depth + 1));
+                    work.Push((nested.Inner.Subject, Combine: false, depth + 1));
 
                     break;
                 }
@@ -1093,20 +1105,31 @@ public static class SparqlExpressionEvaluator
             : ExpressionValue.Error;
     }
 
+    /// <summary>Tests a property of an evaluated RDF term — its kind, for the term-type predicates.</summary>
+    /// <param name="term">The bound term to test.</param>
+    /// <returns><see langword="true"/> when the property holds.</returns>
+    private delegate bool RdfTermPredicate(RdfTerm term);
+
     /// <summary>Applies a term-type predicate to a single argument, propagating an argument error.</summary>
     /// <param name="argument">The argument value.</param>
     /// <param name="test">The predicate on the bound term.</param>
     /// <returns>A boolean value, or an error when the argument errs.</returns>
-    private static ExpressionValue TypeTest(ExpressionValue argument, Func<RdfTerm, bool> test)
+    private static ExpressionValue TypeTest(ExpressionValue argument, RdfTermPredicate test)
     {
         return argument.IsError ? ExpressionValue.Error : Boolean(test(argument.Term));
     }
+
+    /// <summary>Tests a binary property over two UTF-8 string values (operating on their byte spans).</summary>
+    /// <param name="left">The first UTF-8 value.</param>
+    /// <param name="right">The second UTF-8 value.</param>
+    /// <returns><see langword="true"/> when the property holds.</returns>
+    private delegate bool Utf8StringBinaryPredicate(Utf8String left, Utf8String right);
 
     /// <summary>Applies a binary predicate over two string arguments' UTF-8 values, erring when either is not a string or errs.</summary>
     /// <param name="arguments">The argument values (two strings expected).</param>
     /// <param name="test">The predicate over the two UTF-8 values (operates on their byte spans).</param>
     /// <returns>A boolean value, or an error.</returns>
-    private static ExpressionValue StringTest(ExpressionValue[] arguments, Func<Utf8String, Utf8String, bool> test)
+    private static ExpressionValue StringTest(ExpressionValue[] arguments, Utf8StringBinaryPredicate test)
     {
         return TryGetLexicalText(arguments[0], out Utf8String left) && TryGetLexicalText(arguments[1], out Utf8String right)
             ? Boolean(test(left, right))
@@ -1538,11 +1561,16 @@ public static class SparqlExpressionEvaluator
         return StringLiteral(Utf8String.FromString(Convert.ToHexStringLower(context.Hash(algorithm, literal.Value.Span))));
     }
 
+    /// <summary>Selects an integer component of a date-time value, reading the field in the value's own timezone.</summary>
+    /// <param name="value">The date-time value.</param>
+    /// <returns>The selected integer component.</returns>
+    private delegate int DateTimeComponentSelector(DateTimeOffset value);
+
     /// <summary>Evaluates a date-time accessor (<c>YEAR</c>/<c>MONTH</c>/<c>DAY</c>/<c>HOURS</c>/<c>MINUTES</c>, §17.4.5) that returns an integer component of an <c>xsd:dateTime</c>; a non-dateTime argument errs.</summary>
     /// <param name="argument">The <c>xsd:dateTime</c> argument.</param>
     /// <param name="component">The component selector, reading the field in the value's own timezone.</param>
     /// <returns>The component as an <c>xsd:integer</c>, or an error.</returns>
-    private static ExpressionValue DateComponent(ExpressionValue argument, Func<DateTimeOffset, int> component)
+    private static ExpressionValue DateComponent(ExpressionValue argument, DateTimeComponentSelector component)
     {
         return TryGetDateTime(argument, out DateTimeOffset value, out _) ? Integer(component(value)) : ExpressionValue.Error;
     }
@@ -1675,11 +1703,16 @@ public static class SparqlExpressionEvaluator
         return ExpressionValue.Of(new Lumoin.Veritas.Core.TripleTerm(arguments[0].Term, predicate, arguments[2].Term));
     }
 
+    /// <summary>Selects a component (subject, predicate, or object) of a triple term.</summary>
+    /// <param name="triple">The triple term.</param>
+    /// <returns>The selected component term.</returns>
+    private delegate RdfTerm TripleComponentSelector(Lumoin.Veritas.Core.TripleTerm triple);
+
     /// <summary>Evaluates <c>SUBJECT</c>/<c>PREDICATE</c>/<c>OBJECT</c> (RDF 1.2): extracts a component of a triple term; a non-triple-term argument errs.</summary>
     /// <param name="argument">The argument value (expected to be a triple term).</param>
     /// <param name="component">The component selector.</param>
     /// <returns>The selected component, or an error.</returns>
-    private static ExpressionValue TripleComponent(ExpressionValue argument, Func<Lumoin.Veritas.Core.TripleTerm, RdfTerm> component)
+    private static ExpressionValue TripleComponent(ExpressionValue argument, TripleComponentSelector component)
     {
         return !argument.IsError && argument.Term is Lumoin.Veritas.Core.TripleTerm triple ? ExpressionValue.Of(component(triple)) : ExpressionValue.Error;
     }
@@ -2097,19 +2130,24 @@ public static class SparqlExpressionEvaluator
     /// <returns><see langword="true"/>/<see langword="false"/> for a decided comparison, or <see langword="null"/> for a type error.</returns>
     private static bool? TripleTermValueEqual(Lumoin.Veritas.Core.TripleTerm left, Lumoin.Veritas.Core.TripleTerm right)
     {
-        Stack<(RdfTerm Left, RdfTerm Right)> work = new();
-        work.Push((left, right));
+        Stack<(RdfTerm Left, RdfTerm Right, int Depth)> work = new();
+        work.Push((left, right, 1));
 
         while(work.Count > 0)
         {
-            (RdfTerm a, RdfTerm b) = work.Pop();
+            (RdfTerm a, RdfTerm b, int depth) = work.Pop();
             switch(a)
             {
                 case Lumoin.Veritas.Core.TripleTerm at when b is Lumoin.Veritas.Core.TripleTerm bt:
                 {
-                    work.Push((at.Subject, bt.Subject));
-                    work.Push((at.Predicate, bt.Predicate));
-                    work.Push((at.Object, bt.Object));
+                    if(depth > QuotedTripleLimits.MaxNestingDepth)
+                    {
+                        throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
+                    }
+
+                    work.Push((at.Subject, bt.Subject, depth + 1));
+                    work.Push((at.Predicate, bt.Predicate, depth + 1));
+                    work.Push((at.Object, bt.Object, depth + 1));
                     break;
                 }
                 case Lumoin.Veritas.Core.TripleTerm:

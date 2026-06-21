@@ -1,7 +1,7 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.IO;
 using System.IO.Pipelines;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -118,7 +118,7 @@ public static class TurtleReader
     /// parse diagnostics; resolution diagnostics raised while the quad iterator runs append to the same
     /// bag, observable through <see cref="ParseResult{TTree}.Diagnostics"/>.
     /// </remarks>
-    public static async System.Threading.Tasks.Task<(ParseResult<TurtleDocument> Result, IAsyncEnumerable<EmittedQuad> Quads)> ReadWithSourceAsync(
+    public static async Task<(ParseResult<TurtleDocument> Result, IAsyncEnumerable<EmittedQuad> Quads)> ReadWithSourceAsync(
         PipeReader input,
         TurtleSyntax syntax,
         DocumentId documentId,
@@ -129,10 +129,10 @@ public static class TurtleReader
         ArgumentNullException.ThrowIfNull(input);
 
         Utf8StringPool effectivePool = pool ?? new Utf8StringPool();
-        byte[] bytes;
+        (IMemoryOwner<byte> Buffer, int Length) drained;
         try
         {
-            bytes = await DrainAsync(input, cancellationToken).ConfigureAwait(false);
+            drained = await DrainAsync(input, effectivePool, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -140,7 +140,15 @@ public static class TurtleReader
         }
 
         DiagnosticBag diagnostics = new();
-        TurtleDocument document = ParseDocumentInto(bytes, syntax, documentId, effectivePool, diagnostics);
+        TurtleDocument document;
+
+        //The lexer interns every payload, so the drained source is needed only for the parse and is
+        //released back to the pool immediately afterwards.
+        using(drained.Buffer)
+        {
+            document = ParseDocumentInto(drained.Buffer.Memory[..drained.Length], syntax, documentId, effectivePool, diagnostics);
+        }
+
         ParseResult<TurtleDocument> result = new(document, diagnostics.Diagnostics, diagnostics.HasErrors);
         IAsyncEnumerable<EmittedQuad> quads = IterateWithSourceAsync(document, effectivePool, diagnostics, baseIri, cancellationToken);
 
@@ -168,7 +176,7 @@ public static class TurtleReader
     {
         Utf8StringPool effectivePool = pool ?? new Utf8StringPool();
         DiagnosticBag diagnostics = new();
-        TurtleDocument document = ParseDocumentInto(source.ToArray(), syntax, documentId, effectivePool, diagnostics);
+        TurtleDocument document = ParseDocumentInto(source, syntax, documentId, effectivePool, diagnostics);
         ParseResult<TurtleDocument> result = new(document, diagnostics.Diagnostics, diagnostics.HasErrors);
         IAsyncEnumerable<EmittedQuad> quads = IterateWithSourceAsync(document, effectivePool, diagnostics, baseIri, cancellationToken);
         return (result, quads);
@@ -322,25 +330,41 @@ public static class TurtleReader
     //parser's), returning the document. The caller wraps the bag in a ParseResult and reuses it for the
     //emitter, so one bag spans lexing, parsing, and emission.
     private static TurtleDocument ParseDocumentInto(
-        byte[] bytes,
+        ReadOnlyMemory<byte> source,
         TurtleSyntax syntax,
         DocumentId documentId,
         Utf8StringPool pool,
         DiagnosticBag diagnostics)
     {
-        TurtleLexer lexer = new(bytes, pool);
+        TurtleLexer lexer = new(source, pool);
         TurtleParser parser = new(lexer.Tokenize(), pool, documentId, syntax, blankNodes: null, diagnostics: diagnostics);
         BridgeLexerDiagnostics(lexer, diagnostics, 0);
 
         return parser.Parse();
     }
 
-    private static async System.Threading.Tasks.Task<byte[]> DrainAsync(PipeReader input, CancellationToken cancellationToken)
+    private static async Task<(IMemoryOwner<byte> Buffer, int Length)> DrainAsync(PipeReader input, Utf8StringPool pool, CancellationToken cancellationToken)
     {
-        //Turtle parses the whole document, so the pipe is drained into one contiguous buffer.
-        using MemoryStream buffer = new();
-        await input.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
+        //Turtle parses the whole document, so the pipe is examined (not consumed) until the producer
+        //completes, then the bytes are copied into one scratch buffer rented from the caller's pool that the
+        //parse owns and releases — the lexer interns every payload, so nothing downstream references it.
+        while(true)
+        {
+            ReadResult result = await input.ReadAsync(cancellationToken).ConfigureAwait(false);
+            ReadOnlySequence<byte> buffer = result.Buffer;
+            if(result.IsCompleted)
+            {
+                int length = checked((int)buffer.Length);
 
-        return buffer.ToArray();
+                //The pool rejects a zero-length rental and an empty document is valid, so rent at least one byte.
+                IMemoryOwner<byte> owner = pool.RentScratch(Math.Max(1, length));
+                buffer.CopyTo(owner.Memory.Span);
+                input.AdvanceTo(buffer.End);
+
+                return (owner, length);
+            }
+
+            input.AdvanceTo(buffer.Start, buffer.End);
+        }
     }
 }

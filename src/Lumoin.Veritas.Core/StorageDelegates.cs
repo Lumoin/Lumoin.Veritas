@@ -182,22 +182,42 @@ public static class StorageDelegates
             return inner;
         }
 
-        return (s, p, o, ct) => FilteredMatch(inner, filter, s, p, o, ct);
+        return new FilteredMatcher(inner, filter).Match;
     }
 
-    private static async IAsyncEnumerable<EncodedTriple> FilteredMatch(
-        MatchTriplesAsync inner,
-        TripleVisibilityFilter filter,
-        TermId subject,
-        TermId predicate,
-        TermId @object,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
+    /// <summary>
+    /// Carries the inner match delegate and visibility filter behind a
+    /// <see cref="WithFilter"/> result as explicit state, so the produced
+    /// <see cref="MatchTriplesAsync"/> closes over no enclosing local.
+    /// </summary>
+    /// <param name="inner">The underlying match delegate.</param>
+    /// <param name="filter">The visibility filter applied to every yielded triple.</param>
+    private sealed class FilteredMatcher(MatchTriplesAsync inner, TripleVisibilityFilter filter)
     {
-        await foreach(EncodedTriple triple in inner(subject, predicate, @object, cancellationToken).ConfigureAwait(false))
+        /// <summary>The underlying match delegate.</summary>
+        private MatchTriplesAsync Inner { get; } = inner;
+
+        /// <summary>The visibility filter applied to every yielded triple.</summary>
+        private TripleVisibilityFilter Filter { get; } = filter;
+
+        /// <summary>Matches triples through <see cref="Inner"/>, yielding only those that pass <see cref="Filter"/>.</summary>
+        /// <param name="subject">The subject to match, or <see cref="TermId.None"/> for any subject.</param>
+        /// <param name="predicate">The predicate to match, or <see cref="TermId.None"/> for any predicate.</param>
+        /// <param name="object">The object to match, or <see cref="TermId.None"/> for any object.</param>
+        /// <param name="cancellationToken">A token to cancel the enumeration.</param>
+        /// <returns>An async sequence of visible matching triples.</returns>
+        public async IAsyncEnumerable<EncodedTriple> Match(
+            TermId subject,
+            TermId predicate,
+            TermId @object,
+            [EnumeratorCancellation] CancellationToken cancellationToken)
         {
-            if(filter(triple.Subject, triple.Predicate, triple.Object))
+            await foreach(EncodedTriple triple in Inner(subject, predicate, @object, cancellationToken).ConfigureAwait(false))
             {
-                yield return triple;
+                if(Filter(triple.Subject, triple.Predicate, triple.Object))
+                {
+                    yield return triple;
+                }
             }
         }
     }

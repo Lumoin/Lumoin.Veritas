@@ -1,7 +1,7 @@
 using System;
+using System.Buffers.Text;
 using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.Globalization;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Sourcing;
@@ -51,8 +51,8 @@ internal sealed class OwlFunctionalSyntaxConverter
     /// <summary>Gets the IRIs declared as datatypes.</summary>
     public HashSet<Utf8String> DeclaredDatatypes { get; } = [];
 
-    /// <summary>The prefix table the document's prefixed names resolve through.</summary>
-    private Dictionary<string, string> Prefixes { get; } = [];
+    /// <summary>The prefix table the document's prefixed names resolve through; keys carry an eager hash for lookup.</summary>
+    private Dictionary<Utf8String, Utf8String> Prefixes { get; } = [];
 
     /// <summary>Converted values per tree node, filled in post-order and cleared after each ontology child.</summary>
     private Dictionary<OwlFunctionalNode, object?> Converted { get; } = [];
@@ -76,7 +76,7 @@ internal sealed class OwlFunctionalSyntaxConverter
             && prefixGroup.Children[0] is { IsAtom: true, Atom: { Kind: OwlFunctionalTokenKind.Name } prefixToken }
             && prefixGroup.Children[2] is { IsAtom: true, Atom: { Kind: OwlFunctionalTokenKind.Iri } iriToken })
         {
-            Prefixes[prefixToken.Text.TrimEnd(':')] = iriToken.Text;
+            Prefixes[TrimTrailingColons(prefixToken.Text)] = InternTerm(iriToken.Text.Span);
         }
     }
 
@@ -98,21 +98,22 @@ internal sealed class OwlFunctionalSyntaxConverter
         //The leading bare IRIs are the ontology IRI and version IRI.
         if(!HeaderDone && child.IsAtom && child.Atom.Kind == OwlFunctionalTokenKind.Iri)
         {
-            OntologyIri ??= new NamedNode(Utf8String.FromString(child.Atom.Text));
+            OntologyIri ??= new NamedNode(InternTerm(child.Atom.Text.Span));
 
             return;
         }
 
         HeaderDone = true;
 
-        if(child.Head == "Import" && child.Children.Count == 1 && child.Children[0].Atom.Kind == OwlFunctionalTokenKind.Iri)
+        if(child.Head is Utf8String importHead && importHead.Span.SequenceEqual(OwlFunctionalKeywords.Import)
+            && child.Children.Count == 1 && child.Children[0].Atom.Kind == OwlFunctionalTokenKind.Iri)
         {
-            Axioms.Add(new OwlImportAxiom(new NamedNode(Utf8String.FromString(child.Children[0].Atom.Text))) { Origin = Origin });
+            Axioms.Add(new OwlImportAxiom(new NamedNode(InternTerm(child.Children[0].Atom.Text.Span))) { Origin = Origin });
 
             return;
         }
 
-        if(child.Head == "Annotation")
+        if(child.Head is Utf8String annotationHead && annotationHead.Span.SequenceEqual(OwlFunctionalKeywords.Annotation))
         {
             //An ontology annotation surfaces as an annotation
             //assertion on the ontology IRI — the same triple the RDF
@@ -203,18 +204,18 @@ internal sealed class OwlFunctionalSyntaxConverter
     {
         return token.Kind switch
         {
-            OwlFunctionalTokenKind.Iri => Utf8String.FromString(token.Text),
+            OwlFunctionalTokenKind.Iri => InternTerm(token.Text.Span),
             OwlFunctionalTokenKind.Name => ResolveName(token.Text) is Utf8String resolvedName ? resolvedName : null,
-            OwlFunctionalTokenKind.BlankNode => new BlankNode(Utf8String.FromString(token.Text)),
-            OwlFunctionalTokenKind.Number => int.Parse(token.Text, NumberStyles.None, CultureInfo.InvariantCulture),
+            OwlFunctionalTokenKind.BlankNode => new BlankNode(InternTerm(token.Text.Span)),
+            OwlFunctionalTokenKind.Number => ParseNumber(token.Text.Span),
             OwlFunctionalTokenKind.Literal => MakeLiteral(token),
             _ => null
         };
     }
 
-    private Utf8String? ResolveName(string name)
+    private Utf8String? ResolveName(Utf8String name)
     {
-        int colon = name.IndexOf(':', StringComparison.Ordinal);
+        int colon = name.Span.IndexOf((byte)':');
         if(colon < 0)
         {
             //A bare name in atom position is a constructor misuse; report it.
@@ -227,12 +228,12 @@ internal sealed class OwlFunctionalSyntaxConverter
             return null;
         }
 
-        string prefix = name[..colon];
-        string local = name[(colon + 1)..];
+        Utf8String prefix = new(name.Memory[..colon]);
+        ReadOnlyMemory<byte> local = name.Memory[(colon + 1)..];
 
-        if(Prefixes.TryGetValue(prefix, out string? expansion))
+        if(Prefixes.TryGetValue(prefix, out Utf8String expansion))
         {
-            return Utf8String.FromString(expansion + local);
+            return Concat(expansion.Span, local.Span);
         }
 
         Diagnostics.Add(new Diagnostic(
@@ -246,19 +247,27 @@ internal sealed class OwlFunctionalSyntaxConverter
 
     private Literal MakeLiteral(OwlFunctionalToken token)
     {
-        if(token.LiteralLanguage is string language)
+        if(token.LiteralLanguage is Utf8String language)
         {
-            return new Literal(Utf8String.FromString(token.Text), new NamedNode(Vocabulary.Rdf.LangString), Utf8String.FromString(language));
+            return new Literal(token.Text, new NamedNode(Vocabulary.Rdf.LangString), InternTerm(language.Span));
         }
 
-        Utf8String datatype = token.LiteralDatatype switch
+        Utf8String datatype;
+        if(token.LiteralDatatype is not Utf8String datatypeText)
         {
-            null => Vocabulary.Xsd.String,
-            ['<', .. var full] => Utf8String.FromString(full),
-            _ => ResolveName(token.LiteralDatatype) is Utf8String resolved ? resolved : Vocabulary.Xsd.String
-        };
+            datatype = Vocabulary.Xsd.String;
+        }
+        else if(datatypeText.Length > 0 && datatypeText.Span[0] == (byte)'<')
+        {
+            //The lexer marks a <…> datatype IRI with a leading '<'; strip it.
+            datatype = InternTerm(datatypeText.Span[1..]);
+        }
+        else
+        {
+            datatype = ResolveName(datatypeText) is Utf8String resolved ? resolved : Vocabulary.Xsd.String;
+        }
 
-        return new Literal(Utf8String.FromString(token.Text), new NamedNode(datatype));
+        return new Literal(token.Text, new NamedNode(datatype));
     }
 
     //Constructs the value of a headed (or bare) group from its
@@ -271,192 +280,160 @@ internal sealed class OwlFunctionalSyntaxConverter
             children.Add(Converted[child]);
         }
 
-        switch(node.Head)
+        if(node.Head is not Utf8String headValue)
         {
-            case null:
-            {
-                return children;
-            }
-            case "Annotation":
-            {
-                //An annotation frame: optional nested annotations, then
-                //the annotation property and the value.
-                ImmutableArray<OwlAnnotation>.Builder? nested = null;
-                List<object?> parts = new(children.Count);
-                foreach(object? childValue in children)
-                {
-                    if(childValue is OwlAnnotation nestedAnnotation)
-                    {
-                        nested ??= ImmutableArray.CreateBuilder<OwlAnnotation>();
-                        nested.Add(nestedAnnotation);
-                    }
-                    else
-                    {
-                        parts.Add(childValue);
-                    }
-                }
+            return children;
+        }
 
-                return parts is [Utf8String annotationProperty, var annotationValue]
-                    ? new OwlAnnotation(new NamedNode(annotationProperty), AsAnnotationValue(annotationValue)) { Annotations = nested?.ToImmutable() ?? [] }
-                    : null;
-            }
-            case "Class" when children is [Utf8String classIri]:
-            {
-                return new DeclarationValue(OwlEntityKind.Class, classIri);
-            }
-            case "Datatype" when children is [Utf8String datatypeIri]:
-            {
-                return new DeclarationValue(OwlEntityKind.Datatype, datatypeIri);
-            }
-            case "ObjectProperty" when children is [Utf8String objectPropertyIri]:
-            {
-                return new DeclarationValue(OwlEntityKind.ObjectProperty, objectPropertyIri);
-            }
-            case "DataProperty" when children is [Utf8String dataPropertyIri]:
-            {
-                return new DeclarationValue(OwlEntityKind.DataProperty, dataPropertyIri);
-            }
-            case "AnnotationProperty" when children is [Utf8String annotationPropertyIri]:
-            {
-                return new DeclarationValue(OwlEntityKind.AnnotationProperty, annotationPropertyIri);
-            }
-            case "NamedIndividual" when children is [Utf8String individualIri]:
-            {
-                return new DeclarationValue(OwlEntityKind.NamedIndividual, individualIri);
-            }
-            case "ObjectInverseOf" when AsObjectProperty(children[0]) is OwlObjectPropertyReference inverted:
-            {
-                return new OwlInverseObjectProperty(inverted.Named);
-            }
-            case "ObjectIntersectionOf":
-            {
-                return new OwlObjectIntersectionOf(AsClassList(children));
-            }
-            case "ObjectUnionOf":
-            {
-                return new OwlObjectUnionOf(AsClassList(children));
-            }
-            case "ObjectComplementOf":
-            {
-                return new OwlObjectComplementOf(AsClass(children[0]));
-            }
-            case "ObjectOneOf":
-            {
-                return new OwlObjectOneOf(AsIndividualList(children));
-            }
-            case "ObjectSomeValuesFrom":
-            {
-                return new OwlObjectSomeValuesFrom(AsObjectProperty(children[0]), AsClass(children[1]));
-            }
-            case "ObjectAllValuesFrom":
-            {
-                return new OwlObjectAllValuesFrom(AsObjectProperty(children[0]), AsClass(children[1]));
-            }
-            case "ObjectHasValue":
-            {
-                return new OwlObjectHasValue(AsObjectProperty(children[0]), AsIndividual(children[1]));
-            }
-            case "ObjectHasSelf":
-            {
-                return new OwlObjectHasSelf(AsObjectProperty(children[0]));
-            }
-            case "ObjectMinCardinality" or "ObjectMaxCardinality" or "ObjectExactCardinality":
-            {
-                OwlCardinalityKind kind = node.Head switch
-                {
-                    "ObjectMinCardinality" => OwlCardinalityKind.Min,
-                    "ObjectMaxCardinality" => OwlCardinalityKind.Max,
-                    _ => OwlCardinalityKind.Exact
-                };
+        OwlFunctionalKeyword keyword = OwlFunctionalKeywords.Resolve(headValue);
 
-                return new OwlObjectCardinality(
-                    kind,
-                    children[0] is int bound ? bound : 0,
-                    AsObjectProperty(children[1]),
-                    children.Count > 2 ? AsClass(children[2]) : null);
-            }
-            case "DataSomeValuesFrom":
-            {
-                return new OwlDataSomeValuesFrom([AsDataProperty(children[0])], AsDataRange(children[1]));
-            }
-            case "DataAllValuesFrom":
-            {
-                return new OwlDataAllValuesFrom([AsDataProperty(children[0])], AsDataRange(children[1]));
-            }
-            case "DataHasValue" when children[1] is Literal dataValue:
-            {
-                return new OwlDataHasValue(AsDataProperty(children[0]), dataValue);
-            }
-            case "DataMinCardinality" or "DataMaxCardinality" or "DataExactCardinality":
-            {
-                OwlCardinalityKind kind = node.Head switch
-                {
-                    "DataMinCardinality" => OwlCardinalityKind.Min,
-                    "DataMaxCardinality" => OwlCardinalityKind.Max,
-                    _ => OwlCardinalityKind.Exact
-                };
+        return keyword switch
+        {
+            OwlFunctionalKeyword.Annotation => BuildAnnotation(children),
+            OwlFunctionalKeyword.Class when children is [Utf8String classIri] => new DeclarationValue(OwlEntityKind.Class, classIri),
+            OwlFunctionalKeyword.Datatype when children is [Utf8String datatypeIri] => new DeclarationValue(OwlEntityKind.Datatype, datatypeIri),
+            OwlFunctionalKeyword.ObjectProperty when children is [Utf8String objectPropertyIri] => new DeclarationValue(OwlEntityKind.ObjectProperty, objectPropertyIri),
+            OwlFunctionalKeyword.DataProperty when children is [Utf8String dataPropertyIri] => new DeclarationValue(OwlEntityKind.DataProperty, dataPropertyIri),
+            OwlFunctionalKeyword.AnnotationProperty when children is [Utf8String annotationPropertyIri] => new DeclarationValue(OwlEntityKind.AnnotationProperty, annotationPropertyIri),
+            OwlFunctionalKeyword.NamedIndividual when children is [Utf8String individualIri] => new DeclarationValue(OwlEntityKind.NamedIndividual, individualIri),
+            OwlFunctionalKeyword.ObjectInverseOf when AsObjectProperty(children[0]) is OwlObjectPropertyReference inverted => new OwlInverseObjectProperty(inverted.Named),
+            OwlFunctionalKeyword.ObjectIntersectionOf => new OwlObjectIntersectionOf(AsClassList(children)),
+            OwlFunctionalKeyword.ObjectUnionOf => new OwlObjectUnionOf(AsClassList(children)),
+            OwlFunctionalKeyword.ObjectComplementOf => new OwlObjectComplementOf(AsClass(children[0])),
+            OwlFunctionalKeyword.ObjectOneOf => new OwlObjectOneOf(AsIndividualList(children)),
+            OwlFunctionalKeyword.ObjectSomeValuesFrom => new OwlObjectSomeValuesFrom(AsObjectProperty(children[0]), AsClass(children[1])),
+            OwlFunctionalKeyword.ObjectAllValuesFrom => new OwlObjectAllValuesFrom(AsObjectProperty(children[0]), AsClass(children[1])),
+            OwlFunctionalKeyword.ObjectHasValue => new OwlObjectHasValue(AsObjectProperty(children[0]), AsIndividual(children[1])),
+            OwlFunctionalKeyword.ObjectHasSelf => new OwlObjectHasSelf(AsObjectProperty(children[0])),
+            OwlFunctionalKeyword.ObjectMinCardinality or OwlFunctionalKeyword.ObjectMaxCardinality or OwlFunctionalKeyword.ObjectExactCardinality => BuildObjectCardinality(keyword, children),
+            OwlFunctionalKeyword.DataSomeValuesFrom => new OwlDataSomeValuesFrom([AsDataProperty(children[0])], AsDataRange(children[1])),
+            OwlFunctionalKeyword.DataAllValuesFrom => new OwlDataAllValuesFrom([AsDataProperty(children[0])], AsDataRange(children[1])),
+            OwlFunctionalKeyword.DataHasValue when children[1] is Literal dataValue => new OwlDataHasValue(AsDataProperty(children[0]), dataValue),
+            OwlFunctionalKeyword.DataMinCardinality or OwlFunctionalKeyword.DataMaxCardinality or OwlFunctionalKeyword.DataExactCardinality => BuildDataCardinality(keyword, children),
+            OwlFunctionalKeyword.DataIntersectionOf => new OwlDataIntersectionOf(AsDataRangeList(children)),
+            OwlFunctionalKeyword.DataUnionOf => new OwlDataUnionOf(AsDataRangeList(children)),
+            OwlFunctionalKeyword.DataComplementOf => new OwlDataComplementOf(AsDataRange(children[0])),
+            OwlFunctionalKeyword.DataOneOf => BuildDataOneOf(children),
+            OwlFunctionalKeyword.DatatypeRestriction => BuildDatatypeRestriction(children),
+            OwlFunctionalKeyword.ObjectPropertyChain => BuildObjectPropertyChain(children),
 
-                return new OwlDataCardinality(
-                    kind,
-                    children[0] is int bound ? bound : 0,
-                    AsDataProperty(children[1]),
-                    children.Count > 2 ? AsDataRange(children[2]) : null);
-            }
-            case "DataIntersectionOf":
-            {
-                return new OwlDataIntersectionOf(AsDataRangeList(children));
-            }
-            case "DataUnionOf":
-            {
-                return new OwlDataUnionOf(AsDataRangeList(children));
-            }
-            case "DataComplementOf":
-            {
-                return new OwlDataComplementOf(AsDataRange(children[0]));
-            }
-            case "DataOneOf":
-            {
-                List<Literal> literals = [];
-                foreach(object? child in children)
-                {
-                    if(child is Literal literal)
-                    {
-                        literals.Add(literal);
-                    }
-                }
+            //Axiom heads construct in ConvertAxiom; leave the
+            //converted children accessible through the group node.
+            _ => children
+        };
+    }
 
-                return new OwlDataOneOf(literals);
-            }
-            case "DatatypeRestriction":
+    /// <summary>Builds an annotation frame: nested annotations, then the annotation property and value.</summary>
+    /// <param name="children">The frame's converted children.</param>
+    /// <returns>The <see cref="OwlAnnotation"/>, or <see langword="null"/> when the parts do not form one.</returns>
+    private OwlAnnotation? BuildAnnotation(List<object?> children)
+    {
+        ImmutableArray<OwlAnnotation>.Builder? nested = null;
+        List<object?> parts = new(children.Count);
+        foreach(object? childValue in children)
+        {
+            if(childValue is OwlAnnotation nestedAnnotation)
             {
-                List<OwlFacetRestriction> facets = [];
-                for(int i = 1; i + 1 < children.Count; i += 2)
-                {
-                    if(children[i] is Utf8String facet && children[i + 1] is Literal value)
-                    {
-                        facets.Add(new OwlFacetRestriction(new NamedNode(facet), value));
-                    }
-                }
-
-                return new OwlDatatypeRestriction(new NamedNode(AsIri(children[0])), facets);
+                nested ??= ImmutableArray.CreateBuilder<OwlAnnotation>();
+                nested.Add(nestedAnnotation);
             }
-            case "ObjectPropertyChain":
+            else
             {
-                List<OwlObjectPropertyExpression> links = [];
-                foreach(object? child in children)
-                {
-                    links.Add(AsObjectProperty(child));
-                }
-
-                return links;
-            }
-            default:
-            {
-                //Axiom heads construct in ConvertAxiom; leave the
-                //converted children accessible through the group node.
-                return children;
+                parts.Add(childValue);
             }
         }
+
+        return parts is [Utf8String annotationProperty, var annotationValue]
+            ? new OwlAnnotation(new NamedNode(annotationProperty), AsAnnotationValue(annotationValue)) { Annotations = nested?.ToImmutable() ?? [] }
+            : null;
+    }
+
+    /// <summary>Builds an object cardinality from the bound, property, and optional qualifying class.</summary>
+    /// <param name="keyword">The min/max/exact cardinality keyword.</param>
+    /// <param name="children">The expression's converted children.</param>
+    /// <returns>The constructed cardinality.</returns>
+    private OwlObjectCardinality BuildObjectCardinality(OwlFunctionalKeyword keyword, List<object?> children)
+    {
+        OwlCardinalityKind kind = keyword switch
+        {
+            OwlFunctionalKeyword.ObjectMinCardinality => OwlCardinalityKind.Min,
+            OwlFunctionalKeyword.ObjectMaxCardinality => OwlCardinalityKind.Max,
+            _ => OwlCardinalityKind.Exact
+        };
+
+        return new OwlObjectCardinality(
+            kind,
+            children[0] is int bound ? bound : 0,
+            AsObjectProperty(children[1]),
+            children.Count > 2 ? AsClass(children[2]) : null);
+    }
+
+    /// <summary>Builds a data cardinality from the bound, property, and optional qualifying data range.</summary>
+    /// <param name="keyword">The min/max/exact cardinality keyword.</param>
+    /// <param name="children">The expression's converted children.</param>
+    /// <returns>The constructed cardinality.</returns>
+    private OwlDataCardinality BuildDataCardinality(OwlFunctionalKeyword keyword, List<object?> children)
+    {
+        OwlCardinalityKind kind = keyword switch
+        {
+            OwlFunctionalKeyword.DataMinCardinality => OwlCardinalityKind.Min,
+            OwlFunctionalKeyword.DataMaxCardinality => OwlCardinalityKind.Max,
+            _ => OwlCardinalityKind.Exact
+        };
+
+        return new OwlDataCardinality(
+            kind,
+            children[0] is int bound ? bound : 0,
+            AsDataProperty(children[1]),
+            children.Count > 2 ? AsDataRange(children[2]) : null);
+    }
+
+    /// <summary>Collects the literal members of a <c>DataOneOf</c> enumeration.</summary>
+    /// <param name="children">The enumeration's converted children.</param>
+    /// <returns>The constructed data enumeration.</returns>
+    private static OwlDataOneOf BuildDataOneOf(List<object?> children)
+    {
+        List<Literal> literals = [];
+        foreach(object? child in children)
+        {
+            if(child is Literal literal)
+            {
+                literals.Add(literal);
+            }
+        }
+
+        return new OwlDataOneOf(literals);
+    }
+
+    /// <summary>Builds a datatype restriction from the base datatype IRI and the facet/value pairs.</summary>
+    /// <param name="children">The restriction's converted children.</param>
+    /// <returns>The constructed datatype restriction.</returns>
+    private OwlDatatypeRestriction BuildDatatypeRestriction(List<object?> children)
+    {
+        List<OwlFacetRestriction> facets = [];
+        for(int i = 1; i + 1 < children.Count; i += 2)
+        {
+            if(children[i] is Utf8String facet && children[i + 1] is Literal value)
+            {
+                facets.Add(new OwlFacetRestriction(new NamedNode(facet), value));
+            }
+        }
+
+        return new OwlDatatypeRestriction(new NamedNode(AsIri(children[0])), facets);
+    }
+
+    /// <summary>Collects an object-property chain's links.</summary>
+    /// <param name="children">The chain's converted children.</param>
+    /// <returns>The ordered property-expression links.</returns>
+    private List<OwlObjectPropertyExpression> BuildObjectPropertyChain(List<object?> children)
+    {
+        List<OwlObjectPropertyExpression> links = [];
+        foreach(object? child in children)
+        {
+            links.Add(AsObjectProperty(child));
+        }
+
+        return links;
     }
 
     //Constructs the axiom for a top-level constructor group whose
@@ -494,35 +471,40 @@ internal sealed class OwlFunctionalSyntaxConverter
 
         int firstAxiom = Axioms.Count;
 
-        switch(node.Head)
+        OwlFunctionalKeyword keyword = OwlFunctionalKeywords.Resolve(node.Head.GetValueOrDefault());
+
+        switch(keyword)
         {
-            case "Declaration" when children is [DeclarationValue declaration]:
+            case OwlFunctionalKeyword.Declaration when children is [DeclarationValue declaration]:
             {
                 AddDeclaration(declaration);
                 break;
             }
-            case "SubClassOf" when children.Count == 2:
+            case OwlFunctionalKeyword.SubClassOf when children.Count == 2:
             {
                 Axioms.Add(new OwlSubClassOfAxiom(AsClass(children[0]), AsClass(children[1])) { Origin = Origin });
                 break;
             }
-            case "EquivalentClasses":
+            case(OwlFunctionalKeyword.EquivalentClasses):
             {
-                ForEachPair(children, (first, second) =>
-                    Axioms.Add(new OwlEquivalentClassesAxiom(AsClass(first), AsClass(second)) { Origin = Origin }));
+                foreach((object? first, object? second) in Pairs(children))
+                {
+                    Axioms.Add(new OwlEquivalentClassesAxiom(AsClass(first), AsClass(second)) { Origin = Origin });
+                }
+
                 break;
             }
-            case "DisjointClasses":
+            case(OwlFunctionalKeyword.DisjointClasses):
             {
                 Axioms.Add(new OwlDisjointClassesAxiom(AsClassList(children)) { Origin = Origin });
                 break;
             }
-            case "DisjointUnion" when children.Count >= 2 && children[0] is Utf8String unionClass:
+            case OwlFunctionalKeyword.DisjointUnion when children.Count >= 2 && children[0] is Utf8String unionClass:
             {
                 Axioms.Add(new OwlDisjointUnionAxiom(new NamedNode(unionClass), AsClassList(children[1..])) { Origin = Origin });
                 break;
             }
-            case "SubObjectPropertyOf" when children.Count == 2:
+            case OwlFunctionalKeyword.SubObjectPropertyOf when children.Count == 2:
             {
                 if(children[0] is List<OwlObjectPropertyExpression> chain)
                 {
@@ -535,13 +517,16 @@ internal sealed class OwlFunctionalSyntaxConverter
 
                 break;
             }
-            case "EquivalentObjectProperties":
+            case(OwlFunctionalKeyword.EquivalentObjectProperties):
             {
-                ForEachPair(children, (first, second) =>
-                    Axioms.Add(new OwlEquivalentObjectPropertiesAxiom(AsObjectProperty(first), AsObjectProperty(second)) { Origin = Origin }));
+                foreach((object? first, object? second) in Pairs(children))
+                {
+                    Axioms.Add(new OwlEquivalentObjectPropertiesAxiom(AsObjectProperty(first), AsObjectProperty(second)) { Origin = Origin });
+                }
+
                 break;
             }
-            case "DisjointObjectProperties":
+            case(OwlFunctionalKeyword.DisjointObjectProperties):
             {
                 List<OwlObjectPropertyExpression> properties = [];
                 foreach(object? child in children)
@@ -552,50 +537,58 @@ internal sealed class OwlFunctionalSyntaxConverter
                 Axioms.Add(new OwlDisjointObjectPropertiesAxiom(properties) { Origin = Origin });
                 break;
             }
-            case "InverseObjectProperties" when children.Count == 2:
+            case OwlFunctionalKeyword.InverseObjectProperties when children.Count == 2:
             {
                 Axioms.Add(new OwlInverseObjectPropertiesAxiom(AsObjectProperty(children[0]), AsObjectProperty(children[1])) { Origin = Origin });
                 break;
             }
-            case "ObjectPropertyDomain" when children.Count == 2:
+            case OwlFunctionalKeyword.ObjectPropertyDomain when children.Count == 2:
             {
                 Axioms.Add(new OwlObjectPropertyDomainAxiom(AsObjectProperty(children[0]), AsClass(children[1])) { Origin = Origin });
                 break;
             }
-            case "ObjectPropertyRange" when children.Count == 2:
+            case OwlFunctionalKeyword.ObjectPropertyRange when children.Count == 2:
             {
                 Axioms.Add(new OwlObjectPropertyRangeAxiom(AsObjectProperty(children[0]), AsClass(children[1])) { Origin = Origin });
                 break;
             }
-            case "FunctionalObjectProperty" or "InverseFunctionalObjectProperty" or "TransitiveObjectProperty"
-                or "SymmetricObjectProperty" or "AsymmetricObjectProperty" or "ReflexiveObjectProperty" or "IrreflexiveObjectProperty":
+            case(OwlFunctionalKeyword.FunctionalObjectProperty):
+            case(OwlFunctionalKeyword.InverseFunctionalObjectProperty):
+            case(OwlFunctionalKeyword.TransitiveObjectProperty):
+            case(OwlFunctionalKeyword.SymmetricObjectProperty):
+            case(OwlFunctionalKeyword.AsymmetricObjectProperty):
+            case(OwlFunctionalKeyword.ReflexiveObjectProperty):
+            case(OwlFunctionalKeyword.IrreflexiveObjectProperty):
             {
-                OwlPropertyCharacteristic characteristic = node.Head switch
+                OwlPropertyCharacteristic characteristic = keyword switch
                 {
-                    "FunctionalObjectProperty" => OwlPropertyCharacteristic.Functional,
-                    "InverseFunctionalObjectProperty" => OwlPropertyCharacteristic.InverseFunctional,
-                    "TransitiveObjectProperty" => OwlPropertyCharacteristic.Transitive,
-                    "SymmetricObjectProperty" => OwlPropertyCharacteristic.Symmetric,
-                    "AsymmetricObjectProperty" => OwlPropertyCharacteristic.Asymmetric,
-                    "ReflexiveObjectProperty" => OwlPropertyCharacteristic.Reflexive,
+                    OwlFunctionalKeyword.FunctionalObjectProperty => OwlPropertyCharacteristic.Functional,
+                    OwlFunctionalKeyword.InverseFunctionalObjectProperty => OwlPropertyCharacteristic.InverseFunctional,
+                    OwlFunctionalKeyword.TransitiveObjectProperty => OwlPropertyCharacteristic.Transitive,
+                    OwlFunctionalKeyword.SymmetricObjectProperty => OwlPropertyCharacteristic.Symmetric,
+                    OwlFunctionalKeyword.AsymmetricObjectProperty => OwlPropertyCharacteristic.Asymmetric,
+                    OwlFunctionalKeyword.ReflexiveObjectProperty => OwlPropertyCharacteristic.Reflexive,
                     _ => OwlPropertyCharacteristic.Irreflexive
                 };
 
                 Axioms.Add(new OwlObjectPropertyCharacteristicAxiom(characteristic, AsObjectProperty(children[0])) { Origin = Origin });
                 break;
             }
-            case "SubDataPropertyOf" when children.Count == 2:
+            case OwlFunctionalKeyword.SubDataPropertyOf when children.Count == 2:
             {
                 Axioms.Add(new OwlSubDataPropertyOfAxiom(AsDataProperty(children[0]), AsDataProperty(children[1])) { Origin = Origin });
                 break;
             }
-            case "EquivalentDataProperties":
+            case(OwlFunctionalKeyword.EquivalentDataProperties):
             {
-                ForEachPair(children, (first, second) =>
-                    Axioms.Add(new OwlEquivalentDataPropertiesAxiom(AsDataProperty(first), AsDataProperty(second)) { Origin = Origin }));
+                foreach((object? first, object? second) in Pairs(children))
+                {
+                    Axioms.Add(new OwlEquivalentDataPropertiesAxiom(AsDataProperty(first), AsDataProperty(second)) { Origin = Origin });
+                }
+
                 break;
             }
-            case "DisjointDataProperties":
+            case(OwlFunctionalKeyword.DisjointDataProperties):
             {
                 List<NamedNode> properties = [];
                 foreach(object? child in children)
@@ -606,27 +599,27 @@ internal sealed class OwlFunctionalSyntaxConverter
                 Axioms.Add(new OwlDisjointDataPropertiesAxiom(properties) { Origin = Origin });
                 break;
             }
-            case "DataPropertyDomain" when children.Count == 2:
+            case OwlFunctionalKeyword.DataPropertyDomain when children.Count == 2:
             {
                 Axioms.Add(new OwlDataPropertyDomainAxiom(AsDataProperty(children[0]), AsClass(children[1])) { Origin = Origin });
                 break;
             }
-            case "DataPropertyRange" when children.Count == 2:
+            case OwlFunctionalKeyword.DataPropertyRange when children.Count == 2:
             {
                 Axioms.Add(new OwlDataPropertyRangeAxiom(AsDataProperty(children[0]), AsDataRange(children[1])) { Origin = Origin });
                 break;
             }
-            case "FunctionalDataProperty":
+            case(OwlFunctionalKeyword.FunctionalDataProperty):
             {
                 Axioms.Add(new OwlFunctionalDataPropertyAxiom(AsDataProperty(children[0])) { Origin = Origin });
                 break;
             }
-            case "DatatypeDefinition" when children.Count == 2:
+            case OwlFunctionalKeyword.DatatypeDefinition when children.Count == 2:
             {
                 Axioms.Add(new OwlDatatypeDefinitionAxiom(new NamedNode(AsIri(children[0])), AsDataRange(children[1])) { Origin = Origin });
                 break;
             }
-            case "HasKey" when children.Count >= 1:
+            case OwlFunctionalKeyword.HasKey when children.Count >= 1:
             {
                 //HasKey(CE (opes…) (dpes…)): the bare groups carry the
                 //key components. An IRI key with no declaration basis
@@ -656,58 +649,61 @@ internal sealed class OwlFunctionalSyntaxConverter
                 Axioms.Add(new OwlHasKeyAxiom(AsClass(children[0]), objectKeys, dataKeys) { Origin = Origin });
                 break;
             }
-            case "SameIndividual":
+            case(OwlFunctionalKeyword.SameIndividual):
             {
-                ForEachPair(children, (first, second) =>
-                    Axioms.Add(new OwlSameIndividualAxiom(AsIndividual(first), AsIndividual(second)) { Origin = Origin }));
+                foreach((object? first, object? second) in Pairs(children))
+                {
+                    Axioms.Add(new OwlSameIndividualAxiom(AsIndividual(first), AsIndividual(second)) { Origin = Origin });
+                }
+
                 break;
             }
-            case "DifferentIndividuals":
+            case(OwlFunctionalKeyword.DifferentIndividuals):
             {
                 Axioms.Add(new OwlDifferentIndividualsAxiom(AsIndividualList(children)) { Origin = Origin });
                 break;
             }
-            case "ClassAssertion" when children.Count == 2:
+            case OwlFunctionalKeyword.ClassAssertion when children.Count == 2:
             {
                 Axioms.Add(new OwlClassAssertionAxiom(AsClass(children[0]), AsIndividual(children[1])) { Origin = Origin });
                 break;
             }
-            case "ObjectPropertyAssertion" when children.Count == 3 && AsObjectProperty(children[0]) is OwlObjectPropertyReference assertedProperty:
+            case OwlFunctionalKeyword.ObjectPropertyAssertion when children.Count == 3 && AsObjectProperty(children[0]) is OwlObjectPropertyReference assertedProperty:
             {
                 Axioms.Add(new OwlObjectPropertyAssertionAxiom(AsIndividual(children[1]), assertedProperty.Named, AsIndividual(children[2])) { Origin = Origin });
                 break;
             }
-            case "NegativeObjectPropertyAssertion" when children.Count == 3:
+            case OwlFunctionalKeyword.NegativeObjectPropertyAssertion when children.Count == 3:
             {
                 Axioms.Add(new OwlNegativeObjectPropertyAssertionAxiom(AsIndividual(children[1]), AsObjectProperty(children[0]), AsIndividual(children[2])) { Origin = Origin });
                 break;
             }
-            case "DataPropertyAssertion" when children.Count == 3 && children[2] is Literal dataValue:
+            case OwlFunctionalKeyword.DataPropertyAssertion when children.Count == 3 && children[2] is Literal dataValue:
             {
                 Axioms.Add(new OwlDataPropertyAssertionAxiom(AsIndividual(children[1]), AsDataProperty(children[0]), dataValue) { Origin = Origin });
                 break;
             }
-            case "NegativeDataPropertyAssertion" when children.Count == 3 && children[2] is Literal negativeValue:
+            case OwlFunctionalKeyword.NegativeDataPropertyAssertion when children.Count == 3 && children[2] is Literal negativeValue:
             {
                 Axioms.Add(new OwlNegativeDataPropertyAssertionAxiom(AsIndividual(children[1]), AsDataProperty(children[0]), negativeValue) { Origin = Origin });
                 break;
             }
-            case "AnnotationAssertion" when children.Count == 3:
+            case OwlFunctionalKeyword.AnnotationAssertion when children.Count == 3:
             {
                 Axioms.Add(new OwlAnnotationAssertionAxiom(AsIndividual(children[1]), new NamedNode(AsIri(children[0])), AsAnnotationValue(children[2])) { Origin = Origin });
                 break;
             }
-            case "SubAnnotationPropertyOf" when children.Count == 2:
+            case OwlFunctionalKeyword.SubAnnotationPropertyOf when children.Count == 2:
             {
                 Axioms.Add(new OwlSubAnnotationPropertyOfAxiom(new NamedNode(AsIri(children[0])), new NamedNode(AsIri(children[1]))) { Origin = Origin });
                 break;
             }
-            case "AnnotationPropertyDomain" when children.Count == 2:
+            case OwlFunctionalKeyword.AnnotationPropertyDomain when children.Count == 2:
             {
                 Axioms.Add(new OwlAnnotationPropertyDomainAxiom(new NamedNode(AsIri(children[0])), new NamedNode(AsIri(children[1]))) { Origin = Origin });
                 break;
             }
-            case "AnnotationPropertyRange" when children.Count == 2:
+            case OwlFunctionalKeyword.AnnotationPropertyRange when children.Count == 2:
             {
                 Axioms.Add(new OwlAnnotationPropertyRangeAxiom(new NamedNode(AsIri(children[0])), new NamedNode(AsIri(children[1]))) { Origin = Origin });
                 break;
@@ -718,7 +714,7 @@ internal sealed class OwlFunctionalSyntaxConverter
                     WellKnownDiagnostics.Owl.UnsupportedConstruct,
                     DiagnosticSeverity.Error,
                     CurrentSpan,
-                    Utf8String.FromString($"Unrecognised axiom constructor '{node.Head}'.")));
+                    Utf8String.FromString($"Unrecognised axiom constructor '{node.Head.GetValueOrDefault()}'.")));
                 break;
             }
         }
@@ -753,15 +749,59 @@ internal sealed class OwlFunctionalSyntaxConverter
         }
     }
 
-    private static void ForEachPair(List<object?> values, Action<object?, object?> emit)
+    private static IEnumerable<(object? First, object? Second)> Pairs(List<object?> values)
     {
         for(int i = 0; i < values.Count; i++)
         {
             for(int j = i + 1; j < values.Count; j++)
             {
-                emit(values[i], values[j]);
+                yield return (values[i], values[j]);
             }
         }
+    }
+
+    /// <summary>Copies bytes into an eager-hash term value detached from the reader's buffer.</summary>
+    /// <param name="bytes">The UTF-8 bytes of the term.</param>
+    /// <returns>A <see cref="Utf8String"/> over a fresh copy, with its hash precomputed for dictionary use.</returns>
+    private static Utf8String InternTerm(ReadOnlySpan<byte> bytes)
+    {
+        return new Utf8String(bytes.ToArray());
+    }
+
+    /// <summary>Joins a prefix expansion and a local name into one eager-hash term value.</summary>
+    /// <param name="expansion">The namespace expansion bytes.</param>
+    /// <param name="local">The local-name bytes.</param>
+    /// <returns>A <see cref="Utf8String"/> over the concatenation.</returns>
+    private static Utf8String Concat(ReadOnlySpan<byte> expansion, ReadOnlySpan<byte> local)
+    {
+        byte[] joined = new byte[expansion.Length + local.Length];
+        expansion.CopyTo(joined);
+        local.CopyTo(joined.AsSpan(expansion.Length));
+
+        return new Utf8String(joined);
+    }
+
+    /// <summary>Drops any trailing <c>:</c> bytes from a prefix name, yielding an eager-hash lookup key.</summary>
+    /// <param name="name">The prefix token's text, including its trailing colon.</param>
+    /// <returns>The prefix without trailing colons, with its hash precomputed for dictionary use.</returns>
+    private static Utf8String TrimTrailingColons(Utf8String name)
+    {
+        ReadOnlyMemory<byte> memory = name.Memory;
+        int end = memory.Length;
+        while(end > 0 && memory.Span[end - 1] == (byte)':')
+        {
+            end--;
+        }
+
+        return new Utf8String(memory[..end]);
+    }
+
+    /// <summary>Parses a nonnegative integer cardinality bound from its UTF-8 digits.</summary>
+    /// <param name="text">The token's digit bytes.</param>
+    /// <returns>The parsed value, or zero if it does not fit.</returns>
+    private static int ParseNumber(ReadOnlySpan<byte> text)
+    {
+        return Utf8Parser.TryParse(text, out int value, out _) ? value : 0;
     }
 
     //Coercions: atoms resolve per the requesting context.

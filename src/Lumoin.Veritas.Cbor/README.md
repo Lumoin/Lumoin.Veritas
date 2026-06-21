@@ -30,10 +30,6 @@ and dCBOR profile wrappers live in sub-namespaces of this project.
   CIDs with the multibase-prefix wrapping.
 - `Dcbor/` — the dCBOR profile (draft-mcnally-deterministic-cbor),
   similar to DRISL but more permissive on key types and tags.
-- `Internal/SlabBufferWriter` — an `IBufferWriter<byte>` backed by
-  slab-sized rentals from `VeritasMemoryPool<byte>`. Use it when a
-  caller needs the encoded bytes as an `IMemoryOwner<byte>` at the end
-  of writing.
 
 ## When to use this
 

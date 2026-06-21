@@ -134,7 +134,7 @@ public class VeritasMemoryPool<T>: MemoryPool<T>
     /// Lazy singleton backing the <see cref="Shared"/> property.
     /// </summary>
     private static Lazy<VeritasMemoryPool<T>> SharedInstance { get; } =
-        new(() => new VeritasMemoryPool<T>());
+        new(static () => new VeritasMemoryPool<T>());
 
     /// <summary>
     /// Gets a shared singleton instance of the memory pool.
@@ -182,19 +182,19 @@ public class VeritasMemoryPool<T>: MemoryPool<T>
 
         meter.CreateObservableUpDownCounter(
             VeritasMetrics.MemoryPoolTotalSlabs,
-            () => totalSlabs,
+            ObserveTotalSlabs,
             "slabs",
             "Total number of memory slabs created across all buffer sizes.");
 
         meter.CreateObservableUpDownCounter(
             VeritasMetrics.MemoryPoolTotalMemoryAllocated,
-            () => totalMemoryAllocated,
+            ObserveTotalMemoryAllocated,
             "bytes",
             "Total memory allocated across all slabs including available segments.");
 
         meter.CreateObservableUpDownCounter(
             VeritasMetrics.MemoryPoolActiveRentals,
-            () => activeRentals,
+            ObserveActiveRentals,
             "segments",
             "Number of currently rented memory segments.");
 
@@ -218,6 +218,27 @@ public class VeritasMemoryPool<T>: MemoryPool<T>
             VeritasMetrics.MemoryPoolReturnOperationsTotal,
             "operations",
             "Total number of memory return operations.");
+    }
+
+    /// <summary>Observes the total number of slabs created across all buffer sizes.</summary>
+    /// <returns>The total slab count.</returns>
+    private int ObserveTotalSlabs()
+    {
+        return totalSlabs;
+    }
+
+    /// <summary>Observes the total memory allocated across all slabs.</summary>
+    /// <returns>The total allocated bytes.</returns>
+    private long ObserveTotalMemoryAllocated()
+    {
+        return totalMemoryAllocated;
+    }
+
+    /// <summary>Observes the number of currently rented memory segments.</summary>
+    /// <returns>The active rental count.</returns>
+    private int ObserveActiveRentals()
+    {
+        return activeRentals;
     }
 
     /// <summary>

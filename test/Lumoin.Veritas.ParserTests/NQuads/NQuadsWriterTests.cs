@@ -1,4 +1,5 @@
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.NQuads;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System.IO.Pipelines;
@@ -173,6 +174,58 @@ internal sealed class NQuadsWriterTests
         string output = await SerializeAsync([quad], TestContext.CancellationToken).ConfigureAwait(false);
 
         Assert.Contains("\\\\", output, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task DeeplyNestedTripleTermThrowsDepthLimitRatherThanOverflowing()
+    {
+        using Utf8StringPool pool = new();
+
+        //A nesting depth the old recursive writer would have overflowed the call stack on; the iterative
+        //writer walks it over an explicit stack and caps it with a catchable exception instead.
+        Quad quad = new(
+            new NamedNode(pool.Intern("http://example.org/s")),
+            new NamedNode(pool.Intern("http://example.org/p")),
+            NestTripleTerms(pool, 2000));
+
+        TripleTermDepthLimitException exception = await Assert.ThrowsExactlyAsync<TripleTermDepthLimitException>(
+            async () => await SerializeAsync([quad], TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreEqual(QuotedTripleLimits.MaxNestingDepth, exception.Limit);
+    }
+
+    [TestMethod]
+    public async Task TripleTermNestedAtTheLimitSerializes()
+    {
+        using Utf8StringPool pool = new();
+
+        //Nesting exactly at the limit is valid and serializes to completion: one quoted-triple open per level.
+        Quad quad = new(
+            new NamedNode(pool.Intern("http://example.org/s")),
+            new NamedNode(pool.Intern("http://example.org/p")),
+            NestTripleTerms(pool, QuotedTripleLimits.MaxNestingDepth));
+
+        string output = await SerializeAsync([quad], TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(QuotedTripleLimits.MaxNestingDepth, output.Split("<<( ").Length - 1);
+    }
+
+    /// <summary>Builds an RDF-star term nested <paramref name="depth"/> quoted triples deep through the subject.</summary>
+    /// <param name="pool">The pool that interns the term IRIs.</param>
+    /// <param name="depth">The number of quoted-triple nesting levels.</param>
+    /// <returns>The nested term, or a plain named node when <paramref name="depth"/> is zero.</returns>
+    private static RdfTerm NestTripleTerms(Utf8StringPool pool, int depth)
+    {
+        NamedNode predicate = new(pool.Intern("http://example.org/p"));
+        NamedNode leaf = new(pool.Intern("http://example.org/o"));
+
+        RdfTerm term = leaf;
+        for(int i = 0; i < depth; i++)
+        {
+            term = new TripleTerm(term, predicate, leaf);
+        }
+
+        return term;
     }
 
     private static async Task<string> SerializeAsync(IEnumerable<Quad> quads, CancellationToken cancellationToken)

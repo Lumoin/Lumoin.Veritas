@@ -39,7 +39,7 @@ public static class TraceHandlers
         where TEvent : struct, ITraceEvent
     {
         ArgumentNullException.ThrowIfNull(writer);
-        return (in TEvent evt) => writer.TryWrite(evt);
+        return new ChannelTraceHandler<TEvent>(writer).Handle;
     }
 
     /// <summary>
@@ -63,7 +63,7 @@ public static class TraceHandlers
         ArgumentNullException.ThrowIfNull(handlers);
         TraceHandler<TEvent>[] copy = new TraceHandler<TEvent>[handlers.Length];
         Array.Copy(handlers, copy, handlers.Length);
-        return (in TEvent evt) => InvokeAll(copy, in evt);
+        return new CompositeTraceHandler<TEvent>(copy).Handle;
     }
 
     private static void InvokeAll<TEvent>(TraceHandler<TEvent>[] handlers, in TEvent evt)
@@ -79,6 +79,48 @@ public static class TraceHandlers
             {
                 //Swallow per docs: one misbehaving handler must not block others.
             }
+        }
+    }
+
+    /// <summary>
+    /// Carries the channel writer behind a <see cref="ToChannel{TEvent}"/> handler as
+    /// explicit state, so the produced <see cref="TraceHandler{TEvent}"/> closes over no
+    /// enclosing local.
+    /// </summary>
+    /// <typeparam name="TEvent">The event type.</typeparam>
+    /// <param name="writer">The channel writer events are pushed to.</param>
+    private sealed class ChannelTraceHandler<TEvent>(ChannelWriter<TEvent> writer)
+        where TEvent : struct, ITraceEvent
+    {
+        /// <summary>The channel writer events are pushed to.</summary>
+        private ChannelWriter<TEvent> Writer { get; } = writer;
+
+        /// <summary>Writes <paramref name="evt"/> to the channel, honouring its backpressure policy.</summary>
+        /// <param name="evt">The event to write.</param>
+        public void Handle(in TEvent evt)
+        {
+            Writer.TryWrite(evt);
+        }
+    }
+
+    /// <summary>
+    /// Carries the snapshot of fan-out handlers behind a <see cref="Composite{TEvent}"/>
+    /// result as explicit state, so the produced <see cref="TraceHandler{TEvent}"/> closes
+    /// over no enclosing local.
+    /// </summary>
+    /// <typeparam name="TEvent">The event type.</typeparam>
+    /// <param name="handlers">The handlers to fan out to, in order.</param>
+    private sealed class CompositeTraceHandler<TEvent>(TraceHandler<TEvent>[] handlers)
+        where TEvent : struct, ITraceEvent
+    {
+        /// <summary>The handlers to fan out to, in order.</summary>
+        private TraceHandler<TEvent>[] Handlers { get; } = handlers;
+
+        /// <summary>Forwards <paramref name="evt"/> to every handler in order.</summary>
+        /// <param name="evt">The event to fan out.</param>
+        public void Handle(in TEvent evt)
+        {
+            InvokeAll(Handlers, in evt);
         }
     }
 }

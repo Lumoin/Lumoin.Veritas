@@ -84,13 +84,13 @@ public sealed class SkosConceptScheme
     /// Gets the top-level concepts of this scheme (those with no broader concept within the scheme).
     /// </summary>
     public IEnumerable<string> TopConcepts =>
-        topConceptIds.Select(id => ((NamedNode)dictionary.Resolve(id)).Iri.ToString());
+        topConceptIds.Select(ResolveIri);
 
     /// <summary>
     /// Gets all concept IRIs in this scheme.
     /// </summary>
     public IEnumerable<string> Concepts =>
-        conceptIds.Select(id => ((NamedNode)dictionary.Resolve(id)).Iri.ToString());
+        conceptIds.Select(ResolveIri);
 
     /// <summary>
     /// Returns the broader concepts of the given concept IRI.
@@ -107,7 +107,7 @@ public sealed class SkosConceptScheme
             return [];
         }
 
-        return broaderIds.Select(id => ((NamedNode)dictionary.Resolve(id)).Iri.ToString());
+        return broaderIds.Select(ResolveIri);
     }
 
     /// <summary>
@@ -125,7 +125,15 @@ public sealed class SkosConceptScheme
             return [];
         }
 
-        return narrowerIds.Select(id => ((NamedNode)dictionary.Resolve(id)).Iri.ToString());
+        return narrowerIds.Select(ResolveIri);
+    }
+
+    /// <summary>Resolves a concept identifier to its IRI string.</summary>
+    /// <param name="id">The term identifier to resolve.</param>
+    /// <returns>The resolved IRI string.</returns>
+    private string ResolveIri(TermId id)
+    {
+        return ((NamedNode)dictionary.Resolve(id)).Iri.ToString();
     }
 
     /// <summary>
@@ -448,10 +456,29 @@ public sealed class SkosConceptScheme
         }
 
         TermId capturedPredicateId = TermId.FromEncoded(predicateIdRaw);
-        return conceptLabels
-            .Where(entry => entry.PredicateId == capturedPredicateId)
-            .Select(entry => entry.Label)
-            .Where(lit => languageTag is null
-                || (lit.Language is { } lang && lang.ToString().Equals(languageTag, StringComparison.OrdinalIgnoreCase)));
+        return FilterLabels(conceptLabels, capturedPredicateId, languageTag);
+    }
+
+    /// <summary>Yields the labels whose predicate matches <paramref name="predicateId"/> and whose language matches the optional <paramref name="languageTag"/>.</summary>
+    /// <param name="conceptLabels">The concept's predicate-tagged labels.</param>
+    /// <param name="predicateId">The label predicate to match.</param>
+    /// <param name="languageTag">The language tag to match, or <see langword="null"/> for any language.</param>
+    /// <returns>The matching labels, in stored order.</returns>
+    private static IEnumerable<Literal> FilterLabels(IReadOnlyList<(TermId PredicateId, Literal Label)> conceptLabels, TermId predicateId, string? languageTag)
+    {
+        foreach((TermId PredicateId, Literal Label) entry in conceptLabels)
+        {
+            if(entry.PredicateId != predicateId)
+            {
+                continue;
+            }
+
+            Literal label = entry.Label;
+            if(languageTag is null
+                || (label.Language is { } lang && lang.ToString().Equals(languageTag, StringComparison.OrdinalIgnoreCase)))
+            {
+                yield return label;
+            }
+        }
     }
 }

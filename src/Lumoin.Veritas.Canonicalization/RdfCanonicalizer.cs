@@ -732,28 +732,6 @@ public static class RdfCanonicalizer
         HashDelegate hash,
         Dictionary<string, List<string>> hashToRelated)
     {
-        void AddRelated(BlankNode blank, string position)
-        {
-            string relatedId = blank.Label.ToString();
-            if(relatedId == referenceBlankId)
-            {
-                return;
-            }
-
-            string relatedHash = GetRelatedHash(relatedId, quad, position, hashMap, canonicalMap, issuer, hash);
-
-            if(!hashToRelated.TryGetValue(relatedHash, out List<string>? list))
-            {
-                list = [];
-                hashToRelated[relatedHash] = list;
-            }
-
-            if(!list.Contains(relatedId))
-            {
-                list.Add(relatedId);
-            }
-        }
-
         //The first-degree hashing and blank-node discovery recurse into triple terms; this
         //n-degree related-node extraction inspects only the top-level positions. That suffices
         //for every current test because blank nodes nested in triple terms there are uniquely
@@ -766,17 +744,61 @@ public static class RdfCanonicalizer
         //published conformance corpus pins the basic-encoded canonical output.
         if(quad.Subject is BlankNode subjectBlank)
         {
-            AddRelated(subjectBlank, "s");
+            AddRelatedBlankNode(subjectBlank, "s", referenceBlankId, quad, hashMap, canonicalMap, issuer, hash, hashToRelated);
         }
 
         if(quad.Object is BlankNode objectBlank)
         {
-            AddRelated(objectBlank, "o");
+            AddRelatedBlankNode(objectBlank, "o", referenceBlankId, quad, hashMap, canonicalMap, issuer, hash, hashToRelated);
         }
 
         if(quad.Graph is BlankNode graphBlank)
         {
-            AddRelated(graphBlank, "g");
+            AddRelatedBlankNode(graphBlank, "g", referenceBlankId, quad, hashMap, canonicalMap, issuer, hash, hashToRelated);
+        }
+    }
+
+    /// <summary>
+    /// Adds one related blank node (at quad position <paramref name="position"/>) to the related-hash map,
+    /// threading the collection context as explicit parameters so the n-degree extraction needs no closure.
+    /// </summary>
+    /// <param name="blank">The blank node at the inspected position.</param>
+    /// <param name="position">The quad position (<c>s</c>, <c>o</c>, or <c>g</c>).</param>
+    /// <param name="referenceBlankId">The blank node whose related nodes are being collected.</param>
+    /// <param name="quad">The quad being inspected.</param>
+    /// <param name="hashMap">Every blank node's first-degree hash.</param>
+    /// <param name="canonicalMap">The blank nodes assigned a canonical identifier so far.</param>
+    /// <param name="issuer">The working issuer.</param>
+    /// <param name="hash">The hash function.</param>
+    /// <param name="hashToRelated">The related-hash to related-node-id map being built.</param>
+    private static void AddRelatedBlankNode(
+        BlankNode blank,
+        string position,
+        string referenceBlankId,
+        Quad quad,
+        Dictionary<string, string> hashMap,
+        Dictionary<string, string> canonicalMap,
+        IdentifierIssuer issuer,
+        HashDelegate hash,
+        Dictionary<string, List<string>> hashToRelated)
+    {
+        string relatedId = blank.Label.ToString();
+        if(relatedId == referenceBlankId)
+        {
+            return;
+        }
+
+        string relatedHash = GetRelatedHash(relatedId, quad, position, hashMap, canonicalMap, issuer, hash);
+
+        if(!hashToRelated.TryGetValue(relatedHash, out List<string>? list))
+        {
+            list = [];
+            hashToRelated[relatedHash] = list;
+        }
+
+        if(!list.Contains(relatedId))
+        {
+            list.Add(relatedId);
         }
     }
 

@@ -17,6 +17,7 @@ using Lumoin.Veritas.Core.Hypertrie.Execution;
 using Lumoin.Veritas.Core.Hypertrie.Planning;
 using Lumoin.Veritas.Core.Hypertrie.Query;
 using Lumoin.Veritas.Core.Hypertrie.Storage;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Rdf;
 using Lumoin.Veritas.Sparql.Algebra;
@@ -968,18 +969,18 @@ public sealed class SparqlQueryEngine
             return;
         }
 
-        int Rows(AlgebraOperator child) => results[new ResultKey(child, graph)].Count;
+        static int Rows(AlgebraOperator child, Dictionary<ResultKey, SolutionTable> results, TermId graph) => results[new ResultKey(child, graph)].Count;
 
         switch(op)
         {
-            case Project project: trace.Emit(SparqlExecutionOperator.Project, result, Rows(project.Input), -1); break;
-            case Distinct distinct: trace.Emit(SparqlExecutionOperator.Distinct, result, Rows(distinct.Input), -1); break;
-            case Slice slice: trace.Emit(SparqlExecutionOperator.Slice, result, Rows(slice.Input), -1); break;
-            case Join join: trace.Emit(SparqlExecutionOperator.Join, result, Rows(join.Left), Rows(join.Right)); break;
-            case Union union: trace.Emit(SparqlExecutionOperator.Union, result, Rows(union.Left), Rows(union.Right)); break;
-            case Minus minus: trace.Emit(SparqlExecutionOperator.Minus, result, Rows(minus.Left), Rows(minus.Right)); break;
-            case OrderBy orderBy: trace.Emit(SparqlExecutionOperator.OrderBy, result, Rows(orderBy.Input), -1); break;
-            case AggregateJoin aggregateJoin: trace.Emit(SparqlExecutionOperator.Aggregate, result, Rows(aggregateJoin.Input), -1); break;
+            case Project project: trace.Emit(SparqlExecutionOperator.Project, result, Rows(project.Input, results, graph), -1); break;
+            case Distinct distinct: trace.Emit(SparqlExecutionOperator.Distinct, result, Rows(distinct.Input, results, graph), -1); break;
+            case Slice slice: trace.Emit(SparqlExecutionOperator.Slice, result, Rows(slice.Input, results, graph), -1); break;
+            case Join join: trace.Emit(SparqlExecutionOperator.Join, result, Rows(join.Left, results, graph), Rows(join.Right, results, graph)); break;
+            case Union union: trace.Emit(SparqlExecutionOperator.Union, result, Rows(union.Left, results, graph), Rows(union.Right, results, graph)); break;
+            case Minus minus: trace.Emit(SparqlExecutionOperator.Minus, result, Rows(minus.Left, results, graph), Rows(minus.Right, results, graph)); break;
+            case OrderBy orderBy: trace.Emit(SparqlExecutionOperator.OrderBy, result, Rows(orderBy.Input, results, graph), -1); break;
+            case AggregateJoin aggregateJoin: trace.Emit(SparqlExecutionOperator.Aggregate, result, Rows(aggregateJoin.Input, results, graph), -1); break;
             default: break;
         }
     }
@@ -1652,10 +1653,58 @@ public sealed class SparqlQueryEngine
             return ops;
         }
 
-        return new GraphMatchOps(
-            (subject, predicate, @object, cancellationToken) => FilterByAccessAsync(ops.MatchTriples(subject, predicate, @object, cancellationToken), cancellationToken),
-            (subjects, predicate, @object, cancellationToken) => FilterByAccessAsync(ops.MatchTriplesBySubjects(subjects, predicate, @object, cancellationToken), cancellationToken),
-            (subject, predicate, objects, cancellationToken) => FilterByAccessAsync(ops.MatchTriplesByObjects(subject, predicate, objects, cancellationToken), cancellationToken));
+        AccessGuardedMatchOps guarded = new(this, ops);
+
+        return new GraphMatchOps(guarded.MatchTriples, guarded.MatchTriplesBySubjects, guarded.MatchTriplesByObjects);
+    }
+
+    /// <summary>
+    /// Access-filters a store's three match operations, carrying the engine and the unguarded operations as
+    /// explicit state so the wrapped <see cref="GraphMatchOps"/> delegates are bound method groups rather than
+    /// lambdas closing over the enclosing engine and operations.
+    /// </summary>
+    /// <param name="engine">The engine whose access policy filters each matched triple.</param>
+    /// <param name="inner">The store's unguarded match operations.</param>
+    private sealed class AccessGuardedMatchOps(SparqlQueryEngine engine, GraphMatchOps inner)
+    {
+        /// <summary>The engine whose access policy filters each matched triple.</summary>
+        private SparqlQueryEngine Engine { get; } = engine;
+
+        /// <summary>The store's unguarded match operations.</summary>
+        private GraphMatchOps Inner { get; } = inner;
+
+        /// <summary>Matches triples through the inner operations, keeping only those the access policy allows.</summary>
+        /// <param name="subject">The subject to match, or <see cref="TermId.None"/> for any subject.</param>
+        /// <param name="predicate">The predicate to match, or <see cref="TermId.None"/> for any predicate.</param>
+        /// <param name="object">The object to match, or <see cref="TermId.None"/> for any object.</param>
+        /// <param name="cancellationToken">A token to cancel the enumeration.</param>
+        /// <returns>The allowed matching triples.</returns>
+        public IAsyncEnumerable<EncodedTriple> MatchTriples(TermId subject, TermId predicate, TermId @object, CancellationToken cancellationToken)
+        {
+            return Engine.FilterByAccessAsync(Inner.MatchTriples(subject, predicate, @object, cancellationToken), cancellationToken);
+        }
+
+        /// <summary>Matches triples for a subject set under a bound predicate, keeping only those the access policy allows.</summary>
+        /// <param name="subjects">The encoded subject identifiers to look up under <paramref name="predicate"/>.</param>
+        /// <param name="predicate">The bound predicate to match.</param>
+        /// <param name="object">The object to match, or <see cref="TermId.None"/> for any object.</param>
+        /// <param name="cancellationToken">A token to cancel the enumeration.</param>
+        /// <returns>The allowed matching triples.</returns>
+        public IAsyncEnumerable<EncodedTriple> MatchTriplesBySubjects(ReadOnlyMemory<TermId> subjects, TermId predicate, TermId @object, CancellationToken cancellationToken)
+        {
+            return Engine.FilterByAccessAsync(Inner.MatchTriplesBySubjects(subjects, predicate, @object, cancellationToken), cancellationToken);
+        }
+
+        /// <summary>Matches triples for an object set under a bound predicate, keeping only those the access policy allows.</summary>
+        /// <param name="subject">The subject to match, or <see cref="TermId.None"/> for any subject.</param>
+        /// <param name="predicate">The bound predicate to match.</param>
+        /// <param name="objects">The encoded object identifiers to look up under <paramref name="predicate"/>.</param>
+        /// <param name="cancellationToken">A token to cancel the enumeration.</param>
+        /// <returns>The allowed matching triples.</returns>
+        public IAsyncEnumerable<EncodedTriple> MatchTriplesByObjects(TermId subject, TermId predicate, ReadOnlyMemory<TermId> objects, CancellationToken cancellationToken)
+        {
+            return Engine.FilterByAccessAsync(Inner.MatchTriplesByObjects(subject, predicate, objects, cancellationToken), cancellationToken);
+        }
     }
 
     /// <summary>Yields only the matched triples the access-control policy allows; a <c>Deny</c> or <c>NotFound</c> drops the triple, mirroring the BGP gate.</summary>
@@ -1788,27 +1837,32 @@ public sealed class SparqlQueryEngine
         //Post-order build: a position is either a constant (its RdfTerm taken directly), or a nested quoted triple
         //term (built first, then used as this term's subject/object). A predicate must resolve to a NamedNode.
         Dictionary<AstTripleTerm, Core.TripleTerm> built = new(ReferenceEqualityComparer.Instance);
-        Stack<(AstTripleTerm Term, bool Build)> work = new();
-        work.Push((tripleTerm, Build: false));
+        Stack<(AstTripleTerm Term, bool Build, int Depth)> work = new();
+        work.Push((tripleTerm, Build: false, Depth: 1));
 
         while(work.Count > 0)
         {
-            (AstTripleTerm term, bool build) = work.Pop();
+            (AstTripleTerm term, bool build, int depth) = work.Pop();
             AstTriplePattern inner = term.Inner;
 
             if(!build)
             {
-                work.Push((term, Build: true));
+                if(depth > QuotedTripleLimits.MaxNestingDepth)
+                {
+                    throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
+                }
+
+                work.Push((term, Build: true, depth));
 
                 //Only a nested quoted triple term needs to be built before this one; constants are read in place.
                 if(inner.Subject is AstTripleTerm nestedSubject)
                 {
-                    work.Push((nestedSubject, Build: false));
+                    work.Push((nestedSubject, Build: false, depth + 1));
                 }
 
                 if(inner.Object is AstTripleTerm nestedObject)
                 {
-                    work.Push((nestedObject, Build: false));
+                    work.Push((nestedObject, Build: false, depth + 1));
                 }
 
                 continue;
@@ -2005,6 +2059,7 @@ public sealed class SparqlQueryEngine
     /// <param name="rootActual">The actual term to unify against.</param>
     /// <param name="bindings">The bindings, extended in place when a variable component binds.</param>
     /// <returns><see langword="true"/> when the pattern unifies with the term.</returns>
+    /// <remarks>The descent is bounded by the <see cref="TripleTermComponent"/> pattern's depth (it advances only where the pattern is a nested component), and the pattern is built from a parser-produced AST whose quoted-triple nesting is capped at <see cref="QuotedTripleLimits.MaxNestingDepth"/>; an over-deep actual term mismatches against the bottomed-out pattern rather than driving the stack, so no independent depth cap is required here.</remarks>
     private bool TryUnifyTripleTermComponent(TripleTermComponent root, RdfTerm rootActual, List<VariableBinding> bindings)
     {
         Stack<(TripleTermComponent Component, RdfTerm Actual)> work = new();
@@ -2267,20 +2322,7 @@ public sealed class SparqlQueryEngine
             order[i] = i;
         }
 
-        Array.Sort(order, (left, right) =>
-        {
-            for(int condition = 0; condition < conditionCount; condition++)
-            {
-                int comparison = SparqlExpressionEvaluator.CompareForOrdering(keys[condition][left], keys[condition][right]);
-                if(comparison != 0)
-                {
-                    return descending[condition] ? -comparison : comparison;
-                }
-            }
-
-            //A stable tiebreak on the original index keeps ordering deterministic where every key is equal.
-            return left.CompareTo(right);
-        });
+        Array.Sort(order, new ColumnarOrderComparer(conditionCount, keys, descending));
 
         int columnCount = schema.Count;
         uint[][] orderedColumns = new uint[columnCount][];
@@ -2315,13 +2357,7 @@ public sealed class SparqlQueryEngine
             order[i] = i;
         }
 
-        Array.Sort(order, (left, right) =>
-        {
-            int comparison = CompareByConditions(source[left], source[right], orderBy.Conditions, context);
-
-            //A stable tiebreak on the original index keeps ordering deterministic where the keys are equal.
-            return comparison != 0 ? comparison : left.CompareTo(right);
-        });
+        Array.Sort(order, new SolutionOrderComparer(source, orderBy.Conditions, context));
 
         List<SparqlSolution> ordered = new(source.Count);
         foreach(int index in order)
@@ -2330,6 +2366,75 @@ public sealed class SparqlQueryEngine
         }
 
         return ordered;
+    }
+
+    /// <summary>
+    /// Orders columnar row indices by the decoded key columns in priority order, carrying the key columns and
+    /// directions as explicit state so the sort comparison closes over no enclosing local.
+    /// </summary>
+    /// <param name="conditionCount">The number of order conditions.</param>
+    /// <param name="keys">The decoded key column per condition, indexed by row.</param>
+    /// <param name="descending">Whether each condition sorts descending.</param>
+    private sealed class ColumnarOrderComparer(int conditionCount, RdfTerm?[][] keys, bool[] descending) : IComparer<int>
+    {
+        /// <summary>The number of order conditions.</summary>
+        private int ConditionCount { get; } = conditionCount;
+
+        /// <summary>The decoded key column per condition, indexed by row.</summary>
+        private RdfTerm?[][] Keys { get; } = keys;
+
+        /// <summary>Whether each condition sorts descending.</summary>
+        private bool[] Descending { get; } = descending;
+
+        /// <summary>Compares two row indices by the key columns in priority order, with a stable index tiebreak.</summary>
+        /// <param name="left">The first row index.</param>
+        /// <param name="right">The second row index.</param>
+        /// <returns>The ordering of the two rows.</returns>
+        public int Compare(int left, int right)
+        {
+            for(int condition = 0; condition < ConditionCount; condition++)
+            {
+                int comparison = SparqlExpressionEvaluator.CompareForOrdering(Keys[condition][left], Keys[condition][right]);
+                if(comparison != 0)
+                {
+                    return Descending[condition] ? -comparison : comparison;
+                }
+            }
+
+            //A stable tiebreak on the original index keeps ordering deterministic where every key is equal.
+            return left.CompareTo(right);
+        }
+    }
+
+    /// <summary>
+    /// Orders solution row indices by the order conditions, carrying the solutions, conditions, and expression
+    /// context as explicit state so the sort comparison closes over no enclosing local.
+    /// </summary>
+    /// <param name="source">The solutions being ordered, indexed by row.</param>
+    /// <param name="conditions">The order conditions, in priority order.</param>
+    /// <param name="context">The seams the order expressions' non-pure functions consume.</param>
+    private sealed class SolutionOrderComparer(List<SparqlSolution> source, IReadOnlyList<OrderCondition> conditions, SparqlExpressionContext context) : IComparer<int>
+    {
+        /// <summary>The solutions being ordered, indexed by row.</summary>
+        private List<SparqlSolution> Source { get; } = source;
+
+        /// <summary>The order conditions, in priority order.</summary>
+        private IReadOnlyList<OrderCondition> Conditions { get; } = conditions;
+
+        /// <summary>The seams the order expressions' non-pure functions consume.</summary>
+        private SparqlExpressionContext Context { get; } = context;
+
+        /// <summary>Compares two row indices by the order conditions, with a stable index tiebreak.</summary>
+        /// <param name="left">The first row index.</param>
+        /// <param name="right">The second row index.</param>
+        /// <returns>The ordering of the two rows.</returns>
+        public int Compare(int left, int right)
+        {
+            int comparison = CompareByConditions(Source[left], Source[right], Conditions, Context);
+
+            //A stable tiebreak on the original index keeps ordering deterministic where the keys are equal.
+            return comparison != 0 ? comparison : left.CompareTo(right);
+        }
     }
 
     /// <summary>Compares two solutions by the order conditions in priority order, applying each condition's direction.</summary>

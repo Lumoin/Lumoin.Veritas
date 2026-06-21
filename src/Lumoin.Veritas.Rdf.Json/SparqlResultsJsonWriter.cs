@@ -1,8 +1,10 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
-using System.IO;
 using System.Text.Json;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Memory;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Sparql.Execution;
 using Lumoin.Veritas.Sparql.Results;
 using TripleTerm = Lumoin.Veritas.Core.TripleTerm;
@@ -25,29 +27,33 @@ public static class SparqlResultsJsonWriter
     /// <summary>Serializes a result set to its <c>.srj</c> document as an owned UTF-8 string.</summary>
     /// <param name="results">The result set to serialize.</param>
     /// <param name="indented">Whether to pretty-print the JSON.</param>
+    /// <param name="pool">The buffer pool to rent the serialization scratch from; <see langword="null"/> uses the shared pool.</param>
     /// <returns>The <c>.srj</c> document as a <see cref="Utf8String"/>.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="results"/> is <see langword="null"/>.</exception>
-    public static Utf8String WriteToUtf8String(SparqlResultSet results, bool indented = true)
+    public static Utf8String WriteToUtf8String(SparqlResultSet results, bool indented = true, VeritasMemoryPool<byte>? pool = null)
     {
         ArgumentNullException.ThrowIfNull(results);
 
-        using MemoryStream stream = new();
-        Write(results, stream, indented);
+        using SlabBufferWriter buffer = new(pool ?? VeritasMemoryPool<byte>.Shared);
+        Write(results, buffer, indented);
 
-        return new Utf8String(stream.ToArray());
+        int length = buffer.BytesWritten;
+        using IMemoryOwner<byte> owned = buffer.Detach();
+
+        return new Utf8String(owned.Memory.Span[..length].ToArray());
     }
 
-    /// <summary>Writes a result set as SPARQL Results JSON to a stream.</summary>
+    /// <summary>Writes a result set as SPARQL Results JSON into a byte-buffer writer.</summary>
     /// <param name="results">The result set to serialize.</param>
-    /// <param name="stream">The destination stream.</param>
+    /// <param name="bufferWriter">The destination buffer writer; a <see cref="System.IO.Pipelines.PipeWriter"/> or any pooled sink.</param>
     /// <param name="indented">Whether to pretty-print the JSON.</param>
     /// <exception cref="ArgumentNullException">A required argument is <see langword="null"/>.</exception>
-    public static void Write(SparqlResultSet results, Stream stream, bool indented = true)
+    public static void Write(SparqlResultSet results, IBufferWriter<byte> bufferWriter, bool indented = true)
     {
         ArgumentNullException.ThrowIfNull(results);
-        ArgumentNullException.ThrowIfNull(stream);
+        ArgumentNullException.ThrowIfNull(bufferWriter);
 
-        using Utf8JsonWriter writer = new(stream, new JsonWriterOptions { Indented = indented });
+        using Utf8JsonWriter writer = new(bufferWriter, new JsonWriterOptions { Indented = indented });
         writer.WriteStartObject();
 
         writer.WritePropertyName(SparqlResultsJsonNames.Head);
@@ -107,20 +113,29 @@ public static class SparqlResultsJsonWriter
     /// <summary>
     /// Writes a binding value object, descending into triple terms over an explicit op stack (no recursion). The
     /// forward-only writer needs ordered calls, so the stack carries explicit end-object and property-name ops
-    /// around each nested component.
+    /// around each nested component. Quoted-triple nesting beyond
+    /// <see cref="QuotedTripleLimits.MaxNestingDepth"/> raises <see cref="TripleTermDepthLimitException"/>.
     /// </summary>
     /// <param name="writer">The JSON writer.</param>
     /// <param name="root">The term to write.</param>
+    /// <exception cref="TripleTermDepthLimitException">A quoted triple is nested beyond <see cref="QuotedTripleLimits.MaxNestingDepth"/>.</exception>
     private static void WriteTerm(Utf8JsonWriter writer, RdfTerm root)
     {
         Stack<JsonOp> work = new();
         work.Push(new JsonOp(JsonOpKind.Term, root, null));
+        int depth = 0;
 
         while(work.Count > 0)
         {
             JsonOp op = work.Pop();
             switch(op.Kind)
             {
+                case JsonOpKind.CloseTriple:
+                {
+                    writer.WriteEndObject();
+                    depth--;
+                    break;
+                }
                 case JsonOpKind.EndObject:
                 {
                     writer.WriteEndObject();
@@ -135,12 +150,21 @@ public static class SparqlResultsJsonWriter
                 {
                     if(op.Term is TripleTerm triple)
                     {
+                        depth++;
+                        if(depth > QuotedTripleLimits.MaxNestingDepth)
+                        {
+                            throw new TripleTermDepthLimitException(depth, QuotedTripleLimits.MaxNestingDepth);
+                        }
+
                         writer.WriteStartObject();
                         writer.WriteString(SparqlResultsJsonNames.TypeUtf8, SparqlResultsJsonNames.TripleUtf8);
                         writer.WritePropertyName(SparqlResultsJsonNames.ValueUtf8);
                         writer.WriteStartObject();
-                        work.Push(new JsonOp(JsonOpKind.EndObject, null, null));
-                        work.Push(new JsonOp(JsonOpKind.EndObject, null, null));
+
+                        //CloseTriple pops last (closes the outer term object) and unwinds the depth; the plain
+                        //EndObject pops just after the components and closes the inner value object.
+                        work.Push(JsonOp.CloseTriple);
+                        work.Push(JsonOp.EndObject);
                         PushComponent(work, SparqlResultsJsonNames.Object, triple.Object);
                         PushComponent(work, SparqlResultsJsonNames.Predicate, triple.Predicate);
                         PushComponent(work, SparqlResultsJsonNames.Subject, triple.Subject);
@@ -226,12 +250,22 @@ public static class SparqlResultsJsonWriter
         PropertyName,
 
         /// <summary>Close the current object.</summary>
-        EndObject
+        EndObject,
+
+        /// <summary>Close a quoted triple's outer value object and unwind one nesting level.</summary>
+        CloseTriple
     }
 
     /// <summary>One operation on the explicit term-writing stack.</summary>
     /// <param name="Kind">Whether to write a term, a property name, or close an object.</param>
     /// <param name="Term">The term to write (for <see cref="JsonOpKind.Term"/>).</param>
     /// <param name="Property">The property name to write (for <see cref="JsonOpKind.PropertyName"/>).</param>
-    private readonly record struct JsonOp(JsonOpKind Kind, RdfTerm? Term, string? Property);
+    private readonly record struct JsonOp(JsonOpKind Kind, RdfTerm? Term, string? Property)
+    {
+        /// <summary>The payload-less op that closes the current object.</summary>
+        public static JsonOp EndObject { get; } = new(JsonOpKind.EndObject, null, null);
+
+        /// <summary>The payload-less op that closes a quoted triple's outer value object and unwinds one nesting level.</summary>
+        public static JsonOp CloseTriple { get; } = new(JsonOpKind.CloseTriple, null, null);
+    }
 }

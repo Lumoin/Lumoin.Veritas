@@ -35,16 +35,17 @@ internal sealed class OwlFunctionalSyntaxIncrementalTests
         Assert.IsFalse(whole.Diagnostics.HasErrors);
         string rendering = OwlFunctionalSyntaxWriter.Write(whole);
 
-        for(int cut = 0; cut <= CleanDocument.Length; cut++)
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(CleanDocument);
+        for(int cut = 0; cut <= bytes.Length; cut++)
         {
             OwlFunctionalSyntaxIncrementalReader reader = new();
-            reader.Feed(CleanDocument.AsSpan(0, cut));
+            reader.Feed(bytes.AsSpan(0, cut));
 
             //An unfinished tail must never surface as a diagnostic; the
             //status carries the incompleteness instead.
             Assert.IsFalse(reader.Diagnostics.HasErrors, $"cut {cut}: a clean prefix reported an error");
 
-            reader.Feed(CleanDocument.AsSpan(cut));
+            reader.Feed(bytes.AsSpan(cut));
             OwlOntologyDocument resumed = reader.Complete();
 
             Assert.IsFalse(resumed.Diagnostics.HasErrors, $"cut {cut}: the resumed parse reported an error");
@@ -56,29 +57,32 @@ internal sealed class OwlFunctionalSyntaxIncrementalTests
     [TestMethod]
     public void StatusIsNeedMoreInsideTheOntologyAndCompleteAtTheBoundary()
     {
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(CleanDocument);
+
+        //CleanDocument is ASCII, so character indices coincide with byte offsets.
         int ontologyOpen = CleanDocument.IndexOf("Ontology(", System.StringComparison.Ordinal) + "Ontology(".Length;
         int lastClose = CleanDocument.LastIndexOf(')') + 1;
 
         for(int cut = ontologyOpen; cut < lastClose; cut++)
         {
             OwlFunctionalSyntaxIncrementalReader reader = new();
-            Assert.AreEqual(OwlFunctionalParseStatus.NeedMore, reader.Feed(CleanDocument.AsSpan(0, cut)), $"cut {cut}");
+            Assert.AreEqual(OwlFunctionalParseStatus.NeedMore, reader.Feed(bytes.AsSpan(0, cut)), $"cut {cut}");
         }
 
         OwlFunctionalSyntaxIncrementalReader full = new();
-        Assert.AreEqual(OwlFunctionalParseStatus.Complete, full.Feed(CleanDocument));
+        Assert.AreEqual(OwlFunctionalParseStatus.Complete, full.Feed(bytes));
     }
 
     [TestMethod]
     public void TrailingWhitespaceAndCommentsKeepTheBoundaryStatus()
     {
         OwlFunctionalSyntaxIncrementalReader reader = new();
-        Assert.AreEqual(OwlFunctionalParseStatus.Complete, reader.Feed(CleanDocument + "\n  \n"));
+        Assert.AreEqual(OwlFunctionalParseStatus.Complete, reader.Feed(System.Text.Encoding.UTF8.GetBytes(CleanDocument + "\n  \n")));
 
         //A comment whose newline has not arrived may still be growing, so it
         //suspends; its newline restores the boundary.
-        Assert.AreEqual(OwlFunctionalParseStatus.NeedMore, reader.Feed("# trailing"));
-        Assert.AreEqual(OwlFunctionalParseStatus.Complete, reader.Feed("\n"));
+        Assert.AreEqual(OwlFunctionalParseStatus.NeedMore, reader.Feed("# trailing"u8));
+        Assert.AreEqual(OwlFunctionalParseStatus.Complete, reader.Feed("\n"u8));
 
         OwlOntologyDocument document = reader.Complete();
         Assert.IsFalse(document.Diagnostics.HasErrors);
@@ -95,7 +99,7 @@ internal sealed class OwlFunctionalSyntaxIncrementalTests
             """;
 
         OwlFunctionalSyntaxIncrementalReader reader = new();
-        Assert.AreEqual(OwlFunctionalParseStatus.NeedMore, reader.Feed(Truncated));
+        Assert.AreEqual(OwlFunctionalParseStatus.NeedMore, reader.Feed(System.Text.Encoding.UTF8.GetBytes(Truncated)));
         Assert.IsFalse(reader.Diagnostics.HasErrors, "incompleteness squiggled before Complete");
 
         OwlOntologyDocument document = reader.Complete();
@@ -125,7 +129,7 @@ internal sealed class OwlFunctionalSyntaxIncrementalTests
         {
             OwlFunctionalSyntaxIncrementalReader reader = new();
 
-            Assert.AreEqual(OwlFunctionalParseStatus.NeedMore, reader.Feed(tail), tail);
+            Assert.AreEqual(OwlFunctionalParseStatus.NeedMore, reader.Feed(System.Text.Encoding.UTF8.GetBytes(tail)), tail);
             Assert.IsFalse(reader.Diagnostics.HasErrors, $"'{tail}' squiggled a merely-unfinished tail");
         }
     }
@@ -136,7 +140,7 @@ internal sealed class OwlFunctionalSyntaxIncrementalTests
         //An unexpected character can never become valid, so it is an error
         //even while the document is still arriving.
         OwlFunctionalSyntaxIncrementalReader reader = new();
-        reader.Feed("Ontology( <http://example.org/o> % ");
+        reader.Feed("Ontology( <http://example.org/o> % "u8);
 
         Assert.IsTrue(reader.Diagnostics.HasErrors);
         Assert.AreEqual(OwlFunctionalParseStatus.NeedMore, reader.Status);
@@ -149,11 +153,13 @@ internal sealed class OwlFunctionalSyntaxIncrementalTests
         //character offsets; the chunk boundary falls inside the line that
         //carries the offending character.
         const string Document = "#ä\nOntology( <http://example.org/o>\n  %\n)";
-        int split = Document.IndexOf('%', System.StringComparison.Ordinal) - 1;
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(Document);
+        int percent = System.Array.IndexOf(bytes, (byte)'%');
+        int split = percent - 1;
 
         OwlFunctionalSyntaxIncrementalReader reader = new();
-        reader.Feed(Document.AsSpan(0, split));
-        reader.Feed(Document.AsSpan(split));
+        reader.Feed(bytes.AsSpan(0, split));
+        reader.Feed(bytes.AsSpan(split));
         OwlOntologyDocument document = reader.Complete();
 
         Assert.IsTrue(document.Diagnostics.HasErrors);
@@ -161,7 +167,7 @@ internal sealed class OwlFunctionalSyntaxIncrementalTests
         {
             Assert.AreEqual(2, diagnostic.Span.StartLine);
             Assert.AreEqual(2, diagnostic.Span.StartColumn);
-            Assert.AreEqual(Document.IndexOf('%', System.StringComparison.Ordinal) + 1, diagnostic.Span.StartByte);
+            Assert.AreEqual(percent, diagnostic.Span.StartByte);
 
             return;
         }
@@ -171,10 +177,11 @@ internal sealed class OwlFunctionalSyntaxIncrementalTests
     public void FeedAfterCompleteIsRejected()
     {
         OwlFunctionalSyntaxIncrementalReader reader = new();
-        reader.Feed(CleanDocument);
+        reader.Feed(System.Text.Encoding.UTF8.GetBytes(CleanDocument));
         reader.Complete();
 
-        Assert.ThrowsExactly<System.InvalidOperationException>(() => reader.Feed(" "));
+        byte[] more = " "u8.ToArray();
+        Assert.ThrowsExactly<System.InvalidOperationException>(() => reader.Feed(more));
     }
 
     [TestMethod]
@@ -194,10 +201,11 @@ internal sealed class OwlFunctionalSyntaxIncrementalTests
 
                     OwlOntologyDocument whole = OwlFunctionalSyntaxReader.Read(text);
 
+                    byte[] bytes = System.Text.Encoding.UTF8.GetBytes(text);
                     OwlFunctionalSyntaxIncrementalReader reader = new();
-                    for(int offset = 0; offset < text.Length; offset += 17)
+                    for(int offset = 0; offset < bytes.Length; offset += 17)
                     {
-                        reader.Feed(text.AsSpan(offset, System.Math.Min(17, text.Length - offset)));
+                        reader.Feed(bytes.AsSpan(offset, System.Math.Min(17, bytes.Length - offset)));
                     }
 
                     OwlOntologyDocument chunked = reader.Complete();
@@ -216,5 +224,42 @@ internal sealed class OwlFunctionalSyntaxIncrementalTests
         }
 
         Assert.IsGreaterThan(50, documents, "The corpus sweep should cover the functional-syntax documents.");
+    }
+
+    [TestMethod]
+    public void EveryByteCutPointResumesAcrossMultiByteContent()
+    {
+        //Multi-byte code points sit inside a prefix expansion, the ontology
+        //IRI, a prefixed name, and a literal, so a byte cut can fall between
+        //the bytes of one code point. UTF-8 is self-synchronizing, so the
+        //resumable reader must still rejoin the split code point and match the
+        //whole-buffer read at every byte boundary.
+        const string Document = """
+            Prefix( : = <http://example.org/café/> )
+            Ontology( <http://example.org/ø>
+              Declaration( Class( :Aö ) )
+              Declaration( DataProperty( :dp ) )
+              ClassAssertion( :Aö _:x )
+              DataPropertyAssertion( :dp _:x "café ☕"@en )
+            )
+            """;
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(Document);
+        OwlOntologyDocument whole = OwlFunctionalSyntaxReader.Read(bytes);
+        Assert.IsFalse(whole.Diagnostics.HasErrors);
+        string rendering = OwlFunctionalSyntaxWriter.Write(whole);
+
+        for(int cut = 0; cut <= bytes.Length; cut++)
+        {
+            OwlFunctionalSyntaxIncrementalReader reader = new();
+            reader.Feed(bytes.AsSpan(0, cut));
+            Assert.IsFalse(reader.Diagnostics.HasErrors, $"cut {cut}: a clean prefix reported an error");
+
+            reader.Feed(bytes.AsSpan(cut));
+            OwlOntologyDocument resumed = reader.Complete();
+
+            Assert.IsFalse(resumed.Diagnostics.HasErrors, $"cut {cut}: the resumed parse reported an error");
+            Assert.HasCount(whole.Axioms.Length, resumed.Axioms, $"cut {cut}: axiom count differs");
+            Assert.AreEqual(rendering, OwlFunctionalSyntaxWriter.Write(resumed), $"cut {cut}: rendering differs");
+        }
     }
 }

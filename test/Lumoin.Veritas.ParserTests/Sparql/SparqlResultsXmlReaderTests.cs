@@ -1,5 +1,6 @@
 using System.Text;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
 using Lumoin.Veritas.Sparql.Results;
@@ -143,6 +144,49 @@ internal sealed class SparqlResultsXmlReaderTests
         Assert.AreEqual(new NamedNode(Utf8String.FromString("http://example/s")), triple.Subject);
         Assert.AreEqual("http://example/p", triple.Predicate.Iri.ToString());
         Assert.AreEqual("o", ((Literal)triple.Object).Value.ToString());
+    }
+
+    /// <summary>A triple-term binding value nested exactly to the cap reads back without throwing.</summary>
+    [TestMethod]
+    public void ReadsTripleTermNestedToTheLimit()
+    {
+        SparqlResultSet result = Read(NestedTripleResultsXml(QuotedTripleLimits.MaxNestingDepth));
+
+        Assert.IsInstanceOfType<TripleTerm>(Value(result.Solutions[0], "t"));
+    }
+
+    /// <summary>A triple-term binding value nested beyond the cap raises a catchable <see cref="TripleTermDepthLimitException"/> rather than overflowing.</summary>
+    [TestMethod]
+    public void TripleTermNestedBeyondTheLimitThrows()
+    {
+        TripleTermDepthLimitException exception = Assert.ThrowsExactly<TripleTermDepthLimitException>(
+            () => Read(NestedTripleResultsXml(QuotedTripleLimits.MaxNestingDepth + 1)));
+
+        Assert.AreEqual(QuotedTripleLimits.MaxNestingDepth + 1, exception.Depth);
+        Assert.AreEqual(QuotedTripleLimits.MaxNestingDepth, exception.Limit);
+    }
+
+    /// <summary>Builds a SPARQL Results XML document whose single binding value is a triple term nested <paramref name="depth"/> levels through the object position.</summary>
+    /// <param name="depth">The quoted-triple nesting depth.</param>
+    /// <returns>The SPARQL Results XML text.</returns>
+    private static string NestedTripleResultsXml(int depth)
+    {
+        StringBuilder builder = new();
+        builder.Append("<?xml version=\"1.0\"?><sparql xmlns=\"http://www.w3.org/2005/sparql-results#\"><head><variable name=\"t\"/></head><results><result><binding name=\"t\">");
+        for(int i = 0; i < depth; i++)
+        {
+            builder.Append("<triple><subject><uri>http://e/s</uri></subject><predicate><uri>http://e/p</uri></predicate><object>");
+        }
+
+        builder.Append("<uri>http://e/o</uri>");
+        for(int i = 0; i < depth; i++)
+        {
+            builder.Append("</object></triple>");
+        }
+
+        builder.Append("</binding></result></results></sparql>");
+
+        return builder.ToString();
     }
 
     /// <summary>An <c>ASK</c> result parses to its boolean answer.</summary>

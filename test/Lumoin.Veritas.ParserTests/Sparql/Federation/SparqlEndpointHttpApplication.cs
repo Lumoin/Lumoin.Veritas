@@ -3,6 +3,7 @@ using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Json;
 using Lumoin.Veritas.Sparql.Results;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -61,9 +62,8 @@ internal sealed class SparqlEndpointHttpApplication : IHttpApplication<HttpConte
             context.Response.StatusCode = 200;
             context.Response.ContentType = "application/sparql-results+json";
 
-            using MemoryStream buffer = new();
-            SparqlResultsJsonWriter.Write(results, buffer, indented: false);
-            await context.Response.Body.WriteAsync(buffer.ToArray(), context.RequestAborted).ConfigureAwait(false);
+            Utf8String json = SparqlResultsJsonWriter.WriteToUtf8String(results, indented: false);
+            await context.Response.Body.WriteAsync(json.Memory, context.RequestAborted).ConfigureAwait(false);
             trace($"server {endpoint.Name}: response written");
         }
         catch(Exception exception)

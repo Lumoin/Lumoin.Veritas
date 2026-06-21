@@ -55,7 +55,7 @@ internal sealed class W3cOwl2SpeciesTests
     /// <summary>Runs one approved-status OWL 2 test case as a species-identification test.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     [TestMethod]
-    [Owl2ManifestData("approved", "all.rdf")]
+    [Owl2ManifestData("approved", "all.rdf", Owl2TestRemit.ProfileIdentification)]
     public void RunApproved(Owl2TestCase testCase)
     {
         RunAndAssert(testCase);
@@ -64,7 +64,7 @@ internal sealed class W3cOwl2SpeciesTests
     /// <summary>Runs one proposed-status OWL 2 test case as a species-identification test.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     [TestMethod]
-    [Owl2ManifestData("proposed", "all.rdf")]
+    [Owl2ManifestData("proposed", "all.rdf", Owl2TestRemit.ProfileIdentification)]
     public void RunProposed(Owl2TestCase testCase)
     {
         RunAndAssert(testCase);
@@ -76,11 +76,10 @@ internal sealed class W3cOwl2SpeciesTests
 
         //The species markers are curated claims only on the
         //profile-identification tests; elsewhere they are incidental
-        //annotations (every graph is FULL) and assert nothing.
-        if(!testCase.Kinds.Contains("ProfileIdentificationTest"))
-        {
-            Assert.Inconclusive("Not a profile-identification test; the species markers are not curated claims.");
-        }
+        //annotations (every graph is FULL) and assert nothing. The
+        //profile-identification remit is enforced at the data source
+        //(Owl2TestRemit.ProfileIdentification), so every case reaching here
+        //carries a curated species claim.
 
         //Check every document of the test; the species verdict for the
         //test is the conjunction over its documents, like the profile
@@ -111,7 +110,7 @@ internal sealed class W3cOwl2SpeciesTests
 
         if(reports.Count == 0)
         {
-            Assert.Inconclusive("The test declares no document in a syntax the harness reads.");
+            Assert.Fail($"{testCase.Identifier}: the test declares no document in a syntax the harness reads.");
         }
 
         bool expected = testCase.Species.Contains("DL");
@@ -133,7 +132,9 @@ internal sealed class W3cOwl2SpeciesTests
                 Assert.Fail($"{testCase.Identifier} is a recorded known gap but now matches the species claim; remove it from KnownGaps.");
             }
 
-            Assert.Inconclusive("Recorded corpus contradiction; see KnownGaps.");
+            //A pinned corpus contradiction the checker does not reproduce: an
+            //expected, passing capability boundary.
+            return;
         }
 
         if(expected && !allIn)
@@ -157,10 +158,7 @@ internal sealed class W3cOwl2SpeciesTests
         {
             DiagnosticBag parseDiagnostics = new();
             List<Quad> quads = [.. RdfXmlReader.Read(Encoding.UTF8.GetBytes(xml), parseDiagnostics, baseIri: testCase.Uri.AbsoluteUri)];
-            if(parseDiagnostics.HasErrors)
-            {
-                Assert.Inconclusive("A test document did not parse as RDF/XML; the test cannot be set up.");
-            }
+            Assert.IsFalse(parseDiagnostics.HasErrors, $"{testCase.Identifier}: a test document did not parse as RDF/XML; the test cannot be set up.");
 
             quads = Owl2ImportResolver.Expand(testCase, quads);
 
@@ -170,10 +168,7 @@ internal sealed class W3cOwl2SpeciesTests
         if(functional is string text)
         {
             OwlOntologyDocument document = OwlFunctionalSyntaxReader.Read(text);
-            if(document.Diagnostics.HasErrors)
-            {
-                Assert.Inconclusive("A test document did not parse as functional syntax; the test cannot be set up.");
-            }
+            Assert.IsFalse(document.Diagnostics.HasErrors, $"{testCase.Identifier}: a test document did not parse as functional syntax; the test cannot be set up.");
 
             return (document, OwlStructuralToRdf.ToQuads(document));
         }

@@ -440,13 +440,37 @@ public readonly struct NumericValue: IEquatable<NumericValue>
     /// <param name="onFloat">The operation in the float kind.</param>
     /// <param name="onDouble">The operation in the double kind.</param>
     /// <returns>The result in the promoted kind.</returns>
+    /// <summary>A binary operation over two <c>xsd:integer</c> (arbitrary-precision) operands.</summary>
+    /// <param name="left">The left operand.</param>
+    /// <param name="right">The right operand.</param>
+    /// <returns>The result.</returns>
+    private delegate BigInteger IntegerBinaryOperation(BigInteger left, BigInteger right);
+
+    /// <summary>A binary operation over two <c>xsd:decimal</c> operands.</summary>
+    /// <param name="left">The left operand.</param>
+    /// <param name="right">The right operand.</param>
+    /// <returns>The result.</returns>
+    private delegate decimal DecimalBinaryOperation(decimal left, decimal right);
+
+    /// <summary>A binary operation over two <c>xsd:float</c> operands.</summary>
+    /// <param name="left">The left operand.</param>
+    /// <param name="right">The right operand.</param>
+    /// <returns>The result.</returns>
+    private delegate float FloatBinaryOperation(float left, float right);
+
+    /// <summary>A binary operation over two <c>xsd:double</c> operands.</summary>
+    /// <param name="left">The left operand.</param>
+    /// <param name="right">The right operand.</param>
+    /// <returns>The result.</returns>
+    private delegate double DoubleBinaryOperation(double left, double right);
+
     private static NumericValue Combine(
         NumericValue left,
         NumericValue right,
-        Func<BigInteger, BigInteger, BigInteger> onInteger,
-        Func<decimal, decimal, decimal> onDecimal,
-        Func<float, float, float> onFloat,
-        Func<double, double, double> onDouble)
+        IntegerBinaryOperation onInteger,
+        DecimalBinaryOperation onDecimal,
+        FloatBinaryOperation onFloat,
+        DoubleBinaryOperation onDouble)
     {
         NumericKind target = left.Kind > right.Kind ? left.Kind : right.Kind;
 
@@ -477,16 +501,12 @@ public readonly struct NumericValue: IEquatable<NumericValue>
     /// <returns>The canonical lexical form.</returns>
     public string ToCanonicalLexical()
     {
-        //Copy the relevant field to a local: a struct's instance fields cannot be captured by the rendering lambda.
-        float f = floatValue;
-        double d = doubleValue;
-
         return Kind switch
         {
             NumericKind.Integer => integerValue.ToString(CultureInfo.InvariantCulture),
             NumericKind.Decimal => CanonicalDecimal(decimalValue),
-            NumericKind.Float => CanonicalFloating(f, float.IsNaN(f), float.IsPositiveInfinity(f), float.IsNegativeInfinity(f), () => ((double)f).ToString("R", CultureInfo.InvariantCulture)),
-            _ => CanonicalFloating(d, double.IsNaN(d), double.IsPositiveInfinity(d), double.IsNegativeInfinity(d), () => d.ToString("R", CultureInfo.InvariantCulture))
+            NumericKind.Float => CanonicalFloating(floatValue, float.IsNaN(floatValue), float.IsPositiveInfinity(floatValue), float.IsNegativeInfinity(floatValue), ((double)floatValue).ToString("R", CultureInfo.InvariantCulture)),
+            _ => CanonicalFloating(doubleValue, double.IsNaN(doubleValue), double.IsPositiveInfinity(doubleValue), double.IsNegativeInfinity(doubleValue), doubleValue.ToString("R", CultureInfo.InvariantCulture))
         };
     }
 
@@ -507,9 +527,9 @@ public readonly struct NumericValue: IEquatable<NumericValue>
     /// <param name="isNaN">Whether the value is NaN.</param>
     /// <param name="isPositiveInfinity">Whether the value is +∞.</param>
     /// <param name="isNegativeInfinity">Whether the value is −∞.</param>
-    /// <param name="roundTrip">Produces the round-trip ("R") rendering of the value.</param>
+    /// <param name="roundTrip">The round-trip ("R") rendering of the value, used only for a finite value.</param>
     /// <returns>The canonical floating lexical form.</returns>
-    private static string CanonicalFloating(double value, bool isNaN, bool isPositiveInfinity, bool isNegativeInfinity, Func<string> roundTrip)
+    private static string CanonicalFloating(double value, bool isNaN, bool isPositiveInfinity, bool isNegativeInfinity, string roundTrip)
     {
         if(isNaN)
         {
@@ -526,7 +546,7 @@ public readonly struct NumericValue: IEquatable<NumericValue>
             return "-INF";
         }
 
-        return ToScientific(roundTrip(), value == 0);
+        return ToScientific(roundTrip, value == 0);
     }
 
     /// <summary>

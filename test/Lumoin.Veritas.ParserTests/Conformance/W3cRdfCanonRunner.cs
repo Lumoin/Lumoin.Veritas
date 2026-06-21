@@ -35,11 +35,11 @@ internal sealed record W3cRdfCanonCase(string Name, string TypeLocalName, string
 /// </summary>
 /// <remarks>
 /// <para>
-/// Only <c>rdfc:RDFC10EvalTest</c> entries are executed. The <c>rdfc:RDFC10MapTest</c> (issued-identifier map) and
-/// <c>rdfc:RDFC10NegativeEvalTest</c> (poison-graph rejection) entries are honestly skipped: the
-/// <see cref="RdfCanonicalizer.Canonicalize"/> surface returns the canonical string, not the issuer map, and applies
-/// no complexity-based rejection. A wrong canonical output is a failure (red), so the failing count is the honest
-/// distance to full RDFC-1.0 conformance and may only ratchet down.
+/// All three rdf-canon test types execute: <c>rdfc:RDFC10EvalTest</c> compares the canonical N-Quads,
+/// <c>rdfc:RDFC10MapTest</c> compares the issued-identifier map from <see cref="RdfCanonicalizer.CanonicalizeWithMap"/>,
+/// and <c>rdfc:RDFC10NegativeEvalTest</c> expects a poison graph to be rejected with
+/// <see cref="RdfCanonicalizationException"/>. A wrong canonical output, a wrong map, or a missing rejection is a
+/// failure (red), so the failing count is the honest distance to full RDFC-1.0 conformance and may only ratchet down.
 /// </para>
 /// </remarks>
 internal static class W3cRdfCanonRunner

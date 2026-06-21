@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Text;
 
 namespace Lumoin.Veritas.Core;
 
@@ -269,9 +271,180 @@ public sealed record Literal(
 [DebuggerDisplay("<<{Subject} {Predicate} {Object}>>")]
 public sealed record TripleTerm(RdfTerm Subject, NamedNode Predicate, RdfTerm Object): RdfTerm
 {
-    /// <inheritdoc/>
+    /// <summary>
+    /// Determines structural equality with another triple term. Replaces the compiler-synthesized recursive
+    /// comparison with an explicit-stack walk over the quoted-triple spine (leaf components compare through their
+    /// own non-recursive equality), so a deeply-nested term cannot overflow the call stack.
+    /// </summary>
+    /// <param name="other">The triple term to compare with.</param>
+    /// <returns><see langword="true"/> when the terms are structurally equal.</returns>
+    public bool Equals(TripleTerm? other)
+    {
+        if(ReferenceEquals(this, other))
+        {
+            return true;
+        }
+
+        if(other is null)
+        {
+            return false;
+        }
+
+        Stack<(RdfTerm Left, RdfTerm Right)> work = new();
+        work.Push((this, other));
+
+        while(work.Count > 0)
+        {
+            (RdfTerm left, RdfTerm right) = work.Pop();
+            if(ReferenceEquals(left, right))
+            {
+                continue;
+            }
+
+            if(left is TripleTerm leftTriple && right is TripleTerm rightTriple)
+            {
+                if(!leftTriple.Predicate.Equals(rightTriple.Predicate))
+                {
+                    return false;
+                }
+
+                work.Push((leftTriple.Subject, rightTriple.Subject));
+                work.Push((leftTriple.Object, rightTriple.Object));
+            }
+            else if(left is TripleTerm || right is TripleTerm)
+            {
+                //One side is a quoted triple and the other is a leaf — not equal.
+                return false;
+            }
+            else if(!left.Equals(right))
+            {
+                //Both are leaves; their own equality is not recursive.
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Returns a structural hash code consistent with <see cref="Equals(TripleTerm?)"/>, computed over an explicit
+    /// stack (a fixed pre-order walk) so a deeply-nested term cannot overflow the call stack.
+    /// </summary>
+    /// <returns>The structural hash code.</returns>
+    public override int GetHashCode()
+    {
+        HashCode hash = new();
+        Stack<RdfTerm> work = new();
+        work.Push(this);
+
+        while(work.Count > 0)
+        {
+            RdfTerm term = work.Pop();
+            if(term is TripleTerm triple)
+            {
+                hash.Add(triple.Predicate);
+
+                //Push object then subject so the walk is the fixed order subject-then-object — the same order two
+                //structurally-equal terms produce, keeping the hash consistent with equality.
+                work.Push(triple.Object);
+                work.Push(triple.Subject);
+            }
+            else
+            {
+                hash.Add(term);
+            }
+        }
+
+        return hash.ToHashCode();
+    }
+
+    /// <summary>
+    /// Renders the triple term as <c>&lt;&lt;subject predicate object&gt;&gt;</c>. Replaces the recursive
+    /// interpolation with an explicit-stack walk so a deeply-nested term cannot overflow the call stack.
+    /// </summary>
+    /// <returns>The rendered triple term.</returns>
     public override string ToString()
     {
-        return $"<<{Subject} {Predicate} {Object}>>";
+        StringBuilder builder = new();
+        Stack<RenderStep> work = new();
+        work.Push(new RenderStep(RenderMarker.Term, this));
+
+        while(work.Count > 0)
+        {
+            RenderStep step = work.Pop();
+            switch(step.Marker)
+            {
+                case(RenderMarker.Term):
+                {
+                    if(step.Term is TripleTerm triple)
+                    {
+                        //Push in reverse so they pop in render order: <<subject predicate object>>. The predicate
+                        //is a leaf named node, so it renders through the same Term step.
+                        work.Push(RenderStep.Close);
+                        work.Push(new RenderStep(RenderMarker.Term, triple.Object));
+                        work.Push(RenderStep.Space);
+                        work.Push(new RenderStep(RenderMarker.Term, triple.Predicate));
+                        work.Push(RenderStep.Space);
+                        work.Push(new RenderStep(RenderMarker.Term, triple.Subject));
+                        work.Push(RenderStep.Open);
+                    }
+                    else
+                    {
+                        builder.Append(step.Term!.ToString());
+                    }
+
+                    break;
+                }
+                case(RenderMarker.Open):
+                {
+                    builder.Append("<<");
+                    break;
+                }
+                case(RenderMarker.Space):
+                {
+                    builder.Append(' ');
+                    break;
+                }
+                default:
+                {
+                    //RenderMarker.Close: the components are rendered; close the term.
+                    builder.Append(">>");
+                    break;
+                }
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>The kind of step on the <see cref="ToString"/> render work-stack.</summary>
+    private enum RenderMarker
+    {
+        /// <summary>Render a term: a leaf directly, or expand a quoted triple into its component steps.</summary>
+        Term,
+
+        /// <summary>Render the quoted-triple opening delimiter.</summary>
+        Open,
+
+        /// <summary>Render a single component separator.</summary>
+        Space,
+
+        /// <summary>Render the quoted-triple closing delimiter and unwind one nesting level.</summary>
+        Close
+    }
+
+    /// <summary>One step on the <see cref="ToString"/> render work-stack.</summary>
+    /// <param name="Marker">The step kind.</param>
+    /// <param name="Term">The term to render; set only for a <c>Term</c> step.</param>
+    private readonly record struct RenderStep(RenderMarker Marker, RdfTerm? Term)
+    {
+        /// <summary>The payload-less step that renders the quoted-triple opening delimiter.</summary>
+        public static RenderStep Open { get; } = new(RenderMarker.Open, null);
+
+        /// <summary>The payload-less step that renders a single component separator.</summary>
+        public static RenderStep Space { get; } = new(RenderMarker.Space, null);
+
+        /// <summary>The payload-less step that renders the quoted-triple closing delimiter and unwinds one nesting level.</summary>
+        public static RenderStep Close { get; } = new(RenderMarker.Close, null);
     }
 }

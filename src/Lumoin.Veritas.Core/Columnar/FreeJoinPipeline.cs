@@ -262,8 +262,33 @@ public static class FreeJoinPipeline
             columns[column] = column;
         }
 
-        Array.Sort(columns, (left, right) => orderIndex[scanSchema[left]].CompareTo(orderIndex[scanSchema[right]]));
+        Array.Sort(columns, new GlobalOrderColumnComparer(scanSchema, orderIndex));
 
         return columns;
+    }
+
+    /// <summary>
+    /// Orders scan-schema column indices by their variable's position in the global order,
+    /// carrying the schema and order map as explicit state so the comparison closes over no
+    /// enclosing local.
+    /// </summary>
+    /// <param name="scanSchema">The pattern's scan schema, positional against its columns.</param>
+    /// <param name="orderIndex">Each variable's position in the global order.</param>
+    private sealed class GlobalOrderColumnComparer(IReadOnlyList<Variable> scanSchema, Dictionary<Variable, int> orderIndex) : IComparer<int>
+    {
+        /// <summary>The pattern's scan schema, positional against its columns.</summary>
+        private IReadOnlyList<Variable> ScanSchema { get; } = scanSchema;
+
+        /// <summary>Each variable's position in the global order.</summary>
+        private Dictionary<Variable, int> OrderIndex { get; } = orderIndex;
+
+        /// <summary>Compares two column indices by their variable's global-order position.</summary>
+        /// <param name="left">The first column index.</param>
+        /// <param name="right">The second column index.</param>
+        /// <returns>The sign of the two columns' global-order positions compared.</returns>
+        public int Compare(int left, int right)
+        {
+            return OrderIndex[ScanSchema[left]].CompareTo(OrderIndex[ScanSchema[right]]);
+        }
     }
 }
