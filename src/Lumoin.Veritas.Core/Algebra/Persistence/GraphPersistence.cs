@@ -9,6 +9,18 @@ using Lumoin.Veritas.Core.Encoding;
 
 namespace Lumoin.Veritas.Core.Algebra;
 
+/// <summary>Formats a graph node to its text representation for an edge or adjacency list.</summary>
+/// <typeparam name="TNode">The node type.</typeparam>
+/// <param name="node">The node to format.</param>
+/// <returns>The node's text representation.</returns>
+public delegate string NodeFormatter<in TNode>(TNode node);
+
+/// <summary>Formats a graph edge label to its text representation for a labeled edge list.</summary>
+/// <typeparam name="TLabel">The label type.</typeparam>
+/// <param name="label">The label to format.</param>
+/// <returns>The label's text representation.</returns>
+public delegate string LabelFormatter<in TLabel>(TLabel label);
+
 /// <summary>
 /// Streaming writers that emit a <see cref="GraphSource{TNode}"/> to
 /// a <see cref="PipeWriter"/> or convenience-overload to a
@@ -53,7 +65,7 @@ public static class GraphPersistence
     public static async Task WriteEdgeListAsync<TNode>(
         GraphSource<TNode> source,
         PipeWriter writer,
-        Func<TNode, string> formatNode,
+        NodeFormatter<TNode> formatNode,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(source);
@@ -84,7 +96,7 @@ public static class GraphPersistence
     public static Task WriteEdgeListAsync<TNode>(
         GraphSource<TNode> source,
         Stream stream,
-        Func<TNode, string> formatNode,
+        NodeFormatter<TNode> formatNode,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(stream);
@@ -100,8 +112,8 @@ public static class GraphPersistence
     public static async Task WriteLabeledEdgeListAsync<TNode, TLabel>(
         LabeledGraphSource<TNode, TLabel> source,
         PipeWriter writer,
-        Func<TNode, string> formatNode,
-        Func<TLabel, string> formatLabel,
+        NodeFormatter<TNode> formatNode,
+        LabelFormatter<TLabel> formatLabel,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(source);
@@ -134,8 +146,8 @@ public static class GraphPersistence
     public static Task WriteLabeledEdgeListAsync<TNode, TLabel>(
         LabeledGraphSource<TNode, TLabel> source,
         Stream stream,
-        Func<TNode, string> formatNode,
-        Func<TLabel, string> formatLabel,
+        NodeFormatter<TNode> formatNode,
+        LabelFormatter<TLabel> formatLabel,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(stream);
@@ -153,7 +165,7 @@ public static class GraphPersistence
         GraphSource<TNode> source,
         IEnumerable<TNode> nodes,
         PipeWriter writer,
-        Func<TNode, string> formatNode,
+        NodeFormatter<TNode> formatNode,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(source);
@@ -188,7 +200,7 @@ public static class GraphPersistence
         GraphSource<TNode> source,
         IEnumerable<TNode> nodes,
         Stream stream,
-        Func<TNode, string> formatNode,
+        NodeFormatter<TNode> formatNode,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(stream);
