@@ -446,6 +446,59 @@ internal static class PersistenceStagingFixture
             .Commit(new Manifest(generation, generation * 11, generation * 13, entries));
     }
 
+    /// <summary>Stages a system-of-record, sidecar, sketch, and local-parity sidecar (each possibly corrupted by the caller) into a fresh temp-dir store and commits a generation manifest naming all four — the staging a parity-restore repair pass reads.</summary>
+    /// <param name="generation">The commit generation.</param>
+    /// <param name="segment">The data-segment image.</param>
+    /// <param name="sidecar">The sidecar image.</param>
+    /// <param name="sketch">The sketch image.</param>
+    /// <param name="parity">The local-parity image.</param>
+    /// <param name="pool">The pool the manifest writer and digest buffers are rented from.</param>
+    /// <param name="directory">The created temp directory.</param>
+    /// <returns>The store.</returns>
+    internal static FileSystemPersistenceStore StageGeneration(long generation, ArtifactImage segment, ArtifactImage sidecar, ArtifactImage sketch, ArtifactImage parity, MemoryPool<byte> pool, out string directory)
+    {
+        directory = Directory.CreateTempSubdirectory("veritas-staging-").FullName;
+        FileSystemPersistenceStore store = new(directory, NoOpBarrier);
+        CommitGeneration(store, generation, segment, sidecar, sketch, parity, pool);
+
+        return store;
+    }
+
+    /// <summary>Stages the four artifacts under their generation-stamped names into an existing store and commits a manifest naming them, so a repair pass over the generation can read its parity sidecar.</summary>
+    /// <param name="store">The store committed into.</param>
+    /// <param name="generation">The commit generation.</param>
+    /// <param name="segment">The data-segment image.</param>
+    /// <param name="sidecar">The sidecar image.</param>
+    /// <param name="sketch">The sketch image.</param>
+    /// <param name="parity">The local-parity image.</param>
+    /// <param name="pool">The pool the manifest writer and digest buffers are rented from.</param>
+    internal static void CommitGeneration(PersistenceStore store, long generation, ArtifactImage segment, ArtifactImage sidecar, ArtifactImage sketch, ArtifactImage parity, MemoryPool<byte> pool)
+    {
+        int digestWidth = ChecksumAlgorithm.XxHash3.ByteWidth;
+        string segmentName = $"segment-{generation:D20}.dat";
+        string sidecarName = $"sidecar-{generation:D20}.idx";
+        string sketchName = $"sketch-{generation:D20}.skt";
+        string parityName = $"parity-{generation:D20}.par";
+        store.WriteStaged(segmentName, segment.Bytes);
+        store.WriteStaged(sidecarName, sidecar.Bytes);
+        store.WriteStaged(sketchName, sketch.Bytes);
+        store.WriteStaged(parityName, parity.Bytes);
+
+        using IMemoryOwner<byte> segmentDigest = Digest(segment.Bytes, pool);
+        using IMemoryOwner<byte> sidecarDigest = Digest(sidecar.Bytes, pool);
+        using IMemoryOwner<byte> sketchDigest = Digest(sketch.Bytes, pool);
+        using IMemoryOwner<byte> parityDigest = Digest(parity.Bytes, pool);
+        ManifestEntry[] entries =
+        [
+            new(ManifestFileRole.DataSegment, segmentName, 0, segment.Length, segmentDigest.Memory[..digestWidth]),
+            new(ManifestFileRole.Sidecar, sidecarName, 0, sidecar.Length, sidecarDigest.Memory[..digestWidth]),
+            new(ManifestFileRole.Sketch, sketchName, 0, sketch.Length, sketchDigest.Memory[..digestWidth]),
+            new(ManifestFileRole.Parity, parityName, 0, parity.Length, parityDigest.Memory[..digestWidth]),
+        ];
+        new ManifestWriter(store, ChecksumAlgorithm.XxHash3, pool, retainedCurrentPointerCount: 4)
+            .Commit(new Manifest(generation, generation * 11, generation * 13, entries));
+    }
+
     /// <summary>Computes an artifact's whole-image XxHash3 manifest-entry digest into a buffer rented from <paramref name="pool"/>, valid until the rented owner is returned (after the manifest is committed). Shared with the scrub tests' two-artifact staging.</summary>
     /// <param name="image">The artifact bytes.</param>
     /// <param name="pool">The pool the digest buffer is rented from.</param>

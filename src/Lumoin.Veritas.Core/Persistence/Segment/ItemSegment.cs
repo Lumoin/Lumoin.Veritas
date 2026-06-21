@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
@@ -237,6 +238,73 @@ public sealed partial class ItemSegment
         bool hasChecksums = layout.Checksum is not null;
 
         return new ArtifactVerifyReport(layout.Checksum?.Id ?? ChecksumAlgorithmNone, hasChecksums, hasChecksums, frontMatterValid, verdicts);
+    }
+
+    /// <summary>Restores one lost block of an at-rest-corrupt image from a capacity-1 parity block: the lost block's payload is the parity XORed with every surviving block's payload, written back over a copy of the image. The restore is self-checking against the lost block's stored, un-corrupted per-block checksum — a stale parity, a parity built for a different block geometry or a different block count, or more than one truly-lost block yields <see langword="null"/> rather than a wrong block — so it requires a per-block-checksummed image and declines a checksum-free one it cannot self-verify. Only the lost block's payload is rewritten, so the stored digest and front matter the restore is checked against are the original ones.</summary>
+    /// <param name="image">The at-rest-corrupt image; its framing and front matter must be intact (only a block payload is corrupt), as the checksum-gated feed read guarantees.</param>
+    /// <param name="lostBlock">The index of the block to restore, in <c>[0, block count)</c>.</param>
+    /// <param name="parity">The capacity-1 parity block, exactly the block stride (<see cref="MaxBlockPayloadByteCount"/>) wide; a different width cannot restore this segment and yields <see langword="null"/>.</param>
+    /// <param name="parityProtectedBlockCount">The number of system-of-record blocks the parity was folded over; a value other than this image's block count is a co-version mismatch and yields <see langword="null"/>.</param>
+    /// <param name="scratchPool">The pool a transient XOR accumulator is rented from; threaded in by the caller.</param>
+    /// <param name="resolveChecksum">Resolves the image's checksum-algorithm id; <see langword="null"/> uses <see cref="ChecksumAlgorithm.DefaultResolver"/>.</param>
+    /// <returns>A fresh image with the lost block restored when the restore self-verifies; otherwise <see langword="null"/>.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="scratchPool"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="lostBlock"/> is negative or not less than the block count.</exception>
+    /// <exception cref="InvalidDataException">The image is not an item segment, is malformed, or is truncated.</exception>
+    /// <exception cref="NotSupportedException">The major version, a required feature, or the checksum algorithm is unsupported, or the host is big-endian.</exception>
+    public static byte[]? TryRestoreBlockFromParity(ReadOnlySpan<byte> image, int lostBlock, ReadOnlySpan<byte> parity, int parityProtectedBlockCount, MemoryPool<byte> scratchPool, ResolveChecksumAlgorithmDelegate? resolveChecksum = null)
+    {
+        ArgumentNullException.ThrowIfNull(scratchPool);
+        SegmentLayout layout = ParseFraming(image, resolveChecksum);
+        ArgumentOutOfRangeException.ThrowIfNegative(lostBlock);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(lostBlock, layout.BlockCount);
+
+        //The restore is verified only against the lost block's stored per-block checksum; a checksum-free image
+        //cannot self-verify, so it is declined rather than returned unverified.
+        if(layout.Checksum is null)
+        {
+            return null;
+        }
+
+        int stride = layout.BlockItemCount * ItemByteSize;
+        if(parity.Length != stride || parityProtectedBlockCount != layout.BlockCount)
+        {
+            //A parity built for a different block geometry or block count cannot restore this segment.
+            return null;
+        }
+
+        byte[] repaired = new byte[image.Length];
+        image.CopyTo(repaired);
+
+        using ParityBlock scratch = ParityBlock.Rent(scratchPool, stride);
+        Span<byte> accumulator = scratch.WritableSpan;
+        parity.CopyTo(accumulator);
+        for(int block = 0; block < layout.BlockCount; block++)
+        {
+            if(block == lostBlock)
+            {
+                continue;
+            }
+
+            int start = block * layout.BlockItemCount;
+            int itemsInBlock = Math.Min(layout.BlockItemCount, layout.ItemCount - start);
+            long blockOffset = layout.FirstBlock + (block * layout.BlockBytes);
+            ParityCodec.AccumulateXor(accumulator, image.Slice((int)blockOffset, itemsInBlock * ItemByteSize));
+        }
+
+        int lostStart = lostBlock * layout.BlockItemCount;
+        int lostItemsInBlock = Math.Min(layout.BlockItemCount, layout.ItemCount - lostStart);
+        int lostLength = lostItemsInBlock * ItemByteSize;
+        long lostOffset = layout.FirstBlock + (lostBlock * layout.BlockBytes);
+        accumulator[..lostLength].CopyTo(repaired.AsSpan((int)lostOffset, lostLength));
+
+        Span<byte> digest = stackalloc byte[ChecksumAlgorithm.MaximumByteWidth];
+        if(!VerifyBlock(repaired, layout, lostBlock, digest, out _, out _, out _))
+        {
+            return null;
+        }
+
+        return repaired;
     }
 
     /// <summary>Parses an image's framing — magic, version, feature mask, checksum-algorithm id, and block geometry — refusing a malformed, unsupported, or truncated image, and returns the geometry needed to locate and verify every block. It does NOT verify the front-matter trailer (that is <see cref="VerifyFrontMatter"/>), so a decode-free verify can report the front-matter verdict rather than throw.</summary>
