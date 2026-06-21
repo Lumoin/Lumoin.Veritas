@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Sourcing;
@@ -11,7 +10,7 @@ namespace Lumoin.Veritas.Owl.Functional;
 
 /// <summary>
 /// Reads an OWL 2 functional-style syntax document fed incrementally,
-/// chunk by chunk.
+/// chunk by chunk, over UTF-8 bytes.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -23,30 +22,38 @@ namespace Lumoin.Veritas.Owl.Functional;
 /// status, never a diagnostic — an editor must not mark a merely-unfinished
 /// tail as an error. Truncation becomes an error only when
 /// <see cref="Complete"/> declares the input final, which is how the
-/// whole-buffer facade <see cref="OwlFunctionalSyntaxReader.Read"/> consumes
-/// the same machinery.
+/// whole-buffer facade <see cref="OwlFunctionalSyntaxReader.Read(System.ReadOnlySpan{byte})"/>
+/// consumes the same machinery.
 /// </para>
 /// <para>
 /// The core is resumable: the tokenizer commits at token boundaries and
-/// re-lexes a suspended token once more characters arrive; the constructor
-/// tree keeps its open-group stack between feeds; and each completed child of
-/// the <c>Ontology(…)</c> group converts — and releases its subtree — as soon
-/// as its closing parenthesis arrives, so peak parse state tracks the largest
+/// re-lexes a suspended token once more bytes arrive; the constructor tree
+/// keeps its open-group stack between feeds; and each completed child of the
+/// <c>Ontology(…)</c> group converts — and releases its subtree — as soon as
+/// its closing parenthesis arrives, so peak parse state tracks the largest
 /// single axiom rather than the document. All passes run on explicit stacks.
+/// </para>
+/// <para>
+/// The grammar's structural delimiters are all ASCII, and UTF-8 is
+/// self-synchronizing, so a multi-byte code point can never masquerade as a
+/// delimiter: scanning for a byte such as <c>"</c>, <c>&gt;</c>, or <c>)</c>
+/// is exact even when a chunk boundary falls inside a multi-byte code point.
+/// Token values are zero-copy windows over <see cref="Buffer"/>; only a
+/// decoded literal value carries its own bytes.
 /// </para>
 /// </remarks>
 public sealed class OwlFunctionalSyntaxIncrementalReader
 {
-    /// <summary>The document text fed so far.</summary>
-    private char[] Buffer { get; set; } = new char[256];
+    /// <summary>The document bytes fed so far.</summary>
+    private byte[] Buffer { get; set; } = new byte[256];
 
-    /// <summary>The number of valid characters in <see cref="Buffer"/>.</summary>
+    /// <summary>The number of valid bytes in <see cref="Buffer"/>.</summary>
     private int Length { get; set; }
 
     /// <summary>The committed lex position: the start of the next unlexed content.</summary>
     private int LexPosition { get; set; }
 
-    /// <summary>Whether the last drain suspended mid-token waiting for more characters.</summary>
+    /// <summary>Whether the last drain suspended mid-token waiting for more bytes.</summary>
     private bool LexSuspended { get; set; }
 
     /// <summary>Whether <see cref="Complete"/> has declared the input final.</summary>
@@ -55,8 +62,8 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
     /// <summary>The completed document, built once by <see cref="Complete"/>.</summary>
     private OwlOntologyDocument? Document { get; set; }
 
-    /// <summary>Maps character offsets to byte- and line-column source spans.</summary>
-    private OwlSourceMap Map { get; } = new();
+    /// <summary>Maps byte offsets to line-column source spans.</summary>
+    private OwlByteSourceMap Map { get; } = new();
 
     /// <summary>The structural converter completed constructor groups stream into.</summary>
     private OwlFunctionalSyntaxConverter Converter { get; } = new();
@@ -76,7 +83,7 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
     /// <summary>The exclusive end offset of the last accepted token; unterminated groups span to it.</summary>
     private int LastTokenEnd { get; set; }
 
-    /// <summary>Initialises an empty reader; feed source text through <see cref="Feed"/>.</summary>
+    /// <summary>Initialises an empty reader; feed source bytes through <see cref="Feed"/>.</summary>
     public OwlFunctionalSyntaxIncrementalReader()
     {
         Open.Push(Root);
@@ -99,12 +106,12 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
             : OwlFunctionalParseStatus.Complete;
 
     /// <summary>
-    /// Appends source text and parses as far as the input now permits.
+    /// Appends source bytes and parses as far as the input now permits.
     /// </summary>
-    /// <param name="chunk">The next run of document characters, of any length.</param>
+    /// <param name="chunk">The next run of document bytes, of any length.</param>
     /// <returns>The <see cref="Status"/> after the chunk is consumed.</returns>
     /// <exception cref="InvalidOperationException"><see cref="Complete"/> has already been called.</exception>
-    public OwlFunctionalParseStatus Feed(ReadOnlySpan<char> chunk)
+    public OwlFunctionalParseStatus Feed(ReadOnlySpan<byte> chunk)
     {
         if(Final)
         {
@@ -149,13 +156,13 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
         return Document;
     }
 
-    /// <summary>Appends a chunk to the text buffer and extends the source map over it.</summary>
-    /// <param name="chunk">The characters to append.</param>
-    private void Append(ReadOnlySpan<char> chunk)
+    /// <summary>Appends a chunk to the byte buffer and extends the source map over it.</summary>
+    /// <param name="chunk">The bytes to append.</param>
+    private void Append(ReadOnlySpan<byte> chunk)
     {
         if(Length + chunk.Length > Buffer.Length)
         {
-            char[] grown = new char[Math.Max(Buffer.Length * 2, Length + chunk.Length)];
+            byte[] grown = new byte[Math.Max(Buffer.Length * 2, Length + chunk.Length)];
             Buffer.AsSpan(0, Length).CopyTo(grown);
             Buffer = grown;
         }
@@ -196,7 +203,7 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
         /// <summary>A token was lexed and the position committed past it.</summary>
         Token,
 
-        /// <summary>The buffer ended mid-token or mid-comment; more characters decide it, so the position holds at the token start.</summary>
+        /// <summary>The buffer ended mid-token or mid-comment; more bytes decide it, so the position holds at the token start.</summary>
         NeedMore,
 
         /// <summary>The buffer is exhausted at a clean boundary; no token remains.</summary>
@@ -207,19 +214,19 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
     //they pass; a token commits only when its end is fixed by a delimiter or,
     //in final mode, the end of input. A token whose extent the buffer end
     //would otherwise decide reports NeedMore and is re-lexed from its start
-    //once more characters arrive — so a suspended position is never partially
+    //once more bytes arrive — so a suspended position is never partially
     //committed. Truncation faults (an unterminated IRI, literal, or datatype
     //IRI) can only occur at the final tail, where the batch behaviour is
     //reproduced: report and drop the partial token.
     private LexStep TryLexToken(out OwlFunctionalToken token)
     {
         token = default;
-        ReadOnlySpan<char> text = Buffer.AsSpan(0, Length);
+        ReadOnlySpan<byte> text = Buffer.AsSpan(0, Length);
         int i = LexPosition;
 
         while(true)
         {
-            while(i < text.Length && char.IsWhiteSpace(text[i]))
+            while(i < text.Length && IsAsciiWhitespace(text[i]))
             {
                 i++;
             }
@@ -231,11 +238,11 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
                 return LexStep.Exhausted;
             }
 
-            char c = text[i];
+            byte c = text[i];
 
-            if(c == '#')
+            if(c == (byte)'#')
             {
-                int newline = text[i..].IndexOf('\n');
+                int newline = text[i..].IndexOf((byte)'\n');
                 if(newline < 0)
                 {
                     //A comment without its newline may still be growing; in
@@ -255,51 +262,51 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
                 continue;
             }
 
-            if(c == '(')
+            if(c == (byte)'(')
             {
-                token = new OwlFunctionalToken(OwlFunctionalTokenKind.Open, "(", null, null, i, i + 1);
+                token = new OwlFunctionalToken(OwlFunctionalTokenKind.Open, default, null, null, i, i + 1);
                 LexPosition = i + 1;
 
                 return LexStep.Token;
             }
 
-            if(c == ')')
+            if(c == (byte)')')
             {
-                token = new OwlFunctionalToken(OwlFunctionalTokenKind.Close, ")", null, null, i, i + 1);
+                token = new OwlFunctionalToken(OwlFunctionalTokenKind.Close, default, null, null, i, i + 1);
                 LexPosition = i + 1;
 
                 return LexStep.Token;
             }
 
-            if(c == '=')
+            if(c == (byte)'=')
             {
-                token = new OwlFunctionalToken(OwlFunctionalTokenKind.Equals, "=", null, null, i, i + 1);
+                token = new OwlFunctionalToken(OwlFunctionalTokenKind.Equals, default, null, null, i, i + 1);
                 LexPosition = i + 1;
 
                 return LexStep.Token;
             }
 
-            if(c == '<')
+            if(c == (byte)'<')
             {
                 return LexIri(text, i, out token);
             }
 
-            if(c == '"')
+            if(c == (byte)'"')
             {
                 return LexLiteral(text, i, out token);
             }
 
-            if(c == '_' && i + 1 == text.Length && !Final)
+            if(c == (byte)'_' && i + 1 == text.Length && !Final)
             {
                 //A lone underscore at the buffer end may become _:label or a name.
                 return LexStep.NeedMore;
             }
 
-            if(c == '_' && i + 1 < text.Length && text[i + 1] == ':')
+            if(c == (byte)'_' && i + 1 < text.Length && text[i + 1] == (byte)':')
             {
                 int start = i + 2;
                 int end = start;
-                while(end < text.Length && IsNameChar(text[end]))
+                while(end < text.Length && IsNameByte(text[end]))
                 {
                     end++;
                 }
@@ -309,16 +316,16 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
                     return LexStep.NeedMore;
                 }
 
-                token = new OwlFunctionalToken(OwlFunctionalTokenKind.BlankNode, text[start..end].ToString(), null, null, i, end);
+                token = new OwlFunctionalToken(OwlFunctionalTokenKind.BlankNode, Slice(start, end), null, null, i, end);
                 LexPosition = end;
 
                 return LexStep.Token;
             }
 
-            if(char.IsDigit(c))
+            if(IsAsciiDigit(c))
             {
                 int end = i;
-                while(end < text.Length && char.IsDigit(text[end]))
+                while(end < text.Length && IsAsciiDigit(text[end]))
                 {
                     end++;
                 }
@@ -328,16 +335,16 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
                     return LexStep.NeedMore;
                 }
 
-                token = new OwlFunctionalToken(OwlFunctionalTokenKind.Number, text[i..end].ToString(), null, null, i, end);
+                token = new OwlFunctionalToken(OwlFunctionalTokenKind.Number, Slice(i, end), null, null, i, end);
                 LexPosition = end;
 
                 return LexStep.Token;
             }
 
-            if(IsNameStartChar(c) || c == ':')
+            if(IsNameStartByte(c) || c == (byte)':')
             {
                 int end = i;
-                while(end < text.Length && (IsNameChar(text[end]) || text[end] == ':'))
+                while(end < text.Length && (IsNameByte(text[end]) || text[end] == (byte)':'))
                 {
                     end++;
                 }
@@ -347,28 +354,28 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
                     return LexStep.NeedMore;
                 }
 
-                token = new OwlFunctionalToken(OwlFunctionalTokenKind.Name, text[i..end].ToString(), null, null, i, end);
+                token = new OwlFunctionalToken(OwlFunctionalTokenKind.Name, Slice(i, end), null, null, i, end);
                 LexPosition = end;
 
                 return LexStep.Token;
             }
 
-            Report($"Unexpected character '{c}'.", Map.Span(i, i + 1));
+            Report($"Unexpected character '{(char)c}'.", Map.Span(i, i + 1));
             i++;
             LexPosition = i;
         }
     }
 
     /// <summary>Lexes a <c>&lt;…&gt;</c> IRI reference starting at <paramref name="start"/>.</summary>
-    /// <param name="text">The buffered text.</param>
+    /// <param name="text">The buffered bytes.</param>
     /// <param name="start">The offset of the opening angle bracket.</param>
     /// <param name="token">The lexed token on success.</param>
     /// <returns>The step outcome.</returns>
-    private LexStep LexIri(ReadOnlySpan<char> text, int start, out OwlFunctionalToken token)
+    private LexStep LexIri(ReadOnlySpan<byte> text, int start, out OwlFunctionalToken token)
     {
         token = default;
 
-        int close = text[(start + 1)..].IndexOf('>');
+        int close = text[(start + 1)..].IndexOf((byte)'>');
         if(close < 0)
         {
             if(!Final)
@@ -382,39 +389,42 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
             return LexStep.Exhausted;
         }
 
-        token = new OwlFunctionalToken(OwlFunctionalTokenKind.Iri, text.Slice(start + 1, close).ToString(), null, null, start, start + close + 2);
+        token = new OwlFunctionalToken(OwlFunctionalTokenKind.Iri, Slice(start + 1, start + 1 + close), null, null, start, start + close + 2);
         LexPosition = token.End;
 
         return LexStep.Token;
     }
 
     /// <summary>Lexes a quoted literal with its optional <c>^^datatype</c> or <c>@language</c> suffix.</summary>
-    /// <param name="text">The buffered text.</param>
+    /// <param name="text">The buffered bytes.</param>
     /// <param name="start">The offset of the opening quote.</param>
     /// <param name="token">The lexed token on success.</param>
     /// <returns>The step outcome.</returns>
-    private LexStep LexLiteral(ReadOnlySpan<char> text, int start, out OwlFunctionalToken token)
+    private LexStep LexLiteral(ReadOnlySpan<byte> text, int start, out OwlFunctionalToken token)
     {
         token = default;
 
-        StringBuilder value = new();
+        //The decoded value is never longer than its source extent; escapes
+        //only ever shrink it, so the remaining span bounds the buffer.
+        byte[] value = new byte[text.Length - start];
+        int valueLength = 0;
         int i = start + 1;
-        while(i < text.Length && text[i] != '"')
+        while(i < text.Length && text[i] != (byte)'"')
         {
-            if(text[i] == '\\' && i + 1 < text.Length)
+            if(text[i] == (byte)'\\' && i + 1 < text.Length)
             {
                 i++;
-                value.Append(text[i] switch
+                value[valueLength++] = text[i] switch
                 {
-                    'n' => '\n',
-                    't' => '\t',
-                    'r' => '\r',
+                    (byte)'n' => (byte)'\n',
+                    (byte)'t' => (byte)'\t',
+                    (byte)'r' => (byte)'\r',
                     _ => text[i]
-                });
+                };
             }
             else
             {
-                value.Append(text[i]);
+                value[valueLength++] = text[i];
             }
 
             i++;
@@ -442,10 +452,10 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
             return LexStep.NeedMore;
         }
 
-        string? datatype = null;
-        string? language = null;
+        Utf8String? datatype = null;
+        Utf8String? language = null;
 
-        if(i + 1 < text.Length && text[i] == '^' && text[i + 1] == '^')
+        if(i + 1 < text.Length && text[i] == (byte)'^' && text[i + 1] == (byte)'^')
         {
             i += 2;
 
@@ -454,9 +464,9 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
                 return LexStep.NeedMore;
             }
 
-            if(i < text.Length && text[i] == '<')
+            if(i < text.Length && text[i] == (byte)'<')
             {
-                int close = text[(i + 1)..].IndexOf('>');
+                int close = text[(i + 1)..].IndexOf((byte)'>');
                 if(close < 0)
                 {
                     if(!Final)
@@ -465,19 +475,19 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
                     }
 
                     Report("Unterminated datatype IRI.", Map.Span(i, text.Length));
-                    datatype = string.Empty;
+                    datatype = Utf8String.WithoutPrecomputedHash(default);
                     i = text.Length;
                 }
                 else
                 {
-                    datatype = "<" + text.Slice(i + 1, close).ToString();
+                    datatype = MarkedDatatypeIri(text, i + 1, close);
                     i += close + 2;
                 }
             }
             else
             {
                 int nameStart = i;
-                while(i < text.Length && (IsNameChar(text[i]) || text[i] == ':'))
+                while(i < text.Length && (IsNameByte(text[i]) || text[i] == (byte)':'))
                 {
                     i++;
                 }
@@ -487,19 +497,19 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
                     return LexStep.NeedMore;
                 }
 
-                datatype = text[nameStart..i].ToString();
+                datatype = Slice(nameStart, i);
             }
         }
-        else if(!Final && i + 1 == text.Length && text[i] == '^')
+        else if(!Final && i + 1 == text.Length && text[i] == (byte)'^')
         {
             //A single caret at the buffer end may become the ^^ of a datatype.
             return LexStep.NeedMore;
         }
-        else if(i < text.Length && text[i] == '@')
+        else if(i < text.Length && text[i] == (byte)'@')
         {
             i++;
             int tagStart = i;
-            while(i < text.Length && (char.IsLetterOrDigit(text[i]) || text[i] == '-'))
+            while(i < text.Length && (IsAsciiLetterOrDigit(text[i]) || text[i] == (byte)'-'))
             {
                 i++;
             }
@@ -509,23 +519,76 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
                 return LexStep.NeedMore;
             }
 
-            language = text[tagStart..i].ToString();
+            language = Slice(tagStart, i);
         }
 
-        token = new OwlFunctionalToken(OwlFunctionalTokenKind.Literal, value.ToString(), datatype, language, start, i);
+        token = new OwlFunctionalToken(OwlFunctionalTokenKind.Literal, new Utf8String(value.AsMemory(0, valueLength)), datatype, language, start, i);
         LexPosition = i;
 
         return LexStep.Token;
     }
 
-    private static bool IsNameStartChar(char c)
+    /// <summary>Captures a zero-copy window over <see cref="Buffer"/> as a deferred-hash value.</summary>
+    /// <param name="start">The inclusive start byte offset.</param>
+    /// <param name="end">The exclusive end byte offset.</param>
+    /// <returns>The bytes <c>[start, end)</c> as a <see cref="Utf8String"/> over the buffer's memory.</returns>
+    private Utf8String Slice(int start, int end)
     {
-        return char.IsLetter(c) || c == '_';
+        return Utf8String.WithoutPrecomputedHash(Buffer.AsMemory(start, end - start));
     }
 
-    private static bool IsNameChar(char c)
+    /// <summary>Builds a <c>&lt;</c>-marked datatype IRI value: the marker byte followed by the IRI body.</summary>
+    /// <param name="text">The buffered bytes.</param>
+    /// <param name="bodyStart">The inclusive start byte offset of the IRI body.</param>
+    /// <param name="bodyLength">The length of the IRI body in bytes.</param>
+    /// <returns>The marked datatype IRI as its own buffer; the converter strips the marker.</returns>
+    private static Utf8String MarkedDatatypeIri(ReadOnlySpan<byte> text, int bodyStart, int bodyLength)
     {
-        return char.IsLetterOrDigit(c) || c == '_' || c == '-' || c == '.';
+        byte[] marked = new byte[bodyLength + 1];
+        marked[0] = (byte)'<';
+        text.Slice(bodyStart, bodyLength).CopyTo(marked.AsSpan(1));
+
+        return Utf8String.WithoutPrecomputedHash(marked);
+    }
+
+    /// <summary>Whether a byte is one of the grammar's ASCII whitespace bytes.</summary>
+    /// <param name="b">The byte to classify.</param>
+    /// <returns><see langword="true"/> for space, tab, line feed, vertical tab, form feed, or carriage return.</returns>
+    private static bool IsAsciiWhitespace(byte b)
+    {
+        return b == (byte)' ' || (b >= (byte)'\t' && b <= (byte)'\r');
+    }
+
+    /// <summary>Whether a byte is an ASCII decimal digit.</summary>
+    /// <param name="b">The byte to classify.</param>
+    /// <returns><see langword="true"/> for <c>0</c> through <c>9</c>.</returns>
+    private static bool IsAsciiDigit(byte b)
+    {
+        return b >= (byte)'0' && b <= (byte)'9';
+    }
+
+    /// <summary>Whether a byte is an ASCII letter or decimal digit.</summary>
+    /// <param name="b">The byte to classify.</param>
+    /// <returns><see langword="true"/> for <c>A</c>–<c>Z</c>, <c>a</c>–<c>z</c>, or <c>0</c>–<c>9</c>.</returns>
+    private static bool IsAsciiLetterOrDigit(byte b)
+    {
+        return IsAsciiDigit(b) || ((b | 0x20) >= (byte)'a' && (b | 0x20) <= (byte)'z');
+    }
+
+    /// <summary>Whether a byte can begin a name: an ASCII letter, an underscore, or any non-ASCII (multi-byte) code-point byte.</summary>
+    /// <param name="b">The byte to classify.</param>
+    /// <returns><see langword="true"/> when the byte may start a constructor name or prefixed name.</returns>
+    private static bool IsNameStartByte(byte b)
+    {
+        return ((b | 0x20) >= (byte)'a' && (b | 0x20) <= (byte)'z') || b == (byte)'_' || b >= 0x80;
+    }
+
+    /// <summary>Whether a byte can continue a name: an ASCII letter or digit, <c>_</c>, <c>-</c>, <c>.</c>, or any non-ASCII byte.</summary>
+    /// <param name="b">The byte to classify.</param>
+    /// <returns><see langword="true"/> when the byte may continue a constructor name or prefixed name.</returns>
+    private static bool IsNameByte(byte b)
+    {
+        return IsAsciiLetterOrDigit(b) || b == (byte)'_' || b == (byte)'-' || b == (byte)'.' || b >= 0x80;
     }
 
     //The streaming tree builder. A name token is held back one step because
@@ -575,14 +638,14 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
 
     /// <summary>Opens a constructor group and pushes it onto the open stack.</summary>
     /// <param name="head">The constructor name, or <see langword="null"/> for a bare group.</param>
-    /// <param name="start">The character offset the group's span starts at.</param>
-    private void OpenGroup(string? head, int start)
+    /// <param name="start">The byte offset the group's span starts at.</param>
+    private void OpenGroup(Utf8String? head, int start)
     {
         OwlFunctionalNode group = new() { Head = head, SpanStart = start };
         Open.Peek().Children.Add(group);
         Open.Push(group);
 
-        if(head == "Ontology" && Open.Count == 2)
+        if(head is Utf8String headValue && headValue.Span.SequenceEqual(OwlFunctionalKeywords.Ontology) && Open.Count == 2)
         {
             OntologyGroup = group;
             Converter.BeginOntology();
@@ -635,7 +698,7 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
         {
             parent.Children.RemoveAt(parent.Children.Count - 1);
 
-            if(closed.Head == "Prefix")
+            if(closed.Head is Utf8String head && head.Span.SequenceEqual(OwlFunctionalKeywords.Prefix))
             {
                 Converter.RegisterPrefix(closed);
             }
