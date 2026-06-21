@@ -161,19 +161,10 @@ public static class ColumnarHyperCube
             int[] coordinates = CoordinatesOf(cellIndex, shares);
             HyperCubeCell cell = new(shares, coordinates);
 
-            cells.Add(Task.Run(
-                async () =>
-                {
-                    ColumnarBasicGraphPatternEvaluator evaluator = new(
-                        index, query, planner ?? Planners.FirstOccurrence(query), timeProvider,
-                        cardinalities, accessControl, accessContext, traceHandler, correlationId, cell);
-
-                    await foreach(Solution solution in evaluator.EvaluateAsync(cancellationToken).ConfigureAwait(false))
-                    {
-                        await writer.WriteAsync(solution, cancellationToken).ConfigureAwait(false);
-                    }
-                },
-                cancellationToken));
+            CellEvaluation evaluation = new(
+                index, query, planner, timeProvider, cardinalities, accessControl,
+                accessContext, traceHandler, correlationId, writer, cell, cancellationToken);
+            cells.Add(Task.Run(evaluation.RunAsync, cancellationToken));
         }
 
         try
@@ -186,6 +177,87 @@ public static class ColumnarHyperCube
             writer.Complete(exception);
 
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Carries one HyperCube cell's evaluator inputs as explicit state so the per-cell task body
+    /// is a bound method group, not an async lambda closing over the enclosing locals.
+    /// </summary>
+    /// <param name="index">The shared immutable columnar index.</param>
+    /// <param name="query">The basic graph pattern under evaluation.</param>
+    /// <param name="planner">The planner, or <see langword="null"/> to default to first-occurrence.</param>
+    /// <param name="timeProvider">The time source threaded to the evaluator.</param>
+    /// <param name="cardinalities">The a-priori cardinalities, if any.</param>
+    /// <param name="accessControl">The access-control delegate, if any.</param>
+    /// <param name="accessContext">The access context, if any.</param>
+    /// <param name="traceHandler">The trace sink, if any.</param>
+    /// <param name="correlationId">The correlation id shared across cells.</param>
+    /// <param name="writer">The shared channel every cell writes its solutions to.</param>
+    /// <param name="cell">This cell's grid coordinates.</param>
+    /// <param name="cancellationToken">The token cancelling evaluation and writes.</param>
+    private sealed class CellEvaluation(
+        ColumnarTripleIndex index,
+        BasicGraphPattern query,
+        Planner? planner,
+        TimeProvider timeProvider,
+        AprioriCardinalities? cardinalities,
+        AccessControlDelegate? accessControl,
+        AccessContext? accessContext,
+        TraceHandler<QueryTraceEvent>? traceHandler,
+        Guid correlationId,
+        ChannelWriter<Solution> writer,
+        HyperCubeCell cell,
+        CancellationToken cancellationToken)
+    {
+        /// <summary>The shared immutable columnar index.</summary>
+        private ColumnarTripleIndex Index { get; } = index;
+
+        /// <summary>The basic graph pattern under evaluation.</summary>
+        private BasicGraphPattern Query { get; } = query;
+
+        /// <summary>The planner, or <see langword="null"/> to default to first-occurrence.</summary>
+        private Planner? Planner { get; } = planner;
+
+        /// <summary>The time source threaded to the evaluator.</summary>
+        private TimeProvider TimeProvider { get; } = timeProvider;
+
+        /// <summary>The a-priori cardinalities, if any.</summary>
+        private AprioriCardinalities? Cardinalities { get; } = cardinalities;
+
+        /// <summary>The access-control delegate, if any.</summary>
+        private AccessControlDelegate? AccessControl { get; } = accessControl;
+
+        /// <summary>The access context, if any.</summary>
+        private AccessContext? AccessContext { get; } = accessContext;
+
+        /// <summary>The trace sink, if any.</summary>
+        private TraceHandler<QueryTraceEvent>? TraceHandler { get; } = traceHandler;
+
+        /// <summary>The correlation id shared across cells.</summary>
+        private Guid CorrelationId { get; } = correlationId;
+
+        /// <summary>The shared channel every cell writes its solutions to.</summary>
+        private ChannelWriter<Solution> Writer { get; } = writer;
+
+        /// <summary>This cell's grid coordinates.</summary>
+        private HyperCubeCell Cell { get; } = cell;
+
+        /// <summary>The token cancelling evaluation and writes.</summary>
+        private CancellationToken CancellationToken { get; } = cancellationToken;
+
+        /// <summary>Runs this cell's evaluator, writing each solution into the shared channel.</summary>
+        /// <returns>A task that completes when the cell's solution stream drains.</returns>
+        public async Task RunAsync()
+        {
+            ColumnarBasicGraphPatternEvaluator evaluator = new(
+                Index, Query, Planner ?? Planners.FirstOccurrence(Query), TimeProvider,
+                Cardinalities, AccessControl, AccessContext, TraceHandler, CorrelationId, Cell);
+
+            await foreach(Solution solution in evaluator.EvaluateAsync(CancellationToken).ConfigureAwait(false))
+            {
+                await Writer.WriteAsync(solution, CancellationToken).ConfigureAwait(false);
+            }
         }
     }
 

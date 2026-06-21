@@ -827,7 +827,7 @@ public static class HypertrieOps
         Dictionary<NodeHandle, NodeIdentifier> known = [];
         foreach(NodeHandle handle in IterativeTraversal.PostOrder(
             seeds: seeds,
-            adjacency: h => EnumerateNonNullChildHandles(h, store)))
+            adjacency: new ChildHandleAdjacency(store).Of))
         {
             HypertrieNode node = store.GetByHandle(handle);
             NodeIdentifier id = NodeIdentifier.Empty;
@@ -862,6 +862,25 @@ public static class HypertrieOps
                     yield return entry.Value;
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Carries the node store as explicit state so the post-order walk's adjacency is a bound
+    /// method group, not a lambda closing over the enclosing store.
+    /// </summary>
+    /// <param name="store">The node store the child handles are resolved against.</param>
+    private sealed class ChildHandleAdjacency(NodeStore store)
+    {
+        /// <summary>The node store the child handles are resolved against.</summary>
+        private NodeStore Store { get; } = store;
+
+        /// <summary>Yields every FN child handle referenced from the node's edge maps.</summary>
+        /// <param name="handle">The node whose child handles to enumerate.</param>
+        /// <returns>The node's non-null arena child handles.</returns>
+        public IEnumerable<NodeHandle> Of(NodeHandle handle)
+        {
+            return EnumerateNonNullChildHandles(handle, Store);
         }
     }
 

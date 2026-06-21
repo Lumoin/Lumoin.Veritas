@@ -89,11 +89,12 @@ public sealed record GyoJoinTree(IReadOnlyList<int> Parent, IReadOnlyList<int> P
                 }
             }
 
+            Predicate<Variable> isSingleton = new SingletonVariablePredicate(occurrences).IsSingleton;
             for(int i = 0; i < n; i++)
             {
                 if(!removed[i])
                 {
-                    sets[i].RemoveWhere(variable => occurrences[variable] == 1);
+                    sets[i].RemoveWhere(isSingleton);
                 }
             }
 
@@ -183,5 +184,25 @@ public sealed record GyoJoinTree(IReadOnlyList<int> Parent, IReadOnlyList<int> P
         }
 
         return shared;
+    }
+
+    /// <summary>
+    /// Carries the per-variable occurrence counts as explicit state so the singleton test passed
+    /// to the set's <c>RemoveWhere</c> is a bound method group, not a lambda closing over the
+    /// enclosing counts.
+    /// </summary>
+    /// <param name="occurrences">Each variable's occurrence count across the surviving edges.</param>
+    private sealed class SingletonVariablePredicate(Dictionary<Variable, int> occurrences)
+    {
+        /// <summary>Each variable's occurrence count across the surviving edges.</summary>
+        private Dictionary<Variable, int> Occurrences { get; } = occurrences;
+
+        /// <summary>Tests whether a variable occurs in exactly one surviving edge.</summary>
+        /// <param name="variable">The variable to test.</param>
+        /// <returns><see langword="true"/> when the variable occurs exactly once.</returns>
+        public bool IsSingleton(Variable variable)
+        {
+            return Occurrences[variable] == 1;
+        }
     }
 }
