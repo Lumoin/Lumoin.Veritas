@@ -303,15 +303,14 @@ internal sealed class PersistenceDetectionMutationTests
         using IMemoryOwner<byte> owner = pool.Rent(size);
         Span<byte> span = owner.Memory.Span[..size];
         manifest.WriteTo(span, checksum);
-        byte[] bytes = span.ToArray();
         if(corrupt)
         {
-            bytes[ManifestCorruptionOffset] ^= 0xFF;
+            span[ManifestCorruptionOffset] ^= 0xFF;
         }
 
         try
         {
-            _ = Manifest.ReadFrom(bytes, DegenerateResolver);
+            _ = Manifest.ReadFrom(span, DegenerateResolver);
 
             return true;
         }
