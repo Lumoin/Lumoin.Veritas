@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Json;
@@ -39,7 +40,40 @@ public static class JsonLdRemoteContextParsing
     public static ParseRemoteContextDelegate Create(ParseJsonDelegate jsonParser)
     {
         ArgumentNullException.ThrowIfNull(jsonParser);
-        return (resource, cancellationToken) =>
+        return new RemoteContextParser(jsonParser).Parse;
+    }
+
+    /// <summary>
+    /// Adapts a legacy <see cref="ContextResolverDelegate"/> into a
+    /// <see cref="FetchRemoteResourceDelegate"/>. The bytes from the
+    /// resolver become the <see cref="RemoteResource.Bytes"/>; the
+    /// resource's content type defaults to <c>application/ld+json</c>.
+    /// </summary>
+    /// <param name="resolver">The legacy resolver delegate.</param>
+    /// <returns>A fetcher delegate that wraps <paramref name="resolver"/>.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="resolver"/> is <see langword="null"/>.</exception>
+    public static FetchRemoteResourceDelegate AdaptResolverToFetcher(ContextResolverDelegate resolver)
+    {
+        ArgumentNullException.ThrowIfNull(resolver);
+        return new ResolverFetcherAdapter(resolver).FetchAsync;
+    }
+
+    /// <summary>
+    /// Parses a fetched remote-context document with a supplied JSON parser, carrying the parser as
+    /// explicit state so the <see cref="ParseRemoteContextDelegate"/> is a bound method group rather
+    /// than a lambda closing over the enclosing parser.
+    /// </summary>
+    /// <param name="jsonParser">The application's JSON parser implementation.</param>
+    private sealed class RemoteContextParser(ParseJsonDelegate jsonParser)
+    {
+        /// <summary>The application's JSON parser implementation.</summary>
+        private ParseJsonDelegate JsonParser { get; } = jsonParser;
+
+        /// <summary>Parses the fetched UTF-8 JSON bytes and flattens its <c>@context</c> into the format-neutral dictionary shape.</summary>
+        /// <param name="resource">The fetched remote-context resource.</param>
+        /// <param name="cancellationToken">A token to cancel the operation.</param>
+        /// <returns>The flattened context dictionary.</returns>
+        public ValueTask<IReadOnlyDictionary<string, object?>> Parse(RemoteResource resource, CancellationToken cancellationToken)
         {
             ArgumentNullException.ThrowIfNull(resource);
             cancellationToken.ThrowIfCancellationRequested();
@@ -48,7 +82,7 @@ public static class JsonLdRemoteContextParsing
             //Utf8String for the parser. Use the no-precomputed-hash form
             //since these bytes are consumed once and not used as a key.
             Utf8String utf8 = Utf8String.WithoutPrecomputedHash(resource.Bytes);
-            JsonNode root = jsonParser(utf8);
+            JsonNode root = JsonParser(utf8);
 
             //A remote context document must be a single map carrying @context.
             if(root.Kind != JsonNodeKind.Object)
@@ -83,27 +117,31 @@ public static class JsonLdRemoteContextParsing
                 [JsonLdKeywords.Context] = flattened
             };
             return ValueTask.FromResult<IReadOnlyDictionary<string, object?>>(wrapped);
-        };
+        }
     }
 
     /// <summary>
-    /// Adapts a legacy <see cref="ContextResolverDelegate"/> into a
-    /// <see cref="FetchRemoteResourceDelegate"/>. The bytes from the
-    /// resolver become the <see cref="RemoteResource.Bytes"/>; the
-    /// resource's content type defaults to <c>application/ld+json</c>.
+    /// Adapts a <see cref="ContextResolverDelegate"/> into a <see cref="FetchRemoteResourceDelegate"/>,
+    /// carrying the resolver as explicit state so the fetcher is a bound method group rather than a
+    /// lambda closing over the enclosing resolver.
     /// </summary>
-    /// <param name="resolver">The legacy resolver delegate.</param>
-    /// <returns>A fetcher delegate that wraps <paramref name="resolver"/>.</returns>
-    /// <exception cref="ArgumentNullException"><paramref name="resolver"/> is <see langword="null"/>.</exception>
-    [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
-        Justification = "JSON-LD specification uses string URIs throughout the context processing algorithm.")]
-    public static FetchRemoteResourceDelegate AdaptResolverToFetcher(ContextResolverDelegate resolver)
+    /// <param name="resolver">The resolver delegate the fetch runs through.</param>
+    private sealed class ResolverFetcherAdapter(ContextResolverDelegate resolver)
     {
-        ArgumentNullException.ThrowIfNull(resolver);
-        return async (contextUrl, baseUrl, cancellationToken) =>
+        /// <summary>The resolver delegate the fetch runs through.</summary>
+        private ContextResolverDelegate Resolver { get; } = resolver;
+
+        /// <summary>Fetches a remote context by resolving its URL and wrapping the bytes as a resource.</summary>
+        /// <param name="contextUrl">The remote context URL to fetch.</param>
+        /// <param name="baseUrl">The base URL; unused, as the resolver resolves the absolute URL.</param>
+        /// <param name="cancellationToken">A token to cancel the operation.</param>
+        /// <returns>The fetched remote-context resource.</returns>
+        [SuppressMessage("Design", "CA1054:URI-like parameters should not be strings",
+            Justification = "JSON-LD specification uses string URIs throughout the context processing algorithm.")]
+        public async ValueTask<RemoteResource> FetchAsync(string contextUrl, string? baseUrl, CancellationToken cancellationToken)
         {
             _ = baseUrl;
-            Utf8String? resolved = await resolver(new Uri(contextUrl), cancellationToken).ConfigureAwait(false);
+            Utf8String? resolved = await Resolver(new Uri(contextUrl), cancellationToken).ConfigureAwait(false);
             if(resolved is null)
             {
                 throw new LinkedDataProcessingException(
@@ -116,7 +154,7 @@ public static class JsonLdRemoteContextParsing
                 ContentType = "application/ld+json",
                 FinalUrl = contextUrl
             };
-        };
+        }
     }
 
     private static object? FlattenNode(JsonNode node)
