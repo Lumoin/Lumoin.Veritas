@@ -1105,20 +1105,31 @@ public static class SparqlExpressionEvaluator
             : ExpressionValue.Error;
     }
 
+    /// <summary>Tests a property of an evaluated RDF term — its kind, for the term-type predicates.</summary>
+    /// <param name="term">The bound term to test.</param>
+    /// <returns><see langword="true"/> when the property holds.</returns>
+    private delegate bool RdfTermPredicate(RdfTerm term);
+
     /// <summary>Applies a term-type predicate to a single argument, propagating an argument error.</summary>
     /// <param name="argument">The argument value.</param>
     /// <param name="test">The predicate on the bound term.</param>
     /// <returns>A boolean value, or an error when the argument errs.</returns>
-    private static ExpressionValue TypeTest(ExpressionValue argument, Func<RdfTerm, bool> test)
+    private static ExpressionValue TypeTest(ExpressionValue argument, RdfTermPredicate test)
     {
         return argument.IsError ? ExpressionValue.Error : Boolean(test(argument.Term));
     }
+
+    /// <summary>Tests a binary property over two UTF-8 string values (operating on their byte spans).</summary>
+    /// <param name="left">The first UTF-8 value.</param>
+    /// <param name="right">The second UTF-8 value.</param>
+    /// <returns><see langword="true"/> when the property holds.</returns>
+    private delegate bool Utf8StringBinaryPredicate(Utf8String left, Utf8String right);
 
     /// <summary>Applies a binary predicate over two string arguments' UTF-8 values, erring when either is not a string or errs.</summary>
     /// <param name="arguments">The argument values (two strings expected).</param>
     /// <param name="test">The predicate over the two UTF-8 values (operates on their byte spans).</param>
     /// <returns>A boolean value, or an error.</returns>
-    private static ExpressionValue StringTest(ExpressionValue[] arguments, Func<Utf8String, Utf8String, bool> test)
+    private static ExpressionValue StringTest(ExpressionValue[] arguments, Utf8StringBinaryPredicate test)
     {
         return TryGetLexicalText(arguments[0], out Utf8String left) && TryGetLexicalText(arguments[1], out Utf8String right)
             ? Boolean(test(left, right))
@@ -1550,11 +1561,16 @@ public static class SparqlExpressionEvaluator
         return StringLiteral(Utf8String.FromString(Convert.ToHexStringLower(context.Hash(algorithm, literal.Value.Span))));
     }
 
+    /// <summary>Selects an integer component of a date-time value, reading the field in the value's own timezone.</summary>
+    /// <param name="value">The date-time value.</param>
+    /// <returns>The selected integer component.</returns>
+    private delegate int DateTimeComponentSelector(DateTimeOffset value);
+
     /// <summary>Evaluates a date-time accessor (<c>YEAR</c>/<c>MONTH</c>/<c>DAY</c>/<c>HOURS</c>/<c>MINUTES</c>, §17.4.5) that returns an integer component of an <c>xsd:dateTime</c>; a non-dateTime argument errs.</summary>
     /// <param name="argument">The <c>xsd:dateTime</c> argument.</param>
     /// <param name="component">The component selector, reading the field in the value's own timezone.</param>
     /// <returns>The component as an <c>xsd:integer</c>, or an error.</returns>
-    private static ExpressionValue DateComponent(ExpressionValue argument, Func<DateTimeOffset, int> component)
+    private static ExpressionValue DateComponent(ExpressionValue argument, DateTimeComponentSelector component)
     {
         return TryGetDateTime(argument, out DateTimeOffset value, out _) ? Integer(component(value)) : ExpressionValue.Error;
     }
@@ -1687,11 +1703,16 @@ public static class SparqlExpressionEvaluator
         return ExpressionValue.Of(new Lumoin.Veritas.Core.TripleTerm(arguments[0].Term, predicate, arguments[2].Term));
     }
 
+    /// <summary>Selects a component (subject, predicate, or object) of a triple term.</summary>
+    /// <param name="triple">The triple term.</param>
+    /// <returns>The selected component term.</returns>
+    private delegate RdfTerm TripleComponentSelector(Lumoin.Veritas.Core.TripleTerm triple);
+
     /// <summary>Evaluates <c>SUBJECT</c>/<c>PREDICATE</c>/<c>OBJECT</c> (RDF 1.2): extracts a component of a triple term; a non-triple-term argument errs.</summary>
     /// <param name="argument">The argument value (expected to be a triple term).</param>
     /// <param name="component">The component selector.</param>
     /// <returns>The selected component, or an error.</returns>
-    private static ExpressionValue TripleComponent(ExpressionValue argument, Func<Lumoin.Veritas.Core.TripleTerm, RdfTerm> component)
+    private static ExpressionValue TripleComponent(ExpressionValue argument, TripleComponentSelector component)
     {
         return !argument.IsError && argument.Term is Lumoin.Veritas.Core.TripleTerm triple ? ExpressionValue.Of(component(triple)) : ExpressionValue.Error;
     }

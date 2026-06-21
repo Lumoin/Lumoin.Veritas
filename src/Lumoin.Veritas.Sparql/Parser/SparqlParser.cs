@@ -1763,10 +1763,15 @@ public sealed class SparqlParser
             _ => RecoverGraphRef()
         };
 
+    /// <summary>Builds a graph reference from the consumed keyword's source span.</summary>
+    /// <param name="span">The consumed keyword's source span.</param>
+    /// <returns>The graph reference.</returns>
+    private delegate GraphRefTarget GraphRefFromSpan(SourceSpan span);
+
     /// <summary>Consumes a keyword graph reference (<c>DEFAULT</c>/<c>NAMED</c>/<c>ALL</c>) at the cursor.</summary>
     /// <param name="build">Builds the reference from the consumed keyword's span.</param>
     /// <returns>The graph reference.</returns>
-    private GraphRefTarget ConsumeKeywordGraphRef(System.Func<SourceSpan, GraphRefTarget> build)
+    private GraphRefTarget ConsumeKeywordGraphRef(GraphRefFromSpan build)
     {
         SourceSpan span = Current.Span;
         Advance();

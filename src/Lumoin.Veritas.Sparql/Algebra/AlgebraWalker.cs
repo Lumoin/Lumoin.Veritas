@@ -3,6 +3,11 @@ using System.Collections.Generic;
 
 namespace Lumoin.Veritas.Sparql.Algebra;
 
+/// <summary>Rewrites one algebra operator after its children have been transformed; return the operator unchanged to leave it as is.</summary>
+/// <param name="operator">The operator to rewrite.</param>
+/// <returns>The rewritten operator, or the same instance to leave it unchanged.</returns>
+public delegate AlgebraOperator AlgebraRewrite(AlgebraOperator @operator);
+
 /// <summary>
 /// Iterative traversal and rewriting over a SPARQL algebra tree, taking the uniform
 /// <see cref="AlgebraOperator.Children"/> surface as the adjacency. Both operations use an explicit work
@@ -47,7 +52,7 @@ public static class AlgebraWalker
     /// <param name="root">The operator to rewrite.</param>
     /// <param name="rewrite">The rewrite applied to each operator after its children; return the operator unchanged to leave it as is.</param>
     /// <returns>The rewritten tree, or the same <paramref name="root"/> instance when nothing changed.</returns>
-    public static AlgebraOperator Transform(AlgebraOperator root, Func<AlgebraOperator, AlgebraOperator> rewrite)
+    public static AlgebraOperator Transform(AlgebraOperator root, AlgebraRewrite rewrite)
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(rewrite);

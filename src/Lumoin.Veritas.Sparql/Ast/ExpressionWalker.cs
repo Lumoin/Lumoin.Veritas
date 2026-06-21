@@ -3,6 +3,11 @@ using System.Collections.Generic;
 
 namespace Lumoin.Veritas.Sparql.Ast;
 
+/// <summary>Rewrites one expression node after its children have been transformed; return the node unchanged to leave it as is.</summary>
+/// <param name="node">The node to rewrite.</param>
+/// <returns>The rewritten node, or the same instance to leave it unchanged.</returns>
+public delegate ExpressionNode ExpressionRewrite(ExpressionNode node);
+
 /// <summary>
 /// Iterative traversal and rewriting over a SPARQL <see cref="ExpressionNode"/> tree, the expression-side
 /// analogue of <c>AlgebraWalker</c>. Both operations use an explicit work stack rather than call-stack
@@ -54,7 +59,7 @@ public static class ExpressionWalker
     /// <param name="root">The expression to rewrite.</param>
     /// <param name="rewrite">The rewrite applied to each node after its children; return the node unchanged to leave it as is.</param>
     /// <returns>The rewritten expression, or the same <paramref name="root"/> instance when nothing changed.</returns>
-    public static ExpressionNode Transform(ExpressionNode root, Func<ExpressionNode, ExpressionNode> rewrite)
+    public static ExpressionNode Transform(ExpressionNode root, ExpressionRewrite rewrite)
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(rewrite);
