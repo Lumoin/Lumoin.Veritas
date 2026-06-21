@@ -113,7 +113,7 @@ internal sealed class ParitySegmentTests
         ArtifactVerifyReport report = ParitySegment.RunVerifyRound(image.Bytes);
         Assert.IsFalse(report.IsClean);
         Assert.AreEqual(1, report.CorruptCount);
-        Assert.IsFalse(report.Blocks[0].IsValid);
+        Assert.IsFalse(report.Blocks.Span[0].IsValid);
 
         //The block payload changed, not the front matter, so the trailer still verifies.
         Assert.IsTrue(report.FrontMatterValid);

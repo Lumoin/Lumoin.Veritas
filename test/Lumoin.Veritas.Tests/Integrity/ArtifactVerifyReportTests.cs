@@ -123,7 +123,7 @@ internal sealed class ArtifactVerifyReportTests
         Assert.IsTrue(report.HasChecksums);
         Assert.IsTrue(report.FrontMatterValid);
         Assert.IsTrue(report.IsClean);
-        foreach(BlockVerdict verdict in report.Blocks)
+        foreach(BlockVerdict verdict in report.Blocks.Span)
         {
             Assert.IsTrue(verdict.IsValid);
         }
@@ -144,10 +144,10 @@ internal sealed class ArtifactVerifyReportTests
 
         Assert.IsFalse(report.IsClean);
         Assert.AreEqual(1, report.CorruptCount);
-        Assert.IsFalse(report.Blocks[1].IsValid, "Block 1 must be reported corrupt.");
-        Assert.IsTrue(report.Blocks[0].IsValid);
-        Assert.IsTrue(report.Blocks[2].IsValid);
-        Assert.AreEqual(1, report.Blocks[1].BlockIndex);
+        Assert.IsFalse(report.Blocks.Span[1].IsValid, "Block 1 must be reported corrupt.");
+        Assert.IsTrue(report.Blocks.Span[0].IsValid);
+        Assert.IsTrue(report.Blocks.Span[2].IsValid);
+        Assert.AreEqual(1, report.Blocks.Span[1].BlockIndex);
     }
 
     /// <summary>Front-matter rot is reported (the front-matter verdict is false) rather than thrown — the scrub records a corrupt artifact instead of crashing the walk.</summary>
@@ -166,7 +166,7 @@ internal sealed class ArtifactVerifyReportTests
         Assert.IsFalse(report.FrontMatterValid, "Front-matter rot must be reported, not thrown.");
         Assert.AreEqual(0, report.CorruptCount, "Only the front matter is corrupt; every block stays valid.");
         Assert.IsFalse(report.IsClean);
-        foreach(BlockVerdict verdict in report.Blocks)
+        foreach(BlockVerdict verdict in report.Blocks.Span)
         {
             Assert.IsTrue(verdict.IsValid);
         }
@@ -228,9 +228,9 @@ internal sealed class ArtifactVerifyReportTests
 
         Assert.IsFalse(report.IsClean);
         Assert.AreEqual(1, report.CorruptCount);
-        Assert.IsFalse(report.Blocks[1].IsValid, "Block 1 must be reported corrupt.");
-        Assert.IsTrue(report.Blocks[0].IsValid);
-        Assert.IsTrue(report.Blocks[2].IsValid);
+        Assert.IsFalse(report.Blocks.Span[1].IsValid, "Block 1 must be reported corrupt.");
+        Assert.IsTrue(report.Blocks.Span[0].IsValid);
+        Assert.IsTrue(report.Blocks.Span[2].IsValid);
     }
 
     /// <summary>A magic mismatch is refused by the sketch verify, not read as a degraded report.</summary>
@@ -347,8 +347,8 @@ internal sealed class ArtifactVerifyReportTests
         Assert.IsTrue(report.HasChecksums);
         Assert.IsTrue(report.FrontMatterValid);
         Assert.AreEqual(1, report.ChecksumAlgorithmId);
-        Assert.AreEqual(new BlockVerdict(0, 64, 128, true), report.Blocks[0]);
-        Assert.AreEqual(new BlockVerdict(1, 192, 256, false), report.Blocks[1]);
-        Assert.AreEqual(new BlockVerdict(2, 448, 64, true), report.Blocks[2]);
+        Assert.AreEqual(new BlockVerdict(0, 64, 128, true), report.Blocks.Span[0]);
+        Assert.AreEqual(new BlockVerdict(1, 192, 256, false), report.Blocks.Span[1]);
+        Assert.AreEqual(new BlockVerdict(2, 448, 64, true), report.Blocks.Span[2]);
     }
 }

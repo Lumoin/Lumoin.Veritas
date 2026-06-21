@@ -89,9 +89,10 @@ public static class ScrubRound
                 Emit(trace, ref sequence, timestampTicks, correlationId, StorageTraceEventKind.FrontMatterCorrupt, generation, roleCode, -1, 0, 0);
             }
 
-            for(int i = 0; i < report.Blocks.Count; i++)
+            ReadOnlySpan<BlockVerdict> blocks = report.Blocks.Span;
+            for(int i = 0; i < blocks.Length; i++)
             {
-                BlockVerdict verdict = report.Blocks[i];
+                BlockVerdict verdict = blocks[i];
                 if(verdict.IsValid)
                 {
                     verified++;

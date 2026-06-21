@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 
 namespace Lumoin.Veritas.Core.Integrity;
 
@@ -19,11 +18,9 @@ public sealed class ArtifactVerifyReport
     /// <param name="hasChecksums">Whether the image carried per-block checksums to verify against.</param>
     /// <param name="hasFrontMatterChecksum">Whether the image carried a front-matter checksum over its header, scalars, and per-block section.</param>
     /// <param name="frontMatterValid">Whether the front-matter checksum matched; <see langword="true"/> when the image carried none.</param>
-    /// <param name="blocks">The per-block verdicts, in block order.</param>
-    public ArtifactVerifyReport(byte checksumAlgorithmId, bool hasChecksums, bool hasFrontMatterChecksum, bool frontMatterValid, IReadOnlyList<BlockVerdict> blocks)
+    /// <param name="blocks">The per-block verdicts, in block order; held as a contiguous span, not copied.</param>
+    public ArtifactVerifyReport(byte checksumAlgorithmId, bool hasChecksums, bool hasFrontMatterChecksum, bool frontMatterValid, ReadOnlyMemory<BlockVerdict> blocks)
     {
-        ArgumentNullException.ThrowIfNull(blocks);
-
         ChecksumAlgorithmId = checksumAlgorithmId;
         HasChecksums = hasChecksums;
         HasFrontMatterChecksum = hasFrontMatterChecksum;
@@ -43,21 +40,22 @@ public sealed class ArtifactVerifyReport
     /// <summary>Whether the front-matter checksum matched the stored digest; <see langword="true"/> when the image carried none.</summary>
     public bool FrontMatterValid { get; }
 
-    /// <summary>The per-block verdicts, in block order.</summary>
-    public IReadOnlyList<BlockVerdict> Blocks { get; }
+    /// <summary>The per-block verdicts, in block order; a contiguous value-type span the scrub walk indexes without an interface hop.</summary>
+    public ReadOnlyMemory<BlockVerdict> Blocks { get; }
 
     /// <summary>The number of blocks the verify pass walked.</summary>
-    public int BlockCount => Blocks.Count;
+    public int BlockCount => Blocks.Length;
 
     /// <summary>The number of blocks that failed their checksum.</summary>
     public int CorruptCount
     {
         get
         {
+            ReadOnlySpan<BlockVerdict> blocks = Blocks.Span;
             int count = 0;
-            for(int i = 0; i < Blocks.Count; i++)
+            for(int i = 0; i < blocks.Length; i++)
             {
-                if(!Blocks[i].IsValid)
+                if(!blocks[i].IsValid)
                 {
                     count++;
                 }
