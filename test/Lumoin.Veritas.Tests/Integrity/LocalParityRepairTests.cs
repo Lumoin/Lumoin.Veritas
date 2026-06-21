@@ -367,9 +367,9 @@ internal sealed class LocalParityRepairTests
             Assert.IsTrue(ParitySegment.RunVerifyRound(rederived.Image.Span).IsClean, "The re-derived parity must verify clean.");
 
             //The re-derived parity equals a fresh parity folded over the same system-of-record — the differential twin.
-            byte[] rederivedParity = ParitySegment.ReadFrom(rederived.Image.Span);
+            using ParityBlock rederivedParity = ParitySegment.ReadFrom(rederived.Image.Span, bytePool);
             using ParityBlock reference = BuildParityBlock(triples, bytePool);
-            bool faithful = rederivedParity.AsSpan().SequenceEqual(reference.Span);
+            bool faithful = rederivedParity.Span.SequenceEqual(reference.Span);
             Assert.IsTrue(faithful, "The re-derived parity must equal the parity over the system-of-record.");
             StorageTraceEvent rederivedEvent = trace.Events.Single(static e => e.Kind == StorageTraceEventKind.Rederived);
             Assert.AreEqual(ManifestFileRole.Parity.Code, rederivedEvent.RoleCode);
