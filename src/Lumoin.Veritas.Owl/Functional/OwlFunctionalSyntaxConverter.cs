@@ -105,7 +105,7 @@ internal sealed class OwlFunctionalSyntaxConverter
 
         HeaderDone = true;
 
-        if(child.Head is Utf8String importHead && importHead.Span.SequenceEqual(OwlFunctionalKeywords.Import)
+        if(child.Head is Utf8String importHead && OwlFunctionalKeywords.IsImport(importHead)
             && child.Children.Count == 1 && child.Children[0].Atom.Kind == OwlFunctionalTokenKind.Iri)
         {
             Axioms.Add(new OwlImportAxiom(new NamedNode(InternTerm(child.Children[0].Atom.Text.Span))) { Origin = Origin });
@@ -113,7 +113,7 @@ internal sealed class OwlFunctionalSyntaxConverter
             return;
         }
 
-        if(child.Head is Utf8String annotationHead && annotationHead.Span.SequenceEqual(OwlFunctionalKeywords.Annotation))
+        if(child.Head is Utf8String annotationHead && OwlFunctionalKeywords.IsAnnotation(annotationHead))
         {
             //An ontology annotation surfaces as an annotation
             //assertion on the ontology IRI — the same triple the RDF

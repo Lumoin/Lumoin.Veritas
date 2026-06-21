@@ -33,7 +33,20 @@ namespace Lumoin.Veritas.Owl.Manchester;
 public static class OwlManchesterSyntaxReader
 {
     /// <summary>
-    /// Reads a Manchester-syntax ontology document.
+    /// Reads a Manchester-syntax ontology document from its UTF-8 bytes.
+    /// </summary>
+    /// <param name="utf8Text">The document's UTF-8 bytes.</param>
+    /// <returns>The structural document; parse errors are on its diagnostics.</returns>
+    public static OwlOntologyDocument Read(ReadOnlySpan<byte> utf8Text)
+    {
+        OwlManchesterSyntaxIncrementalReader reader = new();
+        reader.Feed(utf8Text);
+
+        return reader.Complete();
+    }
+
+    /// <summary>
+    /// Reads a Manchester-syntax ontology document, encoding the text to UTF-8 once at the boundary.
     /// </summary>
     /// <param name="text">The document text.</param>
     /// <returns>The structural document; parse errors are on its diagnostics.</returns>
@@ -42,9 +55,6 @@ public static class OwlManchesterSyntaxReader
     {
         ArgumentNullException.ThrowIfNull(text);
 
-        OwlManchesterSyntaxIncrementalReader reader = new();
-        reader.Feed(text);
-
-        return reader.Complete();
+        return Read(System.Text.Encoding.UTF8.GetBytes(text));
     }
 }

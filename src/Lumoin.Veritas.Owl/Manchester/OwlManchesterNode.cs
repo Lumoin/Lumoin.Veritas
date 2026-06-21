@@ -34,7 +34,7 @@ internal sealed class OwlManchesterNode
     /// <summary>The node's source extent: the atom's token, or the run from the opening to the closing delimiter.</summary>
     public SourceSpan Span { get; set; }
 
-    /// <summary>The character offset the group's span starts at, held until the closing delimiter fixes the end.</summary>
+    /// <summary>The byte offset the group's span starts at, held until the closing delimiter fixes the end.</summary>
     public int SpanStart { get; init; }
 
     /// <summary>The group's children, in document order.</summary>

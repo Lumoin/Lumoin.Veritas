@@ -242,16 +242,16 @@ internal sealed class OwlManchesterSyntaxTests
 
         //A name at the buffer end may still grow, so a feed ends at a
         //delimiter wherever the boundary status is asserted.
-        Assert.AreEqual(OwlManchesterParseStatus.Complete, reader.Feed("Prefix: : <http://example.org/> Ontology: <http://example.org/o>"));
-        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed(" Class: "));
-        Assert.AreEqual(OwlManchesterParseStatus.Complete, reader.Feed(":Person "));
-        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed("SubClassOf: "));
-        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed(":hasParent some "));
-        Assert.AreEqual(OwlManchesterParseStatus.Complete, reader.Feed(":Person "));
-        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed("and "));
-        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed("("));
-        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed("not :Rock"));
-        Assert.AreEqual(OwlManchesterParseStatus.Complete, reader.Feed(")"));
+        Assert.AreEqual(OwlManchesterParseStatus.Complete, reader.Feed("Prefix: : <http://example.org/> Ontology: <http://example.org/o>"u8));
+        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed(" Class: "u8));
+        Assert.AreEqual(OwlManchesterParseStatus.Complete, reader.Feed(":Person "u8));
+        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed("SubClassOf: "u8));
+        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed(":hasParent some "u8));
+        Assert.AreEqual(OwlManchesterParseStatus.Complete, reader.Feed(":Person "u8));
+        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed("and "u8));
+        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed("("u8));
+        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed("not :Rock"u8));
+        Assert.AreEqual(OwlManchesterParseStatus.Complete, reader.Feed(")"u8));
 
         Assert.IsFalse(reader.Diagnostics.HasErrors, "an unfinished tail must never surface as a diagnostic");
 
@@ -266,13 +266,14 @@ internal sealed class OwlManchesterSyntaxTests
         DiagnosticBag wholeBag = new();
         string rendering = OwlManchesterSyntaxWriter.Write(whole, wholeBag);
 
-        for(int cut = 0; cut <= Handwritten.Length; cut += 3)
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(Handwritten);
+        for(int cut = 0; cut <= bytes.Length; cut += 3)
         {
             OwlManchesterSyntaxIncrementalReader reader = new();
-            reader.Feed(Handwritten.AsSpan(0, cut));
+            reader.Feed(bytes.AsSpan(0, cut));
             Assert.IsFalse(reader.Diagnostics.HasErrors, $"cut {cut}: a clean prefix reported an error");
 
-            reader.Feed(Handwritten.AsSpan(cut));
+            reader.Feed(bytes.AsSpan(cut));
             OwlOntologyDocument resumed = reader.Complete();
 
             Assert.IsFalse(resumed.Diagnostics.HasErrors, $"cut {cut}: the resumed parse reported an error");
@@ -289,7 +290,7 @@ internal sealed class OwlManchesterSyntaxTests
         const string Truncated = "Prefix: : <http://example.org/> Ontology: Class: :A SubClassOf: :hasParent some (:B and";
 
         OwlManchesterSyntaxIncrementalReader reader = new();
-        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed(Truncated));
+        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed(System.Text.Encoding.UTF8.GetBytes(Truncated)));
         Assert.IsFalse(reader.Diagnostics.HasErrors, "incompleteness squiggled before Complete");
 
         OwlOntologyDocument document = reader.Complete();
@@ -313,7 +314,7 @@ internal sealed class OwlManchesterSyntaxTests
         {
             OwlManchesterSyntaxIncrementalReader reader = new();
 
-            Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed(tail), tail);
+            Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed(System.Text.Encoding.UTF8.GetBytes(tail)), tail);
             Assert.IsFalse(reader.Diagnostics.HasErrors, $"'{tail}' squiggled a merely-unfinished tail");
         }
     }
@@ -324,17 +325,19 @@ internal sealed class OwlManchesterSyntaxTests
         //The two-byte character in the comment shifts byte offsets ahead of
         //character offsets; the offending character sits on the second line.
         const string Document = "#ä\nOntology: %";
-        int split = Document.IndexOf('%', StringComparison.Ordinal) - 1;
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(Document);
+        int percent = System.Array.IndexOf(bytes, (byte)'%');
+        int split = percent - 1;
 
         OwlManchesterSyntaxIncrementalReader reader = new();
-        reader.Feed(Document.AsSpan(0, split));
-        reader.Feed(Document.AsSpan(split));
+        reader.Feed(bytes.AsSpan(0, split));
+        reader.Feed(bytes.AsSpan(split));
         OwlOntologyDocument document = reader.Complete();
 
         Assert.IsTrue(document.Diagnostics.HasErrors);
         Diagnostic diagnostic = document.Diagnostics.Diagnostics.First(d => d.Severity == DiagnosticSeverity.Error);
         Assert.AreEqual(1, diagnostic.Span.StartLine);
-        Assert.AreEqual(Document.IndexOf('%', StringComparison.Ordinal) + 1, diagnostic.Span.StartByte);
+        Assert.AreEqual(percent, diagnostic.Span.StartByte);
     }
 
     private static void AssertHasAxiom<TAxiom>(OwlOntologyDocument document)

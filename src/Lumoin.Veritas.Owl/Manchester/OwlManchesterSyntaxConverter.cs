@@ -1,6 +1,8 @@
+using System;
+using System.Buffers.Text;
 using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.Globalization;
+using System.Text;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Sourcing;
@@ -38,7 +40,7 @@ internal sealed class OwlManchesterSyntaxConverter
     public OwlManchesterSyntaxConverter(DiagnosticBag diagnostics)
     {
         Diagnostics = diagnostics;
-        foreach(KeyValuePair<string, string> builtin in OwlManchesterWords.BuiltinPrefixes)
+        foreach(KeyValuePair<Utf8String, Utf8String> builtin in OwlManchesterWords.BuiltinPrefixes)
         {
             Prefixes[builtin.Key] = builtin.Value;
         }
@@ -72,7 +74,7 @@ internal sealed class OwlManchesterSyntaxConverter
     public HashSet<Utf8String> DeclaredDatatypes { get; } = [];
 
     /// <summary>The prefix table the document's names resolve through; the built-in prefixes are preloaded.</summary>
-    private Dictionary<string, string> Prefixes { get; } = [];
+    private Dictionary<Utf8String, Utf8String> Prefixes { get; } = [];
 
     /// <summary>Converted expression values per task, filled in post-order.</summary>
     private Dictionary<ExprTask, object?> Converted { get; } = [];
@@ -151,25 +153,25 @@ internal sealed class OwlManchesterSyntaxConverter
 
             if(node is not { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Name } token } || !IsFrameStart(token.Text, inHeader))
             {
-                Report($"Expected a frame keyword, found '{(node.IsAtom ? node.Atom.Text : "(…)")}'.");
+                Report($"Expected a frame keyword, found '{(node.IsAtom ? Decode(node.Atom.Text.Span) : "(…)")}'.");
                 i++;
 
                 continue;
             }
 
-            if(token.Text == OwlManchesterWords.PrefixKeyword)
+            if(OwlManchesterWords.IsPrefixKeyword(token.Text))
             {
                 i = RegisterPrefix(items, i);
 
                 continue;
             }
 
-            if(token.Text == OwlManchesterWords.OntologyKeyword)
+            if(OwlManchesterWords.IsOntologyKeyword(token.Text))
             {
                 i++;
                 if(i < items.Count && items[i] is { IsAtom: true, Atom.Kind: OwlManchesterTokenKind.Iri } ontologyIriNode)
                 {
-                    OntologyIri ??= new NamedNode(Utf8String.FromString(ontologyIriNode.Atom.Text));
+                    OntologyIri ??= new NamedNode(InternTerm(ontologyIriNode.Atom.Text.Span));
                     i++;
 
                     //An optional version IRI follows; the structural model does not carry it.
@@ -182,7 +184,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 continue;
             }
 
-            if(OwlManchesterWords.EntityFrames.ContainsKey(token.Text) || OwlManchesterWords.MiscFrames.Contains(token.Text))
+            if(OwlManchesterWords.EntityFrames.ContainsKey(token.Text) || OwlManchesterWords.IsMiscFrame(token.Text))
             {
                 inHeader = false;
             }
@@ -199,14 +201,14 @@ internal sealed class OwlManchesterSyntaxConverter
                 }
                 else
                 {
-                    Report($"The frame '{token.Text}' is missing its subject.");
+                    Report($"The frame '{Decode(token.Text.Span)}' is missing its subject.");
                 }
             }
 
             //An ontology-annotation block absorbs following 'Annotations:'
             //keywords — they continue the block (or nest within it), they do
             //not start a sibling frame.
-            bool annotationBlock = token.Text == OwlManchesterWords.AnnotationsKeyword;
+            bool annotationBlock = OwlManchesterWords.IsAnnotationsKeyword(token.Text);
             int end = contentStart;
             while(end < items.Count && !IsFrameBoundary(items[end], inHeader && !annotationBlock))
             {
@@ -224,9 +226,9 @@ internal sealed class OwlManchesterSyntaxConverter
     /// <param name="word">The raw token text.</param>
     /// <param name="inHeader">Whether the ontology header region is still open.</param>
     /// <returns><see langword="true"/> for frame starts.</returns>
-    private static bool IsFrameStart(string word, bool inHeader)
+    private static bool IsFrameStart(Utf8String word, bool inHeader)
     {
-        if(word == OwlManchesterWords.AnnotationsKeyword)
+        if(OwlManchesterWords.IsAnnotationsKeyword(word))
         {
             return inHeader;
         }
@@ -245,7 +247,7 @@ internal sealed class OwlManchesterSyntaxConverter
             return false;
         }
 
-        if(token.Text == OwlManchesterWords.AnnotationsKeyword)
+        if(OwlManchesterWords.IsAnnotationsKeyword(token.Text))
         {
             //Inside a frame, 'Annotations:' is a section; in the header it
             //opens an ontology-annotation block.
@@ -268,7 +270,7 @@ internal sealed class OwlManchesterSyntaxConverter
             && items[nameIndex] is { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Name } nameToken }
             && items[iriIndex] is { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Iri } iriToken })
         {
-            Prefixes[nameToken.Text.TrimEnd(':')] = iriToken.Text;
+            Prefixes[TrimTrailingColons(nameToken.Text)] = InternTerm(iriToken.Text.Span);
 
             return keywordIndex + 3;
         }
@@ -283,13 +285,13 @@ internal sealed class OwlManchesterSyntaxConverter
     {
         CurrentSpan = frame.Subject?.Span ?? CurrentSpan;
 
-        string keyword = frame.Keyword.Text;
+        Utf8String keyword = frame.Keyword.Text;
 
-        if(keyword == OwlManchesterWords.ImportKeyword)
+        if(OwlManchesterWords.IsImportKeyword(keyword))
         {
             if(frame.Lo < frame.Hi && items[frame.Lo] is { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Iri } iriToken })
             {
-                Axioms.Add(new OwlImportAxiom(new NamedNode(Utf8String.FromString(iriToken.Text))) { Origin = Origin });
+                Axioms.Add(new OwlImportAxiom(new NamedNode(InternTerm(iriToken.Text.Span))) { Origin = Origin });
             }
             else
             {
@@ -299,7 +301,7 @@ internal sealed class OwlManchesterSyntaxConverter
             return;
         }
 
-        if(keyword == OwlManchesterWords.AnnotationsKeyword)
+        if(OwlManchesterWords.IsAnnotationsKeyword(keyword))
         {
             //An ontology-level annotation block surfaces as annotation
             //assertions on the ontology IRI; an anonymous ontology has no
@@ -343,7 +345,7 @@ internal sealed class OwlManchesterSyntaxConverter
             return;
         }
 
-        if(OwlManchesterWords.MiscFrames.Contains(keyword))
+        if(OwlManchesterWords.IsMiscFrame(keyword))
         {
             ConvertMiscFrame(items, frame);
 
@@ -374,7 +376,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 return;
             }
 
-            subjectTerm = new BlankNode(Utf8String.FromString(subjectNode.Atom.Text));
+            subjectTerm = new BlankNode(InternTerm(subjectNode.Atom.Text.Span));
         }
         else
         {
@@ -405,10 +407,10 @@ internal sealed class OwlManchesterSyntaxConverter
         int i = lo;
         while(i < hi)
         {
-            if(items[i] is not { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Name } token } || !OwlManchesterWords.Sections.Contains(token.Text))
+            if(items[i] is not { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Name } token } || !OwlManchesterWords.IsSection(token.Text))
             {
                 CurrentSpan = items[i].Span;
-                Report($"Expected a section keyword, found '{(items[i].IsAtom ? items[i].Atom.Text : "(…)")}'.");
+                Report($"Expected a section keyword, found '{(items[i].IsAtom ? Decode(items[i].Atom.Text.Span) : "(…)")}'.");
                 i++;
 
                 continue;
@@ -438,12 +440,12 @@ internal sealed class OwlManchesterSyntaxConverter
     /// <returns><see langword="true"/> at section boundaries.</returns>
     private static bool IsSectionBoundary(List<OwlManchesterNode> items, int position)
     {
-        if(items[position] is not { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Name } token } || !OwlManchesterWords.Sections.Contains(token.Text))
+        if(items[position] is not { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Name } token } || !OwlManchesterWords.IsSection(token.Text))
         {
             return false;
         }
 
-        if(token.Text != OwlManchesterWords.AnnotationsKeyword)
+        if(!OwlManchesterWords.IsAnnotationsKeyword(token.Text))
         {
             return true;
         }
@@ -455,7 +457,7 @@ internal sealed class OwlManchesterSyntaxConverter
         }
 
         return previous is not { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Name } precedingWord }
-            || !OwlManchesterWords.Sections.Contains(precedingWord.Text);
+            || !OwlManchesterWords.IsSection(precedingWord.Text);
     }
 
     //One annotated item of a section: its annotations and its payload range.
@@ -579,7 +581,7 @@ internal sealed class OwlManchesterSyntaxConverter
         }
 
         if(property.Atom.Kind == OwlManchesterTokenKind.Name
-            && (OwlManchesterWords.Operators.Contains(property.Atom.Text) || property.Atom.Text == OwlManchesterWords.AnnotationsKeyword))
+            && (OwlManchesterWords.IsOperator(property.Atom.Text) || OwlManchesterWords.IsAnnotationsKeyword(property.Atom.Text)))
         {
             return false;
         }
@@ -588,13 +590,13 @@ internal sealed class OwlManchesterSyntaxConverter
 
         return target.IsAtom && target.Atom.Kind is OwlManchesterTokenKind.Literal or OwlManchesterTokenKind.Number
             or OwlManchesterTokenKind.Iri or OwlManchesterTokenKind.BlankNode
-            || (target.Atom.Kind == OwlManchesterTokenKind.Name && !OwlManchesterWords.Operators.Contains(target.Atom.Text));
+            || (target.Atom.Kind == OwlManchesterTokenKind.Name && !OwlManchesterWords.IsOperator(target.Atom.Text));
     }
 
     //Section dispatch for entity frames.
     private void ConvertSection(List<OwlManchesterNode> items, OwlEntityKind frameKind, RdfTerm subjectTerm, Utf8String? subjectIri, OwlManchesterToken sectionKeyword, int lo, int hi)
     {
-        if(sectionKeyword.Text == OwlManchesterWords.AnnotationsKeyword)
+        if(OwlManchesterWords.IsAnnotationsKeyword(sectionKeyword.Text))
         {
             int cursor = lo;
             ImmutableArray<OwlAnnotation> annotations = ParseAnnotationList(items, ref cursor, hi);
@@ -657,9 +659,9 @@ internal sealed class OwlManchesterSyntaxConverter
 
     private void ConvertClassSection(List<OwlManchesterNode> items, OwlClassReference subject, Utf8String subjectIri, OwlManchesterToken keyword, int lo, int hi)
     {
-        switch(keyword.Text)
+        switch(OwlManchesterWords.ResolveSection(keyword.Text))
         {
-            case "SubClassOf:":
+            case(OwlManchesterSection.SubClassOf):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -669,7 +671,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "EquivalentTo:":
+            case(OwlManchesterSection.EquivalentTo):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -679,7 +681,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "DisjointWith:":
+            case(OwlManchesterSection.DisjointWith):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -689,7 +691,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "DisjointUnionOf:":
+            case(OwlManchesterSection.DisjointUnionOf):
             {
                 (ImmutableArray<OwlAnnotation> annotations, int start) = LeadingAnnotations(items, lo, hi);
                 List<OwlClassExpression> operands = [];
@@ -702,7 +704,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "HasKey:":
+            case(OwlManchesterSection.HasKey):
             {
                 (ImmutableArray<OwlAnnotation> annotations, int start) = LeadingAnnotations(items, lo, hi);
                 List<OwlObjectPropertyExpression> objectKeys = [];
@@ -711,7 +713,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 {
                     CurrentSpan = items[i].Span;
 
-                    if(IsWord(items, i, "inverse"))
+                    if(IsWord(items, i, OwlManchesterWords.InverseWord))
                     {
                         if(i + 1 < hi && ResolveReference(items[i + 1]) is Utf8String inverted)
                         {
@@ -755,9 +757,9 @@ internal sealed class OwlManchesterSyntaxConverter
 
     private void ConvertObjectPropertySection(List<OwlManchesterNode> items, OwlObjectPropertyReference subject, OwlManchesterToken keyword, int lo, int hi)
     {
-        switch(keyword.Text)
+        switch(OwlManchesterWords.ResolveSection(keyword.Text))
         {
-            case "Domain:":
+            case(OwlManchesterSection.Domain):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -767,7 +769,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "Range:":
+            case(OwlManchesterSection.Range):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -777,7 +779,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "SubPropertyOf:":
+            case(OwlManchesterSection.SubPropertyOf):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -787,7 +789,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "EquivalentTo:":
+            case(OwlManchesterSection.EquivalentTo):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -797,7 +799,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "DisjointWith:":
+            case(OwlManchesterSection.DisjointWith):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -807,7 +809,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "InverseOf:":
+            case(OwlManchesterSection.InverseOf):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -817,7 +819,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "Characteristics:":
+            case(OwlManchesterSection.Characteristics):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -837,14 +839,14 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "SubPropertyChain:":
+            case(OwlManchesterSection.SubPropertyChain):
             {
                 (ImmutableArray<OwlAnnotation> annotations, int start) = LeadingAnnotations(items, lo, hi);
                 List<OwlObjectPropertyExpression> chain = [];
                 int linkStart = start;
                 for(int i = start; i <= hi; i++)
                 {
-                    if(i == hi || IsWord(items, i, "o"))
+                    if(i == hi || IsWord(items, i, OwlManchesterWords.ChainWord))
                     {
                         if(linkStart < i)
                         {
@@ -877,9 +879,9 @@ internal sealed class OwlManchesterSyntaxConverter
 
     private void ConvertDataPropertySection(List<OwlManchesterNode> items, NamedNode subject, OwlManchesterToken keyword, int lo, int hi)
     {
-        switch(keyword.Text)
+        switch(OwlManchesterWords.ResolveSection(keyword.Text))
         {
-            case "Domain:":
+            case(OwlManchesterSection.Domain):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -889,7 +891,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "Range:":
+            case(OwlManchesterSection.Range):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -899,7 +901,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "SubPropertyOf:":
+            case(OwlManchesterSection.SubPropertyOf):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -912,7 +914,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "EquivalentTo:":
+            case(OwlManchesterSection.EquivalentTo):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -925,7 +927,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "DisjointWith:":
+            case(OwlManchesterSection.DisjointWith):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -938,11 +940,11 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "Characteristics:":
+            case(OwlManchesterSection.Characteristics):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
-                    if(IsWord(items, item.Lo, "Functional"))
+                    if(IsWord(items, item.Lo, OwlManchesterWords.FunctionalWord))
                     {
                         Axioms.Add(new OwlFunctionalDataPropertyAxiom(subject) { Origin = Origin, Annotations = item.Annotations });
                     }
@@ -966,9 +968,9 @@ internal sealed class OwlManchesterSyntaxConverter
 
     private void ConvertAnnotationPropertySection(List<OwlManchesterNode> items, NamedNode subject, OwlManchesterToken keyword, int lo, int hi)
     {
-        switch(keyword.Text)
+        switch(OwlManchesterWords.ResolveSection(keyword.Text))
         {
-            case "Domain:":
+            case(OwlManchesterSection.Domain):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -981,7 +983,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "Range:":
+            case(OwlManchesterSection.Range):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -994,7 +996,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "SubPropertyOf:":
+            case(OwlManchesterSection.SubPropertyOf):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -1017,7 +1019,7 @@ internal sealed class OwlManchesterSyntaxConverter
 
     private void ConvertDatatypeSection(List<OwlManchesterNode> items, NamedNode subject, OwlManchesterToken keyword, int lo, int hi)
     {
-        if(keyword.Text == "EquivalentTo:")
+        if(OwlManchesterWords.ResolveSection(keyword.Text) == OwlManchesterSection.EquivalentTo)
         {
             (ImmutableArray<OwlAnnotation> annotations, int start) = LeadingAnnotations(items, lo, hi);
             Axioms.Add(new OwlDatatypeDefinitionAxiom(subject, AsDataRange(ConvertExpression(ExprKind.DataRange, items, start, hi))) { Origin = Origin, Annotations = annotations });
@@ -1030,9 +1032,9 @@ internal sealed class OwlManchesterSyntaxConverter
 
     private void ConvertIndividualSection(List<OwlManchesterNode> items, RdfTerm subject, OwlManchesterToken keyword, int lo, int hi)
     {
-        switch(keyword.Text)
+        switch(OwlManchesterWords.ResolveSection(keyword.Text))
         {
-            case "Types:":
+            case(OwlManchesterSection.Types):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -1042,7 +1044,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "Facts:":
+            case(OwlManchesterSection.Facts):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -1052,7 +1054,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "SameAs:":
+            case(OwlManchesterSection.SameAs):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -1065,7 +1067,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case "DifferentFrom:":
+            case(OwlManchesterSection.DifferentFrom):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
                 {
@@ -1091,7 +1093,7 @@ internal sealed class OwlManchesterSyntaxConverter
     private void ConvertFact(List<OwlManchesterNode> items, RdfTerm subject, SectionItem item)
     {
         int cursor = item.Lo;
-        bool negative = IsWord(items, cursor, "not");
+        bool negative = IsWord(items, cursor, OwlManchesterWords.NotWord);
         if(negative)
         {
             cursor++;
@@ -1143,95 +1145,41 @@ internal sealed class OwlManchesterSyntaxConverter
         (ImmutableArray<OwlAnnotation> annotations, int start) = LeadingAnnotations(items, frame.Lo, frame.Hi);
         List<(int Lo, int Hi)> parts = SplitPlainItems(items, start, frame.Hi);
 
-        switch(frame.Keyword.Text)
+        switch(OwlManchesterWords.ResolveMiscFrame(frame.Keyword.Text))
         {
-            case "EquivalentClasses:":
+            case(OwlManchesterMiscFrame.EquivalentClasses):
             {
-                List<OwlClassExpression> expressions = [];
-                foreach((int lo, int hi) in parts)
-                {
-                    expressions.Add(AsClass(ConvertExpression(ExprKind.Description, items, lo, hi)));
-                }
-
-                foreach((int first, int second) in IndexPairs(expressions.Count))
-                {
-                    Axioms.Add(new OwlEquivalentClassesAxiom(expressions[first], expressions[second]) { Origin = Origin, Annotations = annotations });
-                }
+                ConvertEquivalentClasses(items, parts, annotations);
                 break;
             }
 
-            case "DisjointClasses:":
+            case(OwlManchesterMiscFrame.DisjointClasses):
             {
-                List<OwlClassExpression> expressions = [];
-                foreach((int lo, int hi) in parts)
-                {
-                    expressions.Add(AsClass(ConvertExpression(ExprKind.Description, items, lo, hi)));
-                }
-
-                Axioms.Add(new OwlDisjointClassesAxiom(expressions) { Origin = Origin, Annotations = annotations });
+                ConvertDisjointClasses(items, parts, annotations);
                 break;
             }
 
-            case "EquivalentProperties:":
-            case "DisjointProperties:":
+            case(OwlManchesterMiscFrame.EquivalentProperties):
             {
-                List<Utf8String> properties = [];
-                foreach((int lo, int hi) in parts)
-                {
-                    if(SingleReference(items, lo, hi) is Utf8String property)
-                    {
-                        properties.Add(property);
-                    }
-                }
-
-                bool data = properties.Count > 0 && DeclaredDataProperties.Contains(properties[0]);
-                if(frame.Keyword.Text == "EquivalentProperties:")
-                {
-                    foreach((int first, int second) in IndexPairs(properties.Count))
-                    {
-                        Axioms.Add(data
-                            ? new OwlEquivalentDataPropertiesAxiom(new NamedNode(properties[first]), new NamedNode(properties[second])) { Origin = Origin, Annotations = annotations }
-                            : new OwlEquivalentObjectPropertiesAxiom(new OwlObjectPropertyReference(new NamedNode(properties[first])), new OwlObjectPropertyReference(new NamedNode(properties[second]))) { Origin = Origin, Annotations = annotations });
-                    }
-                }
-                else if(data)
-                {
-                    List<NamedNode> nodes = [];
-                    foreach(Utf8String property in properties)
-                    {
-                        nodes.Add(new NamedNode(property));
-                    }
-
-                    Axioms.Add(new OwlDisjointDataPropertiesAxiom(nodes) { Origin = Origin, Annotations = annotations });
-                }
-                else
-                {
-                    List<OwlObjectPropertyExpression> nodes = [];
-                    foreach(Utf8String property in properties)
-                    {
-                        nodes.Add(new OwlObjectPropertyReference(new NamedNode(property)));
-                    }
-
-                    Axioms.Add(new OwlDisjointObjectPropertiesAxiom(nodes) { Origin = Origin, Annotations = annotations });
-                }
-
+                ConvertPropertyFrame(items, parts, annotations, equivalent: true);
                 break;
             }
 
-            case "SameIndividual:":
+            case(OwlManchesterMiscFrame.DisjointProperties):
             {
-                List<RdfTerm> individuals = CollectIndividuals(items, parts);
-                foreach((int first, int second) in IndexPairs(individuals.Count))
-                {
-                    Axioms.Add(new OwlSameIndividualAxiom(individuals[first], individuals[second]) { Origin = Origin, Annotations = annotations });
-                }
+                ConvertPropertyFrame(items, parts, annotations, equivalent: false);
                 break;
             }
 
-            case "DifferentIndividuals:":
+            case(OwlManchesterMiscFrame.SameIndividual):
             {
-                List<RdfTerm> individuals = CollectIndividuals(items, parts);
-                Axioms.Add(new OwlDifferentIndividualsAxiom(individuals) { Origin = Origin, Annotations = annotations });
+                ConvertSameIndividuals(items, parts, annotations);
+                break;
+            }
+
+            case(OwlManchesterMiscFrame.DifferentIndividuals):
+            {
+                ConvertDifferentIndividuals(items, parts, annotations);
                 break;
             }
 
@@ -1240,6 +1188,110 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
         }
+    }
+
+    /// <summary>Builds the pairwise equivalences of an <c>EquivalentClasses:</c> frame.</summary>
+    /// <param name="items">The frame's token nodes.</param>
+    /// <param name="parts">The comma-separated operand ranges.</param>
+    /// <param name="annotations">The frame's leading annotations.</param>
+    private void ConvertEquivalentClasses(List<OwlManchesterNode> items, List<(int Lo, int Hi)> parts, ImmutableArray<OwlAnnotation> annotations)
+    {
+        List<OwlClassExpression> expressions = [];
+        foreach((int lo, int hi) in parts)
+        {
+            expressions.Add(AsClass(ConvertExpression(ExprKind.Description, items, lo, hi)));
+        }
+
+        foreach((int first, int second) in IndexPairs(expressions.Count))
+        {
+            Axioms.Add(new OwlEquivalentClassesAxiom(expressions[first], expressions[second]) { Origin = Origin, Annotations = annotations });
+        }
+    }
+
+    /// <summary>Builds the n-ary disjointness of a <c>DisjointClasses:</c> frame.</summary>
+    /// <param name="items">The frame's token nodes.</param>
+    /// <param name="parts">The comma-separated operand ranges.</param>
+    /// <param name="annotations">The frame's leading annotations.</param>
+    private void ConvertDisjointClasses(List<OwlManchesterNode> items, List<(int Lo, int Hi)> parts, ImmutableArray<OwlAnnotation> annotations)
+    {
+        List<OwlClassExpression> expressions = [];
+        foreach((int lo, int hi) in parts)
+        {
+            expressions.Add(AsClass(ConvertExpression(ExprKind.Description, items, lo, hi)));
+        }
+
+        Axioms.Add(new OwlDisjointClassesAxiom(expressions) { Origin = Origin, Annotations = annotations });
+    }
+
+    /// <summary>Builds the axioms of an <c>EquivalentProperties:</c> or <c>DisjointProperties:</c> frame, object- or data-valued by the first operand's declaration.</summary>
+    /// <param name="items">The frame's token nodes.</param>
+    /// <param name="parts">The comma-separated operand ranges.</param>
+    /// <param name="annotations">The frame's leading annotations.</param>
+    /// <param name="equivalent"><see langword="true"/> for equivalence, <see langword="false"/> for disjointness.</param>
+    private void ConvertPropertyFrame(List<OwlManchesterNode> items, List<(int Lo, int Hi)> parts, ImmutableArray<OwlAnnotation> annotations, bool equivalent)
+    {
+        List<Utf8String> properties = [];
+        foreach((int lo, int hi) in parts)
+        {
+            if(SingleReference(items, lo, hi) is Utf8String property)
+            {
+                properties.Add(property);
+            }
+        }
+
+        bool data = properties.Count > 0 && DeclaredDataProperties.Contains(properties[0]);
+        if(equivalent)
+        {
+            foreach((int first, int second) in IndexPairs(properties.Count))
+            {
+                Axioms.Add(data
+                    ? new OwlEquivalentDataPropertiesAxiom(new NamedNode(properties[first]), new NamedNode(properties[second])) { Origin = Origin, Annotations = annotations }
+                    : new OwlEquivalentObjectPropertiesAxiom(new OwlObjectPropertyReference(new NamedNode(properties[first])), new OwlObjectPropertyReference(new NamedNode(properties[second]))) { Origin = Origin, Annotations = annotations });
+            }
+        }
+        else if(data)
+        {
+            List<NamedNode> nodes = [];
+            foreach(Utf8String property in properties)
+            {
+                nodes.Add(new NamedNode(property));
+            }
+
+            Axioms.Add(new OwlDisjointDataPropertiesAxiom(nodes) { Origin = Origin, Annotations = annotations });
+        }
+        else
+        {
+            List<OwlObjectPropertyExpression> nodes = [];
+            foreach(Utf8String property in properties)
+            {
+                nodes.Add(new OwlObjectPropertyReference(new NamedNode(property)));
+            }
+
+            Axioms.Add(new OwlDisjointObjectPropertiesAxiom(nodes) { Origin = Origin, Annotations = annotations });
+        }
+    }
+
+    /// <summary>Builds the pairwise same-individual axioms of a <c>SameIndividual:</c> frame.</summary>
+    /// <param name="items">The frame's token nodes.</param>
+    /// <param name="parts">The comma-separated operand ranges.</param>
+    /// <param name="annotations">The frame's leading annotations.</param>
+    private void ConvertSameIndividuals(List<OwlManchesterNode> items, List<(int Lo, int Hi)> parts, ImmutableArray<OwlAnnotation> annotations)
+    {
+        List<RdfTerm> individuals = CollectIndividuals(items, parts);
+        foreach((int first, int second) in IndexPairs(individuals.Count))
+        {
+            Axioms.Add(new OwlSameIndividualAxiom(individuals[first], individuals[second]) { Origin = Origin, Annotations = annotations });
+        }
+    }
+
+    /// <summary>Builds the n-ary difference of a <c>DifferentIndividuals:</c> frame.</summary>
+    /// <param name="items">The frame's token nodes.</param>
+    /// <param name="parts">The comma-separated operand ranges.</param>
+    /// <param name="annotations">The frame's leading annotations.</param>
+    private void ConvertDifferentIndividuals(List<OwlManchesterNode> items, List<(int Lo, int Hi)> parts, ImmutableArray<OwlAnnotation> annotations)
+    {
+        List<RdfTerm> individuals = CollectIndividuals(items, parts);
+        Axioms.Add(new OwlDifferentIndividualsAxiom(individuals) { Origin = Origin, Annotations = annotations });
     }
 
     private List<RdfTerm> CollectIndividuals(List<OwlManchesterNode> items, List<(int Lo, int Hi)> parts)
@@ -1316,7 +1368,7 @@ internal sealed class OwlManchesterSyntaxConverter
     //Object property expressions: an IRI, or 'inverse' followed by an IRI.
     private OwlObjectPropertyExpression ParseObjectPropertyExpression(List<OwlManchesterNode> items, int lo, int hi)
     {
-        if(lo < hi && IsWord(items, lo, "inverse"))
+        if(lo < hi && IsWord(items, lo, OwlManchesterWords.InverseWord))
         {
             if(lo + 1 < hi && ResolveReference(items[lo + 1]) is Utf8String inverted)
             {
@@ -1418,9 +1470,9 @@ internal sealed class OwlManchesterSyntaxConverter
 
         switch(task.Kind)
         {
-            case ExprKind.Description:
+            case(ExprKind.Description):
             {
-                foreach((int lo, int hi) in SplitAtWord(task.Items, task.Lo, task.Hi, "or", null))
+                foreach((int lo, int hi) in SplitAtWord(task.Items, task.Lo, task.Hi, OwlManchesterWords.OrWord, default))
                 {
                     dependencies.Add(new ExprTask(ExprKind.Conjunction, task.Items, lo, hi));
                 }
@@ -1428,9 +1480,9 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case ExprKind.Conjunction:
+            case(ExprKind.Conjunction):
             {
-                foreach((int lo, int hi) in SplitAtWord(task.Items, task.Lo, task.Hi, "and", "that"))
+                foreach((int lo, int hi) in SplitAtWord(task.Items, task.Lo, task.Hi, OwlManchesterWords.AndWord, OwlManchesterWords.ThatWord))
                 {
                     dependencies.Add(new ExprTask(ExprKind.Primary, task.Items, lo, hi));
                 }
@@ -1438,9 +1490,9 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case ExprKind.DataRange:
+            case(ExprKind.DataRange):
             {
-                foreach((int lo, int hi) in SplitAtWord(task.Items, task.Lo, task.Hi, "or", null))
+                foreach((int lo, int hi) in SplitAtWord(task.Items, task.Lo, task.Hi, OwlManchesterWords.OrWord, default))
                 {
                     dependencies.Add(new ExprTask(ExprKind.DataConjunction, task.Items, lo, hi));
                 }
@@ -1448,9 +1500,9 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case ExprKind.DataConjunction:
+            case(ExprKind.DataConjunction):
             {
-                foreach((int lo, int hi) in SplitAtWord(task.Items, task.Lo, task.Hi, "and", null))
+                foreach((int lo, int hi) in SplitAtWord(task.Items, task.Lo, task.Hi, OwlManchesterWords.AndWord, default))
                 {
                     dependencies.Add(new ExprTask(ExprKind.DataPrimary, task.Items, lo, hi));
                 }
@@ -1458,13 +1510,13 @@ internal sealed class OwlManchesterSyntaxConverter
                 break;
             }
 
-            case ExprKind.Primary:
+            case(ExprKind.Primary):
             {
                 PrimaryDependencies(task, dependencies);
                 break;
             }
 
-            case ExprKind.DataPrimary:
+            case(ExprKind.DataPrimary):
             {
                 int lo = SkipNots(task.Items, task.Lo, task.Hi);
                 if(task.Hi - lo == 1 && task.Items[lo] is { IsAtom: false, GroupKind: OwlManchesterGroupKind.Paren } group)
@@ -1508,12 +1560,12 @@ internal sealed class OwlManchesterSyntaxConverter
             return;
         }
 
-        string op = task.Items[operatorIndex].Atom.Text;
-        if(op is "some" or "only")
+        OwlManchesterOperator op = OwlManchesterWords.ResolveOperator(task.Items[operatorIndex].Atom.Text);
+        if(op is OwlManchesterOperator.Some or OwlManchesterOperator.Only)
         {
             dependencies.Add(new ExprTask(data ? ExprKind.DataPrimary : ExprKind.Primary, task.Items, operatorIndex + 1, hi));
         }
-        else if(op is "min" or "max" or "exactly" && operatorIndex + 2 < hi)
+        else if(op is OwlManchesterOperator.Min or OwlManchesterOperator.Max or OwlManchesterOperator.Exactly && operatorIndex + 2 < hi)
         {
             dependencies.Add(new ExprTask(data ? ExprKind.DataPrimary : ExprKind.Primary, task.Items, operatorIndex + 2, hi));
         }
@@ -1527,7 +1579,7 @@ internal sealed class OwlManchesterSyntaxConverter
     private (int OperatorIndex, bool Data) LocateRestriction(List<OwlManchesterNode> items, int lo, int hi)
     {
         int propertyIndex = lo;
-        bool inverse = IsWord(items, lo, "inverse");
+        bool inverse = IsWord(items, lo, OwlManchesterWords.InverseWord);
         if(inverse)
         {
             propertyIndex++;
@@ -1536,7 +1588,7 @@ internal sealed class OwlManchesterSyntaxConverter
         int operatorIndex = propertyIndex + 1;
         if(operatorIndex >= hi
             || items[operatorIndex] is not { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Name } op }
-            || op.Text is not ("some" or "only" or "value" or "Self" or "min" or "max" or "exactly"))
+            || OwlManchesterWords.ResolveOperator(op.Text) is not (OwlManchesterOperator.Some or OwlManchesterOperator.Only or OwlManchesterOperator.Value or OwlManchesterOperator.Self or OwlManchesterOperator.Min or OwlManchesterOperator.Max or OwlManchesterOperator.Exactly))
         {
             return (-1, false);
         }
@@ -1554,12 +1606,12 @@ internal sealed class OwlManchesterSyntaxConverter
     {
         switch(task.Kind)
         {
-            case ExprKind.Description:
-            case ExprKind.DataRange:
+            case(ExprKind.Description):
+            case(ExprKind.DataRange):
             {
-                string separator = "or";
+                ReadOnlySpan<byte> separator = OwlManchesterWords.OrWord;
                 ExprKind part = task.Kind == ExprKind.Description ? ExprKind.Conjunction : ExprKind.DataConjunction;
-                List<(int, int)> ranges = SplitAtWord(task.Items, task.Lo, task.Hi, separator, null);
+                List<(int, int)> ranges = SplitAtWord(task.Items, task.Lo, task.Hi, separator, default);
                 if(ranges.Count == 1)
                 {
                     return Converted[new ExprTask(part, task.Items, ranges[0].Item1, ranges[0].Item2)];
@@ -1585,11 +1637,11 @@ internal sealed class OwlManchesterSyntaxConverter
                 return new OwlDataUnionOf(dataOperands);
             }
 
-            case ExprKind.Conjunction:
-            case ExprKind.DataConjunction:
+            case(ExprKind.Conjunction):
+            case(ExprKind.DataConjunction):
             {
                 ExprKind part = task.Kind == ExprKind.Conjunction ? ExprKind.Primary : ExprKind.DataPrimary;
-                List<(int, int)> ranges = SplitAtWord(task.Items, task.Lo, task.Hi, "and", task.Kind == ExprKind.Conjunction ? "that" : null);
+                List<(int, int)> ranges = SplitAtWord(task.Items, task.Lo, task.Hi, OwlManchesterWords.AndWord, task.Kind == ExprKind.Conjunction ? OwlManchesterWords.ThatWord : default);
                 if(ranges.Count == 1)
                 {
                     return Converted[new ExprTask(part, task.Items, ranges[0].Item1, ranges[0].Item2)];
@@ -1615,12 +1667,12 @@ internal sealed class OwlManchesterSyntaxConverter
                 return new OwlDataIntersectionOf(dataOperands);
             }
 
-            case ExprKind.Primary:
+            case(ExprKind.Primary):
             {
                 return ConstructPrimary(task);
             }
 
-            case ExprKind.DataPrimary:
+            case(ExprKind.DataPrimary):
             {
                 return ConstructDataPrimary(task);
             }
@@ -1706,7 +1758,7 @@ internal sealed class OwlManchesterSyntaxConverter
             return null;
         }
 
-        bool inverse = IsWord(items, lo, "inverse");
+        bool inverse = IsWord(items, lo, OwlManchesterWords.InverseWord);
         int propertyIndex = inverse ? lo + 1 : lo;
         if(ResolveReference(items[propertyIndex]) is not Utf8String propertyIri)
         {
@@ -1717,29 +1769,31 @@ internal sealed class OwlManchesterSyntaxConverter
             ? new OwlInverseObjectProperty(new NamedNode(propertyIri))
             : new OwlObjectPropertyReference(new NamedNode(propertyIri));
         NamedNode dataProperty = new(propertyIri);
-        string op = items[operatorIndex].Atom.Text;
+        OwlManchesterToken opToken = items[operatorIndex].Atom;
+        OwlManchesterOperator op = OwlManchesterWords.ResolveOperator(opToken.Text);
 
         switch(op)
         {
-            case "some" or "only":
+            case(OwlManchesterOperator.Some):
+            case(OwlManchesterOperator.Only):
             {
                 if(data)
                 {
                     OwlDataRange range = AsDataRange(Converted[new ExprTask(ExprKind.DataPrimary, items, operatorIndex + 1, hi)]);
 
-                    return op == "some"
+                    return op == OwlManchesterOperator.Some
                         ? new OwlDataSomeValuesFrom([dataProperty], range)
                         : new OwlDataAllValuesFrom([dataProperty], range);
                 }
 
                 OwlClassExpression filler = AsClass(Converted[new ExprTask(ExprKind.Primary, items, operatorIndex + 1, hi)]);
 
-                return op == "some"
+                return op == OwlManchesterOperator.Some
                     ? new OwlObjectSomeValuesFrom(objectProperty, filler)
                     : new OwlObjectAllValuesFrom(objectProperty, filler);
             }
 
-            case "value":
+            case(OwlManchesterOperator.Value):
             {
                 if(operatorIndex + 1 >= hi)
                 {
@@ -1757,26 +1811,30 @@ internal sealed class OwlManchesterSyntaxConverter
                 return ToIndividual(target) is RdfTerm individual ? new OwlObjectHasValue(objectProperty, individual) : null;
             }
 
-            case "Self":
+            case(OwlManchesterOperator.Self):
             {
                 return new OwlObjectHasSelf(objectProperty);
             }
 
-            case "min" or "max" or "exactly":
+            case(OwlManchesterOperator.Min):
+            case(OwlManchesterOperator.Max):
+            case(OwlManchesterOperator.Exactly):
             {
                 if(operatorIndex + 1 >= hi
                     || items[operatorIndex + 1] is not { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Number } numberToken }
-                    || !int.TryParse(numberToken.Text, NumberStyles.None, CultureInfo.InvariantCulture, out int bound))
+                    || !Utf8Parser.TryParse(numberToken.Text.Span, out int bound, out int boundConsumed)
+                    || boundConsumed != numberToken.Text.Length
+                    || bound < 0)
                 {
-                    Report($"'{op}' must be followed by a nonnegative integer.");
+                    Report($"'{Decode(opToken.Text.Span)}' must be followed by a nonnegative integer.");
 
                     return null;
                 }
 
                 OwlCardinalityKind kind = op switch
                 {
-                    "min" => OwlCardinalityKind.Min,
-                    "max" => OwlCardinalityKind.Max,
+                    OwlManchesterOperator.Min => OwlCardinalityKind.Min,
+                    OwlManchesterOperator.Max => OwlCardinalityKind.Max,
                     _ => OwlCardinalityKind.Exact
                 };
 
@@ -1893,14 +1951,14 @@ internal sealed class OwlManchesterSyntaxConverter
             OwlManchesterNode facetNode = nodes[lo];
             CurrentSpan = facetNode.Span;
 
-            string? facetIri = facetNode switch
+            Utf8String? facetIri = facetNode switch
             {
-                { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Name } word } when OwlManchesterWords.NamedFacets.TryGetValue(word.Text, out string? named) => named,
-                { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Comparison } op } when OwlManchesterWords.ComparisonFacets.TryGetValue(op.Text, out string? comparison) => comparison,
+                { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Name } word } when OwlManchesterWords.NamedFacets.TryGetValue(word.Text, out Utf8String named) => named,
+                { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Comparison } op } when OwlManchesterWords.ComparisonFacets.TryGetValue(op.Text, out Utf8String comparison) => comparison,
                 _ => null
             };
 
-            if(facetIri is null)
+            if(facetIri is not Utf8String facetIriValue)
             {
                 Report("Unknown facet.");
 
@@ -1914,7 +1972,7 @@ internal sealed class OwlManchesterSyntaxConverter
                 continue;
             }
 
-            facets.Add(new OwlFacetRestriction(new NamedNode(Utf8String.FromString(facetIri)), value));
+            facets.Add(new OwlFacetRestriction(new NamedNode(facetIriValue), value));
         }
 
         return facets;
@@ -1927,7 +1985,7 @@ internal sealed class OwlManchesterSyntaxConverter
     /// <returns>The first non-<c>not</c> index.</returns>
     private static int SkipNots(List<OwlManchesterNode> items, int lo, int hi)
     {
-        while(lo < hi && IsWord(items, lo, "not"))
+        while(lo < hi && IsWord(items, lo, OwlManchesterWords.NotWord))
         {
             lo++;
         }
@@ -1940,15 +1998,15 @@ internal sealed class OwlManchesterSyntaxConverter
     /// <param name="lo">The inclusive range start.</param>
     /// <param name="hi">The exclusive range end.</param>
     /// <param name="word">The separator word.</param>
-    /// <param name="synonym">An optional second separator treated identically.</param>
+    /// <param name="synonym">An optional second separator treated identically; empty when there is none.</param>
     /// <returns>The half-open part ranges.</returns>
-    private static List<(int Lo, int Hi)> SplitAtWord(List<OwlManchesterNode> items, int lo, int hi, string word, string? synonym)
+    private static List<(int Lo, int Hi)> SplitAtWord(List<OwlManchesterNode> items, int lo, int hi, ReadOnlySpan<byte> word, ReadOnlySpan<byte> synonym)
     {
         List<(int, int)> parts = [];
         int start = lo;
         for(int i = lo; i <= hi; i++)
         {
-            if(i == hi || IsWord(items, i, word) || (synonym is not null && IsWord(items, i, synonym)))
+            if(i == hi || IsWord(items, i, word) || (!synonym.IsEmpty && IsWord(items, i, synonym)))
             {
                 parts.Add((start, i));
                 start = i + 1;
@@ -1958,11 +2016,11 @@ internal sealed class OwlManchesterSyntaxConverter
         return parts;
     }
 
-    private static bool IsWord(List<OwlManchesterNode> items, int index, string word)
+    private static bool IsWord(List<OwlManchesterNode> items, int index, ReadOnlySpan<byte> word)
     {
         return index < items.Count
             && items[index] is { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Name } token }
-            && token.Text == word;
+            && token.Text.SequenceEqual(word);
     }
 
     private static bool IsComma(OwlManchesterNode node)
@@ -1979,7 +2037,7 @@ internal sealed class OwlManchesterSyntaxConverter
     {
         if(node is { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Iri } iri })
         {
-            return Utf8String.FromString(iri.Text);
+            return InternTerm(iri.Text.Span);
         }
 
         if(node is { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Name } name } && TryResolveName(name.Text, out Utf8String resolved))
@@ -1999,14 +2057,14 @@ internal sealed class OwlManchesterSyntaxConverter
 
         if(node is { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Iri } iri })
         {
-            return Utf8String.FromString(iri.Text);
+            return InternTerm(iri.Text.Span);
         }
 
         if(node is { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Name } name })
         {
-            if(OwlManchesterWords.Operators.Contains(name.Text) || OwlManchesterWords.Sections.Contains(name.Text) || OwlManchesterWords.IsFrameKeyword(name.Text))
+            if(OwlManchesterWords.IsOperator(name.Text) || OwlManchesterWords.IsSection(name.Text) || OwlManchesterWords.IsFrameKeyword(name.Text))
             {
-                Report($"'{name.Text}' is a reserved word, not a name.");
+                Report($"'{Decode(name.Text.Span)}' is a reserved word, not a name.");
 
                 return null;
             }
@@ -2016,10 +2074,10 @@ internal sealed class OwlManchesterSyntaxConverter
                 return resolved;
             }
 
-            int colon = name.Text.IndexOf(':', System.StringComparison.Ordinal);
+            int colon = name.Text.Span.IndexOf((byte)':');
             Report(colon < 0
                 ? "A bare name needs the default prefix; declare 'Prefix: : <iri>'."
-                : $"Undeclared prefix '{name.Text[..colon]}:'.");
+                : $"Undeclared prefix '{Decode(name.Text.Span[..colon])}:'.");
 
             return null;
         }
@@ -2033,17 +2091,17 @@ internal sealed class OwlManchesterSyntaxConverter
     /// <param name="name">The raw name text.</param>
     /// <param name="resolved">The resolved IRI on success.</param>
     /// <returns>Whether resolution succeeded.</returns>
-    private bool TryResolveName(string name, out Utf8String resolved)
+    private bool TryResolveName(Utf8String name, out Utf8String resolved)
     {
         resolved = default!;
 
-        int colon = name.IndexOf(':', System.StringComparison.Ordinal);
-        string prefix = colon < 0 ? string.Empty : name[..colon];
-        string local = colon < 0 ? name : name[(colon + 1)..];
+        int colon = name.Span.IndexOf((byte)':');
+        Utf8String prefix = colon < 0 ? new Utf8String(ReadOnlyMemory<byte>.Empty) : new Utf8String(name.Memory[..colon]);
+        ReadOnlyMemory<byte> local = colon < 0 ? name.Memory : name.Memory[(colon + 1)..];
 
-        if(Prefixes.TryGetValue(prefix, out string? expansion))
+        if(Prefixes.TryGetValue(prefix, out Utf8String expansion))
         {
-            resolved = Utf8String.FromString(expansion + local);
+            resolved = Concat(expansion.Span, local.Span);
 
             return true;
         }
@@ -2057,9 +2115,9 @@ internal sealed class OwlManchesterSyntaxConverter
     private Utf8String? ResolveDatatype(OwlManchesterNode node)
     {
         if(node is { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Name } name }
-            && OwlManchesterWords.BuiltinDatatypes.TryGetValue(name.Text, out string? builtin))
+            && OwlManchesterWords.BuiltinDatatypes.TryGetValue(name.Text, out Utf8String builtin))
         {
-            return Utf8String.FromString(builtin);
+            return builtin;
         }
 
         return ResolveReference(node);
@@ -2072,7 +2130,7 @@ internal sealed class OwlManchesterSyntaxConverter
     {
         if(node is { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.BlankNode } blank })
         {
-            return new BlankNode(Utf8String.FromString(blank.Text));
+            return new BlankNode(InternTerm(blank.Text.Span));
         }
 
         return ResolveReference(node) is Utf8String iri ? new NamedNode(iri) : null;
@@ -2087,20 +2145,31 @@ internal sealed class OwlManchesterSyntaxConverter
 
         if(node is { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Literal } token })
         {
-            if(token.LiteralLanguage is string language)
+            if(token.LiteralLanguage is Utf8String language)
             {
-                return new Literal(Utf8String.FromString(token.Text), new NamedNode(Vocabulary.Rdf.LangString), Utf8String.FromString(language));
+                return new Literal(InternTerm(token.Text.Span), new NamedNode(Vocabulary.Rdf.LangString), InternTerm(language.Span));
             }
 
-            Utf8String datatype = token.LiteralDatatype switch
+            Utf8String datatype;
+            if(token.LiteralDatatype is not Utf8String datatypeText)
             {
-                null => Vocabulary.Xsd.String,
-                ['<', .. var full] => Utf8String.FromString(full),
-                _ when OwlManchesterWords.BuiltinDatatypes.TryGetValue(token.LiteralDatatype, out string? builtin) => Utf8String.FromString(builtin),
-                _ => TryResolveName(token.LiteralDatatype, out Utf8String resolved) ? resolved : ReportDatatype(token.LiteralDatatype)
-            };
+                datatype = Vocabulary.Xsd.String;
+            }
+            else if(datatypeText.Length > 0 && datatypeText.Span[0] == (byte)'<')
+            {
+                //The lexer marks a <…> datatype IRI with a leading '<'; strip it.
+                datatype = InternTerm(datatypeText.Span[1..]);
+            }
+            else if(OwlManchesterWords.BuiltinDatatypes.TryGetValue(datatypeText, out Utf8String builtin))
+            {
+                datatype = builtin;
+            }
+            else
+            {
+                datatype = TryResolveName(datatypeText, out Utf8String resolved) ? resolved : ReportDatatype(datatypeText);
+            }
 
-            return new Literal(Utf8String.FromString(token.Text), new NamedNode(datatype));
+            return new Literal(InternTerm(token.Text.Span), new NamedNode(datatype));
         }
 
         if(node is { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.Number } number })
@@ -2116,9 +2185,9 @@ internal sealed class OwlManchesterSyntaxConverter
     /// <summary>Reports an unresolvable literal datatype and falls back to <c>xsd:string</c>.</summary>
     /// <param name="datatype">The raw datatype text.</param>
     /// <returns>The fallback datatype IRI.</returns>
-    private Utf8String ReportDatatype(string datatype)
+    private Utf8String ReportDatatype(Utf8String datatype)
     {
-        Report($"Unresolvable datatype '{datatype}'.");
+        Report($"Unresolvable datatype '{Decode(datatype.Span)}'.");
 
         return Vocabulary.Xsd.String;
     }
@@ -2126,19 +2195,20 @@ internal sealed class OwlManchesterSyntaxConverter
     /// <summary>Types a numeric lexical by its shape: an <c>f</c> suffix is a float, a fraction or exponent is a decimal, else an integer.</summary>
     /// <param name="lexical">The raw numeric lexical.</param>
     /// <returns>The typed literal.</returns>
-    private static Literal NumberToLiteral(string lexical)
+    private static Literal NumberToLiteral(Utf8String lexical)
     {
-        if(lexical.EndsWith('f') || lexical.EndsWith('F'))
+        ReadOnlySpan<byte> span = lexical.Span;
+        if(span.Length > 0 && (span[^1] == (byte)'f' || span[^1] == (byte)'F'))
         {
-            return new Literal(Utf8String.FromString(lexical[..^1]), new NamedNode(Vocabulary.Xsd.Float));
+            return new Literal(InternTerm(lexical.Memory[..^1].Span), new NamedNode(Vocabulary.Xsd.Float));
         }
 
-        bool fractional = lexical.Contains('.', System.StringComparison.Ordinal)
-            || lexical.Contains('e', System.StringComparison.Ordinal)
-            || lexical.Contains('E', System.StringComparison.Ordinal);
+        bool fractional = span.IndexOf((byte)'.') >= 0
+            || span.IndexOf((byte)'e') >= 0
+            || span.IndexOf((byte)'E') >= 0;
 
         return new Literal(
-            Utf8String.FromString(lexical),
+            InternTerm(span),
             new NamedNode(fractional ? Vocabulary.Xsd.Decimal : Vocabulary.Xsd.Integer));
     }
 
@@ -2154,7 +2224,7 @@ internal sealed class OwlManchesterSyntaxConverter
 
         if(node is { IsAtom: true, Atom: { Kind: OwlManchesterTokenKind.BlankNode } blank })
         {
-            return new BlankNode(Utf8String.FromString(blank.Text));
+            return new BlankNode(InternTerm(blank.Text.Span));
         }
 
         return PeekReference(node) is Utf8String iri ? new NamedNode(iri) : null;
@@ -2224,7 +2294,7 @@ internal sealed class OwlManchesterSyntaxConverter
     /// <param name="keyword">The offending keyword token.</param>
     private void ReportUnexpectedSection(OwlManchesterToken keyword)
     {
-        Report($"The section '{keyword.Text}' does not belong to this frame.");
+        Report($"The section '{Decode(keyword.Text.Span)}' does not belong to this frame.");
     }
 
     /// <summary>Records an error diagnostic at the current span.</summary>
@@ -2236,5 +2306,49 @@ internal sealed class OwlManchesterSyntaxConverter
             DiagnosticSeverity.Error,
             CurrentSpan,
             Utf8String.FromString(message)));
+    }
+
+    /// <summary>Copies bytes into an eager-hash term value detached from the reader's buffer.</summary>
+    /// <param name="bytes">The UTF-8 bytes of the term.</param>
+    /// <returns>A <see cref="Utf8String"/> over a fresh copy, with its hash precomputed for dictionary use.</returns>
+    private static Utf8String InternTerm(ReadOnlySpan<byte> bytes)
+    {
+        return new Utf8String(bytes.ToArray());
+    }
+
+    /// <summary>Joins a prefix expansion and a local name into one eager-hash term value.</summary>
+    /// <param name="a">The namespace expansion bytes.</param>
+    /// <param name="b">The local-name bytes.</param>
+    /// <returns>A <see cref="Utf8String"/> over the concatenation.</returns>
+    private static Utf8String Concat(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
+    {
+        byte[] joined = new byte[a.Length + b.Length];
+        a.CopyTo(joined);
+        b.CopyTo(joined.AsSpan(a.Length));
+
+        return new Utf8String(joined);
+    }
+
+    /// <summary>Drops any trailing <c>:</c> bytes from a prefix name, yielding an eager-hash lookup key.</summary>
+    /// <param name="name">The prefix token's text, including its trailing colon.</param>
+    /// <returns>The prefix without trailing colons, with its hash precomputed for dictionary use.</returns>
+    private static Utf8String TrimTrailingColons(Utf8String name)
+    {
+        ReadOnlyMemory<byte> memory = name.Memory;
+        int end = memory.Length;
+        while(end > 0 && memory.Span[end - 1] == (byte)':')
+        {
+            end--;
+        }
+
+        return new Utf8String(memory[..end]);
+    }
+
+    /// <summary>Decodes UTF-8 bytes to a string for a human-readable diagnostic message; the error path only.</summary>
+    /// <param name="bytes">The UTF-8 bytes to decode.</param>
+    /// <returns>The decoded text.</returns>
+    private static string Decode(ReadOnlySpan<byte> bytes)
+    {
+        return Encoding.UTF8.GetString(bytes);
     }
 }

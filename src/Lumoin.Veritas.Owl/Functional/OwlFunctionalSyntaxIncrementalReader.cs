@@ -645,7 +645,7 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
         Open.Peek().Children.Add(group);
         Open.Push(group);
 
-        if(head is Utf8String headValue && headValue.Span.SequenceEqual(OwlFunctionalKeywords.Ontology) && Open.Count == 2)
+        if(head is Utf8String headValue && OwlFunctionalKeywords.IsOntology(headValue) && Open.Count == 2)
         {
             OntologyGroup = group;
             Converter.BeginOntology();
@@ -698,7 +698,7 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
         {
             parent.Children.RemoveAt(parent.Children.Count - 1);
 
-            if(closed.Head is Utf8String head && head.Span.SequenceEqual(OwlFunctionalKeywords.Prefix))
+            if(closed.Head is Utf8String head && OwlFunctionalKeywords.IsPrefix(head))
             {
                 Converter.RegisterPrefix(closed);
             }

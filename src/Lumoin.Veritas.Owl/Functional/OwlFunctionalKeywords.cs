@@ -318,6 +318,38 @@ internal static class OwlFunctionalKeywords
     {
         return ByName.GetValueOrDefault(head, OwlFunctionalKeyword.Unrecognised);
     }
+
+    /// <summary>Whether a node head names the <c>Ontology</c> document group.</summary>
+    /// <param name="head">The constructor-name bytes to classify.</param>
+    /// <returns><see langword="true"/> for the <c>Ontology</c> head.</returns>
+    public static bool IsOntology(Utf8String head)
+    {
+        return head.SequenceEqual(Ontology);
+    }
+
+    /// <summary>Whether a node head names a <c>Prefix</c> declaration.</summary>
+    /// <param name="head">The constructor-name bytes to classify.</param>
+    /// <returns><see langword="true"/> for the <c>Prefix</c> head.</returns>
+    public static bool IsPrefix(Utf8String head)
+    {
+        return head.SequenceEqual(Prefix);
+    }
+
+    /// <summary>Whether a node head names an <c>Import</c> directive.</summary>
+    /// <param name="head">The constructor-name bytes to classify.</param>
+    /// <returns><see langword="true"/> for the <c>Import</c> head.</returns>
+    public static bool IsImport(Utf8String head)
+    {
+        return head.SequenceEqual(Import);
+    }
+
+    /// <summary>Whether a node head names an <c>Annotation</c> frame.</summary>
+    /// <param name="head">The constructor-name bytes to classify.</param>
+    /// <returns><see langword="true"/> for the <c>Annotation</c> head.</returns>
+    public static bool IsAnnotation(Utf8String head)
+    {
+        return head.SequenceEqual(Annotation);
+    }
 }
 
 /// <summary>The constructor and directive keywords of the OWL 2 functional-style syntax as a closed dispatch discriminant.</summary>

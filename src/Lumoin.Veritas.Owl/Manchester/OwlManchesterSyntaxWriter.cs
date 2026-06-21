@@ -1,6 +1,8 @@
 using System;
+using System.Buffers;
+using System.Buffers.Text;
 using System.Collections.Generic;
-using System.Globalization;
+using System.Collections.Immutable;
 using System.Text;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
@@ -15,11 +17,18 @@ namespace Lumoin.Veritas.Owl.Manchester;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The rendering is deterministic and prefix-free: every IRI is written in
-/// full angle-bracket form; axioms group into frames in order of first
-/// appearance; each section line carries one axiom, its annotations leading
-/// the payload, so the annotated-list grammar stays unambiguous. Reading a
-/// rendering and rendering the result reproduces the same text.
+/// The rendering is UTF-8 byte-native and deterministic and prefix-free: every
+/// IRI is written in full angle-bracket form; axioms group into frames in order
+/// of first appearance; each section line carries one axiom, its annotations
+/// leading the payload, so the annotated-list grammar stays unambiguous. Reading
+/// a rendering and rendering the result reproduces the same text.
+/// </para>
+/// <para>
+/// Keywords and punctuation are emitted directly from their <c>u8</c> byte
+/// sequences in <see cref="OwlManchesterWords"/> and term values from their
+/// <see cref="Utf8String"/> bytes, so no UTF-16 intermediate is ever
+/// materialised. Numbers format through <see cref="Utf8Formatter"/> and literal
+/// escaping scans the bytes.
 /// </para>
 /// <para>
 /// Manchester syntax cannot express every axiom: a general class inclusion
@@ -38,7 +47,31 @@ namespace Lumoin.Veritas.Owl.Manchester;
 public static class OwlManchesterSyntaxWriter
 {
     /// <summary>
-    /// Renders the document.
+    /// Renders the document as UTF-8 Manchester-syntax bytes into a caller-supplied writer.
+    /// </summary>
+    /// <param name="document">The structural document.</param>
+    /// <param name="diagnostics">The bag inexpressible-axiom warnings record into.</param>
+    /// <param name="output">The destination buffer writer the caller owns and threads.</param>
+    /// <exception cref="ArgumentNullException">An argument is <see langword="null"/>.</exception>
+    public static void Write(OwlOntologyDocument document, DiagnosticBag diagnostics, IBufferWriter<byte> output)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        ArgumentNullException.ThrowIfNull(diagnostics);
+        ArgumentNullException.ThrowIfNull(output);
+
+        Plan plan = new(document.OntologyIri, diagnostics);
+
+        foreach(OwlAxiom axiom in document.Axioms)
+        {
+            PlaceAxiom(plan, axiom);
+        }
+
+        plan.PlacePendingAnnotations();
+        plan.Render(output);
+    }
+
+    /// <summary>
+    /// Renders the document to Manchester-syntax text, decoding the UTF-8 bytes once at the boundary.
     /// </summary>
     /// <param name="document">The structural document.</param>
     /// <param name="diagnostics">The bag inexpressible-axiom warnings record into.</param>
@@ -49,40 +82,46 @@ public static class OwlManchesterSyntaxWriter
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(diagnostics);
 
-        Plan plan = new(document.OntologyIri, diagnostics);
+        ArrayBufferWriter<byte> buffer = new();
+        Write(document, diagnostics, buffer);
 
-        foreach(OwlAxiom axiom in document.Axioms)
-        {
-            PlaceAxiom(plan, axiom);
-        }
-
-        plan.PlacePendingAnnotations();
-
-        return plan.Render();
+        return Encoding.UTF8.GetString(buffer.WrittenSpan);
     }
 
-    //One frame section line: optional annotations and a payload.
-    private sealed record SectionLine(ImmutableAnnotations Annotations, string Payload);
+    //One frame section line: optional annotations and a rendered payload.
+    private sealed record SectionLine(ImmutableAnnotations Annotations, Utf8String Payload);
 
     //The annotations of one line, kept as the structural values until rendering.
-    private sealed record ImmutableAnnotations(System.Collections.Immutable.ImmutableArray<OwlAnnotation> Values);
+    private sealed record ImmutableAnnotations(ImmutableArray<OwlAnnotation> Values);
 
-    //One frame: its keyword, its subject text, and its section lines in order.
+    //One frame: its keyword bytes, its subject text, and its section lines in order.
     private sealed class Frame
     {
-        /// <summary>The frame keyword, such as <c>Class:</c>.</summary>
-        public required string Keyword { get; init; }
+        /// <summary>The frame keyword, such as <c>Class:</c>, as its byte sequence.</summary>
+        public required Utf8String Keyword { get; init; }
 
         /// <summary>The rendered subject term.</summary>
-        public required string Subject { get; init; }
+        public required Utf8String Subject { get; init; }
 
         /// <summary>The section lines, in placement order.</summary>
-        public List<(string Section, SectionLine Line)> Lines { get; } = [];
+        public List<FrameLine> Lines { get; } = [];
     }
+
+    //One placed frame line: its section keyword bytes and the line payload.
+    private readonly record struct FrameLine(Utf8String Section, SectionLine Line);
+
+    //One placed entity-free n-ary line: its keyword bytes and the line payload.
+    private readonly record struct MiscLine(Utf8String Keyword, SectionLine Line);
+
+    //The frame key, as the keyword and subject byte sequences in first-appearance order.
+    private readonly record struct FrameKey(Utf8String Keyword, Utf8String Subject);
 
     //The document plan: header, frames in first-appearance order, misc lines.
     private sealed class Plan
     {
+        /// <summary>Initialises the plan for a document.</summary>
+        /// <param name="ontologyIri">The ontology IRI, when the document names one.</param>
+        /// <param name="diagnostics">The bag inexpressibility warnings record into.</param>
         public Plan(NamedNode? ontologyIri, DiagnosticBag diagnostics)
         {
             OntologyIri = ontologyIri;
@@ -96,58 +135,60 @@ public static class OwlManchesterSyntaxWriter
         public DiagnosticBag Diagnostics { get; }
 
         /// <summary>The rendered import IRIs, in document order.</summary>
-        public List<string> Imports { get; } = [];
+        public List<Utf8String> Imports { get; } = [];
 
         /// <summary>The ontology-level annotations, in document order.</summary>
         public List<OwlAnnotation> OntologyAnnotations { get; } = [];
 
         /// <summary>The frames, keyed by keyword and subject, in first-appearance order.</summary>
-        public Dictionary<(string Keyword, string Subject), Frame> Frames { get; } = [];
+        public Dictionary<FrameKey, Frame> Frames { get; } = [];
 
         /// <summary>The frame keys in first-appearance order.</summary>
-        public List<(string Keyword, string Subject)> FrameOrder { get; } = [];
+        public List<FrameKey> FrameOrder { get; } = [];
 
         /// <summary>The entity-free n-ary lines, in document order.</summary>
-        public List<(string Keyword, SectionLine Line)> MiscLines { get; } = [];
+        public List<MiscLine> MiscLines { get; } = [];
 
         /// <summary>Annotation assertions awaiting a frame to host them, in document order.</summary>
         public List<OwlAnnotationAssertionAxiom> PendingAnnotations { get; } = [];
 
         /// <summary>Finds or creates the frame for a subject.</summary>
-        /// <param name="keyword">The frame keyword.</param>
+        /// <param name="keyword">The frame keyword bytes.</param>
         /// <param name="subject">The rendered subject.</param>
         /// <returns>The frame.</returns>
-        public Frame EnsureFrame(string keyword, string subject)
+        public Frame EnsureFrame(ReadOnlySpan<byte> keyword, Utf8String subject)
         {
-            if(!Frames.TryGetValue((keyword, subject), out Frame? frame))
+            FrameKey key = new(new Utf8String(keyword.ToArray()), subject);
+            if(!Frames.TryGetValue(key, out Frame? frame))
             {
-                frame = new Frame { Keyword = keyword, Subject = subject };
-                Frames[(keyword, subject)] = frame;
-                FrameOrder.Add((keyword, subject));
+                frame = new Frame { Keyword = key.Keyword, Subject = subject };
+                Frames[key] = frame;
+                FrameOrder.Add(key);
             }
 
             return frame;
         }
 
         /// <summary>Adds one section line to a frame, unless the payload contains an inexpressible sub-expression.</summary>
-        /// <param name="keyword">The frame keyword.</param>
+        /// <param name="keyword">The frame keyword bytes.</param>
         /// <param name="subject">The rendered subject.</param>
-        /// <param name="section">The section keyword.</param>
+        /// <param name="section">The section keyword bytes.</param>
         /// <param name="axiom">The axiom whose annotations lead the line.</param>
         /// <param name="payload">The rendered payload.</param>
-        public void AddLine(string keyword, string subject, string section, OwlAxiom axiom, string payload)
+        /// <param name="inexpressible">Whether the payload met a shape with no Manchester form.</param>
+        public void AddLine(ReadOnlySpan<byte> keyword, Utf8String subject, ReadOnlySpan<byte> section, OwlAxiom axiom, Utf8String payload, bool inexpressible)
         {
             //An expression renderer that met an n-ary data quantifier (or
-            //another shape with no Manchester form) embedded the marker; the
-            //whole axiom is skipped rather than silently altered.
-            if(payload.Contains("urn:veritas:inexpressible", StringComparison.Ordinal))
+            //another shape with no Manchester form) raised the flag; the whole
+            //axiom is skipped rather than silently altered.
+            if(inexpressible)
             {
                 Skip("an expression with no Manchester form");
 
                 return;
             }
 
-            EnsureFrame(keyword, subject).Lines.Add((section, new SectionLine(new ImmutableAnnotations(axiom.Annotations), payload)));
+            EnsureFrame(keyword, subject).Lines.Add(new FrameLine(new Utf8String(section.ToArray()), new SectionLine(new ImmutableAnnotations(axiom.Annotations), payload)));
         }
 
         /// <summary>Records an inexpressible axiom and skips it.</summary>
@@ -177,11 +218,11 @@ public static class OwlManchesterSyntaxWriter
                     continue;
                 }
 
-                string subject = RenderTerm(axiom.Subject);
+                Utf8String subject = RenderTerm(axiom.Subject);
                 Frame? host = null;
-                foreach((string Keyword, string Subject) key in FrameOrder)
+                foreach(FrameKey key in FrameOrder)
                 {
-                    if(key.Subject == subject)
+                    if(key.Subject.Equals(subject))
                     {
                         host = Frames[key];
                         break;
@@ -195,124 +236,162 @@ public static class OwlManchesterSyntaxWriter
                     continue;
                 }
 
-                host.Lines.Add(("Annotations:", new SectionLine(
-                    new ImmutableAnnotations(axiom.Annotations),
-                    $"{RenderTerm(axiom.Property)} {RenderTerm(axiom.Value)}")));
+                host.Lines.Add(new FrameLine(
+                    new Utf8String(OwlManchesterWords.AnnotationsKeyword.ToArray()),
+                    new SectionLine(
+                        new ImmutableAnnotations(axiom.Annotations),
+                        JoinSpaced(RenderTerm(axiom.Property), RenderTerm(axiom.Value)))));
             }
         }
 
-        /// <summary>Renders the plan to the document text.</summary>
-        /// <returns>The Manchester-syntax text.</returns>
-        public string Render()
+        /// <summary>Renders the plan to the document bytes.</summary>
+        /// <param name="output">The destination buffer writer.</param>
+        public void Render(IBufferWriter<byte> output)
         {
-            StringBuilder text = new();
-            text.Append("Ontology:");
+            output.Write(OwlManchesterWords.OntologyKeyword);
             if(OntologyIri is NamedNode iri)
             {
-                text.Append(" <").Append(iri.Iri.ToString()).Append('>');
+                output.Write(" <"u8);
+                output.Write(iri.Iri.Span);
+                output.Write(">"u8);
             }
 
-            text.AppendLine();
+            output.Write("\n"u8);
 
-            foreach(string import in Imports)
+            foreach(Utf8String import in Imports)
             {
-                text.Append("Import: ").Append(import).AppendLine();
+                output.Write(OwlManchesterWords.ImportKeyword);
+                output.Write(" "u8);
+                output.Write(import.Span);
+                output.Write("\n"u8);
             }
 
             foreach(OwlAnnotation annotation in OntologyAnnotations)
             {
-                text.Append("Annotations: ");
-                AppendAnnotation(text, annotation);
-                text.AppendLine();
+                output.Write(OwlManchesterWords.AnnotationsKeyword);
+                output.Write(" "u8);
+                WriteAnnotation(output, annotation);
+                output.Write("\n"u8);
             }
 
-            foreach((string Keyword, string Subject) key in FrameOrder)
+            foreach(FrameKey key in FrameOrder)
             {
                 Frame frame = Frames[key];
-                text.AppendLine();
-                text.Append(frame.Keyword).Append(' ').Append(frame.Subject).AppendLine();
+                output.Write("\n"u8);
+                output.Write(frame.Keyword.Span);
+                output.Write(" "u8);
+                output.Write(frame.Subject.Span);
+                output.Write("\n"u8);
 
-                foreach((string section, SectionLine line) in frame.Lines)
+                foreach(FrameLine line in frame.Lines)
                 {
-                    text.Append("    ").Append(section).Append(' ');
-                    AppendLineAnnotations(text, line.Annotations);
-                    text.Append(line.Payload).AppendLine();
+                    output.Write("    "u8);
+                    output.Write(line.Section.Span);
+                    output.Write(" "u8);
+                    WriteLineAnnotations(output, line.Line.Annotations);
+                    output.Write(line.Line.Payload.Span);
+                    output.Write("\n"u8);
                 }
             }
 
-            foreach((string keyword, SectionLine line) in MiscLines)
+            foreach(MiscLine misc in MiscLines)
             {
-                text.AppendLine();
-                text.Append(keyword).Append(' ');
-                AppendLineAnnotations(text, line.Annotations);
-                text.Append(line.Payload).AppendLine();
+                output.Write("\n"u8);
+                output.Write(misc.Keyword.Span);
+                output.Write(" "u8);
+                WriteLineAnnotations(output, misc.Line.Annotations);
+                output.Write(misc.Line.Payload.Span);
+                output.Write("\n"u8);
             }
-
-            return text.ToString();
         }
 
-        /// <summary>Appends a line's leading <c>Annotations:</c> block, when it has one.</summary>
-        /// <param name="text">The output.</param>
+        /// <summary>Writes a line's leading <c>Annotations:</c> block, when it has one.</summary>
+        /// <param name="output">The destination buffer writer.</param>
         /// <param name="annotations">The line's annotations.</param>
-        private static void AppendLineAnnotations(StringBuilder text, ImmutableAnnotations annotations)
+        private static void WriteLineAnnotations(IBufferWriter<byte> output, ImmutableAnnotations annotations)
         {
             if(annotations.Values.IsDefaultOrEmpty)
             {
                 return;
             }
 
-            text.Append("Annotations: ");
+            output.Write(OwlManchesterWords.AnnotationsKeyword);
+            output.Write(" "u8);
             for(int i = 0; i < annotations.Values.Length; i++)
             {
                 if(i > 0)
                 {
-                    text.Append(", ");
+                    output.Write(", "u8);
                 }
 
-                AppendAnnotation(text, annotations.Values[i]);
+                WriteAnnotation(output, annotations.Values[i]);
             }
 
-            text.Append(' ');
+            output.Write(" "u8);
         }
 
-        /// <summary>Appends one annotation: its nested block, its property, and its target.</summary>
-        /// <param name="text">The output.</param>
+        /// <summary>Writes one annotation: its nested block, its property, and its target.</summary>
+        /// <param name="output">The destination buffer writer.</param>
         /// <param name="annotation">The annotation.</param>
-        private static void AppendAnnotation(StringBuilder text, OwlAnnotation annotation)
+        private static void WriteAnnotation(IBufferWriter<byte> output, OwlAnnotation annotation)
         {
             //Nested annotation blocks recurse structurally; an explicit stack
             //of pending pieces keeps the call stack flat.
-            Stack<object> work = new();
-            work.Push(annotation);
+            Stack<AnnotationPiece> work = new();
+            work.Push(AnnotationPiece.Of(annotation));
 
             while(work.Count > 0)
             {
-                object piece = work.Pop();
-                if(piece is string literal)
+                AnnotationPiece piece = work.Pop();
+                if(piece.Text is Utf8String literal)
                 {
-                    text.Append(literal);
+                    output.Write(literal.Span);
 
                     continue;
                 }
 
-                OwlAnnotation current = (OwlAnnotation)piece;
-                work.Push($"{RenderTerm(current.Property)} {RenderTerm(current.Value)}");
+                OwlAnnotation current = piece.Annotation!;
+                work.Push(AnnotationPiece.Of(JoinSpaced(RenderTerm(current.Property), RenderTerm(current.Value))));
 
                 for(int i = current.Annotations.Length - 1; i >= 0; i--)
                 {
-                    work.Push(" ");
-                    work.Push(current.Annotations[i]);
+                    work.Push(AnnotationPiece.Of(new Utf8String(" "u8.ToArray())));
+                    work.Push(AnnotationPiece.Of(current.Annotations[i]));
                     if(i == 0)
                     {
-                        work.Push("Annotations: ");
+                        //The stack pops last-in-first-out, so the trailing space is pushed
+                        //before the keyword to make the keyword pop first: "Annotations: ".
+                        work.Push(AnnotationPiece.Of(new Utf8String(" "u8.ToArray())));
+                        work.Push(AnnotationPiece.Of(new Utf8String(OwlManchesterWords.AnnotationsKeyword.ToArray())));
                     }
                     else
                     {
                         //Continuing annotations join the same nested block.
-                        work.Push(", ");
+                        work.Push(AnnotationPiece.Of(new Utf8String(", "u8.ToArray())));
                     }
                 }
             }
+        }
+    }
+
+    //One unit of annotation-rendering work: literal bytes to emit, or an
+    //annotation to expand.
+    private readonly record struct AnnotationPiece(Utf8String? Text, OwlAnnotation? Annotation)
+    {
+        /// <summary>A literal-text piece.</summary>
+        /// <param name="text">The bytes to emit verbatim.</param>
+        /// <returns>The piece.</returns>
+        public static AnnotationPiece Of(Utf8String text)
+        {
+            return new AnnotationPiece(text, null);
+        }
+
+        /// <summary>An annotation-to-expand piece.</summary>
+        /// <param name="annotation">The annotation.</param>
+        /// <returns>The piece.</returns>
+        public static AnnotationPiece Of(OwlAnnotation annotation)
+        {
+            return new AnnotationPiece(null, annotation);
         }
     }
 
@@ -322,13 +401,13 @@ public static class OwlManchesterSyntaxWriter
     {
         switch(axiom)
         {
-            case OwlImportAxiom import:
+            case(OwlImportAxiom import):
             {
-                plan.Imports.Add($"<{import.Imported.Iri}>");
+                plan.Imports.Add(RenderIri(import.Imported.Iri));
                 break;
             }
 
-            case OwlDeclarationAxiom declaration:
+            case(OwlDeclarationAxiom declaration):
             {
                 if(!declaration.Annotations.IsDefaultOrEmpty)
                 {
@@ -336,17 +415,17 @@ public static class OwlManchesterSyntaxWriter
                     break;
                 }
 
-                plan.EnsureFrame(FrameKeyword(declaration.Kind), $"<{declaration.Entity.Iri}>");
+                plan.EnsureFrame(FrameKeyword(declaration.Kind), RenderIri(declaration.Entity.Iri));
                 break;
             }
 
-            case OwlAnnotationAssertionAxiom annotation:
+            case(OwlAnnotationAssertionAxiom annotation):
             {
                 plan.PendingAnnotations.Add(annotation);
                 break;
             }
 
-            case OwlSubClassOfAxiom subClass:
+            case(OwlSubClassOfAxiom subClass):
             {
                 if(subClass.SubClass is not OwlClassReference reference)
                 {
@@ -354,51 +433,55 @@ public static class OwlManchesterSyntaxWriter
                     break;
                 }
 
-                plan.AddLine("Class:", RenderTerm(reference.Class), "SubClassOf:", axiom, RenderClass(subClass.SuperClass, parenthesize: false));
+                Utf8String payload = RenderClass(subClass.SuperClass, parenthesize: false, out bool inexpressible);
+                plan.AddLine(OwlManchesterWords.ClassFrame, RenderTerm(reference.Class), OwlManchesterWords.SubClassOfSection, axiom, payload, inexpressible);
                 break;
             }
 
-            case OwlEquivalentClassesAxiom equivalent:
+            case(OwlEquivalentClassesAxiom equivalent):
             {
                 if(equivalent.First is OwlClassReference firstReference)
                 {
-                    plan.AddLine("Class:", RenderTerm(firstReference.Class), "EquivalentTo:", axiom, RenderClass(equivalent.Second, parenthesize: false));
+                    Utf8String payload = RenderClass(equivalent.Second, parenthesize: false, out bool inexpressible);
+                    plan.AddLine(OwlManchesterWords.ClassFrame, RenderTerm(firstReference.Class), OwlManchesterWords.EquivalentToSection, axiom, payload, inexpressible);
                 }
                 else if(equivalent.Second is OwlClassReference secondReference)
                 {
-                    plan.AddLine("Class:", RenderTerm(secondReference.Class), "EquivalentTo:", axiom, RenderClass(equivalent.First, parenthesize: false));
+                    Utf8String payload = RenderClass(equivalent.First, parenthesize: false, out bool inexpressible);
+                    plan.AddLine(OwlManchesterWords.ClassFrame, RenderTerm(secondReference.Class), OwlManchesterWords.EquivalentToSection, axiom, payload, inexpressible);
                 }
                 else
                 {
-                    plan.MiscLines.Add(("EquivalentClasses:", new SectionLine(
-                        new ImmutableAnnotations(axiom.Annotations),
-                        $"{RenderClass(equivalent.First, parenthesize: false)}, {RenderClass(equivalent.Second, parenthesize: false)}")));
+                    Utf8String first = RenderClass(equivalent.First, parenthesize: false, out _);
+                    Utf8String second = RenderClass(equivalent.Second, parenthesize: false, out _);
+                    AddMiscLine(plan, OwlManchesterWords.EquivalentClassesFrame, axiom, JoinList(first, second));
                 }
 
                 break;
             }
 
-            case OwlDisjointClassesAxiom disjoint:
+            case(OwlDisjointClassesAxiom disjoint):
             {
                 if(disjoint.Operands.Count == 2 && disjoint.Operands[0] is OwlClassReference firstReference)
                 {
-                    plan.AddLine("Class:", RenderTerm(firstReference.Class), "DisjointWith:", axiom, RenderClass(disjoint.Operands[1], parenthesize: false));
+                    Utf8String payload = RenderClass(disjoint.Operands[1], parenthesize: false, out bool inexpressible);
+                    plan.AddLine(OwlManchesterWords.ClassFrame, RenderTerm(firstReference.Class), OwlManchesterWords.DisjointWithSection, axiom, payload, inexpressible);
                     break;
                 }
 
-                plan.MiscLines.Add(("DisjointClasses:", new SectionLine(
-                    new ImmutableAnnotations(axiom.Annotations),
-                    JoinClasses(disjoint.Operands))));
+                Utf8String joined = JoinClasses(disjoint.Operands, out _);
+                AddMiscLine(plan, OwlManchesterWords.DisjointClassesFrame, axiom, joined);
                 break;
             }
 
-            case OwlDisjointUnionAxiom disjointUnion:
+            case(OwlDisjointUnionAxiom disjointUnion):
             {
-                plan.AddLine("Class:", $"<{disjointUnion.Class.Iri}>", "DisjointUnionOf:", axiom, JoinClasses(disjointUnion.Operands));
+                Utf8String joined = JoinClasses(disjointUnion.Operands, out bool inexpressible);
+                plan.AddLine(OwlManchesterWords.ClassFrame, RenderIri(disjointUnion.Class.Iri), OwlManchesterWords.DisjointUnionOfSection, axiom, joined, inexpressible);
                 break;
             }
 
-            case OwlHasKeyAxiom hasKey:
+            case(OwlHasKeyAxiom hasKey):
             {
                 if(hasKey.Class is not OwlClassReference reference)
                 {
@@ -406,22 +489,25 @@ public static class OwlManchesterSyntaxWriter
                     break;
                 }
 
-                List<string> keys = [];
+                ArrayBufferWriter<byte> keys = new();
+                bool firstKey = true;
                 foreach(OwlObjectPropertyExpression objectKey in hasKey.ObjectProperties)
                 {
-                    keys.Add(RenderObjectProperty(objectKey));
+                    AppendSeparated(keys, " "u8, ref firstKey);
+                    keys.Write(RenderObjectProperty(objectKey).Span);
                 }
 
                 foreach(NamedNode dataKey in hasKey.DataProperties)
                 {
-                    keys.Add($"<{dataKey.Iri}>");
+                    AppendSeparated(keys, " "u8, ref firstKey);
+                    keys.Write(RenderIri(dataKey.Iri).Span);
                 }
 
-                plan.AddLine("Class:", RenderTerm(reference.Class), "HasKey:", axiom, string.Join(" ", keys));
+                plan.AddLine(OwlManchesterWords.ClassFrame, RenderTerm(reference.Class), OwlManchesterWords.HasKeySection, axiom, ToUtf8String(keys), inexpressible: false);
                 break;
             }
 
-            case OwlPropertyChainAxiom chain:
+            case(OwlPropertyChainAxiom chain):
             {
                 if(chain.SuperProperty is not OwlObjectPropertyReference superReference)
                 {
@@ -429,17 +515,19 @@ public static class OwlManchesterSyntaxWriter
                     break;
                 }
 
-                List<string> links = [];
+                ArrayBufferWriter<byte> links = new();
+                bool firstLink = true;
                 foreach(OwlObjectPropertyExpression link in chain.Chain)
                 {
-                    links.Add(RenderObjectProperty(link));
+                    AppendSeparated(links, " o "u8, ref firstLink);
+                    links.Write(RenderObjectProperty(link).Span);
                 }
 
-                plan.AddLine("ObjectProperty:", RenderTerm(superReference.Named), "SubPropertyChain:", axiom, string.Join(" o ", links));
+                plan.AddLine(OwlManchesterWords.ObjectPropertyFrame, RenderTerm(superReference.Named), OwlManchesterWords.SubPropertyChainSection, axiom, ToUtf8String(links), inexpressible: false);
                 break;
             }
 
-            case OwlSubObjectPropertyOfAxiom subProperty:
+            case(OwlSubObjectPropertyOfAxiom subProperty):
             {
                 if(subProperty.SubProperty is not OwlObjectPropertyReference reference)
                 {
@@ -447,19 +535,19 @@ public static class OwlManchesterSyntaxWriter
                     break;
                 }
 
-                plan.AddLine("ObjectProperty:", RenderTerm(reference.Named), "SubPropertyOf:", axiom, RenderObjectProperty(subProperty.SuperProperty));
+                plan.AddLine(OwlManchesterWords.ObjectPropertyFrame, RenderTerm(reference.Named), OwlManchesterWords.SubPropertyOfSection, axiom, RenderObjectProperty(subProperty.SuperProperty), inexpressible: false);
                 break;
             }
 
-            case OwlEquivalentObjectPropertiesAxiom equivalentProperties:
+            case(OwlEquivalentObjectPropertiesAxiom equivalentProperties):
             {
                 if(equivalentProperties.First is OwlObjectPropertyReference firstReference)
                 {
-                    plan.AddLine("ObjectProperty:", RenderTerm(firstReference.Named), "EquivalentTo:", axiom, RenderObjectProperty(equivalentProperties.Second));
+                    plan.AddLine(OwlManchesterWords.ObjectPropertyFrame, RenderTerm(firstReference.Named), OwlManchesterWords.EquivalentToSection, axiom, RenderObjectProperty(equivalentProperties.Second), inexpressible: false);
                 }
                 else if(equivalentProperties.Second is OwlObjectPropertyReference secondReference)
                 {
-                    plan.AddLine("ObjectProperty:", RenderTerm(secondReference.Named), "EquivalentTo:", axiom, RenderObjectProperty(equivalentProperties.First));
+                    plan.AddLine(OwlManchesterWords.ObjectPropertyFrame, RenderTerm(secondReference.Named), OwlManchesterWords.EquivalentToSection, axiom, RenderObjectProperty(equivalentProperties.First), inexpressible: false);
                 }
                 else
                 {
@@ -469,15 +557,16 @@ public static class OwlManchesterSyntaxWriter
                 break;
             }
 
-            case OwlDisjointObjectPropertiesAxiom disjointProperties:
+            case(OwlDisjointObjectPropertiesAxiom disjointProperties):
             {
                 if(disjointProperties.Operands.Count == 2 && disjointProperties.Operands[0] is OwlObjectPropertyReference firstReference)
                 {
-                    plan.AddLine("ObjectProperty:", RenderTerm(firstReference.Named), "DisjointWith:", axiom, RenderObjectProperty(disjointProperties.Operands[1]));
+                    plan.AddLine(OwlManchesterWords.ObjectPropertyFrame, RenderTerm(firstReference.Named), OwlManchesterWords.DisjointWithSection, axiom, RenderObjectProperty(disjointProperties.Operands[1]), inexpressible: false);
                     break;
                 }
 
-                List<string> properties = [];
+                ArrayBufferWriter<byte> properties = new();
+                bool firstProperty = true;
                 bool expressible = true;
                 foreach(OwlObjectPropertyExpression operand in disjointProperties.Operands)
                 {
@@ -487,7 +576,8 @@ public static class OwlManchesterSyntaxWriter
                         break;
                     }
 
-                    properties.Add(RenderTerm(operandReference.Named));
+                    AppendSeparated(properties, ", "u8, ref firstProperty);
+                    properties.Write(RenderTerm(operandReference.Named).Span);
                 }
 
                 if(!expressible)
@@ -496,19 +586,19 @@ public static class OwlManchesterSyntaxWriter
                     break;
                 }
 
-                plan.MiscLines.Add(("DisjointProperties:", new SectionLine(new ImmutableAnnotations(axiom.Annotations), string.Join(", ", properties))));
+                AddMiscLine(plan, OwlManchesterWords.DisjointPropertiesFrame, axiom, ToUtf8String(properties));
                 break;
             }
 
-            case OwlInverseObjectPropertiesAxiom inverse:
+            case(OwlInverseObjectPropertiesAxiom inverse):
             {
                 if(inverse.First is OwlObjectPropertyReference firstReference)
                 {
-                    plan.AddLine("ObjectProperty:", RenderTerm(firstReference.Named), "InverseOf:", axiom, RenderObjectProperty(inverse.Second));
+                    plan.AddLine(OwlManchesterWords.ObjectPropertyFrame, RenderTerm(firstReference.Named), OwlManchesterWords.InverseOfSection, axiom, RenderObjectProperty(inverse.Second), inexpressible: false);
                 }
                 else if(inverse.Second is OwlObjectPropertyReference secondReference)
                 {
-                    plan.AddLine("ObjectProperty:", RenderTerm(secondReference.Named), "InverseOf:", axiom, RenderObjectProperty(inverse.First));
+                    plan.AddLine(OwlManchesterWords.ObjectPropertyFrame, RenderTerm(secondReference.Named), OwlManchesterWords.InverseOfSection, axiom, RenderObjectProperty(inverse.First), inexpressible: false);
                 }
                 else
                 {
@@ -518,7 +608,7 @@ public static class OwlManchesterSyntaxWriter
                 break;
             }
 
-            case OwlObjectPropertyDomainAxiom domain:
+            case(OwlObjectPropertyDomainAxiom domain):
             {
                 if(domain.Property is not OwlObjectPropertyReference reference)
                 {
@@ -526,11 +616,12 @@ public static class OwlManchesterSyntaxWriter
                     break;
                 }
 
-                plan.AddLine("ObjectProperty:", RenderTerm(reference.Named), "Domain:", axiom, RenderClass(domain.Domain, parenthesize: false));
+                Utf8String payload = RenderClass(domain.Domain, parenthesize: false, out bool inexpressible);
+                plan.AddLine(OwlManchesterWords.ObjectPropertyFrame, RenderTerm(reference.Named), OwlManchesterWords.DomainSection, axiom, payload, inexpressible);
                 break;
             }
 
-            case OwlObjectPropertyRangeAxiom range:
+            case(OwlObjectPropertyRangeAxiom range):
             {
                 if(range.Property is not OwlObjectPropertyReference reference)
                 {
@@ -538,11 +629,12 @@ public static class OwlManchesterSyntaxWriter
                     break;
                 }
 
-                plan.AddLine("ObjectProperty:", RenderTerm(reference.Named), "Range:", axiom, RenderClass(range.Range, parenthesize: false));
+                Utf8String payload = RenderClass(range.Range, parenthesize: false, out bool inexpressible);
+                plan.AddLine(OwlManchesterWords.ObjectPropertyFrame, RenderTerm(reference.Named), OwlManchesterWords.RangeSection, axiom, payload, inexpressible);
                 break;
             }
 
-            case OwlObjectPropertyCharacteristicAxiom characteristic:
+            case(OwlObjectPropertyCharacteristicAxiom characteristic):
             {
                 if(characteristic.Property is not OwlObjectPropertyReference reference)
                 {
@@ -550,95 +642,102 @@ public static class OwlManchesterSyntaxWriter
                     break;
                 }
 
-                plan.AddLine("ObjectProperty:", RenderTerm(reference.Named), "Characteristics:", axiom, CharacteristicWord(characteristic.Characteristic));
+                plan.AddLine(OwlManchesterWords.ObjectPropertyFrame, RenderTerm(reference.Named), OwlManchesterWords.CharacteristicsSection, axiom, new Utf8String(CharacteristicWord(characteristic.Characteristic).ToArray()), inexpressible: false);
                 break;
             }
 
-            case OwlSubDataPropertyOfAxiom subData:
+            case(OwlSubDataPropertyOfAxiom subData):
             {
-                plan.AddLine("DataProperty:", $"<{subData.SubProperty.Iri}>", "SubPropertyOf:", axiom, $"<{subData.SuperProperty.Iri}>");
+                plan.AddLine(OwlManchesterWords.DataPropertyFrame, RenderIri(subData.SubProperty.Iri), OwlManchesterWords.SubPropertyOfSection, axiom, RenderIri(subData.SuperProperty.Iri), inexpressible: false);
                 break;
             }
 
-            case OwlEquivalentDataPropertiesAxiom equivalentData:
+            case(OwlEquivalentDataPropertiesAxiom equivalentData):
             {
-                plan.AddLine("DataProperty:", $"<{equivalentData.First.Iri}>", "EquivalentTo:", axiom, $"<{equivalentData.Second.Iri}>");
+                plan.AddLine(OwlManchesterWords.DataPropertyFrame, RenderIri(equivalentData.First.Iri), OwlManchesterWords.EquivalentToSection, axiom, RenderIri(equivalentData.Second.Iri), inexpressible: false);
                 break;
             }
 
-            case OwlDisjointDataPropertiesAxiom disjointData:
+            case(OwlDisjointDataPropertiesAxiom disjointData):
             {
                 if(disjointData.Operands.Count == 2)
                 {
-                    plan.AddLine("DataProperty:", $"<{disjointData.Operands[0].Iri}>", "DisjointWith:", axiom, $"<{disjointData.Operands[1].Iri}>");
+                    plan.AddLine(OwlManchesterWords.DataPropertyFrame, RenderIri(disjointData.Operands[0].Iri), OwlManchesterWords.DisjointWithSection, axiom, RenderIri(disjointData.Operands[1].Iri), inexpressible: false);
                     break;
                 }
 
-                List<string> properties = [];
+                ArrayBufferWriter<byte> properties = new();
+                bool firstProperty = true;
                 foreach(NamedNode operand in disjointData.Operands)
                 {
-                    properties.Add($"<{operand.Iri}>");
+                    AppendSeparated(properties, ", "u8, ref firstProperty);
+                    properties.Write(RenderIri(operand.Iri).Span);
                 }
 
-                plan.MiscLines.Add(("DisjointProperties:", new SectionLine(new ImmutableAnnotations(axiom.Annotations), string.Join(", ", properties))));
+                AddMiscLine(plan, OwlManchesterWords.DisjointPropertiesFrame, axiom, ToUtf8String(properties));
                 break;
             }
 
-            case OwlDataPropertyDomainAxiom dataDomain:
+            case(OwlDataPropertyDomainAxiom dataDomain):
             {
-                plan.AddLine("DataProperty:", $"<{dataDomain.Property.Iri}>", "Domain:", axiom, RenderClass(dataDomain.Domain, parenthesize: false));
+                Utf8String payload = RenderClass(dataDomain.Domain, parenthesize: false, out bool inexpressible);
+                plan.AddLine(OwlManchesterWords.DataPropertyFrame, RenderIri(dataDomain.Property.Iri), OwlManchesterWords.DomainSection, axiom, payload, inexpressible);
                 break;
             }
 
-            case OwlDataPropertyRangeAxiom dataRange:
+            case(OwlDataPropertyRangeAxiom dataRange):
             {
-                plan.AddLine("DataProperty:", $"<{dataRange.Property.Iri}>", "Range:", axiom, RenderDataRange(dataRange.Range, parenthesize: false));
+                Utf8String payload = RenderDataRange(dataRange.Range, parenthesize: false, out bool inexpressible);
+                plan.AddLine(OwlManchesterWords.DataPropertyFrame, RenderIri(dataRange.Property.Iri), OwlManchesterWords.RangeSection, axiom, payload, inexpressible);
                 break;
             }
 
-            case OwlFunctionalDataPropertyAxiom functionalData:
+            case(OwlFunctionalDataPropertyAxiom functionalData):
             {
-                plan.AddLine("DataProperty:", $"<{functionalData.Property.Iri}>", "Characteristics:", axiom, "Functional");
+                plan.AddLine(OwlManchesterWords.DataPropertyFrame, RenderIri(functionalData.Property.Iri), OwlManchesterWords.CharacteristicsSection, axiom, new Utf8String(OwlManchesterWords.FunctionalWord.ToArray()), inexpressible: false);
                 break;
             }
 
-            case OwlDatatypeDefinitionAxiom definition:
+            case(OwlDatatypeDefinitionAxiom definition):
             {
-                plan.AddLine("Datatype:", $"<{definition.Datatype.Iri}>", "EquivalentTo:", axiom, RenderDataRange(definition.Range, parenthesize: false));
+                Utf8String payload = RenderDataRange(definition.Range, parenthesize: false, out bool inexpressible);
+                plan.AddLine(OwlManchesterWords.DatatypeFrame, RenderIri(definition.Datatype.Iri), OwlManchesterWords.EquivalentToSection, axiom, payload, inexpressible);
                 break;
             }
 
-            case OwlSubAnnotationPropertyOfAxiom subAnnotation:
+            case(OwlSubAnnotationPropertyOfAxiom subAnnotation):
             {
-                plan.AddLine("AnnotationProperty:", $"<{subAnnotation.SubProperty.Iri}>", "SubPropertyOf:", axiom, $"<{subAnnotation.SuperProperty.Iri}>");
+                plan.AddLine(OwlManchesterWords.AnnotationPropertyFrame, RenderIri(subAnnotation.SubProperty.Iri), OwlManchesterWords.SubPropertyOfSection, axiom, RenderIri(subAnnotation.SuperProperty.Iri), inexpressible: false);
                 break;
             }
 
-            case OwlAnnotationPropertyDomainAxiom annotationDomain:
+            case(OwlAnnotationPropertyDomainAxiom annotationDomain):
             {
-                plan.AddLine("AnnotationProperty:", $"<{annotationDomain.Property.Iri}>", "Domain:", axiom, $"<{annotationDomain.Domain.Iri}>");
+                plan.AddLine(OwlManchesterWords.AnnotationPropertyFrame, RenderIri(annotationDomain.Property.Iri), OwlManchesterWords.DomainSection, axiom, RenderIri(annotationDomain.Domain.Iri), inexpressible: false);
                 break;
             }
 
-            case OwlAnnotationPropertyRangeAxiom annotationRange:
+            case(OwlAnnotationPropertyRangeAxiom annotationRange):
             {
-                plan.AddLine("AnnotationProperty:", $"<{annotationRange.Property.Iri}>", "Range:", axiom, $"<{annotationRange.Range.Iri}>");
+                plan.AddLine(OwlManchesterWords.AnnotationPropertyFrame, RenderIri(annotationRange.Property.Iri), OwlManchesterWords.RangeSection, axiom, RenderIri(annotationRange.Range.Iri), inexpressible: false);
                 break;
             }
 
-            case OwlClassAssertionAxiom assertion:
+            case(OwlClassAssertionAxiom assertion):
             {
-                plan.AddLine("Individual:", RenderTerm(assertion.Individual), "Types:", axiom, RenderClass(assertion.Class, parenthesize: false));
+                Utf8String payload = RenderClass(assertion.Class, parenthesize: false, out bool inexpressible);
+                plan.AddLine(OwlManchesterWords.IndividualFrame, RenderTerm(assertion.Individual), OwlManchesterWords.TypesSection, axiom, payload, inexpressible);
                 break;
             }
 
-            case OwlObjectPropertyAssertionAxiom objectAssertion:
+            case(OwlObjectPropertyAssertionAxiom objectAssertion):
             {
-                plan.AddLine("Individual:", RenderTerm(objectAssertion.Source), "Facts:", axiom, $"<{objectAssertion.Property.Iri}> {RenderTerm(objectAssertion.Target)}");
+                Utf8String payload = JoinSpaced(RenderIri(objectAssertion.Property.Iri), RenderTerm(objectAssertion.Target));
+                plan.AddLine(OwlManchesterWords.IndividualFrame, RenderTerm(objectAssertion.Source), OwlManchesterWords.FactsSection, axiom, payload, inexpressible: false);
                 break;
             }
 
-            case OwlNegativeObjectPropertyAssertionAxiom negativeObject:
+            case(OwlNegativeObjectPropertyAssertionAxiom negativeObject):
             {
                 if(negativeObject.Property is not OwlObjectPropertyReference reference)
                 {
@@ -646,43 +745,48 @@ public static class OwlManchesterSyntaxWriter
                     break;
                 }
 
-                plan.AddLine("Individual:", RenderTerm(negativeObject.Source), "Facts:", axiom, $"not <{reference.Named.Iri}> {RenderTerm(negativeObject.Target)}");
+                Utf8String payload = JoinNegated(RenderIri(reference.Named.Iri), RenderTerm(negativeObject.Target));
+                plan.AddLine(OwlManchesterWords.IndividualFrame, RenderTerm(negativeObject.Source), OwlManchesterWords.FactsSection, axiom, payload, inexpressible: false);
                 break;
             }
 
-            case OwlDataPropertyAssertionAxiom dataAssertion:
+            case(OwlDataPropertyAssertionAxiom dataAssertion):
             {
-                plan.AddLine("Individual:", RenderTerm(dataAssertion.Source), "Facts:", axiom, $"<{dataAssertion.Property.Iri}> {RenderTerm(dataAssertion.Target)}");
+                Utf8String payload = JoinSpaced(RenderIri(dataAssertion.Property.Iri), RenderTerm(dataAssertion.Target));
+                plan.AddLine(OwlManchesterWords.IndividualFrame, RenderTerm(dataAssertion.Source), OwlManchesterWords.FactsSection, axiom, payload, inexpressible: false);
                 break;
             }
 
-            case OwlNegativeDataPropertyAssertionAxiom negativeData:
+            case(OwlNegativeDataPropertyAssertionAxiom negativeData):
             {
-                plan.AddLine("Individual:", RenderTerm(negativeData.Source), "Facts:", axiom, $"not <{negativeData.Property.Iri}> {RenderTerm(negativeData.Target)}");
+                Utf8String payload = JoinNegated(RenderIri(negativeData.Property.Iri), RenderTerm(negativeData.Target));
+                plan.AddLine(OwlManchesterWords.IndividualFrame, RenderTerm(negativeData.Source), OwlManchesterWords.FactsSection, axiom, payload, inexpressible: false);
                 break;
             }
 
-            case OwlSameIndividualAxiom same:
+            case(OwlSameIndividualAxiom same):
             {
-                plan.AddLine("Individual:", RenderTerm(same.First), "SameAs:", axiom, RenderTerm(same.Second));
+                plan.AddLine(OwlManchesterWords.IndividualFrame, RenderTerm(same.First), OwlManchesterWords.SameAsSection, axiom, RenderTerm(same.Second), inexpressible: false);
                 break;
             }
 
-            case OwlDifferentIndividualsAxiom different:
+            case(OwlDifferentIndividualsAxiom different):
             {
                 if(different.Individuals.Count == 2)
                 {
-                    plan.AddLine("Individual:", RenderTerm(different.Individuals[0]), "DifferentFrom:", axiom, RenderTerm(different.Individuals[1]));
+                    plan.AddLine(OwlManchesterWords.IndividualFrame, RenderTerm(different.Individuals[0]), OwlManchesterWords.DifferentFromSection, axiom, RenderTerm(different.Individuals[1]), inexpressible: false);
                     break;
                 }
 
-                List<string> individuals = [];
+                ArrayBufferWriter<byte> individuals = new();
+                bool firstIndividual = true;
                 foreach(RdfTerm individual in different.Individuals)
                 {
-                    individuals.Add(RenderTerm(individual));
+                    AppendSeparated(individuals, ", "u8, ref firstIndividual);
+                    individuals.Write(RenderTerm(individual).Span);
                 }
 
-                plan.MiscLines.Add(("DifferentIndividuals:", new SectionLine(new ImmutableAnnotations(axiom.Annotations), string.Join(", ", individuals))));
+                AddMiscLine(plan, OwlManchesterWords.DifferentIndividualsFrame, axiom, ToUtf8String(individuals));
                 break;
             }
 
@@ -694,71 +798,159 @@ public static class OwlManchesterSyntaxWriter
         }
     }
 
-    private static string FrameKeyword(OwlEntityKind kind)
+    /// <summary>Adds an entity-free n-ary misc line, carrying any inexpressibility marker through in the payload.</summary>
+    /// <param name="plan">The document plan.</param>
+    /// <param name="keyword">The misc frame keyword bytes.</param>
+    /// <param name="axiom">The axiom whose annotations lead the line.</param>
+    /// <param name="payload">The rendered payload.</param>
+    private static void AddMiscLine(Plan plan, ReadOnlySpan<byte> keyword, OwlAxiom axiom, Utf8String payload)
+    {
+
+        plan.MiscLines.Add(new MiscLine(new Utf8String(keyword.ToArray()), new SectionLine(new ImmutableAnnotations(axiom.Annotations), payload)));
+    }
+
+    /// <summary>The entity-frame keyword bytes for a declaration kind.</summary>
+    /// <param name="kind">The entity kind.</param>
+    /// <returns>The keyword bytes.</returns>
+    private static ReadOnlySpan<byte> FrameKeyword(OwlEntityKind kind)
     {
         return kind switch
         {
-            OwlEntityKind.Class => "Class:",
-            OwlEntityKind.Datatype => "Datatype:",
-            OwlEntityKind.ObjectProperty => "ObjectProperty:",
-            OwlEntityKind.DataProperty => "DataProperty:",
-            OwlEntityKind.AnnotationProperty => "AnnotationProperty:",
-            _ => "Individual:"
+            OwlEntityKind.Class => OwlManchesterWords.ClassFrame,
+            OwlEntityKind.Datatype => OwlManchesterWords.DatatypeFrame,
+            OwlEntityKind.ObjectProperty => OwlManchesterWords.ObjectPropertyFrame,
+            OwlEntityKind.DataProperty => OwlManchesterWords.DataPropertyFrame,
+            OwlEntityKind.AnnotationProperty => OwlManchesterWords.AnnotationPropertyFrame,
+            _ => OwlManchesterWords.IndividualFrame
         };
     }
 
-    private static string CharacteristicWord(OwlPropertyCharacteristic characteristic)
+    /// <summary>The characteristic-word bytes for an object-property characteristic.</summary>
+    /// <param name="characteristic">The characteristic.</param>
+    /// <returns>The word bytes.</returns>
+    private static ReadOnlySpan<byte> CharacteristicWord(OwlPropertyCharacteristic characteristic)
     {
         return characteristic switch
         {
-            OwlPropertyCharacteristic.Functional => "Functional",
-            OwlPropertyCharacteristic.InverseFunctional => "InverseFunctional",
-            OwlPropertyCharacteristic.Transitive => "Transitive",
-            OwlPropertyCharacteristic.Symmetric => "Symmetric",
-            OwlPropertyCharacteristic.Asymmetric => "Asymmetric",
-            OwlPropertyCharacteristic.Reflexive => "Reflexive",
-            _ => "Irreflexive"
+            OwlPropertyCharacteristic.Functional => OwlManchesterWords.FunctionalWord,
+            OwlPropertyCharacteristic.InverseFunctional => OwlManchesterWords.InverseFunctionalWord,
+            OwlPropertyCharacteristic.Transitive => OwlManchesterWords.TransitiveWord,
+            OwlPropertyCharacteristic.Symmetric => OwlManchesterWords.SymmetricWord,
+            OwlPropertyCharacteristic.Asymmetric => OwlManchesterWords.AsymmetricWord,
+            OwlPropertyCharacteristic.Reflexive => OwlManchesterWords.ReflexiveWord,
+            _ => OwlManchesterWords.IrreflexiveWord
         };
     }
 
-    private static string JoinClasses(IReadOnlyList<OwlClassExpression> expressions)
+    /// <summary>Joins rendered class expressions into a comma-separated list, flagging any inexpressible operand.</summary>
+    /// <param name="expressions">The class expressions.</param>
+    /// <param name="inexpressible">Set when an operand met a shape with no Manchester form.</param>
+    /// <returns>The joined bytes.</returns>
+    private static Utf8String JoinClasses(IReadOnlyList<OwlClassExpression> expressions, out bool inexpressible)
     {
-        List<string> parts = new(expressions.Count);
+        inexpressible = false;
+        ArrayBufferWriter<byte> parts = new();
+        bool first = true;
         foreach(OwlClassExpression expression in expressions)
         {
-            parts.Add(RenderClass(expression, parenthesize: false));
+            AppendSeparated(parts, ", "u8, ref first);
+            parts.Write(RenderClass(expression, parenthesize: false, out bool gap).Span);
+            inexpressible |= gap;
         }
 
-        return string.Join(", ", parts);
+        return ToUtf8String(parts);
+    }
+
+    /// <summary>Renders an IRI in full angle-bracket form.</summary>
+    /// <param name="iri">The IRI bytes.</param>
+    /// <returns>The rendered term.</returns>
+    private static Utf8String RenderIri(Utf8String iri)
+    {
+        ArrayBufferWriter<byte> text = new();
+        text.Write("<"u8);
+        text.Write(iri.Span);
+        text.Write(">"u8);
+
+        return ToUtf8String(text);
+    }
+
+    /// <summary>Joins two rendered fragments with a single separating space.</summary>
+    /// <param name="left">The leading fragment.</param>
+    /// <param name="right">The trailing fragment.</param>
+    /// <returns>The joined bytes.</returns>
+    private static Utf8String JoinSpaced(Utf8String left, Utf8String right)
+    {
+        ArrayBufferWriter<byte> text = new();
+        text.Write(left.Span);
+        text.Write(" "u8);
+        text.Write(right.Span);
+
+        return ToUtf8String(text);
+    }
+
+    /// <summary>Joins two rendered fragments into a comma-separated list.</summary>
+    /// <param name="left">The leading fragment.</param>
+    /// <param name="right">The trailing fragment.</param>
+    /// <returns>The joined bytes.</returns>
+    private static Utf8String JoinList(Utf8String left, Utf8String right)
+    {
+        ArrayBufferWriter<byte> text = new();
+        text.Write(left.Span);
+        text.Write(", "u8);
+        text.Write(right.Span);
+
+        return ToUtf8String(text);
+    }
+
+    /// <summary>Renders a negated fact: <c>not</c>, the property IRI, and the target.</summary>
+    /// <param name="property">The rendered property IRI.</param>
+    /// <param name="target">The rendered target term.</param>
+    /// <returns>The joined bytes.</returns>
+    private static Utf8String JoinNegated(Utf8String property, Utf8String target)
+    {
+        ArrayBufferWriter<byte> text = new();
+        text.Write(OwlManchesterWords.NotWord);
+        text.Write(" "u8);
+        text.Write(property.Span);
+        text.Write(" "u8);
+        text.Write(target.Span);
+
+        return ToUtf8String(text);
     }
 
     //Term rendering: full IRIs, blank labels, and literals in the same
     //lexical policy the functional-syntax writer uses.
-    private static string RenderTerm(RdfTerm term)
+    private static Utf8String RenderTerm(RdfTerm term)
     {
-        StringBuilder text = new();
+        ArrayBufferWriter<byte> text = new();
         AppendTerm(text, term);
 
-        return text.ToString();
+        return ToUtf8String(text);
     }
 
-    private static void AppendTerm(StringBuilder text, RdfTerm term)
+    /// <summary>Appends a term's rendering: a full IRI, a blank label, or a quoted literal.</summary>
+    /// <param name="text">The destination buffer writer.</param>
+    /// <param name="term">The term.</param>
+    private static void AppendTerm(IBufferWriter<byte> text, RdfTerm term)
     {
         switch(term)
         {
-            case NamedNode named:
+            case(NamedNode named):
             {
-                text.Append('<').Append(named.Iri.ToString()).Append('>');
+                text.Write("<"u8);
+                text.Write(named.Iri.Span);
+                text.Write(">"u8);
                 break;
             }
 
-            case BlankNode blank:
+            case(BlankNode blank):
             {
-                text.Append("_:").Append(blank.Label.ToString());
+                text.Write("_:"u8);
+                text.Write(blank.Label.Span);
                 break;
             }
 
-            case Literal value:
+            case(Literal value):
             {
                 AppendLiteral(text, value);
                 break;
@@ -771,25 +963,32 @@ public static class OwlManchesterSyntaxWriter
         }
     }
 
-    private static void AppendLiteral(StringBuilder text, Literal value)
+    /// <summary>Appends a quoted literal with its <c>\\</c>/<c>"</c> escapes and optional language or datatype suffix.</summary>
+    /// <param name="text">The destination buffer writer.</param>
+    /// <param name="value">The literal.</param>
+    private static void AppendLiteral(IBufferWriter<byte> text, Literal value)
     {
-        text.Append('"');
-        string lexical = value.Value.ToString();
-        foreach(char character in lexical)
-        {
-            if(character is '"' or '\\')
-            {
-                text.Append('\\');
-            }
+        text.Write("\""u8);
 
-            text.Append(character);
+        ReadOnlySpan<byte> lexical = value.Value.Span;
+        int start = 0;
+        for(int i = 0; i < lexical.Length; i++)
+        {
+            if(lexical[i] == (byte)'"' || lexical[i] == (byte)'\\')
+            {
+                text.Write(lexical[start..i]);
+                text.Write("\\"u8);
+                start = i;
+            }
         }
 
-        text.Append('"');
+        text.Write(lexical[start..]);
+        text.Write("\""u8);
 
         if(value.Language is Utf8String language)
         {
-            text.Append('@').Append(language.ToString());
+            text.Write("@"u8);
+            text.Write(language.Span);
 
             return;
         }
@@ -798,82 +997,138 @@ public static class OwlManchesterSyntaxWriter
         //datatype is written explicitly.
         if(!value.Datatype.Iri.Equals(Vocabulary.Xsd.String))
         {
-            text.Append("^^<").Append(value.Datatype.Iri.ToString()).Append('>');
+            text.Write("^^<"u8);
+            text.Write(value.Datatype.Iri.Span);
+            text.Write(">"u8);
         }
     }
 
-    private static string RenderObjectProperty(OwlObjectPropertyExpression expression)
+    /// <summary>Renders an object-property expression: a named property or an inverse modifier.</summary>
+    /// <param name="expression">The expression.</param>
+    /// <returns>The rendered bytes.</returns>
+    private static Utf8String RenderObjectProperty(OwlObjectPropertyExpression expression)
     {
-        return expression switch
+        ArrayBufferWriter<byte> text = new();
+        switch(expression)
         {
-            OwlObjectPropertyReference reference => $"<{reference.Named.Iri}>",
-            OwlInverseObjectProperty inverse => $"inverse <{inverse.Inverted.Iri}>",
-            _ => "inverse <urn:veritas:invalid>"
-        };
+            case(OwlObjectPropertyReference reference):
+            {
+                text.Write("<"u8);
+                text.Write(reference.Named.Iri.Span);
+                text.Write(">"u8);
+                break;
+            }
+
+            case(OwlInverseObjectProperty inverse):
+            {
+                text.Write(OwlManchesterWords.InverseWord);
+                text.Write(" <"u8);
+                text.Write(inverse.Inverted.Iri.Span);
+                text.Write(">"u8);
+                break;
+            }
+
+            default:
+            {
+                text.Write(OwlManchesterWords.InverseWord);
+                text.Write(" <urn:veritas:invalid>"u8);
+                break;
+            }
+        }
+
+        return ToUtf8String(text);
     }
 
-    //One unit of expression-rendering work: literal text, a class expression
-    //to expand, or a data range to expand. Parenthesization is decided at
-    //push time, so precedence is explicit in the output.
-    private readonly record struct Piece(string? Text, OwlClassExpression? Class, OwlDataRange? Range, bool Parenthesize)
+    //One unit of expression-rendering work: literal bytes, a class expression
+    //to expand, or a data range to expand. Parenthesization is decided at push
+    //time, so precedence is explicit in the output.
+    private readonly record struct Piece(Utf8String? Text, OwlClassExpression? Class, OwlDataRange? Range, bool Parenthesize)
     {
-        public static Piece Of(string text)
+        /// <summary>A literal-text piece.</summary>
+        /// <param name="text">The bytes to emit verbatim.</param>
+        /// <returns>The piece.</returns>
+        public static Piece Of(Utf8String text)
         {
             return new Piece(text, null, null, false);
         }
 
+        /// <summary>A class-expression piece to expand.</summary>
+        /// <param name="expression">The class expression.</param>
+        /// <param name="parenthesize">Whether a compound expansion parenthesizes.</param>
+        /// <returns>The piece.</returns>
         public static Piece Expand(OwlClassExpression expression, bool parenthesize)
         {
             return new Piece(null, expression, null, parenthesize);
         }
 
+        /// <summary>A data-range piece to expand.</summary>
+        /// <param name="range">The data range.</param>
+        /// <param name="parenthesize">Whether a compound expansion parenthesizes.</param>
+        /// <returns>The piece.</returns>
         public static Piece Expand(OwlDataRange range, bool parenthesize)
         {
             return new Piece(null, null, range, parenthesize);
         }
     }
 
-    private static string RenderClass(OwlClassExpression expression, bool parenthesize)
+    /// <summary>Renders a class expression through an explicit work stack.</summary>
+    /// <param name="expression">The class expression.</param>
+    /// <param name="parenthesize">Whether a compound rendering parenthesizes.</param>
+    /// <param name="inexpressible">Set when the expression met a shape with no Manchester form.</param>
+    /// <returns>The rendered bytes.</returns>
+    private static Utf8String RenderClass(OwlClassExpression expression, bool parenthesize, out bool inexpressible)
     {
-        StringBuilder text = new();
+        ArrayBufferWriter<byte> text = new();
         Stack<Piece> work = new();
         work.Push(Piece.Expand(expression, parenthesize));
-        Drain(text, work);
+        inexpressible = Drain(text, work);
 
-        return text.ToString();
+        return ToUtf8String(text);
     }
 
-    private static string RenderDataRange(OwlDataRange range, bool parenthesize)
+    /// <summary>Renders a data range through an explicit work stack.</summary>
+    /// <param name="range">The data range.</param>
+    /// <param name="parenthesize">Whether a compound rendering parenthesizes.</param>
+    /// <param name="inexpressible">Set when the range met a shape with no Manchester form.</param>
+    /// <returns>The rendered bytes.</returns>
+    private static Utf8String RenderDataRange(OwlDataRange range, bool parenthesize, out bool inexpressible)
     {
-        StringBuilder text = new();
+        ArrayBufferWriter<byte> text = new();
         Stack<Piece> work = new();
         work.Push(Piece.Expand(range, parenthesize));
-        Drain(text, work);
+        inexpressible = Drain(text, work);
 
-        return text.ToString();
+        return ToUtf8String(text);
     }
 
-    private static void Drain(StringBuilder text, Stack<Piece> work)
+    /// <summary>Drains the work stack into the output, reporting whether any piece had no Manchester form.</summary>
+    /// <param name="text">The destination buffer writer.</param>
+    /// <param name="work">The work stack.</param>
+    /// <returns><see langword="true"/> when a piece met a shape with no Manchester form.</returns>
+    private static bool Drain(IBufferWriter<byte> text, Stack<Piece> work)
     {
+        bool inexpressible = false;
         while(work.Count > 0)
         {
             Piece piece = work.Pop();
-            if(piece.Text is string literal)
+            if(piece.Text is Utf8String literal)
             {
-                text.Append(literal);
+                text.Write(literal.Span);
 
                 continue;
             }
 
             if(piece.Class is OwlClassExpression expression)
             {
-                ExpandClass(text, work, expression, piece.Parenthesize);
+                inexpressible |= ExpandClass(text, work, expression, piece.Parenthesize);
 
                 continue;
             }
 
-            ExpandDataRange(text, work, piece.Range!, piece.Parenthesize);
+            inexpressible |= ExpandDataRange(text, work, piece.Range!, piece.Parenthesize);
         }
+
+        return inexpressible;
     }
 
     /// <summary>Whether a class expression stands alone without parentheses: a named class or an enumeration.</summary>
@@ -892,49 +1147,56 @@ public static class OwlManchesterSyntaxWriter
         return range is OwlDatatypeReference or OwlDataOneOf or OwlDatatypeRestriction;
     }
 
-    private static void ExpandClass(StringBuilder text, Stack<Piece> work, OwlClassExpression expression, bool parenthesize)
+    /// <summary>Expands one class expression: writes its leaf or pushes its operands, parenthesized when compound.</summary>
+    /// <param name="text">The destination buffer writer.</param>
+    /// <param name="work">The work stack.</param>
+    /// <param name="expression">The class expression.</param>
+    /// <param name="parenthesize">Whether a compound expansion parenthesizes.</param>
+    /// <returns><see langword="true"/> when the expression has no Manchester form.</returns>
+    private static bool ExpandClass(IBufferWriter<byte> text, Stack<Piece> work, OwlClassExpression expression, bool parenthesize)
     {
         bool wrap = parenthesize && !IsAtomic(expression);
+        bool inexpressible = false;
         List<Piece> pieces = [];
         if(wrap)
         {
-            pieces.Add(Piece.Of("("));
+            pieces.Add(Piece.Of(new Utf8String("("u8.ToArray())));
         }
 
         switch(expression)
         {
-            case OwlClassReference reference:
+            case(OwlClassReference reference):
             {
-                pieces.Add(Piece.Of($"<{reference.Class.Iri}>"));
+                pieces.Add(Piece.Of(RenderIri(reference.Class.Iri)));
                 break;
             }
 
-            case OwlObjectOneOf oneOf:
+            case(OwlObjectOneOf oneOf):
             {
-                StringBuilder set = new();
-                set.Append('{');
+                ArrayBufferWriter<byte> set = new();
+                set.Write("{"u8);
                 for(int i = 0; i < oneOf.Individuals.Count; i++)
                 {
                     if(i > 0)
                     {
-                        set.Append(", ");
+                        set.Write(", "u8);
                     }
 
                     AppendTerm(set, oneOf.Individuals[i]);
                 }
 
-                set.Append('}');
-                pieces.Add(Piece.Of(set.ToString()));
+                set.Write("}"u8);
+                pieces.Add(Piece.Of(ToUtf8String(set)));
                 break;
             }
 
-            case OwlObjectIntersectionOf intersection:
+            case(OwlObjectIntersectionOf intersection):
             {
                 for(int i = 0; i < intersection.Operands.Count; i++)
                 {
                     if(i > 0)
                     {
-                        pieces.Add(Piece.Of(" and "));
+                        pieces.Add(Piece.Of(new Utf8String(" and "u8.ToArray())));
                     }
 
                     pieces.Add(Piece.Expand(intersection.Operands[i], parenthesize: true));
@@ -943,13 +1205,13 @@ public static class OwlManchesterSyntaxWriter
                 break;
             }
 
-            case OwlObjectUnionOf union:
+            case(OwlObjectUnionOf union):
             {
                 for(int i = 0; i < union.Operands.Count; i++)
                 {
                     if(i > 0)
                     {
-                        pieces.Add(Piece.Of(" or "));
+                        pieces.Add(Piece.Of(new Utf8String(" or "u8.ToArray())));
                     }
 
                     pieces.Add(Piece.Expand(union.Operands[i], parenthesize: true));
@@ -958,91 +1220,77 @@ public static class OwlManchesterSyntaxWriter
                 break;
             }
 
-            case OwlObjectComplementOf complement:
+            case(OwlObjectComplementOf complement):
             {
-                pieces.Add(Piece.Of("not "));
+                pieces.Add(Piece.Of(new Utf8String("not "u8.ToArray())));
                 pieces.Add(Piece.Expand(complement.Operand, parenthesize: true));
                 break;
             }
 
-            case OwlObjectSomeValuesFrom someValues:
+            case(OwlObjectSomeValuesFrom someValues):
             {
-                pieces.Add(Piece.Of($"{RenderObjectProperty(someValues.Property)} some "));
+                pieces.Add(Piece.Of(SpaceWord(RenderObjectProperty(someValues.Property), OwlManchesterWords.SomeWord)));
                 pieces.Add(Piece.Expand(someValues.Filler, parenthesize: true));
                 break;
             }
 
-            case OwlObjectAllValuesFrom allValues:
+            case(OwlObjectAllValuesFrom allValues):
             {
-                pieces.Add(Piece.Of($"{RenderObjectProperty(allValues.Property)} only "));
+                pieces.Add(Piece.Of(SpaceWord(RenderObjectProperty(allValues.Property), OwlManchesterWords.OnlyWord)));
                 pieces.Add(Piece.Expand(allValues.Filler, parenthesize: true));
                 break;
             }
 
-            case OwlObjectHasValue hasValue:
+            case(OwlObjectHasValue hasValue):
             {
-                pieces.Add(Piece.Of($"{RenderObjectProperty(hasValue.Property)} value {RenderTerm(hasValue.Individual)}"));
+                pieces.Add(Piece.Of(RestrictionValue(RenderObjectProperty(hasValue.Property), OwlManchesterWords.ValueWord, RenderTerm(hasValue.Individual))));
                 break;
             }
 
-            case OwlObjectHasSelf hasSelf:
+            case(OwlObjectHasSelf hasSelf):
             {
-                pieces.Add(Piece.Of($"{RenderObjectProperty(hasSelf.Property)} Self"));
+                pieces.Add(Piece.Of(JoinSpaced(RenderObjectProperty(hasSelf.Property), new Utf8String(OwlManchesterWords.SelfWord.ToArray()))));
                 break;
             }
 
-            case OwlObjectCardinality cardinality:
+            case(OwlObjectCardinality cardinality):
             {
-                string word = cardinality.Kind switch
-                {
-                    OwlCardinalityKind.Min => "min",
-                    OwlCardinalityKind.Max => "max",
-                    _ => "exactly"
-                };
-
-                pieces.Add(Piece.Of($"{RenderObjectProperty(cardinality.Property)} {word} {cardinality.Cardinality.ToString(CultureInfo.InvariantCulture)}"));
+                pieces.Add(Piece.Of(RenderCardinality(RenderObjectProperty(cardinality.Property), cardinality.Kind, cardinality.Cardinality)));
                 if(cardinality.Filler is OwlClassExpression filler)
                 {
-                    pieces.Add(Piece.Of(" "));
+                    pieces.Add(Piece.Of(new Utf8String(" "u8.ToArray())));
                     pieces.Add(Piece.Expand(filler, parenthesize: true));
                 }
 
                 break;
             }
 
-            case OwlDataSomeValuesFrom dataSome when dataSome.Properties.Count == 1:
+            case(OwlDataSomeValuesFrom dataSome) when dataSome.Properties.Count == 1:
             {
-                pieces.Add(Piece.Of($"<{dataSome.Properties[0].Iri}> some "));
+                pieces.Add(Piece.Of(SpaceWord(RenderIri(dataSome.Properties[0].Iri), OwlManchesterWords.SomeWord)));
                 pieces.Add(Piece.Expand(dataSome.Range, parenthesize: true));
                 break;
             }
 
-            case OwlDataAllValuesFrom dataAll when dataAll.Properties.Count == 1:
+            case(OwlDataAllValuesFrom dataAll) when dataAll.Properties.Count == 1:
             {
-                pieces.Add(Piece.Of($"<{dataAll.Properties[0].Iri}> only "));
+                pieces.Add(Piece.Of(SpaceWord(RenderIri(dataAll.Properties[0].Iri), OwlManchesterWords.OnlyWord)));
                 pieces.Add(Piece.Expand(dataAll.Range, parenthesize: true));
                 break;
             }
 
-            case OwlDataHasValue dataHasValue:
+            case(OwlDataHasValue dataHasValue):
             {
-                pieces.Add(Piece.Of($"<{dataHasValue.Property.Iri}> value {RenderTerm(dataHasValue.Value)}"));
+                pieces.Add(Piece.Of(RestrictionValue(RenderIri(dataHasValue.Property.Iri), OwlManchesterWords.ValueWord, RenderTerm(dataHasValue.Value))));
                 break;
             }
 
-            case OwlDataCardinality dataCardinality:
+            case(OwlDataCardinality dataCardinality):
             {
-                string word = dataCardinality.Kind switch
-                {
-                    OwlCardinalityKind.Min => "min",
-                    OwlCardinalityKind.Max => "max",
-                    _ => "exactly"
-                };
-
-                pieces.Add(Piece.Of($"<{dataCardinality.Property.Iri}> {word} {dataCardinality.Cardinality.ToString(CultureInfo.InvariantCulture)}"));
+                pieces.Add(Piece.Of(RenderCardinality(RenderIri(dataCardinality.Property.Iri), dataCardinality.Kind, dataCardinality.Cardinality)));
                 if(dataCardinality.Range is OwlDataRange qualifier)
                 {
-                    pieces.Add(Piece.Of(" "));
+                    pieces.Add(Piece.Of(new Utf8String(" "u8.ToArray())));
                     pieces.Add(Piece.Expand(qualifier, parenthesize: true));
                 }
 
@@ -1052,86 +1300,97 @@ public static class OwlManchesterSyntaxWriter
             default:
             {
                 //An n-ary data quantifier over several properties has no
-                //Manchester form; an invalid marker keeps the text readable.
-                pieces.Add(Piece.Of("<urn:veritas:inexpressible>"));
+                //Manchester form; the marker keeps the text readable and the
+                //flag drops the whole axiom.
+                pieces.Add(Piece.Of(new Utf8String("<urn:veritas:inexpressible>"u8.ToArray())));
+                inexpressible = true;
                 break;
             }
         }
 
         if(wrap)
         {
-            pieces.Add(Piece.Of(")"));
+            pieces.Add(Piece.Of(new Utf8String(")"u8.ToArray())));
         }
 
-        for(int i = pieces.Count - 1; i >= 0; i--)
-        {
-            work.Push(pieces[i]);
-        }
+        PushReversed(work, pieces);
+
+        return inexpressible;
     }
 
-    private static void ExpandDataRange(StringBuilder text, Stack<Piece> work, OwlDataRange range, bool parenthesize)
+    /// <summary>Expands one data range: writes its leaf or pushes its operands, parenthesized when compound.</summary>
+    /// <param name="text">The destination buffer writer.</param>
+    /// <param name="work">The work stack.</param>
+    /// <param name="range">The data range.</param>
+    /// <param name="parenthesize">Whether a compound expansion parenthesizes.</param>
+    /// <returns><see langword="true"/> when the range has no Manchester form.</returns>
+    private static bool ExpandDataRange(IBufferWriter<byte> text, Stack<Piece> work, OwlDataRange range, bool parenthesize)
     {
         bool wrap = parenthesize && !IsAtomic(range);
+        bool inexpressible = false;
         List<Piece> pieces = [];
         if(wrap)
         {
-            pieces.Add(Piece.Of("("));
+            pieces.Add(Piece.Of(new Utf8String("("u8.ToArray())));
         }
 
         switch(range)
         {
-            case OwlDatatypeReference reference:
+            case(OwlDatatypeReference reference):
             {
-                pieces.Add(Piece.Of($"<{reference.Datatype.Iri}>"));
+                pieces.Add(Piece.Of(RenderIri(reference.Datatype.Iri)));
                 break;
             }
 
-            case OwlDataOneOf oneOf:
+            case(OwlDataOneOf oneOf):
             {
-                StringBuilder set = new();
-                set.Append('{');
+                ArrayBufferWriter<byte> set = new();
+                set.Write("{"u8);
                 for(int i = 0; i < oneOf.Literals.Count; i++)
                 {
                     if(i > 0)
                     {
-                        set.Append(", ");
+                        set.Write(", "u8);
                     }
 
                     AppendLiteral(set, oneOf.Literals[i]);
                 }
 
-                set.Append('}');
-                pieces.Add(Piece.Of(set.ToString()));
+                set.Write("}"u8);
+                pieces.Add(Piece.Of(ToUtf8String(set)));
                 break;
             }
 
-            case OwlDatatypeRestriction restriction:
+            case(OwlDatatypeRestriction restriction):
             {
-                StringBuilder facets = new();
-                facets.Append('<').Append(restriction.Datatype.Iri.ToString()).Append(">[");
+                ArrayBufferWriter<byte> facets = new();
+                facets.Write("<"u8);
+                facets.Write(restriction.Datatype.Iri.Span);
+                facets.Write(">["u8);
                 for(int i = 0; i < restriction.Restrictions.Count; i++)
                 {
                     if(i > 0)
                     {
-                        facets.Append(", ");
+                        facets.Write(", "u8);
                     }
 
-                    facets.Append(FacetWord(restriction.Restrictions[i].Facet)).Append(' ');
+                    facets.Write(FacetWord(restriction.Restrictions[i].Facet));
+                    facets.Write(" "u8);
                     AppendLiteral(facets, restriction.Restrictions[i].Value);
                 }
 
-                facets.Append(']');
-                pieces.Add(Piece.Of(facets.ToString()));
+                facets.Write("]"u8);
+                pieces.Add(Piece.Of(ToUtf8String(facets)));
                 break;
             }
 
-            case OwlDataIntersectionOf intersection:
+            case(OwlDataIntersectionOf intersection):
             {
                 for(int i = 0; i < intersection.Ranges.Count; i++)
                 {
                     if(i > 0)
                     {
-                        pieces.Add(Piece.Of(" and "));
+                        pieces.Add(Piece.Of(new Utf8String(" and "u8.ToArray())));
                     }
 
                     pieces.Add(Piece.Expand(intersection.Ranges[i], parenthesize: true));
@@ -1140,13 +1399,13 @@ public static class OwlManchesterSyntaxWriter
                 break;
             }
 
-            case OwlDataUnionOf union:
+            case(OwlDataUnionOf union):
             {
                 for(int i = 0; i < union.Ranges.Count; i++)
                 {
                     if(i > 0)
                     {
-                        pieces.Add(Piece.Of(" or "));
+                        pieces.Add(Piece.Of(new Utf8String(" or "u8.ToArray())));
                     }
 
                     pieces.Add(Piece.Expand(union.Ranges[i], parenthesize: true));
@@ -1155,55 +1414,156 @@ public static class OwlManchesterSyntaxWriter
                 break;
             }
 
-            case OwlDataComplementOf complement:
+            case(OwlDataComplementOf complement):
             {
-                pieces.Add(Piece.Of("not "));
+                pieces.Add(Piece.Of(new Utf8String("not "u8.ToArray())));
                 pieces.Add(Piece.Expand(complement.Range, parenthesize: true));
                 break;
             }
 
             default:
             {
-                pieces.Add(Piece.Of("<urn:veritas:inexpressible>"));
+                pieces.Add(Piece.Of(new Utf8String("<urn:veritas:inexpressible>"u8.ToArray())));
+                inexpressible = true;
                 break;
             }
         }
 
         if(wrap)
         {
-            pieces.Add(Piece.Of(")"));
+            pieces.Add(Piece.Of(new Utf8String(")"u8.ToArray())));
         }
 
-        for(int i = pieces.Count - 1; i >= 0; i--)
+        PushReversed(work, pieces);
+
+        return inexpressible;
+    }
+
+    /// <summary>Renders a property, a space, an operator word, and a trailing space: <c>&lt;p&gt; some&#160;</c>.</summary>
+    /// <param name="property">The rendered property.</param>
+    /// <param name="word">The operator word bytes.</param>
+    /// <returns>The rendered bytes.</returns>
+    private static Utf8String SpaceWord(Utf8String property, ReadOnlySpan<byte> word)
+    {
+        ArrayBufferWriter<byte> text = new();
+        text.Write(property.Span);
+        text.Write(" "u8);
+        text.Write(word);
+        text.Write(" "u8);
+
+        return ToUtf8String(text);
+    }
+
+    /// <summary>Renders a has-value restriction: <c>&lt;p&gt; value &lt;v&gt;</c>.</summary>
+    /// <param name="property">The rendered property.</param>
+    /// <param name="word">The restriction word bytes.</param>
+    /// <param name="value">The rendered value term.</param>
+    /// <returns>The rendered bytes.</returns>
+    private static Utf8String RestrictionValue(Utf8String property, ReadOnlySpan<byte> word, Utf8String value)
+    {
+        ArrayBufferWriter<byte> text = new();
+        text.Write(property.Span);
+        text.Write(" "u8);
+        text.Write(word);
+        text.Write(" "u8);
+        text.Write(value.Span);
+
+        return ToUtf8String(text);
+    }
+
+    /// <summary>Renders a cardinality restriction head: <c>&lt;p&gt; min 1</c>.</summary>
+    /// <param name="property">The rendered property.</param>
+    /// <param name="kind">The cardinality kind.</param>
+    /// <param name="cardinality">The cardinality bound.</param>
+    /// <returns>The rendered bytes.</returns>
+    private static Utf8String RenderCardinality(Utf8String property, OwlCardinalityKind kind, int cardinality)
+    {
+        ReadOnlySpan<byte> word = kind switch
         {
-            work.Push(pieces[i]);
-        }
+            OwlCardinalityKind.Min => OwlManchesterWords.MinWord,
+            OwlCardinalityKind.Max => OwlManchesterWords.MaxWord,
+            _ => OwlManchesterWords.ExactlyWord
+        };
+
+        ArrayBufferWriter<byte> text = new();
+        text.Write(property.Span);
+        text.Write(" "u8);
+        text.Write(word);
+        text.Write(" "u8);
+        AppendNumber(text, cardinality);
+
+        return ToUtf8String(text);
     }
 
     /// <summary>Maps a constraining-facet IRI back to its Manchester word or comparison operator.</summary>
     /// <param name="facet">The facet IRI node.</param>
-    /// <returns>The facet token.</returns>
-    private static string FacetWord(NamedNode facet)
+    /// <returns>The facet token bytes.</returns>
+    private static ReadOnlySpan<byte> FacetWord(NamedNode facet)
     {
-        string iri = facet.Iri.ToString();
-        foreach(KeyValuePair<string, string> named in OwlManchesterWords.NamedFacets)
+        ReadOnlySpan<byte> iri = facet.Iri.Span;
+        foreach(KeyValuePair<Utf8String, Utf8String> named in OwlManchesterWords.NamedFacets)
         {
-            if(named.Value == iri)
+            if(named.Value.SequenceEqual(iri))
             {
-                return named.Key;
+                return named.Key.Span;
             }
         }
 
-        foreach(KeyValuePair<string, string> comparison in OwlManchesterWords.ComparisonFacets)
+        foreach(KeyValuePair<Utf8String, Utf8String> comparison in OwlManchesterWords.ComparisonFacets)
         {
-            if(comparison.Value == iri)
+            if(comparison.Value.SequenceEqual(iri))
             {
-                return comparison.Key;
+                return comparison.Key.Span;
             }
         }
 
         //An unknown facet IRI has no Manchester abbreviation; the raw IRI at
         //least reads back as an unknown facet rather than vanishing.
-        return iri;
+        return facet.Iri.Span;
+    }
+
+    /// <summary>Appends a separator before all but the first member of a list.</summary>
+    /// <param name="output">The destination buffer writer.</param>
+    /// <param name="separator">The separator bytes.</param>
+    /// <param name="first">The first-member flag, cleared after the first call.</param>
+    private static void AppendSeparated(IBufferWriter<byte> output, ReadOnlySpan<byte> separator, ref bool first)
+    {
+        if(first)
+        {
+            first = false;
+
+            return;
+        }
+
+        output.Write(separator);
+    }
+
+    /// <summary>Appends a nonnegative integer as its decimal digits.</summary>
+    /// <param name="output">The destination buffer writer.</param>
+    /// <param name="value">The value to write.</param>
+    private static void AppendNumber(ArrayBufferWriter<byte> output, int value)
+    {
+        Span<byte> buffer = output.GetSpan(16);
+        Utf8Formatter.TryFormat(value, buffer, out int written);
+        output.Advance(written);
+    }
+
+    /// <summary>Snapshots a buffer's written bytes as an owned <see cref="Utf8String"/>.</summary>
+    /// <param name="buffer">The buffer to snapshot.</param>
+    /// <returns>The snapshot.</returns>
+    private static Utf8String ToUtf8String(ArrayBufferWriter<byte> buffer)
+    {
+        return new Utf8String(buffer.WrittenSpan.ToArray());
+    }
+
+    /// <summary>Pushes built pieces in reverse so they pop in their built order.</summary>
+    /// <param name="work">The work stack.</param>
+    /// <param name="pieces">The pieces to push.</param>
+    private static void PushReversed(Stack<Piece> work, List<Piece> pieces)
+    {
+        for(int i = pieces.Count - 1; i >= 0; i--)
+        {
+            work.Push(pieces[i]);
+        }
     }
 }

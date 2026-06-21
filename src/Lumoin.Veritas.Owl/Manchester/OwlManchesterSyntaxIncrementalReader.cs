@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Sourcing;
@@ -11,7 +10,7 @@ namespace Lumoin.Veritas.Owl.Manchester;
 
 /// <summary>
 /// Reads an OWL 2 Manchester-syntax document fed incrementally, chunk by
-/// chunk.
+/// chunk, over UTF-8 bytes.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -25,30 +24,38 @@ namespace Lumoin.Veritas.Owl.Manchester;
 /// operator word. Incompleteness is a status, never a diagnostic. Truncation
 /// becomes an error only when <see cref="Complete"/> declares the input
 /// final, which is how the whole-buffer facade
-/// <see cref="OwlManchesterSyntaxReader.Read"/> consumes the same machinery.
+/// <see cref="OwlManchesterSyntaxReader.Read(System.ReadOnlySpan{byte})"/>
+/// consumes the same machinery.
 /// </para>
 /// <para>
 /// The tokenizer is resumable: it commits at token boundaries and re-lexes a
-/// suspended token once more characters arrive. Frames convert when
+/// suspended token once more bytes arrive. Frames convert when
 /// <see cref="Complete"/> runs, in two passes — frame subjects declare their
 /// entities first, then sections convert to axioms — because Manchester
 /// expressions are typed by the declaration census (an undeclared property in
 /// a restriction reads as an object property). Comments run from <c>#</c> to
 /// the end of the line.
 /// </para>
+/// <para>
+/// The grammar's delimiters are all ASCII, and UTF-8 is self-synchronizing,
+/// so a multi-byte code point can never masquerade as a delimiter and a chunk
+/// boundary inside one resumes correctly. Token values are zero-copy windows
+/// over <see cref="Buffer"/>; only a decoded literal value carries its own
+/// bytes.
+/// </para>
 /// </remarks>
 public sealed class OwlManchesterSyntaxIncrementalReader
 {
-    /// <summary>The document text fed so far.</summary>
-    private char[] Buffer { get; set; } = new char[256];
+    /// <summary>The document bytes fed so far.</summary>
+    private byte[] Buffer { get; set; } = new byte[256];
 
-    /// <summary>The number of valid characters in <see cref="Buffer"/>.</summary>
+    /// <summary>The number of valid bytes in <see cref="Buffer"/>.</summary>
     private int Length { get; set; }
 
     /// <summary>The committed lex position: the start of the next unlexed content.</summary>
     private int LexPosition { get; set; }
 
-    /// <summary>Whether the last drain suspended mid-token waiting for more characters.</summary>
+    /// <summary>Whether the last drain suspended mid-token waiting for more bytes.</summary>
     private bool LexSuspended { get; set; }
 
     /// <summary>Whether <see cref="Complete"/> has declared the input final.</summary>
@@ -57,8 +64,8 @@ public sealed class OwlManchesterSyntaxIncrementalReader
     /// <summary>The completed document, built once by <see cref="Complete"/>.</summary>
     private OwlOntologyDocument? Document { get; set; }
 
-    /// <summary>Maps character offsets to byte- and line-column source spans.</summary>
-    private OwlSourceMap Map { get; } = new();
+    /// <summary>Maps byte offsets to line-column source spans.</summary>
+    private OwlByteSourceMap Map { get; } = new();
 
     /// <summary>The bag every lexical, structural, and conversion diagnostic accumulates into.</summary>
     private DiagnosticBag Bag { get; } = new();
@@ -72,7 +79,7 @@ public sealed class OwlManchesterSyntaxIncrementalReader
     /// <summary>The exclusive end offset of the last accepted token; unterminated groups span to it.</summary>
     private int LastTokenEnd { get; set; }
 
-    /// <summary>Initialises an empty reader; feed source text through <see cref="Feed"/>.</summary>
+    /// <summary>Initialises an empty reader; feed source bytes through <see cref="Feed"/>.</summary>
     public OwlManchesterSyntaxIncrementalReader()
     {
         Open.Push(Root);
@@ -95,12 +102,12 @@ public sealed class OwlManchesterSyntaxIncrementalReader
             : OwlManchesterParseStatus.Complete;
 
     /// <summary>
-    /// Appends source text and lexes as far as the input now permits.
+    /// Appends source bytes and lexes as far as the input now permits.
     /// </summary>
-    /// <param name="chunk">The next run of document characters, of any length.</param>
+    /// <param name="chunk">The next run of document bytes, of any length.</param>
     /// <returns>The <see cref="Status"/> after the chunk is consumed.</returns>
     /// <exception cref="InvalidOperationException"><see cref="Complete"/> has already been called.</exception>
-    public OwlManchesterParseStatus Feed(ReadOnlySpan<char> chunk)
+    public OwlManchesterParseStatus Feed(ReadOnlySpan<byte> chunk)
     {
         if(Final)
         {
@@ -148,13 +155,13 @@ public sealed class OwlManchesterSyntaxIncrementalReader
         return Document;
     }
 
-    /// <summary>Appends a chunk to the text buffer and extends the source map over it.</summary>
-    /// <param name="chunk">The characters to append.</param>
-    private void Append(ReadOnlySpan<char> chunk)
+    /// <summary>Appends a chunk to the byte buffer and extends the source map over it.</summary>
+    /// <param name="chunk">The bytes to append.</param>
+    private void Append(ReadOnlySpan<byte> chunk)
     {
         if(Length + chunk.Length > Buffer.Length)
         {
-            char[] grown = new char[Math.Max(Buffer.Length * 2, Length + chunk.Length)];
+            byte[] grown = new byte[Math.Max(Buffer.Length * 2, Length + chunk.Length)];
             Buffer.AsSpan(0, Length).CopyTo(grown);
             Buffer = grown;
         }
@@ -195,7 +202,7 @@ public sealed class OwlManchesterSyntaxIncrementalReader
         /// <summary>A token was lexed and the position committed past it.</summary>
         Token,
 
-        /// <summary>The buffer ended mid-token or mid-comment; more characters decide it, so the position holds at the token start.</summary>
+        /// <summary>The buffer ended mid-token or mid-comment; more bytes decide it, so the position holds at the token start.</summary>
         NeedMore,
 
         /// <summary>The buffer is exhausted at a clean boundary; no token remains.</summary>
@@ -206,18 +213,18 @@ public sealed class OwlManchesterSyntaxIncrementalReader
     //functional-syntax reader: whitespace and complete comments commit as they
     //pass; a token commits only when its end is fixed by a delimiter or, in
     //final mode, the end of input; a suspended token re-lexes from its start
-    //once more characters arrive. The Manchester-specific corner is '<': it
-    //opens an IRI reference unless what follows makes it a facet comparison
-    //('<=', or '<' before whitespace, a digit, a sign, or a quote).
+    //once more bytes arrive. The Manchester-specific corner is '<': it opens an
+    //IRI reference unless what follows makes it a facet comparison ('<=', or
+    //'<' before whitespace, a digit, a sign, or a quote).
     private LexStep TryLexToken(out OwlManchesterToken token)
     {
         token = default;
-        ReadOnlySpan<char> text = Buffer.AsSpan(0, Length);
+        ReadOnlySpan<byte> text = Buffer.AsSpan(0, Length);
         int i = LexPosition;
 
         while(true)
         {
-            while(i < text.Length && char.IsWhiteSpace(text[i]))
+            while(i < text.Length && IsAsciiWhitespace(text[i]))
             {
                 i++;
             }
@@ -229,11 +236,11 @@ public sealed class OwlManchesterSyntaxIncrementalReader
                 return LexStep.Exhausted;
             }
 
-            char c = text[i];
+            byte c = text[i];
 
-            if(c == '#')
+            if(c == (byte)'#')
             {
-                int newline = text[i..].IndexOf('\n');
+                int newline = text[i..].IndexOf((byte)'\n');
                 if(newline < 0)
                 {
                     if(!Final)
@@ -253,48 +260,41 @@ public sealed class OwlManchesterSyntaxIncrementalReader
 
             switch(c)
             {
-                case ',':
+                case((byte)','):
                 {
-                    return Single(OwlManchesterTokenKind.Comma, ",", i, out token);
+                    return Single(OwlManchesterTokenKind.Comma, i, 1, out token);
                 }
-
-                case '(':
+                case((byte)'('):
                 {
-                    return Single(OwlManchesterTokenKind.Open, "(", i, out token);
+                    return Single(OwlManchesterTokenKind.Open, i, 1, out token);
                 }
-
-                case ')':
+                case((byte)')'):
                 {
-                    return Single(OwlManchesterTokenKind.Close, ")", i, out token);
+                    return Single(OwlManchesterTokenKind.Close, i, 1, out token);
                 }
-
-                case '{':
+                case((byte)'{'):
                 {
-                    return Single(OwlManchesterTokenKind.OpenBrace, "{", i, out token);
+                    return Single(OwlManchesterTokenKind.OpenBrace, i, 1, out token);
                 }
-
-                case '}':
+                case((byte)'}'):
                 {
-                    return Single(OwlManchesterTokenKind.CloseBrace, "}", i, out token);
+                    return Single(OwlManchesterTokenKind.CloseBrace, i, 1, out token);
                 }
-
-                case '[':
+                case((byte)'['):
                 {
-                    return Single(OwlManchesterTokenKind.OpenBracket, "[", i, out token);
+                    return Single(OwlManchesterTokenKind.OpenBracket, i, 1, out token);
                 }
-
-                case ']':
+                case((byte)']'):
                 {
-                    return Single(OwlManchesterTokenKind.CloseBracket, "]", i, out token);
+                    return Single(OwlManchesterTokenKind.CloseBracket, i, 1, out token);
                 }
-
                 default:
                 {
                     break;
                 }
             }
 
-            if(c == '>')
+            if(c == (byte)'>')
             {
                 if(i + 1 == text.Length && !Final)
                 {
@@ -302,18 +302,15 @@ public sealed class OwlManchesterSyntaxIncrementalReader
                     return LexStep.NeedMore;
                 }
 
-                if(i + 1 < text.Length && text[i + 1] == '=')
+                if(i + 1 < text.Length && text[i + 1] == (byte)'=')
                 {
-                    token = new OwlManchesterToken(OwlManchesterTokenKind.Comparison, ">=", null, null, i, i + 2);
-                    LexPosition = i + 2;
-
-                    return LexStep.Token;
+                    return Single(OwlManchesterTokenKind.Comparison, i, 2, out token);
                 }
 
-                return Single(OwlManchesterTokenKind.Comparison, ">", i, out token);
+                return Single(OwlManchesterTokenKind.Comparison, i, 1, out token);
             }
 
-            if(c == '<')
+            if(c == (byte)'<')
             {
                 if(i + 1 == text.Length && !Final)
                 {
@@ -321,39 +318,36 @@ public sealed class OwlManchesterSyntaxIncrementalReader
                     return LexStep.NeedMore;
                 }
 
-                if(i + 1 < text.Length && text[i + 1] == '=')
+                if(i + 1 < text.Length && text[i + 1] == (byte)'=')
                 {
-                    token = new OwlManchesterToken(OwlManchesterTokenKind.Comparison, "<=", null, null, i, i + 2);
-                    LexPosition = i + 2;
-
-                    return LexStep.Token;
+                    return Single(OwlManchesterTokenKind.Comparison, i, 2, out token);
                 }
 
-                if(i + 1 == text.Length || char.IsWhiteSpace(text[i + 1]) || char.IsDigit(text[i + 1])
-                    || text[i + 1] is '+' or '-' or '"')
+                if(i + 1 == text.Length || IsAsciiWhitespace(text[i + 1]) || IsAsciiDigit(text[i + 1])
+                    || text[i + 1] is (byte)'+' or (byte)'-' or (byte)'"')
                 {
-                    return Single(OwlManchesterTokenKind.Comparison, "<", i, out token);
+                    return Single(OwlManchesterTokenKind.Comparison, i, 1, out token);
                 }
 
                 return LexIri(text, i, out token);
             }
 
-            if(c == '"')
+            if(c == (byte)'"')
             {
                 return LexLiteral(text, i, out token);
             }
 
-            if(c == '_' && i + 1 == text.Length && !Final)
+            if(c == (byte)'_' && i + 1 == text.Length && !Final)
             {
                 //A lone underscore at the buffer end may become _:label or a name.
                 return LexStep.NeedMore;
             }
 
-            if(c == '_' && i + 1 < text.Length && text[i + 1] == ':')
+            if(c == (byte)'_' && i + 1 < text.Length && text[i + 1] == (byte)':')
             {
                 int start = i + 2;
                 int end = start;
-                while(end < text.Length && IsNameChar(text[end]))
+                while(end < text.Length && IsNameByte(text[end]))
                 {
                     end++;
                 }
@@ -363,13 +357,13 @@ public sealed class OwlManchesterSyntaxIncrementalReader
                     return LexStep.NeedMore;
                 }
 
-                token = new OwlManchesterToken(OwlManchesterTokenKind.BlankNode, text[start..end].ToString(), null, null, i, end);
+                token = new OwlManchesterToken(OwlManchesterTokenKind.BlankNode, Slice(start, end), null, null, i, end);
                 LexPosition = end;
 
                 return LexStep.Token;
             }
 
-            if(c is '+' or '-')
+            if(c is (byte)'+' or (byte)'-')
             {
                 if(i + 1 == text.Length && !Final)
                 {
@@ -377,33 +371,33 @@ public sealed class OwlManchesterSyntaxIncrementalReader
                     return LexStep.NeedMore;
                 }
 
-                if(i + 1 < text.Length && (char.IsDigit(text[i + 1]) || text[i + 1] == '.'))
+                if(i + 1 < text.Length && (IsAsciiDigit(text[i + 1]) || text[i + 1] == (byte)'.'))
                 {
                     return LexNumber(text, i, out token);
                 }
 
-                Report($"Unexpected character '{c}'.", Map.Span(i, i + 1));
+                Report($"Unexpected character '{(char)c}'.", Map.Span(i, i + 1));
                 i++;
                 LexPosition = i;
 
                 continue;
             }
 
-            if(char.IsDigit(c) || (c == '.' && i + 1 < text.Length && char.IsDigit(text[i + 1])))
+            if(IsAsciiDigit(c) || (c == (byte)'.' && i + 1 < text.Length && IsAsciiDigit(text[i + 1])))
             {
                 return LexNumber(text, i, out token);
             }
 
-            if(c == '.' && i + 1 == text.Length && !Final)
+            if(c == (byte)'.' && i + 1 == text.Length && !Final)
             {
                 //A dot at the buffer end may begin '.5'.
                 return LexStep.NeedMore;
             }
 
-            if(IsNameStartChar(c) || c == ':')
+            if(IsNameStartByte(c) || c == (byte)':')
             {
                 int end = i;
-                while(end < text.Length && (IsNameChar(text[end]) || text[end] == ':'))
+                while(end < text.Length && (IsNameByte(text[end]) || text[end] == (byte)':'))
                 {
                     end++;
                 }
@@ -413,42 +407,42 @@ public sealed class OwlManchesterSyntaxIncrementalReader
                     return LexStep.NeedMore;
                 }
 
-                token = new OwlManchesterToken(OwlManchesterTokenKind.Name, text[i..end].ToString(), null, null, i, end);
+                token = new OwlManchesterToken(OwlManchesterTokenKind.Name, Slice(i, end), null, null, i, end);
                 LexPosition = end;
 
                 return LexStep.Token;
             }
 
-            Report($"Unexpected character '{c}'.", Map.Span(i, i + 1));
+            Report($"Unexpected character '{(char)c}'.", Map.Span(i, i + 1));
             i++;
             LexPosition = i;
         }
     }
 
-    /// <summary>Emits a single-character (or fixed-text) token and commits past it.</summary>
+    /// <summary>Emits a fixed-length punctuation token and commits past it.</summary>
     /// <param name="kind">The token kind.</param>
-    /// <param name="text">The token text.</param>
     /// <param name="start">The token's start offset.</param>
+    /// <param name="length">The token's byte length.</param>
     /// <param name="token">The emitted token.</param>
     /// <returns>Always <see cref="LexStep.Token"/>.</returns>
-    private LexStep Single(OwlManchesterTokenKind kind, string text, int start, out OwlManchesterToken token)
+    private LexStep Single(OwlManchesterTokenKind kind, int start, int length, out OwlManchesterToken token)
     {
-        token = new OwlManchesterToken(kind, text, null, null, start, start + text.Length);
+        token = new OwlManchesterToken(kind, Slice(start, start + length), null, null, start, start + length);
         LexPosition = token.End;
 
         return LexStep.Token;
     }
 
     /// <summary>Lexes a <c>&lt;…&gt;</c> IRI reference starting at <paramref name="start"/>.</summary>
-    /// <param name="text">The buffered text.</param>
+    /// <param name="text">The buffered bytes.</param>
     /// <param name="start">The offset of the opening angle bracket.</param>
     /// <param name="token">The lexed token on success.</param>
     /// <returns>The step outcome.</returns>
-    private LexStep LexIri(ReadOnlySpan<char> text, int start, out OwlManchesterToken token)
+    private LexStep LexIri(ReadOnlySpan<byte> text, int start, out OwlManchesterToken token)
     {
         token = default;
 
-        int close = text[(start + 1)..].IndexOf('>');
+        int close = text[(start + 1)..].IndexOf((byte)'>');
         if(close < 0)
         {
             if(!Final)
@@ -462,39 +456,42 @@ public sealed class OwlManchesterSyntaxIncrementalReader
             return LexStep.Exhausted;
         }
 
-        token = new OwlManchesterToken(OwlManchesterTokenKind.Iri, text.Slice(start + 1, close).ToString(), null, null, start, start + close + 2);
+        token = new OwlManchesterToken(OwlManchesterTokenKind.Iri, Slice(start + 1, start + 1 + close), null, null, start, start + close + 2);
         LexPosition = token.End;
 
         return LexStep.Token;
     }
 
     /// <summary>Lexes a quoted literal with its optional <c>^^datatype</c> or <c>@language</c> suffix.</summary>
-    /// <param name="text">The buffered text.</param>
+    /// <param name="text">The buffered bytes.</param>
     /// <param name="start">The offset of the opening quote.</param>
     /// <param name="token">The lexed token on success.</param>
     /// <returns>The step outcome.</returns>
-    private LexStep LexLiteral(ReadOnlySpan<char> text, int start, out OwlManchesterToken token)
+    private LexStep LexLiteral(ReadOnlySpan<byte> text, int start, out OwlManchesterToken token)
     {
         token = default;
 
-        StringBuilder value = new();
+        //The decoded value is never longer than its source extent; escapes
+        //only ever shrink it, so the remaining span bounds the buffer.
+        byte[] value = new byte[text.Length - start];
+        int valueLength = 0;
         int i = start + 1;
-        while(i < text.Length && text[i] != '"')
+        while(i < text.Length && text[i] != (byte)'"')
         {
-            if(text[i] == '\\' && i + 1 < text.Length)
+            if(text[i] == (byte)'\\' && i + 1 < text.Length)
             {
                 i++;
-                value.Append(text[i] switch
+                value[valueLength++] = text[i] switch
                 {
-                    'n' => '\n',
-                    't' => '\t',
-                    'r' => '\r',
+                    (byte)'n' => (byte)'\n',
+                    (byte)'t' => (byte)'\t',
+                    (byte)'r' => (byte)'\r',
                     _ => text[i]
-                });
+                };
             }
             else
             {
-                value.Append(text[i]);
+                value[valueLength++] = text[i];
             }
 
             i++;
@@ -522,10 +519,10 @@ public sealed class OwlManchesterSyntaxIncrementalReader
             return LexStep.NeedMore;
         }
 
-        string? datatype = null;
-        string? language = null;
+        Utf8String? datatype = null;
+        Utf8String? language = null;
 
-        if(i + 1 < text.Length && text[i] == '^' && text[i + 1] == '^')
+        if(i + 1 < text.Length && text[i] == (byte)'^' && text[i + 1] == (byte)'^')
         {
             i += 2;
 
@@ -534,9 +531,9 @@ public sealed class OwlManchesterSyntaxIncrementalReader
                 return LexStep.NeedMore;
             }
 
-            if(i < text.Length && text[i] == '<')
+            if(i < text.Length && text[i] == (byte)'<')
             {
-                int close = text[(i + 1)..].IndexOf('>');
+                int close = text[(i + 1)..].IndexOf((byte)'>');
                 if(close < 0)
                 {
                     if(!Final)
@@ -545,19 +542,19 @@ public sealed class OwlManchesterSyntaxIncrementalReader
                     }
 
                     Report("Unterminated datatype IRI.", Map.Span(i, text.Length));
-                    datatype = string.Empty;
+                    datatype = Utf8String.WithoutPrecomputedHash(default);
                     i = text.Length;
                 }
                 else
                 {
-                    datatype = "<" + text.Slice(i + 1, close).ToString();
+                    datatype = MarkedDatatypeIri(text, i + 1, close);
                     i += close + 2;
                 }
             }
             else
             {
                 int nameStart = i;
-                while(i < text.Length && (IsNameChar(text[i]) || text[i] == ':'))
+                while(i < text.Length && (IsNameByte(text[i]) || text[i] == (byte)':'))
                 {
                     i++;
                 }
@@ -567,19 +564,19 @@ public sealed class OwlManchesterSyntaxIncrementalReader
                     return LexStep.NeedMore;
                 }
 
-                datatype = text[nameStart..i].ToString();
+                datatype = Slice(nameStart, i);
             }
         }
-        else if(!Final && i + 1 == text.Length && text[i] == '^')
+        else if(!Final && i + 1 == text.Length && text[i] == (byte)'^')
         {
             //A single caret at the buffer end may become the ^^ of a datatype.
             return LexStep.NeedMore;
         }
-        else if(i < text.Length && text[i] == '@')
+        else if(i < text.Length && text[i] == (byte)'@')
         {
             i++;
             int tagStart = i;
-            while(i < text.Length && (char.IsLetterOrDigit(text[i]) || text[i] == '-'))
+            while(i < text.Length && (IsAsciiLetterOrDigit(text[i]) || text[i] == (byte)'-'))
             {
                 i++;
             }
@@ -589,10 +586,10 @@ public sealed class OwlManchesterSyntaxIncrementalReader
                 return LexStep.NeedMore;
             }
 
-            language = text[tagStart..i].ToString();
+            language = Slice(tagStart, i);
         }
 
-        token = new OwlManchesterToken(OwlManchesterTokenKind.Literal, value.ToString(), datatype, language, start, i);
+        token = new OwlManchesterToken(OwlManchesterTokenKind.Literal, new Utf8String(value.AsMemory(0, valueLength)), datatype, language, start, i);
         LexPosition = i;
 
         return LexStep.Token;
@@ -604,43 +601,43 @@ public sealed class OwlManchesterSyntaxIncrementalReader
     /// and an optional <c>f</c> suffix. The raw lexical is kept; the
     /// converter infers the datatype from its shape.
     /// </summary>
-    /// <param name="text">The buffered text.</param>
+    /// <param name="text">The buffered bytes.</param>
     /// <param name="start">The offset the number starts at.</param>
     /// <param name="token">The lexed token on success.</param>
     /// <returns>The step outcome.</returns>
-    private LexStep LexNumber(ReadOnlySpan<char> text, int start, out OwlManchesterToken token)
+    private LexStep LexNumber(ReadOnlySpan<byte> text, int start, out OwlManchesterToken token)
     {
         token = default;
 
         //The caller guarantees a sign is followed by a digit or a dot.
         int i = start;
-        if(text[i] is '+' or '-')
+        if(text[i] is (byte)'+' or (byte)'-')
         {
             i++;
         }
 
-        while(i < text.Length && char.IsDigit(text[i]))
+        while(i < text.Length && IsAsciiDigit(text[i]))
         {
             i++;
         }
 
-        if(i < text.Length && text[i] == '.' && i + 1 < text.Length && char.IsDigit(text[i + 1]))
+        if(i < text.Length && text[i] == (byte)'.' && i + 1 < text.Length && IsAsciiDigit(text[i + 1]))
         {
             i++;
-            while(i < text.Length && char.IsDigit(text[i]))
+            while(i < text.Length && IsAsciiDigit(text[i]))
             {
                 i++;
             }
         }
-        else if(i < text.Length && text[i] == '.' && i + 1 == text.Length && !Final)
+        else if(i < text.Length && text[i] == (byte)'.' && i + 1 == text.Length && !Final)
         {
             return LexStep.NeedMore;
         }
 
-        if(i < text.Length && text[i] is 'e' or 'E')
+        if(i < text.Length && text[i] is (byte)'e' or (byte)'E')
         {
             int exponent = i + 1;
-            if(exponent < text.Length && text[exponent] is '+' or '-')
+            if(exponent < text.Length && text[exponent] is (byte)'+' or (byte)'-')
             {
                 exponent++;
             }
@@ -650,17 +647,17 @@ public sealed class OwlManchesterSyntaxIncrementalReader
                 return LexStep.NeedMore;
             }
 
-            if(exponent < text.Length && char.IsDigit(text[exponent]))
+            if(exponent < text.Length && IsAsciiDigit(text[exponent]))
             {
                 i = exponent;
-                while(i < text.Length && char.IsDigit(text[i]))
+                while(i < text.Length && IsAsciiDigit(text[i]))
                 {
                     i++;
                 }
             }
         }
 
-        if(i < text.Length && text[i] is 'f' or 'F')
+        if(i < text.Length && text[i] is (byte)'f' or (byte)'F')
         {
             i++;
         }
@@ -671,20 +668,73 @@ public sealed class OwlManchesterSyntaxIncrementalReader
             return LexStep.NeedMore;
         }
 
-        token = new OwlManchesterToken(OwlManchesterTokenKind.Number, text[start..i].ToString(), null, null, start, i);
+        token = new OwlManchesterToken(OwlManchesterTokenKind.Number, Slice(start, i), null, null, start, i);
         LexPosition = i;
 
         return LexStep.Token;
     }
 
-    private static bool IsNameStartChar(char c)
+    /// <summary>Captures a zero-copy window over <see cref="Buffer"/> as a deferred-hash value.</summary>
+    /// <param name="start">The inclusive start byte offset.</param>
+    /// <param name="end">The exclusive end byte offset.</param>
+    /// <returns>The bytes <c>[start, end)</c> as a <see cref="Utf8String"/> over the buffer's memory.</returns>
+    private Utf8String Slice(int start, int end)
     {
-        return char.IsLetter(c) || c == '_';
+        return Utf8String.WithoutPrecomputedHash(Buffer.AsMemory(start, end - start));
     }
 
-    private static bool IsNameChar(char c)
+    /// <summary>Builds a <c>&lt;</c>-marked datatype IRI value: the marker byte followed by the IRI body.</summary>
+    /// <param name="text">The buffered bytes.</param>
+    /// <param name="bodyStart">The inclusive start byte offset of the IRI body.</param>
+    /// <param name="bodyLength">The length of the IRI body in bytes.</param>
+    /// <returns>The marked datatype IRI as its own buffer; the converter strips the marker.</returns>
+    private static Utf8String MarkedDatatypeIri(ReadOnlySpan<byte> text, int bodyStart, int bodyLength)
     {
-        return char.IsLetterOrDigit(c) || c == '_' || c == '-' || c == '.';
+        byte[] marked = new byte[bodyLength + 1];
+        marked[0] = (byte)'<';
+        text.Slice(bodyStart, bodyLength).CopyTo(marked.AsSpan(1));
+
+        return Utf8String.WithoutPrecomputedHash(marked);
+    }
+
+    /// <summary>Whether a byte is one of the grammar's ASCII whitespace bytes.</summary>
+    /// <param name="b">The byte to classify.</param>
+    /// <returns><see langword="true"/> for space, tab, line feed, vertical tab, form feed, or carriage return.</returns>
+    private static bool IsAsciiWhitespace(byte b)
+    {
+        return b == (byte)' ' || (b >= (byte)'\t' && b <= (byte)'\r');
+    }
+
+    /// <summary>Whether a byte is an ASCII decimal digit.</summary>
+    /// <param name="b">The byte to classify.</param>
+    /// <returns><see langword="true"/> for <c>0</c> through <c>9</c>.</returns>
+    private static bool IsAsciiDigit(byte b)
+    {
+        return b >= (byte)'0' && b <= (byte)'9';
+    }
+
+    /// <summary>Whether a byte is an ASCII letter or decimal digit.</summary>
+    /// <param name="b">The byte to classify.</param>
+    /// <returns><see langword="true"/> for <c>A</c>–<c>Z</c>, <c>a</c>–<c>z</c>, or <c>0</c>–<c>9</c>.</returns>
+    private static bool IsAsciiLetterOrDigit(byte b)
+    {
+        return IsAsciiDigit(b) || ((b | 0x20) >= (byte)'a' && (b | 0x20) <= (byte)'z');
+    }
+
+    /// <summary>Whether a byte can begin a name: an ASCII letter, an underscore, or any non-ASCII (multi-byte) code-point byte.</summary>
+    /// <param name="b">The byte to classify.</param>
+    /// <returns><see langword="true"/> when the byte may start a word or prefixed name.</returns>
+    private static bool IsNameStartByte(byte b)
+    {
+        return ((b | 0x20) >= (byte)'a' && (b | 0x20) <= (byte)'z') || b == (byte)'_' || b >= 0x80;
+    }
+
+    /// <summary>Whether a byte can continue a name: an ASCII letter or digit, <c>_</c>, <c>-</c>, <c>.</c>, or any non-ASCII byte.</summary>
+    /// <param name="b">The byte to classify.</param>
+    /// <returns><see langword="true"/> when the byte may continue a word or prefixed name.</returns>
+    private static bool IsNameByte(byte b)
+    {
+        return IsAsciiLetterOrDigit(b) || b == (byte)'_' || b == (byte)'-' || b == (byte)'.' || b >= 0x80;
     }
 
     //The streaming tree builder: groups nest by bracket family, everything
@@ -805,7 +855,7 @@ public sealed class OwlManchesterSyntaxIncrementalReader
         return items.Count >= 2
             && items[^2] is { IsAtom: true } previous
             && previous.Atom.Kind == OwlManchesterTokenKind.Name
-            && previous.Atom.Text == OwlManchesterWords.PrefixKeyword;
+            && OwlManchesterWords.IsPrefixKeyword(previous.Atom.Text);
     }
 
     /// <summary>Records an error diagnostic into the shared bag.</summary>

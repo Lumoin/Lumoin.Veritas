@@ -136,6 +136,18 @@ public readonly struct Utf8String: IEquatable<Utf8String>, IComparable<Utf8Strin
     }
 
     /// <summary>
+    /// Determines whether this instance's bytes equal a raw UTF-8 byte sequence — the
+    /// allocation-free way to compare against a <c>u8</c> literal or a keyword span,
+    /// without reaching through <see cref="Span"/> or decoding to a <see cref="string"/>.
+    /// </summary>
+    /// <param name="other">The UTF-8 bytes to compare against.</param>
+    /// <returns><see langword="true"/> when the byte sequences are equal.</returns>
+    public bool SequenceEqual(ReadOnlySpan<byte> other)
+    {
+        return bytes.Span.SequenceEqual(other);
+    }
+
+    /// <summary>
     /// Compares two <see cref="Utf8String"/> instances lexicographically by their UTF-8 bytes.
     /// </summary>
     /// <param name="other">The other instance to compare against.</param>
