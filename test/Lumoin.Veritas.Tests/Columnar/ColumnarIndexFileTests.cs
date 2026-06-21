@@ -7,6 +7,8 @@ using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.Execution;
 using Lumoin.Veritas.Core.Integrity;
 using Lumoin.Veritas.Core.Memory;
+using Lumoin.Veritas.Core.Persistence.Manifest;
+using Lumoin.Veritas.Tests.Integrity;
 using Microsoft.Win32.SafeHandles;
 
 namespace Lumoin.Veritas.Tests.Columnar;
@@ -40,18 +42,17 @@ internal sealed class ColumnarIndexFileTests
         return [.. triples];
     }
 
-    /// <summary>Writes the index to a pool-rented, XxHash3-checksummed image and returns the bytes.</summary>
+    /// <summary>Serializes the index into a buffer rented from the caller's pool and returns it as a pooled, owned image — the re-derivable sidecar artifact — XxHash3-checksummed, rather than copying the bytes out to a loose array.</summary>
     /// <param name="index">The index to serialize.</param>
-    /// <returns>The image bytes.</returns>
-    private static byte[] ToImage(ColumnarTripleIndex index)
+    /// <param name="imagePool">The pool the image buffer is rented from; the returned image owns the buffer and returns it on dispose.</param>
+    /// <returns>The pooled image; the caller disposes it.</returns>
+    private static ArtifactImage ToImage(ColumnarTripleIndex index, MemoryPool<byte> imagePool)
     {
-        using VeritasMemoryPool<byte> pool = new();
         int size = index.ComputeSerializedSize(ChecksumAlgorithm.XxHash3);
-        using IMemoryOwner<byte> owner = pool.Rent(size);
-        Span<byte> image = owner.Memory.Span[..size];
-        index.WriteTo(image, ChecksumAlgorithm.XxHash3);
+        IMemoryOwner<byte> owner = imagePool.Rent(size);
+        index.WriteTo(owner.Memory.Span[..size], ChecksumAlgorithm.XxHash3);
 
-        return image.ToArray();
+        return ArtifactImage.Own(owner, size, ManifestFileRole.Sidecar);
     }
 
     /// <summary>Asserts the index's merged triple set equals <paramref name="expected"/>.</summary>
@@ -82,18 +83,19 @@ internal sealed class ColumnarIndexFileTests
     {
         EncodedTriple[] triples = SampleTriples();
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(triples, ColumnarOrderSetMode.ThreeRotations);
-        byte[] image = ToImage(index);
+        using VeritasMemoryPool<byte> imagePool = new();
+        using ArtifactImage image = ToImage(index, imagePool);
 
         string path = Path.GetTempFileName();
         try
         {
-            File.WriteAllBytes(path, image);
+            File.WriteAllBytes(path, image.Bytes);
             foreach(ColumnAccessMode mode in (ColumnAccessMode[])[ColumnAccessMode.Auto, ColumnAccessMode.MemoryMapped, ColumnAccessMode.Streamed])
             {
                 using SafeFileHandle handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read);
-                using VeritasMemoryPool<byte> imagePool = new();
+                using VeritasMemoryPool<byte> readPool = new();
                 using VeritasMemoryPool<EncodedTriple> deltaPool = new();
-                ColumnarTripleIndex restored = ColumnarIndexFile.Read(handle, mode, imagePool, deltaPool);
+                ColumnarTripleIndex restored = ColumnarIndexFile.Read(handle, mode, readPool, deltaPool);
 
                 Assert.AreEqual(index.TripleCount, restored.TripleCount, $"The triple count differs (mode {mode}).");
                 AssertSameTriples(triples, restored);
@@ -111,16 +113,17 @@ internal sealed class ColumnarIndexFileTests
     {
         EncodedTriple[] triples = SampleTriples();
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(triples, backing: ColumnPayloadBacking.NativeAligned);
-        byte[] image = ToImage(index);
+        using VeritasMemoryPool<byte> imagePool = new();
+        using ArtifactImage image = ToImage(index, imagePool);
 
         string path = Path.GetTempFileName();
         try
         {
-            File.WriteAllBytes(path, image);
+            File.WriteAllBytes(path, image.Bytes);
             using SafeFileHandle handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read);
-            using VeritasMemoryPool<byte> imagePool = new();
+            using VeritasMemoryPool<byte> readPool = new();
             using VeritasMemoryPool<EncodedTriple> deltaPool = new();
-            ColumnarTripleIndex restored = ColumnarIndexFile.Read(handle, ColumnAccessMode.MemoryMapped, imagePool, deltaPool);
+            ColumnarTripleIndex restored = ColumnarIndexFile.Read(handle, ColumnAccessMode.MemoryMapped, readPool, deltaPool);
 
             Assert.AreEqual(ColumnPayloadBacking.NativeAligned, restored.Backing);
             AssertSameTriples(triples, restored);
@@ -137,21 +140,22 @@ internal sealed class ColumnarIndexFileTests
     {
         EncodedTriple[] triples = SampleTriples();
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(triples);
-        byte[] image = ToImage(index);
+        using VeritasMemoryPool<byte> imagePool = new();
+        using ArtifactImage image = ToImage(index, imagePool);
 
         //Corrupt the first byte of the first column blob (located via a verify round, since the image
         //tail is now the front-matter checksum trailer); that blob's checksum must fail on a mapped load.
-        VerifyRoundReport report = ColumnarTripleIndex.RunVerifyRound(image);
-        image[(int)report.Blobs[0].ByteOffset] ^= 0xFF;
+        VerifyRoundReport report = ColumnarTripleIndex.RunVerifyRound(image.Bytes);
+        image.WritableBytes[(int)report.Blobs[0].ByteOffset] ^= 0xFF;
 
         string path = Path.GetTempFileName();
         try
         {
-            File.WriteAllBytes(path, image);
+            File.WriteAllBytes(path, image.Bytes);
             using SafeFileHandle handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read);
-            using VeritasMemoryPool<byte> imagePool = new();
+            using VeritasMemoryPool<byte> readPool = new();
             using VeritasMemoryPool<EncodedTriple> deltaPool = new();
-            Assert.ThrowsExactly<InvalidDataException>(() => { _ = ColumnarIndexFile.Read(handle, ColumnAccessMode.MemoryMapped, imagePool, deltaPool); });
+            Assert.ThrowsExactly<InvalidDataException>(() => { _ = ColumnarIndexFile.Read(handle, ColumnAccessMode.MemoryMapped, readPool, deltaPool); });
         }
         finally
         {
@@ -183,12 +187,17 @@ internal sealed class ColumnarIndexFileTests
     {
         EncodedTriple[] triples = SampleTriples();
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(triples);
-        byte[] image = ToImage(index);
+        using VeritasMemoryPool<byte> imagePool = new();
+        using ArtifactImage image = ToImage(index, imagePool);
 
         using VeritasMemoryPool<byte> pool = new();
         using VeritasMemoryPool<EncodedTriple> deltaPool = new();
 
-        using(ColumnarImageSource clean = BufferSource(image, pool))
+        //The composed-source seam takes a loose array of image bytes the source copies into its own
+        //pooled buffer, so materialize the staged image's bytes once for the source and verify round.
+        byte[] imageBytes = image.Bytes.ToArray();
+
+        using(ColumnarImageSource clean = BufferSource(imageBytes, pool))
         {
             ColumnarTripleIndex restored = ColumnarIndexFile.Read(clean, deltaPool);
             AssertSameTriples(triples, restored);
@@ -196,8 +205,8 @@ internal sealed class ColumnarIndexFileTests
 
         //Corrupt the first byte of the first column blob (located via a verify round), so the failure
         //is a per-blob checksum on the source decode path, not the front-matter trailer at the tail.
-        VerifyRoundReport report = ColumnarTripleIndex.RunVerifyRound(image);
-        using(CorruptingColumnarImageSource corrupting = new(BufferSource(image, pool), pool, (int)report.Blobs[0].ByteOffset))
+        VerifyRoundReport report = ColumnarTripleIndex.RunVerifyRound(imageBytes);
+        using(CorruptingColumnarImageSource corrupting = new(BufferSource(imageBytes, pool), pool, (int)report.Blobs[0].ByteOffset))
         {
             Assert.ThrowsExactly<InvalidDataException>(() => { _ = ColumnarIndexFile.Read(corrupting, deltaPool); });
         }

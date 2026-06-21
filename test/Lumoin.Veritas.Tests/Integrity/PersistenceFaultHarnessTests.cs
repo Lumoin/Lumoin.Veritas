@@ -6,6 +6,7 @@ using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.Integrity;
 using Lumoin.Veritas.Core.Memory;
+using Lumoin.Veritas.Core.Persistence.Manifest;
 
 namespace Lumoin.Veritas.Tests.Integrity;
 
@@ -57,18 +58,17 @@ internal sealed class PersistenceFaultHarnessTests
         return [.. triples];
     }
 
-    /// <summary>Serializes an index to a checksummed image and returns the bytes.</summary>
+    /// <summary>Serializes an index into a buffer rented from the caller's pool and returns it as a pooled, owned image — the re-derivable columnar sidecar artifact — rather than copying the bytes out to a loose array.</summary>
     /// <param name="index">The index to serialize.</param>
-    /// <returns>The image bytes.</returns>
-    private static byte[] ToImage(ColumnarTripleIndex index)
+    /// <param name="imagePool">The pool the image buffer is rented from; the returned image owns the buffer and returns it on dispose.</param>
+    /// <returns>The pooled image; the caller disposes it.</returns>
+    private static ArtifactImage ToImage(ColumnarTripleIndex index, MemoryPool<byte> imagePool)
     {
-        using VeritasMemoryPool<byte> pool = new();
         int size = index.ComputeSerializedSize(ChecksumAlgorithm.XxHash3);
-        using IMemoryOwner<byte> owner = pool.Rent(size);
-        Span<byte> image = owner.Memory.Span[..size];
-        index.WriteTo(image, ChecksumAlgorithm.XxHash3);
+        IMemoryOwner<byte> owner = imagePool.Rent(size);
+        index.WriteTo(owner.Memory.Span[..size], ChecksumAlgorithm.XxHash3);
 
-        return image.ToArray();
+        return ArtifactImage.Own(owner, size, ManifestFileRole.Sidecar);
     }
 
     /// <summary>Advances a non-zero xorshift64 state and returns the next value.</summary>
@@ -83,36 +83,39 @@ internal sealed class PersistenceFaultHarnessTests
         return state;
     }
 
-    /// <summary>Produces a damaged copy of <paramref name="clean"/> for one cell, driven by a seed so the run is reproducible.</summary>
-    /// <param name="clean">The clean image.</param>
+    /// <summary>Produces a damaged copy of <paramref name="clean"/> for one cell as its own pooled image, driven by a seed so the run is reproducible; the caller disposes it.</summary>
+    /// <param name="clean">The clean image; left intact — the damage lands on a fresh copy or a truncated copy.</param>
     /// <param name="blob">The blob to damage.</param>
     /// <param name="kind">The damage kind.</param>
     /// <param name="seed">The xorshift seed.</param>
-    /// <returns>The damaged image.</returns>
-    private static byte[] Corrupt(byte[] clean, BlobVerdict blob, CorruptionKind kind, ulong seed)
+    /// <param name="imagePool">The pool the damaged copy is rented from.</param>
+    /// <returns>The damaged image; the caller disposes it.</returns>
+    private static ArtifactImage Corrupt(ArtifactImage clean, BlobVerdict blob, CorruptionKind kind, ulong seed, MemoryPool<byte> imagePool)
     {
         ulong state = seed == 0 ? 0x9E3779B97F4A7C15UL : seed;
         if(kind == CorruptionKind.Truncate)
         {
-            return clean[..((int)blob.ByteOffset + (int)blob.ByteLength - 1)];
+            return clean.Truncated(clean.Length - ((int)blob.ByteOffset + (int)blob.ByteLength - 1), imagePool);
         }
 
-        byte[] copy = [.. clean];
+        ArtifactImage copy = ArtifactImage.Copy(clean.Bytes, clean.Role, imagePool);
+        Span<byte> bytes = copy.WritableBytes;
         if(kind == CorruptionKind.BitFlip)
         {
             int position = (int)blob.ByteOffset + (int)(NextXorshift(ref state) % (ulong)blob.ByteLength);
-            copy[position] ^= (byte)(1 << (int)(NextXorshift(ref state) & 7));
+            bytes[position] ^= (byte)(1 << (int)(NextXorshift(ref state) & 7));
 
             return copy;
         }
 
+        byte original = bytes[(int)blob.ByteOffset];
         for(long i = blob.ByteOffset; i < blob.ByteOffset + blob.ByteLength; i++)
         {
-            copy[i] = (byte)NextXorshift(ref state);
+            bytes[(int)i] = (byte)NextXorshift(ref state);
         }
 
         //Guarantee at least one byte differs from the original so the damage is real even if the garbage coincided with the clean bytes.
-        copy[blob.ByteOffset] = (byte)(clean[blob.ByteOffset] ^ 0xFF);
+        bytes[(int)blob.ByteOffset] = (byte)(original ^ 0xFF);
 
         return copy;
     }
@@ -121,10 +124,11 @@ internal sealed class PersistenceFaultHarnessTests
     [TestMethod]
     public void CleanImageVerifiesClean()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(SampleTriples());
-        byte[] image = ToImage(index);
+        using ArtifactImage image = ToImage(index, imagePool);
 
-        VerifyRoundReport report = ColumnarTripleIndex.RunVerifyRound(image);
+        VerifyRoundReport report = ColumnarTripleIndex.RunVerifyRound(image.Bytes);
 
         Assert.IsTrue(report.IsClean);
         Assert.IsGreaterThan(0, report.BlobCount);
@@ -135,9 +139,10 @@ internal sealed class PersistenceFaultHarnessTests
     [TestMethod]
     public void EveryBlobByteCorruptionIsDetected()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(SampleTriples());
-        byte[] clean = ToImage(index);
-        VerifyRoundReport cleanReport = ColumnarTripleIndex.RunVerifyRound(clean);
+        using ArtifactImage clean = ToImage(index, imagePool);
+        VerifyRoundReport cleanReport = ColumnarTripleIndex.RunVerifyRound(clean.Bytes);
         Assert.IsTrue(cleanReport.IsClean);
 
         using VeritasMemoryPool<EncodedTriple> deltaPool = new();
@@ -146,14 +151,14 @@ internal sealed class PersistenceFaultHarnessTests
         {
             foreach(CorruptionKind kind in (CorruptionKind[])[CorruptionKind.BitFlip, CorruptionKind.WholeBlockGarbage])
             {
-                byte[] corrupt = Corrupt(clean, blob, kind, seed);
+                using ArtifactImage corrupt = Corrupt(clean, blob, kind, seed, imagePool);
                 seed++;
 
-                VerifyRoundReport report = ColumnarTripleIndex.RunVerifyRound(corrupt);
+                VerifyRoundReport report = ColumnarTripleIndex.RunVerifyRound(corrupt.Bytes);
                 Assert.IsFalse(report.Blobs[blob.Index].IsValid, $"blob {blob.Index} kind {kind} not reported corrupt");
                 Assert.AreEqual(1, report.CorruptCount, $"blob {blob.Index} kind {kind} corrupted more than one verdict");
 
-                Assert.ThrowsExactly<InvalidDataException>(() => { _ = ColumnarTripleIndex.ReadFrom(corrupt, deltaPool); });
+                Assert.ThrowsExactly<InvalidDataException>(() => { _ = ColumnarTripleIndex.ReadFrom(corrupt.Bytes, deltaPool); });
             }
         }
     }
@@ -162,43 +167,46 @@ internal sealed class PersistenceFaultHarnessTests
     [TestMethod]
     public void TruncatedBlobIsRefused()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(SampleTriples());
-        byte[] clean = ToImage(index);
-        VerifyRoundReport cleanReport = ColumnarTripleIndex.RunVerifyRound(clean);
+        using ArtifactImage clean = ToImage(index, imagePool);
+        VerifyRoundReport cleanReport = ColumnarTripleIndex.RunVerifyRound(clean.Bytes);
 
         BlobVerdict last = cleanReport.Blobs[cleanReport.BlobCount - 1];
-        byte[] truncated = Corrupt(clean, last, CorruptionKind.Truncate, 1);
+        using ArtifactImage truncated = Corrupt(clean, last, CorruptionKind.Truncate, 1, imagePool);
 
-        Assert.ThrowsExactly<InvalidDataException>(() => { _ = ColumnarTripleIndex.RunVerifyRound(truncated); });
+        Assert.ThrowsExactly<InvalidDataException>(() => { _ = ColumnarTripleIndex.RunVerifyRound(truncated.Bytes); });
     }
 
     /// <summary>I5 (epoch consistency): an image stamped with a checksum-algorithm id no resolver knows is refused, not verified under the wrong algorithm.</summary>
     [TestMethod]
     public void ForeignChecksumAlgorithmIsRefused()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(SampleTriples());
-        byte[] image = ToImage(index);
-        image[ChecksumAlgorithmIdOffset] = 99;
+        using ArtifactImage image = ToImage(index, imagePool);
+        image.WritableBytes[ChecksumAlgorithmIdOffset] = 99;
 
-        Assert.ThrowsExactly<NotSupportedException>(() => { _ = ColumnarTripleIndex.RunVerifyRound(image); });
+        Assert.ThrowsExactly<NotSupportedException>(() => { _ = ColumnarTripleIndex.RunVerifyRound(image.Bytes); });
     }
 
     /// <summary>I1 (front matter): a byte corrupted in the persisted delta — which the per-blob checksums do not cover — is caught by the front-matter checksum: reported by the verify round and refused by the warm reader before the delta is used.</summary>
     [TestMethod]
     public void FrontMatterCorruptionIsDetected()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         ColumnarTripleIndex withDelta = ColumnarTripleIndex.Build(SampleTriples()).Apply([EncodedTriple.FromEncoded(900_000, 1, 2)], []);
-        byte[] clean = ToImage(withDelta);
+        using ArtifactImage clean = ToImage(withDelta, imagePool);
 
         //A byte inside the added-delta triple data: header (19) + scalars (8) + added-count (4) = 31.
-        byte[] corrupt = [.. clean];
-        corrupt[31] ^= 0xFF;
+        using ArtifactImage corrupt = ArtifactImage.Copy(clean.Bytes, clean.Role, imagePool);
+        corrupt.WritableBytes[31] ^= 0xFF;
 
-        VerifyRoundReport report = ColumnarTripleIndex.RunVerifyRound(corrupt);
+        VerifyRoundReport report = ColumnarTripleIndex.RunVerifyRound(corrupt.Bytes);
         Assert.IsFalse(report.FrontMatterValid);
         Assert.IsFalse(report.IsClean);
 
         using VeritasMemoryPool<EncodedTriple> deltaPool = new();
-        Assert.ThrowsExactly<InvalidDataException>(() => { _ = ColumnarTripleIndex.ReadFrom(corrupt, deltaPool); });
+        Assert.ThrowsExactly<InvalidDataException>(() => { _ = ColumnarTripleIndex.ReadFrom(corrupt.Bytes, deltaPool); });
     }
 }

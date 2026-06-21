@@ -9,8 +9,10 @@ using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.ContentAddressing;
 using Lumoin.Veritas.Core.Integrity;
 using Lumoin.Veritas.Core.Memory;
+using Lumoin.Veritas.Core.Persistence.Manifest;
 using Lumoin.Veritas.Core.Persistence.Sketch;
 using Lumoin.Veritas.Core.Reconciliation;
+using Lumoin.Veritas.Tests.Integrity;
 using Lumoin.Verisync.Core;
 
 namespace Lumoin.Veritas.Tests.Persistence;
@@ -137,17 +139,17 @@ internal sealed class SketchSegmentReconciliationTests
         }
     }
 
-    /// <summary>Persists a replica's items as a structural sketch image and returns the bytes.</summary>
+    /// <summary>Persists a replica's items as a structural sketch into a buffer rented from the caller's pool and returns it as a pooled, owned image — the sketch artifact — rather than copying the bytes out to a loose array.</summary>
     /// <param name="items">The replica's projected items.</param>
     /// <param name="symbolCount">The number of symbols to persist.</param>
-    /// <returns>The sketch image bytes.</returns>
-    private static byte[] PersistToArray(ContentKey128[] items, int symbolCount)
+    /// <param name="imagePool">The pool the image buffer is rented from; the returned image owns the buffer and returns it on dispose.</param>
+    /// <returns>The pooled sketch image; the caller disposes it.</returns>
+    private static ArtifactImage PersistToImage(ContentKey128[] items, int symbolCount, MemoryPool<byte> imagePool)
     {
-        using VeritasMemoryPool<byte> pool = new();
         ArrayBufferWriter<byte> writer = new();
-        SketchPersistence.PersistSketch(items, SketchContract.Structural, symbolCount, ChecksumAlgorithm.XxHash3, pool, HostEncode, writer);
+        SketchPersistence.PersistSketch(items, SketchContract.Structural, symbolCount, ChecksumAlgorithm.XxHash3, imagePool, HostEncode, writer);
 
-        return writer.WrittenSpan.ToArray();
+        return ArtifactImage.Copy(writer.WrittenSpan, ManifestFileRole.Sketch, imagePool);
     }
 
     /// <summary>Loads both verified sketches and reconciles them through the counting decoder — a static helper so the refusal test's body captures nothing.</summary>
@@ -155,10 +157,10 @@ internal sealed class SketchSegmentReconciliationTests
     /// <param name="imageB">The other replica's sketch image.</param>
     /// <param name="symbolCap">The decode symbol cap.</param>
     /// <param name="counter">The counting decoder.</param>
-    private static void ReconcileThroughCounter(byte[] imageA, byte[] imageB, int symbolCap, CountingDecoder counter)
+    private static void ReconcileThroughCounter(ArtifactImage imageA, ArtifactImage imageB, int symbolCap, CountingDecoder counter)
     {
-        VerifiedSketch leftV = SketchPersistence.LoadVerifiedSketch(imageA, SketchContract.Structural);
-        VerifiedSketch rightV = SketchPersistence.LoadVerifiedSketch(imageB, SketchContract.Structural);
+        VerifiedSketch leftV = SketchPersistence.LoadVerifiedSketch(imageA.Bytes, SketchContract.Structural);
+        VerifiedSketch rightV = SketchPersistence.LoadVerifiedSketch(imageB.Bytes, SketchContract.Structural);
         ContentKey128[] recovered = new ContentKey128[leftV.SymbolCount + rightV.SymbolCount];
         SketchReconciliationDelegates.DecodeSketchDifference decode = counter.Decode;
         decode(leftV, rightV, symbolCap, recovered);
@@ -168,6 +170,7 @@ internal sealed class SketchSegmentReconciliationTests
     [TestMethod]
     public void ConvergeThroughPersistedSketches()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         EncodedTriple[] triplesA = Line(0, 150);
         EncodedTriple[] triplesB = Line(50, 150);
         ColumnarTripleIndex replicaA = ColumnarTripleIndex.Build(triplesA);
@@ -177,11 +180,11 @@ internal sealed class SketchSegmentReconciliationTests
         ContentKey128[] itemsB = [.. triplesB.Select(StructuralReconciliationProjection.Project)];
         int cap = 100 + (20 * (replicaA.TripleCount + replicaB.TripleCount));
 
-        byte[] imageA = PersistToArray(itemsA, cap);
-        byte[] imageB = PersistToArray(itemsB, cap);
+        using ArtifactImage imageA = PersistToImage(itemsA, cap, imagePool);
+        using ArtifactImage imageB = PersistToImage(itemsB, cap, imagePool);
 
-        VerifiedSketch leftV = SketchPersistence.LoadVerifiedSketch(imageA, SketchContract.Structural);
-        VerifiedSketch rightV = SketchPersistence.LoadVerifiedSketch(imageB, SketchContract.Structural);
+        VerifiedSketch leftV = SketchPersistence.LoadVerifiedSketch(imageA.Bytes, SketchContract.Structural);
+        VerifiedSketch rightV = SketchPersistence.LoadVerifiedSketch(imageB.Bytes, SketchContract.Structural);
 
         ContentKey128[] recovered = new ContentKey128[leftV.SymbolCount + rightV.SymbolCount];
         SketchReconciliationDelegates.DecodeSketchDifference decode = HostDecode;
@@ -210,14 +213,15 @@ internal sealed class SketchSegmentReconciliationTests
     [TestMethod]
     public void CorruptSketchBlockIsRefusedBeforeCombine()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         ContentKey128[] itemsA = [.. Line(0, 150).Select(StructuralReconciliationProjection.Project)];
         ContentKey128[] itemsB = [.. Line(50, 150).Select(StructuralReconciliationProjection.Project)];
         int cap = 100 + (20 * 300);
-        byte[] imageA = PersistToArray(itemsA, cap);
-        byte[] imageB = PersistToArray(itemsB, cap);
+        using ArtifactImage imageA = PersistToImage(itemsA, cap, imagePool);
+        using ArtifactImage imageB = PersistToImage(itemsB, cap, imagePool);
 
         //Flip the first byte of block 0 (the first page-aligned block at the default 4 KiB alignment).
-        imageA[SketchSegment.DefaultBlockAlignment] ^= 0xFF;
+        imageA.WritableBytes[SketchSegment.DefaultBlockAlignment] ^= 0xFF;
 
         CountingDecoder counter = new();
         Assert.ThrowsExactly<InvalidDataException>(() => ReconcileThroughCounter(imageA, imageB, cap, counter));
@@ -229,30 +233,33 @@ internal sealed class SketchSegmentReconciliationTests
     [TestMethod]
     public void WrongGeometryIsRefused()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         ContentKey128[] items = [.. Line(0, 50).Select(StructuralReconciliationProjection.Project)];
-        byte[] image = PersistToArray(items, 100 + (20 * 50));
+        using ArtifactImage image = PersistToImage(items, 100 + (20 * 50), imagePool);
 
         //Persisted as Structural (symbol width 24); load against a 20-byte-symbol contract.
         SketchContract wrong = new(ContentKey128.ByteWidth, 4, 256);
-        Assert.ThrowsExactly<InvalidDataException>(() => { _ = SketchPersistence.LoadVerifiedSketch(image, wrong); });
+        Assert.ThrowsExactly<InvalidDataException>(() => { _ = SketchPersistence.LoadVerifiedSketch(image.Bytes, wrong); });
     }
 
     /// <summary>A sketch loaded under a contract with the SAME symbol width but a different symbols-per-block is refused — the second geometry-mismatch branch, distinct from the symbol-width branch.</summary>
     [TestMethod]
     public void WrongSymbolsPerBlockIsRefused()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         ContentKey128[] items = [.. Line(0, 50).Select(StructuralReconciliationProjection.Project)];
-        byte[] image = PersistToArray(items, 100 + (20 * 50));
+        using ArtifactImage image = PersistToImage(items, 100 + (20 * 50), imagePool);
 
         //Persisted as Structural (symbol width 24, 256 symbols per block); load against the same symbol width but 128 per block.
         SketchContract wrong = new(ContentKey128.ByteWidth, 8, 128);
-        Assert.ThrowsExactly<InvalidDataException>(() => { _ = SketchPersistence.LoadVerifiedSketch(image, wrong); });
+        Assert.ThrowsExactly<InvalidDataException>(() => { _ = SketchPersistence.LoadVerifiedSketch(image.Bytes, wrong); });
     }
 
     /// <summary>When the recovered sink is smaller than the symmetric difference, the decode writes nothing and returns the needed count — the documented overflow contract.</summary>
     [TestMethod]
     public void UndersizedRecoveredSinkReturnsNeededCountAndWritesNothing()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         ContentKey128[] itemsA = [.. Line(0, 150).Select(StructuralReconciliationProjection.Project)];
         ContentKey128[] itemsB = [.. Line(50, 150).Select(StructuralReconciliationProjection.Project)];
         int cap = 100 + (20 * 300);
@@ -261,8 +268,10 @@ internal sealed class SketchSegmentReconciliationTests
         difference.SymmetricExceptWith(itemsB);
         int expectedDiff = difference.Count;
 
-        VerifiedSketch leftV = SketchPersistence.LoadVerifiedSketch(PersistToArray(itemsA, cap), SketchContract.Structural);
-        VerifiedSketch rightV = SketchPersistence.LoadVerifiedSketch(PersistToArray(itemsB, cap), SketchContract.Structural);
+        using ArtifactImage imageA = PersistToImage(itemsA, cap, imagePool);
+        using ArtifactImage imageB = PersistToImage(itemsB, cap, imagePool);
+        VerifiedSketch leftV = SketchPersistence.LoadVerifiedSketch(imageA.Bytes, SketchContract.Structural);
+        VerifiedSketch rightV = SketchPersistence.LoadVerifiedSketch(imageB.Bytes, SketchContract.Structural);
 
         //A sink one shy of the difference cannot hold the result.
         ContentKey128[] undersized = new ContentKey128[expectedDiff - 1];
@@ -276,11 +285,14 @@ internal sealed class SketchSegmentReconciliationTests
     [TestMethod]
     public void IdenticalReplicasRecoverNoDifferenceThroughSketches()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         ContentKey128[] items = [.. Line(0, 100).Select(StructuralReconciliationProjection.Project)];
         int cap = 100 + (20 * 200);
 
-        VerifiedSketch leftV = SketchPersistence.LoadVerifiedSketch(PersistToArray(items, cap), SketchContract.Structural);
-        VerifiedSketch rightV = SketchPersistence.LoadVerifiedSketch(PersistToArray(items, cap), SketchContract.Structural);
+        using ArtifactImage imageA = PersistToImage(items, cap, imagePool);
+        using ArtifactImage imageB = PersistToImage(items, cap, imagePool);
+        VerifiedSketch leftV = SketchPersistence.LoadVerifiedSketch(imageA.Bytes, SketchContract.Structural);
+        VerifiedSketch rightV = SketchPersistence.LoadVerifiedSketch(imageB.Bytes, SketchContract.Structural);
 
         ContentKey128[] recovered = new ContentKey128[leftV.SymbolCount + rightV.SymbolCount];
         int n = HostDecode(leftV, rightV, cap, recovered);

@@ -5,6 +5,7 @@ using Lumoin.Veritas.Core.Integrity;
 using Lumoin.Veritas.Core.Memory;
 using Lumoin.Veritas.Core.Persistence;
 using Lumoin.Veritas.Core.Persistence.Manifest;
+using Lumoin.Veritas.Tests.Integrity;
 
 namespace Lumoin.Veritas.Tests.Persistence;
 
@@ -86,19 +87,18 @@ internal sealed class ManifestPersistenceTests
         return bytes;
     }
 
-    /// <summary>Serializes a manifest to a pool-rented image and returns the bytes — the mutable fixture the refused-image cells damage.</summary>
+    /// <summary>Serializes a manifest into a buffer rented from the caller's pool and returns it as a pooled, owned image — the mutable fixture the refused-image cells damage in place — rather than copying the bytes out to a loose array.</summary>
     /// <param name="manifest">The manifest to serialize.</param>
     /// <param name="checksum">The checksum algorithm, or <see langword="null"/> for none.</param>
-    /// <returns>The image bytes.</returns>
-    private static byte[] ManifestImage(Manifest manifest, ChecksumAlgorithm? checksum)
+    /// <param name="imagePool">The pool the image buffer is rented from; the returned image owns the buffer and returns it on dispose.</param>
+    /// <returns>The pooled image; the caller disposes it.</returns>
+    private static ArtifactImage ManifestImage(Manifest manifest, ChecksumAlgorithm? checksum, MemoryPool<byte> imagePool)
     {
-        using VeritasMemoryPool<byte> pool = new();
         int size = manifest.ComputeSerializedSize(checksum);
-        using IMemoryOwner<byte> owner = pool.Rent(size);
-        Span<byte> image = owner.Memory.Span[..size];
-        manifest.WriteTo(image, checksum);
+        IMemoryOwner<byte> owner = imagePool.Rent(size);
+        manifest.WriteTo(owner.Memory.Span[..size], checksum);
 
-        return image.ToArray();
+        return ArtifactImage.Own(owner, size, ManifestFileRole.DataSegment);
     }
 
     /// <summary>A clean commit recovers the same generation it committed, by following the live CURRENT, not degraded.</summary>
@@ -388,30 +388,33 @@ internal sealed class ManifestPersistenceTests
     [TestMethod]
     public void CorruptManifestImageIsRefused()
     {
-        byte[] image = ManifestImage(SampleManifest(9, ChecksumAlgorithm.XxHash3), ChecksumAlgorithm.XxHash3);
-        image[12] ^= 0xFF;
+        using VeritasMemoryPool<byte> imagePool = new();
+        using ArtifactImage image = ManifestImage(SampleManifest(9, ChecksumAlgorithm.XxHash3), ChecksumAlgorithm.XxHash3, imagePool);
+        image.WritableBytes[12] ^= 0xFF;
 
-        Assert.ThrowsExactly<InvalidDataException>(() => { _ = Manifest.ReadFrom(image); });
+        Assert.ThrowsExactly<InvalidDataException>(() => { _ = Manifest.ReadFrom(image.Bytes); });
     }
 
     /// <summary>A truncated manifest image is refused rather than mis-read.</summary>
     [TestMethod]
     public void TruncatedManifestImageIsRefused()
     {
-        byte[] image = ManifestImage(SampleManifest(9, ChecksumAlgorithm.XxHash3), ChecksumAlgorithm.XxHash3);
-        byte[] truncated = image.AsSpan(0, 6).ToArray();
+        using VeritasMemoryPool<byte> imagePool = new();
+        using ArtifactImage image = ManifestImage(SampleManifest(9, ChecksumAlgorithm.XxHash3), ChecksumAlgorithm.XxHash3, imagePool);
+        using ArtifactImage truncated = image.Truncated(image.Length - 6, imagePool);
 
-        Assert.ThrowsExactly<InvalidDataException>(() => { _ = Manifest.ReadFrom(truncated); });
+        Assert.ThrowsExactly<InvalidDataException>(() => { _ = Manifest.ReadFrom(truncated.Bytes); });
     }
 
     /// <summary>I5 / epoch consistency: a manifest stamped with a checksum-algorithm id no resolver knows is refused, not verified under the wrong algorithm.</summary>
     [TestMethod]
     public void ForeignChecksumAlgorithmIdIsRefused()
     {
-        byte[] image = ManifestImage(SampleManifest(9, ChecksumAlgorithm.XxHash3), ChecksumAlgorithm.XxHash3);
-        image[ChecksumAlgorithmIdOffset] = 99;
+        using VeritasMemoryPool<byte> imagePool = new();
+        using ArtifactImage image = ManifestImage(SampleManifest(9, ChecksumAlgorithm.XxHash3), ChecksumAlgorithm.XxHash3, imagePool);
+        image.WritableBytes[ChecksumAlgorithmIdOffset] = 99;
 
-        Assert.ThrowsExactly<NotSupportedException>(() => { _ = Manifest.ReadFrom(image); });
+        Assert.ThrowsExactly<NotSupportedException>(() => { _ = Manifest.ReadFrom(image.Bytes); });
     }
 
     /// <summary>I5: a live CURRENT pointer stamped with a checksum-algorithm id this reader cannot resolve makes recovery throw, not silently downgrade to an older committed generation — a reader incompatibility is propagated, never masked as at-rest rot.</summary>

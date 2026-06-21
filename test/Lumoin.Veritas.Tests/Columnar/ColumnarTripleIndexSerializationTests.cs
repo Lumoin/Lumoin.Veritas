@@ -8,6 +8,8 @@ using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.Integrity;
 using Lumoin.Veritas.Core.Memory;
+using Lumoin.Veritas.Core.Persistence.Manifest;
+using Lumoin.Veritas.Tests.Integrity;
 
 namespace Lumoin.Veritas.Tests.Columnar;
 
@@ -70,19 +72,18 @@ internal sealed class ColumnarTripleIndexSerializationTests
         return [.. triples];
     }
 
-    /// <summary>Writes the index to a pool-rented image, copies it out, and returns the bytes.</summary>
+    /// <summary>Serializes the index into a buffer rented from the caller's pool and returns it as a pooled, owned image — the re-derivable sidecar artifact — rather than copying the bytes out to a loose array.</summary>
     /// <param name="index">The index to serialize.</param>
     /// <param name="checksum">The checksum algorithm, or <see langword="null"/>.</param>
-    /// <returns>The image bytes.</returns>
-    private static byte[] ToImage(ColumnarTripleIndex index, ChecksumAlgorithm? checksum)
+    /// <param name="imagePool">The pool the image buffer is rented from; the returned image owns the buffer and returns it on dispose.</param>
+    /// <returns>The pooled image; the caller disposes it.</returns>
+    private static ArtifactImage ToImage(ColumnarTripleIndex index, ChecksumAlgorithm? checksum, MemoryPool<byte> imagePool)
     {
-        using VeritasMemoryPool<byte> pool = new();
         int size = index.ComputeSerializedSize(checksum);
-        using IMemoryOwner<byte> owner = pool.Rent(size);
-        Span<byte> image = owner.Memory.Span[..size];
-        index.WriteTo(image, checksum);
+        IMemoryOwner<byte> owner = imagePool.Rent(size);
+        index.WriteTo(owner.Memory.Span[..size], checksum);
 
-        return image.ToArray();
+        return ArtifactImage.Own(owner, size, ManifestFileRole.Sidecar);
     }
 
     /// <summary>Asserts the index's merged triple set equals <paramref name="expected"/>.</summary>
@@ -182,46 +183,49 @@ internal sealed class ColumnarTripleIndexSerializationTests
     [TestMethod]
     public void ChecksumDetectsBlobCorruption()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         EncodedTriple[] triples = SampleTriples();
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(triples);
-        byte[] image = ToImage(index, ChecksumAlgorithm.XxHash3);
+        using ArtifactImage image = ToImage(index, ChecksumAlgorithm.XxHash3, imagePool);
 
         //Corrupt the first byte of the first column blob (located via a verify round, since the image
         //now ends with a front-matter checksum trailer rather than a blob); that blob's checksum fails.
-        VerifyRoundReport report = ColumnarTripleIndex.RunVerifyRound(image);
-        image[(int)report.Blobs[0].ByteOffset] ^= 0xFF;
+        VerifyRoundReport report = ColumnarTripleIndex.RunVerifyRound(image.Bytes);
+        image.WritableBytes[(int)report.Blobs[0].ByteOffset] ^= 0xFF;
 
         using VeritasMemoryPool<EncodedTriple> deltaPool = new();
-        Assert.ThrowsExactly<InvalidDataException>(() => { _ = ColumnarTripleIndex.ReadFrom(image, deltaPool); });
+        Assert.ThrowsExactly<InvalidDataException>(() => { _ = ColumnarTripleIndex.ReadFrom(image.Bytes, deltaPool); });
     }
 
     /// <summary>An image whose checksum-algorithm id no resolver knows is rejected as unsupported.</summary>
     [TestMethod]
     public void UnknownChecksumAlgorithmIsRejected()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         EncodedTriple[] triples = SampleTriples();
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(triples);
-        byte[] image = ToImage(index, ChecksumAlgorithm.XxHash3);
+        using ArtifactImage image = ToImage(index, ChecksumAlgorithm.XxHash3, imagePool);
 
-        image[ChecksumAlgorithmIdOffset] = 99;
+        image.WritableBytes[ChecksumAlgorithmIdOffset] = 99;
 
         using VeritasMemoryPool<EncodedTriple> deltaPool = new();
-        Assert.ThrowsExactly<NotSupportedException>(() => { _ = ColumnarTripleIndex.ReadFrom(image, deltaPool); });
+        Assert.ThrowsExactly<NotSupportedException>(() => { _ = ColumnarTripleIndex.ReadFrom(image.Bytes, deltaPool); });
     }
 
     /// <summary>A custom checksum algorithm round-trips when the reader injects a resolver that knows it, and is rejected by the default resolver.</summary>
     [TestMethod]
     public void CustomChecksumRoundTripsViaInjectedResolver()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         EncodedTriple[] triples = SampleTriples();
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(triples);
-        byte[] image = ToImage(index, CustomChecksum);
+        using ArtifactImage image = ToImage(index, CustomChecksum, imagePool);
 
         using VeritasMemoryPool<EncodedTriple> deltaPool = new();
-        ColumnarTripleIndex restored = ColumnarTripleIndex.ReadFrom(image, deltaPool, ResolveWithCustom);
+        ColumnarTripleIndex restored = ColumnarTripleIndex.ReadFrom(image.Bytes, deltaPool, ResolveWithCustom);
         AssertSameTriples(triples, restored);
 
-        Assert.ThrowsExactly<NotSupportedException>(() => { _ = ColumnarTripleIndex.ReadFrom(image, deltaPool); });
+        Assert.ThrowsExactly<NotSupportedException>(() => { _ = ColumnarTripleIndex.ReadFrom(image.Bytes, deltaPool); });
     }
 
     /// <summary>Bytes that are not a columnar index image are rejected rather than mis-read.</summary>
@@ -238,13 +242,14 @@ internal sealed class ColumnarTripleIndexSerializationTests
     [TestMethod]
     public void TruncatedImageIsRejected()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         EncodedTriple[] triples = SampleTriples();
         ColumnarTripleIndex index = ColumnarTripleIndex.Build(triples);
-        byte[] image = ToImage(index, ChecksumAlgorithm.XxHash3);
-        byte[] truncated = image[..(image.Length / 2)];
+        using ArtifactImage image = ToImage(index, ChecksumAlgorithm.XxHash3, imagePool);
+        using ArtifactImage truncated = image.Truncated(image.Length - (image.Length / 2), imagePool);
 
         using VeritasMemoryPool<EncodedTriple> deltaPool = new();
-        Assert.ThrowsExactly<InvalidDataException>(() => { _ = ColumnarTripleIndex.ReadFrom(truncated, deltaPool); });
+        Assert.ThrowsExactly<InvalidDataException>(() => { _ = ColumnarTripleIndex.ReadFrom(truncated.Bytes, deltaPool); });
     }
 
     /// <summary>An empty image — single-segment or segmented — is reported as not-an-image rather than failing inside the buffer rent.</summary>

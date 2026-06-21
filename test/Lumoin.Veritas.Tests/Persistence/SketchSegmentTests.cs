@@ -3,7 +3,9 @@ using System.Buffers;
 using System.IO;
 using Lumoin.Veritas.Core.Integrity;
 using Lumoin.Veritas.Core.Memory;
+using Lumoin.Veritas.Core.Persistence.Manifest;
 using Lumoin.Veritas.Core.Persistence.Sketch;
+using Lumoin.Veritas.Tests.Integrity;
 
 namespace Lumoin.Veritas.Tests.Persistence;
 
@@ -39,19 +41,18 @@ internal sealed class SketchSegmentTests
         return symbols;
     }
 
-    /// <summary>Serializes a segment to a pool-rented image and returns the bytes.</summary>
+    /// <summary>Serializes a segment into a buffer rented from the caller's pool and returns it as a pooled, owned image — the sketch artifact — rather than copying the bytes out to a loose array.</summary>
     /// <param name="segment">The segment to serialize.</param>
     /// <param name="checksum">The per-block checksum algorithm, or <see langword="null"/> for none.</param>
-    /// <returns>The image bytes.</returns>
-    private static byte[] ToImage(SketchSegment segment, ChecksumAlgorithm? checksum)
+    /// <param name="imagePool">The pool the image buffer is rented from; the returned image owns the buffer and returns it on dispose.</param>
+    /// <returns>The pooled image; the caller disposes it.</returns>
+    private static ArtifactImage ToImage(SketchSegment segment, ChecksumAlgorithm? checksum, MemoryPool<byte> imagePool)
     {
-        using VeritasMemoryPool<byte> pool = new();
         int size = (int)segment.ComputeSerializedSize(checksum);
-        using IMemoryOwner<byte> owner = pool.Rent(size);
-        Span<byte> image = owner.Memory.Span[..size];
-        segment.WriteTo(image, checksum);
+        IMemoryOwner<byte> owner = imagePool.Rent(size);
+        segment.WriteTo(owner.Memory.Span[..size], checksum);
 
-        return image.ToArray();
+        return ArtifactImage.Own(owner, size, ManifestFileRole.Sketch);
     }
 
     /// <summary>The byte offset of the first symbol block: the front matter plus the per-block checksum section, rounded up to the alignment.</summary>
@@ -70,6 +71,7 @@ internal sealed class SketchSegmentTests
     [TestMethod]
     public void RoundTripsInOrderAcrossChecksumSelections()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         foreach(ChecksumAlgorithm? checksum in (ChecksumAlgorithm?[])[null, ChecksumAlgorithm.XxHash3, ChecksumAlgorithm.Crc32])
         {
             byte[] symbols = SampleSymbols(100, symbolWidth: 20);
@@ -77,8 +79,8 @@ internal sealed class SketchSegmentTests
             int blockCount = segment.BlockCount;
             Assert.AreEqual(15, blockCount, $"100 symbols in 7-symbol blocks is 15 blocks (algorithm {checksum?.Name ?? "none"}).");
 
-            byte[] image = ToImage(segment, checksum);
-            byte[] restored = SketchSegment.ReadFrom(image);
+            using ArtifactImage image = ToImage(segment, checksum, imagePool);
+            byte[] restored = SketchSegment.ReadFrom(image.Bytes);
 
             Assert.IsTrue(symbols.AsSpan().SequenceEqual(restored), $"The symbols did not round-trip in order (algorithm {checksum?.Name ?? "none"}).");
         }
@@ -126,18 +128,19 @@ internal sealed class SketchSegmentTests
     [TestMethod]
     public void BlockCorruptionIsDetectedAndNamesTheSymbolRange()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         foreach(ChecksumAlgorithm checksum in (ChecksumAlgorithm[])[ChecksumAlgorithm.XxHash3, ChecksumAlgorithm.Crc32])
         {
             byte[] symbols = SampleSymbols(30, symbolWidth: 12);
             SketchSegment segment = new(symbols, symbolWidth: 12, symbolsPerBlock: 10, blockAlignment: 64);
-            byte[] image = ToImage(segment, checksum);
+            using ArtifactImage image = ToImage(segment, checksum, imagePool);
 
             //Flip the first symbol byte of block 1 — symbols [10, 20).
             int firstBlock = FirstBlockOffset(segment.BlockCount, checksum.ByteWidth, 64);
             long blockBytes = ((10L * 12) + 63) / 64 * 64;
-            image[firstBlock + (int)blockBytes] ^= 0xFF;
+            image.WritableBytes[firstBlock + (int)blockBytes] ^= 0xFF;
 
-            InvalidDataException thrown = Assert.ThrowsExactly<InvalidDataException>(() => { _ = SketchSegment.ReadFrom(image); });
+            InvalidDataException thrown = Assert.ThrowsExactly<InvalidDataException>(() => { _ = SketchSegment.ReadFrom(image.Bytes); });
             Assert.IsTrue(thrown.Message.Contains("[10, 20)", StringComparison.Ordinal), $"The refusal did not name the corrupt block's symbol range (algorithm {checksum.Name}): {thrown.Message}");
         }
     }
@@ -147,16 +150,17 @@ internal sealed class SketchSegmentTests
     public void PartialLastBlockCorruptionNamesTheRemainderRange()
     {
         //25 symbols in 10-symbol blocks: blocks [0, 10), [10, 20), [20, 25) — the last holds the 5-symbol remainder.
+        using VeritasMemoryPool<byte> imagePool = new();
         byte[] symbols = SampleSymbols(25, symbolWidth: 12);
         SketchSegment segment = new(symbols, symbolWidth: 12, symbolsPerBlock: 10, blockAlignment: 64);
-        byte[] image = ToImage(segment, ChecksumAlgorithm.XxHash3);
+        using ArtifactImage image = ToImage(segment, ChecksumAlgorithm.XxHash3, imagePool);
 
         //Flip the first symbol byte of the partial last block (block 2).
         int firstBlock = FirstBlockOffset(segment.BlockCount, ChecksumAlgorithm.XxHash3.ByteWidth, 64);
         long blockBytes = ((10L * 12) + 63) / 64 * 64;
-        image[firstBlock + (int)(2 * blockBytes)] ^= 0xFF;
+        image.WritableBytes[firstBlock + (int)(2 * blockBytes)] ^= 0xFF;
 
-        InvalidDataException thrown = Assert.ThrowsExactly<InvalidDataException>(() => { _ = SketchSegment.ReadFrom(image); });
+        InvalidDataException thrown = Assert.ThrowsExactly<InvalidDataException>(() => { _ = SketchSegment.ReadFrom(image.Bytes); });
         Assert.IsTrue(thrown.Message.Contains("[20, 25)", StringComparison.Ordinal), $"The refusal did not name the partial last block's remainder range: {thrown.Message}");
         Assert.IsFalse(thrown.Message.Contains("[20, 30)", StringComparison.Ordinal), $"The refusal named the block stride instead of the remainder: {thrown.Message}");
     }
@@ -166,16 +170,17 @@ internal sealed class SketchSegmentTests
     public void InPaddingCorruptionIsInert()
     {
         //10-symbol blocks of 12-byte symbols at 64-byte alignment: payload 120 bytes, stride Align(120, 64) = 128 — 8 padding bytes per block.
+        using VeritasMemoryPool<byte> imagePool = new();
         byte[] symbols = SampleSymbols(30, symbolWidth: 12);
         SketchSegment segment = new(symbols, symbolWidth: 12, symbolsPerBlock: 10, blockAlignment: 64);
-        byte[] image = ToImage(segment, ChecksumAlgorithm.XxHash3);
+        using ArtifactImage image = ToImage(segment, ChecksumAlgorithm.XxHash3, imagePool);
 
         //Flip a byte in block 0's padding (just past its 120-byte payload), outside both that block's
         //checksum domain and the front-matter trailer.
         int firstBlock = FirstBlockOffset(segment.BlockCount, ChecksumAlgorithm.XxHash3.ByteWidth, 64);
-        image[firstBlock + (10 * 12)] ^= 0xFF;
+        image.WritableBytes[firstBlock + (10 * 12)] ^= 0xFF;
 
-        byte[] restored = SketchSegment.ReadFrom(image);
+        byte[] restored = SketchSegment.ReadFrom(image.Bytes);
         Assert.IsTrue(symbols.AsSpan().SequenceEqual(restored), "An inert padding-byte corruption was not tolerated, so the per-block checksum domain spans the padded stride rather than the payload.");
     }
 
@@ -183,16 +188,17 @@ internal sealed class SketchSegmentTests
     [TestMethod]
     public void FrontMatterCorruptionIsDetected()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         foreach(ChecksumAlgorithm checksum in (ChecksumAlgorithm[])[ChecksumAlgorithm.XxHash3, ChecksumAlgorithm.Crc32])
         {
             byte[] symbols = SampleSymbols(30, symbolWidth: 12);
             SketchSegment segment = new(symbols, symbolWidth: 12, symbolsPerBlock: 10, blockAlignment: 64);
-            byte[] image = ToImage(segment, checksum);
+            using ArtifactImage image = ToImage(segment, checksum, imagePool);
 
             //The per-block checksum section begins right after the scalars and is covered by the front-matter trailer.
-            image[FrontMatterBase] ^= 0xFF;
+            image.WritableBytes[FrontMatterBase] ^= 0xFF;
 
-            Assert.ThrowsExactly<InvalidDataException>(() => { _ = SketchSegment.ReadFrom(image); });
+            Assert.ThrowsExactly<InvalidDataException>(() => { _ = SketchSegment.ReadFrom(image.Bytes); });
         }
     }
 
@@ -200,56 +206,60 @@ internal sealed class SketchSegmentTests
     [TestMethod]
     public void TruncatedImageIsRefused()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         byte[] symbols = SampleSymbols(30, symbolWidth: 12);
         SketchSegment segment = new(symbols, symbolWidth: 12, symbolsPerBlock: 10, blockAlignment: 64);
-        byte[] image = ToImage(segment, ChecksumAlgorithm.XxHash3);
-        byte[] truncated = image.AsSpan(0, image.Length - 100).ToArray();
+        using ArtifactImage image = ToImage(segment, ChecksumAlgorithm.XxHash3, imagePool);
+        using ArtifactImage truncated = image.Truncated(100, imagePool);
 
-        Assert.ThrowsExactly<InvalidDataException>(() => { _ = SketchSegment.ReadFrom(truncated); });
+        Assert.ThrowsExactly<InvalidDataException>(() => { _ = SketchSegment.ReadFrom(truncated.Bytes); });
     }
 
     /// <summary>An image stamped with a checksum-algorithm id no resolver knows is refused, not read under the wrong algorithm.</summary>
     [TestMethod]
     public void ForeignChecksumAlgorithmIsRefused()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         byte[] symbols = SampleSymbols(30, symbolWidth: 12);
         SketchSegment segment = new(symbols, symbolWidth: 12, symbolsPerBlock: 10, blockAlignment: 64);
-        byte[] image = ToImage(segment, ChecksumAlgorithm.XxHash3);
+        using ArtifactImage image = ToImage(segment, ChecksumAlgorithm.XxHash3, imagePool);
 
         //The checksum-algorithm id is the last header byte: magic (8) + major (1) + minor (1) + feature mask (8).
-        image[18] = 99;
+        image.WritableBytes[18] = 99;
 
-        Assert.ThrowsExactly<NotSupportedException>(() => { _ = SketchSegment.ReadFrom(image); });
+        Assert.ThrowsExactly<NotSupportedException>(() => { _ = SketchSegment.ReadFrom(image.Bytes); });
     }
 
     /// <summary>The header's front-matter-checksum feature flag must agree with the presence of a checksum-algorithm id: a checksummed image with the flag cleared, or a no-checksum image with the flag set, is a header inconsistency the reader refuses.</summary>
     [TestMethod]
     public void FeatureFlagDisagreeingWithChecksumIdIsRefused()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         byte[] symbols = SampleSymbols(30, symbolWidth: 12);
         SketchSegment segment = new(symbols, symbolWidth: 12, symbolsPerBlock: 10, blockAlignment: 64);
 
         //A checksummed image with the feature bit cleared (the algorithm id still present) is inconsistent.
-        byte[] flagCleared = ToImage(segment, ChecksumAlgorithm.XxHash3);
-        flagCleared[FeatureMaskOffset] = 0;
-        Assert.ThrowsExactly<InvalidDataException>(() => { _ = SketchSegment.ReadFrom(flagCleared); });
+        using ArtifactImage flagCleared = ToImage(segment, ChecksumAlgorithm.XxHash3, imagePool);
+        flagCleared.WritableBytes[FeatureMaskOffset] = 0;
+        Assert.ThrowsExactly<InvalidDataException>(() => { _ = SketchSegment.ReadFrom(flagCleared.Bytes); });
 
         //A no-checksum image with the feature bit set (no algorithm id) is the symmetric inconsistency.
-        byte[] flagSet = ToImage(segment, null);
-        flagSet[FeatureMaskOffset] = 1;
-        Assert.ThrowsExactly<InvalidDataException>(() => { _ = SketchSegment.ReadFrom(flagSet); });
+        using ArtifactImage flagSet = ToImage(segment, null, imagePool);
+        flagSet.WritableBytes[FeatureMaskOffset] = 1;
+        Assert.ThrowsExactly<InvalidDataException>(() => { _ = SketchSegment.ReadFrom(flagSet.Bytes); });
     }
 
     /// <summary>An empty segment round-trips to an empty symbol set.</summary>
     [TestMethod]
     public void EmptySegmentRoundTrips()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         SketchSegment segment = new(ReadOnlyMemory<byte>.Empty, symbolWidth: 16, symbolsPerBlock: 8, blockAlignment: 64);
         int blockCount = segment.BlockCount;
         Assert.AreEqual(0, blockCount);
 
-        byte[] image = ToImage(segment, ChecksumAlgorithm.XxHash3);
-        byte[] restored = SketchSegment.ReadFrom(image);
+        using ArtifactImage image = ToImage(segment, ChecksumAlgorithm.XxHash3, imagePool);
+        byte[] restored = SketchSegment.ReadFrom(image.Bytes);
 
         Assert.IsEmpty(restored);
     }
@@ -258,6 +268,7 @@ internal sealed class SketchSegmentTests
     [TestMethod]
     public void BlocksAreDefaultPageAligned()
     {
+        using VeritasMemoryPool<byte> imagePool = new();
         const int SymbolWidth = 8;
         const int SymbolsPerBlock = 8;
         byte[] symbols = SampleSymbols(20, SymbolWidth);
@@ -270,8 +281,8 @@ internal sealed class SketchSegmentTests
         long expected = SketchSegment.DefaultBlockAlignment + (3L * SketchSegment.DefaultBlockAlignment) + ChecksumAlgorithm.XxHash3.ByteWidth;
         Assert.AreEqual(expected, segment.ComputeSerializedSize(ChecksumAlgorithm.XxHash3));
 
-        byte[] image = ToImage(segment, ChecksumAlgorithm.XxHash3);
-        byte[] restored = SketchSegment.ReadFrom(image);
+        using ArtifactImage image = ToImage(segment, ChecksumAlgorithm.XxHash3, imagePool);
+        byte[] restored = SketchSegment.ReadFrom(image.Bytes);
         Assert.IsTrue(symbols.AsSpan().SequenceEqual(restored));
 
         //Observe the page alignment directly in the bytes: each block begins on a 4 KiB multiple, and its
@@ -281,7 +292,7 @@ internal sealed class SketchSegmentTests
         {
             long blockOffset = SketchSegment.DefaultBlockAlignment + (block * blockBytes);
             Assert.AreEqual(0L, blockOffset % SketchSegment.DefaultBlockAlignment, $"Block {block} does not begin on a page boundary.");
-            Assert.AreEqual(symbols[block * SymbolsPerBlock * SymbolWidth], image[(int)blockOffset], $"Block {block}'s first byte is not its first symbol.");
+            Assert.AreEqual(symbols[block * SymbolsPerBlock * SymbolWidth], image.Bytes[(int)blockOffset], $"Block {block}'s first byte is not its first symbol.");
         }
     }
 
@@ -293,6 +304,7 @@ internal sealed class SketchSegmentTests
         //[0, 4), [4, 8), [8, 10). Front matter = header 19 + scalars 16 + 3 digests * 8 = 59, so the first
         //block aligns to 64; each block's 48 payload bytes round up to a 64-byte stride; the image is
         //64 + 3*64 + 8 = 264 bytes. All hand-computed, independent of the production Align.
+        using VeritasMemoryPool<byte> imagePool = new();
         const int SymbolWidth = 12;
         const int SymbolsPerBlock = 4;
         byte[] symbols = SampleSymbols(10, SymbolWidth);
@@ -301,14 +313,14 @@ internal sealed class SketchSegmentTests
         Assert.AreEqual(3, blockCount);
         Assert.AreEqual(264L, segment.ComputeSerializedSize(ChecksumAlgorithm.XxHash3), "The hand-computed image size did not match — the alignment arithmetic drifted.");
 
-        byte[] image = ToImage(segment, ChecksumAlgorithm.XxHash3);
+        using ArtifactImage image = ToImage(segment, ChecksumAlgorithm.XxHash3, imagePool);
         int[] blockOffsets = [64, 128, 192];
         for(int block = 0; block < blockOffsets.Length; block++)
         {
-            Assert.AreEqual(symbols[block * SymbolsPerBlock * SymbolWidth], image[blockOffsets[block]], $"Block {block} does not begin at its hand-computed offset {blockOffsets[block]}.");
+            Assert.AreEqual(symbols[block * SymbolsPerBlock * SymbolWidth], image.Bytes[blockOffsets[block]], $"Block {block} does not begin at its hand-computed offset {blockOffsets[block]}.");
         }
 
-        byte[] restored = SketchSegment.ReadFrom(image);
+        byte[] restored = SketchSegment.ReadFrom(image.Bytes);
         Assert.IsTrue(symbols.AsSpan().SequenceEqual(restored));
     }
 }
