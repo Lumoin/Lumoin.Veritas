@@ -134,7 +134,7 @@ public class VeritasMemoryPool<T>: MemoryPool<T>
     /// Lazy singleton backing the <see cref="Shared"/> property.
     /// </summary>
     private static Lazy<VeritasMemoryPool<T>> SharedInstance { get; } =
-        new(() => new VeritasMemoryPool<T>());
+        new(static () => new VeritasMemoryPool<T>());
 
     /// <summary>
     /// Gets a shared singleton instance of the memory pool.

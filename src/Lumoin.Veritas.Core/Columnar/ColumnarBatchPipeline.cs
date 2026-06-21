@@ -764,10 +764,10 @@ public static class ColumnarBatchPipeline
                 }
             }
 
-            Predicate<Variable> isSingleton = new SingletonVariablePredicate(occurrences).IsSingleton;
+            SingletonVariablePredicate isSingleton = new(occurrences);
             foreach(HashSet<Variable> edge in edges)
             {
-                changed |= edge.RemoveWhere(isSingleton) > 0;
+                changed |= edge.RemoveWhere(isSingleton.IsSingleton) > 0;
             }
 
             //An edge contained in another is an ear; drop it.

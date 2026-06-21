@@ -89,12 +89,12 @@ public sealed record GyoJoinTree(IReadOnlyList<int> Parent, IReadOnlyList<int> P
                 }
             }
 
-            Predicate<Variable> isSingleton = new SingletonVariablePredicate(occurrences).IsSingleton;
+            SingletonVariablePredicate isSingleton = new(occurrences);
             for(int i = 0; i < n; i++)
             {
                 if(!removed[i])
                 {
-                    sets[i].RemoveWhere(isSingleton);
+                    sets[i].RemoveWhere(isSingleton.IsSingleton);
                 }
             }
 
