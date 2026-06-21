@@ -267,14 +267,33 @@ public sealed class VeritasEngine: IAsyncDisposable
         DescriptionLogicDelegate descriptionLogic = ReasoningEngines.SatBacked(configuration.Budget, configuration.SearchMode);
         ReasoningRendezvous rendezvous = new(configuration.Policy, descriptionLogic);
 
-        return async (store, dictionary, cancellationToken) =>
+        return new ReasoningMaterialization(rendezvous).MaterializeAsync;
+    }
+
+    /// <summary>
+    /// Materialises the post-commit reasoning store through a rendezvous, carrying the rendezvous as
+    /// explicit state so the engine's <see cref="ReasoningMaterializationDelegate"/> is a bound method
+    /// group rather than a lambda closing over the enclosing rendezvous.
+    /// </summary>
+    /// <param name="rendezvous">The reasoning rendezvous the materialisation runs through.</param>
+    private sealed class ReasoningMaterialization(ReasoningRendezvous rendezvous)
+    {
+        /// <summary>The reasoning rendezvous the materialisation runs through.</summary>
+        private ReasoningRendezvous Rendezvous { get; } = rendezvous;
+
+        /// <summary>Materialises the reasoned store for a committed system-of-record store.</summary>
+        /// <param name="store">The committed system-of-record store.</param>
+        /// <param name="dictionary">The term dictionary the store is encoded against.</param>
+        /// <param name="cancellationToken">A token to cancel materialisation.</param>
+        /// <returns>The materialised reasoned store.</returns>
+        public async ValueTask<HypertrieGraphStore> MaterializeAsync(HypertrieGraphStore store, TermDictionary dictionary, CancellationToken cancellationToken)
         {
-            ReasoningResult result = await rendezvous
+            ReasoningResult result = await Rendezvous
                 .MaterializeAsync(store, dictionary, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             return result.Store;
-        };
+        }
     }
 
     /// <summary>Describes the first error diagnostic (code and message), for a parse-failure exception message.</summary>
