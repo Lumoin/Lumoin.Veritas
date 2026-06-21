@@ -504,7 +504,7 @@ public sealed class HypertrieGraphStore
     /// </summary>
     public StorageDelegates.MatchTriplesAsync AsMatchDelegate()
     {
-        return (s, p, o, ct) => ToAsyncEnumerable(Match(s, p, o), ct);
+        return MatchDelegateImpl;
     }
 
     /// <summary>
@@ -513,7 +513,7 @@ public sealed class HypertrieGraphStore
     /// </summary>
     public StorageDelegates.MatchTriplesBySubjectsAsync AsMatchBySubjectsDelegate()
     {
-        return (subjects, p, o, ct) => ToAsyncEnumerable(MatchBySubjects(subjects, p, o), ct);
+        return MatchBySubjectsDelegateImpl;
     }
 
     /// <summary>
@@ -522,7 +522,7 @@ public sealed class HypertrieGraphStore
     /// </summary>
     public StorageDelegates.MatchTriplesByObjectsAsync AsMatchByObjectsDelegate()
     {
-        return (s, p, objects, ct) => ToAsyncEnumerable(MatchByObjects(s, p, objects), ct);
+        return MatchByObjectsDelegateImpl;
     }
 
     /// <summary>
@@ -545,7 +545,48 @@ public sealed class HypertrieGraphStore
     /// </summary>
     public StorageDelegates.CountTriplesAsync AsCountDelegate()
     {
-        return _ => ValueTask.FromResult((long)Count);
+        return CountDelegateImpl;
+    }
+
+    /// <summary>The instance implementation behind <see cref="AsMatchDelegate"/>, bound as a method group so the delegate closes over no enclosing local.</summary>
+    /// <param name="subject">The subject to match, or <see cref="TermId.None"/> for any subject.</param>
+    /// <param name="predicate">The predicate to match, or <see cref="TermId.None"/> for any predicate.</param>
+    /// <param name="object">The object to match, or <see cref="TermId.None"/> for any object.</param>
+    /// <param name="cancellationToken">A token to cancel the enumeration.</param>
+    /// <returns>An async sequence of matching triples.</returns>
+    private IAsyncEnumerable<EncodedTriple> MatchDelegateImpl(TermId subject, TermId predicate, TermId @object, CancellationToken cancellationToken)
+    {
+        return ToAsyncEnumerable(Match(subject, predicate, @object), cancellationToken);
+    }
+
+    /// <summary>The instance implementation behind <see cref="AsMatchBySubjectsDelegate"/>, bound as a method group so the delegate closes over no enclosing local.</summary>
+    /// <param name="subjects">The encoded subject identifiers to look up under <paramref name="predicate"/>.</param>
+    /// <param name="predicate">The bound predicate to match.</param>
+    /// <param name="object">The object to match, or <see cref="TermId.None"/> for any object.</param>
+    /// <param name="cancellationToken">A token to cancel the enumeration.</param>
+    /// <returns>An async sequence of matching triples.</returns>
+    private IAsyncEnumerable<EncodedTriple> MatchBySubjectsDelegateImpl(ReadOnlyMemory<TermId> subjects, TermId predicate, TermId @object, CancellationToken cancellationToken)
+    {
+        return ToAsyncEnumerable(MatchBySubjects(subjects, predicate, @object), cancellationToken);
+    }
+
+    /// <summary>The instance implementation behind <see cref="AsMatchByObjectsDelegate"/>, bound as a method group so the delegate closes over no enclosing local.</summary>
+    /// <param name="subject">The subject to match, or <see cref="TermId.None"/> for any subject.</param>
+    /// <param name="predicate">The bound predicate to match.</param>
+    /// <param name="objects">The encoded object identifiers to look up under <paramref name="predicate"/>.</param>
+    /// <param name="cancellationToken">A token to cancel the enumeration.</param>
+    /// <returns>An async sequence of matching triples.</returns>
+    private IAsyncEnumerable<EncodedTriple> MatchByObjectsDelegateImpl(TermId subject, TermId predicate, ReadOnlyMemory<TermId> objects, CancellationToken cancellationToken)
+    {
+        return ToAsyncEnumerable(MatchByObjects(subject, predicate, objects), cancellationToken);
+    }
+
+    /// <summary>The instance implementation behind <see cref="AsCountDelegate"/>, bound as a method group so the delegate closes over no enclosing local.</summary>
+    /// <param name="cancellationToken">A token to cancel the operation; the count is immediate, so it is not observed.</param>
+    /// <returns>The total triple count.</returns>
+    private ValueTask<long> CountDelegateImpl(CancellationToken cancellationToken)
+    {
+        return ValueTask.FromResult((long)Count);
     }
 
     private static async IAsyncEnumerable<EncodedTriple> ToAsyncEnumerable(
