@@ -159,7 +159,9 @@ internal sealed class ComputeLaneTests
         environment.Current = Env(4);
         lane.RunControlPlaneTickOnce();
 
-        Assert.IsTrue(SpinWait.SpinUntil(() => lane.WorkerCount == 3, ConditionTimeout), $"Expected three workers, saw {lane.WorkerCount}.");
+        await WaitForWorkerCountAsync(lane, 3, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(3, lane.WorkerCount);
     }
 
     [TestMethod]
@@ -176,7 +178,9 @@ internal sealed class ComputeLaneTests
         environment.Current = Env(4);
         time.Advance(TimeSpan.FromSeconds(5));
 
-        Assert.IsTrue(SpinWait.SpinUntil(() => lane.WorkerCount == 3, ConditionTimeout), $"Expected the timer-driven tick to resize to three, saw {lane.WorkerCount}.");
+        await WaitForWorkerCountAsync(lane, 3, TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(3, lane.WorkerCount);
     }
 
     [TestMethod]
@@ -280,6 +284,30 @@ internal sealed class ComputeLaneTests
         Assert.AreEqual(ComputeAdmission.ShedQueueFull, lane.Admit(ComputeWorkClass.ViewBuild, Nothing));
 
         release.SetResult();
+    }
+
+    /// <summary>
+    /// Awaits until the lane reports <paramref name="expected"/> live workers,
+    /// driven by the lane's state-transition signal and bounded by the test
+    /// token — no wall-clock spin, so the assertion is robust under thread-pool
+    /// load. Shrink is by attrition, so the worker count settles asynchronously.
+    /// </summary>
+    /// <param name="lane">The lane under test.</param>
+    /// <param name="expected">The worker count to await.</param>
+    /// <param name="cancellationToken">The test's cancellation token.</param>
+    /// <returns>A task that completes when the lane reaches the expected width.</returns>
+    private static async Task WaitForWorkerCountAsync(ThreadedComputeLane lane, int expected, CancellationToken cancellationToken)
+    {
+        while(true)
+        {
+            Task advanced = lane.ObserveStateTransition();
+            if(lane.WorkerCount == expected)
+            {
+                return;
+            }
+
+            await advanced.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>A turn body that does nothing — for admission and shed assertions that do not need the turn to observe anything.</summary>

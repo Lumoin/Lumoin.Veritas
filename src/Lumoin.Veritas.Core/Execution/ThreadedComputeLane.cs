@@ -87,6 +87,12 @@ internal sealed class ThreadedComputeLane: IComputeLane
     /// <summary>The running count of shed admissions; accessed via interlocked operations.</summary>
     private long shedCount;
 
+    /// <summary>Set when a test arms state observation; leaves the per-turn pulse a single volatile read in production. Accessed via volatile reads.</summary>
+    private volatile bool observingState;
+
+    /// <summary>Completed and replaced on each observed state transition — a turn completing or the live worker count changing — while observation is armed, so a test can await a transition without a wall-clock spin. Accessed via interlocked exchange.</summary>
+    private TaskCompletionSource stateAdvanced = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     /// <summary>
     /// Constructs and starts the lane, sized from <paramref name="policy"/>
     /// resolved against the environment <paramref name="observeEnvironment"/>
@@ -245,6 +251,34 @@ internal sealed class ThreadedComputeLane: IComputeLane
         ResizeWorkers(plan.ComputeLaneWorkers);
     }
 
+    /// <summary>
+    /// Arms state observation and returns a task that completes at the next
+    /// turn completion or worker-count change. A test re-reads this between
+    /// state checks to await a transition deterministically — bounded by its
+    /// own token rather than a wall clock — so the assertion stays robust
+    /// under thread-pool load. The observation counterpart to
+    /// <see cref="RunControlPlaneTickOnce"/>; production leaves it unarmed and
+    /// the pulse costs a single volatile read per turn.
+    /// </summary>
+    /// <returns>The task completing on the next observed state transition.</returns>
+    internal Task ObserveStateTransition()
+    {
+        observingState = true;
+
+        return Volatile.Read(ref stateAdvanced).Task;
+    }
+
+    /// <summary>Completes the current state-transition task and installs a fresh one, waking any armed observer; a no-op until a test arms observation. Continuations run asynchronously, so it is safe to call while holding <see cref="gate"/>.</summary>
+    private void SignalStateAdvanced()
+    {
+        if(!observingState)
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref stateAdvanced, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
+    }
+
     /// <summary>The async consumer loop: drain the highest-priority turn under the lock, await it outside the lock, and repeat until shrunk away or drained at stop.</summary>
     /// <returns>The loop task.</returns>
     private async Task ConsumerLoopAsync()
@@ -271,6 +305,8 @@ internal sealed class ThreadedComputeLane: IComputeLane
 
             if(exit)
             {
+                SignalStateAdvanced();
+
                 return;
             }
 
@@ -322,6 +358,8 @@ internal sealed class ThreadedComputeLane: IComputeLane
             {
                 Volatile.Write(ref tickPending, 0);
             }
+
+            SignalStateAdvanced();
         }
     }
 
