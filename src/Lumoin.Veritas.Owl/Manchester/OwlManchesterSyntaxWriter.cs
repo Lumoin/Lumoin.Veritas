@@ -406,7 +406,6 @@ public static class OwlManchesterSyntaxWriter
                 plan.Imports.Add(RenderIri(import.Imported.Iri));
                 break;
             }
-
             case(OwlDeclarationAxiom declaration):
             {
                 if(!declaration.Annotations.IsDefaultOrEmpty)
@@ -418,13 +417,11 @@ public static class OwlManchesterSyntaxWriter
                 plan.EnsureFrame(FrameKeyword(declaration.Kind), RenderIri(declaration.Entity.Iri));
                 break;
             }
-
             case(OwlAnnotationAssertionAxiom annotation):
             {
                 plan.PendingAnnotations.Add(annotation);
                 break;
             }
-
             case(OwlSubClassOfAxiom subClass):
             {
                 if(subClass.SubClass is not OwlClassReference reference)
@@ -437,7 +434,6 @@ public static class OwlManchesterSyntaxWriter
                 plan.AddLine(OwlManchesterWords.ClassFrame, RenderTerm(reference.Class), OwlManchesterWords.SubClassOfSection, axiom, payload, inexpressible);
                 break;
             }
-
             case(OwlEquivalentClassesAxiom equivalent):
             {
                 if(equivalent.First is OwlClassReference firstReference)
@@ -459,7 +455,6 @@ public static class OwlManchesterSyntaxWriter
 
                 break;
             }
-
             case(OwlDisjointClassesAxiom disjoint):
             {
                 if(disjoint.Operands.Count == 2 && disjoint.Operands[0] is OwlClassReference firstReference)
@@ -473,14 +468,12 @@ public static class OwlManchesterSyntaxWriter
                 AddMiscLine(plan, OwlManchesterWords.DisjointClassesFrame, axiom, joined);
                 break;
             }
-
             case(OwlDisjointUnionAxiom disjointUnion):
             {
                 Utf8String joined = JoinClasses(disjointUnion.Operands, out bool inexpressible);
                 plan.AddLine(OwlManchesterWords.ClassFrame, RenderIri(disjointUnion.Class.Iri), OwlManchesterWords.DisjointUnionOfSection, axiom, joined, inexpressible);
                 break;
             }
-
             case(OwlHasKeyAxiom hasKey):
             {
                 if(hasKey.Class is not OwlClassReference reference)
@@ -506,7 +499,6 @@ public static class OwlManchesterSyntaxWriter
                 plan.AddLine(OwlManchesterWords.ClassFrame, RenderTerm(reference.Class), OwlManchesterWords.HasKeySection, axiom, ToUtf8String(keys), inexpressible: false);
                 break;
             }
-
             case(OwlPropertyChainAxiom chain):
             {
                 if(chain.SuperProperty is not OwlObjectPropertyReference superReference)
@@ -526,7 +518,6 @@ public static class OwlManchesterSyntaxWriter
                 plan.AddLine(OwlManchesterWords.ObjectPropertyFrame, RenderTerm(superReference.Named), OwlManchesterWords.SubPropertyChainSection, axiom, ToUtf8String(links), inexpressible: false);
                 break;
             }
-
             case(OwlSubObjectPropertyOfAxiom subProperty):
             {
                 if(subProperty.SubProperty is not OwlObjectPropertyReference reference)
@@ -538,7 +529,6 @@ public static class OwlManchesterSyntaxWriter
                 plan.AddLine(OwlManchesterWords.ObjectPropertyFrame, RenderTerm(reference.Named), OwlManchesterWords.SubPropertyOfSection, axiom, RenderObjectProperty(subProperty.SuperProperty), inexpressible: false);
                 break;
             }
-
             case(OwlEquivalentObjectPropertiesAxiom equivalentProperties):
             {
                 if(equivalentProperties.First is OwlObjectPropertyReference firstReference)
@@ -556,7 +546,6 @@ public static class OwlManchesterSyntaxWriter
 
                 break;
             }
-
             case(OwlDisjointObjectPropertiesAxiom disjointProperties):
             {
                 if(disjointProperties.Operands.Count == 2 && disjointProperties.Operands[0] is OwlObjectPropertyReference firstReference)
@@ -589,7 +578,6 @@ public static class OwlManchesterSyntaxWriter
                 AddMiscLine(plan, OwlManchesterWords.DisjointPropertiesFrame, axiom, ToUtf8String(properties));
                 break;
             }
-
             case(OwlInverseObjectPropertiesAxiom inverse):
             {
                 if(inverse.First is OwlObjectPropertyReference firstReference)
@@ -607,7 +595,6 @@ public static class OwlManchesterSyntaxWriter
 
                 break;
             }
-
             case(OwlObjectPropertyDomainAxiom domain):
             {
                 if(domain.Property is not OwlObjectPropertyReference reference)
@@ -620,7 +607,6 @@ public static class OwlManchesterSyntaxWriter
                 plan.AddLine(OwlManchesterWords.ObjectPropertyFrame, RenderTerm(reference.Named), OwlManchesterWords.DomainSection, axiom, payload, inexpressible);
                 break;
             }
-
             case(OwlObjectPropertyRangeAxiom range):
             {
                 if(range.Property is not OwlObjectPropertyReference reference)
@@ -633,7 +619,6 @@ public static class OwlManchesterSyntaxWriter
                 plan.AddLine(OwlManchesterWords.ObjectPropertyFrame, RenderTerm(reference.Named), OwlManchesterWords.RangeSection, axiom, payload, inexpressible);
                 break;
             }
-
             case(OwlObjectPropertyCharacteristicAxiom characteristic):
             {
                 if(characteristic.Property is not OwlObjectPropertyReference reference)
@@ -645,19 +630,16 @@ public static class OwlManchesterSyntaxWriter
                 plan.AddLine(OwlManchesterWords.ObjectPropertyFrame, RenderTerm(reference.Named), OwlManchesterWords.CharacteristicsSection, axiom, new Utf8String(CharacteristicWord(characteristic.Characteristic).ToArray()), inexpressible: false);
                 break;
             }
-
             case(OwlSubDataPropertyOfAxiom subData):
             {
                 plan.AddLine(OwlManchesterWords.DataPropertyFrame, RenderIri(subData.SubProperty.Iri), OwlManchesterWords.SubPropertyOfSection, axiom, RenderIri(subData.SuperProperty.Iri), inexpressible: false);
                 break;
             }
-
             case(OwlEquivalentDataPropertiesAxiom equivalentData):
             {
                 plan.AddLine(OwlManchesterWords.DataPropertyFrame, RenderIri(equivalentData.First.Iri), OwlManchesterWords.EquivalentToSection, axiom, RenderIri(equivalentData.Second.Iri), inexpressible: false);
                 break;
             }
-
             case(OwlDisjointDataPropertiesAxiom disjointData):
             {
                 if(disjointData.Operands.Count == 2)
@@ -677,66 +659,56 @@ public static class OwlManchesterSyntaxWriter
                 AddMiscLine(plan, OwlManchesterWords.DisjointPropertiesFrame, axiom, ToUtf8String(properties));
                 break;
             }
-
             case(OwlDataPropertyDomainAxiom dataDomain):
             {
                 Utf8String payload = RenderClass(dataDomain.Domain, parenthesize: false, out bool inexpressible);
                 plan.AddLine(OwlManchesterWords.DataPropertyFrame, RenderIri(dataDomain.Property.Iri), OwlManchesterWords.DomainSection, axiom, payload, inexpressible);
                 break;
             }
-
             case(OwlDataPropertyRangeAxiom dataRange):
             {
                 Utf8String payload = RenderDataRange(dataRange.Range, parenthesize: false, out bool inexpressible);
                 plan.AddLine(OwlManchesterWords.DataPropertyFrame, RenderIri(dataRange.Property.Iri), OwlManchesterWords.RangeSection, axiom, payload, inexpressible);
                 break;
             }
-
             case(OwlFunctionalDataPropertyAxiom functionalData):
             {
                 plan.AddLine(OwlManchesterWords.DataPropertyFrame, RenderIri(functionalData.Property.Iri), OwlManchesterWords.CharacteristicsSection, axiom, new Utf8String(OwlManchesterWords.FunctionalWord.ToArray()), inexpressible: false);
                 break;
             }
-
             case(OwlDatatypeDefinitionAxiom definition):
             {
                 Utf8String payload = RenderDataRange(definition.Range, parenthesize: false, out bool inexpressible);
                 plan.AddLine(OwlManchesterWords.DatatypeFrame, RenderIri(definition.Datatype.Iri), OwlManchesterWords.EquivalentToSection, axiom, payload, inexpressible);
                 break;
             }
-
             case(OwlSubAnnotationPropertyOfAxiom subAnnotation):
             {
                 plan.AddLine(OwlManchesterWords.AnnotationPropertyFrame, RenderIri(subAnnotation.SubProperty.Iri), OwlManchesterWords.SubPropertyOfSection, axiom, RenderIri(subAnnotation.SuperProperty.Iri), inexpressible: false);
                 break;
             }
-
             case(OwlAnnotationPropertyDomainAxiom annotationDomain):
             {
                 plan.AddLine(OwlManchesterWords.AnnotationPropertyFrame, RenderIri(annotationDomain.Property.Iri), OwlManchesterWords.DomainSection, axiom, RenderIri(annotationDomain.Domain.Iri), inexpressible: false);
                 break;
             }
-
             case(OwlAnnotationPropertyRangeAxiom annotationRange):
             {
                 plan.AddLine(OwlManchesterWords.AnnotationPropertyFrame, RenderIri(annotationRange.Property.Iri), OwlManchesterWords.RangeSection, axiom, RenderIri(annotationRange.Range.Iri), inexpressible: false);
                 break;
             }
-
             case(OwlClassAssertionAxiom assertion):
             {
                 Utf8String payload = RenderClass(assertion.Class, parenthesize: false, out bool inexpressible);
                 plan.AddLine(OwlManchesterWords.IndividualFrame, RenderTerm(assertion.Individual), OwlManchesterWords.TypesSection, axiom, payload, inexpressible);
                 break;
             }
-
             case(OwlObjectPropertyAssertionAxiom objectAssertion):
             {
                 Utf8String payload = JoinSpaced(RenderIri(objectAssertion.Property.Iri), RenderTerm(objectAssertion.Target));
                 plan.AddLine(OwlManchesterWords.IndividualFrame, RenderTerm(objectAssertion.Source), OwlManchesterWords.FactsSection, axiom, payload, inexpressible: false);
                 break;
             }
-
             case(OwlNegativeObjectPropertyAssertionAxiom negativeObject):
             {
                 if(negativeObject.Property is not OwlObjectPropertyReference reference)
@@ -749,27 +721,23 @@ public static class OwlManchesterSyntaxWriter
                 plan.AddLine(OwlManchesterWords.IndividualFrame, RenderTerm(negativeObject.Source), OwlManchesterWords.FactsSection, axiom, payload, inexpressible: false);
                 break;
             }
-
             case(OwlDataPropertyAssertionAxiom dataAssertion):
             {
                 Utf8String payload = JoinSpaced(RenderIri(dataAssertion.Property.Iri), RenderTerm(dataAssertion.Target));
                 plan.AddLine(OwlManchesterWords.IndividualFrame, RenderTerm(dataAssertion.Source), OwlManchesterWords.FactsSection, axiom, payload, inexpressible: false);
                 break;
             }
-
             case(OwlNegativeDataPropertyAssertionAxiom negativeData):
             {
                 Utf8String payload = JoinNegated(RenderIri(negativeData.Property.Iri), RenderTerm(negativeData.Target));
                 plan.AddLine(OwlManchesterWords.IndividualFrame, RenderTerm(negativeData.Source), OwlManchesterWords.FactsSection, axiom, payload, inexpressible: false);
                 break;
             }
-
             case(OwlSameIndividualAxiom same):
             {
                 plan.AddLine(OwlManchesterWords.IndividualFrame, RenderTerm(same.First), OwlManchesterWords.SameAsSection, axiom, RenderTerm(same.Second), inexpressible: false);
                 break;
             }
-
             case(OwlDifferentIndividualsAxiom different):
             {
                 if(different.Individuals.Count == 2)
@@ -789,7 +757,6 @@ public static class OwlManchesterSyntaxWriter
                 AddMiscLine(plan, OwlManchesterWords.DifferentIndividualsFrame, axiom, ToUtf8String(individuals));
                 break;
             }
-
             default:
             {
                 plan.Skip($"an axiom of kind {axiom.GetType().Name}");
@@ -942,20 +909,17 @@ public static class OwlManchesterSyntaxWriter
                 text.Write(">"u8);
                 break;
             }
-
             case(BlankNode blank):
             {
                 text.Write("_:"u8);
                 text.Write(blank.Label.Span);
                 break;
             }
-
             case(Literal value):
             {
                 AppendLiteral(text, value);
                 break;
             }
-
             default:
             {
                 break;
@@ -1018,7 +982,6 @@ public static class OwlManchesterSyntaxWriter
                 text.Write(">"u8);
                 break;
             }
-
             case(OwlInverseObjectProperty inverse):
             {
                 text.Write(OwlManchesterWords.InverseWord);
@@ -1027,7 +990,6 @@ public static class OwlManchesterSyntaxWriter
                 text.Write(">"u8);
                 break;
             }
-
             default:
             {
                 text.Write(OwlManchesterWords.InverseWord);
@@ -1170,7 +1132,6 @@ public static class OwlManchesterSyntaxWriter
                 pieces.Add(Piece.Of(RenderIri(reference.Class.Iri)));
                 break;
             }
-
             case(OwlObjectOneOf oneOf):
             {
                 ArrayBufferWriter<byte> set = new();
@@ -1189,7 +1150,6 @@ public static class OwlManchesterSyntaxWriter
                 pieces.Add(Piece.Of(ToUtf8String(set)));
                 break;
             }
-
             case(OwlObjectIntersectionOf intersection):
             {
                 for(int i = 0; i < intersection.Operands.Count; i++)
@@ -1204,7 +1164,6 @@ public static class OwlManchesterSyntaxWriter
 
                 break;
             }
-
             case(OwlObjectUnionOf union):
             {
                 for(int i = 0; i < union.Operands.Count; i++)
@@ -1219,40 +1178,34 @@ public static class OwlManchesterSyntaxWriter
 
                 break;
             }
-
             case(OwlObjectComplementOf complement):
             {
                 pieces.Add(Piece.Of(new Utf8String("not "u8.ToArray())));
                 pieces.Add(Piece.Expand(complement.Operand, parenthesize: true));
                 break;
             }
-
             case(OwlObjectSomeValuesFrom someValues):
             {
                 pieces.Add(Piece.Of(SpaceWord(RenderObjectProperty(someValues.Property), OwlManchesterWords.SomeWord)));
                 pieces.Add(Piece.Expand(someValues.Filler, parenthesize: true));
                 break;
             }
-
             case(OwlObjectAllValuesFrom allValues):
             {
                 pieces.Add(Piece.Of(SpaceWord(RenderObjectProperty(allValues.Property), OwlManchesterWords.OnlyWord)));
                 pieces.Add(Piece.Expand(allValues.Filler, parenthesize: true));
                 break;
             }
-
             case(OwlObjectHasValue hasValue):
             {
                 pieces.Add(Piece.Of(RestrictionValue(RenderObjectProperty(hasValue.Property), OwlManchesterWords.ValueWord, RenderTerm(hasValue.Individual))));
                 break;
             }
-
             case(OwlObjectHasSelf hasSelf):
             {
                 pieces.Add(Piece.Of(JoinSpaced(RenderObjectProperty(hasSelf.Property), new Utf8String(OwlManchesterWords.SelfWord.ToArray()))));
                 break;
             }
-
             case(OwlObjectCardinality cardinality):
             {
                 pieces.Add(Piece.Of(RenderCardinality(RenderObjectProperty(cardinality.Property), cardinality.Kind, cardinality.Cardinality)));
@@ -1264,27 +1217,23 @@ public static class OwlManchesterSyntaxWriter
 
                 break;
             }
-
             case(OwlDataSomeValuesFrom dataSome) when dataSome.Properties.Count == 1:
             {
                 pieces.Add(Piece.Of(SpaceWord(RenderIri(dataSome.Properties[0].Iri), OwlManchesterWords.SomeWord)));
                 pieces.Add(Piece.Expand(dataSome.Range, parenthesize: true));
                 break;
             }
-
             case(OwlDataAllValuesFrom dataAll) when dataAll.Properties.Count == 1:
             {
                 pieces.Add(Piece.Of(SpaceWord(RenderIri(dataAll.Properties[0].Iri), OwlManchesterWords.OnlyWord)));
                 pieces.Add(Piece.Expand(dataAll.Range, parenthesize: true));
                 break;
             }
-
             case(OwlDataHasValue dataHasValue):
             {
                 pieces.Add(Piece.Of(RestrictionValue(RenderIri(dataHasValue.Property.Iri), OwlManchesterWords.ValueWord, RenderTerm(dataHasValue.Value))));
                 break;
             }
-
             case(OwlDataCardinality dataCardinality):
             {
                 pieces.Add(Piece.Of(RenderCardinality(RenderIri(dataCardinality.Property.Iri), dataCardinality.Kind, dataCardinality.Cardinality)));
@@ -1296,7 +1245,6 @@ public static class OwlManchesterSyntaxWriter
 
                 break;
             }
-
             default:
             {
                 //An n-ary data quantifier over several properties has no
@@ -1341,7 +1289,6 @@ public static class OwlManchesterSyntaxWriter
                 pieces.Add(Piece.Of(RenderIri(reference.Datatype.Iri)));
                 break;
             }
-
             case(OwlDataOneOf oneOf):
             {
                 ArrayBufferWriter<byte> set = new();
@@ -1360,7 +1307,6 @@ public static class OwlManchesterSyntaxWriter
                 pieces.Add(Piece.Of(ToUtf8String(set)));
                 break;
             }
-
             case(OwlDatatypeRestriction restriction):
             {
                 ArrayBufferWriter<byte> facets = new();
@@ -1383,7 +1329,6 @@ public static class OwlManchesterSyntaxWriter
                 pieces.Add(Piece.Of(ToUtf8String(facets)));
                 break;
             }
-
             case(OwlDataIntersectionOf intersection):
             {
                 for(int i = 0; i < intersection.Ranges.Count; i++)
@@ -1398,7 +1343,6 @@ public static class OwlManchesterSyntaxWriter
 
                 break;
             }
-
             case(OwlDataUnionOf union):
             {
                 for(int i = 0; i < union.Ranges.Count; i++)
@@ -1413,14 +1357,12 @@ public static class OwlManchesterSyntaxWriter
 
                 break;
             }
-
             case(OwlDataComplementOf complement):
             {
                 pieces.Add(Piece.Of(new Utf8String("not "u8.ToArray())));
                 pieces.Add(Piece.Expand(complement.Range, parenthesize: true));
                 break;
             }
-
             default:
             {
                 pieces.Add(Piece.Of(new Utf8String("<urn:veritas:inexpressible>"u8.ToArray())));

@@ -649,7 +649,6 @@ internal sealed class OwlManchesterSyntaxConverter
                 ConvertIndividualSection(items, subjectTerm, sectionKeyword, lo, hi);
                 break;
             }
-
             default:
             {
                 break;
@@ -670,7 +669,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(OwlManchesterSection.EquivalentTo):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
@@ -680,7 +678,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(OwlManchesterSection.DisjointWith):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
@@ -690,7 +687,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(OwlManchesterSection.DisjointUnionOf):
             {
                 (ImmutableArray<OwlAnnotation> annotations, int start) = LeadingAnnotations(items, lo, hi);
@@ -703,7 +699,6 @@ internal sealed class OwlManchesterSyntaxConverter
                 Axioms.Add(new OwlDisjointUnionAxiom(new NamedNode(subjectIri), operands) { Origin = Origin, Annotations = annotations });
                 break;
             }
-
             case(OwlManchesterSection.HasKey):
             {
                 (ImmutableArray<OwlAnnotation> annotations, int start) = LeadingAnnotations(items, lo, hi);
@@ -746,7 +741,6 @@ internal sealed class OwlManchesterSyntaxConverter
                 Axioms.Add(new OwlHasKeyAxiom(subject, objectKeys, dataKeys) { Origin = Origin, Annotations = annotations });
                 break;
             }
-
             default:
             {
                 ReportUnexpectedSection(keyword);
@@ -768,7 +762,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(OwlManchesterSection.Range):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
@@ -778,7 +771,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(OwlManchesterSection.SubPropertyOf):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
@@ -788,7 +780,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(OwlManchesterSection.EquivalentTo):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
@@ -798,7 +789,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(OwlManchesterSection.DisjointWith):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
@@ -808,7 +798,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(OwlManchesterSection.InverseOf):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
@@ -818,7 +807,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(OwlManchesterSection.Characteristics):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
@@ -838,7 +826,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(OwlManchesterSection.SubPropertyChain):
             {
                 (ImmutableArray<OwlAnnotation> annotations, int start) = LeadingAnnotations(items, lo, hi);
@@ -868,7 +855,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             default:
             {
                 ReportUnexpectedSection(keyword);
@@ -890,7 +876,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(OwlManchesterSection.Range):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
@@ -900,7 +885,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(OwlManchesterSection.SubPropertyOf):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
@@ -913,7 +897,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(OwlManchesterSection.EquivalentTo):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
@@ -926,7 +909,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(OwlManchesterSection.DisjointWith):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
@@ -939,7 +921,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(OwlManchesterSection.Characteristics):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
@@ -957,7 +938,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             default:
             {
                 ReportUnexpectedSection(keyword);
@@ -982,7 +962,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(OwlManchesterSection.Range):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
@@ -995,7 +974,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(OwlManchesterSection.SubPropertyOf):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
@@ -1008,7 +986,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             default:
             {
                 ReportUnexpectedSection(keyword);
@@ -1043,7 +1020,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(OwlManchesterSection.Facts):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
@@ -1053,7 +1029,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(OwlManchesterSection.SameAs):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
@@ -1066,7 +1041,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(OwlManchesterSection.DifferentFrom):
             {
                 foreach(SectionItem item in SplitAnnotatedItems(items, lo, hi))
@@ -1079,7 +1053,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             default:
             {
                 ReportUnexpectedSection(keyword);
@@ -1152,37 +1125,31 @@ internal sealed class OwlManchesterSyntaxConverter
                 ConvertEquivalentClasses(items, parts, annotations);
                 break;
             }
-
             case(OwlManchesterMiscFrame.DisjointClasses):
             {
                 ConvertDisjointClasses(items, parts, annotations);
                 break;
             }
-
             case(OwlManchesterMiscFrame.EquivalentProperties):
             {
                 ConvertPropertyFrame(items, parts, annotations, equivalent: true);
                 break;
             }
-
             case(OwlManchesterMiscFrame.DisjointProperties):
             {
                 ConvertPropertyFrame(items, parts, annotations, equivalent: false);
                 break;
             }
-
             case(OwlManchesterMiscFrame.SameIndividual):
             {
                 ConvertSameIndividuals(items, parts, annotations);
                 break;
             }
-
             case(OwlManchesterMiscFrame.DifferentIndividuals):
             {
                 ConvertDifferentIndividuals(items, parts, annotations);
                 break;
             }
-
             default:
             {
                 break;
@@ -1479,7 +1446,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(ExprKind.Conjunction):
             {
                 foreach((int lo, int hi) in SplitAtWord(task.Items, task.Lo, task.Hi, OwlManchesterWords.AndWord, OwlManchesterWords.ThatWord))
@@ -1489,7 +1455,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(ExprKind.DataRange):
             {
                 foreach((int lo, int hi) in SplitAtWord(task.Items, task.Lo, task.Hi, OwlManchesterWords.OrWord, default))
@@ -1499,7 +1464,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(ExprKind.DataConjunction):
             {
                 foreach((int lo, int hi) in SplitAtWord(task.Items, task.Lo, task.Hi, OwlManchesterWords.AndWord, default))
@@ -1509,13 +1473,11 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             case(ExprKind.Primary):
             {
                 PrimaryDependencies(task, dependencies);
                 break;
             }
-
             case(ExprKind.DataPrimary):
             {
                 int lo = SkipNots(task.Items, task.Lo, task.Hi);
@@ -1526,7 +1488,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 break;
             }
-
             default:
             {
                 break;
@@ -1636,7 +1597,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 return new OwlDataUnionOf(dataOperands);
             }
-
             case(ExprKind.Conjunction):
             case(ExprKind.DataConjunction):
             {
@@ -1666,17 +1626,14 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 return new OwlDataIntersectionOf(dataOperands);
             }
-
             case(ExprKind.Primary):
             {
                 return ConstructPrimary(task);
             }
-
             case(ExprKind.DataPrimary):
             {
                 return ConstructDataPrimary(task);
             }
-
             default:
             {
                 return null;
@@ -1792,7 +1749,6 @@ internal sealed class OwlManchesterSyntaxConverter
                     ? new OwlObjectSomeValuesFrom(objectProperty, filler)
                     : new OwlObjectAllValuesFrom(objectProperty, filler);
             }
-
             case(OwlManchesterOperator.Value):
             {
                 if(operatorIndex + 1 >= hi)
@@ -1810,12 +1766,10 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 return ToIndividual(target) is RdfTerm individual ? new OwlObjectHasValue(objectProperty, individual) : null;
             }
-
             case(OwlManchesterOperator.Self):
             {
                 return new OwlObjectHasSelf(objectProperty);
             }
-
             case(OwlManchesterOperator.Min):
             case(OwlManchesterOperator.Max):
             case(OwlManchesterOperator.Exactly):
@@ -1850,7 +1804,6 @@ internal sealed class OwlManchesterSyntaxConverter
 
                 return new OwlObjectCardinality(kind, bound, objectProperty, cardinalityFiller);
             }
-
             default:
             {
                 return null;
