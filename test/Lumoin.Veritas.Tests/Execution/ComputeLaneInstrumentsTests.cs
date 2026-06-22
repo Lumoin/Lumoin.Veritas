@@ -19,8 +19,8 @@ namespace Lumoin.Veritas.Tests.Execution;
 [TestClass]
 internal sealed class ComputeLaneInstrumentsTests
 {
-    /// <summary>The safety bound for waiting on the lane to reach a known state; a timeout means a real defect.</summary>
-    private static readonly TimeSpan ConditionTimeout = TimeSpan.FromSeconds(10);
+    /// <summary>The MSTest-supplied per-test context.</summary>
+    public TestContext TestContext { get; set; } = null!;
 
     /// <summary>Builds a non-browser environment snapshot.</summary>
     /// <param name="processorCount">The logical processor count.</param>
@@ -44,7 +44,7 @@ internal sealed class ComputeLaneInstrumentsTests
         }
 
         //Reach a known state before pulling the instruments.
-        Assert.IsTrue(SpinWait.SpinUntil(() => lane.TurnsCompleted == 3, ConditionTimeout), $"Expected three completed turns, saw {lane.TurnsCompleted}.");
+        await WaitForTurnsCompletedAsync(lane, 3, TestContext.CancellationToken).ConfigureAwait(false);
 
         using Meter meter = new(VeritasMetrics.MeterName, "1.0.0");
         ComputeLaneInstruments.Register(meter, lane);
@@ -113,5 +113,28 @@ internal sealed class ComputeLaneInstrumentsTests
         Assert.IsGreaterThanOrEqualTo(6, queueDepthByClass.Count);
         Assert.AreEqual(0, queueDepthByClass["view_build"]);
         Assert.AreEqual(0, queueDepthByClass["scrub"]);
+    }
+
+    /// <summary>
+    /// Awaits until the lane has completed at least <paramref name="expected"/>
+    /// turns, driven by the lane's state-transition signal and bounded by the
+    /// test token — no wall-clock spin, so it is robust under thread-pool load.
+    /// </summary>
+    /// <param name="lane">The lane under test.</param>
+    /// <param name="expected">The completed-turn count to await.</param>
+    /// <param name="cancellationToken">The test's cancellation token.</param>
+    /// <returns>A task that completes once the lane has run the expected turns.</returns>
+    private static async Task WaitForTurnsCompletedAsync(ThreadedComputeLane lane, long expected, CancellationToken cancellationToken)
+    {
+        while(true)
+        {
+            Task advanced = lane.ObserveStateTransition();
+            if(lane.TurnsCompleted >= expected)
+            {
+                return;
+            }
+
+            await advanced.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 }

@@ -16,6 +16,7 @@ using Lumoin.Veritas.Core.Persistence.Journal;
 using Lumoin.Veritas.Core.Persistence.Manifest;
 using Lumoin.Veritas.Core.Persistence.Segment;
 using Lumoin.Veritas.Core.Persistence.Sketch;
+using Lumoin.Veritas.Tests.MemoryPool;
 using Lumoin.Veritas.Tests.Persistence;
 using Microsoft.Extensions.Time.Testing;
 using static Lumoin.Veritas.Tests.Integrity.PersistenceStagingFixture;
@@ -463,6 +464,10 @@ internal sealed class PersistenceCombinationMatrixTests
         }
 
         using VeritasMemoryPool<byte> bytePool = new();
+        //The repair pass rents from a poisoning pool so every valid matrix cell asserts the pass returns every
+        //buffer it rented (OutstandingRentals == 0) once the report is disposed — STEP-4 enforcement across the
+        //whole damage x rung matrix. Staging and assertion reads use the separate bytePool.
+        using PoisoningMemoryPool<byte> repairPool = new();
         using VeritasMemoryPool<EncodedTriple> triplePool = new();
         using ArtifactImage segment = cell.Site == DamageSite.DataSegment ? BuildDamagedSegment(cell.Kind, bytePool) : SegmentImage(Triples, bytePool);
         using ArtifactImage sidecar = cell.Site == DamageSite.Sidecar ? BuildDamagedSidecar(cell.Kind, bytePool) : SidecarImage(Triples, bytePool);
@@ -512,8 +517,12 @@ internal sealed class PersistenceCombinationMatrixTests
             AssertDetectionVerdict(cell, verify);
 
             StorageTraceCapture trace = new();
-            RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, trace.Capture, Guid.Empty, clock);
-            AssertRepairOutcome(cell, repair, trace, bytePool, triplePool);
+            using(RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(repairPool, triplePool), null, trace.Capture, Guid.Empty, clock))
+            {
+                AssertRepairOutcome(cell, repair, trace, bytePool, triplePool);
+            }
+
+            Assert.AreEqual(0, repairPool.OutstandingRentals, "The repair pass must return every buffer it rented from the repair pool once the report is disposed.");
         }
         finally
         {
@@ -847,8 +856,9 @@ internal sealed class PersistenceCombinationMatrixTests
         Assert.IsEmpty(repair.NamedLosses);
         RederivedArtifact restored = repair.RederivedArtifacts.Single(static a => a.Role == ManifestFileRole.DataSegment);
         Assert.IsTrue(ItemSegment.RunVerifyRound(restored.Image.Span).IsClean, "The restored system-of-record must verify clean.");
-        EncodedTriple[] recovered = ItemSegment.ReadFrom(restored.Image.Span);
-        bool faithful = recovered.SequenceEqual(Triples);
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        using DecodedItemSegment recovered = ItemSegment.ReadFrom(restored.Image.Span, triplePool);
+        bool faithful = recovered.Span.SequenceEqual(Triples);
         Assert.IsTrue(faithful, "The restored system-of-record must hold exactly the original triples — the peel's differential twin (I3).");
         StorageTraceEvent reingested = trace.Events.Single(static e => e.Kind == StorageTraceEventKind.Reingested);
         Assert.AreEqual((long)TripleCount, reingested.ItemCount, "The healed system-of-record holds every item.");

@@ -147,13 +147,15 @@ public sealed class ParitySegment
         }
     }
 
-    /// <summary>Reconstructs the parity block bytes from an image written by <see cref="WriteTo"/>, verifying the front-matter trailer and the block's checksum before its bytes are copied out. The report-not-throw, decode-free counterpart is <see cref="RunVerifyRound"/>.</summary>
+    /// <summary>Reconstructs the parity block from an image written by <see cref="WriteTo"/> into an owned, pooled <see cref="ParityBlock"/>, verifying the front-matter trailer and the block's checksum before its bytes are copied out; the caller owns and disposes the returned block. The report-not-throw, decode-free counterpart is <see cref="RunVerifyRound"/>.</summary>
     /// <param name="source">The byte image.</param>
+    /// <param name="pool">The pool the returned parity block's buffer is rented from; threaded in by the caller, who owns and disposes the block.</param>
     /// <param name="resolveChecksum">Resolves the image's checksum-algorithm id; <see langword="null"/> uses <see cref="ChecksumAlgorithm.DefaultResolver"/>.</param>
-    /// <returns>The parity block bytes, exactly the protected block stride long.</returns>
+    /// <returns>The owned, pooled parity block, exactly the protected block stride long.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="pool"/> is <see langword="null"/>.</exception>
     /// <exception cref="InvalidDataException">The image is not a parity segment, is malformed, or the block or the front matter fails its checksum.</exception>
     /// <exception cref="NotSupportedException">The major version, a required feature, or the checksum algorithm is unsupported, or the host is big-endian.</exception>
-    public static byte[] ReadFrom(ReadOnlySpan<byte> source, ResolveChecksumAlgorithmDelegate? resolveChecksum = null)
+    public static ParityBlock ReadFrom(ReadOnlySpan<byte> source, MemoryPool<byte> pool, ResolveChecksumAlgorithmDelegate? resolveChecksum = null)
     {
         ParityLayout layout = ParseAndVerifyFrontMatter(source, resolveChecksum);
         Span<byte> scratch = stackalloc byte[ChecksumAlgorithm.MaximumByteWidth];
@@ -162,10 +164,12 @@ public sealed class ParitySegment
             throw new InvalidDataException("The parity block failed its checksum (at-rest corruption).");
         }
 
-        byte[] parityBytes = new byte[layout.ParityLength];
-        source.Slice((int)layout.FirstBlock, layout.ParityLength).CopyTo(parityBytes);
+        //The rent is the last fallible step: nothing between it and the return throws, so a verified block is
+        //never rented and then leaked.
+        ParityBlock block = ParityBlock.Rent(pool, layout.ParityLength);
+        source.Slice((int)layout.FirstBlock, layout.ParityLength).CopyTo(block.WritableSpan);
 
-        return parityBytes;
+        return block;
     }
 
     /// <summary>Verifies an image decode-free, reporting the parity block's at-rest checksum verdict and the front-matter verdict rather than throwing on a failure — the format-neutral scrub seam. Framing damage (a malformed, unsupported, or truncated image) is still refused, since a geometry that cannot be parsed cannot be walked.</summary>

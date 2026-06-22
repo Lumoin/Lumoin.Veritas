@@ -32,7 +32,7 @@ public sealed class SlabBufferWriter: IBufferWriter<byte>, IDisposable
 {
     private const int DefaultSlabSize = 4096;
 
-    private readonly VeritasMemoryPool<byte> pool;
+    private readonly MemoryPool<byte> pool;
     private readonly int slabSize;
     private readonly List<IMemoryOwner<byte>> committed = [];
     private readonly List<int> committedLengths = [];
@@ -47,11 +47,11 @@ public sealed class SlabBufferWriter: IBufferWriter<byte>, IDisposable
     /// supplied <paramref name="pool"/>. Slabs are rented at
     /// <paramref name="slabSize"/> bytes each.
     /// </summary>
-    /// <param name="pool">The pool to rent slabs from.</param>
+    /// <param name="pool">The pool to rent slabs from; threaded in by the caller (the abstract <see cref="MemoryPool{T}"/> so any pool — including the repair pass's injected one — flows down through the call chain).</param>
     /// <param name="slabSize">The byte length of each slab. Must be positive.</param>
     /// <exception cref="ArgumentNullException"><paramref name="pool"/> is <c>null</c>.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="slabSize"/> is not positive.</exception>
-    public SlabBufferWriter(VeritasMemoryPool<byte> pool, int slabSize = DefaultSlabSize)
+    public SlabBufferWriter(MemoryPool<byte> pool, int slabSize = DefaultSlabSize)
     {
         ArgumentNullException.ThrowIfNull(pool);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(slabSize, 0);

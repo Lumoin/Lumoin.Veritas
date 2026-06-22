@@ -11,6 +11,7 @@ using Lumoin.Veritas.Core.Persistence;
 using Lumoin.Veritas.Core.Persistence.Manifest;
 using Lumoin.Veritas.Core.Persistence.Parity;
 using Lumoin.Veritas.Core.Persistence.Segment;
+using Lumoin.Veritas.Tests.MemoryPool;
 using Microsoft.Extensions.Time.Testing;
 using static Lumoin.Veritas.Tests.Integrity.PersistenceStagingFixture;
 
@@ -49,10 +50,10 @@ internal sealed class LocalParityRepairTests
             using ArtifactImage corrupt = SegmentImage(triples, pool);
             CorruptSegmentBlock(corrupt, lostBlock, blockCount);
 
-            byte[]? repaired = ItemSegment.TryRestoreBlockFromParity(corrupt.Bytes, lostBlock, parity.Span, blockCount, pool);
+            using PooledArtifactImage? repaired = ItemSegment.TryRestoreBlockFromParity(corrupt.Bytes, lostBlock, parity.Span, blockCount, pool);
 
             Assert.IsNotNull(repaired, $"block {lostBlock} must restore.");
-            Assert.IsTrue(repaired.AsSpan().SequenceEqual(original.Bytes), $"block {lostBlock} restore must reproduce the original image byte for byte.");
+            Assert.IsTrue(repaired.Span.SequenceEqual(original.Bytes), $"block {lostBlock} restore must reproduce the original image byte for byte.");
         }
     }
 
@@ -70,7 +71,7 @@ internal sealed class LocalParityRepairTests
         using ArtifactImage corrupt = SegmentImage(triples, pool);
         CorruptSegmentBlock(corrupt, block: 1, blockCount: 3);
 
-        byte[]? repaired = ItemSegment.TryRestoreBlockFromParity(corrupt.Bytes, 1, staleParity.Span, 3, pool);
+        using PooledArtifactImage? repaired = ItemSegment.TryRestoreBlockFromParity(corrupt.Bytes, 1, staleParity.Span, 3, pool);
         Assert.IsNull(repaired, "A stale parity must fail the restore's self-check.");
     }
 
@@ -84,7 +85,7 @@ internal sealed class LocalParityRepairTests
         CorruptSegmentBlock(corrupt, block: 1, blockCount: 3);
         using ParityBlock wrongWidth = ParityBlock.Rent(pool, 7);
 
-        byte[]? repaired = ItemSegment.TryRestoreBlockFromParity(corrupt.Bytes, 1, wrongWidth.Span, 3, pool);
+        using PooledArtifactImage? repaired = ItemSegment.TryRestoreBlockFromParity(corrupt.Bytes, 1, wrongWidth.Span, 3, pool);
         Assert.IsNull(repaired, "A parity that is not the block stride cannot restore this segment.");
     }
 
@@ -98,7 +99,7 @@ internal sealed class LocalParityRepairTests
         CorruptSegmentBlock(corrupt, block: 1, blockCount: 3);
         using ParityBlock parity = BuildParityBlock(triples, pool);
 
-        byte[]? repaired = ItemSegment.TryRestoreBlockFromParity(corrupt.Bytes, 1, parity.Span, 2, pool);
+        using PooledArtifactImage? repaired = ItemSegment.TryRestoreBlockFromParity(corrupt.Bytes, 1, parity.Span, 2, pool);
         Assert.IsNull(repaired, "A parity built over a different block count must decline as a co-version mismatch.");
     }
 
@@ -115,7 +116,7 @@ internal sealed class LocalParityRepairTests
         using ArtifactImage image = ArtifactImage.Own(owner, size, ManifestFileRole.DataSegment);
         using ParityBlock parity = BuildParityBlock(triples, pool);
 
-        byte[]? repaired = ItemSegment.TryRestoreBlockFromParity(image.Bytes, 1, parity.Span, 3, pool);
+        using PooledArtifactImage? repaired = ItemSegment.TryRestoreBlockFromParity(image.Bytes, 1, parity.Span, 3, pool);
         Assert.IsNull(repaired, "A checksum-free image cannot self-verify a restore and is declined.");
     }
 
@@ -151,15 +152,15 @@ internal sealed class LocalParityRepairTests
             Assert.IsTrue(dataSegmentDetected, "Precondition: the system-of-record block must be detected corrupt.");
 
             StorageTraceCapture trace = new();
-            RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, trace.Capture, Guid.Empty, new FakeTimeProvider());
+            using RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, trace.Capture, Guid.Empty, new FakeTimeProvider());
 
             Assert.IsFalse(repair.Refused);
             Assert.IsTrue(repair.IsClean, "A parity-restorable system-of-record block is fully recoverable.");
             Assert.IsEmpty(repair.NamedLosses);
             RederivedArtifact restored = repair.RederivedArtifacts.Single(static a => a.Role == ManifestFileRole.DataSegment);
             Assert.IsTrue(ItemSegment.RunVerifyRound(restored.Image.Span).IsClean, "The restored system-of-record must verify clean.");
-            EncodedTriple[] recovered = ItemSegment.ReadFrom(restored.Image.Span);
-            bool faithful = recovered.SequenceEqual(triples);
+            using DecodedItemSegment recovered = ItemSegment.ReadFrom(restored.Image.Span, triplePool);
+            bool faithful = recovered.Span.SequenceEqual(triples);
             Assert.IsTrue(faithful, "The restored system-of-record must hold exactly the original triples (a faithful recovery).");
             StorageTraceEvent reingested = trace.Events.Single(static e => e.Kind == StorageTraceEventKind.Reingested);
             Assert.AreEqual(ManifestFileRole.DataSegment.Code, reingested.RoleCode);
@@ -189,15 +190,51 @@ internal sealed class LocalParityRepairTests
             ScrubRoundReport verify = ScrubRound.RunVerifyPass(store, null, null, Guid.Empty, new FakeTimeProvider());
 
             StorageTraceCapture trace = new();
-            RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, trace.Capture, Guid.Empty, new FakeTimeProvider());
+            using RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, trace.Capture, Guid.Empty, new FakeTimeProvider());
 
             Assert.IsTrue(repair.IsClean);
             RederivedArtifact restored = repair.RederivedArtifacts.Single(static a => a.Role == ManifestFileRole.DataSegment);
-            EncodedTriple[] recovered = ItemSegment.ReadFrom(restored.Image.Span);
-            bool faithful = recovered.SequenceEqual(triples);
+            using DecodedItemSegment recovered = ItemSegment.ReadFrom(restored.Image.Span, triplePool);
+            bool faithful = recovered.Span.SequenceEqual(triples);
             Assert.IsTrue(faithful, "The restored short-last-block segment must hold all 25 original triples.");
             StorageTraceEvent reingested = trace.Events.Single(static e => e.Kind == StorageTraceEventKind.Reingested);
             Assert.AreEqual(25, reingested.ItemCount);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>The parity-restore path is pool-clean: a repair pass that restores a lost system-of-record block hands the restored image to the report (which keeps it rented), and disposing the report returns EVERY buffer the pass rented from the repair pool — proven under a poisoning pool that counts outstanding rentals (the reader-4 + report-ownership lifetime gate).</summary>
+    [TestMethod]
+    public void RestoringRepairPassReturnsEveryBufferOnReportDispose()
+    {
+        EncodedTriple[] triples = SampleTriples(30);
+        using VeritasMemoryPool<byte> imagePool = new();
+        using PoisoningMemoryPool<byte> repairPool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        using ArtifactImage segment = SegmentImage(triples, imagePool);
+        using ArtifactImage sidecar = SidecarImage(triples, imagePool);
+        using ArtifactImage sketch = SketchImage(10, imagePool);
+        using ArtifactImage parity = ParityImage(triples, imagePool);
+        CorruptSegmentBlock(segment, block: 1, blockCount: 3);
+        FileSystemPersistenceStore store = StageGeneration(7, segment, sidecar, sketch, parity, imagePool, out string directory);
+        try
+        {
+            ScrubRoundReport verify = ScrubRound.RunVerifyPass(store, null, null, Guid.Empty, new FakeTimeProvider());
+            RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(repairPool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
+            try
+            {
+                Assert.IsTrue(repair.IsClean, "The lost block must restore from parity.");
+                Assert.IsGreaterThan(0, repairPool.OutstandingRentals, "The report must keep the restored image rented until it is disposed.");
+            }
+            finally
+            {
+                repair.Dispose();
+            }
+
+            Assert.AreEqual(0, repairPool.OutstandingRentals, "Disposing the report must return every buffer the restoring repair pass rented from the repair pool.");
         }
         finally
         {
@@ -223,15 +260,15 @@ internal sealed class LocalParityRepairTests
         {
             ScrubRoundReport verify = ScrubRound.RunVerifyPass(store, null, null, Guid.Empty, new FakeTimeProvider());
 
-            RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
+            using RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
 
             Assert.IsTrue(repair.IsClean);
             Assert.IsEmpty(repair.NamedLosses);
             //The system-of-record is restored to all 30 items, and the co-damaged sidecar is re-derived from
             //that healed set — not the block-excluded feed — so both index exactly the same triples.
             RederivedArtifact restoredSegment = repair.RederivedArtifacts.Single(static a => a.Role == ManifestFileRole.DataSegment);
-            EncodedTriple[] recovered = ItemSegment.ReadFrom(restoredSegment.Image.Span);
-            bool segmentFaithful = recovered.SequenceEqual(triples);
+            using DecodedItemSegment recovered = ItemSegment.ReadFrom(restoredSegment.Image.Span, triplePool);
+            bool segmentFaithful = recovered.Span.SequenceEqual(triples);
             Assert.IsTrue(segmentFaithful, "The restored system-of-record must hold all 30 triples.");
 
             RederivedArtifact rederivedSidecar = repair.RederivedArtifacts.Single(static a => a.Role == ManifestFileRole.Sidecar);
@@ -263,7 +300,7 @@ internal sealed class LocalParityRepairTests
         {
             ScrubRoundReport verify = ScrubRound.RunVerifyPass(store, null, null, Guid.Empty, new FakeTimeProvider());
 
-            RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
+            using RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
 
             Assert.IsFalse(repair.Refused);
             Assert.IsFalse(repair.IsClean, "A capacity-1 parity cannot restore two lost blocks.");
@@ -294,7 +331,7 @@ internal sealed class LocalParityRepairTests
         {
             ScrubRoundReport verify = ScrubRound.RunVerifyPass(store, null, null, Guid.Empty, new FakeTimeProvider());
 
-            RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
+            using RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
 
             Assert.IsFalse(repair.IsClean);
             Assert.IsEmpty(repair.RederivedArtifacts);
@@ -326,7 +363,7 @@ internal sealed class LocalParityRepairTests
         {
             ScrubRoundReport verify = ScrubRound.RunVerifyPass(store, null, null, Guid.Empty, new FakeTimeProvider());
 
-            RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
+            using RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
 
             Assert.IsFalse(repair.IsClean);
             Assert.IsEmpty(repair.RederivedArtifacts);
@@ -359,7 +396,7 @@ internal sealed class LocalParityRepairTests
             Assert.IsTrue(parityDetected, "Precondition: the parity must be detected corrupt.");
 
             StorageTraceCapture trace = new();
-            RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, trace.Capture, Guid.Empty, new FakeTimeProvider());
+            using RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, trace.Capture, Guid.Empty, new FakeTimeProvider());
 
             Assert.IsTrue(repair.IsClean, "A re-derivable parity corruption is fully recoverable.");
             Assert.IsEmpty(repair.NamedLosses);
@@ -367,9 +404,9 @@ internal sealed class LocalParityRepairTests
             Assert.IsTrue(ParitySegment.RunVerifyRound(rederived.Image.Span).IsClean, "The re-derived parity must verify clean.");
 
             //The re-derived parity equals a fresh parity folded over the same system-of-record — the differential twin.
-            byte[] rederivedParity = ParitySegment.ReadFrom(rederived.Image.Span);
+            using ParityBlock rederivedParity = ParitySegment.ReadFrom(rederived.Image.Span, bytePool);
             using ParityBlock reference = BuildParityBlock(triples, bytePool);
-            bool faithful = rederivedParity.AsSpan().SequenceEqual(reference.Span);
+            bool faithful = rederivedParity.Span.SequenceEqual(reference.Span);
             Assert.IsTrue(faithful, "The re-derived parity must equal the parity over the system-of-record.");
             StorageTraceEvent rederivedEvent = trace.Events.Single(static e => e.Kind == StorageTraceEventKind.Rederived);
             Assert.AreEqual(ManifestFileRole.Parity.Code, rederivedEvent.RoleCode);

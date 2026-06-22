@@ -14,6 +14,7 @@ using Lumoin.Veritas.Core.Persistence.Manifest;
 using Lumoin.Veritas.Core.Persistence.Segment;
 using Lumoin.Veritas.Core.Persistence.Sketch;
 using Lumoin.Veritas.Core.Reconciliation;
+using Lumoin.Veritas.Tests.MemoryPool;
 using Microsoft.Extensions.Time.Testing;
 using static Lumoin.Veritas.Tests.Integrity.PersistenceStagingFixture;
 
@@ -50,7 +51,7 @@ internal sealed class RepairPassTests
             Assert.IsTrue(sidecarDetected, "Precondition: the sidecar must be detected corrupt.");
 
             StorageTraceCapture trace = new();
-            RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, trace.Capture, Guid.Empty, new FakeTimeProvider());
+            using RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, trace.Capture, Guid.Empty, new FakeTimeProvider());
 
             Assert.IsFalse(repair.Refused);
             Assert.IsTrue(repair.IsClean, "A re-derivable sidecar corruption is fully recoverable.");
@@ -62,6 +63,41 @@ internal sealed class RepairPassTests
             Assert.IsEmpty(repair.NamedLosses);
             StorageTraceEvent rederivedEvent = trace.Events.Single(static e => e.Kind == StorageTraceEventKind.Rederived);
             Assert.AreEqual(30, rederivedEvent.ItemCount);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>The re-derive path is pool-clean: re-deriving a corrupt sidecar from the verified system-of-record hands the fresh image to the report, and disposing the report returns EVERY buffer the re-derive rented from the repair pool — proven under a poisoning pool (the re-derive-writer pooling gate).</summary>
+    [TestMethod]
+    public void RederivingRepairPassReturnsEveryBufferOnReportDispose()
+    {
+        EncodedTriple[] triples = SampleTriples(30);
+        using VeritasMemoryPool<byte> imagePool = new();
+        using PoisoningMemoryPool<byte> repairPool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        using ArtifactImage segment = SegmentImage(triples, imagePool);
+        using ArtifactImage sidecar = SidecarImage(triples, imagePool);
+        CorruptSidecarFrontMatter(sidecar);
+        using ArtifactImage sketch = SketchImage(10, imagePool);
+        FileSystemPersistenceStore store = StageGeneration(7, segment, sidecar, sketch, imagePool, out string directory);
+        try
+        {
+            ScrubRoundReport verify = ScrubRound.RunVerifyPass(store, null, null, Guid.Empty, new FakeTimeProvider());
+            RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(repairPool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
+            try
+            {
+                Assert.IsTrue(repair.IsClean, "The corrupt sidecar must re-derive.");
+                Assert.IsGreaterThan(0, repairPool.OutstandingRentals, "The report must keep the re-derived image rented until it is disposed.");
+            }
+            finally
+            {
+                repair.Dispose();
+            }
+
+            Assert.AreEqual(0, repairPool.OutstandingRentals, "Disposing the report must return every buffer the re-deriving repair pass rented from the repair pool.");
         }
         finally
         {
@@ -88,7 +124,7 @@ internal sealed class RepairPassTests
             Assert.IsTrue(sketchDetected, "Precondition: the sketch must be detected corrupt.");
 
             StorageTraceCapture trace = new();
-            RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, trace.Capture, Guid.Empty, new FakeTimeProvider());
+            using RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, trace.Capture, Guid.Empty, new FakeTimeProvider());
 
             Assert.IsFalse(repair.Refused);
             Assert.IsTrue(repair.IsClean);
@@ -122,7 +158,7 @@ internal sealed class RepairPassTests
             Assert.IsTrue(dataSegmentDetected, "Precondition: the system-of-record must be detected corrupt.");
 
             StorageTraceCapture trace = new();
-            RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, trace.Capture, Guid.Empty, new FakeTimeProvider());
+            using RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, trace.Capture, Guid.Empty, new FakeTimeProvider());
 
             Assert.IsFalse(repair.Refused);
             Assert.IsFalse(repair.IsClean, "A named system-of-record loss is not a clean outcome.");
@@ -158,7 +194,7 @@ internal sealed class RepairPassTests
             ScrubRoundReport verify = ScrubRound.RunVerifyPass(store, null, null, Guid.Empty, new FakeTimeProvider());
             Assert.IsTrue(verify.IsClean, "Precondition: the staged generation is clean.");
 
-            RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
+            using RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
 
             Assert.IsFalse(repair.Refused);
             Assert.IsTrue(repair.IsClean);
@@ -183,7 +219,7 @@ internal sealed class RepairPassTests
         {
             ScrubRoundReport degraded = new(commitGeneration: 7, isDegradedSnapshot: true, blocksVerified: 0, corruptBlocks: [new ScrubBlockFinding(ManifestFileRole.Sidecar.Code, "sidecar", 0, 0, 0, IsFrontMatter: false)]);
 
-            RepairPassReport repair = ScrubRound.RunRepairPass(store, degraded, RepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
+            using RepairPassReport repair = ScrubRound.RunRepairPass(store, degraded, RepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
 
             Assert.IsTrue(repair.Refused);
             Assert.AreEqual(RepairRefusalReason.DegradedSnapshot, repair.Refusal);
@@ -211,7 +247,7 @@ internal sealed class RepairPassTests
         {
             ScrubRoundReport stale = new(commitGeneration: 6, isDegradedSnapshot: false, blocksVerified: 1, corruptBlocks: [new ScrubBlockFinding(ManifestFileRole.Sidecar.Code, "sidecar", 0, 0, 0, IsFrontMatter: false)]);
 
-            RepairPassReport repair = ScrubRound.RunRepairPass(store, stale, RepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
+            using RepairPassReport repair = ScrubRound.RunRepairPass(store, stale, RepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
 
             Assert.IsTrue(repair.Refused);
             Assert.AreEqual(RepairRefusalReason.StaleFindings, repair.Refusal);
@@ -241,7 +277,7 @@ internal sealed class RepairPassTests
         {
             ScrubRoundReport sketchOnly = new(commitGeneration: 7, isDegradedSnapshot: false, blocksVerified: 0, corruptBlocks: [new ScrubBlockFinding(ManifestFileRole.Sketch.Code, "sketch", 0, 0, 0, IsFrontMatter: false)]);
 
-            RepairPassReport repair = ScrubRound.RunRepairPass(store, sketchOnly, RepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
+            using RepairPassReport repair = ScrubRound.RunRepairPass(store, sketchOnly, RepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
 
             Assert.IsTrue(repair.Refused);
             Assert.AreEqual(RepairRefusalReason.SystemOfRecordUnreadable, repair.Refusal);
@@ -270,7 +306,7 @@ internal sealed class RepairPassTests
             store.Delete($"segment-{7:D20}.dat");
             ScrubRoundReport report = new(commitGeneration: 7, isDegradedSnapshot: false, blocksVerified: 0, corruptBlocks: [new ScrubBlockFinding(ManifestFileRole.Sidecar.Code, "sidecar", 0, 0, 0, IsFrontMatter: false)]);
 
-            RepairPassReport repair = ScrubRound.RunRepairPass(store, report, RepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
+            using RepairPassReport repair = ScrubRound.RunRepairPass(store, report, RepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
 
             Assert.IsTrue(repair.Refused);
             Assert.AreEqual(RepairRefusalReason.SystemOfRecordUnreadable, repair.Refusal);
@@ -302,7 +338,7 @@ internal sealed class RepairPassTests
 
             ScrubRoundReport report = new(commitGeneration: 7, isDegradedSnapshot: false, blocksVerified: 0, corruptBlocks: [new ScrubBlockFinding(ManifestFileRole.Sidecar.Code, "sidecar", 0, 0, 0, IsFrontMatter: false)]);
 
-            RepairPassReport repair = ScrubRound.RunRepairPass(store, report, RepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
+            using RepairPassReport repair = ScrubRound.RunRepairPass(store, report, RepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
 
             Assert.IsTrue(repair.Refused);
             Assert.AreEqual(RepairRefusalReason.DegradedSnapshot, repair.Refusal);

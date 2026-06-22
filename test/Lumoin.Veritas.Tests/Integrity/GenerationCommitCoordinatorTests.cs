@@ -11,6 +11,7 @@ using Lumoin.Veritas.Core.Persistence;
 using Lumoin.Veritas.Core.Persistence.Manifest;
 using Lumoin.Veritas.Core.Persistence.Segment;
 using Lumoin.Veritas.Core.Persistence.Sketch;
+using Lumoin.Veritas.Tests.MemoryPool;
 using Microsoft.Extensions.Time.Testing;
 using static Lumoin.Veritas.Tests.Integrity.PersistenceStagingFixture;
 
@@ -56,7 +57,7 @@ internal sealed class GenerationCommitCoordinatorTests
         try
         {
             FakeTimeProvider clock = new();
-            RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
+            using RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
             Assert.IsTrue(repair.IsClean, "A damaged-sidecar repair re-derives cleanly.");
 
             GenerationCommitReport report = Coordinator(store, bytePool, clock, trace: null).Commit(repair, Guid.Empty);
@@ -68,6 +69,33 @@ internal sealed class GenerationCommitCoordinatorTests
             RecoveryResult recovered = new ManifestRecovery(store).Recover();
             Assert.AreEqual(Generation + 1, recovered.Manifest.CommitGeneration, "Recovery follows CURRENT to the healed generation.");
             Assert.IsFalse(recovered.IsDegraded);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>The commit boundary is pool-clean: after a heal stages the report's re-derived images into a new generation and the report is disposed, every buffer the repair pass rented from the repair pool is returned (OutstandingRentals == 0) — proven under a poisoning pool. Guards the report-owned image views read during Commit against premature recycling.</summary>
+    [TestMethod]
+    public void HealReturnsEveryRepairPoolBufferOnReportDispose()
+    {
+        using VeritasMemoryPool<byte> bytePool = new();
+        using PoisoningMemoryPool<byte> repairPool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        FileSystemPersistenceStore store = StageDamagedSidecarGeneration(bytePool, out string directory);
+        try
+        {
+            FakeTimeProvider clock = new();
+            ScrubRoundReport verify = ScrubRound.RunVerifyPass(store, null, null, Guid.Empty, clock);
+            using(RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(repairPool, triplePool), null, null, Guid.Empty, clock))
+            {
+                Assert.IsTrue(repair.IsClean, "A damaged-sidecar repair re-derives cleanly.");
+                GenerationCommitReport report = Coordinator(store, bytePool, clock, trace: null).Commit(repair, Guid.Empty);
+                Assert.AreEqual(GenerationCommitOutcome.Committed, report.Outcome);
+            }
+
+            Assert.AreEqual(0, repairPool.OutstandingRentals, "Disposing the report after the commit must return every buffer the repair pass rented from the repair pool.");
         }
         finally
         {
@@ -89,7 +117,7 @@ internal sealed class GenerationCommitCoordinatorTests
             ManifestEntry priorSidecar = ReadEntry(store, ManifestFileRole.Sidecar);
             ManifestEntry priorSketch = ReadEntry(store, ManifestFileRole.Sketch);
 
-            RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
+            using RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
             Coordinator(store, bytePool, clock, trace: null).Commit(repair, Guid.Empty);
 
             ManifestEntry healedSegment = ReadEntry(store, ManifestFileRole.DataSegment);
@@ -127,7 +155,7 @@ internal sealed class GenerationCommitCoordinatorTests
         try
         {
             FakeTimeProvider clock = new();
-            RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
+            using RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
             GenerationCommitCoordinator coordinator = Coordinator(store, bytePool, clock, trace: null);
 
             GenerationCommitReport first = coordinator.Commit(repair, Guid.Empty);
@@ -158,7 +186,7 @@ internal sealed class GenerationCommitCoordinatorTests
         try
         {
             FakeTimeProvider clock = new();
-            RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
+            using RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
 
             GenerationCommitReport report = Coordinator(store, bytePool, clock, trace: null).Commit(repair, Guid.Empty);
 
@@ -187,7 +215,7 @@ internal sealed class GenerationCommitCoordinatorTests
         try
         {
             FakeTimeProvider clock = new();
-            RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
+            using RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
             Assert.IsTrue(repair.Refused, "A truncated system-of-record forces the repair to refuse.");
 
             GenerationCommitReport report = Coordinator(store, bytePool, clock, trace: null).Commit(repair, Guid.Empty);
@@ -212,7 +240,7 @@ internal sealed class GenerationCommitCoordinatorTests
         try
         {
             FakeTimeProvider clock = new();
-            RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
+            using RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
             StorageTraceCapture trace = new();
 
             Coordinator(store, bytePool, clock, trace.Capture).Commit(repair, Guid.Empty);
@@ -243,7 +271,7 @@ internal sealed class GenerationCommitCoordinatorTests
         try
         {
             FakeTimeProvider clock = new();
-            RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
+            using RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
             Assert.IsNotEmpty(repair.RederivedArtifacts, "The damaged sidecar is re-derived from the surviving items.");
             Assert.IsNotEmpty(repair.NamedLosses, "The corrupt system-of-record block is named lost.");
 

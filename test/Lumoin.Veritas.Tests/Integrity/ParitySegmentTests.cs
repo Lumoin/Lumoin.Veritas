@@ -6,6 +6,7 @@ using Lumoin.Veritas.Core.Memory;
 using Lumoin.Veritas.Core.Persistence.Manifest;
 using Lumoin.Veritas.Core.Persistence.Parity;
 using Lumoin.Veritas.Core.Persistence.Segment;
+using Lumoin.Veritas.Tests.MemoryPool;
 using static Lumoin.Veritas.Tests.Integrity.PersistenceStagingFixture;
 
 namespace Lumoin.Veritas.Tests.Integrity;
@@ -71,8 +72,8 @@ internal sealed class ParitySegmentTests
         ParitySegment segment = new(parity.Memory, protectedBlockCount, BlockAlignment);
 
         using ArtifactImage image = WriteImage(segment, ChecksumAlgorithm.XxHash3, pool);
-        byte[] readBack = ParitySegment.ReadFrom(image.Bytes);
-        Assert.IsTrue(parity.Span.SequenceEqual(readBack));
+        using ParityBlock readBack = ParitySegment.ReadFrom(image.Bytes, pool);
+        Assert.IsTrue(parity.Span.SequenceEqual(readBack.Span));
     }
 
     [TestMethod]
@@ -86,8 +87,24 @@ internal sealed class ParitySegmentTests
         ParitySegment segment = new(parity.Memory, protectedBlockCount, BlockAlignment);
 
         using ArtifactImage image = WriteImage(segment, null, pool);
-        byte[] readBack = ParitySegment.ReadFrom(image.Bytes);
-        Assert.IsTrue(parity.Span.SequenceEqual(readBack));
+        using ParityBlock readBack = ParitySegment.ReadFrom(image.Bytes, pool);
+        Assert.IsTrue(parity.Span.SequenceEqual(readBack.Span));
+    }
+
+    [TestMethod]
+    public void ReadFromReturnsAnOwnedBlockReleasedOnDispose()
+    {
+        using VeritasMemoryPool<byte> imagePool = new();
+        using PoisoningMemoryPool<byte> blockPool = new();
+        using ArtifactImage image = ParityImage(SampleTriples(TripleCount), imagePool);
+
+        using(ParityBlock block = ParitySegment.ReadFrom(image.Bytes, blockPool))
+        {
+            Assert.AreEqual(1, blockPool.OutstandingRentals);
+            Assert.IsGreaterThan(0, block.Length);
+        }
+
+        Assert.AreEqual(0, blockPool.OutstandingRentals, "The owned parity block must return its buffer to the pool on dispose.");
     }
 
     [TestMethod]
@@ -138,7 +155,7 @@ internal sealed class ParitySegmentTests
         using ArtifactImage image = ParityImage(SampleTriples(TripleCount), pool);
         GarbageParityBlock(image);
 
-        Assert.ThrowsExactly<System.IO.InvalidDataException>(() => ParitySegment.ReadFrom(image.Bytes));
+        Assert.ThrowsExactly<System.IO.InvalidDataException>(() => ParitySegment.ReadFrom(image.Bytes, pool));
     }
 
     [TestMethod]
@@ -148,7 +165,7 @@ internal sealed class ParitySegmentTests
         using ArtifactImage image = ParityImage(SampleTriples(TripleCount), pool);
 
         //Drop the final byte: the declared block now runs past the image, so the framing is refused.
-        Assert.ThrowsExactly<System.IO.InvalidDataException>(() => ParitySegment.ReadFrom(image.Bytes[..(image.Length - 1)]));
+        Assert.ThrowsExactly<System.IO.InvalidDataException>(() => ParitySegment.ReadFrom(image.Bytes[..(image.Length - 1)], pool));
     }
 
     [TestMethod]

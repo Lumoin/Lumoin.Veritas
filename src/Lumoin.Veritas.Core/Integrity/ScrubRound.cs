@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using Lumoin.Veritas.Core.Columnar;
@@ -139,25 +140,25 @@ public static class ScrubRound
         //A degraded snapshot may be a torn-publish orphan; re-deriving atop it is unsafe.
         if(verifyReport.IsDegradedSnapshot)
         {
-            return new RepairPassReport(verifyReport.CommitGeneration, RepairRefusalReason.DegradedSnapshot, [], []);
+            return new RepairPassReport(verifyReport.CommitGeneration, RepairRefusalReason.DegradedSnapshot, [], [], []);
         }
 
         //A clean report has nothing to repair.
         if(verifyReport.CorruptBlocks.Count == 0)
         {
-            return new RepairPassReport(verifyReport.CommitGeneration, RepairRefusalReason.None, [], []);
+            return new RepairPassReport(verifyReport.CommitGeneration, RepairRefusalReason.None, [], [], []);
         }
 
         RecoveryResult recovery = new ManifestRecovery(store, resolveChecksum).Recover();
         if(recovery.IsDegraded)
         {
-            return new RepairPassReport(verifyReport.CommitGeneration, RepairRefusalReason.DegradedSnapshot, [], []);
+            return new RepairPassReport(verifyReport.CommitGeneration, RepairRefusalReason.DegradedSnapshot, [], [], []);
         }
 
         Manifest manifest = recovery.Manifest;
         if(manifest.CommitGeneration != verifyReport.CommitGeneration)
         {
-            return new RepairPassReport(verifyReport.CommitGeneration, RepairRefusalReason.StaleFindings, [], []);
+            return new RepairPassReport(verifyReport.CommitGeneration, RepairRefusalReason.StaleFindings, [], [], []);
         }
 
         bool dataSegmentDamaged = false;
@@ -188,7 +189,7 @@ public static class ScrubRound
         byte[]? systemOfRecordImage = ReadDataSegmentImage(store, manifest);
         if(systemOfRecordImage is null)
         {
-            return new RepairPassReport(manifest.CommitGeneration, RepairRefusalReason.SystemOfRecordUnreadable, [], []);
+            return new RepairPassReport(manifest.CommitGeneration, RepairRefusalReason.SystemOfRecordUnreadable, [], [], []);
         }
 
         //Every repair path reads the one verified system-of-record feed: to re-derive the sidecar or the
@@ -197,6 +198,8 @@ public static class ScrubRound
         //role (SystemOfRecordUnreadable) rather than guessing — and a sketch re-derive can never bypass that
         //refusal. The pass owns the feed for its lifetime; the coordinator borrows it.
         ItemSegmentFeed? feed = null;
+        ParityBlock? parityBlock = null;
+        RepairCoordinator? coordinator = null;
         try
         {
             feed = ItemSegment.ReadVerifiedItems(systemOfRecordImage, configuration.TriplePool, resolveChecksum);
@@ -204,12 +207,14 @@ public static class ScrubRound
 
             //A corrupt system-of-record block can be restored from a co-versioned parity sidecar, when the
             //generation carries one and it itself verifies clean at rest; a re-derivable view never needs it.
+            //The pass owns the restoring parity block for its lifetime and disposes it in the finally; the
+            //source's parity view stays valid through the data-segment repair, which runs before the finally.
             ParityRepairSource? paritySource = dataSegmentDamaged
-                ? TryReadVerifiedParity(store, manifest, systemOfRecordImage, resolveChecksum)
+                ? TryReadVerifiedParity(store, manifest, systemOfRecordImage, configuration.BytePool, resolveChecksum, out parityBlock)
                 : null;
 
             long timestampTicks = timeProvider.GetUtcNow().UtcTicks;
-            RepairCoordinator coordinator = new(feed, configuration, manifest.CommitGeneration, trace, correlationId, timestampTicks, systemOfRecordBlockItemCount, systemOfRecordBlockAlignment, paritySource);
+            coordinator = new(feed, configuration, manifest.CommitGeneration, trace, correlationId, timestampTicks, systemOfRecordBlockItemCount, systemOfRecordBlockAlignment, paritySource);
             //Restore the system-of-record first: a co-damaged view re-derived afterward then folds the healed
             //full item set rather than the block-excluded feed, so every published tier reflects the same items.
             if(dataSegmentDamaged)
@@ -236,14 +241,16 @@ public static class ScrubRound
                 coordinator.Repair(ManifestFileRole.Parity);
             }
 
-            return new RepairPassReport(manifest.CommitGeneration, RepairRefusalReason.None, [.. coordinator.RederivedArtifacts], [.. coordinator.NamedLosses]);
+            return new RepairPassReport(manifest.CommitGeneration, RepairRefusalReason.None, [.. coordinator.RederivedArtifacts], [.. coordinator.NamedLosses], [.. coordinator.TakeImageOwners()]);
         }
         catch(InvalidDataException)
         {
-            return new RepairPassReport(manifest.CommitGeneration, RepairRefusalReason.SystemOfRecordUnreadable, [], []);
+            return new RepairPassReport(manifest.CommitGeneration, RepairRefusalReason.SystemOfRecordUnreadable, [], [], []);
         }
         finally
         {
+            coordinator?.Dispose();
+            parityBlock?.Dispose();
             feed?.Dispose();
         }
     }
@@ -269,10 +276,13 @@ public static class ScrubRound
     /// <param name="store">The store holding the generation's artifacts.</param>
     /// <param name="manifest">The recovered manifest.</param>
     /// <param name="systemOfRecordImage">The at-rest-corrupt system-of-record image the surviving blocks are read from during the restore.</param>
+    /// <param name="pool">The pool the verified parity block is rented from; the caller owns and disposes the block returned in <paramref name="parityBlock"/>.</param>
     /// <param name="resolveChecksum">Resolves a stored checksum-algorithm id; <see langword="null"/> uses the default resolver.</param>
+    /// <param name="parityBlock">On a non-<see langword="null"/> return, the owned parity block backing the source's parity view, which the caller disposes once the restore is done; <see langword="null"/> when no usable parity is present.</param>
     /// <returns>The restoring source, or <see langword="null"/> when no usable parity is present.</returns>
-    private static ParityRepairSource? TryReadVerifiedParity(PersistenceStore store, Manifest manifest, ReadOnlyMemory<byte> systemOfRecordImage, ResolveChecksumAlgorithmDelegate? resolveChecksum)
+    private static ParityRepairSource? TryReadVerifiedParity(PersistenceStore store, Manifest manifest, ReadOnlyMemory<byte> systemOfRecordImage, MemoryPool<byte> pool, ResolveChecksumAlgorithmDelegate? resolveChecksum, out ParityBlock? parityBlock)
     {
+        parityBlock = null;
         foreach(ManifestEntry entry in manifest.Entries)
         {
             if(entry.Role != ManifestFileRole.Parity)
@@ -294,9 +304,10 @@ public static class ScrubRound
                 }
 
                 (_, int protectedBlockCount) = ParitySegment.ReadGeometry(parityImage);
-                byte[] parity = ParitySegment.ReadFrom(parityImage, resolveChecksum);
+                ParityBlock parity = ParitySegment.ReadFrom(parityImage, pool, resolveChecksum);
+                parityBlock = parity;
 
-                return new ParityRepairSource(systemOfRecordImage, parity, protectedBlockCount, resolveChecksum);
+                return new ParityRepairSource(systemOfRecordImage, parity.Memory, protectedBlockCount, resolveChecksum);
             }
             catch(InvalidDataException)
             {
