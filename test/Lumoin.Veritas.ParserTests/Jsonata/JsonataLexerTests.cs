@@ -115,6 +115,9 @@ internal sealed class JsonataLexerTests
 
         Assert.AreEqual(JsonataTokenKind.String, tokens[0].Kind);
         Assert.AreEqual("\U0001F600", tokens[0].Value.ToString());
+
+        //The surrogate pair combines to one scalar emitted directly as its four UTF-8 bytes.
+        CollectionAssert.AreEqual(new byte[] { 0xF0, 0x9F, 0x98, 0x80 }, tokens[0].Value.Span.ToArray());
     }
 
     /// <summary>A bare name lexes as <see cref="JsonataTokenKind.Name"/> carrying its text.</summary>

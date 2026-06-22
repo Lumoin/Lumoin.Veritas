@@ -298,6 +298,9 @@ internal sealed class TurtleLexerTests
 
         Assert.AreEqual(TurtleTokenKind.StringLiteral, tokens[0].Kind);
         Assert.AreEqual("\U0001F600", tokens[0].Value.ToString());
+
+        //The long escape decodes directly to its four UTF-8 bytes, no UTF-16 intermediate.
+        CollectionAssert.AreEqual(new byte[] { 0xF0, 0x9F, 0x98, 0x80 }, tokens[0].Value.Span.ToArray());
     }
 
     private static void AssertLexRecoversWithError(string source, TurtleLexErrorCode expectedCode)

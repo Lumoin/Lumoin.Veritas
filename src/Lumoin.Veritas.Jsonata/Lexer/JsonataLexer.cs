@@ -1272,11 +1272,9 @@ public sealed class JsonataLexer
 
     private int AppendCodepoint(uint codepoint, ref IMemoryOwner<byte> owner, int written)
     {
-        Span<char> chars = stackalloc char[2];
-        int charCount = new Rune((int)codepoint).EncodeToUtf16(chars);
-        int maxBytes = Encoding.UTF8.GetMaxByteCount(charCount);
-        EnsureScratchCapacity(ref owner, written + maxBytes);
-        int encoded = Encoding.UTF8.GetBytes(chars[..charCount], owner.Memory.Span[written..]);
+        Rune rune = new((int)codepoint);
+        EnsureScratchCapacity(ref owner, written + rune.Utf8SequenceLength);
+        int encoded = rune.EncodeToUtf8(owner.Memory.Span[written..]);
 
         return written + encoded;
     }

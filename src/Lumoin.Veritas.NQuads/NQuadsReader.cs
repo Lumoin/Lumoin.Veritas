@@ -1123,7 +1123,7 @@ public static class NQuadsReader
 
     private static int EncodeUtf8CodePoint(int codePoint, Span<byte> output)
     {
-        return Encoding.UTF8.GetBytes(char.ConvertFromUtf32(codePoint).AsSpan(), output);
+        return new Rune(codePoint).EncodeToUtf8(output);
     }
 
     private static void SkipWhitespace(ReadOnlySpan<byte> line, ref int pos)

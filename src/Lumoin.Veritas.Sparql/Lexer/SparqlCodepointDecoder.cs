@@ -210,10 +210,8 @@ internal sealed class SparqlCodepointDecoder
 
     private void EmitCodepoint(uint codepoint, int offset, int line, int column)
     {
-        Span<char> chars = stackalloc char[2];
-        int charCount = new Rune((int)codepoint).EncodeToUtf16(chars);
         Span<byte> bytes = stackalloc byte[4];
-        int byteCount = Encoding.UTF8.GetBytes(chars[..charCount], bytes);
+        int byteCount = new Rune((int)codepoint).EncodeToUtf8(bytes);
 
         for(int j = 0; j < byteCount; j++)
         {
