@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Veritas.Replication</RootNamespace>
+    <Description>Active-active replication and distributed repair for Lumoin.Veritas: cross-replica rateless anti-entropy reconciliation that recovers the exact symmetric difference between two replicas of one dataset and converges them by idempotent repair-as-ingest, and the peer-reconciliation repair rung that heals a detected system-of-record loss from a peer. It binds the Lumoin.Verisync rateless tier to the core's host-bound sketch seams, so the transport-free core never takes a replication dependency.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+  </ItemGroup>
+
+  <!--
+    The Lumoin.Verisync rateless anti-entropy tier (Consensus label in Directory.Packages.props).
+    This is the one library project granted that label: it is the active-active replication home, so
+    the reconciliation codec the core's host-bound sketch seams expect lives here, out of the core.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Lumoin.Verisync.Core" />
+  </ItemGroup>
+
+</Project>

@@ -105,6 +105,9 @@
       <_IsLibraryProject Condition="'$(_IsTestProject)' != 'true' AND '$(_IsBenchmarkProject)' != 'true' AND '$(_IsSerializationProject)' != 'true' AND '$(_IsCliProject)' != 'true'">true</_IsLibraryProject>
       <_AdditionalAllowedLabels Condition="'$(_IsSerializationProject)' == 'true'">Serialization</_AdditionalAllowedLabels>
       <_AdditionalAllowedLabels Condition="'$(_IsCliProject)' == 'true'">Cli;Serialization</_AdditionalAllowedLabels>
+      <!-- The dedicated replication library is the active-active home: it is granted the Consensus label
+           so it (and only it, among library projects) may reference the Lumoin.Verisync rateless tier. -->
+      <_AdditionalAllowedLabels Condition="'$(MSBuildProjectName)' == 'Lumoin.Veritas.Replication'">Consensus</_AdditionalAllowedLabels>
     </PropertyGroup>
     <ValidateScopedPackages Condition="('$(_IsLibraryProject)' == 'true' OR '$(_IsSerializationProject)' == 'true' OR '$(_IsCliProject)' == 'true') AND '@(PackageReference)' != ''" ProjectName="$(MSBuildProjectName)" PackageReferences="@(PackageReference)" DirectoryPackagesPropsPath="$(MSBuildThisFileFullPath)" AdditionalAllowedLabels="$(_AdditionalAllowedLabels)" />
   </Target>

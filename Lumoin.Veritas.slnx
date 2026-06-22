@@ -31,6 +31,7 @@
     <Project Path="src/Lumoin.Veritas.Json.Stj/Lumoin.Veritas.Json.Stj.csproj" />
     <Project Path="src/Lumoin.Veritas.JsonLd/Lumoin.Veritas.JsonLd.csproj" Id="e225ffdc-adbf-469b-983d-f365b556fdab" />
     <Project Path="src/Lumoin.Veritas.Rdf.Json/Lumoin.Veritas.Rdf.Json.csproj" />
+    <Project Path="src/Lumoin.Veritas.Replication/Lumoin.Veritas.Replication.csproj" />
     <Project Path="src/Lumoin.Veritas.Jsonata/Lumoin.Veritas.Jsonata.csproj" />
     <Project Path="src/Lumoin.Veritas.JsonPointer/Lumoin.Veritas.JsonPointer.csproj" />
     <Project Path="src/Lumoin.Veritas.JsonSchema/Lumoin.Veritas.JsonSchema.csproj" />

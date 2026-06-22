@@ -82,6 +82,7 @@
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Owl\Lumoin.Veritas.Owl.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Rdf\Lumoin.Veritas.Rdf.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Rdf.Json\Lumoin.Veritas.Rdf.Json.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Replication\Lumoin.Veritas.Replication.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Shacl\Lumoin.Veritas.Shacl.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Skos\Lumoin.Veritas.Skos.csproj" />
     <ProjectReference Include="..\..\src\Lumoin.Veritas.Sparql\Lumoin.Veritas.Sparql.csproj" />

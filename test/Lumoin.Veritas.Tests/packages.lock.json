@@ -490,6 +490,13 @@
           "Lumoin.Veritas.Sparql": "[0.0.0, )"
         }
       },
+      "lumoin.veritas.replication": {
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Verisync.Core": "[0.0.3, )",
+          "Lumoin.Veritas.Core": "[0.0.0, )"
+        }
+      },
       "lumoin.veritas.shacl": {
         "type": "Project",
         "dependencies": {
