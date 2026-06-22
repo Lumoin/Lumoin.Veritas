@@ -14,6 +14,7 @@ using Lumoin.Veritas.Core.Persistence.Manifest;
 using Lumoin.Veritas.Core.Persistence.Segment;
 using Lumoin.Veritas.Core.Persistence.Sketch;
 using Lumoin.Veritas.Core.Reconciliation;
+using Lumoin.Veritas.Tests.MemoryPool;
 using Microsoft.Extensions.Time.Testing;
 using static Lumoin.Veritas.Tests.Integrity.PersistenceStagingFixture;
 
@@ -62,6 +63,41 @@ internal sealed class RepairPassTests
             Assert.IsEmpty(repair.NamedLosses);
             StorageTraceEvent rederivedEvent = trace.Events.Single(static e => e.Kind == StorageTraceEventKind.Rederived);
             Assert.AreEqual(30, rederivedEvent.ItemCount);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>The re-derive path is pool-clean: re-deriving a corrupt sidecar from the verified system-of-record hands the fresh image to the report, and disposing the report returns EVERY buffer the re-derive rented from the repair pool — proven under a poisoning pool (the re-derive-writer pooling gate).</summary>
+    [TestMethod]
+    public void RederivingRepairPassReturnsEveryBufferOnReportDispose()
+    {
+        EncodedTriple[] triples = SampleTriples(30);
+        using VeritasMemoryPool<byte> imagePool = new();
+        using PoisoningMemoryPool<byte> repairPool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        using ArtifactImage segment = SegmentImage(triples, imagePool);
+        using ArtifactImage sidecar = SidecarImage(triples, imagePool);
+        CorruptSidecarFrontMatter(sidecar);
+        using ArtifactImage sketch = SketchImage(10, imagePool);
+        FileSystemPersistenceStore store = StageGeneration(7, segment, sidecar, sketch, imagePool, out string directory);
+        try
+        {
+            ScrubRoundReport verify = ScrubRound.RunVerifyPass(store, null, null, Guid.Empty, new FakeTimeProvider());
+            RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(repairPool, triplePool), null, null, Guid.Empty, new FakeTimeProvider());
+            try
+            {
+                Assert.IsTrue(repair.IsClean, "The corrupt sidecar must re-derive.");
+                Assert.IsGreaterThan(0, repairPool.OutstandingRentals, "The report must keep the re-derived image rented until it is disposed.");
+            }
+            finally
+            {
+                repair.Dispose();
+            }
+
+            Assert.AreEqual(0, repairPool.OutstandingRentals, "Disposing the report must return every buffer the re-deriving repair pass rented from the repair pool.");
         }
         finally
         {

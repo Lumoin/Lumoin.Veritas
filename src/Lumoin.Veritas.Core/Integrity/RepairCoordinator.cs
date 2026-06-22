@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.ContentAddressing;
 using Lumoin.Veritas.Core.Diagnostics;
+using Lumoin.Veritas.Core.Memory;
 using Lumoin.Veritas.Core.Persistence.Manifest;
 using Lumoin.Veritas.Core.Persistence.Parity;
 using Lumoin.Veritas.Core.Persistence.Segment;
@@ -242,9 +243,10 @@ internal sealed class RepairCoordinator: IDisposable
             configuration.OrderSetMode,
             configuration.ValueEncoding,
             configuration.Backing);
-        ArrayBufferWriter<byte> writer = new();
+        using SlabBufferWriter writer = new(configuration.BytePool);
         ColumnarIndexFile.Write(index, writer, configuration.Checksum);
-        Record(ManifestFileRole.Sidecar, writer.WrittenMemory, RederiveItemCount);
+        int size = writer.BytesWritten;
+        RecordOwnedImage(ManifestFileRole.Sidecar, writer.Detach(), size, RederiveItemCount);
     }
 
     /// <summary>Rebuilds the integrity sketch by projecting the verified system-of-record triples into reconciliation items and folding them through the host encoder, and records the fresh image.</summary>
@@ -265,9 +267,10 @@ internal sealed class RepairCoordinator: IDisposable
             items[i] = configuration.Project(verified[i]);
         }
 
-        ArrayBufferWriter<byte> writer = new();
+        using SlabBufferWriter writer = new(configuration.BytePool);
         SketchPersistence.PersistSketch(items, configuration.SketchContract, configuration.SymbolBudget, configuration.Checksum, configuration.BytePool, configuration.EncodeSketchSymbols, writer);
-        Record(ManifestFileRole.Sketch, writer.WrittenMemory, count);
+        int size = writer.BytesWritten;
+        RecordOwnedImage(ManifestFileRole.Sketch, writer.Detach(), size, count);
     }
 
     /// <summary>Rebuilds the local-parity sidecar from the verified system-of-record triples — folding the capacity-1 parity over the same block geometry the system-of-record uses — and records the fresh image.</summary>
@@ -278,19 +281,21 @@ internal sealed class RepairCoordinator: IDisposable
         int protectedBlockCount = ParitySegment.BuildParity(systemOfRecord, parity.WritableSpan, configuration.BytePool);
         ParitySegment segment = new(parity.Memory, protectedBlockCount, SystemOfRecordBlockAlignment);
         int size = (int)segment.ComputeSerializedSize(configuration.Checksum);
-        ArrayBufferWriter<byte> writer = new();
+        using SlabBufferWriter writer = new(configuration.BytePool);
         segment.WriteTo(writer.GetSpan(size)[..size], configuration.Checksum);
         writer.Advance(size);
-        Record(ManifestFileRole.Parity, writer.WrittenMemory, RederiveItemCount);
+        RecordOwnedImage(ManifestFileRole.Parity, writer.Detach(), size, RederiveItemCount);
     }
 
-    /// <summary>Records a regenerated artifact and emits its re-derived outcome.</summary>
+    /// <summary>Takes ownership of a freshly serialized image buffer (detached from a pooled writer), records the regenerated artifact over a view into it, and emits the re-derived outcome. The image transfers to <see cref="ImageOwners"/> here — which transfers to the report on success or is disposed by <see cref="Dispose"/> on an aborted pass — so it is never wrapped into a flagged local that could leak.</summary>
     /// <param name="role">The regenerated artifact's role.</param>
-    /// <param name="image">The fresh image bytes.</param>
+    /// <param name="owner">The rented buffer the image was serialized into; ownership transfers to this coordinator.</param>
+    /// <param name="length">The serialized image byte length.</param>
     /// <param name="itemCount">The number of system-of-record items the artifact was rebuilt from.</param>
-    private void Record(ManifestFileRole role, ReadOnlyMemory<byte> image, long itemCount)
+    private void RecordOwnedImage(ManifestFileRole role, IMemoryOwner<byte> owner, int length, long itemCount)
     {
-        rederived.Add(new RederivedArtifact(role, image));
+        ImageOwners.Add(PooledArtifactImage.Own(owner, length));
+        rederived.Add(new RederivedArtifact(role, ImageOwners[^1].Memory));
         Emit(StorageTraceEventKind.Rederived, role.Code, blockIndex: -1, itemCount);
     }
 

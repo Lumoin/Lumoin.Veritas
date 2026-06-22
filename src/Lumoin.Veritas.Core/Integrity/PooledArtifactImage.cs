@@ -34,4 +34,19 @@ public sealed class PooledArtifactImage: PooledBuffer<byte>
 
         return new PooledArtifactImage(pool.Rent(length), length);
     }
+
+    /// <summary>Takes ownership of a pre-rented buffer an image was written directly into — for serializers that emit into a growable pooled writer (a <see cref="Lumoin.Veritas.Core.Memory.SlabBufferWriter"/>) and detach the concatenated result. The image disposes the owner.</summary>
+    /// <param name="owner">The rented buffer owner; the image takes ownership and disposes it.</param>
+    /// <param name="length">The image byte length (the written prefix of the rented buffer).</param>
+    /// <returns>The pooled image.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="owner"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="length"/> is negative or longer than the rented buffer.</exception>
+    public static PooledArtifactImage Own(IMemoryOwner<byte> owner, int length)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(length, owner.Memory.Length);
+
+        return new PooledArtifactImage(owner, length);
+    }
 }
