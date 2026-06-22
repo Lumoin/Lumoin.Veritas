@@ -101,6 +101,26 @@ internal sealed class RdfTermJsonConverterTests
         Assert.AreEqual(quad, back);
     }
 
+    /// <summary>Deserializing from UTF-8 bytes copies multi-byte and escaped values straight from the reader, with no UTF-16 round-trip.</summary>
+    [TestMethod]
+    public void DeserializesMultiByteAndEscapedValuesFromBytes()
+    {
+        byte[] uri = Encoding.UTF8.GetBytes("{\"type\":\"uri\",\"value\":\"http://example.org/café\"}");
+        RdfTerm? named = JsonSerializer.Deserialize<RdfTerm>(uri, Options);
+        Assert.AreEqual("http://example.org/café", ((NamedNode)named!).Iri.ToString());
+        CollectionAssert.AreEqual(Encoding.UTF8.GetBytes("http://example.org/café"), ((NamedNode)named).Iri.Span.ToArray());
+
+        //A \u escape in the value is unescaped by the byte copy, not left literal.
+        byte[] escaped = Encoding.UTF8.GetBytes("{\"type\":\"bnode\",\"value\":\"b\\u0030\"}");
+        RdfTerm? blank = JsonSerializer.Deserialize<RdfTerm>(escaped, Options);
+        Assert.AreEqual("b0", ((BlankNode)blank!).Label.ToString());
+
+        byte[] literal = Encoding.UTF8.GetBytes("{\"type\":\"literal\",\"value\":\"café ☕\",\"language\":\"fr\"}");
+        RdfTerm? lit = JsonSerializer.Deserialize<RdfTerm>(literal, Options);
+        Assert.AreEqual("café ☕", ((Literal)lit!).Value.ToString());
+        Assert.AreEqual("fr", ((Literal)lit).Language!.Value.ToString());
+    }
+
     /// <summary>Serializer options with the RDF term and quad converters registered.</summary>
     private static JsonSerializerOptions Options { get; } = CreateOptions();
 

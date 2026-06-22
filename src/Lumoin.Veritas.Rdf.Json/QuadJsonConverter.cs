@@ -15,10 +15,17 @@ namespace Lumoin.Veritas.Rdf.Json;
 /// </remarks>
 public sealed class QuadJsonConverter: JsonConverter<Quad>
 {
-    private const string SubjectProperty = "subject";
-    private const string PredicateProperty = "predicate";
-    private const string ObjectProperty = "object";
-    private const string GraphProperty = "graph";
+    /// <summary>The <c>subject</c> property name.</summary>
+    private static ReadOnlySpan<byte> SubjectProperty => "subject"u8;
+
+    /// <summary>The <c>predicate</c> property name.</summary>
+    private static ReadOnlySpan<byte> PredicateProperty => "predicate"u8;
+
+    /// <summary>The <c>object</c> property name.</summary>
+    private static ReadOnlySpan<byte> ObjectProperty => "object"u8;
+
+    /// <summary>The <c>graph</c> property name.</summary>
+    private static ReadOnlySpan<byte> GraphProperty => "graph"u8;
 
     /// <inheritdoc/>
     public override Quad? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
@@ -50,27 +57,27 @@ public sealed class QuadJsonConverter: JsonConverter<Quad>
                 throw new JsonException("Expected property name.");
             }
 
-            string propertyName = reader.GetString()!;
+            QuadProperty property = ClassifyProperty(ref reader);
             reader.Read();
 
-            switch(propertyName)
+            switch(property)
             {
-                case SubjectProperty:
+                case(QuadProperty.Subject):
                 {
                     subject = termConverter.Read(ref reader, typeof(RdfTerm), options);
                     break;
                 }
-                case PredicateProperty:
+                case(QuadProperty.Predicate):
                 {
                     predicate = termConverter.Read(ref reader, typeof(RdfTerm), options);
                     break;
                 }
-                case ObjectProperty:
+                case(QuadProperty.Object):
                 {
                     @object = termConverter.Read(ref reader, typeof(RdfTerm), options);
                     break;
                 }
-                case GraphProperty:
+                case(QuadProperty.Graph):
                 {
                     graph = termConverter.Read(ref reader, typeof(RdfTerm), options);
                     break;
@@ -118,6 +125,53 @@ public sealed class QuadJsonConverter: JsonConverter<Quad>
         }
 
         writer.WriteEndObject();
+    }
+
+    /// <summary>Classifies the current property-name token against the known names without materialising a string.</summary>
+    /// <param name="reader">The reader positioned on a property-name token.</param>
+    /// <returns>The matched property, or <see cref="QuadProperty.Unknown"/>.</returns>
+    private static QuadProperty ClassifyProperty(ref Utf8JsonReader reader)
+    {
+        if(reader.ValueTextEquals(SubjectProperty))
+        {
+            return QuadProperty.Subject;
+        }
+
+        if(reader.ValueTextEquals(PredicateProperty))
+        {
+            return QuadProperty.Predicate;
+        }
+
+        if(reader.ValueTextEquals(ObjectProperty))
+        {
+            return QuadProperty.Object;
+        }
+
+        if(reader.ValueTextEquals(GraphProperty))
+        {
+            return QuadProperty.Graph;
+        }
+
+        return QuadProperty.Unknown;
+    }
+
+    /// <summary>A quad object's property, classified from its UTF-8 name.</summary>
+    private enum QuadProperty
+    {
+        /// <summary>An unrecognised property, skipped.</summary>
+        Unknown,
+
+        /// <summary>The <c>subject</c> term.</summary>
+        Subject,
+
+        /// <summary>The <c>predicate</c> term.</summary>
+        Predicate,
+
+        /// <summary>The <c>object</c> term.</summary>
+        Object,
+
+        /// <summary>The <c>graph</c> term.</summary>
+        Graph
     }
 
     private static RdfTermJsonConverter GetTermConverter(JsonSerializerOptions options)

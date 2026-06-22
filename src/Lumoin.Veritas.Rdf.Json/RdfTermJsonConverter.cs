@@ -19,24 +19,52 @@ namespace Lumoin.Veritas.Rdf.Json;
 /// <para>
 /// This converter handles the polymorphic dispatch that <see cref="RdfTerm"/>
 /// requires. Domain types remain clean POCOs; all JSON structure decisions
-/// are encapsulated here.
+/// are encapsulated here. The read path is byte-native: property names and the
+/// type discriminator dispatch through <see cref="Utf8JsonReader.ValueTextEquals(System.ReadOnlySpan{byte})"/>
+/// and every scalar value is copied straight from the reader's UTF-8 into an
+/// owned <see cref="Utf8String"/>, so no <see cref="string"/> is materialised.
 /// </para>
 /// </remarks>
 public sealed class RdfTermJsonConverter: JsonConverter<RdfTerm>
 {
-    private const string TypeProperty = "type";
-    private const string ValueProperty = "value";
-    private const string DatatypeProperty = "datatype";
-    private const string LanguageProperty = "language";
-    private const string DirectionProperty = "direction";
-    private const string SubjectProperty = "subject";
-    private const string PredicateProperty = "predicate";
-    private const string ObjectProperty = "object";
+    /// <summary>The <c>type</c> discriminator property name.</summary>
+    private static ReadOnlySpan<byte> TypeProperty => "type"u8;
 
-    private const string TypeUri = "uri";
-    private const string TypeBnode = "bnode";
-    private const string TypeLiteral = "literal";
-    private const string TypeTriple = "triple";
+    /// <summary>The <c>value</c> lexical property name.</summary>
+    private static ReadOnlySpan<byte> ValueProperty => "value"u8;
+
+    /// <summary>The <c>datatype</c> IRI property name.</summary>
+    private static ReadOnlySpan<byte> DatatypeProperty => "datatype"u8;
+
+    /// <summary>The <c>language</c> tag property name.</summary>
+    private static ReadOnlySpan<byte> LanguageProperty => "language"u8;
+
+    /// <summary>The <c>direction</c> base-direction property name.</summary>
+    private static ReadOnlySpan<byte> DirectionProperty => "direction"u8;
+
+    /// <summary>The <c>subject</c> triple-component property name.</summary>
+    private static ReadOnlySpan<byte> SubjectProperty => "subject"u8;
+
+    /// <summary>The <c>predicate</c> triple-component property name.</summary>
+    private static ReadOnlySpan<byte> PredicateProperty => "predicate"u8;
+
+    /// <summary>The <c>object</c> triple-component property name.</summary>
+    private static ReadOnlySpan<byte> ObjectProperty => "object"u8;
+
+    /// <summary>The <c>uri</c> type discriminator value.</summary>
+    private static ReadOnlySpan<byte> TypeUri => "uri"u8;
+
+    /// <summary>The <c>bnode</c> type discriminator value.</summary>
+    private static ReadOnlySpan<byte> TypeBnode => "bnode"u8;
+
+    /// <summary>The <c>literal</c> type discriminator value.</summary>
+    private static ReadOnlySpan<byte> TypeLiteral => "literal"u8;
+
+    /// <summary>The <c>triple</c> type discriminator value.</summary>
+    private static ReadOnlySpan<byte> TypeTriple => "triple"u8;
+
+    /// <summary>The default <c>xsd:string</c> datatype of a literal with no declared datatype.</summary>
+    private static NamedNode XsdString { get; } = new(Vocabulary.Xsd.String);
 
     /// <inheritdoc/>
     /// <remarks>
@@ -89,51 +117,51 @@ public sealed class RdfTermJsonConverter: JsonConverter<RdfTerm>
                 throw new JsonException("Expected property name.");
             }
 
-            string propertyName = reader.GetString()!;
+            PropertyKind property = ClassifyProperty(ref reader);
             if(!reader.Read())
             {
                 throw new JsonException("Unexpected end of JSON after a property name.");
             }
 
             ReadFrame current = stack.Peek();
-            switch(propertyName)
+            switch(property)
             {
-                case(TypeProperty):
+                case(PropertyKind.Type):
                 {
-                    current.Type = reader.GetString();
+                    current.Type = ClassifyType(ref reader);
                     break;
                 }
-                case(ValueProperty):
+                case(PropertyKind.Value):
                 {
-                    current.Value = reader.GetString();
+                    current.Value = ReadUtf8(ref reader);
                     break;
                 }
-                case(DatatypeProperty):
+                case(PropertyKind.Datatype):
                 {
-                    current.Datatype = reader.GetString();
+                    current.Datatype = ReadUtf8(ref reader);
                     break;
                 }
-                case(LanguageProperty):
+                case(PropertyKind.Language):
                 {
-                    current.Language = reader.GetString();
+                    current.Language = ReadUtf8(ref reader);
                     break;
                 }
-                case(DirectionProperty):
+                case(PropertyKind.Direction):
                 {
-                    current.Direction = reader.GetString();
+                    current.Direction = ReadUtf8(ref reader);
                     break;
                 }
-                case(SubjectProperty):
+                case(PropertyKind.Subject):
                 {
                     BeginChild(stack, current, ChildSlot.Subject, reader.TokenType);
                     break;
                 }
-                case(PredicateProperty):
+                case(PropertyKind.Predicate):
                 {
                     BeginChild(stack, current, ChildSlot.Predicate, reader.TokenType);
                     break;
                 }
-                case(ObjectProperty):
+                case(PropertyKind.Object):
                 {
                     BeginChild(stack, current, ChildSlot.Object, reader.TokenType);
                     break;
@@ -149,6 +177,94 @@ public sealed class RdfTermJsonConverter: JsonConverter<RdfTerm>
         return result;
     }
 
+    /// <summary>Classifies the current property-name token against the known names without materialising a string.</summary>
+    /// <param name="reader">The reader positioned on a property-name token.</param>
+    /// <returns>The matched property, or <see cref="PropertyKind.Unknown"/>.</returns>
+    private static PropertyKind ClassifyProperty(ref Utf8JsonReader reader)
+    {
+        if(reader.ValueTextEquals(TypeProperty))
+        {
+            return PropertyKind.Type;
+        }
+
+        if(reader.ValueTextEquals(ValueProperty))
+        {
+            return PropertyKind.Value;
+        }
+
+        if(reader.ValueTextEquals(DatatypeProperty))
+        {
+            return PropertyKind.Datatype;
+        }
+
+        if(reader.ValueTextEquals(LanguageProperty))
+        {
+            return PropertyKind.Language;
+        }
+
+        if(reader.ValueTextEquals(DirectionProperty))
+        {
+            return PropertyKind.Direction;
+        }
+
+        if(reader.ValueTextEquals(SubjectProperty))
+        {
+            return PropertyKind.Subject;
+        }
+
+        if(reader.ValueTextEquals(PredicateProperty))
+        {
+            return PropertyKind.Predicate;
+        }
+
+        if(reader.ValueTextEquals(ObjectProperty))
+        {
+            return PropertyKind.Object;
+        }
+
+        return PropertyKind.Unknown;
+    }
+
+    /// <summary>Classifies the current string token as a type discriminator without materialising a string.</summary>
+    /// <param name="reader">The reader positioned on the type value token.</param>
+    /// <returns>The matched term kind, or <see cref="TermKind.Unknown"/>.</returns>
+    private static TermKind ClassifyType(ref Utf8JsonReader reader)
+    {
+        if(reader.ValueTextEquals(TypeUri))
+        {
+            return TermKind.Uri;
+        }
+
+        if(reader.ValueTextEquals(TypeBnode))
+        {
+            return TermKind.Bnode;
+        }
+
+        if(reader.ValueTextEquals(TypeLiteral))
+        {
+            return TermKind.Literal;
+        }
+
+        if(reader.ValueTextEquals(TypeTriple))
+        {
+            return TermKind.Triple;
+        }
+
+        return TermKind.Unknown;
+    }
+
+    /// <summary>Copies the current string token's unescaped UTF-8 into an owned <see cref="Utf8String"/>.</summary>
+    /// <param name="reader">The reader positioned on a string value token.</param>
+    /// <returns>The decoded value.</returns>
+    private static Utf8String ReadUtf8(ref Utf8JsonReader reader)
+    {
+        int maxLength = reader.HasValueSequence ? checked((int)reader.ValueSequence.Length) : reader.ValueSpan.Length;
+        byte[] buffer = new byte[maxLength];
+        int written = reader.CopyString(buffer);
+
+        return new Utf8String(new ReadOnlyMemory<byte>(buffer, 0, written));
+    }
+
     /// <summary>Builds the RDF term for a completed frame from its accumulated type discriminator, scalars, and children.</summary>
     /// <param name="frame">The completed frame.</param>
     /// <returns>The built term.</returns>
@@ -157,12 +273,23 @@ public sealed class RdfTermJsonConverter: JsonConverter<RdfTerm>
     {
         return frame.Type switch
         {
-            TypeUri => new NamedNode(Utf8String.FromString(frame.Value!)),
-            TypeBnode => new BlankNode(Utf8String.FromString(frame.Value!)),
-            TypeLiteral => CreateLiteral(frame.Value!, frame.Datatype, frame.Language, frame.Direction),
-            TypeTriple => new TripleTerm(frame.Subject!, (NamedNode)frame.Predicate!, frame.Object!),
-            _ => throw new JsonException($"Unknown RDF term type: '{frame.Type}'.")
+            TermKind.Uri => new NamedNode(frame.Value ?? default),
+            TermKind.Bnode => new BlankNode(frame.Value ?? default),
+            TermKind.Literal => CreateLiteral(frame),
+            TermKind.Triple => new TripleTerm(frame.Subject!, (NamedNode)frame.Predicate!, frame.Object!),
+            _ => throw new JsonException("Unknown RDF term type.")
         };
+    }
+
+    /// <summary>Builds a literal from a completed frame, defaulting an absent datatype to <c>xsd:string</c> and parsing the base direction.</summary>
+    /// <param name="frame">The completed literal frame.</param>
+    /// <returns>The literal term.</returns>
+    private static Literal CreateLiteral(ReadFrame frame)
+    {
+        NamedNode datatype = frame.Datatype is Utf8String dt ? new NamedNode(dt) : XsdString;
+        TextDirection? direction = frame.Direction is Utf8String dir && TextDirections.TryParse(dir.Span, out TextDirection parsed) ? parsed : null;
+
+        return new Literal(frame.Value ?? default, datatype, frame.Language, direction);
     }
 
     /// <summary>Stores a built child term into its parent frame's pending triple-component slot.</summary>
@@ -306,23 +433,23 @@ public sealed class RdfTermJsonConverter: JsonConverter<RdfTerm>
             case(NamedNode(var iri)):
             {
                 writer.WriteString(TypeProperty, TypeUri);
-                writer.WriteString(ValueProperty, iri.ToString());
+                writer.WriteString(ValueProperty, iri.Span);
                 break;
             }
             case(BlankNode(var label)):
             {
                 writer.WriteString(TypeProperty, TypeBnode);
-                writer.WriteString(ValueProperty, label.ToString());
+                writer.WriteString(ValueProperty, label.Span);
                 break;
             }
             case(Literal(var lexical, var dt, var lang, var dir)):
             {
                 writer.WriteString(TypeProperty, TypeLiteral);
-                writer.WriteString(ValueProperty, lexical.ToString());
-                writer.WriteString(DatatypeProperty, dt.Iri.ToString());
+                writer.WriteString(ValueProperty, lexical.Span);
+                writer.WriteString(DatatypeProperty, dt.Iri.Span);
                 if(lang is { } l)
                 {
-                    writer.WriteString(LanguageProperty, l.ToString());
+                    writer.WriteString(LanguageProperty, l.Span);
                 }
 
                 if(dir is { } d)
@@ -340,20 +467,6 @@ public sealed class RdfTermJsonConverter: JsonConverter<RdfTerm>
         }
 
         writer.WriteEndObject();
-    }
-
-    private static Literal CreateLiteral(string value, string? datatype, string? language, string? direction)
-    {
-        TextDirection? dir = TextDirections.TryParse(direction, out TextDirection parsed) ? parsed : null;
-
-        Utf8String lexical = Utf8String.FromString(value);
-        NamedNode dt = new(Utf8String.FromString(datatype ?? "http://www.w3.org/2001/XMLSchema#string"));
-
-        Utf8String? lang = language is not null
-            ? Utf8String.FromString(language)
-            : null;
-
-        return new Literal(lexical, dt, lang, dir);
     }
 
     /// <summary>The kind of step on the quoted-triple serialization work-stack.</summary>
@@ -399,6 +512,56 @@ public sealed class RdfTermJsonConverter: JsonConverter<RdfTerm>
         public static TermStep EndObject { get; } = new(JsonStepKind.EndObject, null);
     }
 
+    /// <summary>A binding value object's property, classified from its UTF-8 name.</summary>
+    private enum PropertyKind
+    {
+        /// <summary>An unrecognised property, skipped.</summary>
+        Unknown,
+
+        /// <summary>The <c>type</c> discriminator.</summary>
+        Type,
+
+        /// <summary>The <c>value</c> lexical form.</summary>
+        Value,
+
+        /// <summary>The <c>datatype</c> IRI.</summary>
+        Datatype,
+
+        /// <summary>The <c>language</c> tag.</summary>
+        Language,
+
+        /// <summary>The <c>direction</c> base direction.</summary>
+        Direction,
+
+        /// <summary>The <c>subject</c> triple component.</summary>
+        Subject,
+
+        /// <summary>The <c>predicate</c> triple component.</summary>
+        Predicate,
+
+        /// <summary>The <c>object</c> triple component.</summary>
+        Object
+    }
+
+    /// <summary>An RDF term's kind, classified from its <c>type</c> discriminator.</summary>
+    private enum TermKind
+    {
+        /// <summary>An unrecognised or absent type.</summary>
+        Unknown,
+
+        /// <summary>An IRI (<c>uri</c>).</summary>
+        Uri,
+
+        /// <summary>A blank node (<c>bnode</c>).</summary>
+        Bnode,
+
+        /// <summary>A literal.</summary>
+        Literal,
+
+        /// <summary>A quoted triple (<c>triple</c>).</summary>
+        Triple
+    }
+
     /// <summary>The triple component a nested child term fills in its parent frame.</summary>
     private enum ChildSlot
     {
@@ -419,19 +582,19 @@ public sealed class RdfTermJsonConverter: JsonConverter<RdfTerm>
     private sealed class ReadFrame
     {
         /// <summary>The <c>type</c> discriminator.</summary>
-        public string? Type { get; set; }
+        public TermKind Type { get; set; }
 
         /// <summary>The <c>value</c> lexical form (for a leaf term).</summary>
-        public string? Value { get; set; }
+        public Utf8String? Value { get; set; }
 
         /// <summary>The <c>datatype</c> IRI (for a literal).</summary>
-        public string? Datatype { get; set; }
+        public Utf8String? Datatype { get; set; }
 
         /// <summary>The <c>language</c> tag (for a literal).</summary>
-        public string? Language { get; set; }
+        public Utf8String? Language { get; set; }
 
         /// <summary>The <c>direction</c> token (for a literal).</summary>
-        public string? Direction { get; set; }
+        public Utf8String? Direction { get; set; }
 
         /// <summary>The built subject term (for a triple).</summary>
         public RdfTerm? Subject { get; set; }
