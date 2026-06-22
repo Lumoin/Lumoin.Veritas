@@ -19,24 +19,29 @@ namespace Lumoin.Veritas.Rdf.Json;
 /// </summary>
 /// <remarks>
 /// <para>
-/// This reader lives in <c>Lumoin.Veritas.Json</c> — the project that owns the <c>System.Text.Json</c> dependency —
-/// alongside the other SPARQL Query Results serializations' JSON counterparts; the XML (<c>.srx</c>) reader lives in
-/// <c>Lumoin.Veritas.Sparql</c> (no JSON dependency). Both produce the same <see cref="SparqlResultSet"/> model.
+/// The reader is byte-native: it drives a single <see cref="Utf8JsonReader"/> over the UTF-8 input, dispatches
+/// property names and the type discriminator through <see cref="Utf8JsonReader.ValueTextEquals(System.ReadOnlySpan{byte})"/>,
+/// and copies each scalar straight from the reader into an owned <see cref="Utf8String"/>, so no <see cref="string"/>
+/// is materialised on the parse path and the result set is independent of the input buffer.
 /// </para>
 /// <para>
 /// Binding value objects carry a <c>type</c> (<c>uri</c>, <c>literal</c>, the legacy <c>typed-literal</c>,
 /// <c>bnode</c>, or <c>triple</c>) and a <c>value</c>. A <c>literal</c> is typed <c>rdf:langString</c> when it
-/// carries <c>xml:lang</c>, its declared <c>datatype</c>, or <c>xsd:string</c> otherwise. A <c>triple</c>'s
-/// <c>value</c> is an object with nested <c>subject</c>/<c>predicate</c>/<c>object</c> term objects; it parses to a
-/// <see cref="TripleTerm"/> over an explicit stack, so deep nesting cannot overflow the call stack.
+/// carries <c>xml:lang</c> (<c>rdf:dirLangString</c> when it also carries <c>its:dir</c>), its declared
+/// <c>datatype</c>, or <c>xsd:string</c> otherwise. A <c>triple</c>'s <c>value</c> is an object with nested
+/// <c>subject</c>/<c>predicate</c>/<c>object</c> term objects; it parses over an explicit stack, so deep nesting
+/// cannot overflow the call stack.
 /// </para>
 /// </remarks>
 public static class SparqlResultsJsonReader
 {
+    /// <summary>The <c>xsd:string</c> datatype of a plain literal.</summary>
     private static NamedNode XsdString { get; } = new(Vocabulary.Xsd.String);
 
+    /// <summary>The <c>rdf:langString</c> datatype of a language-tagged literal.</summary>
     private static NamedNode RdfLangString { get; } = new(Vocabulary.Rdf.LangString);
 
+    /// <summary>The <c>rdf:dirLangString</c> datatype of a directional language-tagged literal.</summary>
     private static NamedNode RdfDirLangString { get; } = new(Vocabulary.Rdf.DirLangString);
 
     /// <summary>Reads a result set from the in-memory JSON bytes.</summary>
@@ -45,15 +50,9 @@ public static class SparqlResultsJsonReader
     /// <exception cref="FormatException">The document is not well-formed SPARQL Results JSON.</exception>
     public static SparqlResultSet Read(ReadOnlyMemory<byte> bytes)
     {
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(bytes);
-            return ReadDocument(document);
-        }
-        catch(JsonException ex)
-        {
-            throw new FormatException($"Malformed SPARQL Results JSON: {ex.Message}", ex);
-        }
+        Utf8JsonReader reader = new(bytes.Span);
+
+        return ReadDocument(ref reader);
     }
 
     /// <summary>Reads a result set from a possibly-segmented in-memory JSON byte sequence, such as a pipe's buffer, with no contiguous copy.</summary>
@@ -62,15 +61,9 @@ public static class SparqlResultsJsonReader
     /// <exception cref="FormatException">The document is not well-formed SPARQL Results JSON.</exception>
     public static SparqlResultSet Read(ReadOnlySequence<byte> bytes)
     {
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(bytes);
-            return ReadDocument(document);
-        }
-        catch(JsonException ex)
-        {
-            throw new FormatException($"Malformed SPARQL Results JSON: {ex.Message}", ex);
-        }
+        Utf8JsonReader reader = new(bytes);
+
+        return ReadDocument(ref reader);
     }
 
     /// <summary>Reads a result set from a JSON stream.</summary>
@@ -82,10 +75,67 @@ public static class SparqlResultsJsonReader
     {
         ArgumentNullException.ThrowIfNull(stream);
 
+        using MemoryStream buffer = new();
+        stream.CopyTo(buffer);
+
+        return Read(new ReadOnlyMemory<byte>(buffer.GetBuffer(), 0, (int)buffer.Length));
+    }
+
+    /// <summary>Builds the result set from the JSON token stream, wrapping a malformed-JSON error as a format error.</summary>
+    /// <param name="reader">The reader positioned before the root token.</param>
+    /// <returns>The result set.</returns>
+    /// <exception cref="FormatException">The document is malformed or does not have the SPARQL-results shape.</exception>
+    private static SparqlResultSet ReadDocument(ref Utf8JsonReader reader)
+    {
         try
         {
-            using JsonDocument document = JsonDocument.Parse(stream);
-            return ReadDocument(document);
+            if(!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+            {
+                throw new FormatException("SPARQL Results JSON must be a top-level object.");
+            }
+
+            List<Utf8String> variables = [];
+            List<SparqlSolution> solutions = [];
+            bool isAsk = false;
+            bool askValue = false;
+            bool sawBindings = false;
+
+            while(reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
+            {
+                if(reader.ValueTextEquals(SparqlResultsJsonNames.BooleanUtf8))
+                {
+                    reader.Read();
+                    askValue = ReadBoolean(ref reader);
+                    isAsk = true;
+                }
+                else if(reader.ValueTextEquals(SparqlResultsJsonNames.HeadUtf8))
+                {
+                    reader.Read();
+                    ReadHead(ref reader, variables);
+                }
+                else if(reader.ValueTextEquals(SparqlResultsJsonNames.ResultsUtf8))
+                {
+                    reader.Read();
+                    sawBindings |= ReadResults(ref reader, solutions);
+                }
+                else
+                {
+                    reader.Read();
+                    reader.Skip();
+                }
+            }
+
+            if(isAsk)
+            {
+                return SparqlResultSet.ForAsk(askValue);
+            }
+
+            if(!sawBindings)
+            {
+                throw new FormatException("SPARQL SELECT results JSON is missing its results.bindings array.");
+            }
+
+            return SparqlResultSet.ForSelect(variables, solutions);
         }
         catch(JsonException ex)
         {
@@ -93,255 +143,506 @@ public static class SparqlResultsJsonReader
         }
     }
 
-    /// <summary>Builds the result set from the parsed JSON document.</summary>
-    /// <param name="document">The parsed document.</param>
-    /// <returns>The result set.</returns>
-    /// <exception cref="FormatException">The document does not have the SPARQL-results shape.</exception>
-    private static SparqlResultSet ReadDocument(JsonDocument document)
+    /// <summary>Reads the <c>boolean</c> of an <c>ASK</c> result, accepting a JSON boolean or the strings <c>true</c>/<c>false</c>.</summary>
+    /// <param name="reader">The reader positioned on the boolean value token.</param>
+    /// <returns>The boolean answer.</returns>
+    /// <exception cref="FormatException">The value is neither a JSON boolean nor <c>true</c>/<c>false</c>.</exception>
+    private static bool ReadBoolean(ref Utf8JsonReader reader)
     {
-        JsonElement root = document.RootElement;
-        if(root.ValueKind != JsonValueKind.Object)
+        return reader.TokenType switch
         {
-            throw new FormatException("SPARQL Results JSON must be a top-level object.");
-        }
-
-        if(root.TryGetProperty(SparqlResultsJsonNames.Boolean, out JsonElement boolean))
-        {
-            return SparqlResultSet.ForAsk(ReadBoolean(boolean));
-        }
-
-        List<Utf8String> variables = ReadHeadVariables(root);
-        if(!root.TryGetProperty(SparqlResultsJsonNames.Results, out JsonElement results) || !results.TryGetProperty(SparqlResultsJsonNames.Bindings, out JsonElement bindings) || bindings.ValueKind != JsonValueKind.Array)
-        {
-            throw new FormatException("SPARQL SELECT results JSON is missing its results.bindings array.");
-        }
-
-        List<SparqlSolution> solutions = [];
-        foreach(JsonElement row in bindings.EnumerateArray())
-        {
-            solutions.Add(ReadSolution(row));
-        }
-
-        return SparqlResultSet.ForSelect(variables, solutions);
+            JsonTokenType.True => true,
+            JsonTokenType.False => false,
+            JsonTokenType.String when reader.ValueTextEquals("true"u8) => true,
+            JsonTokenType.String when reader.ValueTextEquals("false"u8) => false,
+            _ => throw new FormatException("A SPARQL ASK result's 'boolean' must be true or false.")
+        };
     }
 
-    /// <summary>Reads the head's declared variables (<c>head.vars</c>) in document order; empty when absent.</summary>
-    /// <param name="root">The root object.</param>
-    /// <returns>The variable names.</returns>
-    private static List<Utf8String> ReadHeadVariables(JsonElement root)
+    /// <summary>Reads the head's declared variables (<c>head.vars</c>) in document order; tolerant of an absent or non-array <c>vars</c>.</summary>
+    /// <param name="reader">The reader positioned on the head value.</param>
+    /// <param name="variables">The list the variable names are appended to.</param>
+    private static void ReadHead(ref Utf8JsonReader reader, List<Utf8String> variables)
     {
-        List<Utf8String> variables = [];
-        if(!root.TryGetProperty(SparqlResultsJsonNames.Head, out JsonElement head) || !head.TryGetProperty(SparqlResultsJsonNames.Vars, out JsonElement vars) || vars.ValueKind != JsonValueKind.Array)
+        if(reader.TokenType != JsonTokenType.StartObject)
         {
-            return variables;
+            reader.Skip();
+
+            return;
         }
 
-        foreach(JsonElement name in vars.EnumerateArray())
+        while(reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
         {
-            if(name.ValueKind == JsonValueKind.String)
+            if(reader.ValueTextEquals(SparqlResultsJsonNames.VarsUtf8))
             {
-                variables.Add(Utf8String.FromString(name.GetString()!));
+                reader.Read();
+                if(reader.TokenType == JsonTokenType.StartArray)
+                {
+                    while(reader.Read() && reader.TokenType != JsonTokenType.EndArray)
+                    {
+                        if(reader.TokenType == JsonTokenType.String)
+                        {
+                            variables.Add(ReadUtf8(ref reader));
+                        }
+                    }
+                }
+                else
+                {
+                    reader.Skip();
+                }
+            }
+            else
+            {
+                reader.Read();
+                reader.Skip();
+            }
+        }
+    }
+
+    /// <summary>Reads the <c>results.bindings</c> array into solutions.</summary>
+    /// <param name="reader">The reader positioned on the results value.</param>
+    /// <param name="solutions">The list the solutions are appended to.</param>
+    /// <returns><see langword="true"/> when a <c>bindings</c> array was present.</returns>
+    /// <exception cref="FormatException">A <c>bindings</c> property is present but is not an array of objects.</exception>
+    private static bool ReadResults(ref Utf8JsonReader reader, List<SparqlSolution> solutions)
+    {
+        if(reader.TokenType != JsonTokenType.StartObject)
+        {
+            reader.Skip();
+
+            return false;
+        }
+
+        bool sawBindings = false;
+        while(reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
+        {
+            if(reader.ValueTextEquals(SparqlResultsJsonNames.BindingsUtf8))
+            {
+                reader.Read();
+                if(reader.TokenType != JsonTokenType.StartArray)
+                {
+                    throw new FormatException("SPARQL SELECT results JSON is missing its results.bindings array.");
+                }
+
+                while(reader.Read() && reader.TokenType != JsonTokenType.EndArray)
+                {
+                    if(reader.TokenType != JsonTokenType.StartObject)
+                    {
+                        throw new FormatException("A SPARQL Results JSON binding set must be an object.");
+                    }
+
+                    solutions.Add(ReadSolution(ref reader));
+                }
+
+                sawBindings = true;
+            }
+            else
+            {
+                reader.Read();
+                reader.Skip();
             }
         }
 
-        return variables;
+        return sawBindings;
     }
 
     /// <summary>Reads one binding-set object into a solution, binding each named property to its parsed term.</summary>
-    /// <param name="row">The binding-set object.</param>
+    /// <param name="reader">The reader positioned on the binding-set object's start.</param>
     /// <returns>The solution mapping.</returns>
-    private static SparqlSolution ReadSolution(JsonElement row)
+    /// <exception cref="FormatException">A binding value is not an object.</exception>
+    private static SparqlSolution ReadSolution(ref Utf8JsonReader reader)
     {
-        if(row.ValueKind != JsonValueKind.Object)
-        {
-            throw new FormatException("A SPARQL Results JSON binding set must be an object.");
-        }
-
         List<SparqlBinding> bindings = [];
-        foreach(JsonProperty binding in row.EnumerateObject())
+        while(reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
         {
-            bindings.Add(new SparqlBinding(new SparqlVariable(Utf8String.FromString(binding.Name)), ParseTerm(binding.Value)));
+            Utf8String variable = ReadUtf8(ref reader);
+            reader.Read();
+            if(reader.TokenType != JsonTokenType.StartObject)
+            {
+                throw new FormatException("A SPARQL Results JSON binding value must be an object.");
+            }
+
+            bindings.Add(new SparqlBinding(new SparqlVariable(variable), ReadTerm(ref reader)));
         }
 
         return new SparqlSolution(bindings);
     }
 
     /// <summary>
-    /// Parses a binding value object to an RDF term over an explicit post-order work stack, so a deeply-nested
-    /// triple term cannot overflow the call stack. The reachable depth is already bounded by
-    /// <see cref="JsonDocument"/>'s own nesting cap (a triple term nests roughly two JSON object levels per
-    /// quoted-triple level, so deeper input throws <see cref="System.Text.Json.JsonException"/> at parse before
-    /// this walk runs); no further quoted-triple cap is enforced here.
+    /// Parses a binding value object to an RDF term over an explicit stack, so a deeply-nested triple term cannot
+    /// overflow the call stack. A frame's <see cref="TermFrame.InValue"/> flag distinguishes a leaf's string
+    /// <c>value</c> from a triple's <c>value</c> wrapper object, whose <c>subject</c>/<c>predicate</c>/<c>object</c>
+    /// properties push child term frames. Properties are accepted in any order; a term is built at its closing brace.
     /// </summary>
-    /// <param name="value">The binding value object.</param>
+    /// <param name="reader">The reader positioned on the term object's start.</param>
     /// <returns>The parsed term.</returns>
-    private static RdfTerm ParseTerm(JsonElement value)
+    /// <exception cref="FormatException">The value object is malformed.</exception>
+    private static RdfTerm ReadTerm(ref Utf8JsonReader reader)
     {
-        Dictionary<int, RdfTerm> results = [];
-        Stack<TermFrame> work = new();
-        int nextId = 0;
-        TermFrame rootFrame = new() { Element = value, Id = nextId++ };
-        work.Push(rootFrame);
+        Stack<TermFrame> stack = new();
+        stack.Push(new TermFrame());
+        RdfTerm? result = null;
 
-        while(work.Count > 0)
+        while(stack.Count > 0)
         {
-            TermFrame frame = work.Pop();
-            if(!IsTriple(frame.Element))
+            if(!reader.Read())
             {
-                results[frame.Id] = ParseLeaf(frame.Element);
-                continue;
+                throw new FormatException("Unexpected end of JSON while reading a binding value.");
             }
 
-            if(frame.Combine)
+            TermFrame frame = stack.Peek();
+            if(reader.TokenType == JsonTokenType.EndObject)
             {
-                if(results[frame.PredicateId] is not NamedNode predicate)
+                if(frame.InValue)
                 {
-                    throw new FormatException("A SPARQL Results JSON triple value has a non-IRI predicate term.");
+                    //The triple's value wrapper closed; return to the triple frame's top-level properties.
+                    frame.InValue = false;
+                }
+                else
+                {
+                    RdfTerm term = BuildTerm(stack.Pop());
+                    if(stack.Count == 0)
+                    {
+                        result = term;
+                    }
+                    else
+                    {
+                        Assign(stack.Peek(), term);
+                    }
                 }
 
-                results[frame.Id] = new TripleTerm(results[frame.SubjectId], predicate, results[frame.ObjectId]);
                 continue;
             }
 
-            JsonElement inner = frame.Element.GetProperty(SparqlResultsJsonNames.Value);
-            TermFrame subject = new() { Element = Component(inner, SparqlResultsJsonNames.Subject), Id = nextId++ };
-            TermFrame predicateFrame = new() { Element = Component(inner, SparqlResultsJsonNames.Predicate), Id = nextId++ };
-            TermFrame @object = new() { Element = Component(inner, SparqlResultsJsonNames.Object), Id = nextId++ };
-            frame.Combine = true;
-            frame.SubjectId = subject.Id;
-            frame.PredicateId = predicateFrame.Id;
-            frame.ObjectId = @object.Id;
-            work.Push(frame);
-            work.Push(@object);
-            work.Push(predicateFrame);
-            work.Push(subject);
-        }
-
-        return results[rootFrame.Id];
-    }
-
-    /// <summary>Returns whether a binding value object is a triple term (<c>"type":"triple"</c>).</summary>
-    /// <param name="value">The value object.</param>
-    /// <returns><see langword="true"/> when it is a triple term.</returns>
-    private static bool IsTriple(JsonElement value)
-    {
-        return value.ValueKind == JsonValueKind.Object
-            && value.TryGetProperty(SparqlResultsJsonNames.Type, out JsonElement type)
-            && type.ValueKind == JsonValueKind.String
-            && string.Equals(type.GetString(), SparqlResultsJsonNames.Triple, StringComparison.Ordinal);
-    }
-
-    /// <summary>Returns the nested term object for a triple component (<c>subject</c>/<c>predicate</c>/<c>object</c>).</summary>
-    /// <param name="tripleValue">The triple's <c>value</c> object.</param>
-    /// <param name="component">The component property name.</param>
-    /// <returns>The component term object.</returns>
-    private static JsonElement Component(JsonElement tripleValue, string component)
-    {
-        if(!tripleValue.TryGetProperty(component, out JsonElement element))
-        {
-            throw new FormatException($"A SPARQL Results JSON triple value is missing its '{component}'.");
-        }
-
-        return element;
-    }
-
-    /// <summary>Parses a leaf value object (<c>uri</c>/<c>literal</c>/<c>typed-literal</c>/<c>bnode</c>) to its RDF term.</summary>
-    /// <param name="value">The value object.</param>
-    /// <returns>The parsed term.</returns>
-    private static RdfTerm ParseLeaf(JsonElement value)
-    {
-        if(value.ValueKind != JsonValueKind.Object)
-        {
-            throw new FormatException("A SPARQL Results JSON binding value must be an object.");
-        }
-
-        string type = RequireString(value, SparqlResultsJsonNames.Type);
-        string lexical = RequireString(value, SparqlResultsJsonNames.Value);
-
-        return type switch
-        {
-            SparqlResultsJsonNames.Uri => new NamedNode(Utf8String.FromString(lexical)),
-            SparqlResultsJsonNames.Bnode => new BlankNode(Utf8String.FromString(lexical)),
-            SparqlResultsJsonNames.Literal or SparqlResultsJsonNames.TypedLiteral => ParseLiteral(value, lexical),
-            _ => throw new FormatException($"Unsupported SPARQL Results JSON binding value type '{type}'.")
-        };
-    }
-
-    /// <summary>Parses a literal value: <c>rdf:dirLangString</c> when it carries both <c>xml:lang</c> and <c>its:dir</c> (RDF 1.2), <c>rdf:langString</c> for <c>xml:lang</c> alone, its declared <c>datatype</c>, or <c>xsd:string</c> otherwise.</summary>
-    /// <param name="value">The value object.</param>
-    /// <param name="lexical">The literal's lexical form.</param>
-    /// <returns>The literal term.</returns>
-    private static Literal ParseLiteral(JsonElement value, string lexical)
-    {
-        if(value.TryGetProperty(SparqlResultsJsonNames.Language, out JsonElement language) && language.ValueKind == JsonValueKind.String)
-        {
-            Utf8String tag = Utf8String.FromString(language.GetString()!);
-            if(value.TryGetProperty(SparqlResultsJsonNames.Direction, out JsonElement direction) && direction.ValueKind == JsonValueKind.String && TextDirections.TryParse(direction.GetString(), out TextDirection baseDirection))
+            if(reader.TokenType != JsonTokenType.PropertyName)
             {
-                return new Literal(Utf8String.FromString(lexical), RdfDirLangString, tag, baseDirection);
+                throw new FormatException("Expected a property name in a SPARQL Results JSON binding value.");
             }
 
-            return new Literal(Utf8String.FromString(lexical), RdfLangString, tag);
+            if(frame.InValue)
+            {
+                ComponentSlot slot = ClassifyComponent(ref reader);
+                reader.Read();
+                if(reader.TokenType != JsonTokenType.StartObject)
+                {
+                    throw new FormatException("A SPARQL Results JSON triple component must be an object.");
+                }
+
+                frame.Pending = slot;
+                stack.Push(new TermFrame());
+
+                continue;
+            }
+
+            PropertyKind property = ClassifyProperty(ref reader);
+            reader.Read();
+            switch(property)
+            {
+                case(PropertyKind.Type):
+                {
+                    frame.Kind = ClassifyType(ref reader);
+                    break;
+                }
+                case(PropertyKind.Value):
+                {
+                    if(reader.TokenType == JsonTokenType.StartObject)
+                    {
+                        //A triple's value is the wrapper object holding its components.
+                        frame.InValue = true;
+                    }
+                    else
+                    {
+                        frame.Lexical = ReadUtf8(ref reader);
+                    }
+
+                    break;
+                }
+                case(PropertyKind.Datatype):
+                {
+                    frame.Datatype = ReadUtf8(ref reader);
+                    break;
+                }
+                case(PropertyKind.Language):
+                {
+                    frame.Language = ReadUtf8(ref reader);
+                    break;
+                }
+                case(PropertyKind.Direction):
+                {
+                    frame.Direction = ReadUtf8(ref reader);
+                    break;
+                }
+                default:
+                {
+                    reader.Skip();
+                    break;
+                }
+            }
         }
 
-        if(value.TryGetProperty(SparqlResultsJsonNames.Datatype, out JsonElement datatype) && datatype.ValueKind == JsonValueKind.String)
-        {
-            return new Literal(Utf8String.FromString(lexical), new NamedNode(Utf8String.FromString(datatype.GetString()!)));
-        }
-
-        return new Literal(Utf8String.FromString(lexical), XsdString);
+        return result ?? throw new FormatException("A SPARQL Results JSON binding value did not produce a term.");
     }
 
-    /// <summary>Reads the <c>boolean</c> of an <c>ASK</c> result, accepting a JSON boolean or the strings <c>true</c>/<c>false</c>.</summary>
-    /// <param name="boolean">The <c>boolean</c> element.</param>
-    /// <returns>The boolean answer.</returns>
-    /// <exception cref="FormatException">The value is neither a JSON boolean nor <c>true</c>/<c>false</c>.</exception>
-    private static bool ReadBoolean(JsonElement boolean)
+    /// <summary>Builds the term for a completed frame from its type discriminator, scalars, and components.</summary>
+    /// <param name="frame">The completed frame.</param>
+    /// <returns>The built term.</returns>
+    /// <exception cref="FormatException">The frame's type is unsupported, or a triple component is missing or ill-typed.</exception>
+    private static RdfTerm BuildTerm(TermFrame frame)
     {
-        return boolean.ValueKind switch
+        return frame.Kind switch
         {
-            JsonValueKind.True => true,
-            JsonValueKind.False => false,
-            JsonValueKind.String when string.Equals(boolean.GetString(), "true", StringComparison.Ordinal) => true,
-            JsonValueKind.String when string.Equals(boolean.GetString(), "false", StringComparison.Ordinal) => false,
-            _ => throw new FormatException("A SPARQL ASK result's 'boolean' must be true or false.")
+            TermKind.Uri => new NamedNode(frame.Lexical ?? default),
+            TermKind.Bnode => new BlankNode(frame.Lexical ?? default),
+            TermKind.Literal => BuildLiteral(frame),
+            TermKind.Triple => BuildTriple(frame),
+            _ => throw new FormatException("Unsupported SPARQL Results JSON binding value type.")
         };
     }
 
-    /// <summary>Reads a required string property from a value object.</summary>
-    /// <param name="value">The value object.</param>
-    /// <param name="name">The property name.</param>
-    /// <returns>The string value.</returns>
-    /// <exception cref="FormatException">The property is missing or not a string.</exception>
-    private static string RequireString(JsonElement value, string name)
+    /// <summary>Builds a literal: <c>rdf:dirLangString</c> with both <c>xml:lang</c> and <c>its:dir</c>, <c>rdf:langString</c> for <c>xml:lang</c> alone, its declared datatype, or <c>xsd:string</c>.</summary>
+    /// <param name="frame">The completed literal frame.</param>
+    /// <returns>The literal term.</returns>
+    private static Literal BuildLiteral(TermFrame frame)
     {
-        if(!value.TryGetProperty(name, out JsonElement property) || property.ValueKind != JsonValueKind.String)
+        Utf8String lexical = frame.Lexical ?? default;
+        if(frame.Language is Utf8String tag)
         {
-            throw new FormatException($"A SPARQL Results JSON binding value is missing its string '{name}'.");
+            if(frame.Direction is Utf8String dir && TextDirections.TryParse(dir.Span, out TextDirection direction))
+            {
+                return new Literal(lexical, RdfDirLangString, tag, direction);
+            }
+
+            return new Literal(lexical, RdfLangString, tag);
         }
 
-        return property.GetString()!;
+        if(frame.Datatype is Utf8String datatype)
+        {
+            return new Literal(lexical, new NamedNode(datatype));
+        }
+
+        return new Literal(lexical, XsdString);
     }
 
-    /// <summary>One node on the explicit term-parse stack: its JSON element, its result id, and (for a triple) the ids of its parsed components.</summary>
+    /// <summary>Builds a triple term from its three parsed components.</summary>
+    /// <param name="frame">The completed triple frame.</param>
+    /// <returns>The triple term.</returns>
+    /// <exception cref="FormatException">A component is missing, or the predicate is not an IRI.</exception>
+    private static TripleTerm BuildTriple(TermFrame frame)
+    {
+        if(frame.Subject is null || frame.Predicate is null || frame.Object is null)
+        {
+            throw new FormatException("A SPARQL Results JSON triple value is missing a component.");
+        }
+
+        if(frame.Predicate is not NamedNode predicate)
+        {
+            throw new FormatException("A SPARQL Results JSON triple value has a non-IRI predicate term.");
+        }
+
+        return new TripleTerm(frame.Subject, predicate, frame.Object);
+    }
+
+    /// <summary>Stores a built component term into its parent triple frame's pending slot.</summary>
+    /// <param name="parent">The parent triple frame.</param>
+    /// <param name="child">The built component term.</param>
+    private static void Assign(TermFrame parent, RdfTerm child)
+    {
+        switch(parent.Pending)
+        {
+            case(ComponentSlot.Subject):
+            {
+                parent.Subject = child;
+                break;
+            }
+            case(ComponentSlot.Predicate):
+            {
+                parent.Predicate = child;
+                break;
+            }
+            default:
+            {
+                parent.Object = child;
+                break;
+            }
+        }
+    }
+
+    /// <summary>Classifies the current property-name token of a term object without materialising a string.</summary>
+    /// <param name="reader">The reader positioned on a property-name token.</param>
+    /// <returns>The matched property, or <see cref="PropertyKind.Unknown"/>.</returns>
+    private static PropertyKind ClassifyProperty(ref Utf8JsonReader reader)
+    {
+        if(reader.ValueTextEquals(SparqlResultsJsonNames.TypeUtf8))
+        {
+            return PropertyKind.Type;
+        }
+
+        if(reader.ValueTextEquals(SparqlResultsJsonNames.ValueUtf8))
+        {
+            return PropertyKind.Value;
+        }
+
+        if(reader.ValueTextEquals(SparqlResultsJsonNames.DatatypeUtf8))
+        {
+            return PropertyKind.Datatype;
+        }
+
+        if(reader.ValueTextEquals(SparqlResultsJsonNames.LanguageUtf8))
+        {
+            return PropertyKind.Language;
+        }
+
+        if(reader.ValueTextEquals(SparqlResultsJsonNames.DirectionUtf8))
+        {
+            return PropertyKind.Direction;
+        }
+
+        return PropertyKind.Unknown;
+    }
+
+    /// <summary>Classifies the current type-discriminator string token without materialising a string.</summary>
+    /// <param name="reader">The reader positioned on the type value token.</param>
+    /// <returns>The matched term kind, or <see cref="TermKind.Unknown"/>.</returns>
+    private static TermKind ClassifyType(ref Utf8JsonReader reader)
+    {
+        if(reader.ValueTextEquals(SparqlResultsJsonNames.UriUtf8))
+        {
+            return TermKind.Uri;
+        }
+
+        if(reader.ValueTextEquals(SparqlResultsJsonNames.BnodeUtf8))
+        {
+            return TermKind.Bnode;
+        }
+
+        if(reader.ValueTextEquals(SparqlResultsJsonNames.LiteralUtf8) || reader.ValueTextEquals(SparqlResultsJsonNames.TypedLiteralUtf8))
+        {
+            return TermKind.Literal;
+        }
+
+        if(reader.ValueTextEquals(SparqlResultsJsonNames.TripleUtf8))
+        {
+            return TermKind.Triple;
+        }
+
+        return TermKind.Unknown;
+    }
+
+    /// <summary>Classifies the current property-name token of a triple's value wrapper as a component slot.</summary>
+    /// <param name="reader">The reader positioned on a property-name token.</param>
+    /// <returns>The matched component slot; an unrecognised name maps to the object slot and is overwritten by a real one.</returns>
+    private static ComponentSlot ClassifyComponent(ref Utf8JsonReader reader)
+    {
+        if(reader.ValueTextEquals(SparqlResultsJsonNames.SubjectUtf8))
+        {
+            return ComponentSlot.Subject;
+        }
+
+        if(reader.ValueTextEquals(SparqlResultsJsonNames.PredicateUtf8))
+        {
+            return ComponentSlot.Predicate;
+        }
+
+        return ComponentSlot.Object;
+    }
+
+    /// <summary>Copies the current string or property-name token's unescaped UTF-8 into an owned <see cref="Utf8String"/>.</summary>
+    /// <param name="reader">The reader positioned on a string or property-name token.</param>
+    /// <returns>The decoded value.</returns>
+    private static Utf8String ReadUtf8(ref Utf8JsonReader reader)
+    {
+        int maxLength = reader.HasValueSequence ? checked((int)reader.ValueSequence.Length) : reader.ValueSpan.Length;
+        byte[] buffer = new byte[maxLength];
+        int written = reader.CopyString(buffer);
+
+        return new Utf8String(new ReadOnlyMemory<byte>(buffer, 0, written));
+    }
+
+    /// <summary>A binding value object's property, classified from its UTF-8 name.</summary>
+    private enum PropertyKind
+    {
+        /// <summary>An unrecognised property, skipped.</summary>
+        Unknown,
+
+        /// <summary>The <c>type</c> discriminator.</summary>
+        Type,
+
+        /// <summary>The <c>value</c> lexical form or triple wrapper.</summary>
+        Value,
+
+        /// <summary>The <c>datatype</c> IRI.</summary>
+        Datatype,
+
+        /// <summary>The <c>xml:lang</c> tag.</summary>
+        Language,
+
+        /// <summary>The <c>its:dir</c> base direction.</summary>
+        Direction
+    }
+
+    /// <summary>An RDF term's kind, classified from its <c>type</c> discriminator.</summary>
+    private enum TermKind
+    {
+        /// <summary>An unrecognised or absent type.</summary>
+        Unknown,
+
+        /// <summary>An IRI (<c>uri</c>).</summary>
+        Uri,
+
+        /// <summary>A blank node (<c>bnode</c>).</summary>
+        Bnode,
+
+        /// <summary>A literal (<c>literal</c> or legacy <c>typed-literal</c>).</summary>
+        Literal,
+
+        /// <summary>A quoted triple (<c>triple</c>).</summary>
+        Triple
+    }
+
+    /// <summary>The triple component a nested child term fills.</summary>
+    private enum ComponentSlot
+    {
+        /// <summary>The triple's subject.</summary>
+        Subject,
+
+        /// <summary>The triple's predicate.</summary>
+        Predicate,
+
+        /// <summary>The triple's object.</summary>
+        Object
+    }
+
+    /// <summary>The mutable parse state for one open term object on the deserialization stack.</summary>
     private sealed class TermFrame
     {
-        /// <summary>The JSON element this frame parses.</summary>
-        public JsonElement Element { get; init; }
+        /// <summary>The <c>type</c> discriminator.</summary>
+        public TermKind Kind { get; set; }
 
-        /// <summary>The id under which this frame's parsed term is stored.</summary>
-        public int Id { get; init; }
+        /// <summary>The <c>value</c> lexical form (for a leaf term).</summary>
+        public Utf8String? Lexical { get; set; }
 
-        /// <summary>Whether the frame is in its combine phase (its triple components are parsed).</summary>
-        public bool Combine { get; set; }
+        /// <summary>The <c>datatype</c> IRI (for a literal).</summary>
+        public Utf8String? Datatype { get; set; }
 
-        /// <summary>The result id of a triple's subject term.</summary>
-        public int SubjectId { get; set; }
+        /// <summary>The <c>xml:lang</c> tag (for a literal).</summary>
+        public Utf8String? Language { get; set; }
 
-        /// <summary>The result id of a triple's predicate term.</summary>
-        public int PredicateId { get; set; }
+        /// <summary>The <c>its:dir</c> base direction (for a literal).</summary>
+        public Utf8String? Direction { get; set; }
 
-        /// <summary>The result id of a triple's object term.</summary>
-        public int ObjectId { get; set; }
+        /// <summary>The built subject term (for a triple).</summary>
+        public RdfTerm? Subject { get; set; }
+
+        /// <summary>The built predicate term (for a triple).</summary>
+        public RdfTerm? Predicate { get; set; }
+
+        /// <summary>The built object term (for a triple).</summary>
+        public RdfTerm? Object { get; set; }
+
+        /// <summary>The component slot the next completed child term fills.</summary>
+        public ComponentSlot Pending { get; set; }
+
+        /// <summary>Whether the frame is reading the components inside its triple's <c>value</c> wrapper object.</summary>
+        public bool InValue { get; set; }
     }
 }

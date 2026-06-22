@@ -92,4 +92,31 @@ internal static class SparqlResultsJsonNames
 
     /// <summary>The <c>literal</c> type-value as UTF-8, for the writer.</summary>
     public static ReadOnlySpan<byte> LiteralUtf8 => "literal"u8;
+
+    /// <summary>The legacy <c>typed-literal</c> type-value as UTF-8, for the byte-native reader.</summary>
+    public static ReadOnlySpan<byte> TypedLiteralUtf8 => "typed-literal"u8;
+
+    /// <summary>The <c>head</c> property name as UTF-8, for the byte-native reader.</summary>
+    public static ReadOnlySpan<byte> HeadUtf8 => "head"u8;
+
+    /// <summary>The <c>vars</c> property name as UTF-8, for the byte-native reader.</summary>
+    public static ReadOnlySpan<byte> VarsUtf8 => "vars"u8;
+
+    /// <summary>The <c>results</c> property name as UTF-8, for the byte-native reader.</summary>
+    public static ReadOnlySpan<byte> ResultsUtf8 => "results"u8;
+
+    /// <summary>The <c>bindings</c> property name as UTF-8, for the byte-native reader.</summary>
+    public static ReadOnlySpan<byte> BindingsUtf8 => "bindings"u8;
+
+    /// <summary>The <c>boolean</c> property name as UTF-8, for the byte-native reader.</summary>
+    public static ReadOnlySpan<byte> BooleanUtf8 => "boolean"u8;
+
+    /// <summary>The <c>subject</c> component name as UTF-8, for the byte-native reader.</summary>
+    public static ReadOnlySpan<byte> SubjectUtf8 => "subject"u8;
+
+    /// <summary>The <c>predicate</c> component name as UTF-8, for the byte-native reader.</summary>
+    public static ReadOnlySpan<byte> PredicateUtf8 => "predicate"u8;
+
+    /// <summary>The <c>object</c> component name as UTF-8, for the byte-native reader.</summary>
+    public static ReadOnlySpan<byte> ObjectUtf8 => "object"u8;
 }

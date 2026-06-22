@@ -93,6 +93,30 @@ internal sealed class SparqlResultsJsonReaderTests
         Assert.AreEqual(new BlankNode(Utf8String.FromString("b0")), Value(solution, "b"));
     }
 
+    /// <summary>Multi-byte UTF-8 in an IRI and a literal value is copied straight from the reader, byte-for-byte.</summary>
+    [TestMethod]
+    public void ReadsMultiByteUtf8Values()
+    {
+        SparqlResultSet result = Read(
+            """
+            {
+              "head": { "vars": [ "iri", "lit" ] },
+              "results": { "bindings": [
+                { "iri": { "type": "uri", "value": "http://example.org/café" },
+                  "lit": { "type": "literal", "value": "café ☕", "xml:lang": "fr" } }
+              ] }
+            }
+            """);
+
+        SparqlSolution solution = result.Solutions[0];
+        Assert.AreEqual("http://example.org/café", ((NamedNode)Value(solution, "iri")).Iri.ToString());
+
+        Literal literal = (Literal)Value(solution, "lit");
+        Assert.AreEqual("café ☕", literal.Value.ToString());
+        Assert.AreEqual("fr", literal.Language?.ToString());
+        CollectionAssert.AreEqual(System.Text.Encoding.UTF8.GetBytes("café ☕"), literal.Value.Span.ToArray());
+    }
+
     /// <summary>The legacy <c>typed-literal</c> type is read as a datatyped literal.</summary>
     [TestMethod]
     public void ReadsLegacyTypedLiteral()
