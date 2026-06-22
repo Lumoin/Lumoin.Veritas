@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace Lumoin.Veritas.Core.Integrity;
 
@@ -31,23 +32,32 @@ public enum RepairRefusalReason
 /// it commits nothing, so a clean outcome means the corruption is fully recoverable (every damaged derived
 /// artifact re-derived and nothing named lost), not that anything was published.
 /// </summary>
-public sealed class RepairPassReport
+public sealed class RepairPassReport: IDisposable
 {
+    /// <summary>The pooled image buffers backing the re-derived artifacts' <see cref="RederivedArtifact.Image"/> views; this report owns them and returns them to their pool on <see cref="Dispose"/>, after the caller has staged the images.</summary>
+    private readonly IReadOnlyList<PooledArtifactImage> ownedImages;
+
+    /// <summary>One once the owned image buffers have been returned; guards a second return.</summary>
+    private int disposed;
+
     /// <summary>Creates a repair-pass report.</summary>
     /// <param name="commitGeneration">The manifest commit generation the pass acted on.</param>
     /// <param name="refusal">Why the pass declined, or <see cref="RepairRefusalReason.None"/> when it acted.</param>
     /// <param name="rederivedArtifacts">The derived artifacts regenerated from the verified system-of-record.</param>
     /// <param name="namedLosses">The item losses named when no restoring rung applied.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="rederivedArtifacts"/> or <paramref name="namedLosses"/> is <see langword="null"/>.</exception>
-    public RepairPassReport(long commitGeneration, RepairRefusalReason refusal, IReadOnlyList<RederivedArtifact> rederivedArtifacts, IReadOnlyList<UnrecoverableItemReport> namedLosses)
+    /// <param name="ownedImages">The pooled image buffers backing the re-derived artifacts' images; this report takes ownership and disposes them. Empty when no artifact carries a pooled image (every image is garbage-collected, or none was produced).</param>
+    /// <exception cref="ArgumentNullException"><paramref name="rederivedArtifacts"/>, <paramref name="namedLosses"/>, or <paramref name="ownedImages"/> is <see langword="null"/>.</exception>
+    public RepairPassReport(long commitGeneration, RepairRefusalReason refusal, IReadOnlyList<RederivedArtifact> rederivedArtifacts, IReadOnlyList<UnrecoverableItemReport> namedLosses, IReadOnlyList<PooledArtifactImage> ownedImages)
     {
         ArgumentNullException.ThrowIfNull(rederivedArtifacts);
         ArgumentNullException.ThrowIfNull(namedLosses);
+        ArgumentNullException.ThrowIfNull(ownedImages);
 
         CommitGeneration = commitGeneration;
         Refusal = refusal;
         RederivedArtifacts = rederivedArtifacts;
         NamedLosses = namedLosses;
+        this.ownedImages = ownedImages;
     }
 
     /// <summary>The manifest commit generation the pass acted on.</summary>
@@ -67,4 +77,16 @@ public sealed class RepairPassReport
 
     /// <summary>Whether the corruption is fully recoverable: the pass acted, every damaged derived artifact re-derived, and nothing was named lost.</summary>
     public bool IsClean => !Refused && NamedLosses.Count == 0;
+
+    /// <summary>Returns every pooled image buffer this report owns to its pool; idempotent. Call after the re-derived images have been staged (or the report has been observed); reading a <see cref="RederivedArtifact.Image"/> afterward reads recycled memory.</summary>
+    public void Dispose()
+    {
+        if(Interlocked.Exchange(ref disposed, 1) == 0)
+        {
+            for(int i = 0; i < ownedImages.Count; i++)
+            {
+                ownedImages[i].Dispose();
+            }
+        }
+    }
 }

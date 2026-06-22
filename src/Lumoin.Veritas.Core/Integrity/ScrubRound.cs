@@ -140,25 +140,25 @@ public static class ScrubRound
         //A degraded snapshot may be a torn-publish orphan; re-deriving atop it is unsafe.
         if(verifyReport.IsDegradedSnapshot)
         {
-            return new RepairPassReport(verifyReport.CommitGeneration, RepairRefusalReason.DegradedSnapshot, [], []);
+            return new RepairPassReport(verifyReport.CommitGeneration, RepairRefusalReason.DegradedSnapshot, [], [], []);
         }
 
         //A clean report has nothing to repair.
         if(verifyReport.CorruptBlocks.Count == 0)
         {
-            return new RepairPassReport(verifyReport.CommitGeneration, RepairRefusalReason.None, [], []);
+            return new RepairPassReport(verifyReport.CommitGeneration, RepairRefusalReason.None, [], [], []);
         }
 
         RecoveryResult recovery = new ManifestRecovery(store, resolveChecksum).Recover();
         if(recovery.IsDegraded)
         {
-            return new RepairPassReport(verifyReport.CommitGeneration, RepairRefusalReason.DegradedSnapshot, [], []);
+            return new RepairPassReport(verifyReport.CommitGeneration, RepairRefusalReason.DegradedSnapshot, [], [], []);
         }
 
         Manifest manifest = recovery.Manifest;
         if(manifest.CommitGeneration != verifyReport.CommitGeneration)
         {
-            return new RepairPassReport(verifyReport.CommitGeneration, RepairRefusalReason.StaleFindings, [], []);
+            return new RepairPassReport(verifyReport.CommitGeneration, RepairRefusalReason.StaleFindings, [], [], []);
         }
 
         bool dataSegmentDamaged = false;
@@ -189,7 +189,7 @@ public static class ScrubRound
         byte[]? systemOfRecordImage = ReadDataSegmentImage(store, manifest);
         if(systemOfRecordImage is null)
         {
-            return new RepairPassReport(manifest.CommitGeneration, RepairRefusalReason.SystemOfRecordUnreadable, [], []);
+            return new RepairPassReport(manifest.CommitGeneration, RepairRefusalReason.SystemOfRecordUnreadable, [], [], []);
         }
 
         //Every repair path reads the one verified system-of-record feed: to re-derive the sidecar or the
@@ -241,11 +241,11 @@ public static class ScrubRound
                 coordinator.Repair(ManifestFileRole.Parity);
             }
 
-            return new RepairPassReport(manifest.CommitGeneration, RepairRefusalReason.None, [.. coordinator.RederivedArtifacts], [.. coordinator.NamedLosses]);
+            return new RepairPassReport(manifest.CommitGeneration, RepairRefusalReason.None, [.. coordinator.RederivedArtifacts], [.. coordinator.NamedLosses], [.. coordinator.TakeImageOwners()]);
         }
         catch(InvalidDataException)
         {
-            return new RepairPassReport(manifest.CommitGeneration, RepairRefusalReason.SystemOfRecordUnreadable, [], []);
+            return new RepairPassReport(manifest.CommitGeneration, RepairRefusalReason.SystemOfRecordUnreadable, [], [], []);
         }
         finally
         {

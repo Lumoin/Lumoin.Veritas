@@ -82,7 +82,10 @@ public sealed class ScrubTurn
         EmitRoundMarker(StorageTraceEventKind.ScrubRoundBegan, sequence: 0, timestampTicks, generation: 0, itemCount: 0);
 
         ScrubRoundReport verifyReport = ScrubRound.RunVerifyPass(store, resolveChecksum, trace, correlationId, timeProvider);
-        RepairPassReport repairReport = ScrubRound.RunRepairPass(store, verifyReport, configuration, resolveChecksum, trace, correlationId, timeProvider);
+
+        //The repair report owns any pooled image buffers it carries (a parity-restored system-of-record image);
+        //the sink reads them synchronously within the await, then this round returns them to the pool on dispose.
+        using RepairPassReport repairReport = ScrubRound.RunRepairPass(store, verifyReport, configuration, resolveChecksum, trace, correlationId, timeProvider);
 
         EmitRoundMarker(StorageTraceEventKind.ScrubRoundCompleted, sequence: 1, timestampTicks, verifyReport.CommitGeneration, verifyReport.CorruptBlocks.Count);
 

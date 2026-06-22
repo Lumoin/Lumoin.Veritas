@@ -56,7 +56,7 @@ internal sealed class GenerationCommitCoordinatorTests
         try
         {
             FakeTimeProvider clock = new();
-            RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
+            using RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
             Assert.IsTrue(repair.IsClean, "A damaged-sidecar repair re-derives cleanly.");
 
             GenerationCommitReport report = Coordinator(store, bytePool, clock, trace: null).Commit(repair, Guid.Empty);
@@ -89,7 +89,7 @@ internal sealed class GenerationCommitCoordinatorTests
             ManifestEntry priorSidecar = ReadEntry(store, ManifestFileRole.Sidecar);
             ManifestEntry priorSketch = ReadEntry(store, ManifestFileRole.Sketch);
 
-            RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
+            using RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
             Coordinator(store, bytePool, clock, trace: null).Commit(repair, Guid.Empty);
 
             ManifestEntry healedSegment = ReadEntry(store, ManifestFileRole.DataSegment);
@@ -127,7 +127,7 @@ internal sealed class GenerationCommitCoordinatorTests
         try
         {
             FakeTimeProvider clock = new();
-            RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
+            using RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
             GenerationCommitCoordinator coordinator = Coordinator(store, bytePool, clock, trace: null);
 
             GenerationCommitReport first = coordinator.Commit(repair, Guid.Empty);
@@ -158,7 +158,7 @@ internal sealed class GenerationCommitCoordinatorTests
         try
         {
             FakeTimeProvider clock = new();
-            RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
+            using RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
 
             GenerationCommitReport report = Coordinator(store, bytePool, clock, trace: null).Commit(repair, Guid.Empty);
 
@@ -187,7 +187,7 @@ internal sealed class GenerationCommitCoordinatorTests
         try
         {
             FakeTimeProvider clock = new();
-            RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
+            using RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
             Assert.IsTrue(repair.Refused, "A truncated system-of-record forces the repair to refuse.");
 
             GenerationCommitReport report = Coordinator(store, bytePool, clock, trace: null).Commit(repair, Guid.Empty);
@@ -212,7 +212,7 @@ internal sealed class GenerationCommitCoordinatorTests
         try
         {
             FakeTimeProvider clock = new();
-            RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
+            using RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
             StorageTraceCapture trace = new();
 
             Coordinator(store, bytePool, clock, trace.Capture).Commit(repair, Guid.Empty);
@@ -243,7 +243,7 @@ internal sealed class GenerationCommitCoordinatorTests
         try
         {
             FakeTimeProvider clock = new();
-            RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
+            using RepairPassReport repair = RunRepair(store, bytePool, triplePool, clock);
             Assert.IsNotEmpty(repair.RederivedArtifacts, "The damaged sidecar is re-derived from the surviving items.");
             Assert.IsNotEmpty(repair.NamedLosses, "The corrupt system-of-record block is named lost.");
 

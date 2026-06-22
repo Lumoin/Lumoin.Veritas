@@ -265,16 +265,16 @@ public sealed partial class ItemSegment
     /// <param name="lostBlock">The index of the block to restore, in <c>[0, block count)</c>.</param>
     /// <param name="parity">The capacity-1 parity block, exactly the block stride (<see cref="MaxBlockPayloadByteCount"/>) wide; a different width cannot restore this segment and yields <see langword="null"/>.</param>
     /// <param name="parityProtectedBlockCount">The number of system-of-record blocks the parity was folded over; a value other than this image's block count is a co-version mismatch and yields <see langword="null"/>.</param>
-    /// <param name="scratchPool">The pool a transient XOR accumulator is rented from; threaded in by the caller.</param>
+    /// <param name="pool">The pool the returned image and a transient XOR accumulator are rented from; threaded in by the caller, who owns and disposes the returned image.</param>
     /// <param name="resolveChecksum">Resolves the image's checksum-algorithm id; <see langword="null"/> uses <see cref="ChecksumAlgorithm.DefaultResolver"/>.</param>
-    /// <returns>A fresh image with the lost block restored when the restore self-verifies; otherwise <see langword="null"/>.</returns>
-    /// <exception cref="ArgumentNullException"><paramref name="scratchPool"/> is <see langword="null"/>.</exception>
+    /// <returns>An owned, pooled image with the lost block restored when the restore self-verifies; otherwise <see langword="null"/>. The caller disposes a non-<see langword="null"/> result.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="pool"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="lostBlock"/> is negative or not less than the block count.</exception>
     /// <exception cref="InvalidDataException">The image is not an item segment, is malformed, or is truncated.</exception>
     /// <exception cref="NotSupportedException">The major version, a required feature, or the checksum algorithm is unsupported, or the host is big-endian.</exception>
-    public static byte[]? TryRestoreBlockFromParity(ReadOnlySpan<byte> image, int lostBlock, ReadOnlySpan<byte> parity, int parityProtectedBlockCount, MemoryPool<byte> scratchPool, ResolveChecksumAlgorithmDelegate? resolveChecksum = null)
+    public static PooledArtifactImage? TryRestoreBlockFromParity(ReadOnlySpan<byte> image, int lostBlock, ReadOnlySpan<byte> parity, int parityProtectedBlockCount, MemoryPool<byte> pool, ResolveChecksumAlgorithmDelegate? resolveChecksum = null)
     {
-        ArgumentNullException.ThrowIfNull(scratchPool);
+        ArgumentNullException.ThrowIfNull(pool);
         SegmentLayout layout = ParseFraming(image, resolveChecksum);
         ArgumentOutOfRangeException.ThrowIfNegative(lostBlock);
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(lostBlock, layout.BlockCount);
@@ -293,38 +293,54 @@ public sealed partial class ItemSegment
             return null;
         }
 
-        byte[] repaired = new byte[image.Length];
-        image.CopyTo(repaired);
-
-        using ParityBlock scratch = ParityBlock.Rent(scratchPool, stride);
-        Span<byte> accumulator = scratch.WritableSpan;
-        parity.CopyTo(accumulator);
-        for(int block = 0; block < layout.BlockCount; block++)
+        //The restored image is rented from the caller's pool; a failed self-check returns it to the pool via the
+        //finally (the local is nulled out only once the verified image is handed back), rather than leaking an
+        //unverified buffer. The transient XOR accumulator is a separate scratch rental disposed within the try.
+        PooledArtifactImage? repaired = PooledArtifactImage.Rent(pool, image.Length);
+        try
         {
-            if(block == lostBlock)
+            Span<byte> repairedSpan = repaired.WritableSpan;
+            image.CopyTo(repairedSpan);
+
+            using ParityBlock scratch = ParityBlock.Rent(pool, stride);
+            Span<byte> accumulator = scratch.WritableSpan;
+            parity.CopyTo(accumulator);
+            for(int block = 0; block < layout.BlockCount; block++)
             {
-                continue;
+                if(block == lostBlock)
+                {
+                    continue;
+                }
+
+                int start = block * layout.BlockItemCount;
+                int itemsInBlock = Math.Min(layout.BlockItemCount, layout.ItemCount - start);
+                long blockOffset = layout.FirstBlock + (block * layout.BlockBytes);
+                ParityCodec.AccumulateXor(accumulator, image.Slice((int)blockOffset, itemsInBlock * ItemByteSize));
             }
 
-            int start = block * layout.BlockItemCount;
-            int itemsInBlock = Math.Min(layout.BlockItemCount, layout.ItemCount - start);
-            long blockOffset = layout.FirstBlock + (block * layout.BlockBytes);
-            ParityCodec.AccumulateXor(accumulator, image.Slice((int)blockOffset, itemsInBlock * ItemByteSize));
+            int lostStart = lostBlock * layout.BlockItemCount;
+            int lostItemsInBlock = Math.Min(layout.BlockItemCount, layout.ItemCount - lostStart);
+            int lostLength = lostItemsInBlock * ItemByteSize;
+            long lostOffset = layout.FirstBlock + (lostBlock * layout.BlockBytes);
+            accumulator[..lostLength].CopyTo(repairedSpan.Slice((int)lostOffset, lostLength));
+
+            Span<byte> digest = stackalloc byte[ChecksumAlgorithm.MaximumByteWidth];
+            if(!VerifyBlock(repairedSpan, layout, lostBlock, digest, out _, out _, out _))
+            {
+                return null;
+            }
+
+            //The restore self-verified: hand ownership of the image to the caller and null the local so the
+            //finally does not return the now-borrowed buffer to the pool.
+            PooledArtifactImage verified = repaired;
+            repaired = null;
+
+            return verified;
         }
-
-        int lostStart = lostBlock * layout.BlockItemCount;
-        int lostItemsInBlock = Math.Min(layout.BlockItemCount, layout.ItemCount - lostStart);
-        int lostLength = lostItemsInBlock * ItemByteSize;
-        long lostOffset = layout.FirstBlock + (lostBlock * layout.BlockBytes);
-        accumulator[..lostLength].CopyTo(repaired.AsSpan((int)lostOffset, lostLength));
-
-        Span<byte> digest = stackalloc byte[ChecksumAlgorithm.MaximumByteWidth];
-        if(!VerifyBlock(repaired, layout, lostBlock, digest, out _, out _, out _))
+        finally
         {
-            return null;
+            repaired?.Dispose();
         }
-
-        return repaired;
     }
 
     /// <summary>Reads back the block geometry (item count, triples per block, and block alignment) an image was written with, without verifying its checksums or decoding its triples — the cheap geometry peek a parity re-derive uses to rebuild the parity over the same blocks.</summary>

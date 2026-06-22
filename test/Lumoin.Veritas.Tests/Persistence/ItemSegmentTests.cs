@@ -87,8 +87,8 @@ internal sealed class ItemSegmentTests
             using ArtifactImage image = ToImage(segment, checksum, imagePool);
             using DecodedItemSegment restored = ItemSegment.ReadFrom(image.Bytes, triplePool);
 
-            Assert.AreEqual(triples.Length, restored.Count);
-            Assert.IsTrue(triples.AsSpan().SequenceEqual(restored.Items.Span), $"The triples did not round-trip in order (algorithm {checksum?.Name ?? "none"}).");
+            Assert.AreEqual(triples.Length, restored.Length);
+            Assert.IsTrue(triples.AsSpan().SequenceEqual(restored.Span), $"The triples did not round-trip in order (algorithm {checksum?.Name ?? "none"}).");
         }
     }
 
@@ -125,8 +125,8 @@ internal sealed class ItemSegmentTests
                 //ReadFrom over the whole over-sized buffer recovers the triples, so it consumes exactly the
                 //declared total (== size) and tolerates the sentinel tail rather than reading to the end.
                 using DecodedItemSegment restored = ItemSegment.ReadFrom(buffer, triplePool);
-                Assert.AreEqual(triples.Length, restored.Count);
-                Assert.IsTrue(triples.AsSpan().SequenceEqual(restored.Items.Span), $"The exact-size image did not round-trip (algorithm {checksum?.Name ?? "none"}, {count}/{blockItemCount}).");
+                Assert.AreEqual(triples.Length, restored.Length);
+                Assert.IsTrue(triples.AsSpan().SequenceEqual(restored.Span), $"The exact-size image did not round-trip (algorithm {checksum?.Name ?? "none"}, {count}/{blockItemCount}).");
             }
         }
     }
@@ -191,7 +191,7 @@ internal sealed class ItemSegmentTests
         image.WritableBytes[firstBlock + (10 * 12)] ^= 0xFF;
 
         using DecodedItemSegment restored = ItemSegment.ReadFrom(image.Bytes, triplePool);
-        Assert.IsTrue(triples.AsSpan().SequenceEqual(restored.Items.Span), "An inert padding-byte corruption was not tolerated, so the per-block checksum domain spans the padded stride rather than the payload.");
+        Assert.IsTrue(triples.AsSpan().SequenceEqual(restored.Span), "An inert padding-byte corruption was not tolerated, so the per-block checksum domain spans the padded stride rather than the payload.");
     }
 
     /// <summary>A byte corrupted in the front matter (the per-block checksum section it covers) fails the front-matter trailer, under both the 8-byte and 4-byte checksum widths.</summary>
@@ -276,7 +276,7 @@ internal sealed class ItemSegmentTests
         using ArtifactImage image = ToImage(segment, ChecksumAlgorithm.XxHash3, imagePool);
         using DecodedItemSegment restored = ItemSegment.ReadFrom(image.Bytes, triplePool);
 
-        Assert.AreEqual(0, restored.Count);
+        Assert.AreEqual(0, restored.Length);
     }
 
     /// <summary>Each item block begins on the default page boundary, so the image lays the blocks out page-aligned.</summary>
@@ -299,7 +299,7 @@ internal sealed class ItemSegmentTests
         Span<byte> image = owner.Memory.Span[..(int)expected];
         segment.WriteTo(image, ChecksumAlgorithm.XxHash3);
         using DecodedItemSegment restored = ItemSegment.ReadFrom(image, triplePool);
-        Assert.IsTrue(triples.AsSpan().SequenceEqual(restored.Items.Span));
+        Assert.IsTrue(triples.AsSpan().SequenceEqual(restored.Span));
 
         //Observe the page alignment directly in the bytes rather than only through the size formula: each
         //block begins on a 4 KiB multiple, and the first record of block k decodes to that block's first
@@ -326,7 +326,7 @@ internal sealed class ItemSegmentTests
         using ArtifactImage image = ToImage(segment, ChecksumAlgorithm.XxHash3, imagePool);
 
         using DecodedItemSegment recovered = ItemSegment.ReadFrom(image.Bytes, triplePool);
-        ColumnarTripleIndex sidecar = ColumnarTripleIndex.Build(MemoryMarshal.ToEnumerable(recovered.Items));
+        ColumnarTripleIndex sidecar = ColumnarTripleIndex.Build(MemoryMarshal.ToEnumerable(recovered.Memory));
 
         HashSet<EncodedTriple> expected = [.. triples];
         HashSet<EncodedTriple> actual = [.. sidecar.EnumerateTriples()];
@@ -346,7 +346,7 @@ internal sealed class ItemSegmentTests
         using(DecodedItemSegment decoded = ItemSegment.ReadFrom(image.Bytes, triplePool))
         {
             Assert.AreEqual(1, triplePool.OutstandingRentals);
-            Assert.AreEqual(triples.Length, decoded.Count);
+            Assert.AreEqual(triples.Length, decoded.Length);
         }
 
         Assert.AreEqual(0, triplePool.OutstandingRentals, "The decoded item segment must return its buffer to the pool on dispose.");

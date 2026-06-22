@@ -512,7 +512,7 @@ internal sealed class PersistenceCombinationMatrixTests
             AssertDetectionVerdict(cell, verify);
 
             StorageTraceCapture trace = new();
-            RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, trace.Capture, Guid.Empty, clock);
+            using RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, trace.Capture, Guid.Empty, clock);
             AssertRepairOutcome(cell, repair, trace, bytePool, triplePool);
         }
         finally
@@ -849,7 +849,7 @@ internal sealed class PersistenceCombinationMatrixTests
         Assert.IsTrue(ItemSegment.RunVerifyRound(restored.Image.Span).IsClean, "The restored system-of-record must verify clean.");
         using VeritasMemoryPool<EncodedTriple> triplePool = new();
         using DecodedItemSegment recovered = ItemSegment.ReadFrom(restored.Image.Span, triplePool);
-        bool faithful = recovered.Items.Span.SequenceEqual(Triples);
+        bool faithful = recovered.Span.SequenceEqual(Triples);
         Assert.IsTrue(faithful, "The restored system-of-record must hold exactly the original triples — the peel's differential twin (I3).");
         StorageTraceEvent reingested = trace.Events.Single(static e => e.Kind == StorageTraceEventKind.Reingested);
         Assert.AreEqual((long)TripleCount, reingested.ItemCount, "The healed system-of-record holds every item.");

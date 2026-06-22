@@ -67,6 +67,9 @@ internal sealed class RepairCoordinator: IDisposable
     /// <summary>The owned, pooled full system-of-record item set after a parity restore healed the segment this pass, or <see langword="null"/> when the segment was not restored. A view re-derived after a restore folds these (via <see cref="RederiveItems"/>) so every tier reflects the same items; the coordinator disposes it at pass end, after those re-derives have run. It needs to be a mutable field because it is set during the pass and is the disposable resource the coordinator owns.</summary>
     private DecodedItemSegment? restoredItemsOwner;
 
+    /// <summary>The pooled image buffers backing this pass's re-derived artifacts (a restored system-of-record image so far); the coordinator owns them until <see cref="TakeImageOwners"/> hands them to the <see cref="RepairPassReport"/> and clears this list, after which the report disposes them. Any still listed when the pass ends — an exception before the transfer — are disposed by <see cref="Dispose"/>, so the emptiness of this list IS the "transferred" state (no separate flag). Get-only: the list reference is fixed, its contents are the mutable state.</summary>
+    private List<PooledArtifactImage> ImageOwners { get; } = [];
+
     /// <summary>Creates a coordinator for one repair pass.</summary>
     /// <param name="feed">The verified system-of-record feed every re-derive and loss-naming reads from; borrowed — the caller owns its lifetime.</param>
     /// <param name="configuration">The re-derive knobs and pools.</param>
@@ -104,6 +107,16 @@ internal sealed class RepairCoordinator: IDisposable
 
     /// <summary>The item losses named this pass.</summary>
     internal IReadOnlyList<UnrecoverableItemReport> NamedLosses => losses;
+
+    /// <summary>Transfers ownership of this pass's pooled image buffers to the caller (the <see cref="RepairPassReport"/>): it returns a snapshot and CLEARS the coordinator's list, so a later <see cref="Dispose"/> finds nothing to dispose (the report now owns them). Call exactly once, when the pass succeeds and the report is built.</summary>
+    /// <returns>The pooled image buffers backing the re-derived artifacts.</returns>
+    internal IReadOnlyList<PooledArtifactImage> TakeImageOwners()
+    {
+        PooledArtifactImage[] taken = [.. ImageOwners];
+        ImageOwners.Clear();
+
+        return taken;
+    }
 
     /// <summary>Repairs the damaged artifact of role <paramref name="role"/> by descending the repair-source ladder: a derived artifact re-derives at the re-derive rung; the system-of-record descends to the terminal rung and its corrupt blocks' item ranges are named lost.</summary>
     /// <param name="role">The damaged artifact's role.</param>
@@ -186,27 +199,40 @@ internal sealed class RepairCoordinator: IDisposable
         }
 
         SkippedItemRange lost = skipped[0];
-        byte[]? repaired = ItemSegment.TryRestoreBlockFromParity(source.SystemOfRecordImage.Span, lost.BlockIndex, source.Parity.Span, source.ProtectedBlockCount, configuration.BytePool, source.ResolveChecksum);
+        PooledArtifactImage? repaired = ItemSegment.TryRestoreBlockFromParity(source.SystemOfRecordImage.Span, lost.BlockIndex, source.Parity.Span, source.ProtectedBlockCount, configuration.BytePool, source.ResolveChecksum);
         if(repaired is null)
         {
             return false;
         }
 
-        //The healed image holds the full item set; a view re-derived after this folds it, not the pruned feed.
-        //The decode is owned by the coordinator and disposed at pass end, after the co-damaged re-derives that
-        //fold restoredItems have run.
-        DecodedItemSegment healed = ItemSegment.ReadFrom(repaired, configuration.TriplePool, source.ResolveChecksum);
-        restoredItemsOwner = healed;
-        RecordRestored(ManifestFileRole.DataSegment, repaired, healed.Count);
+        try
+        {
+            //The healed image holds the full item set; a view re-derived after this folds it, not the pruned feed.
+            //The decode is owned by the coordinator (restoredItemsOwner) and disposed at pass end, after the
+            //co-damaged re-derives that fold restoredItems have run.
+            DecodedItemSegment healed = ItemSegment.ReadFrom(repaired.Span, configuration.TriplePool, source.ResolveChecksum);
+            restoredItemsOwner = healed;
+            RecordRestored(ManifestFileRole.DataSegment, repaired.Memory, healed.Length);
+
+            //Ownership of the restored image transfers to the owned-images list — which transfers to the report on
+            //success, or is disposed by Dispose if the pass aborts later. Null the local so the finally disposes it
+            //only when a throw above prevented the transfer.
+            ImageOwners.Add(repaired);
+            repaired = null;
+        }
+        finally
+        {
+            repaired?.Dispose();
+        }
 
         return true;
     }
 
     /// <summary>The system-of-record items a re-derive folds: the parity-restored full set when the segment was healed this pass, otherwise the verified feed, which excludes any block the segment lost.</summary>
-    private ReadOnlyMemory<EncodedTriple> RederiveItems => restoredItemsOwner?.Items ?? feed.VerifiedItems;
+    private ReadOnlyMemory<EncodedTriple> RederiveItems => restoredItemsOwner?.Memory ?? feed.VerifiedItems;
 
     /// <summary>The number of system-of-record items a re-derive folds.</summary>
-    private int RederiveItemCount => restoredItemsOwner?.Count ?? feed.VerifiedCount;
+    private int RederiveItemCount => restoredItemsOwner?.Length ?? feed.VerifiedCount;
 
     /// <summary>Rebuilds the columnar sidecar from the verified system-of-record triples and records the fresh image.</summary>
     private void RederiveSidecar()
@@ -308,9 +334,14 @@ internal sealed class RepairCoordinator: IDisposable
         trace(in evt);
     }
 
-    /// <summary>Returns the pooled decode that backed a parity-restored item set to its pool; idempotent, and a no-op when no restore occurred. The borrowed feed and parity source are the caller's to dispose.</summary>
+    /// <summary>Returns the pass's pooled buffers to their pools: the parity-restored item-set decode always, and any re-derived image buffers still owned here. On success <see cref="TakeImageOwners"/> already cleared the list (the report owns them), so this disposes images only when the pass threw before the transfer — a restored-then-aborted pass never leaks the restored image. The borrowed feed and parity source are the caller's to dispose.</summary>
     public void Dispose()
     {
         restoredItemsOwner?.Dispose();
+
+        for(int i = 0; i < ImageOwners.Count; i++)
+        {
+            ImageOwners[i].Dispose();
+        }
     }
 }
