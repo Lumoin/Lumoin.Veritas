@@ -1,66 +1,41 @@
 using System;
 using System.Buffers;
+using Lumoin.Veritas.Core.Memory;
 using Lumoin.Veritas.Core.Persistence.Manifest;
 
 namespace Lumoin.Veritas.Tests.Integrity;
 
 /// <summary>
-/// A serialized persistence-artifact image the storage self-heal tests stage and damage: the artifact's
-/// manifest role together with its bytes held in a buffer rented from a caller-supplied
-/// <see cref="System.Buffers.MemoryPool{T}"/> — threaded in by the test, never a shared singleton — rather than
-/// a loose array, so an image is a semantic value with pooled, owned storage, the test analog of
-/// <see cref="Lumoin.Veritas.Core.Columnar.PooledColumnarImageSource"/>. The read view feeds the verify,
-/// checksum, and staging paths; the writable view is how the fault injectors damage the image in place.
-/// Disposing returns the buffer to the pool the caller threaded in.
+/// A serialized persistence-artifact image the storage self-heal tests stage and damage: a pooled, owned
+/// buffer (<see cref="PooledBuffer{T}"/>) carrying the artifact's manifest role alongside its bytes, the test
+/// analog of <see cref="Lumoin.Veritas.Core.Columnar.PooledColumnarImageSource"/> and a sibling of the
+/// production owned-image type <see cref="Lumoin.Veritas.Core.Integrity.PooledArtifactImage"/>. The read view
+/// (<see cref="Bytes"/>) feeds the verify, checksum, and staging paths; the writable view
+/// (<see cref="WritableBytes"/>) is how the fault injectors damage the image in place. Disposing returns the
+/// buffer to the pool the caller threaded in. Being its own type keeps a staged image from being interchanged
+/// with another byte buffer of a different purpose.
 /// </summary>
-internal sealed class ArtifactImage: IDisposable
+internal sealed class ArtifactImage: PooledBuffer<byte>
 {
-    /// <summary>The rented buffer owner; returned to the pool on dispose.</summary>
-    private readonly IMemoryOwner<byte> owner;
-
-    /// <summary>Whether the buffer has been returned to the pool.</summary>
-    private bool disposed;
-
     /// <summary>Wraps a rented buffer whose first <paramref name="length"/> bytes are the image.</summary>
     /// <param name="owner">The rented buffer owner; this image takes ownership and disposes it.</param>
     /// <param name="length">The image length in bytes.</param>
     /// <param name="role">The artifact's manifest role.</param>
-    private ArtifactImage(IMemoryOwner<byte> owner, int length, ManifestFileRole role)
+    private ArtifactImage(IMemoryOwner<byte> owner, int length, ManifestFileRole role): base(owner, length)
     {
-        this.owner = owner;
-        Length = length;
         Role = role;
     }
 
     /// <summary>The artifact's manifest role.</summary>
     internal ManifestFileRole Role { get; }
 
-    /// <summary>The image length in bytes.</summary>
-    internal int Length { get; }
-
-    /// <summary>The image bytes, for verifying, checksumming, and staging.</summary>
+    /// <summary>The image bytes, for verifying, checksumming, and staging — the role-named alias of <see cref="PooledBuffer{T}.Span"/>.</summary>
     /// <exception cref="ObjectDisposedException">The buffer has been returned to the pool.</exception>
-    internal ReadOnlySpan<byte> Bytes
-    {
-        get
-        {
-            ObjectDisposedException.ThrowIf(disposed, this);
+    internal ReadOnlySpan<byte> Bytes => Span;
 
-            return owner.Memory.Span[..Length];
-        }
-    }
-
-    /// <summary>The image bytes as a writable view, the surface the fault injectors damage in place.</summary>
+    /// <summary>The image bytes as a writable view, the surface the fault injectors damage in place — the role-named alias of <see cref="PooledBuffer{T}.WritableSpan"/>.</summary>
     /// <exception cref="ObjectDisposedException">The buffer has been returned to the pool.</exception>
-    internal Span<byte> WritableBytes
-    {
-        get
-        {
-            ObjectDisposedException.ThrowIf(disposed, this);
-
-            return owner.Memory.Span[..Length];
-        }
-    }
+    internal Span<byte> WritableBytes => WritableSpan;
 
     /// <summary>Takes ownership of a pre-rented buffer a builder wrote a serialized image directly into.</summary>
     /// <param name="owner">The rented buffer owner; the image takes ownership and disposes it.</param>
@@ -101,15 +76,5 @@ internal sealed class ArtifactImage: IDisposable
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(trailingBytesToDrop, Length);
 
         return Copy(Bytes[..(Length - trailingBytesToDrop)], Role, pool);
-    }
-
-    /// <summary>Returns the rented buffer to the pool.</summary>
-    public void Dispose()
-    {
-        if(!disposed)
-        {
-            disposed = true;
-            owner.Dispose();
-        }
     }
 }
