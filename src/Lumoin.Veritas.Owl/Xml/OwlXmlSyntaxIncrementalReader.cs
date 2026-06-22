@@ -442,7 +442,14 @@ public sealed class OwlXmlSyntaxIncrementalReader
         int next = IndexOfByte(text, start, text.Length, (byte)'<');
         if(next < 0)
         {
-            if(!Final)
+            //Character data inside an open element is significant and is decoded
+            //as one unit, so an unterminated in-element run waits for the '<'
+            //that ends it: decoding a reference or a code point split across the
+            //boundary in halves would corrupt it. Top-level character data is the
+            //insignificant whitespace between and after the document's elements;
+            //it is discarded, so it never suspends and a whitespace tail after
+            //the closed root reads as a document boundary, not an unfinished unit.
+            if(!Final && Open.Count > 1)
             {
                 return Suspend(text, start);
             }
