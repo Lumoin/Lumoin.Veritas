@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
@@ -16,18 +15,25 @@ namespace Lumoin.Veritas.Sparql.Results;
 /// <remarks>
 /// The header line names the variables (each <c>?</c>-prefixed), tab-separated; each subsequent line is one solution
 /// whose tab-separated fields are Turtle terms, an empty field denoting an unbound variable. Raw tabs and newlines
-/// never appear inside a value (they are escaped), so the line and field splits are unambiguous.
+/// never appear inside a value (they are escaped), so the line and field splits are unambiguous. The reader is
+/// byte-native: it scans the UTF-8 input directly and copies each term's bytes into an owned <see cref="Utf8String"/>,
+/// so the result set is independent of the input buffer.
 /// </remarks>
 public static class SparqlResultsTsvReader
 {
+    /// <summary>The <c>xsd:string</c> datatype of a plain literal.</summary>
     private static NamedNode XsdString { get; } = new(Vocabulary.Xsd.String);
 
+    /// <summary>The <c>xsd:integer</c> datatype of a bare integer token.</summary>
     private static NamedNode XsdInteger { get; } = new(Vocabulary.Xsd.Integer);
 
+    /// <summary>The <c>xsd:decimal</c> datatype of a bare decimal token.</summary>
     private static NamedNode XsdDecimal { get; } = new(Vocabulary.Xsd.Decimal);
 
+    /// <summary>The <c>xsd:double</c> datatype of a bare double token.</summary>
     private static NamedNode XsdDouble { get; } = new(Vocabulary.Xsd.Double);
 
+    /// <summary>The <c>xsd:boolean</c> datatype of the <c>true</c>/<c>false</c> tokens.</summary>
     private static NamedNode XsdBoolean { get; } = new(Vocabulary.Xsd.Boolean);
 
     /// <summary>Reads a TSV results document into a <see cref="SparqlResultSet"/>.</summary>
@@ -36,32 +42,32 @@ public static class SparqlResultsTsvReader
     /// <exception cref="FormatException">The document has no header line.</exception>
     public static SparqlResultSet Read(ReadOnlyMemory<byte> bytes)
     {
-        string text = Encoding.UTF8.GetString(bytes.Span).Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\r", "\n", StringComparison.Ordinal);
-        string[] lines = text.Split('\n');
-        if(lines.Length == 0 || lines[0].Length == 0 && lines.Length == 1)
+        List<ReadOnlyMemory<byte>> lines = SplitLines(bytes);
+        if(lines.Count == 0 || (lines[0].Length == 0 && lines.Count == 1))
         {
             throw new FormatException("A SPARQL TSV results document must begin with a header line of variable names.");
         }
 
         List<Utf8String> variables = [];
-        foreach(string column in lines[0].Split('\t'))
+        foreach(ReadOnlyMemory<byte> column in SplitFields(lines[0]))
         {
-            string name = column.StartsWith('?') ? column[1..] : column;
-            variables.Add(Utf8String.FromString(name));
+            ReadOnlySpan<byte> name = column.Span;
+            ReadOnlyMemory<byte> bare = name.Length > 0 && name[0] == (byte)'?' ? column.Slice(1) : column;
+            variables.Add(new Utf8String(bare.ToArray()));
         }
 
         List<SparqlSolution> solutions = [];
-        for(int i = 1; i < lines.Length; i++)
+        for(int i = 1; i < lines.Count; i++)
         {
-            //A trailing terminator leaves a final empty element; it is not a solution row.
-            if(i == lines.Length - 1 && lines[i].Length == 0)
+            //A trailing terminator leaves a final empty line; it is not a solution row.
+            if(i == lines.Count - 1 && lines[i].Length == 0)
             {
                 continue;
             }
 
-            string[] fields = lines[i].Split('\t');
+            List<ReadOnlyMemory<byte>> fields = SplitFields(lines[i]);
             List<SparqlBinding> bindings = [];
-            for(int column = 0; column < fields.Length && column < variables.Count; column++)
+            for(int column = 0; column < fields.Count && column < variables.Count; column++)
             {
                 if(fields[column].Length == 0)
                 {
@@ -77,17 +83,81 @@ public static class SparqlResultsTsvReader
         return SparqlResultSet.ForSelect(variables, solutions);
     }
 
-    /// <summary>Parses one Turtle term field into an RDF term.</summary>
-    /// <param name="field">The non-empty field text.</param>
-    /// <returns>The parsed term.</returns>
-    private static RdfTerm ParseTerm(string field)
+    /// <summary>Splits the document into lines on <c>\n</c>, treating a preceding or lone <c>\r</c> as the same boundary.</summary>
+    /// <param name="bytes">The document bytes.</param>
+    /// <returns>The line slices, in order; a trailing terminator yields a final empty slice.</returns>
+    private static List<ReadOnlyMemory<byte>> SplitLines(ReadOnlyMemory<byte> bytes)
     {
-        return field switch
+        List<ReadOnlyMemory<byte>> lines = [];
+        ReadOnlySpan<byte> span = bytes.Span;
+        int start = 0;
+        int i = 0;
+        while(i < span.Length)
         {
-            ['<', ..] when field.EndsWith('>') => new NamedNode(Utf8String.FromString(field[1..^1])),
-            ['_', ':', ..] => new BlankNode(Utf8String.FromString(field[2..])),
-            ['"', ..] => ParseQuotedLiteral(field),
-            "true" or "false" => new Literal(Utf8String.FromString(field), XsdBoolean),
+            byte b = span[i];
+            if(b == (byte)'\n')
+            {
+                lines.Add(bytes.Slice(start, i - start));
+                i++;
+                start = i;
+            }
+            else if(b == (byte)'\r')
+            {
+                lines.Add(bytes.Slice(start, i - start));
+                i++;
+                if(i < span.Length && span[i] == (byte)'\n')
+                {
+                    i++;
+                }
+
+                start = i;
+            }
+            else
+            {
+                i++;
+            }
+        }
+
+        lines.Add(bytes.Slice(start, span.Length - start));
+
+        return lines;
+    }
+
+    /// <summary>Splits one line into tab-separated fields.</summary>
+    /// <param name="line">The line slice.</param>
+    /// <returns>The field slices, in order.</returns>
+    private static List<ReadOnlyMemory<byte>> SplitFields(ReadOnlyMemory<byte> line)
+    {
+        List<ReadOnlyMemory<byte>> fields = [];
+        ReadOnlySpan<byte> span = line.Span;
+        int start = 0;
+        for(int i = 0; i < span.Length; i++)
+        {
+            if(span[i] == (byte)'\t')
+            {
+                fields.Add(line.Slice(start, i - start));
+                start = i + 1;
+            }
+        }
+
+        fields.Add(line.Slice(start, span.Length - start));
+
+        return fields;
+    }
+
+    /// <summary>Parses one Turtle term field into an RDF term.</summary>
+    /// <param name="field">The non-empty field slice.</param>
+    /// <returns>The parsed term.</returns>
+    private static RdfTerm ParseTerm(ReadOnlyMemory<byte> field)
+    {
+        ReadOnlySpan<byte> span = field.Span;
+
+        return span switch
+        {
+            [(byte)'<', .., (byte)'>'] => new NamedNode(new Utf8String(field.Slice(1, field.Length - 2).ToArray())),
+            [(byte)'_', (byte)':', ..] => new BlankNode(new Utf8String(field.Slice(2).ToArray())),
+            [(byte)'"', ..] => ParseQuotedLiteral(field),
+            _ when span.SequenceEqual("true"u8) || span.SequenceEqual("false"u8) => new Literal(new Utf8String(field.ToArray()), XsdBoolean),
             _ => ParseNumericOrPlain(field)
         };
     }
@@ -95,42 +165,55 @@ public static class SparqlResultsTsvReader
     /// <summary>Parses a double-quoted literal with its optional <c>@lang</c>(<c>--dir</c>) or <c>^^&lt;datatype&gt;</c> suffix.</summary>
     /// <param name="field">The field beginning with a double quote.</param>
     /// <returns>The literal term.</returns>
-    private static Literal ParseQuotedLiteral(string field)
+    private static Literal ParseQuotedLiteral(ReadOnlyMemory<byte> field)
     {
-        StringBuilder value = new(field.Length);
+        ReadOnlySpan<byte> span = field.Span;
+
+        //Unescaping only ever shortens a value, so the field length bounds the decoded byte count.
+        byte[] buffer = new byte[span.Length];
+        int written = 0;
         int index = 1;
-        while(index < field.Length)
+        while(index < span.Length)
         {
-            char character = field[index];
-            if(character == '"')
+            byte b = span[index];
+            if(b == (byte)'"')
             {
                 index++;
                 break;
             }
 
-            if(character == '\\' && index + 1 < field.Length)
+            if(b == (byte)'\\' && index + 1 < span.Length)
             {
-                value.Append(Unescape(field[index + 1]));
+                buffer[written++] = Unescape(span[index + 1]);
                 index += 2;
 
                 continue;
             }
 
-            value.Append(character);
+            buffer[written++] = b;
             index++;
         }
 
-        Utf8String lexical = Utf8String.FromString(value.ToString());
-        string suffix = field[index..];
+        Utf8String lexical = new(new ReadOnlyMemory<byte>(buffer, 0, written));
 
-        if(suffix.StartsWith('@'))
+        return BuildLiteral(lexical, field.Slice(index));
+    }
+
+    /// <summary>Applies a quoted literal's suffix: a language tag, a datatype IRI, or none (a plain string).</summary>
+    /// <param name="lexical">The decoded lexical value.</param>
+    /// <param name="suffix">The bytes following the closing quote.</param>
+    /// <returns>The literal term.</returns>
+    private static Literal BuildLiteral(Utf8String lexical, ReadOnlyMemory<byte> suffix)
+    {
+        ReadOnlySpan<byte> span = suffix.Span;
+        if(span.Length > 0 && span[0] == (byte)'@')
         {
-            return LanguageTaggedLiteral(lexical, suffix[1..]);
+            return LanguageTaggedLiteral(lexical, suffix.Slice(1));
         }
 
-        if(suffix.StartsWith("^^<", StringComparison.Ordinal) && suffix.EndsWith('>'))
+        if(span.Length >= 4 && span[0] == (byte)'^' && span[1] == (byte)'^' && span[2] == (byte)'<' && span[^1] == (byte)'>')
         {
-            return new Literal(lexical, new NamedNode(Utf8String.FromString(suffix[3..^1])));
+            return new Literal(lexical, new NamedNode(new Utf8String(suffix.Slice(3, suffix.Length - 4).ToArray())));
         }
 
         return new Literal(lexical, XsdString);
@@ -140,46 +223,45 @@ public static class SparqlResultsTsvReader
     /// <param name="lexical">The literal's lexical value.</param>
     /// <param name="tag">The language tag, possibly with a <c>--direction</c> suffix.</param>
     /// <returns>The (directional) language-tagged literal.</returns>
-    private static Literal LanguageTaggedLiteral(Utf8String lexical, string tag)
+    private static Literal LanguageTaggedLiteral(Utf8String lexical, ReadOnlyMemory<byte> tag)
     {
-        int separator = tag.IndexOf("--", StringComparison.Ordinal);
-        if(separator >= 0 && TextDirections.TryParse(tag[(separator + 2)..], out TextDirection direction))
+        ReadOnlySpan<byte> span = tag.Span;
+        int separator = span.IndexOf("--"u8);
+        if(separator >= 0 && TextDirections.TryParse(span[(separator + 2)..], out TextDirection direction))
         {
-            return new Literal(lexical, new NamedNode(Vocabulary.Rdf.DirLangString), Utf8String.FromString(tag[..separator]), direction);
+            return new Literal(lexical, new NamedNode(Vocabulary.Rdf.DirLangString), new Utf8String(tag.Slice(0, separator).ToArray()), direction);
         }
 
-        return new Literal(lexical, new NamedNode(Vocabulary.Rdf.LangString), Utf8String.FromString(tag));
+        return new Literal(lexical, new NamedNode(Vocabulary.Rdf.LangString), new Utf8String(tag.ToArray()));
     }
 
     /// <summary>Maps an unrecognised bare token to a numeric typed literal (integer/decimal/double) or, failing that, a plain string literal.</summary>
-    /// <param name="field">The bare field text.</param>
+    /// <param name="field">The bare field slice.</param>
     /// <returns>The literal term.</returns>
-    private static Literal ParseNumericOrPlain(string field)
+    private static Literal ParseNumericOrPlain(ReadOnlyMemory<byte> field)
     {
-        NumericShape shape = ClassifyNumeric(field);
-
-        return shape switch
+        return ClassifyNumeric(field.Span) switch
         {
-            NumericShape.Integer => new Literal(Utf8String.FromString(field), XsdInteger),
-            NumericShape.Decimal => new Literal(Utf8String.FromString(field), XsdDecimal),
-            NumericShape.Double => new Literal(Utf8String.FromString(field), XsdDouble),
-            _ => new Literal(Utf8String.FromString(field), XsdString)
+            NumericShape.Integer => new Literal(new Utf8String(field.ToArray()), XsdInteger),
+            NumericShape.Decimal => new Literal(new Utf8String(field.ToArray()), XsdDecimal),
+            NumericShape.Double => new Literal(new Utf8String(field.ToArray()), XsdDouble),
+            _ => new Literal(new Utf8String(field.ToArray()), XsdString)
         };
     }
 
     /// <summary>Classifies a bare token as a Turtle integer, decimal, double, or none of these.</summary>
-    /// <param name="field">The token.</param>
+    /// <param name="field">The token bytes.</param>
     /// <returns>The numeric shape.</returns>
-    private static NumericShape ClassifyNumeric(string field)
+    private static NumericShape ClassifyNumeric(ReadOnlySpan<byte> field)
     {
         int index = 0;
-        if(index < field.Length && (field[index] == '+' || field[index] == '-'))
+        if(index < field.Length && (field[index] == (byte)'+' || field[index] == (byte)'-'))
         {
             index++;
         }
 
         bool digitsBeforePoint = ConsumeDigits(field, ref index);
-        bool point = index < field.Length && field[index] == '.';
+        bool point = index < field.Length && field[index] == (byte)'.';
         bool digitsAfterPoint = false;
         if(point)
         {
@@ -193,11 +275,11 @@ public static class SparqlResultsTsvReader
         }
 
         bool exponent = false;
-        if(index < field.Length && (field[index] == 'e' || field[index] == 'E'))
+        if(index < field.Length && (field[index] == (byte)'e' || field[index] == (byte)'E'))
         {
             exponent = true;
             index++;
-            if(index < field.Length && (field[index] == '+' || field[index] == '-'))
+            if(index < field.Length && (field[index] == (byte)'+' || field[index] == (byte)'-'))
             {
                 index++;
             }
@@ -222,13 +304,13 @@ public static class SparqlResultsTsvReader
     }
 
     /// <summary>Advances past a run of ASCII digits, reporting whether any were consumed.</summary>
-    /// <param name="field">The token.</param>
+    /// <param name="field">The token bytes.</param>
     /// <param name="index">The position, advanced past the digits.</param>
     /// <returns><see langword="true"/> when at least one digit was consumed.</returns>
-    private static bool ConsumeDigits(string field, ref int index)
+    private static bool ConsumeDigits(ReadOnlySpan<byte> field, ref int index)
     {
         int start = index;
-        while(index < field.Length && field[index] is >= '0' and <= '9')
+        while(index < field.Length && field[index] is >= (byte)'0' and <= (byte)'9')
         {
             index++;
         }
@@ -236,18 +318,18 @@ public static class SparqlResultsTsvReader
         return index > start;
     }
 
-    /// <summary>Maps a Turtle string escape character to its literal value.</summary>
-    /// <param name="escape">The character following the backslash.</param>
-    /// <returns>The unescaped character.</returns>
-    private static char Unescape(char escape)
+    /// <summary>Maps a Turtle string escape byte to its literal value.</summary>
+    /// <param name="escape">The byte following the backslash.</param>
+    /// <returns>The unescaped byte.</returns>
+    private static byte Unescape(byte escape)
     {
         return escape switch
         {
-            'n' => '\n',
-            'r' => '\r',
-            't' => '\t',
-            'b' => '\b',
-            'f' => '\f',
+            (byte)'n' => (byte)'\n',
+            (byte)'r' => (byte)'\r',
+            (byte)'t' => (byte)'\t',
+            (byte)'b' => (byte)'\b',
+            (byte)'f' => (byte)'\f',
             _ => escape
         };
     }

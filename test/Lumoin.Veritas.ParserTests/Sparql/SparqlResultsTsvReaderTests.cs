@@ -53,6 +53,32 @@ internal sealed class SparqlResultsTsvReaderTests
         Assert.IsFalse(row.TryGetValue(Var("opt"), out _));
     }
 
+    /// <summary>A literal whose value carries multi-byte UTF-8 is preserved byte-for-byte.</summary>
+    [TestMethod]
+    public void ParsesMultiByteUtf8LiteralValue()
+    {
+        string tsv = string.Join('\n', "?v", "\"café ☕\"");
+
+        SparqlResultSet result = SparqlResultsTsvReader.Read(Encoding.UTF8.GetBytes(tsv));
+
+        Assert.IsTrue(result.Solutions[0].TryGetValue(Var("v"), out RdfTerm term));
+        Assert.AreEqual("café ☕", ((Literal)term).Value.ToString());
+        CollectionAssert.AreEqual(Encoding.UTF8.GetBytes("café ☕"), ((Literal)term).Value.Span.ToArray());
+    }
+
+    /// <summary>Escaped tabs and newlines inside a value decode to their control bytes, not field or line breaks.</summary>
+    [TestMethod]
+    public void UnescapesTabAndNewlineInsideValue()
+    {
+        string tsv = string.Join('\n', "?v", "\"a\\tb\\nc\"");
+
+        SparqlResultSet result = SparqlResultsTsvReader.Read(Encoding.UTF8.GetBytes(tsv));
+
+        Assert.HasCount(1, result.Solutions);
+        Assert.IsTrue(result.Solutions[0].TryGetValue(Var("v"), out RdfTerm term));
+        Assert.AreEqual("a\tb\nc", ((Literal)term).Value.ToString());
+    }
+
     /// <summary>Builds a variable from its name.</summary>
     /// <param name="name">The variable name (without the <c>?</c>).</param>
     /// <returns>The variable.</returns>
