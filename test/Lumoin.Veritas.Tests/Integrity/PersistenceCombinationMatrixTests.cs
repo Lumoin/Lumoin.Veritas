@@ -16,6 +16,7 @@ using Lumoin.Veritas.Core.Persistence.Journal;
 using Lumoin.Veritas.Core.Persistence.Manifest;
 using Lumoin.Veritas.Core.Persistence.Segment;
 using Lumoin.Veritas.Core.Persistence.Sketch;
+using Lumoin.Veritas.Tests.MemoryPool;
 using Lumoin.Veritas.Tests.Persistence;
 using Microsoft.Extensions.Time.Testing;
 using static Lumoin.Veritas.Tests.Integrity.PersistenceStagingFixture;
@@ -463,6 +464,10 @@ internal sealed class PersistenceCombinationMatrixTests
         }
 
         using VeritasMemoryPool<byte> bytePool = new();
+        //The repair pass rents from a poisoning pool so every valid matrix cell asserts the pass returns every
+        //buffer it rented (OutstandingRentals == 0) once the report is disposed — STEP-4 enforcement across the
+        //whole damage x rung matrix. Staging and assertion reads use the separate bytePool.
+        using PoisoningMemoryPool<byte> repairPool = new();
         using VeritasMemoryPool<EncodedTriple> triplePool = new();
         using ArtifactImage segment = cell.Site == DamageSite.DataSegment ? BuildDamagedSegment(cell.Kind, bytePool) : SegmentImage(Triples, bytePool);
         using ArtifactImage sidecar = cell.Site == DamageSite.Sidecar ? BuildDamagedSidecar(cell.Kind, bytePool) : SidecarImage(Triples, bytePool);
@@ -512,8 +517,12 @@ internal sealed class PersistenceCombinationMatrixTests
             AssertDetectionVerdict(cell, verify);
 
             StorageTraceCapture trace = new();
-            using RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(bytePool, triplePool), null, trace.Capture, Guid.Empty, clock);
-            AssertRepairOutcome(cell, repair, trace, bytePool, triplePool);
+            using(RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(repairPool, triplePool), null, trace.Capture, Guid.Empty, clock))
+            {
+                AssertRepairOutcome(cell, repair, trace, bytePool, triplePool);
+            }
+
+            Assert.AreEqual(0, repairPool.OutstandingRentals, "The repair pass must return every buffer it rented from the repair pool once the report is disposed.");
         }
         finally
         {

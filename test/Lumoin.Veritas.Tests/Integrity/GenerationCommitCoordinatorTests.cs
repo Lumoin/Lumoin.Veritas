@@ -11,6 +11,7 @@ using Lumoin.Veritas.Core.Persistence;
 using Lumoin.Veritas.Core.Persistence.Manifest;
 using Lumoin.Veritas.Core.Persistence.Segment;
 using Lumoin.Veritas.Core.Persistence.Sketch;
+using Lumoin.Veritas.Tests.MemoryPool;
 using Microsoft.Extensions.Time.Testing;
 using static Lumoin.Veritas.Tests.Integrity.PersistenceStagingFixture;
 
@@ -68,6 +69,33 @@ internal sealed class GenerationCommitCoordinatorTests
             RecoveryResult recovered = new ManifestRecovery(store).Recover();
             Assert.AreEqual(Generation + 1, recovered.Manifest.CommitGeneration, "Recovery follows CURRENT to the healed generation.");
             Assert.IsFalse(recovered.IsDegraded);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>The commit boundary is pool-clean: after a heal stages the report's re-derived images into a new generation and the report is disposed, every buffer the repair pass rented from the repair pool is returned (OutstandingRentals == 0) — proven under a poisoning pool. Guards the report-owned image views read during Commit against premature recycling.</summary>
+    [TestMethod]
+    public void HealReturnsEveryRepairPoolBufferOnReportDispose()
+    {
+        using VeritasMemoryPool<byte> bytePool = new();
+        using PoisoningMemoryPool<byte> repairPool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        FileSystemPersistenceStore store = StageDamagedSidecarGeneration(bytePool, out string directory);
+        try
+        {
+            FakeTimeProvider clock = new();
+            ScrubRoundReport verify = ScrubRound.RunVerifyPass(store, null, null, Guid.Empty, clock);
+            using(RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, RepairConfig(repairPool, triplePool), null, null, Guid.Empty, clock))
+            {
+                Assert.IsTrue(repair.IsClean, "A damaged-sidecar repair re-derives cleanly.");
+                GenerationCommitReport report = Coordinator(store, bytePool, clock, trace: null).Commit(repair, Guid.Empty);
+                Assert.AreEqual(GenerationCommitOutcome.Committed, report.Outcome);
+            }
+
+            Assert.AreEqual(0, repairPool.OutstandingRentals, "Disposing the report after the commit must return every buffer the repair pass rented from the repair pool.");
         }
         finally
         {
