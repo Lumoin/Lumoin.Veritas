@@ -10,6 +10,11 @@ namespace Lumoin.Veritas.Xml;
 /// <param name="Value">The attribute value with XML references resolved.</param>
 public readonly record struct XmlByteAttribute(Utf8String LocalName, Utf8String NamespaceIri, Utf8String Value);
 
+/// <summary>One namespace binding in scope at an <see cref="XmlByteNode"/>: a prefix and the namespace IRI it is bound to.</summary>
+/// <param name="Prefix">The prefix, or an empty value for the default-namespace binding.</param>
+/// <param name="NamespaceIri">The namespace IRI the prefix is bound to.</param>
+public readonly record struct XmlNamespaceBinding(Utf8String Prefix, Utf8String NamespaceIri);
+
 /// <summary>
 /// One element of the tree an <see cref="XmlByteReader"/> builds: its namespace-resolved name, its attributes, its
 /// element children, and any directly-contained character data. Lookups compare names as UTF-8 byte spans, so a
@@ -31,6 +36,21 @@ public sealed class XmlByteNode
 
     /// <summary>The element's directly-contained character data with references resolved; empty for an element that carries only children.</summary>
     public Utf8String Text { get; set; }
+
+    /// <summary>
+    /// The namespace bindings in scope at this element — the inherited bindings extended with this element's own
+    /// declarations — in document declaration order (outermost first, the nearest declaration of a prefix supplying its
+    /// IRI). Empty for an element under no namespace declarations. Used to hoist the in-scope namespaces onto a detached
+    /// <c>rdf:parseType="Literal"</c> fragment, the one place canonicalization needs the prefixes the reader otherwise resolves away.
+    /// </summary>
+    public IReadOnlyList<XmlNamespaceBinding> InScopeNamespaces { get; init; } = [];
+
+    /// <summary>The start offset of this element's verbatim inner content (just past the start tag's <c>&gt;</c>) in the source bytes; <c>0</c> for an empty element.</summary>
+    /// <remarks>Paired with <see cref="ContentEnd"/> to recover the raw, undecoded inner markup an XML literal canonicalizes; meaningful only against the same buffer the reader parsed.</remarks>
+    internal int ContentStart { get; init; }
+
+    /// <summary>The end offset of this element's verbatim inner content (the <c>&lt;</c> of the end tag) in the source bytes; <c>0</c> for an empty element.</summary>
+    internal int ContentEnd { get; set; }
 
     /// <summary>Whether this element has the given local name and namespace IRI.</summary>
     /// <param name="localName">The local name to match.</param>

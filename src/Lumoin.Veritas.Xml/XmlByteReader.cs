@@ -82,6 +82,9 @@ public static class XmlByteReader
         /// <summary>The namespace-binding scope stack, one frame per open element.</summary>
         private Stack<Dictionary<Utf8String, Utf8String>> Scopes { get; } = new();
 
+        /// <summary>The in-scope namespace bindings in document declaration order, one frame per open element, parallel to <see cref="Scopes"/>; a frame is shared with its parent when the element declares no namespaces.</summary>
+        private Stack<IReadOnlyList<XmlNamespaceBinding>> OrderedScopes { get; } = new();
+
         /// <summary>The remaining budget for general-entity expansion, in bytes.</summary>
         private int entityBudget = MaxEntityExpansionBytes;
 
@@ -93,6 +96,7 @@ public static class XmlByteReader
         {
             Open.Push(Root);
             Scopes.Push([]);
+            OrderedScopes.Push(EmptyBindings);
 
             int i = 0;
             while(i < utf8.Length)
@@ -276,12 +280,15 @@ public static class XmlByteReader
             }
 
             List<RawAttribute> raw = ParseAttributes(utf8, nameEnd, empty ? close - 1 : close);
-            Dictionary<Utf8String, Utf8String> scope = BindScope(utf8, raw);
+            (Dictionary<Utf8String, Utf8String> scope, List<XmlNamespaceBinding>? local) = BindScope(utf8, raw);
+            IReadOnlyList<XmlNamespaceBinding> ordered = local is null ? OrderedScopes.Peek() : MergeOrdered(OrderedScopes.Peek(), local);
 
             XmlByteNode node = new()
             {
                 LocalName = LocalName(utf8.Slice(nameStart, nameEnd - nameStart)),
-                NamespaceIri = ResolveElementNamespace(utf8.Slice(nameStart, nameEnd - nameStart), scope)
+                NamespaceIri = ResolveElementNamespace(utf8.Slice(nameStart, nameEnd - nameStart), scope),
+                InScopeNamespaces = ordered,
+                ContentStart = empty ? 0 : close + 1
             };
 
             foreach(RawAttribute attribute in raw)
@@ -302,6 +309,7 @@ public static class XmlByteReader
             {
                 Open.Push(node);
                 Scopes.Push(scope);
+                OrderedScopes.Push(ordered);
             }
 
             return close + 1;
@@ -338,8 +346,10 @@ public static class XmlByteReader
                 throw new FormatException("XML document has a mismatched end tag.");
             }
 
+            node.ContentEnd = start;
             Open.Pop();
             Scopes.Pop();
+            OrderedScopes.Pop();
 
             return close + 1;
         }
@@ -374,30 +384,38 @@ public static class XmlByteReader
             node.Text = node.Text.IsEmpty ? content : Concat(node.Text, content);
         }
 
-        /// <summary>Builds the namespace scope of an element: the parent scope extended with the element's own <c>xmlns</c> declarations.</summary>
+        /// <summary>Builds the namespace scope of an element: the parent scope extended with the element's own <c>xmlns</c> declarations, plus the element's own declarations in document order (for the in-scope binding list).</summary>
         /// <param name="utf8">The document bytes.</param>
         /// <param name="attributes">The element's raw attributes.</param>
-        /// <returns>The element's scope, sharing the parent frame when the element declares no namespaces.</returns>
-        private Dictionary<Utf8String, Utf8String> BindScope(ReadOnlySpan<byte> utf8, List<RawAttribute> attributes)
+        /// <returns>The element's lookup scope (sharing the parent frame when the element declares no namespaces) and its own declarations in document order, or <see langword="null"/> when it declares none.</returns>
+        private (Dictionary<Utf8String, Utf8String> Scope, List<XmlNamespaceBinding>? Local) BindScope(ReadOnlySpan<byte> utf8, List<RawAttribute> attributes)
         {
             Dictionary<Utf8String, Utf8String> parent = Scopes.Peek();
             Dictionary<Utf8String, Utf8String>? bound = null;
+            List<XmlNamespaceBinding>? local = null;
             foreach(RawAttribute attribute in attributes)
             {
                 ReadOnlySpan<byte> name = utf8.Slice(attribute.NameStart, attribute.NameEnd - attribute.NameStart);
                 if(name.SequenceEqual("xmlns"u8))
                 {
+                    Utf8String iri = Decode(utf8.Slice(attribute.ValueStart, attribute.ValueEnd - attribute.ValueStart), expandGeneral: true);
                     bound ??= new(parent);
-                    bound[DefaultPrefix] = Decode(utf8.Slice(attribute.ValueStart, attribute.ValueEnd - attribute.ValueStart), expandGeneral: true);
+                    bound[DefaultPrefix] = iri;
+                    local ??= [];
+                    local.Add(new XmlNamespaceBinding(default, iri));
                 }
                 else if(name.Length > 6 && name.StartsWith("xmlns:"u8))
                 {
+                    Utf8String prefix = new(name.Slice(6).ToArray());
+                    Utf8String iri = Decode(utf8.Slice(attribute.ValueStart, attribute.ValueEnd - attribute.ValueStart), expandGeneral: true);
                     bound ??= new(parent);
-                    bound[new Utf8String(name.Slice(6).ToArray())] = Decode(utf8.Slice(attribute.ValueStart, attribute.ValueEnd - attribute.ValueStart), expandGeneral: true);
+                    bound[prefix] = iri;
+                    local ??= [];
+                    local.Add(new XmlNamespaceBinding(prefix, iri));
                 }
             }
 
-            return bound ?? parent;
+            return (bound ?? parent, local);
         }
 
         /// <summary>Decodes a byte range, resolving XML predefined and numeric references and (when permitted) general entities; a reference-free range is an owned slice.</summary>
@@ -635,6 +653,49 @@ public static class XmlByteReader
 
     /// <summary>The scope key standing for the default (unprefixed) namespace binding.</summary>
     private static Utf8String DefaultPrefix { get; } = new("\0default"u8.ToArray());
+
+    /// <summary>The shared empty in-scope binding list for the document root (never mutated).</summary>
+    private static IReadOnlyList<XmlNamespaceBinding> EmptyBindings { get; } = [];
+
+    /// <summary>Extends a parent element's in-scope bindings with a child's own declarations, in document order: a redeclared prefix keeps its outermost position with the child's IRI; a new prefix appends.</summary>
+    /// <param name="parent">The parent's in-scope bindings, in document order.</param>
+    /// <param name="local">The element's own declarations, in document order.</param>
+    /// <returns>The element's in-scope bindings, in document order.</returns>
+    private static List<XmlNamespaceBinding> MergeOrdered(IReadOnlyList<XmlNamespaceBinding> parent, List<XmlNamespaceBinding> local)
+    {
+        List<XmlNamespaceBinding> merged = [.. parent];
+        foreach(XmlNamespaceBinding binding in local)
+        {
+            int index = IndexOfPrefix(merged, binding.Prefix.Span);
+            if(index >= 0)
+            {
+                merged[index] = binding;
+            }
+            else
+            {
+                merged.Add(binding);
+            }
+        }
+
+        return merged;
+    }
+
+    /// <summary>The index of the binding with a given prefix, or <c>-1</c>.</summary>
+    /// <param name="bindings">The bindings to search.</param>
+    /// <param name="prefix">The prefix to find.</param>
+    /// <returns>The index, or <c>-1</c>.</returns>
+    private static int IndexOfPrefix(List<XmlNamespaceBinding> bindings, ReadOnlySpan<byte> prefix)
+    {
+        for(int i = 0; i < bindings.Count; i++)
+        {
+            if(bindings[i].Prefix.Span.SequenceEqual(prefix))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
 
     /// <summary>Concatenates two decoded text fragments into one owned buffer.</summary>
     /// <param name="left">The leading fragment.</param>
