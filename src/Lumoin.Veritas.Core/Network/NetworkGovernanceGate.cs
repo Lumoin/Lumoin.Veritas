@@ -49,6 +49,33 @@ public static class NetworkGovernanceGate
         };
     }
 
+    /// <summary>Consults the policy and honors the verdict for a seam that signals a decline by exception: a permit (or a delay, after its back-off) returns, a deny throws <see cref="NetworkGovernanceDeniedException"/>. For the SERVICE and graph-resolve transports, whose existing failure channel is a throw the engine's silent handling catches.</summary>
+    /// <param name="governance">The policy to consult.</param>
+    /// <param name="request">The call being governed.</param>
+    /// <param name="timeProvider">The clock a delay backs off against and the event is timestamped with.</param>
+    /// <param name="trace">The diagnostics sink the verdict is emitted to; <see langword="null"/> emits nothing.</param>
+    /// <param name="correlationId">The correlation id the emitted event carries.</param>
+    /// <param name="sequenceNumber">The sequence number the emitted event carries.</param>
+    /// <param name="cancellationToken">The token that cancels the consultation or the back-off.</param>
+    /// <returns>A task that completes when the call may proceed.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="governance"/> or <paramref name="timeProvider"/> is <see langword="null"/>.</exception>
+    /// <exception cref="NetworkGovernanceDeniedException">The policy denied the call.</exception>
+    public static async ValueTask EnterOrThrowAsync(
+        NetworkGovernanceDelegate governance,
+        NetworkGovernanceRequest request,
+        TimeProvider timeProvider,
+        TraceHandler<NetworkGovernanceTraceEvent>? trace,
+        Guid correlationId,
+        long sequenceNumber,
+        CancellationToken cancellationToken)
+    {
+        bool permitted = await TryEnterAsync(governance, request, timeProvider, trace, correlationId, sequenceNumber, cancellationToken).ConfigureAwait(false);
+        if(!permitted)
+        {
+            throw new NetworkGovernanceDeniedException(request.Boundary);
+        }
+    }
+
     /// <summary>Backs off for <paramref name="retryAfter"/> against the injected clock, then reports that the call may proceed.</summary>
     /// <param name="retryAfter">The back-off; a non-positive value proceeds immediately.</param>
     /// <param name="timeProvider">The clock the delay runs against.</param>
