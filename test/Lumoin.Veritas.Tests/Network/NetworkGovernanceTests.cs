@@ -22,7 +22,7 @@ internal sealed class NetworkGovernanceTests
     {
         foreach(NetworkBoundary boundary in Enum.GetValues<NetworkBoundary>())
         {
-            NetworkGovernanceRequest request = new(boundary, null, ReadOnlyMemory<byte>.Empty, OperationSizeHint: 0, PartitionCoordinate: -1);
+            NetworkGovernanceRequest request = new(boundary, null, NetworkPeerKey.None, OperationSizeHint: 0, PartitionCoordinate: -1);
             NetworkGovernanceDecision decision = await NetworkGovernance.AlwaysPermit(request, TestContext.CancellationToken).ConfigureAwait(false);
 
             Assert.AreEqual(NetworkGovernanceKind.Permit, decision.Kind, $"The default must permit at the {boundary} boundary.");
@@ -48,6 +48,25 @@ internal sealed class NetworkGovernanceTests
     public void DelayRejectsANegativeBackoff()
     {
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => NetworkGovernanceDecision.Delay(TimeSpan.FromSeconds(-1)));
+    }
+
+    /// <summary>The tagged peer-key factories carry their kind and bytes verbatim, the unidentified default reads as such, and an empty payload is refused — the self-describing handle never silently holds a kind without its bytes.</summary>
+    [TestMethod]
+    public void PeerKeyFactoriesTagTheirBytesAndRejectEmpty()
+    {
+        byte[] bytes = [1, 2, 3, 4];
+        Assert.AreEqual(NetworkPeerKeyKind.ReplicaId, NetworkPeerKey.ReplicaId(bytes).Kind);
+        Assert.AreEqual(NetworkPeerKeyKind.EndpointIri, NetworkPeerKey.EndpointIri(bytes).Kind);
+        Assert.AreEqual(NetworkPeerKeyKind.SocketAddress, NetworkPeerKey.SocketAddress(bytes).Kind);
+        Assert.IsTrue(NetworkPeerKey.ReplicaId(bytes).Bytes.Span.SequenceEqual(bytes), "The key must carry its bytes verbatim.");
+
+        Assert.IsTrue(NetworkPeerKey.None.IsUnidentified, "None is the unidentified peer.");
+        Assert.AreEqual(NetworkPeerKeyKind.Unidentified, NetworkPeerKey.None.Kind);
+        Assert.IsFalse(NetworkPeerKey.ReplicaId(bytes).IsUnidentified, "An identified key is not unidentified.");
+
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => NetworkPeerKey.ReplicaId(ReadOnlyMemory<byte>.Empty));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => NetworkPeerKey.EndpointIri(ReadOnlyMemory<byte>.Empty));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => NetworkPeerKey.SocketAddress(ReadOnlyMemory<byte>.Empty));
     }
 
     /// <summary>The governance trace event implements the diagnostics-bus contract and carries its boundary and verdict.</summary>
