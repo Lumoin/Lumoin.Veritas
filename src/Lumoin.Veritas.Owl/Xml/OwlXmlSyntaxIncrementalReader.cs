@@ -636,6 +636,12 @@ public sealed class OwlXmlSyntaxIncrementalReader
         return LexStep.NeedMore;
     }
 
+    /// <summary>The cap on the bytes a document's general-entity references may expand to, bounding an entity-amplification (billion-laughs) attack — the OWL corpus reads from files, so the bound matters.</summary>
+    private const int MaxEntityExpansionBytes = 10_000_000;
+
+    /// <summary>The remaining budget for general-entity expansion, in bytes; once exhausted a reference is left unexpanded rather than growing the decoded output without limit (compounding nested entities are bounded the same way).</summary>
+    private int EntityBudget { get; set; } = MaxEntityExpansionBytes;
+
     /// <summary>Decodes a buffer range, resolving XML entity and character references; a range with no reference is a zero-copy window.</summary>
     /// <param name="start">The inclusive start offset.</param>
     /// <param name="length">The range length in bytes.</param>
@@ -707,7 +713,14 @@ public sealed class OwlXmlSyntaxIncrementalReader
         }
         else if(Entities.TryGetValue(new Utf8String(reference.ToArray()), out Utf8String entity))
         {
-            output.Write(entity.Span);
+            //Bound the total general-entity expansion against a billion-laughs amplification; once the budget is
+            //exhausted the reference is left unexpanded rather than growing the output without limit. The budget is
+            //shared across registration (where nested entities would otherwise compound) and content expansion.
+            if(EntityBudget >= entity.Length)
+            {
+                EntityBudget -= entity.Length;
+                output.Write(entity.Span);
+            }
         }
     }
 

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Owl.Functional;
@@ -94,6 +95,32 @@ internal sealed class OwlXmlSyntaxTests
         Assert.IsFalse(document.Diagnostics.HasErrors);
         OwlDeclarationAxiom declaration = Find<OwlDeclarationAxiom>(document)!;
         Assert.AreEqual("http://example.org/A", declaration.Entity.Iri.ToString());
+    }
+
+    /// <summary>A billion-laughs entity-amplification document is bounded by the expansion budget — it reads to completion rather than exhausting memory.</summary>
+    [TestMethod]
+    public void EntityAmplificationIsBoundedByTheExpansionBudget()
+    {
+        StringBuilder builder = new("<?xml version=\"1.0\"?><!DOCTYPE Ontology [<!ENTITY a \"");
+        builder.Append('x', 64).Append("\">");
+        for(char level = 'b'; level <= 'i'; level++)
+        {
+            builder.Append("<!ENTITY ").Append(level).Append(" \"");
+            for(int reference = 0; reference < 10; reference++)
+            {
+                builder.Append('&').Append((char)(level - 1)).Append(';');
+            }
+
+            builder.Append("\">");
+        }
+
+        //Unbounded, &i; would expand to 64 * 10^8 = 6.4 GB; the budget caps the total expansion far below that, so the
+        //read completes instead of exhausting memory (without the budget this document hangs / throws OutOfMemory).
+        builder.Append("]><Ontology xmlns=\"http://www.w3.org/2002/07/owl#\"><x>&i;</x></Ontology>");
+
+        OwlOntologyDocument document = OwlXmlSyntaxReader.Read(builder.ToString());
+
+        Assert.IsNotNull(document);
     }
 
     [TestMethod]
