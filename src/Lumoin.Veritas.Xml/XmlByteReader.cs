@@ -280,6 +280,7 @@ public static class XmlByteReader
             }
 
             List<RawAttribute> raw = ParseAttributes(utf8, nameEnd, empty ? close - 1 : close);
+            EnsureNoDuplicateAttributes(utf8, raw);
             (Dictionary<Utf8String, Utf8String> scope, List<XmlNamespaceBinding>? local) = BindScope(utf8, raw);
             IReadOnlyList<XmlNamespaceBinding> ordered = local is null ? OrderedScopes.Peek() : MergeOrdered(OrderedScopes.Peek(), local);
 
@@ -598,6 +599,25 @@ public static class XmlByteReader
         return name.SequenceEqual("xmlns"u8) || name.StartsWith("xmlns:"u8);
     }
 
+    /// <summary>Rejects a start tag that names the same attribute twice (the XML 1.0 well-formedness constraint <i>Unique Att Spec</i>), comparing qualified names.</summary>
+    /// <param name="utf8">The document bytes.</param>
+    /// <param name="attributes">The tag's raw attributes.</param>
+    /// <exception cref="FormatException">Two attributes share a qualified name.</exception>
+    private static void EnsureNoDuplicateAttributes(ReadOnlySpan<byte> utf8, List<RawAttribute> attributes)
+    {
+        for(int first = 0; first < attributes.Count; first++)
+        {
+            ReadOnlySpan<byte> name = utf8.Slice(attributes[first].NameStart, attributes[first].NameEnd - attributes[first].NameStart);
+            for(int second = first + 1; second < attributes.Count; second++)
+            {
+                if(name.SequenceEqual(utf8.Slice(attributes[second].NameStart, attributes[second].NameEnd - attributes[second].NameStart)))
+                {
+                    throw new FormatException("XML start tag has a duplicate attribute name.");
+                }
+            }
+        }
+    }
+
     /// <summary>The local name of a qualified name, as an owned <see cref="Utf8String"/>.</summary>
     /// <param name="qualified">The qualified name bytes.</param>
     /// <returns>The local-name part.</returns>
@@ -639,16 +659,35 @@ public static class XmlByteReader
             }
 
             value = (hex ? value * 16 : value * 10) + place;
+            if(value > 0x10FFFF)
+            {
+                throw new FormatException("XML numeric character reference is out of range.");
+            }
         }
 
-        if(!Rune.TryCreate(value, out Rune rune))
+        if(!Rune.TryCreate(value, out Rune rune) || !IsXmlChar(value))
         {
-            throw new FormatException("XML numeric character reference is not a valid Unicode scalar value.");
+            throw new FormatException("XML numeric character reference is not a valid XML character.");
         }
 
         Span<byte> encoded = stackalloc byte[4];
 
         output.Write(encoded.Slice(0, rune.EncodeToUtf8(encoded)));
+    }
+
+    /// <summary>Whether a codepoint is a valid XML 1.0 character (the <c>Char</c> production): tab, line feed, carriage return, or a non-control scalar excluding the surrogate block, U+FFFE, and U+FFFF.</summary>
+    /// <param name="value">The codepoint.</param>
+    /// <returns><see langword="true"/> when the codepoint is a permitted XML character.</returns>
+    private static bool IsXmlChar(int value)
+    {
+        return value switch
+        {
+            0x9 or 0xA or 0xD => true,
+            >= 0x20 and <= 0xD7FF => true,
+            >= 0xE000 and <= 0xFFFD => true,
+            >= 0x10000 and <= 0x10FFFF => true,
+            _ => false
+        };
     }
 
     /// <summary>The scope key standing for the default (unprefixed) namespace binding.</summary>

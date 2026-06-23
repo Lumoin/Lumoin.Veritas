@@ -136,4 +136,20 @@ internal sealed class XmlByteReaderTests
     {
         Assert.ThrowsExactly<FormatException>(() => ReadDtd("<!DOCTYPE r []><r>&missing;</r>"));
     }
+
+    /// <summary>A start tag naming the same attribute twice is rejected (the XML 1.0 Unique Att Spec well-formedness constraint).</summary>
+    [TestMethod]
+    public void RejectsDuplicateAttribute()
+    {
+        Assert.ThrowsExactly<FormatException>(() => Read("<r a=\"1\" a=\"2\"/>"));
+    }
+
+    /// <summary>A numeric character reference outside the XML Char production — a C0 control, a noncharacter, or out of range — is rejected.</summary>
+    [TestMethod]
+    public void RejectsInvalidNumericCharacterReference()
+    {
+        Assert.ThrowsExactly<FormatException>(() => Read("<r>&#0;</r>"));
+        Assert.ThrowsExactly<FormatException>(() => Read("<r>&#xFFFF;</r>"));
+        Assert.ThrowsExactly<FormatException>(() => Read("<r>&#x110000;</r>"));
+    }
 }
