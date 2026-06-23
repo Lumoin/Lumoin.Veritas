@@ -59,6 +59,55 @@ internal sealed partial class VeritasCliIntegrationTests
         Assert.Contains("http://example.org/carol", result.Stdout);
     }
 
+    /// <summary>The <c>query</c> command loads an RDF/XML (<c>.rdf</c>) dataset through the byte-native RDF/XML reader and selects from it.</summary>
+    /// <returns>The asynchronous test.</returns>
+    [TestMethod]
+    public async Task QueryCommandLoadsRdfXmlData()
+    {
+        string? executable = GetCliExecutablePath();
+        if(executable is null)
+        {
+            Assert.Inconclusive("The Lumoin.Veritas.Cli executable was not built; build it to run this test.");
+
+            return;
+        }
+
+        (string dataPath, string queryPath) = WriteRdfXmlFixture();
+
+        CliResult result = await WorkbenchCliTestHelpers.RunCliAsync(
+            executable,
+            ["query", queryPath, "--data", dataPath],
+            TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(0, result.ExitCode, $"stderr: {result.Stderr}");
+        Assert.Contains("http://example.org/bob", result.Stdout);
+        Assert.Contains("http://example.org/carol", result.Stdout);
+    }
+
+    /// <summary>The <c>query</c> command loads an OWL/XML (<c>.owl</c>) ontology, mapped to RDF, and selects the subclass axiom it carries.</summary>
+    /// <returns>The asynchronous test.</returns>
+    [TestMethod]
+    public async Task QueryCommandLoadsOwlXmlData()
+    {
+        string? executable = GetCliExecutablePath();
+        if(executable is null)
+        {
+            Assert.Inconclusive("The Lumoin.Veritas.Cli executable was not built; build it to run this test.");
+
+            return;
+        }
+
+        (string dataPath, string queryPath) = WriteOwlXmlFixture();
+
+        CliResult result = await WorkbenchCliTestHelpers.RunCliAsync(
+            executable,
+            ["query", queryPath, "--data", dataPath],
+            TestContext.CancellationToken).ConfigureAwait(false);
+
+        Assert.AreEqual(0, result.ExitCode, $"stderr: {result.Stderr}");
+        Assert.Contains("http://example.org/Animal", result.Stdout);
+    }
+
     /// <summary>The <c>serve</c> command's Kestrel endpoint answers a SPARQL Protocol GET over HTTP.</summary>
     /// <returns>The asynchronous test.</returns>
     [TestMethod]
@@ -242,6 +291,53 @@ internal sealed partial class VeritasCliIntegrationTests
 
         string queryPath = Path.Combine(directory, "query.rq");
         File.WriteAllText(queryPath, "PREFIX : <http://example.org/>\nSELECT ?who WHERE { :alice :knows ?who } ORDER BY ?who\n");
+
+        return (dataPath, queryPath);
+    }
+
+    /// <summary>Writes a small RDF/XML (<c>.rdf</c>) dataset and a SELECT query to a fresh temporary directory.</summary>
+    /// <returns>The data file path and the query file path.</returns>
+    private static (string DataPath, string QueryPath) WriteRdfXmlFixture()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "veritas-cli-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(directory);
+
+        string dataPath = Path.Combine(directory, "data.rdf");
+        File.WriteAllText(
+            dataPath,
+            "<?xml version=\"1.0\"?>\n"
+            + "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"http://example.org/\">\n"
+            + "  <rdf:Description rdf:about=\"http://example.org/alice\">\n"
+            + "    <ex:knows rdf:resource=\"http://example.org/bob\"/>\n"
+            + "    <ex:knows rdf:resource=\"http://example.org/carol\"/>\n"
+            + "  </rdf:Description>\n"
+            + "</rdf:RDF>\n");
+
+        string queryPath = Path.Combine(directory, "query.rq");
+        File.WriteAllText(queryPath, "PREFIX : <http://example.org/>\nSELECT ?who WHERE { :alice :knows ?who } ORDER BY ?who\n");
+
+        return (dataPath, queryPath);
+    }
+
+    /// <summary>Writes a small OWL/XML (<c>.owl</c>) ontology and a SELECT query for its subclass axiom to a fresh temporary directory.</summary>
+    /// <returns>The data file path and the query file path.</returns>
+    private static (string DataPath, string QueryPath) WriteOwlXmlFixture()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "veritas-cli-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(directory);
+
+        string dataPath = Path.Combine(directory, "data.owl");
+        File.WriteAllText(
+            dataPath,
+            "<?xml version=\"1.0\"?>\n"
+            + "<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\" ontologyIRI=\"http://example.org/o\">\n"
+            + "  <Declaration><Class IRI=\"http://example.org/Dog\"/></Declaration>\n"
+            + "  <Declaration><Class IRI=\"http://example.org/Animal\"/></Declaration>\n"
+            + "  <SubClassOf><Class IRI=\"http://example.org/Dog\"/><Class IRI=\"http://example.org/Animal\"/></SubClassOf>\n"
+            + "</Ontology>\n");
+
+        string queryPath = Path.Combine(directory, "query.rq");
+        File.WriteAllText(queryPath, "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>\nSELECT ?super WHERE { <http://example.org/Dog> rdfs:subClassOf ?super }\n");
 
         return (dataPath, queryPath);
     }
