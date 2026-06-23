@@ -62,13 +62,24 @@ public static class RatelessSketchCodec
         }
     }
 
-    /// <summary>Reconstructs each verified sketch's symbols, combines the two streams index-wise, absorbs until the decoder converges or <paramref name="symbolCap"/> symbols are absorbed, and writes the recovered difference items. The operands are <see cref="VerifiedSketch"/> values, so detection preceded this combine by construction.</summary>
+    /// <summary>The count-only reverse seam: recovers the symmetric difference and returns just how many items it found, discarding the convergence signal. Binds <see cref="Decode"/>; <see cref="RecoverDifference"/> is the richer entry a session drives.</summary>
     /// <param name="left">One replica's verified sketch.</param>
     /// <param name="right">The other replica's verified sketch.</param>
     /// <param name="symbolCap">The maximum number of symbols to absorb before giving up.</param>
     /// <param name="recovered">The sink for the recovered difference items.</param>
     /// <returns>The number of recovered items; when it exceeds <paramref name="recovered"/>'s length nothing is written.</returns>
     private static int DecodeDifference(VerifiedSketch left, VerifiedSketch right, int symbolCap, Span<ContentKey128> recovered)
+    {
+        return RecoverDifference(left, right, symbolCap, recovered).RecoveredCount;
+    }
+
+    /// <summary>Reconstructs each verified sketch's symbols, combines the two streams index-wise, absorbs until the decoder converges or <paramref name="symbolCap"/> symbols are absorbed, writes the recovered difference items, and reports whether the peel was complete. The operands are <see cref="VerifiedSketch"/> values, so detection preceded this combine by construction.</summary>
+    /// <param name="left">One replica's verified sketch.</param>
+    /// <param name="right">The other replica's verified sketch.</param>
+    /// <param name="symbolCap">The maximum number of symbols to absorb before giving up.</param>
+    /// <param name="recovered">The sink for the recovered difference items; when the recovered count exceeds its length nothing is written.</param>
+    /// <returns>The recovered count, whether the decoder converged, and how many symbols were absorbed.</returns>
+    public static SketchDifference RecoverDifference(VerifiedSketch left, VerifiedSketch right, int symbolCap, Span<ContentKey128> recovered)
     {
         int symbolWidth = left.SymbolWidth;
         ReadOnlySpan<byte> leftSymbols = left.Symbols.Span;
@@ -88,16 +99,14 @@ public static class RatelessSketchCodec
         }
 
         IReadOnlyList<ReadOnlyMemory<byte>> decoded = decoder.DecodedItems;
-        if(decoded.Count > recovered.Length)
+        if(decoded.Count <= recovered.Length)
         {
-            return decoded.Count;
+            for(int i = 0; i < decoded.Count; i++)
+            {
+                recovered[i] = ContentKey128.FromBytes(decoded[i].Span);
+            }
         }
 
-        for(int i = 0; i < decoded.Count; i++)
-        {
-            recovered[i] = ContentKey128.FromBytes(decoded[i].Span);
-        }
-
-        return decoded.Count;
+        return new SketchDifference(decoded.Count, decoder.IsComplete, absorbed);
     }
 }
