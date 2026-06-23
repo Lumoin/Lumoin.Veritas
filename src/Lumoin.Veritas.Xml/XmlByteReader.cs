@@ -18,7 +18,9 @@ namespace Lumoin.Veritas.Xml;
 /// in-scope <c>xmlns</c>/<c>xmlns:prefix</c> declarations (a per-element scope stack); the implicit <c>xml</c>
 /// prefix is always bound to the XML namespace. Predefined entities (<c>&amp;lt;</c>, <c>&amp;gt;</c>,
 /// <c>&amp;amp;</c>, <c>&amp;quot;</c>, <c>&amp;apos;</c>) and numeric character references decode in text and
-/// attribute values.
+/// attribute values. Literal line endings are normalized to <c>LF</c> in text and CDATA content (XML 1.0 §2.11),
+/// and attribute values are further whitespace-normalized — each literal tab and line break becomes a space
+/// (§3.3.3); whitespace introduced by a character reference (<c>&amp;#xD;</c>, <c>&amp;#x9;</c>) is preserved.
 /// </para>
 /// <para>
 /// A DTD is rejected by default. With <see cref="Read(System.ReadOnlySpan{byte}, bool)"/> and
@@ -173,7 +175,7 @@ public static class XmlByteReader
                     throw new FormatException("XML document has an unterminated CDATA section.");
                 }
 
-                AppendText(Utf8String.WithoutPrecomputedHash(utf8.Slice(open, close - open).ToArray()));
+                AppendText(NormalizeText(utf8.Slice(open, close - open)));
 
                 return close + "]]>"u8.Length;
             }
@@ -249,7 +251,7 @@ public static class XmlByteReader
                     {
                         //An entity's replacement text decodes predefined and numeric references once at registration;
                         //it is then emitted verbatim on reference (general entities do not nest in this reader).
-                        Entities[new Utf8String(name.ToArray())] = Decode(utf8.Slice(valueStart, valueEnd - valueStart), expandGeneral: false);
+                        Entities[new Utf8String(name.ToArray())] = Decode(utf8.Slice(valueStart, valueEnd - valueStart), expandGeneral: false, NormalizationMode.Text);
                         cursor = valueEnd + 1;
                     }
                 }
@@ -302,7 +304,7 @@ public static class XmlByteReader
                 node.Attributes.Add(new XmlByteAttribute(
                     LocalName(utf8.Slice(attribute.NameStart, attribute.NameEnd - attribute.NameStart)),
                     ResolveAttributeNamespace(utf8.Slice(attribute.NameStart, attribute.NameEnd - attribute.NameStart), scope),
-                    Decode(utf8.Slice(attribute.ValueStart, attribute.ValueEnd - attribute.ValueStart), expandGeneral: true)));
+                    Decode(utf8.Slice(attribute.ValueStart, attribute.ValueEnd - attribute.ValueStart), expandGeneral: true, NormalizationMode.Attribute)));
             }
 
             Open.Peek().Children.Add(node);
@@ -367,7 +369,7 @@ public static class XmlByteReader
                 next = utf8.Length;
             }
 
-            AppendText(Decode(utf8.Slice(start, next - start), expandGeneral: true));
+            AppendText(Decode(utf8.Slice(start, next - start), expandGeneral: true, NormalizationMode.Text));
 
             return next;
         }
@@ -399,7 +401,7 @@ public static class XmlByteReader
                 ReadOnlySpan<byte> name = utf8.Slice(attribute.NameStart, attribute.NameEnd - attribute.NameStart);
                 if(name.SequenceEqual("xmlns"u8))
                 {
-                    Utf8String iri = Decode(utf8.Slice(attribute.ValueStart, attribute.ValueEnd - attribute.ValueStart), expandGeneral: true);
+                    Utf8String iri = Decode(utf8.Slice(attribute.ValueStart, attribute.ValueEnd - attribute.ValueStart), expandGeneral: true, NormalizationMode.Attribute);
                     bound ??= new(parent);
                     bound[DefaultPrefix] = iri;
                     local ??= [];
@@ -408,7 +410,7 @@ public static class XmlByteReader
                 else if(name.Length > 6 && name.StartsWith("xmlns:"u8))
                 {
                     Utf8String prefix = new(name.Slice(6).ToArray());
-                    Utf8String iri = Decode(utf8.Slice(attribute.ValueStart, attribute.ValueEnd - attribute.ValueStart), expandGeneral: true);
+                    Utf8String iri = Decode(utf8.Slice(attribute.ValueStart, attribute.ValueEnd - attribute.ValueStart), expandGeneral: true, NormalizationMode.Attribute);
                     bound ??= new(parent);
                     bound[prefix] = iri;
                     local ??= [];
@@ -419,14 +421,15 @@ public static class XmlByteReader
             return (bound ?? parent, local);
         }
 
-        /// <summary>Decodes a byte range, resolving XML predefined and numeric references and (when permitted) general entities; a reference-free range is an owned slice.</summary>
+        /// <summary>Decodes a byte range, resolving XML predefined and numeric references and (when permitted) general entities, and normalizing the range's literal whitespace per <paramref name="mode"/>; a range with neither a reference nor normalizable whitespace is an owned slice.</summary>
         /// <param name="raw">The bytes to decode.</param>
         /// <param name="expandGeneral">Whether <c>&amp;name;</c> general-entity references expand (text/attribute values), as opposed to an entity replacement text being registered.</param>
+        /// <param name="mode">Whether the range is text/CDATA (XML 1.0 §2.11 line endings only) or an attribute value (§2.11 then §3.3.3 whitespace-to-space); whitespace from a reference is never normalized either way.</param>
         /// <returns>The decoded, owned value.</returns>
         /// <exception cref="FormatException">A reference is unterminated, undefined, or the expansion budget is exhausted.</exception>
-        private Utf8String Decode(ReadOnlySpan<byte> raw, bool expandGeneral)
+        private Utf8String Decode(ReadOnlySpan<byte> raw, bool expandGeneral, NormalizationMode mode)
         {
-            if(raw.IndexOf((byte)'&') < 0)
+            if(!NeedsDecoding(raw, mode))
             {
                 return Utf8String.WithoutPrecomputedHash(raw.ToArray());
             }
@@ -435,22 +438,24 @@ public static class XmlByteReader
             int i = 0;
             while(i < raw.Length)
             {
-                if(raw[i] != (byte)'&')
+                if(raw[i] == (byte)'&')
                 {
-                    output.Write(raw.Slice(i, 1));
-                    i++;
+                    int semicolon = raw.Slice(i).IndexOf((byte)';');
+                    if(semicolon < 0)
+                    {
+                        throw new FormatException("XML value has an unterminated entity reference.");
+                    }
+
+                    ExpandReference(raw.Slice(i + 1, semicolon - 1), output, expandGeneral);
+                    i += semicolon + 1;
 
                     continue;
                 }
 
-                int semicolon = raw.Slice(i).IndexOf((byte)';');
-                if(semicolon < 0)
-                {
-                    throw new FormatException("XML value has an unterminated entity reference.");
-                }
-
-                ExpandReference(raw.Slice(i + 1, semicolon - 1), output, expandGeneral);
-                i += semicolon + 1;
+                int amp = raw.Slice(i).IndexOf((byte)'&');
+                int literalEnd = amp < 0 ? raw.Length : i + amp;
+                WriteNormalizedLiteral(raw.Slice(i, literalEnd - i), mode, output);
+                i = literalEnd;
             }
 
             return Utf8String.WithoutPrecomputedHash(output.WrittenSpan.ToArray());
@@ -533,6 +538,19 @@ public static class XmlByteReader
         {
             return prefix.SequenceEqual("xml"u8) ? new Utf8String(XmlNamespace.ToArray()) : scope.GetValueOrDefault(new Utf8String(prefix.ToArray()));
         }
+    }
+
+    /// <summary>
+    /// How a decoded value's <b>literal</b> whitespace is normalized. Whitespace introduced by a character or
+    /// entity reference is never normalized under either mode — only whitespace present literally in the source is.
+    /// </summary>
+    private enum NormalizationMode
+    {
+        /// <summary>XML 1.0 §2.11 only: a literal <c>CR LF</c> pair or a lone literal <c>CR</c> collapses to a single <c>LF</c> (text and CDATA content).</summary>
+        Text,
+
+        /// <summary>XML 1.0 §2.11 then §3.3.3: after line-ending normalization, each remaining literal whitespace (<c>LF</c>, tab, space) becomes a single space (attribute values).</summary>
+        Attribute
     }
 
     /// <summary>The raw byte ranges of one parsed attribute, before namespace resolution.</summary>
@@ -747,6 +765,68 @@ public static class XmlByteReader
         right.Span.CopyTo(joined.AsSpan(left.Length));
 
         return Utf8String.WithoutPrecomputedHash(joined);
+    }
+
+    /// <summary>Whether a byte range needs the decoding slow path: it carries a reference, or whitespace the <paramref name="mode"/> normalizes (a literal <c>CR</c> under either mode; also a literal <c>LF</c> or tab in an attribute value). A range without any of these passes through unchanged.</summary>
+    /// <param name="raw">The bytes to test.</param>
+    /// <param name="mode">The normalization mode.</param>
+    /// <returns><see langword="true"/> when the range must be decoded; <see langword="false"/> when it is an unchanged slice.</returns>
+    private static bool NeedsDecoding(ReadOnlySpan<byte> raw, NormalizationMode mode)
+    {
+        return raw.IndexOfAny(mode == NormalizationMode.Attribute ? "&\r\n\t"u8 : "&\r"u8) >= 0;
+    }
+
+    /// <summary>Writes a reference-free literal run to the decode buffer, normalizing its whitespace per <paramref name="mode"/>: §2.11 collapses a literal <c>CR LF</c> or lone <c>CR</c> to one <c>LF</c>, and in an attribute value §3.3.3 then maps every literal <c>LF</c>, tab, and space to one space. A non-whitespace run is written as a single slice.</summary>
+    /// <param name="run">The literal bytes (no entity reference).</param>
+    /// <param name="mode">The normalization mode.</param>
+    /// <param name="output">The decode buffer.</param>
+    private static void WriteNormalizedLiteral(ReadOnlySpan<byte> run, NormalizationMode mode, ArrayBufferWriter<byte> output)
+    {
+        ReadOnlySpan<byte> normalizable = mode == NormalizationMode.Attribute ? "\r\n\t"u8 : "\r"u8;
+        int i = 0;
+        while(i < run.Length)
+        {
+            int next = run.Slice(i).IndexOfAny(normalizable);
+            if(next < 0)
+            {
+                output.Write(run.Slice(i));
+
+                return;
+            }
+
+            if(next > 0)
+            {
+                output.Write(run.Slice(i, next));
+            }
+
+            i += next;
+            if(run[i] == (byte)'\r')
+            {
+                output.Write(mode == NormalizationMode.Attribute ? " "u8 : "\n"u8);
+                i += i + 1 < run.Length && run[i + 1] == (byte)'\n' ? 2 : 1;
+            }
+            else
+            {
+                output.Write(" "u8);
+                i++;
+            }
+        }
+    }
+
+    /// <summary>Normalizes a literal run's line endings (XML 1.0 §2.11) with no reference expansion, for CDATA content where markup and references are inert; a run with no <c>CR</c> is an owned slice.</summary>
+    /// <param name="raw">The CDATA bytes.</param>
+    /// <returns>The line-ending-normalized, owned value.</returns>
+    private static Utf8String NormalizeText(ReadOnlySpan<byte> raw)
+    {
+        if(raw.IndexOf((byte)'\r') < 0)
+        {
+            return Utf8String.WithoutPrecomputedHash(raw.ToArray());
+        }
+
+        ArrayBufferWriter<byte> output = new();
+        WriteNormalizedLiteral(raw, NormalizationMode.Text, output);
+
+        return Utf8String.WithoutPrecomputedHash(output.WrittenSpan.ToArray());
     }
 
     /// <summary>Finds the closing <c>&gt;</c> of a start or empty-element tag, skipping over quoted attribute values.</summary>

@@ -8,8 +8,10 @@ namespace Lumoin.Veritas.ParserTests.Xml;
 /// <summary>
 /// Verifies the shared byte-native <see cref="XmlByteReader"/>: it builds the element tree, resolves namespace
 /// scopes (including the rule that an unprefixed attribute is in no namespace), decodes predefined and numeric
-/// references in text and attribute values, takes CDATA verbatim while ignoring comments, and rejects malformed
-/// input and a DTD with <see cref="FormatException"/>.
+/// references in text and attribute values, normalizes literal line endings and attribute whitespace per XML 1.0
+/// (§2.11/§3.3.3) while preserving reference-introduced whitespace, takes CDATA content verbatim apart from that
+/// line-ending normalization while ignoring comments, and rejects malformed input and a DTD with
+/// <see cref="FormatException"/>.
 /// </summary>
 [TestClass]
 internal sealed class XmlByteReaderTests
@@ -151,5 +153,60 @@ internal sealed class XmlByteReaderTests
         Assert.ThrowsExactly<FormatException>(() => Read("<r>&#0;</r>"));
         Assert.ThrowsExactly<FormatException>(() => Read("<r>&#xFFFF;</r>"));
         Assert.ThrowsExactly<FormatException>(() => Read("<r>&#x110000;</r>"));
+    }
+
+    /// <summary>In text content, a literal CRLF or lone CR normalizes to a single LF, a literal LF is unchanged, and each line break collapses independently (XML 1.0 §2.11).</summary>
+    [TestMethod]
+    public void NormalizesTextLineEndingsToLineFeed()
+    {
+        Assert.AreEqual("a\nb", Read("<r>a\r\nb</r>").Text.ToString(), "A literal CRLF becomes a single LF.");
+        Assert.AreEqual("a\nb", Read("<r>a\rb</r>").Text.ToString(), "A lone literal CR becomes an LF.");
+        Assert.AreEqual("a\nb", Read("<r>a\nb</r>").Text.ToString(), "A literal LF is unchanged.");
+        Assert.AreEqual("a\n\nb", Read("<r>a\r\n\r\nb</r>").Text.ToString(), "Each CRLF collapses to one LF independently.");
+    }
+
+    /// <summary>CDATA content has its literal line endings normalized to LF (§2.11), even though its markup and references stay inert.</summary>
+    [TestMethod]
+    public void NormalizesCdataLineEndingsToLineFeed()
+    {
+        Assert.AreEqual("x\ny", Read("<r><![CDATA[x\r\ny]]></r>").Text.ToString(), "A CRLF in CDATA becomes a single LF.");
+        Assert.AreEqual("x\ny", Read("<r><![CDATA[x\ry]]></r>").Text.ToString(), "A lone CR in CDATA becomes an LF.");
+    }
+
+    /// <summary>In an attribute value, each literal tab and line break becomes a single space, a CRLF becomes one space, and literal space runs are not collapsed because the attribute is CDATA-typed (§3.3.3).</summary>
+    [TestMethod]
+    public void NormalizesAttributeWhitespaceToSpaces()
+    {
+        Assert.AreEqual("a b", Read("<r v=\"a\tb\"/>").Attribute("v"u8)?.ToString(), "A literal tab becomes a space.");
+        Assert.AreEqual("a b", Read("<r v=\"a\nb\"/>").Attribute("v"u8)?.ToString(), "A literal LF becomes a space.");
+        Assert.AreEqual("a b", Read("<r v=\"a\r\nb\"/>").Attribute("v"u8)?.ToString(), "A literal CRLF becomes a single space.");
+        Assert.AreEqual("a  b", Read("<r v=\"a  b\"/>").Attribute("v"u8)?.ToString(), "Literal space runs are not collapsed (the attribute is CDATA-typed).");
+    }
+
+    /// <summary>Whitespace introduced by a character reference is the referenced character verbatim, never line-ending- or attribute-normalized: a CR reference stays CR in text and in an attribute, and a tab reference stays a tab in an attribute.</summary>
+    [TestMethod]
+    public void PreservesReferenceIntroducedWhitespace()
+    {
+        Assert.AreEqual("a\rb", Read("<r>a&#xD;b</r>").Text.ToString(), "A CR character reference in text is preserved, not normalized to LF.");
+        Assert.AreEqual("a\rb", Read("<r v=\"a&#xD;b\"/>").Attribute("v"u8)?.ToString(), "A CR character reference in an attribute is preserved, not mapped to a space.");
+        Assert.AreEqual("a\tb", Read("<r v=\"a&#x9;b\"/>").Attribute("v"u8)?.ToString(), "A tab character reference in an attribute is preserved, not mapped to a space.");
+    }
+
+    /// <summary>Within one attribute value, literal whitespace normalizes to a space while reference-introduced whitespace is preserved — the two are distinguished as the value is decoded, not by a post-pass.</summary>
+    [TestMethod]
+    public void DistinguishesLiteralFromReferencedWhitespaceInOneValue()
+    {
+        Assert.AreEqual("a b\tc", Read("<r v=\"a\tb&#x9;c\"/>").Attribute("v"u8)?.ToString(), "The literal tab becomes a space; the tab character reference stays a tab.");
+    }
+
+    /// <summary>A CRLF-authored document parses, with element text line endings normalized to LF.</summary>
+    [TestMethod]
+    public void ReadsACrlfAuthoredDocument()
+    {
+        XmlByteNode root = Read("<r>\r\n  <c>line1\r\nline2</c>\r\n</r>");
+
+        XmlByteNode? c = root.Element("c"u8, default);
+        Assert.IsNotNull(c);
+        Assert.AreEqual("line1\nline2", c!.Text.ToString(), "Text content line endings are normalized to LF.");
     }
 }
