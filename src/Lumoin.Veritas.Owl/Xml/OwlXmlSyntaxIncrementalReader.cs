@@ -5,8 +5,8 @@ using System.Text;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Parsing;
+using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Owl.Structural;
-using Lumoin.Veritas.Owl.Syntax;
 
 namespace Lumoin.Veritas.Owl.Xml;
 
@@ -53,7 +53,7 @@ public sealed class OwlXmlSyntaxIncrementalReader
     private OwlOntologyDocument? Document { get; set; }
 
     /// <summary>Maps byte offsets to line-column source spans.</summary>
-    private OwlByteSourceMap Map { get; } = new();
+    private ByteSourceMap Map { get; } = new();
 
     /// <summary>The converter the completed ontology element folds into structural axioms.</summary>
     private OwlXmlSyntaxConverter Converter { get; } = new();

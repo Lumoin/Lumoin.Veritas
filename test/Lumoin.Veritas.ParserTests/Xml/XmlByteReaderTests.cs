@@ -209,4 +209,49 @@ internal sealed class XmlByteReaderTests
         Assert.IsNotNull(c);
         Assert.AreEqual("line1\nline2", c!.Text.ToString(), "Text content line endings are normalized to LF.");
     }
+
+    /// <summary>Each element carries a byte span from its start tag's <c>&lt;</c> through just past its end tag's <c>&gt;</c>.</summary>
+    [TestMethod]
+    public void RecordsByteSpansForElements()
+    {
+        XmlByteNode root = Read("<r><c>text</c></r>");
+
+        Assert.AreEqual(0, root.Span.StartByte, "The root span begins at the document's first byte.");
+        Assert.AreEqual(18, root.Span.EndByte, "The root span ends just past its end tag's '>'.");
+
+        XmlByteNode? c = root.Element("c"u8, default);
+        Assert.IsNotNull(c);
+        Assert.AreEqual(3, c!.Span.StartByte, "The child span begins at its start tag's '<'.");
+        Assert.AreEqual(14, c.Span.EndByte, "The child span ends just past its end tag's '>'.");
+    }
+
+    /// <summary>A self-closing element's span covers its single tag.</summary>
+    [TestMethod]
+    public void RecordsByteSpanForSelfClosingElement()
+    {
+        XmlByteNode root = Read("<r><a/></r>");
+
+        XmlByteNode? a = root.Element("a"u8, default);
+        Assert.IsNotNull(a);
+        Assert.AreEqual(3, a!.Span.StartByte, "The empty-element span begins at the tag's '<'.");
+        Assert.AreEqual(7, a.Span.EndByte, "The empty-element span ends just past the tag's '>'.");
+    }
+
+    /// <summary>An element span resolves to zero-based line and column positions across a multi-line document.</summary>
+    [TestMethod]
+    public void RecordsLineAndColumnSpans()
+    {
+        XmlByteNode root = Read("<r>\n<c/>\n</r>");
+
+        XmlByteNode? c = root.Element("c"u8, default);
+        Assert.IsNotNull(c);
+        Assert.AreEqual(1, c!.Span.StartLine, "The child begins on the second line (zero-based line 1).");
+        Assert.AreEqual(0, c.Span.StartColumn, "The child begins at the line's first column.");
+        Assert.AreEqual(1, c.Span.EndLine, "The child ends on the same line.");
+        Assert.AreEqual(4, c.Span.EndColumn, "The child ends four columns in, just past '<c/>'.");
+
+        Assert.AreEqual(0, root.Span.StartLine, "The root begins on the first line.");
+        Assert.AreEqual(2, root.Span.EndLine, "The root ends on the third line (zero-based line 2).");
+        Assert.AreEqual(4, root.Span.EndColumn, "The root ends just past its end tag's '>'.");
+    }
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Sourcing;
 
 namespace Lumoin.Veritas.Xml;
 
@@ -44,6 +45,16 @@ public sealed class XmlByteNode
     /// <c>rdf:parseType="Literal"</c> fragment, the one place canonicalization needs the prefixes the reader otherwise resolves away.
     /// </summary>
     public IReadOnlyList<XmlNamespaceBinding> InScopeNamespaces { get; init; } = [];
+
+    /// <summary>
+    /// The source span covering this element — from its start tag's <c>&lt;</c> through just past its end tag's
+    /// <c>&gt;</c>, or the single tag of an empty element. <see cref="SourceSpan.None"/> on the synthetic document
+    /// root (which a consumer never sees); on every element the reader returns, the span locates that element.
+    /// </summary>
+    public SourceSpan Span { get; internal set; }
+
+    /// <summary>The byte offset of this element's start tag's <c>&lt;</c>; the reader pairs it with the end-tag offset to fix <see cref="Span"/> when the element closes.</summary>
+    internal int SpanStart { get; init; }
 
     /// <summary>The start offset of this element's verbatim inner content (just past the start tag's <c>&gt;</c>) in the source bytes; <c>0</c> for an empty element.</summary>
     /// <remarks>Paired with <see cref="ContentEnd"/> to recover the raw, undecoded inner markup an XML literal canonicalizes; meaningful only against the same buffer the reader parsed.</remarks>

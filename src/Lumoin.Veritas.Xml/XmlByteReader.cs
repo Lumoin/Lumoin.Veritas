@@ -3,6 +3,7 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.Text;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Sourcing;
 
 namespace Lumoin.Veritas.Xml;
 
@@ -87,6 +88,9 @@ public static class XmlByteReader
         /// <summary>The in-scope namespace bindings in document declaration order, one frame per open element, parallel to <see cref="Scopes"/>; a frame is shared with its parent when the element declares no namespaces.</summary>
         private Stack<IReadOnlyList<XmlNamespaceBinding>> OrderedScopes { get; } = new();
 
+        /// <summary>Resolves byte offsets to <see cref="SourceSpan"/> values for the element spans recorded on the tree.</summary>
+        private ByteSourceMap Map { get; } = new();
+
         /// <summary>The remaining budget for general-entity expansion, in bytes.</summary>
         private int entityBudget = MaxEntityExpansionBytes;
 
@@ -99,6 +103,7 @@ public static class XmlByteReader
             Open.Push(Root);
             Scopes.Push([]);
             OrderedScopes.Push(EmptyBindings);
+            Map.Append(utf8);
 
             int i = 0;
             while(i < utf8.Length)
@@ -291,7 +296,9 @@ public static class XmlByteReader
                 LocalName = LocalName(utf8.Slice(nameStart, nameEnd - nameStart)),
                 NamespaceIri = ResolveElementNamespace(utf8.Slice(nameStart, nameEnd - nameStart), scope),
                 InScopeNamespaces = ordered,
-                ContentStart = empty ? 0 : close + 1
+                ContentStart = empty ? 0 : close + 1,
+                SpanStart = start,
+                Span = empty ? Map.Span(start, close + 1) : default
             };
 
             foreach(RawAttribute attribute in raw)
@@ -350,6 +357,7 @@ public static class XmlByteReader
             }
 
             node.ContentEnd = start;
+            node.Span = Map.Span(node.SpanStart, close + 1);
             Open.Pop();
             Scopes.Pop();
             OrderedScopes.Pop();

@@ -1,23 +1,23 @@
 using System;
 using System.Collections.Generic;
-using Lumoin.Veritas.Core.Sourcing;
 
-namespace Lumoin.Veritas.Owl.Syntax;
+namespace Lumoin.Veritas.Core.Sourcing;
 
 /// <summary>
-/// Maps UTF-8 byte offsets of incrementally fed source text to
-/// <see cref="SourceSpan"/> values. Because the byte-native OWL reader lexes
-/// over bytes, a byte offset needs no translation; this map only records where
-/// each line begins so a byte offset resolves to a line and column.
+/// Maps UTF-8 byte offsets of source text to <see cref="SourceSpan"/> values.
+/// Because the byte-native readers lex over bytes, a byte offset needs no
+/// translation; this map only records where each line begins so a byte offset
+/// resolves to a line and column.
 /// </summary>
 /// <remarks>
-/// The line-start table grows per fed chunk, so spans for already-fed text are
-/// stable across feeds. Columns are counted in bytes from the line start —
-/// consistent with the pipeline working in UTF-8 throughout; an editor working
-/// in UTF-16 code units converts at its own boundary. For an all-ASCII line a
-/// byte column equals the code-point column.
+/// The line-start table grows per appended chunk, so spans for already-seen text
+/// are stable across appends — a reader fed incrementally appends each chunk as it
+/// arrives, and a whole-buffer reader appends the buffer once. Columns are counted
+/// in bytes from the line start — consistent with the pipeline working in UTF-8
+/// throughout; an editor working in UTF-16 code units converts at its own boundary.
+/// For an all-ASCII line a byte column equals the code-point column.
 /// </remarks>
-internal sealed class OwlByteSourceMap
+public sealed class ByteSourceMap
 {
     /// <summary>The byte offset each line begins at; the first line begins at zero.</summary>
     private List<int> LineStarts { get; } = [0];

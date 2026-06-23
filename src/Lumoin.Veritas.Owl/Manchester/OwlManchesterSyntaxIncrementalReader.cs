@@ -4,7 +4,6 @@ using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Owl.Structural;
-using Lumoin.Veritas.Owl.Syntax;
 
 namespace Lumoin.Veritas.Owl.Manchester;
 
@@ -65,7 +64,7 @@ public sealed class OwlManchesterSyntaxIncrementalReader
     private OwlOntologyDocument? Document { get; set; }
 
     /// <summary>Maps byte offsets to line-column source spans.</summary>
-    private OwlByteSourceMap Map { get; } = new();
+    private ByteSourceMap Map { get; } = new();
 
     /// <summary>The bag every lexical, structural, and conversion diagnostic accumulates into.</summary>
     private DiagnosticBag Bag { get; } = new();
