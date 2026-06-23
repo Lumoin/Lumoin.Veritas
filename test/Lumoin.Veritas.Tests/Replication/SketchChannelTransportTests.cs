@@ -3,6 +3,7 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.IO.Pipelines;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
@@ -150,5 +151,62 @@ internal sealed class SketchChannelTransportTests
         union.UnionWith(triplesB);
         Assert.IsTrue(union.SetEquals([.. resultA.ConvergedIndex.EnumerateTriples()]), "Replica A must converge to the union.");
         Assert.IsTrue(union.SetEquals([.. resultB.ConvergedIndex.EnumerateTriples()]), "Replica B must converge to the union.");
+    }
+
+    /// <summary>A budget the server cannot serve within one frame (here a deliberately tiny frame) is declined by value: the server writes no response and its loop survives, and the client reads no frame and reconciles as an unavailable peer rather than hanging — the failure path a missing response completion would deadlock. A linked deadline turns a regression of that hang into a fast failure instead of a stuck suite.</summary>
+    [TestMethod]
+    public async Task ServerDeclinesAnUnserveableBudgetAndTheClientReportsPeerUnavailable()
+    {
+        using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        using VeritasMemoryPool<byte> pool = new();
+        EncodedTriple[] triplesA = Line(0, 30);
+        EncodedTriple[] triplesB = Line(20, 30);
+        ColumnarTripleIndex replicaA = ColumnarTripleIndex.Build(triplesA);
+        ColumnarTripleIndex replicaB = ColumnarTripleIndex.Build(triplesB);
+
+        //A frame far smaller than any real sketch makes the client's budget unserveable, so the server declines it.
+        const int tinyFrameLength = 256;
+        Pipe requestPipe = new();
+        Pipe responsePipe = new();
+        SketchChannelServer server = new(replicaB, pool, requestPipe.Reader, responsePipe.Writer, tinyFrameLength);
+        SketchChannelClient client = new(requestPipe.Writer, responsePipe.Reader, tinyFrameLength);
+
+        Task serveTask = server.ServeAsync(deadline.Token);
+        AntiEntropySessionResult result = await AntiEntropySession.ReconcileAsync(replicaA, client.FetchAsync, ReplicationPolicy.Default, pool, TimeProvider.System, cancellationToken: deadline.Token).ConfigureAwait(false);
+        await serveTask.ConfigureAwait(false);
+
+        Assert.AreEqual(AntiEntropyOutcome.PeerUnavailable, result.Outcome, "An unserveable budget must decline as peer-unavailable, not hang.");
+        Assert.AreSame(replicaA, result.ConvergedIndex, "A declined fetch leaves the local index unchanged.");
+    }
+
+    /// <summary>A sketch past the default pause threshold and spanning multiple pipe segments still converges over the channel when the duplex is sized for the frame — exercising the multi-segment frame read and image copy the small-replica tests stay under. The pipes are built with a pause-writer threshold above the frame, the constraint the transport documents.</summary>
+    [TestMethod]
+    public async Task ALargeSketchConvergesOverAFrameSizedChannel()
+    {
+        using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(60));
+        using VeritasMemoryPool<byte> pool = new();
+        EncodedTriple[] triplesA = Line(0, 150);
+        EncodedTriple[] triplesB = Line(50, 150);
+        ColumnarTripleIndex replicaA = ColumnarTripleIndex.Build(triplesA);
+        ColumnarTripleIndex replicaB = ColumnarTripleIndex.Build(triplesB);
+
+        //The sketch for 150 items exceeds the default 64 KiB pause threshold; size the pipes above the frame so the
+        //whole-frame buffering does not deadlock — the constraint the client and server document.
+        PipeOptions frameSized = new(pauseWriterThreshold: 16 * 1024 * 1024, resumeWriterThreshold: 8 * 1024 * 1024);
+        Pipe requestPipe = new(frameSized);
+        Pipe responsePipe = new(frameSized);
+        SketchChannelServer server = new(replicaB, pool, requestPipe.Reader, responsePipe.Writer);
+        SketchChannelClient client = new(requestPipe.Writer, responsePipe.Reader);
+
+        Task serveTask = server.ServeAsync(deadline.Token);
+        AntiEntropySessionResult result = await AntiEntropySession.ReconcileAsync(replicaA, client.FetchAsync, ReplicationPolicy.Default, pool, TimeProvider.System, cancellationToken: deadline.Token).ConfigureAwait(false);
+        await serveTask.ConfigureAwait(false);
+
+        Assert.AreEqual(AntiEntropyOutcome.Converged, result.Outcome, "A frame-sized channel must converge a large sketch.");
+        HashSet<EncodedTriple> union = [.. triplesA];
+        union.UnionWith(triplesB);
+        Assert.IsTrue(union.SetEquals([.. result.ConvergedIndex.EnumerateTriples()]), "Replica A must converge to the union across a multi-segment frame.");
     }
 }

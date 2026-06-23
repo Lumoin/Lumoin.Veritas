@@ -15,6 +15,13 @@ namespace Lumoin.Veritas.Replication;
 /// drives one fetch over it, completing the request side so a cooperating <see cref="SketchChannelServer"/> ends
 /// its serve loop and replies.
 /// </summary>
+/// <remarks>
+/// A length-prefixed sketch frame is buffered whole before it is read, so the response pipe's pause-writer
+/// threshold must be at least <c>maxFrameLength</c>: a frame larger than the threshold pauses the writer before
+/// the reader can consume it and deadlocks. The default in-memory <see cref="Pipe"/> threshold is 64 KiB, so a
+/// duplex carrying sketches larger than that — a socket connection, or an in-memory pipe sized for the budget —
+/// must be constructed with a pause-writer threshold matching the chosen frame length.
+/// </remarks>
 public sealed class SketchChannelClient
 {
     private readonly PipeWriter requestWriter;
@@ -45,11 +52,18 @@ public sealed class SketchChannelClient
     public async ValueTask<ReadOnlyMemory<byte>> FetchAsync(int symbolBudget, CancellationToken cancellationToken)
     {
         MessageChannelWriter<int> requestChannel = new(requestWriter, SketchChannelFraming.WriteBudget, maxFrameLength);
-        await requestChannel.WriteAsync(symbolBudget, cancellationToken).ConfigureAwait(false);
 
-        //Complete the request side so the peer's serve loop ends after this one request and replies; without it the
-        //peer would wait for more requests and the response read below would never see the channel end.
-        await requestChannel.CompleteAsync().ConfigureAwait(false);
+        //Complete the request side on EVERY exit (success or a faulted/cancelled write) so the peer's serve loop
+        //always ends and never strands on an abandoned request pipe; completing a pipe writer is idempotent. A
+        //write that throws propagates after the completion, faulting this fetch while still releasing the peer.
+        try
+        {
+            await requestChannel.WriteAsync(symbolBudget, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            await requestChannel.CompleteAsync().ConfigureAwait(false);
+        }
 
         MessageChannelReader<ReadOnlyMemory<byte>> responseChannel = new(responseReader, SketchChannelFraming.ReadImage, maxFrameLength);
         await foreach(ReadOnlyMemory<byte> image in responseChannel.ReadAllAsync(cancellationToken).ConfigureAwait(false))
