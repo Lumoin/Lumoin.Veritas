@@ -1,6 +1,7 @@
 using System;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Owl.Functional;
 using Lumoin.Veritas.Owl.Structural;
 using Lumoin.Veritas.Owl.Xml;
@@ -12,8 +13,8 @@ namespace Lumoin.Veritas.ParserTests.Owl;
 /// Verifies the OWL/XML reader's incremental editor contract: input fed
 /// chunk by chunk produces the same <see cref="OwlOntologyDocument"/> as the
 /// whole-buffer read at every byte boundary, an unfinished tail is an
-/// <see cref="OwlXmlParseStatus.NeedMore"/> status rather than a diagnostic, and
-/// a closed document at a boundary reports <see cref="OwlXmlParseStatus.Complete"/>.
+/// <see cref="IncrementalParseStatus.NeedMore"/> status rather than a diagnostic, and
+/// a closed document at a boundary reports <see cref="IncrementalParseStatus.Complete"/>.
 /// </summary>
 /// <remarks>
 /// The XML front-end diverges from the functional and Manchester ones in places
@@ -101,11 +102,11 @@ internal sealed class OwlXmlSyntaxIncrementalTests
         for(int cut = interior; cut < lastClose; cut++)
         {
             OwlXmlSyntaxIncrementalReader reader = new();
-            Assert.AreEqual(OwlXmlParseStatus.NeedMore, reader.Feed(bytes.AsSpan(0, cut)), $"cut {cut}");
+            Assert.AreEqual(IncrementalParseStatus.NeedMore, reader.Feed(bytes.AsSpan(0, cut)), $"cut {cut}");
         }
 
         OwlXmlSyntaxIncrementalReader full = new();
-        Assert.AreEqual(OwlXmlParseStatus.Complete, full.Feed(bytes));
+        Assert.AreEqual(IncrementalParseStatus.Complete, full.Feed(bytes));
     }
 
     [TestMethod]
@@ -117,13 +118,13 @@ internal sealed class OwlXmlSyntaxIncrementalTests
         byte[] bytes = System.Text.Encoding.UTF8.GetBytes(Document);
 
         OwlXmlSyntaxIncrementalReader whole = new();
-        Assert.AreEqual(OwlXmlParseStatus.Complete, whole.Feed(bytes));
+        Assert.AreEqual(IncrementalParseStatus.Complete, whole.Feed(bytes));
 
         //The closing '/>' is the last two bytes; before it arrives the start tag
         //is unfinished, after it the empty element closes without an open child.
         OwlXmlSyntaxIncrementalReader split = new();
-        Assert.AreEqual(OwlXmlParseStatus.NeedMore, split.Feed(bytes.AsSpan(0, bytes.Length - 2)));
-        Assert.AreEqual(OwlXmlParseStatus.Complete, split.Feed(bytes.AsSpan(bytes.Length - 2)));
+        Assert.AreEqual(IncrementalParseStatus.NeedMore, split.Feed(bytes.AsSpan(0, bytes.Length - 2)));
+        Assert.AreEqual(IncrementalParseStatus.Complete, split.Feed(bytes.AsSpan(bytes.Length - 2)));
 
         OwlOntologyDocument document = split.Complete();
         Assert.IsFalse(document.Diagnostics.HasErrors);
@@ -139,13 +140,13 @@ internal sealed class OwlXmlSyntaxIncrementalTests
         //an unfinished unit: Status stays Complete (the editor must not be told
         //to keep waiting on a finished document).
         OwlXmlSyntaxIncrementalReader reader = new();
-        Assert.AreEqual(OwlXmlParseStatus.Complete, reader.Feed(System.Text.Encoding.UTF8.GetBytes(CleanDocument + "\n  \n")));
+        Assert.AreEqual(IncrementalParseStatus.Complete, reader.Feed(System.Text.Encoding.UTF8.GetBytes(CleanDocument + "\n  \n")));
 
         //A comment scans and commits without pushing, so it keeps the boundary;
         //a comment whose '-->' has not arrived is genuinely unfinished and
         //suspends until it closes.
-        Assert.AreEqual(OwlXmlParseStatus.NeedMore, reader.Feed("<!-- trailing"u8));
-        Assert.AreEqual(OwlXmlParseStatus.Complete, reader.Feed(" -->"u8));
+        Assert.AreEqual(IncrementalParseStatus.NeedMore, reader.Feed("<!-- trailing"u8));
+        Assert.AreEqual(IncrementalParseStatus.Complete, reader.Feed(" -->"u8));
 
         OwlOntologyDocument document = reader.Complete();
         Assert.IsFalse(document.Diagnostics.HasErrors);
@@ -171,7 +172,7 @@ internal sealed class OwlXmlSyntaxIncrementalTests
         {
             OwlXmlSyntaxIncrementalReader reader = new();
 
-            Assert.AreEqual(OwlXmlParseStatus.NeedMore, reader.Feed(System.Text.Encoding.UTF8.GetBytes(tail)), tail);
+            Assert.AreEqual(IncrementalParseStatus.NeedMore, reader.Feed(System.Text.Encoding.UTF8.GetBytes(tail)), tail);
             Assert.IsFalse(reader.Diagnostics.HasErrors, $"'{tail}' squiggled a merely-unfinished tail");
         }
     }
@@ -252,7 +253,7 @@ internal sealed class OwlXmlSyntaxIncrementalTests
         int embedded = Document.IndexOf("a>b", StringComparison.Ordinal) + 2;
 
         OwlXmlSyntaxIncrementalReader split = new();
-        Assert.AreEqual(OwlXmlParseStatus.NeedMore, split.Feed(bytes.AsSpan(0, embedded)));
+        Assert.AreEqual(IncrementalParseStatus.NeedMore, split.Feed(bytes.AsSpan(0, embedded)));
         Assert.IsFalse(split.Diagnostics.HasErrors);
         split.Feed(bytes.AsSpan(embedded));
         OwlOntologyDocument document = split.Complete();
@@ -306,7 +307,7 @@ internal sealed class OwlXmlSyntaxIncrementalTests
         const string Truncated = """<Ontology xmlns="http://www.w3.org/2002/07/owl#"><Declaration><Class IRI="http://example.org/A"/></Declaration><!-- never closed""";
 
         OwlXmlSyntaxIncrementalReader reader = new();
-        Assert.AreEqual(OwlXmlParseStatus.NeedMore, reader.Feed(System.Text.Encoding.UTF8.GetBytes(Truncated)));
+        Assert.AreEqual(IncrementalParseStatus.NeedMore, reader.Feed(System.Text.Encoding.UTF8.GetBytes(Truncated)));
         Assert.IsFalse(reader.Diagnostics.HasErrors, "incompleteness squiggled before Complete");
 
         OwlOntologyDocument document = reader.Complete();
@@ -386,10 +387,10 @@ internal sealed class OwlXmlSyntaxIncrementalTests
     public void CompleteIsIdempotentAndEmptyFeedsKeepTheStatus()
     {
         OwlXmlSyntaxIncrementalReader reader = new();
-        Assert.AreEqual(OwlXmlParseStatus.Complete, reader.Feed(ReadOnlySpan<byte>.Empty));
+        Assert.AreEqual(IncrementalParseStatus.Complete, reader.Feed(ReadOnlySpan<byte>.Empty));
 
         reader.Feed(System.Text.Encoding.UTF8.GetBytes(CleanDocument));
-        Assert.AreEqual(OwlXmlParseStatus.Complete, reader.Feed(ReadOnlySpan<byte>.Empty));
+        Assert.AreEqual(IncrementalParseStatus.Complete, reader.Feed(ReadOnlySpan<byte>.Empty));
 
         OwlOntologyDocument first = reader.Complete();
         OwlOntologyDocument second = reader.Complete();

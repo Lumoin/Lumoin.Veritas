@@ -4,20 +4,11 @@ using System.Collections.Generic;
 using System.Text;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Owl.Structural;
 using Lumoin.Veritas.Owl.Syntax;
 
 namespace Lumoin.Veritas.Owl.Xml;
-
-/// <summary>Whether incrementally fed OWL/XML ends at a document boundary or inside an unfinished construct.</summary>
-public enum OwlXmlParseStatus
-{
-    /// <summary>The input so far ends at a document boundary: no element is open and no markup is half-scanned.</summary>
-    Complete = 0,
-
-    /// <summary>The input so far ends inside an open element or a half-scanned markup unit; more bytes are needed.</summary>
-    NeedMore = 1
-}
 
 /// <summary>
 /// Reads an OWL 2 XML serialization document fed incrementally, chunk by chunk,
@@ -90,16 +81,16 @@ public sealed class OwlXmlSyntaxIncrementalReader
     public DiagnosticBag Diagnostics => Converter.Diagnostics;
 
     /// <summary>Gets whether the input fed so far ends at a document boundary or inside an unfinished construct.</summary>
-    public OwlXmlParseStatus Status =>
+    public IncrementalParseStatus Status =>
         LexSuspended || Open.Count > 1
-            ? OwlXmlParseStatus.NeedMore
-            : OwlXmlParseStatus.Complete;
+            ? IncrementalParseStatus.NeedMore
+            : IncrementalParseStatus.Complete;
 
     /// <summary>Appends source bytes and scans as far as the input now permits.</summary>
     /// <param name="chunk">The next run of document bytes, of any length.</param>
     /// <returns>The <see cref="Status"/> after the chunk is consumed.</returns>
     /// <exception cref="InvalidOperationException"><see cref="Complete"/> has already been called.</exception>
-    public OwlXmlParseStatus Feed(ReadOnlySpan<byte> chunk)
+    public IncrementalParseStatus Feed(ReadOnlySpan<byte> chunk)
     {
         if(Final)
         {
