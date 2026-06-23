@@ -201,7 +201,9 @@ internal sealed class AntiEntropySessionTests
         ReplicationTraceEvent emitted = trace.Events.Single();
         Assert.AreEqual(AntiEntropyOutcome.Converged, emitted.Outcome, "The emitted event must carry the converged outcome.");
         Assert.AreEqual(correlation, emitted.CorrelationId, "The event must carry the reconcile's correlation id.");
-        Assert.AreEqual(result.RecoveredCount, emitted.RecoveredCount, "The event's recovered count must match the result.");
+        HashSet<ContentKey128> expectedDifference = [.. triplesA.Select(StructuralReconciliationProjection.Project)];
+        expectedDifference.SymmetricExceptWith(triplesB.Select(StructuralReconciliationProjection.Project));
+        Assert.AreEqual(expectedDifference.Count, emitted.RecoveredCount, "The event must report exactly the symmetric-difference count, independently of the result.");
         Assert.IsGreaterThan(0, emitted.SymbolBudget, "The event must carry the symbol budget the sketches were built at.");
     }
 
@@ -220,7 +222,9 @@ internal sealed class AntiEntropySessionTests
         Assert.AreEqual(AntiEntropyOutcome.AlreadyConsistent, result.Outcome, "Replicas that already agree are already consistent.");
         Assert.IsTrue(result.IsComplete, "AlreadyConsistent is a completing outcome.");
         Assert.AreEqual(0, result.RecoveredCount);
-        Assert.AreEqual(AntiEntropyOutcome.AlreadyConsistent, trace.Events.Single().Outcome);
+        ReplicationTraceEvent emitted = trace.Events.Single();
+        Assert.AreEqual(AntiEntropyOutcome.AlreadyConsistent, emitted.Outcome);
+        Assert.IsGreaterThan(0, emitted.AbsorbedSymbols, "An already-consistent peel is a post-combine empty peel — symbols were absorbed, unlike an unavailable peer which absorbs none.");
     }
 
     /// <summary>An unreachable peer reports <see cref="AntiEntropyOutcome.PeerUnavailable"/>, absorbs no symbols, and emits the decline.</summary>
