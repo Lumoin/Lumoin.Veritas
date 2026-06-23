@@ -2,11 +2,12 @@ using System;
 using System.Buffers;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.ContentAddressing;
 using Lumoin.Veritas.Core.Diagnostics;
-using Lumoin.Veritas.Core.Integrity;
 using Lumoin.Veritas.Core.Memory;
 using Lumoin.Veritas.Core.Reconciliation;
 
@@ -63,12 +64,83 @@ public static class AntiEntropySession
         ArgumentNullException.ThrowIfNull(timeProvider);
 
         long startTimestamp = timeProvider.GetTimestamp();
-
         int localItemCount = local.TripleCount;
         int symbolBudget = policy.SymbolBudget(localItemCount);
-        VerifiedSketch localSketch = PersistLocalSketch(local, localItemCount, symbolBudget, pool);
+        VerifiedSketch localSketch = PersistLocalSketch(local, symbolBudget, pool);
 
         ReadOnlyMemory<byte> peerImage = fetch(symbolBudget);
+
+        return CombineAndApply(local, localSketch, peerImage, localItemCount, symbolBudget, pool, trace, correlationId, timeProvider, startTimestamp);
+    }
+
+    /// <summary>
+    /// The asynchronous reconcile: identical to <see cref="Reconcile"/> except it awaits an
+    /// <see cref="AsyncSketchFetchDelegate"/> that crosses a transport for the peer's sketch. The local sketch is
+    /// persisted synchronously before the await and the recover-and-apply runs synchronously after it, so the only
+    /// suspension point is the fetch — every await stays in the session, never in the core's synchronous repair
+    /// path.
+    /// </summary>
+    /// <param name="local">The local replica to reconcile and, on a complete peel, converge.</param>
+    /// <param name="fetch">The asynchronous seam that returns the peer's persisted sketch image at a requested symbol budget.</param>
+    /// <param name="policy">The budget shape both sides' sketches are sized under.</param>
+    /// <param name="pool">The pool the session's transient item, image, and recovered-item buffers are rented from.</param>
+    /// <param name="timeProvider">The clock the session's elapsed time and event timestamp are measured against.</param>
+    /// <param name="trace">The diagnostics sink each reconcile emits its outcome to; <see langword="null"/> emits nothing.</param>
+    /// <param name="correlationId">The correlation id the emitted event carries, linking the reconcile to the operation that drove it.</param>
+    /// <param name="cancellationToken">The token that cancels the awaited fetch.</param>
+    /// <returns>The session outcome: the value-based outcome, recovered count, resulting index, absorbed symbols, and elapsed time.</returns>
+    /// <exception cref="ArgumentNullException">A reference argument is <see langword="null"/>.</exception>
+    /// <exception cref="InvalidDataException">The local replica holds more items than a single buffer can address, or the combined budget overflows a single recovered-item buffer.</exception>
+    public static async ValueTask<AntiEntropySessionResult> ReconcileAsync(
+        ColumnarTripleIndex local,
+        AsyncSketchFetchDelegate fetch,
+        ReplicationPolicy policy,
+        MemoryPool<byte> pool,
+        TimeProvider timeProvider,
+        TraceHandler<ReplicationTraceEvent>? trace = null,
+        Guid correlationId = default,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(local);
+        ArgumentNullException.ThrowIfNull(fetch);
+        ArgumentNullException.ThrowIfNull(pool);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+
+        long startTimestamp = timeProvider.GetTimestamp();
+        int localItemCount = local.TripleCount;
+        int symbolBudget = policy.SymbolBudget(localItemCount);
+        VerifiedSketch localSketch = PersistLocalSketch(local, symbolBudget, pool);
+
+        ReadOnlyMemory<byte> peerImage = await fetch(symbolBudget, cancellationToken).ConfigureAwait(false);
+
+        return CombineAndApply(local, localSketch, peerImage, localItemCount, symbolBudget, pool, trace, correlationId, timeProvider, startTimestamp);
+    }
+
+    /// <summary>Combines the loaded local sketch with the fetched peer image and, on a complete peel, applies the recovered difference — the synchronous recover-and-apply shared by the synchronous and asynchronous reconciles, so they differ only in how the peer image is fetched.</summary>
+    /// <param name="local">The local replica being reconciled.</param>
+    /// <param name="localSketch">The local replica's verified sketch.</param>
+    /// <param name="peerImage">The peer's fetched sketch image, or empty when the peer was unavailable.</param>
+    /// <param name="localItemCount">The local replica's item count, for the emitted event.</param>
+    /// <param name="symbolBudget">The symbol budget the sketches were built and the recovery is capped at.</param>
+    /// <param name="pool">The pool the recovered-item buffer is rented from.</param>
+    /// <param name="trace">The diagnostics sink; <see langword="null"/> emits nothing.</param>
+    /// <param name="correlationId">The reconcile's correlation id.</param>
+    /// <param name="timeProvider">The clock the event timestamp and elapsed time are read from.</param>
+    /// <param name="startTimestamp">The timestamp the session began at.</param>
+    /// <returns>The session result.</returns>
+    /// <exception cref="InvalidDataException">The combined budget overflows a single recovered-item buffer.</exception>
+    private static AntiEntropySessionResult CombineAndApply(
+        ColumnarTripleIndex local,
+        VerifiedSketch localSketch,
+        ReadOnlyMemory<byte> peerImage,
+        int localItemCount,
+        int symbolBudget,
+        MemoryPool<byte> pool,
+        TraceHandler<ReplicationTraceEvent>? trace,
+        Guid correlationId,
+        TimeProvider timeProvider,
+        long startTimestamp)
+    {
         if(peerImage.IsEmpty)
         {
             //An unreachable peer returns an empty image: there is no source to reconcile against, so the session
@@ -162,32 +234,16 @@ public static class AntiEntropySession
         return new AntiEntropySessionResult(recoveredCount, convergedIndex, outcome, absorbedSymbols, timeProvider.GetElapsedTime(startTimestamp));
     }
 
-    /// <summary>Projects the local triples into a pooled item buffer, persists them as a structural sketch through the rateless encode binder, and loads the image back as a verified sketch — the type-system evidence the local side carries into the combine.</summary>
+    /// <summary>Persists the local replica's structural sketch and loads the image back as a verified sketch — the type-system evidence the local side carries into the combine.</summary>
     /// <param name="local">The local replica whose triples are projected.</param>
-    /// <param name="localItemCount">The local replica's triple count, the projected-item buffer length.</param>
     /// <param name="symbolBudget">The number of coded symbols to persist.</param>
     /// <param name="pool">The pool the transient item and image buffers are rented from.</param>
     /// <returns>The local replica's verified sketch.</returns>
     /// <exception cref="InvalidDataException">The local replica holds more items than a single projected-item buffer can address.</exception>
-    private static VerifiedSketch PersistLocalSketch(ColumnarTripleIndex local, int localItemCount, int symbolBudget, MemoryPool<byte> pool)
+    private static VerifiedSketch PersistLocalSketch(ColumnarTripleIndex local, int symbolBudget, MemoryPool<byte> pool)
     {
-        long itemByteCount = (long)localItemCount * ContentKey128.ByteWidth;
-        if(itemByteCount > Array.MaxLength)
-        {
-            throw new InvalidDataException("The local replica holds more items than a single projected-item buffer can address.");
-        }
-
-        using IMemoryOwner<byte> itemOwner = pool.Rent((int)Math.Max(1, itemByteCount));
-        Span<ContentKey128> items = MemoryMarshal.Cast<byte, ContentKey128>(itemOwner.Memory.Span)[..localItemCount];
-        int index = 0;
-        foreach(EncodedTriple triple in local.EnumerateTriples())
-        {
-            items[index] = StructuralReconciliationProjection.Project(triple);
-            index++;
-        }
-
         using SlabBufferWriter writer = new(pool);
-        SketchPersistence.PersistSketch(items, SketchContract.Structural, symbolBudget, ChecksumAlgorithm.XxHash3, pool, RatelessSketchCodec.Encode, writer);
+        LocalSketchImage.Write(local, symbolBudget, pool, writer);
         int imageLength = writer.BytesWritten;
         using IMemoryOwner<byte> imageOwner = writer.Detach();
 
