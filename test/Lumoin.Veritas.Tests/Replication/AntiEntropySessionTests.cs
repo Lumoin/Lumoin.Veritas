@@ -168,4 +168,118 @@ internal sealed class AntiEntropySessionTests
         Assert.IsGreaterThan(0, result.AbsorbedSymbols, "A partial peel absorbs symbols before giving up — unlike an unreachable peer, which absorbs none.");
         Assert.AreSame(replicaA, result.ConvergedIndex, "A declined partial peel applies nothing: the local index is returned unchanged.");
     }
+
+    /// <summary>Captures replication trace events through a method group, so a test body holds no closure over the captured list.</summary>
+    private sealed class ReplicationTraceCapture
+    {
+        /// <summary>The events captured, in emission order.</summary>
+        public List<ReplicationTraceEvent> Events { get; } = [];
+
+        /// <summary>The handler entry point.</summary>
+        /// <param name="evt">The emitted event.</param>
+        public void Capture(in ReplicationTraceEvent evt)
+        {
+            Events.Add(evt);
+        }
+    }
+
+    /// <summary>A converging reconcile reports <see cref="AntiEntropyOutcome.Converged"/> and emits one matching trace event carrying the recovered count and the budget.</summary>
+    [TestMethod]
+    public void ConvergedReconcileReportsConvergedAndEmitsEvent()
+    {
+        using VeritasMemoryPool<byte> pool = new();
+        EncodedTriple[] triplesA = Line(0, 150);
+        EncodedTriple[] triplesB = Line(50, 150);
+        ColumnarTripleIndex replicaA = ColumnarTripleIndex.Build(triplesA);
+        SketchFetchDelegate fetch = budget => PersistPeerImage(triplesB, budget, pool);
+        ReplicationTraceCapture trace = new();
+        Guid correlation = new("11111111-2222-3333-4444-555555555555");
+
+        AntiEntropySessionResult result = AntiEntropySession.Reconcile(replicaA, fetch, ReplicationPolicy.Default, pool, TimeProvider.System, trace.Capture, correlation);
+
+        Assert.AreEqual(AntiEntropyOutcome.Converged, result.Outcome, "Diverged replicas with a sufficient budget converge.");
+        ReplicationTraceEvent emitted = trace.Events.Single();
+        Assert.AreEqual(AntiEntropyOutcome.Converged, emitted.Outcome, "The emitted event must carry the converged outcome.");
+        Assert.AreEqual(correlation, emitted.CorrelationId, "The event must carry the reconcile's correlation id.");
+        Assert.AreEqual(result.RecoveredCount, emitted.RecoveredCount, "The event's recovered count must match the result.");
+        Assert.IsGreaterThan(0, emitted.SymbolBudget, "The event must carry the symbol budget the sketches were built at.");
+    }
+
+    /// <summary>Identical replicas report <see cref="AntiEntropyOutcome.AlreadyConsistent"/> — a complete, empty peel — and emit it.</summary>
+    [TestMethod]
+    public void IdenticalReplicasReportAlreadyConsistent()
+    {
+        using VeritasMemoryPool<byte> pool = new();
+        EncodedTriple[] triples = Line(0, 100);
+        ColumnarTripleIndex replicaA = ColumnarTripleIndex.Build(triples);
+        SketchFetchDelegate fetch = budget => PersistPeerImage(triples, budget, pool);
+        ReplicationTraceCapture trace = new();
+
+        AntiEntropySessionResult result = AntiEntropySession.Reconcile(replicaA, fetch, ReplicationPolicy.Default, pool, TimeProvider.System, trace.Capture);
+
+        Assert.AreEqual(AntiEntropyOutcome.AlreadyConsistent, result.Outcome, "Replicas that already agree are already consistent.");
+        Assert.IsTrue(result.IsComplete, "AlreadyConsistent is a completing outcome.");
+        Assert.AreEqual(0, result.RecoveredCount);
+        Assert.AreEqual(AntiEntropyOutcome.AlreadyConsistent, trace.Events.Single().Outcome);
+    }
+
+    /// <summary>An unreachable peer reports <see cref="AntiEntropyOutcome.PeerUnavailable"/>, absorbs no symbols, and emits the decline.</summary>
+    [TestMethod]
+    public void UnavailablePeerReportsPeerUnavailable()
+    {
+        using VeritasMemoryPool<byte> pool = new();
+        EncodedTriple[] triplesA = Line(0, 150);
+        ColumnarTripleIndex replicaA = ColumnarTripleIndex.Build(triplesA);
+        SketchFetchDelegate fetch = _ => ReadOnlyMemory<byte>.Empty;
+        ReplicationTraceCapture trace = new();
+
+        AntiEntropySessionResult result = AntiEntropySession.Reconcile(replicaA, fetch, ReplicationPolicy.Default, pool, TimeProvider.System, trace.Capture);
+
+        Assert.AreEqual(AntiEntropyOutcome.PeerUnavailable, result.Outcome);
+        Assert.IsFalse(result.IsComplete);
+        Assert.AreEqual(0, result.AbsorbedSymbols, "No combine happened, so no symbols were absorbed.");
+        Assert.AreSame(replicaA, result.ConvergedIndex, "An unavailable peer leaves the local index unchanged.");
+        Assert.AreEqual(AntiEntropyOutcome.PeerUnavailable, trace.Events.Single().Outcome);
+    }
+
+    /// <summary>A corrupt peer sketch is refused as a value-based <see cref="AntiEntropyOutcome.PeerSketchRejected"/> decline, not a propagated exception, and the local index is left unchanged — the operational face of detection-precedes-combine.</summary>
+    [TestMethod]
+    public void CorruptPeerSketchIsRejectedAsAValueNotAThrow()
+    {
+        using VeritasMemoryPool<byte> pool = new();
+        EncodedTriple[] triplesA = Line(0, 150);
+        ColumnarTripleIndex replicaA = ColumnarTripleIndex.Build(triplesA);
+
+        //A non-empty buffer that is not a valid sketch image: the verifying load refuses it (magic/geometry), so
+        //the session declines by value rather than letting the load's exception escape.
+        SketchFetchDelegate fetch = _ => new byte[64];
+        ReplicationTraceCapture trace = new();
+
+        AntiEntropySessionResult result = AntiEntropySession.Reconcile(replicaA, fetch, ReplicationPolicy.Default, pool, TimeProvider.System, trace.Capture);
+
+        Assert.AreEqual(AntiEntropyOutcome.PeerSketchRejected, result.Outcome, "A peer sketch that fails its verifying load is refused by value.");
+        Assert.IsFalse(result.IsComplete);
+        Assert.AreSame(replicaA, result.ConvergedIndex, "A refused peer sketch leaves the local index unchanged.");
+        Assert.AreEqual(AntiEntropyOutcome.PeerSketchRejected, trace.Events.Single().Outcome);
+    }
+
+    /// <summary>A budget too small to peel the difference reports <see cref="AntiEntropyOutcome.IncompletePeel"/>, having absorbed symbols without converging, and applies nothing.</summary>
+    [TestMethod]
+    public void StarvedBudgetReportsIncompletePeel()
+    {
+        using VeritasMemoryPool<byte> pool = new();
+        EncodedTriple[] triplesA = Line(0, 150);
+        EncodedTriple[] triplesB = Line(50, 150);
+        ColumnarTripleIndex replicaA = ColumnarTripleIndex.Build(triplesA);
+        SketchFetchDelegate fetch = budget => PersistPeerImage(triplesB, budget, pool);
+        ReplicationTraceCapture trace = new();
+
+        AntiEntropySessionResult result = AntiEntropySession.Reconcile(replicaA, fetch, new ReplicationPolicy(50, 0), pool, TimeProvider.System, trace.Capture);
+
+        Assert.AreEqual(AntiEntropyOutcome.IncompletePeel, result.Outcome, "A starved budget cannot peel the difference.");
+        Assert.IsFalse(result.IsComplete);
+        Assert.IsGreaterThan(0, result.AbsorbedSymbols);
+        Assert.AreSame(replicaA, result.ConvergedIndex, "An incomplete peel applies nothing.");
+        Assert.AreEqual(AntiEntropyOutcome.IncompletePeel, trace.Events.Single().Outcome);
+    }
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using Lumoin.Veritas.Core.Columnar;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Integrity;
 
 namespace Lumoin.Veritas.Replication;
@@ -27,6 +28,8 @@ public sealed class AntiEntropyRepairLadderBinding
     private readonly ReplicationPolicy policy;
     private readonly MemoryPool<byte> pool;
     private readonly TimeProvider timeProvider;
+    private readonly TraceHandler<ReplicationTraceEvent>? trace;
+    private readonly Guid correlationId;
 
     /// <summary>Creates a binding over the inputs one anti-entropy reconciliation needs.</summary>
     /// <param name="local">The local replica to reconcile and, on a complete peel, converge.</param>
@@ -34,13 +37,17 @@ public sealed class AntiEntropyRepairLadderBinding
     /// <param name="policy">The budget shape both sides' sketches are sized under.</param>
     /// <param name="pool">The pool the session's transient buffers are rented from.</param>
     /// <param name="timeProvider">The clock the session's elapsed time is measured against.</param>
+    /// <param name="trace">The diagnostics sink the session's outcome is emitted to when the rung runs; <see langword="null"/> emits nothing.</param>
+    /// <param name="correlationId">The correlation id the emitted event carries, linking the reconcile to the repair that drove the descent.</param>
     /// <exception cref="ArgumentNullException">A reference argument is <see langword="null"/>.</exception>
     public AntiEntropyRepairLadderBinding(
         ColumnarTripleIndex local,
         SketchFetchDelegate fetch,
         ReplicationPolicy policy,
         MemoryPool<byte> pool,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        TraceHandler<ReplicationTraceEvent>? trace = null,
+        Guid correlationId = default)
     {
         ArgumentNullException.ThrowIfNull(local);
         ArgumentNullException.ThrowIfNull(fetch);
@@ -52,6 +59,8 @@ public sealed class AntiEntropyRepairLadderBinding
         this.policy = policy;
         this.pool = pool;
         this.timeProvider = timeProvider;
+        this.trace = trace;
+        this.correlationId = correlationId;
     }
 
     /// <summary>The outcome of the peer-reconciliation session, or <see langword="null"/> until the ladder reaches the peer-reconciliation rung. On a complete peel its <see cref="AntiEntropySessionResult.ConvergedIndex"/> is the converged replica.</summary>
@@ -73,7 +82,7 @@ public sealed class AntiEntropyRepairLadderBinding
     /// <returns><see langword="true"/> when the session completed the peel; otherwise <see langword="false"/>.</returns>
     private bool ReconcileWithPeer()
     {
-        AntiEntropySessionResult result = AntiEntropySession.Reconcile(local, fetch, policy, pool, timeProvider);
+        AntiEntropySessionResult result = AntiEntropySession.Reconcile(local, fetch, policy, pool, timeProvider, trace, correlationId);
         Result = result;
 
         return result.IsComplete;

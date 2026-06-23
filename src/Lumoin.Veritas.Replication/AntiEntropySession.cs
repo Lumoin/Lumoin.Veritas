@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.ContentAddressing;
+using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Integrity;
 using Lumoin.Veritas.Core.Memory;
 using Lumoin.Veritas.Core.Reconciliation;
@@ -22,33 +23,39 @@ namespace Lumoin.Veritas.Replication;
 /// </summary>
 /// <remarks>
 /// Both sides route through the verifying sketch load, so a value handed to the decoder is type-system evidence
-/// that detection preceded the combine: an unverified or corrupt sketch can never be combined. The session is a
-/// pure function of its inputs apart from the injected time provider — same replicas and peer image yield the
-/// same outcome — so it composes under the repair-source ladder without owning any clock or identity itself.
+/// that detection preceded the combine: an unverified or corrupt sketch can never be combined. Every reconcile
+/// ends at one of the <see cref="AntiEntropyOutcome"/> values, reported both as the result's outcome and — when a
+/// handler is attached — as a <see cref="ReplicationTraceEvent"/> on the Core diagnostics bus. The session is a
+/// pure function of its inputs apart from the injected time provider and that observe-only trace, so it composes
+/// under the repair-source ladder without owning any clock or identity itself.
 /// </remarks>
 public static class AntiEntropySession
 {
     /// <summary>
     /// Reconciles the local replica against a peer: persists the local sketch at the policy's budget, fetches the
     /// peer's sketch at the same budget, decodes their symmetric difference, and applies it as repair-as-ingest on
-    /// a complete peel. An unreachable peer (an empty fetch), a partial peel, or an overflow leaves the local
-    /// index unchanged and reports an incomplete session, so a declined reconciliation never half-applies.
+    /// a complete peel. An unreachable peer (an empty fetch), a refused peer sketch (corrupt or wrong geometry), a
+    /// partial peel, or an overflow leaves the local index unchanged and reports the matching declining
+    /// <see cref="AntiEntropyOutcome"/>, so a declined reconciliation never half-applies.
     /// </summary>
     /// <param name="local">The local replica to reconcile and, on a complete peel, converge.</param>
     /// <param name="fetch">The seam that returns the peer's persisted sketch image at a requested symbol budget.</param>
     /// <param name="policy">The budget shape both sides' sketches are sized under.</param>
     /// <param name="pool">The pool the session's transient item, image, and recovered-item buffers are rented from.</param>
-    /// <param name="timeProvider">The clock the session's elapsed time is measured against.</param>
-    /// <returns>The session outcome: the recovered count, the resulting index, completeness, absorbed symbols, and elapsed time.</returns>
+    /// <param name="timeProvider">The clock the session's elapsed time and event timestamp are measured against.</param>
+    /// <param name="trace">The diagnostics sink each reconcile emits its outcome to; <see langword="null"/> emits nothing.</param>
+    /// <param name="correlationId">The correlation id the emitted event carries, linking the reconcile to the operation that drove it.</param>
+    /// <returns>The session outcome: the value-based outcome, recovered count, resulting index, absorbed symbols, and elapsed time.</returns>
     /// <exception cref="ArgumentNullException">A reference argument is <see langword="null"/>.</exception>
-    /// <exception cref="InvalidDataException">The peer's sketch image is malformed, fails its checksum, or has the wrong geometry, or a replica holds more items than a single buffer can address.</exception>
-    /// <exception cref="NotSupportedException">The peer's sketch image declares an unsupported version, feature, or checksum algorithm.</exception>
+    /// <exception cref="InvalidDataException">The local replica holds more items than a single buffer can address, or the combined budget overflows a single recovered-item buffer.</exception>
     public static AntiEntropySessionResult Reconcile(
         ColumnarTripleIndex local,
         SketchFetchDelegate fetch,
         ReplicationPolicy policy,
         MemoryPool<byte> pool,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        TraceHandler<ReplicationTraceEvent>? trace = null,
+        Guid correlationId = default)
     {
         ArgumentNullException.ThrowIfNull(local);
         ArgumentNullException.ThrowIfNull(fetch);
@@ -66,12 +73,22 @@ public static class AntiEntropySession
         {
             //An unreachable peer returns an empty image: there is no source to reconcile against, so the session
             //declines and the local index is returned unchanged.
-            return new AntiEntropySessionResult(0, local, false, 0, timeProvider.GetElapsedTime(startTimestamp));
+            return Complete(trace, correlationId, timeProvider, startTimestamp, AntiEntropyOutcome.PeerUnavailable, localItemCount, symbolBudget, 0, 0, local);
         }
 
-        //The verifying load refuses corrupt peer bytes BEFORE any combine (DetectionPrecedesXor): an unverified
-        //sketch can never reach the decoder.
-        VerifiedSketch peerSketch = SketchPersistence.LoadVerifiedSketch(peerImage.Span, SketchContract.Structural);
+        //The verifying load refuses corrupt or wrong-geometry peer bytes BEFORE any combine (DetectionPrecedesXor).
+        //A peer reached over a transport can send bytes that fail that load, which is an expected operational
+        //condition, so it is a value-based decline here rather than a propagated throw; the LOCAL sketch's own load
+        //still throws, since that is our own data and a genuine invariant breach.
+        VerifiedSketch peerSketch;
+        try
+        {
+            peerSketch = SketchPersistence.LoadVerifiedSketch(peerImage.Span, SketchContract.Structural);
+        }
+        catch(Exception exception) when(exception is InvalidDataException or NotSupportedException)
+        {
+            return Complete(trace, correlationId, timeProvider, startTimestamp, AntiEntropyOutcome.PeerSketchRejected, localItemCount, symbolBudget, 0, 0, local);
+        }
 
         int sinkCapacity = localSketch.SymbolCount + peerSketch.SymbolCount;
         long sinkByteCount = (long)sinkCapacity * ContentKey128.ByteWidth;
@@ -89,14 +106,14 @@ public static class AntiEntropySession
         {
             //A partial peel (the budget could not cover the difference) or an overflowed sink leaves the local
             //index untouched: applying an incomplete difference would not converge, so the session declines.
-            return new AntiEntropySessionResult(difference.RecoveredCount, local, false, difference.AbsorbedSymbols, timeProvider.GetElapsedTime(startTimestamp));
+            return Complete(trace, correlationId, timeProvider, startTimestamp, AntiEntropyOutcome.IncompletePeel, localItemCount, symbolBudget, difference.RecoveredCount, difference.AbsorbedSymbols, local);
         }
 
         if(difference.RecoveredCount == 0)
         {
             //The replicas already agree: a complete, empty peel is nothing to ingest, so the local index is
             //returned as-is without an Apply round.
-            return new AntiEntropySessionResult(0, local, true, difference.AbsorbedSymbols, timeProvider.GetElapsedTime(startTimestamp));
+            return Complete(trace, correlationId, timeProvider, startTimestamp, AntiEntropyOutcome.AlreadyConsistent, localItemCount, symbolBudget, 0, difference.AbsorbedSymbols, local);
         }
 
         EncodedTriple[] recoveredTriples = new EncodedTriple[difference.RecoveredCount];
@@ -109,7 +126,40 @@ public static class AntiEntropySession
         //union of both — Apply is idempotent, so the items the local side already holds are no-ops.
         ColumnarTripleIndex converged = local.Apply(recoveredTriples, []);
 
-        return new AntiEntropySessionResult(difference.RecoveredCount, converged, true, difference.AbsorbedSymbols, timeProvider.GetElapsedTime(startTimestamp));
+        return Complete(trace, correlationId, timeProvider, startTimestamp, AntiEntropyOutcome.Converged, localItemCount, symbolBudget, difference.RecoveredCount, difference.AbsorbedSymbols, converged);
+    }
+
+    /// <summary>Builds the session result for an outcome and, when a handler is attached, emits the matching <see cref="ReplicationTraceEvent"/> — the one place every reconcile path reports through, so the result's outcome and the emitted event never disagree.</summary>
+    /// <param name="trace">The diagnostics sink; <see langword="null"/> emits nothing.</param>
+    /// <param name="correlationId">The reconcile's correlation id.</param>
+    /// <param name="timeProvider">The clock the event timestamp and elapsed time are read from.</param>
+    /// <param name="startTimestamp">The timestamp the session began at, for the elapsed measurement.</param>
+    /// <param name="outcome">How the reconcile ended.</param>
+    /// <param name="localItemCount">The local replica's item count.</param>
+    /// <param name="symbolBudget">The symbol budget the sketches were built and the recovery capped at.</param>
+    /// <param name="recoveredCount">The recovered difference-item count.</param>
+    /// <param name="absorbedSymbols">The symbols the decoder absorbed.</param>
+    /// <param name="convergedIndex">The resulting index — the converged union, or the unchanged local index on a decline.</param>
+    /// <returns>The session result.</returns>
+    private static AntiEntropySessionResult Complete(
+        TraceHandler<ReplicationTraceEvent>? trace,
+        Guid correlationId,
+        TimeProvider timeProvider,
+        long startTimestamp,
+        AntiEntropyOutcome outcome,
+        int localItemCount,
+        int symbolBudget,
+        int recoveredCount,
+        int absorbedSymbols,
+        ColumnarTripleIndex convergedIndex)
+    {
+        if(trace is not null)
+        {
+            ReplicationTraceEvent evt = new(0, timeProvider.GetUtcNow().UtcTicks, correlationId, outcome, localItemCount, symbolBudget, recoveredCount, absorbedSymbols);
+            trace(in evt);
+        }
+
+        return new AntiEntropySessionResult(recoveredCount, convergedIndex, outcome, absorbedSymbols, timeProvider.GetElapsedTime(startTimestamp));
     }
 
     /// <summary>Projects the local triples into a pooled item buffer, persists them as a structural sketch through the rateless encode binder, and loads the image back as a verified sketch — the type-system evidence the local side carries into the combine.</summary>
