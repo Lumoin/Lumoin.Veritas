@@ -42,6 +42,12 @@
         "resolved": "10.0.8",
         "contentHash": "+dJsbPJ3FyUbTZNplFj0RCKePFizmv6ewDV46JE9q/IVH4c3xTCftHfHelLsAKf0jryIPqgMb5GpS0x7TAY3mg=="
       },
+      "System.Threading.RateLimiting": {
+        "type": "Direct",
+        "requested": "[10.0.8, )",
+        "resolved": "10.0.8",
+        "contentHash": "/xN6RLDCClJl4wkwN6UGuDBJev7DUyXBi43h1/dDiZLP5nzkiHV/LVzutNkO00nCGLpybKYbih4VwYIFoaIxsQ=="
+      },
       "Markdig.Signed": {
         "type": "Transitive",
         "resolved": "0.41.1",

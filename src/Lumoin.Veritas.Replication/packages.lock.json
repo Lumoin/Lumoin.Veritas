@@ -130,7 +130,8 @@
         "type": "Project",
         "dependencies": {
           "Lumoin.Base": "[0.0.2, )",
-          "System.IO.Hashing": "[10.0.8, )"
+          "System.IO.Hashing": "[10.0.8, )",
+          "System.Threading.RateLimiting": "[10.0.8, )"
         }
       },
       "Lumoin.Base": {
@@ -153,6 +154,12 @@
         "dependencies": {
           "System.Security.Cryptography.Pkcs": "10.0.6"
         }
+      },
+      "System.Threading.RateLimiting": {
+        "type": "CentralTransitive",
+        "requested": "[10.0.8, )",
+        "resolved": "10.0.8",
+        "contentHash": "/xN6RLDCClJl4wkwN6UGuDBJev7DUyXBi43h1/dDiZLP5nzkiHV/LVzutNkO00nCGLpybKYbih4VwYIFoaIxsQ=="
       }
     }
   }

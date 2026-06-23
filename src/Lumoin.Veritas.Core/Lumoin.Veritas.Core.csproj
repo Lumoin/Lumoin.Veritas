@@ -10,6 +10,7 @@
   <ItemGroup>
     <PackageReference Include="Lumoin.Base" />
     <PackageReference Include="System.IO.Hashing" />
+    <PackageReference Include="System.Threading.RateLimiting" />
   </ItemGroup>
 
 </Project>
