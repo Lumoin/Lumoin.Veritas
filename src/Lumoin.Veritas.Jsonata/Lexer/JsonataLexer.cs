@@ -329,6 +329,26 @@ public sealed class JsonataLexer
         }
     }
 
+    /// <summary>
+    /// Lexes a buffer of source bytes for the synchronous incremental path, marking whether it is the final chunk, and
+    /// returns the tokens produced up to the last clean boundary; the number of source bytes consumed is reported so the
+    /// caller re-presents the unconsumed tail (a partial token or character) prepended to the next chunk. The returned
+    /// list is the lexer's own buffer and is valid only until the next call.
+    /// </summary>
+    /// <param name="buffer">The source bytes to lex (a re-presented unconsumed tail plus the new chunk).</param>
+    /// <param name="isFinal">Whether this is the final chunk; when <see langword="true"/> a token may complete at end of input.</param>
+    /// <param name="consumed">Receives the number of source bytes consumed; the rest is the unconsumed tail to re-present.</param>
+    /// <returns>The tokens lexed from the buffer, in source order.</returns>
+    internal IReadOnlyList<JsonataToken> FeedBuffer(ReadOnlySequence<byte> buffer, bool isFinal, out long consumed)
+    {
+        atFinalBuffer = isFinal;
+
+        DrainResult drained = DrainBuffer(buffer);
+        consumed = buffer.GetOffset(drained.Consumed);
+
+        return pendingTokens;
+    }
+
     private JsonataLexStatus TryLexToken(ref SequenceReader<byte> reader, out JsonataToken token)
     {
         token = default;

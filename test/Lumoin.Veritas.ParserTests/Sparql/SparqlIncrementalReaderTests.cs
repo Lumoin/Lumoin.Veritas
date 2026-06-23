@@ -1,5 +1,4 @@
 using System;
-using System.Reflection;
 using System.Text;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
@@ -112,51 +111,6 @@ internal sealed class SparqlIncrementalReaderTests
         ParseResult<SparqlRequest> incremental = reader.Complete();
 
         Assert.IsFalse(incremental.HasErrors, "the well-formed query must parse without diagnostics");
-        Assert.AreEqual(DeepRender(whole), DeepRender(incremental.Tree), "byte-by-byte incremental parse must render identically to the whole-buffer parse");
-    }
-
-    /// <summary>Renders an AST node deeply and deterministically — expanding lists by content and rendering each <see cref="Utf8String"/> as its text — so two structurally-equal trees compare equal regardless of list-instance identity or interning, while still comparing every source span.</summary>
-    /// <param name="node">The node, value, or list to render.</param>
-    /// <returns>The deterministic deep rendering.</returns>
-    private static string DeepRender(object? node)
-    {
-        return node switch
-        {
-            null => "∅",
-            Utf8String text => $"\"{text}\"",
-            string text => $"\"{text}\"",
-            bool or int or long or double or Enum => node.ToString()!,
-            System.Collections.IEnumerable items => RenderList(items),
-            _ => RenderObject(node)
-        };
-
-        static string RenderList(System.Collections.IEnumerable items)
-        {
-            StringBuilder list = new("[");
-            foreach(object? item in items)
-            {
-                list.Append(DeepRender(item)).Append(',');
-            }
-
-            return list.Append(']').ToString();
-        }
-
-        static string RenderObject(object node)
-        {
-            Type type = node.GetType();
-            StringBuilder builder = new(type.Name);
-            builder.Append('{');
-            foreach(PropertyInfo property in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
-            {
-                if(property.GetIndexParameters().Length > 0)
-                {
-                    continue;
-                }
-
-                builder.Append(property.Name).Append('=').Append(DeepRender(property.GetValue(node))).Append(';');
-            }
-
-            return builder.Append('}').ToString();
-        }
+        Assert.AreEqual(AstStructuralRenderer.Render(whole), AstStructuralRenderer.Render(incremental.Tree), "byte-by-byte incremental parse must render identically to the whole-buffer parse");
     }
 }
