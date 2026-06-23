@@ -69,7 +69,7 @@ internal sealed class RepairCoordinator: IDisposable
     /// <summary>The artifact role currently under repair, read by <see cref="AttemptRung"/>.</summary>
     private ManifestFileRole current;
 
-    /// <summary>The owned, pooled full system-of-record item set after a parity restore healed the segment this pass, or <see langword="null"/> when the segment was not restored. A view re-derived after a restore folds these (via <see cref="RederiveItems"/>) so every tier reflects the same items; the coordinator disposes it at pass end, after those re-derives have run. It needs to be a mutable field because it is set during the pass and is the disposable resource the coordinator owns.</summary>
+    /// <summary>The owned, pooled full system-of-record item set after a local-parity or peer-reconciliation restore healed the segment this pass, or <see langword="null"/> when the segment was not restored. A view re-derived after a restore folds these (via <see cref="RederiveItems"/>) so every tier reflects the same items; the coordinator disposes it at pass end, after those re-derives have run. It needs to be a mutable field because it is set during the pass and is the disposable resource the coordinator owns.</summary>
     private DecodedItemSegment? restoredItemsOwner;
 
     /// <summary>The pooled image buffers backing this pass's re-derived artifacts (a restored system-of-record image so far); the coordinator owns them until <see cref="TakeImageOwners"/> hands them to the <see cref="RepairPassReport"/> and clears this list, after which the report disposes them. Any still listed when the pass ends — an exception before the transfer — are disposed by <see cref="Dispose"/>, so the emptiness of this list IS the "transferred" state (no separate flag). Get-only: the list reference is fixed, its contents are the mutable state.</summary>
@@ -241,7 +241,7 @@ internal sealed class RepairCoordinator: IDisposable
         return true;
     }
 
-    /// <summary>The peer-reconciliation rung: a single lost system-of-record block is recovered from a peer's verified sketch — the local survivors' sketch combined with the peer's, peeled to their symmetric difference — and the healed full item set is re-ingested as the system-of-record. It applies only to the system-of-record, only when exactly one block is lost, and only when the peel is complete and recovers exactly the lost block's item count (a faithful peer of the same dictionary epoch); no peer source, more than one lost block, a partial peel, or a recovered count that does not match the lost block declines so the ladder descends to a named loss.</summary>
+    /// <summary>The peer-reconciliation rung: a single lost system-of-record block is recovered from a peer's verified sketch — the local survivors' sketch combined with the peer's, peeled to their symmetric difference — and the healed full item set is re-ingested as the system-of-record. It applies only to the system-of-record, only when exactly one block is lost, and only when the peel is complete, recovers exactly the lost block's item count, and recovers only peer-only items (a faithful peer of the same dictionary epoch whose item set is a superset of the survivors); no peer source, more than one lost block, a partial peel, a recovered count that does not match the lost block, or a recovered item that is already a survivor declines so the ladder descends to a named loss.</summary>
     /// <returns><see langword="true"/> when the lost block's items were recovered and re-ingested.</returns>
     private bool AttemptPeerReconciliation()
     {
@@ -276,11 +276,24 @@ internal sealed class RepairCoordinator: IDisposable
         Span<ContentKey128> recovered = MemoryMarshal.Cast<byte, ContentKey128>(recoveredOwner.Memory.Span)[..sinkCapacity];
         SketchDifference difference = source.Recover(localSketch, source.PeerSketch, source.SymbolCap, recovered);
 
-        //A complete peel that recovered exactly the lost block's items is a faithful single-block restore; a
-        //partial peel, an overflowed sink, or a different recovered count means the peer cannot restore exactly
-        //this block, so the rung declines and the loss is named.
+        //A complete peel that recovered exactly the lost block's item count is the necessary size check; a partial
+        //peel, an overflowed sink, or a different recovered count means the peer cannot restore exactly this block,
+        //so the rung declines and the loss is named.
         bool restorable = difference.IsComplete && difference.RecoveredCount == lost.ItemCount && difference.RecoveredCount <= recovered.Length;
         if(!restorable)
+        {
+            return false;
+        }
+
+        //Direction guard: the recovered symmetric difference must be ENTIRELY peer-only items. The recovered set
+        //is the symmetric difference of the survivors and the peer, so it carries both peer-not-survivor items
+        //(what a faithful peer supplies) AND survivor-not-peer items (a peer that also lost a survivor). A
+        //matching item count can hide that mix — a survivor among the recovered set means the heal below would
+        //duplicate that survivor and silently drop a genuinely-lost item the peer never had — so a recovered
+        //survivor declines to a named loss instead of publishing a corrupt system-of-record. Under a faithful
+        //peer (the survivors are a subset of the peer) no recovered item is a survivor, so a clean single-block
+        //restore is never rejected.
+        if(!RecoveredItemsArePeerOnly(recovered[..difference.RecoveredCount]))
         {
             return false;
         }
@@ -355,7 +368,30 @@ internal sealed class RepairCoordinator: IDisposable
         return SketchPersistence.LoadVerifiedSketch(imageOwner.Memory.Span[..imageLength], configuration.SketchContract);
     }
 
-    /// <summary>The system-of-record items a re-derive folds: the parity-restored full set when the segment was healed this pass, otherwise the verified feed, which excludes any block the segment lost.</summary>
+    /// <summary>Whether every recovered difference item is a peer-only item — none is already among the verified survivors. The recovered set is the symmetric difference of the survivors and the peer, so a survivor appearing in it is the survivors-direction of a diverged peer; under a faithful peer whose item set includes all survivors, the recovered set is entirely peer-only.</summary>
+    /// <param name="recovered">The recovered symmetric-difference items.</param>
+    /// <returns><see langword="true"/> when no recovered item is a survivor; <see langword="false"/> when at least one is.</returns>
+    private bool RecoveredItemsArePeerOnly(ReadOnlySpan<ContentKey128> recovered)
+    {
+        ReadOnlySpan<EncodedTriple> survivors = feed.VerifiedItems.Span;
+        HashSet<ContentKey128> survivorKeys = new(survivors.Length);
+        for(int i = 0; i < survivors.Length; i++)
+        {
+            survivorKeys.Add(configuration.Project(survivors[i]));
+        }
+
+        for(int i = 0; i < recovered.Length; i++)
+        {
+            if(survivorKeys.Contains(recovered[i]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>The system-of-record items a re-derive folds: the restored full set when a local-parity or peer-reconciliation restore healed the segment this pass, otherwise the verified feed, which excludes any block the segment lost.</summary>
     private ReadOnlyMemory<EncodedTriple> RederiveItems => restoredItemsOwner?.Memory ?? feed.VerifiedItems;
 
     /// <summary>The number of system-of-record items a re-derive folds.</summary>
@@ -425,7 +461,7 @@ internal sealed class RepairCoordinator: IDisposable
         Emit(StorageTraceEventKind.Rederived, role.Code, blockIndex: -1, itemCount);
     }
 
-    /// <summary>Records a system-of-record image healed by a parity restore and emits its re-ingested outcome — the recovered block re-applied through the ordinary system-of-record image rather than re-derived.</summary>
+    /// <summary>Records a system-of-record image healed by a local-parity or peer-reconciliation restore and emits its re-ingested outcome — the recovered items re-applied through the ordinary system-of-record image rather than re-derived from a surviving authority.</summary>
     /// <param name="role">The healed artifact's role (the system-of-record).</param>
     /// <param name="image">The healed image bytes.</param>
     /// <param name="itemCount">The number of system-of-record items the healed image holds.</param>
@@ -465,7 +501,7 @@ internal sealed class RepairCoordinator: IDisposable
         trace(in evt);
     }
 
-    /// <summary>Returns the pass's pooled buffers to their pools: the parity-restored item-set decode always, and any re-derived image buffers still owned here. On success <see cref="TakeImageOwners"/> already cleared the list (the report owns them), so this disposes images only when the pass threw before the transfer — a restored-then-aborted pass never leaks the restored image. The borrowed feed and parity source are the caller's to dispose.</summary>
+    /// <summary>Returns the pass's pooled buffers to their pools: the restored item-set decode always (set by a local-parity or peer-reconciliation restore), and any re-derived image buffers still owned here. On success <see cref="TakeImageOwners"/> already cleared the list (the report owns them), so this disposes images only when the pass threw before the transfer — a restored-then-aborted pass never leaks the restored image. The borrowed feed and repair sources are the caller's to dispose.</summary>
     public void Dispose()
     {
         restoredItemsOwner?.Dispose();

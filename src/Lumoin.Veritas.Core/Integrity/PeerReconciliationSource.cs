@@ -16,10 +16,13 @@ namespace Lumoin.Veritas.Core.Integrity;
 /// </summary>
 /// <remarks>
 /// This source restores a single lost block from a faithful peer replica of the same dictionary epoch: the
-/// coordinator's rung gates on exactly one lost block and on the recovered difference matching that block's item
-/// count, so a multi-block loss or a peer that has diverged beyond the lost block declines to a named loss rather
-/// than half-healing. Broadening to a multi-block or arbitrarily-diverged peer is a later rung; the cap lives on
-/// the rung, not on this holder, so lifting it needs no change here.
+/// coordinator's rung gates on exactly one lost block, on a complete peel whose recovered count matches that
+/// block's item count, AND on every recovered item being peer-only (none already a survivor). The recovered set
+/// is a symmetric difference, so the peer-only gate is what rejects a count-balanced diverged peer — one that
+/// also lost a survivor — that would otherwise heal to a system-of-record duplicating that survivor and dropping
+/// a genuinely-lost item. A multi-block loss, a partial peel, a mismatched count, or a recovered survivor all
+/// decline to a named loss rather than half-healing. Broadening to a multi-block or arbitrarily-diverged peer is
+/// a later rung; the cap lives on the rung, not on this holder, so lifting it needs no change here.
 /// </remarks>
 /// <param name="PeerSketch">The peer replica's verified sketch, over the peer's full item set.</param>
 /// <param name="Recover">The host-bound seam that combines the local and peer sketches and recovers their symmetric difference, reporting whether the peel was complete.</param>

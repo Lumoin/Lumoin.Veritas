@@ -51,26 +51,28 @@ internal sealed class PeerReconciliationRepairTests
             RatelessSketchCodec.Encode);
     }
 
-    /// <summary>Persists a peer replica's triples as a verified structural sketch at the test's symbol budget — the peer operand the rung combines with the local survivors' sketch.</summary>
+    /// <summary>Persists a peer replica's triples as a verified structural sketch at the given symbol budget — the peer operand the rung combines with the local survivors' sketch.</summary>
     /// <param name="peerTriples">The peer replica's triples.</param>
     /// <param name="pool">The pool the persist rents its transient buffers from.</param>
+    /// <param name="symbolCap">The number of symbols to persist.</param>
     /// <returns>The peer's verified sketch.</returns>
-    private static VerifiedSketch PeerSketch(EncodedTriple[] peerTriples, MemoryPool<byte> pool)
+    private static VerifiedSketch PeerSketch(EncodedTriple[] peerTriples, MemoryPool<byte> pool, int symbolCap)
     {
         ContentKey128[] items = [.. peerTriples.Select(StructuralReconciliationProjection.Project)];
         ArrayBufferWriter<byte> writer = new();
-        SketchPersistence.PersistSketch(items, SketchContract.Structural, SymbolCap, ChecksumAlgorithm.XxHash3, pool, RatelessSketchCodec.Encode, writer);
+        SketchPersistence.PersistSketch(items, SketchContract.Structural, symbolCap, ChecksumAlgorithm.XxHash3, pool, RatelessSketchCodec.Encode, writer);
 
         return SketchPersistence.LoadVerifiedSketch(writer.WrittenSpan, SketchContract.Structural);
     }
 
-    /// <summary>Builds a peer-reconciliation source over a peer replica's full triple set: its verified sketch, the rateless recover seam, the structural inverse, and the symbol cap.</summary>
+    /// <summary>Builds a peer-reconciliation source over a peer replica's full triple set: its verified sketch, the rateless recover seam, the structural inverse, and the symbol cap. The cap budgets both the peer sketch and (through the source) the survivor sketch and the recovery.</summary>
     /// <param name="peerTriples">The peer replica's full triple set.</param>
     /// <param name="pool">The pool the peer sketch persist rents from.</param>
+    /// <param name="symbolCap">The symbol budget; defaults to the generous <see cref="SymbolCap"/>, lowered by a test that drives a partial peel.</param>
     /// <returns>The peer-reconciliation source.</returns>
-    private static PeerReconciliationSource PeerSource(EncodedTriple[] peerTriples, MemoryPool<byte> pool)
+    private static PeerReconciliationSource PeerSource(EncodedTriple[] peerTriples, MemoryPool<byte> pool, int symbolCap = SymbolCap)
     {
-        return new PeerReconciliationSource(PeerSketch(peerTriples, pool), RatelessSketchCodec.Recover, StructuralReconciliationProjection.Inversion, SymbolCap);
+        return new PeerReconciliationSource(PeerSketch(peerTriples, pool, symbolCap), RatelessSketchCodec.Recover, StructuralReconciliationProjection.Inversion, symbolCap);
     }
 
     /// <summary>The survivors of a one-block loss: the triples with the lost block's items removed — the item set a peer that also lost the block would hold.</summary>
@@ -210,6 +212,82 @@ internal sealed class PeerReconciliationRepairTests
             using RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, PeerRepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider(), PeerSource(peerMissingTheBlock, bytePool));
 
             Assert.IsFalse(repair.IsClean, "A peer missing the lost items cannot restore the block.");
+            Assert.IsEmpty(repair.RederivedArtifacts);
+            UnrecoverableItemReport loss = repair.NamedLosses.Single();
+            Assert.AreEqual(10, loss.LostItemCount);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>A symbol budget below the lost block's item count cannot fully peel the difference, so the decoder does not converge and the rung declines on the completeness gate — a partial peel never half-heals. This is the test that fails if the IsComplete term of the gate is dropped.</summary>
+    [TestMethod]
+    public void PeerReconciliationDeclinesWhenThePeelIsPartial()
+    {
+        EncodedTriple[] triples = SampleTriples(30);
+        using VeritasMemoryPool<byte> bytePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        using ArtifactImage segment = SegmentImage(triples, bytePool);
+        using ArtifactImage sidecar = SidecarImage(triples, bytePool);
+        using ArtifactImage sketch = SketchImage(10, bytePool);
+        CorruptSegmentBlock(segment, block: 1, blockCount: 3);
+        FileSystemPersistenceStore store = StageGeneration(7, segment, sidecar, sketch, bytePool, out string directory);
+        try
+        {
+            ScrubRoundReport verify = ScrubRound.RunVerifyPass(store, null, null, Guid.Empty, new FakeTimeProvider());
+
+            //Eight coded symbols cannot peel a ten-item difference, so the decoder cannot converge — IsComplete
+            //is false even though the peer is faithful and would peel completely under a larger budget.
+            using RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, PeerRepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider(), PeerSource(triples, bytePool, symbolCap: 8));
+
+            Assert.IsFalse(repair.IsClean, "A partial peel must not heal the block.");
+            Assert.IsEmpty(repair.RederivedArtifacts);
+            UnrecoverableItemReport loss = repair.NamedLosses.Single();
+            Assert.AreEqual(10, loss.LostItemCount);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>A count-balanced diverged peer — one that lacks a surviving item AND lacks one of the lost block's items, so the symmetric difference still has the lost block's cardinality — is rejected by the peer-only direction guard, not healed: blindly concatenating that difference would duplicate the missing survivor and drop the unrecovered lost item. The rung declines and names the loss.</summary>
+    [TestMethod]
+    public void PeerReconciliationDeclinesWhenAPeerDivergedInACountBalancedWay()
+    {
+        EncodedTriple[] triples = SampleTriples(30);
+
+        //The peer lacks survivor index 0 and one of the lost block's items (index 19), and carries the other
+        //nine lost items (indices 10..18). Its symmetric difference with the survivors is then {item 0} (a
+        //survivor the peer lacks) plus {items 10..18} (nine peer-only lost items) = ten items, matching the lost
+        //block's count, so only the direction guard — not the count check — can reject it.
+        List<EncodedTriple> peer = [];
+        for(int i = 1; i < 30; i++)
+        {
+            if(i == 19)
+            {
+                continue;
+            }
+
+            peer.Add(triples[i]);
+        }
+
+        using VeritasMemoryPool<byte> bytePool = new();
+        using VeritasMemoryPool<EncodedTriple> triplePool = new();
+        using ArtifactImage segment = SegmentImage(triples, bytePool);
+        using ArtifactImage sidecar = SidecarImage(triples, bytePool);
+        using ArtifactImage sketch = SketchImage(10, bytePool);
+        CorruptSegmentBlock(segment, block: 1, blockCount: 3);
+        FileSystemPersistenceStore store = StageGeneration(7, segment, sidecar, sketch, bytePool, out string directory);
+        try
+        {
+            ScrubRoundReport verify = ScrubRound.RunVerifyPass(store, null, null, Guid.Empty, new FakeTimeProvider());
+
+            using RepairPassReport repair = ScrubRound.RunRepairPass(store, verify, PeerRepairConfig(bytePool, triplePool), null, null, Guid.Empty, new FakeTimeProvider(), PeerSource([.. peer], bytePool));
+
+            Assert.IsFalse(repair.IsClean, "A count-balanced diverged peer must be rejected, not healed into a duplicate-and-drop system-of-record.");
             Assert.IsEmpty(repair.RederivedArtifacts);
             UnrecoverableItemReport loss = repair.NamedLosses.Single();
             Assert.AreEqual(10, loss.LostItemCount);
