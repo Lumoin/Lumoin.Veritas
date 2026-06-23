@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Lumoin.Base" />
     <PackageReference Include="System.IO.Hashing" />
   </ItemGroup>
 

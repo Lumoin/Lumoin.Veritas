@@ -39,11 +39,6 @@
           "Microsoft.Build.Tasks.Core": "17.14.28"
         }
       },
-      "Lumoin.Base": {
-        "type": "Transitive",
-        "resolved": "0.0.2",
-        "contentHash": "mFsXJq9SVg0poCevJ13u40iETZ6/fhNgsY/jFV+47PCqyTLz1KAQcjaM12dwUFba4GVcBqAOeNw2QseqOU6X2g=="
-      },
       "Markdig.Signed": {
         "type": "Transitive",
         "resolved": "0.41.1",
@@ -134,8 +129,15 @@
       "lumoin.veritas.core": {
         "type": "Project",
         "dependencies": {
+          "Lumoin.Base": "[0.0.2, )",
           "System.IO.Hashing": "[10.0.8, )"
         }
+      },
+      "Lumoin.Base": {
+        "type": "CentralTransitive",
+        "requested": "[0.0.2, )",
+        "resolved": "0.0.2",
+        "contentHash": "mFsXJq9SVg0poCevJ13u40iETZ6/fhNgsY/jFV+47PCqyTLz1KAQcjaM12dwUFba4GVcBqAOeNw2QseqOU6X2g=="
       },
       "System.IO.Hashing": {
         "type": "CentralTransitive",

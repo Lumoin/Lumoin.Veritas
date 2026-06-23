@@ -1,6 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core.Diagnostics;
+using Lumoin.Veritas.Core.Memory;
 using Lumoin.Veritas.Core.Network;
 
 namespace Lumoin.Veritas.Tests.Network;
@@ -50,23 +51,36 @@ internal sealed class NetworkGovernanceTests
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => NetworkGovernanceDecision.Delay(TimeSpan.FromSeconds(-1)));
     }
 
-    /// <summary>The tagged peer-key factories carry their kind and bytes verbatim, the unidentified default reads as such, and an empty payload is refused — the self-describing handle never silently holds a kind without its bytes.</summary>
+    /// <summary>The pooled peer-key factories own a copy of their bytes, tag them with the right kind, the unidentified default reads as such and carries no kind, and an empty payload is refused — the self-describing handle never holds a kind without its bytes.</summary>
     [TestMethod]
     public void PeerKeyFactoriesTagTheirBytesAndRejectEmpty()
     {
+        using VeritasMemoryPool<byte> pool = new();
         byte[] bytes = [1, 2, 3, 4];
-        Assert.AreEqual(NetworkPeerKeyKind.ReplicaId, NetworkPeerKey.ReplicaId(bytes).Kind);
-        Assert.AreEqual(NetworkPeerKeyKind.EndpointIri, NetworkPeerKey.EndpointIri(bytes).Kind);
-        Assert.AreEqual(NetworkPeerKeyKind.SocketAddress, NetworkPeerKey.SocketAddress(bytes).Kind);
-        Assert.IsTrue(NetworkPeerKey.ReplicaId(bytes).Bytes.Span.SequenceEqual(bytes), "The key must carry its bytes verbatim.");
+
+        using(NetworkPeerKey replica = NetworkPeerKey.RentReplicaId(pool, bytes))
+        {
+            Assert.AreEqual(NetworkPeerKeyKind.ReplicaId, replica.Tag.Get<NetworkPeerKeyKind>(), "The tag must carry the replica-id kind.");
+            Assert.IsTrue(replica.Bytes.Span.SequenceEqual(bytes), "The key must own a copy of its bytes.");
+            Assert.IsFalse(replica.IsUnidentified, "A rented key identifies a peer.");
+        }
+
+        using(NetworkPeerKey endpoint = NetworkPeerKey.RentEndpointIri(pool, bytes))
+        {
+            Assert.AreEqual(NetworkPeerKeyKind.EndpointIri, endpoint.Tag.Get<NetworkPeerKeyKind>());
+        }
+
+        using(NetworkPeerKey socket = NetworkPeerKey.RentSocketAddress(pool, bytes))
+        {
+            Assert.AreEqual(NetworkPeerKeyKind.SocketAddress, socket.Tag.Get<NetworkPeerKeyKind>());
+        }
 
         Assert.IsTrue(NetworkPeerKey.None.IsUnidentified, "None is the unidentified peer.");
-        Assert.AreEqual(NetworkPeerKeyKind.Unidentified, NetworkPeerKey.None.Kind);
-        Assert.IsFalse(NetworkPeerKey.ReplicaId(bytes).IsUnidentified, "An identified key is not unidentified.");
+        Assert.IsFalse(NetworkPeerKey.None.Tag.TryGet<NetworkPeerKeyKind>(out _), "None carries no kind.");
 
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => NetworkPeerKey.ReplicaId(ReadOnlyMemory<byte>.Empty));
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => NetworkPeerKey.EndpointIri(ReadOnlyMemory<byte>.Empty));
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => NetworkPeerKey.SocketAddress(ReadOnlyMemory<byte>.Empty));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => NetworkPeerKey.RentReplicaId(pool, ReadOnlySpan<byte>.Empty));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => NetworkPeerKey.RentEndpointIri(pool, ReadOnlySpan<byte>.Empty));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => NetworkPeerKey.RentSocketAddress(pool, ReadOnlySpan<byte>.Empty));
     }
 
     /// <summary>The governance trace event implements the diagnostics-bus contract and carries its boundary and verdict.</summary>

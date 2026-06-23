@@ -11,7 +11,7 @@ namespace Lumoin.Veritas.Core.Network;
 /// </summary>
 /// <param name="Boundary">The boundary at which the decision is taken.</param>
 /// <param name="Context">The opaque access context (the authenticated "who is asking"); <see langword="null"/> when the call carries none.</param>
-/// <param name="PeerKey">The self-describing network target (a replica id, an endpoint IRI, or a socket address), or <see cref="NetworkPeerKey.None"/> when the peer is unidentified.</param>
+/// <param name="PeerKey">The self-describing network target (a replica id, an endpoint IRI, or a socket address), or <see cref="NetworkPeerKey.None"/> when the peer is unidentified. The request only borrows it; the caller that rented it owns and disposes it once the decision completes.</param>
 /// <param name="OperationSizeHint">A non-negative size hint for the call — the symbol budget for a replication fetch, an estimated byte or row weight for a query — that a rate or quota policy may weigh; 0 when unknown.</param>
 /// <param name="PartitionCoordinate">The partition or hypercube-cell coordinate the call belongs to, for a topology-aware policy; -1 when the call is not partitioned.</param>
 public readonly record struct NetworkGovernanceRequest(

@@ -1,8 +1,9 @@
 namespace Lumoin.Veritas.Core.Network;
 
 /// <summary>
-/// The discriminator for a <see cref="NetworkPeerKey"/>: which kind of network target its bytes name. There is one
-/// tag per kind of byte payload, not one per <see cref="NetworkBoundary"/> — an outbound SERVICE query and a graph
+/// Which kind of network target a <see cref="NetworkPeerKey"/>'s bytes name — carried in the key's
+/// <see cref="Lumoin.Base.Tag"/> as the out-of-band description of the otherwise-opaque identifier bytes. There is
+/// one kind per byte payload, not one per <see cref="NetworkBoundary"/> — an outbound SERVICE query and a graph
 /// resolve both carry an endpoint IRI, so both use <see cref="EndpointIri"/> and the boundary distinguishes them.
 /// Identities and credentials are never a peer-key kind; they live in the opaque access context.
 /// </summary>
