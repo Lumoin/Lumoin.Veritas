@@ -8,11 +8,14 @@ namespace Lumoin.Veritas.Core.Network;
 /// <summary>
 /// A per-peer rate-limiting <see cref="NetworkGovernanceDelegate"/>: a token bucket for each peer, over the BCL
 /// <see cref="PartitionedRateLimiter{TResource}"/>. It is the rate/concurrency facet of network governance, the
-/// sibling of <see cref="NetworkFirewall"/>; acquiring a token permits the call, exhausting the bucket delays it
-/// for the limiter's computed retry-after, and a bucket that can never satisfy denies. Acquiring then releasing a
-/// single token fits the gate's consult-then-proceed contract — the token bucket replenishes over time, so the
-/// permit is not held across the call (concurrency limiting, which holds a lease for the call's duration, is a
-/// later facet that needs the lease threaded through the decorator, not the gate).
+/// sibling of <see cref="NetworkFirewall"/>. Acquiring a token permits the call; when the bucket is empty the
+/// acquisition waits in a bounded queue for one to replenish and then permits, and only a full queue denies. The
+/// cap is enforced by the bucket itself — the limiter never returns a <see cref="NetworkGovernanceKind.Delay"/>
+/// verdict, because the gate honors a delay as "proceed after backing off" without re-acquiring a token, which
+/// would admit every concurrent caller that found the same empty bucket and so breach the rate under load.
+/// Acquiring then releasing a single token fits the gate's consult-then-proceed contract: the token bucket
+/// replenishes over time, so the permit is not held across the call (concurrency limiting, which holds a lease for
+/// the call's duration, is a later facet that needs the lease threaded through the decorator, not the gate).
 /// </summary>
 /// <remarks>
 /// The rate is fixed at construction: the BCL limiter captures a partition's options when the partition is first
@@ -27,17 +30,20 @@ public sealed class NetworkRateLimiter : IDisposable
     /// <param name="tokenLimit">The bucket capacity per peer — the maximum burst; positive.</param>
     /// <param name="tokensPerPeriod">The tokens replenished each period; positive.</param>
     /// <param name="replenishmentPeriod">The replenishment period; positive.</param>
+    /// <param name="queueLimit">How many over-budget calls per peer may wait for a token rather than be denied; 0 denies immediately once the bucket is empty. Not negative.</param>
     /// <param name="autoReplenishment">Whether the limiter replenishes on its own timer; <see langword="false"/> requires manual replenishment (used to make tests deterministic).</param>
-    /// <exception cref="ArgumentOutOfRangeException">A count is not positive, or the period is not positive.</exception>
-    public NetworkRateLimiter(int tokenLimit, int tokensPerPeriod, TimeSpan replenishmentPeriod, bool autoReplenishment = true)
+    /// <exception cref="ArgumentOutOfRangeException">A positive-required count is not positive, the queue limit is negative, or the period is not positive.</exception>
+    public NetworkRateLimiter(int tokenLimit, int tokensPerPeriod, TimeSpan replenishmentPeriod, int queueLimit = 0, bool autoReplenishment = true)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(tokenLimit);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(tokensPerPeriod);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(replenishmentPeriod, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfNegative(queueLimit);
 
         TokenLimit = tokenLimit;
         TokensPerPeriod = tokensPerPeriod;
         ReplenishmentPeriod = replenishmentPeriod;
+        QueueCapacity = queueLimit;
         AutoReplenishment = autoReplenishment;
         OptionsFactory = CreateOptions;
         limiter = PartitionedRateLimiter.Create<NetworkGovernanceRequest, string>(Partition);
@@ -56,6 +62,9 @@ public sealed class NetworkRateLimiter : IDisposable
     /// <summary>The replenishment period.</summary>
     private TimeSpan ReplenishmentPeriod { get; }
 
+    /// <summary>How many over-budget calls per peer may wait for a token rather than be denied.</summary>
+    private int QueueCapacity { get; }
+
     /// <summary>Whether the limiter replenishes on its own timer.</summary>
     private bool AutoReplenishment { get; }
 
@@ -68,20 +77,16 @@ public sealed class NetworkRateLimiter : IDisposable
         limiter.Dispose();
     }
 
-    /// <summary>Acquires one token for the call's peer: a token permits it, an empty bucket delays it for the computed retry-after, and a bucket that cannot satisfy denies it.</summary>
+    /// <summary>Acquires one token for the call's peer: a token (now, or after a bounded wait in the queue) permits it; a full queue denies it. The token is consumed when acquired, so the cap is enforced by the bucket — the limiter never returns a delay.</summary>
     /// <param name="request">The call being governed.</param>
-    /// <param name="cancellationToken">The token that cancels the acquisition.</param>
-    /// <returns>The verdict.</returns>
+    /// <param name="cancellationToken">The token that cancels the acquisition or its queued wait.</param>
+    /// <returns>A permit when a token was acquired, otherwise a deny.</returns>
     private async ValueTask<NetworkGovernanceDecision> Evaluate(NetworkGovernanceRequest request, CancellationToken cancellationToken)
     {
         using RateLimitLease lease = await limiter.AcquireAsync(request, permitCount: 1, cancellationToken).ConfigureAwait(false);
-        if(lease.IsAcquired)
-        {
-            return NetworkGovernanceDecision.Permit;
-        }
 
-        return lease.TryGetMetadata(MetadataName.RetryAfter, out TimeSpan retryAfter)
-            ? NetworkGovernanceDecision.Delay(retryAfter)
+        return lease.IsAcquired
+            ? NetworkGovernanceDecision.Permit
             : NetworkGovernanceDecision.Deny;
     }
 
@@ -104,7 +109,8 @@ public sealed class NetworkRateLimiter : IDisposable
             TokensPerPeriod = TokensPerPeriod,
             ReplenishmentPeriod = ReplenishmentPeriod,
             AutoReplenishment = AutoReplenishment,
-            QueueLimit = 0,
+            QueueLimit = QueueCapacity,
+            QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
         };
     }
 

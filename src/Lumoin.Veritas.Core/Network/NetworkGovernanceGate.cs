@@ -95,7 +95,7 @@ public static class NetworkGovernanceGate
         trace(in evt);
     }
 
-    /// <summary>A stable, deterministic hash of the peer key for trace joins: the kind seeds the hash so the same bytes under two kinds hash distinctly; an unidentified key hashes to 0.</summary>
+    /// <summary>A stable, deterministic hash of the peer key for trace joins: the kind seeds the hash so the same bytes under two kinds hash distinctly; an unidentified key hashes to 0. An identified key can also hash to 0 (about 2^-64), so 0 is not a strict unidentified marker — the hash only joins diagnostics, it never feeds a decision.</summary>
     /// <param name="peerKey">The peer key.</param>
     /// <returns>The peer-key hash, or 0 when unidentified.</returns>
     private static long ComputePeerKeyHash(NetworkPeerKey peerKey)

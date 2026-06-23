@@ -17,7 +17,7 @@ namespace Lumoin.Veritas.Core.Diagnostics;
 /// <param name="CorrelationId">The correlation id shared with the operation the governed call belongs to.</param>
 /// <param name="Boundary">The boundary at which the decision was taken.</param>
 /// <param name="Outcome">The verdict the governance seam returned.</param>
-/// <param name="PeerKeyHash">A stable hash of the peer/endpoint key the decision keyed on, for joining without carrying the key bytes; 0 when the peer was unidentified.</param>
+/// <param name="PeerKeyHash">A stable hash of the peer/endpoint key the decision keyed on, for joining without carrying the key bytes; 0 when the peer was unidentified. An identified peer can also hash to 0 (probability about 2^-64), so a consumer reads 0 as "unidentified, or the rare identified collision", not a strict identity — the hash is a diagnostics join key, never a decision input.</param>
 /// <param name="RetryAfterTicks">The back-off in <see cref="DateTime.Ticks"/> units when the outcome is a delay; 0 otherwise.</param>
 public readonly record struct NetworkGovernanceTraceEvent(
     long SequenceNumber,
