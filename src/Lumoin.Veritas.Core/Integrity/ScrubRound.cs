@@ -119,6 +119,7 @@ public static class ScrubRound
     /// <param name="trace">The diagnostics sink each outcome is emitted to; <see langword="null"/> emits nothing.</param>
     /// <param name="correlationId">The correlation id shared by every event of this pass.</param>
     /// <param name="timeProvider">The clock the pass timestamps its events with; read once per pass.</param>
+    /// <param name="peerSource">A peer replica's reconciliation source for the peer-reconciliation rung, supplied by the host that fetched the peer's verified sketch; <see langword="null"/> (the default) leaves the rung unsourced, so the pass behaves exactly as a local-only repair.</param>
     /// <returns>The repair verdict: the regenerated artifacts and named losses, or the refusal reason.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="store"/>, <paramref name="verifyReport"/>, <paramref name="configuration"/>, or <paramref name="timeProvider"/> is <see langword="null"/>.</exception>
     /// <exception cref="InvalidDataException">No committed manifest generation could be recovered.</exception>
@@ -130,7 +131,8 @@ public static class ScrubRound
         ResolveChecksumAlgorithmDelegate? resolveChecksum,
         TraceHandler<StorageTraceEvent>? trace,
         Guid correlationId,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        PeerReconciliationSource? peerSource = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(verifyReport);
@@ -214,7 +216,7 @@ public static class ScrubRound
                 : null;
 
             long timestampTicks = timeProvider.GetUtcNow().UtcTicks;
-            coordinator = new(feed, configuration, manifest.CommitGeneration, trace, correlationId, timestampTicks, systemOfRecordBlockItemCount, systemOfRecordBlockAlignment, paritySource);
+            coordinator = new(feed, configuration, manifest.CommitGeneration, trace, correlationId, timestampTicks, systemOfRecordBlockItemCount, systemOfRecordBlockAlignment, paritySource, peerSource);
             //Restore the system-of-record first: a co-damaged view re-derived afterward then folds the healed
             //full item set rather than the block-excluded feed, so every published tier reflects the same items.
             if(dataSegmentDamaged)

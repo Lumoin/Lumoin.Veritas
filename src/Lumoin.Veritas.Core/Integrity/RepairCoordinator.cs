@@ -20,8 +20,9 @@ namespace Lumoin.Veritas.Core.Integrity;
 /// the ladder's per-rung attempt bound as a method group. A re-derivable artifact (the sidecar, the sketch) is
 /// rebuilt from the one verified system-of-record feed at the re-derive rung; the system-of-record itself is
 /// not re-derivable, but a single lost block can be restored from a borrowed parity source at the local-parity
-/// rung — a system-of-record loss the parity cannot restore (no parity source, more than one lost block, a
-/// stale parity) descends to a named loss at the terminal rung. Each outcome is emitted as a
+/// rung, or recovered from a peer replica's verified sketch at the peer-reconciliation rung — a system-of-record
+/// loss no rung can restore (no source, more than one lost block, a stale parity, or a peer that cannot peel the
+/// lost block) descends to a named loss at the terminal rung. Each outcome is emitted as a
 /// <see cref="StorageTraceEvent"/>.
 /// </summary>
 internal sealed class RepairCoordinator: IDisposable
@@ -46,6 +47,9 @@ internal sealed class RepairCoordinator: IDisposable
 
     /// <summary>The local-parity restoring source for the system-of-record, or <see langword="null"/> when the generation carries no usable parity; borrowed for the pass.</summary>
     private readonly ParityRepairSource? paritySource;
+
+    /// <summary>The peer-reconciliation restoring source for the system-of-record, or <see langword="null"/> when no peer was supplied; borrowed for the pass.</summary>
+    private readonly PeerReconciliationSource? peerSource;
 
     /// <summary>The system-of-record's block geometry — the triples per block — a parity re-derive rebuilds the parity over, so the regenerated parity protects the same blocks the original did.</summary>
     private int SystemOfRecordBlockItemCount { get; }
@@ -81,6 +85,7 @@ internal sealed class RepairCoordinator: IDisposable
     /// <param name="systemOfRecordBlockItemCount">The system-of-record's triples per block, so a parity re-derive rebuilds the parity over the same block geometry.</param>
     /// <param name="systemOfRecordBlockAlignment">The system-of-record's block alignment, so a re-derived parity image is framed under the same alignment as the segment it co-versions.</param>
     /// <param name="paritySource">The local-parity restoring source for the system-of-record, or <see langword="null"/> when the generation carries no usable parity; borrowed for the pass.</param>
+    /// <param name="peerSource">The peer-reconciliation restoring source for the system-of-record, or <see langword="null"/> when no peer was supplied; borrowed for the pass.</param>
     internal RepairCoordinator(
         ItemSegmentFeed feed,
         RepairConfiguration configuration,
@@ -90,7 +95,8 @@ internal sealed class RepairCoordinator: IDisposable
         long timestampTicks,
         int systemOfRecordBlockItemCount,
         int systemOfRecordBlockAlignment,
-        ParityRepairSource? paritySource = null)
+        ParityRepairSource? paritySource = null,
+        PeerReconciliationSource? peerSource = null)
     {
         this.feed = feed;
         this.configuration = configuration;
@@ -101,6 +107,7 @@ internal sealed class RepairCoordinator: IDisposable
         SystemOfRecordBlockItemCount = systemOfRecordBlockItemCount;
         SystemOfRecordBlockAlignment = systemOfRecordBlockAlignment;
         this.paritySource = paritySource;
+        this.peerSource = peerSource;
     }
 
     /// <summary>The derived artifacts regenerated this pass, for the caller to stage and publish.</summary>
@@ -131,7 +138,7 @@ internal sealed class RepairCoordinator: IDisposable
         }
     }
 
-    /// <summary>The ladder's per-rung attempt: the re-derive rung rebuilds a damaged derived artifact from the verified system-of-record feed; the local-parity rung restores a single lost system-of-record block from the parity source; the peer rung is not yet sourced and declines.</summary>
+    /// <summary>The ladder's per-rung attempt: the re-derive rung rebuilds a damaged derived artifact from the verified system-of-record feed; the local-parity rung restores a single lost system-of-record block from the parity source; the peer-reconciliation rung restores a single lost block from a peer's verified sketch. A rung with no source, or a corruption it does not restore, declines so the ladder descends.</summary>
     /// <param name="rung">The rung being attempted.</param>
     /// <returns><see langword="true"/> when the rung restored the corruption.</returns>
     private bool AttemptRung(RepairRung rung)
@@ -146,7 +153,12 @@ internal sealed class RepairCoordinator: IDisposable
             return AttemptLocalParity();
         }
 
-        //Peer reconciliation has no source, so it declines and the ladder descends.
+        if(rung == RepairRung.PeerReconciliation)
+        {
+            return AttemptPeerReconciliation();
+        }
+
+        //No restoring rung applied; the ladder descends to a named loss.
         return false;
     }
 
@@ -227,6 +239,120 @@ internal sealed class RepairCoordinator: IDisposable
         }
 
         return true;
+    }
+
+    /// <summary>The peer-reconciliation rung: a single lost system-of-record block is recovered from a peer's verified sketch — the local survivors' sketch combined with the peer's, peeled to their symmetric difference — and the healed full item set is re-ingested as the system-of-record. It applies only to the system-of-record, only when exactly one block is lost, and only when the peel is complete and recovers exactly the lost block's item count (a faithful peer of the same dictionary epoch); no peer source, more than one lost block, a partial peel, or a recovered count that does not match the lost block declines so the ladder descends to a named loss.</summary>
+    /// <returns><see langword="true"/> when the lost block's items were recovered and re-ingested.</returns>
+    private bool AttemptPeerReconciliation()
+    {
+        if(current != ManifestFileRole.DataSegment)
+        {
+            return false;
+        }
+
+        if(peerSource is not PeerReconciliationSource source)
+        {
+            return false;
+        }
+
+        IReadOnlyList<SkippedItemRange> skipped = feed.SkippedRanges;
+        if(skipped.Count != 1)
+        {
+            //A capacity for one lost block: a multi-block loss is a broader reconciliation deferred to a later rung.
+            return false;
+        }
+
+        SkippedItemRange lost = skipped[0];
+        VerifiedSketch localSketch = PersistSurvivorSketch(source.SymbolCap);
+
+        int sinkCapacity = localSketch.SymbolCount + source.PeerSketch.SymbolCount;
+        long sinkByteCount = (long)sinkCapacity * ContentKey128.ByteWidth;
+        if(sinkByteCount > Array.MaxLength)
+        {
+            return false;
+        }
+
+        using IMemoryOwner<byte> recoveredOwner = configuration.BytePool.Rent((int)Math.Max(1, sinkByteCount));
+        Span<ContentKey128> recovered = MemoryMarshal.Cast<byte, ContentKey128>(recoveredOwner.Memory.Span)[..sinkCapacity];
+        SketchDifference difference = source.Recover(localSketch, source.PeerSketch, source.SymbolCap, recovered);
+
+        //A complete peel that recovered exactly the lost block's items is a faithful single-block restore; a
+        //partial peel, an overflowed sink, or a different recovered count means the peer cannot restore exactly
+        //this block, so the rung declines and the loss is named.
+        bool restorable = difference.IsComplete && difference.RecoveredCount == lost.ItemCount && difference.RecoveredCount <= recovered.Length;
+        if(!restorable)
+        {
+            return false;
+        }
+
+        int survivorCount = feed.VerifiedCount;
+        int healedCount = survivorCount + difference.RecoveredCount;
+
+        //The healed full item set is the survivors plus the recovered lost items. The coordinator owns the buffer
+        //through restoredItemsOwner from here, so any later throw returns it via Dispose; a co-damaged view
+        //re-derived after this folds the healed set, not the block-excluded feed.
+        IMemoryOwner<EncodedTriple> healedOwner = configuration.TriplePool.Rent(Math.Max(1, healedCount));
+        restoredItemsOwner = new DecodedItemSegment(healedOwner, healedCount);
+        Span<EncodedTriple> healed = healedOwner.Memory.Span[..healedCount];
+        feed.VerifiedItems.Span.CopyTo(healed);
+        for(int i = 0; i < difference.RecoveredCount; i++)
+        {
+            healed[survivorCount + i] = source.Invert(recovered[i]);
+        }
+
+        //Stage a fresh system-of-record image over the healed set under the segment's block geometry — the
+        //recovered items are a set, not the original block's bytes, so the image is re-staged rather than XOR-patched.
+        ItemSegment segment = new(restoredItemsOwner.Memory, SystemOfRecordBlockItemCount, SystemOfRecordBlockAlignment);
+        int size = (int)segment.ComputeSerializedSize(configuration.Checksum);
+        using SlabBufferWriter writer = new(configuration.BytePool);
+        segment.WriteTo(writer.GetSpan(size)[..size], configuration.Checksum);
+        writer.Advance(size);
+
+        //Ownership of the healed image transfers to the owned-images list — which transfers to the report on
+        //success, or is disposed by Dispose if the pass aborts later. Null the local so the finally disposes it
+        //only when a throw above prevented the transfer.
+        PooledArtifactImage? image = PooledArtifactImage.Own(writer.Detach(), size);
+        try
+        {
+            RecordRestored(ManifestFileRole.DataSegment, image.Memory, healedCount);
+            ImageOwners.Add(image);
+            image = null;
+        }
+        finally
+        {
+            image?.Dispose();
+        }
+
+        return true;
+    }
+
+    /// <summary>Projects the verified survivor triples into reconciliation items, persists them as a structural sketch through the host encoder, and loads the image back as a verified sketch — the local operand the peer-reconciliation decode combines with the peer's sketch.</summary>
+    /// <param name="symbolCap">The number of symbols to persist — the source's symbol budget.</param>
+    /// <returns>The survivors' verified sketch.</returns>
+    /// <exception cref="InvalidDataException">The survivor set holds more items than a single projected-item buffer can address.</exception>
+    private VerifiedSketch PersistSurvivorSketch(int symbolCap)
+    {
+        int count = feed.VerifiedCount;
+        long itemByteCount = (long)count * ContentKey128.ByteWidth;
+        if(itemByteCount > Array.MaxLength)
+        {
+            throw new InvalidDataException("The system-of-record holds more items than a single projected-item buffer can address.");
+        }
+
+        using IMemoryOwner<byte> itemOwner = configuration.BytePool.Rent((int)Math.Max(1, itemByteCount));
+        Span<ContentKey128> items = MemoryMarshal.Cast<byte, ContentKey128>(itemOwner.Memory.Span)[..count];
+        ReadOnlySpan<EncodedTriple> survivors = feed.VerifiedItems.Span;
+        for(int i = 0; i < count; i++)
+        {
+            items[i] = configuration.Project(survivors[i]);
+        }
+
+        using SlabBufferWriter writer = new(configuration.BytePool);
+        SketchPersistence.PersistSketch(items, configuration.SketchContract, symbolCap, configuration.Checksum, configuration.BytePool, configuration.EncodeSketchSymbols, writer);
+        int imageLength = writer.BytesWritten;
+        using IMemoryOwner<byte> imageOwner = writer.Detach();
+
+        return SketchPersistence.LoadVerifiedSketch(imageOwner.Memory.Span[..imageLength], configuration.SketchContract);
     }
 
     /// <summary>The system-of-record items a re-derive folds: the parity-restored full set when the segment was healed this pass, otherwise the verified feed, which excludes any block the segment lost.</summary>

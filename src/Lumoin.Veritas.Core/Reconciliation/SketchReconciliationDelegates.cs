@@ -53,4 +53,23 @@ public static class SketchReconciliationDelegates
     /// <param name="recovered">The sink for the recovered difference items.</param>
     /// <returns>The number of recovered items; when it exceeds <paramref name="recovered"/>'s length nothing was written.</returns>
     public delegate int DecodeSketchDifference(VerifiedSketch left, VerifiedSketch right, int symbolCap, Span<ContentKey128> recovered);
+
+    /// <summary>
+    /// Combines two replicas' verified sketches and recovers their symmetric difference, returning the recovered
+    /// items alongside whether the decoder fully converged — the completeness-aware counterpart of
+    /// <see cref="DecodeSketchDifference"/>.
+    /// </summary>
+    /// <remarks>
+    /// The count-only seam cannot tell a complete peel from a partial one: both write recovered items and report a
+    /// count. A repair rung that must act on the recovered set — re-ingesting a lost system-of-record block from a
+    /// peer — needs that distinction, because acting on a partial difference would heal incompletely. The operands
+    /// are <see cref="VerifiedSketch"/> values, so detection precedes the combine by construction, exactly as for
+    /// the count-only seam.
+    /// </remarks>
+    /// <param name="left">One replica's verified sketch.</param>
+    /// <param name="right">The other replica's verified sketch.</param>
+    /// <param name="symbolCap">The maximum number of symbols to absorb before giving up.</param>
+    /// <param name="recovered">The sink for the recovered difference items; when the recovered count exceeds its length nothing is written.</param>
+    /// <returns>The recovered count, whether the decoder converged, and how many symbols were absorbed.</returns>
+    public delegate SketchDifference RecoverSketchDifference(VerifiedSketch left, VerifiedSketch right, int symbolCap, Span<ContentKey128> recovered);
 }

@@ -23,8 +23,11 @@ public static class RatelessSketchCodec
     /// <summary>The host-bound forward seam: folds a replica's projected items into a coded-symbol stream and writes the requested symbol bytes. Pass to <see cref="SketchPersistence.PersistSketch"/>.</summary>
     public static SketchReconciliationDelegates.EncodeSketchSymbols Encode { get; } = EncodeSymbols;
 
-    /// <summary>The host-bound reverse seam: combines two verified sketches and decodes their exact symmetric difference. Pass to a reconciliation pass or peer-reconciliation rung.</summary>
+    /// <summary>The host-bound reverse seam: combines two verified sketches and decodes their exact symmetric difference, returning only the recovered count. Pass to a reconciliation pass that needs no convergence signal.</summary>
     public static SketchReconciliationDelegates.DecodeSketchDifference Decode { get; } = DecodeDifference;
+
+    /// <summary>The completeness-aware reverse seam: combines two verified sketches and recovers their symmetric difference, reporting whether the peel was complete. Pass to the peer-reconciliation repair rung, which must distinguish a complete peel from a partial one before re-ingesting.</summary>
+    public static SketchReconciliationDelegates.RecoverSketchDifference Recover { get; } = RecoverDifference;
 
     /// <summary>The structural reconciliation contract both seams pin: the structural item domain, a 16-byte item, an 8-byte well-known-keyed checksum. It is input-independent and immutable, so it is built once and shared by every encode and decode.</summary>
     private static ReconciliationContract StructuralContract { get; } = new(
