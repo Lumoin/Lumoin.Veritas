@@ -121,10 +121,27 @@ public sealed class VeritasEngine: IAsyncDisposable
     /// <exception cref="ArgumentException"><paramref name="sparql"/> does not parse, or is a SPARQL Update rather than a query.</exception>
     /// <exception cref="NotSupportedException"><paramref name="sparql"/> is a CONSTRUCT or DESCRIBE query, which this surface does not yet render.</exception>
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
-    public async ValueTask<VeritasQueryResult> QueryAsync(string sparql, string? baseIri = null, CancellationToken cancellationToken = default)
+    public ValueTask<VeritasQueryResult> QueryAsync(string sparql, string? baseIri = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(sparql);
 
+        return QueryAsync(Utf8String.FromString(sparql).Memory, baseIri, cancellationToken);
+    }
+
+    /// <summary>
+    /// Evaluates a SPARQL query supplied as UTF-8 bytes, parsing them directly with no
+    /// string round-trip — the entry a byte-native transport (the HTTP endpoint's
+    /// <c>application/sparql-query</c> POST body) routes to.
+    /// </summary>
+    /// <param name="sparql">The query as UTF-8 bytes.</param>
+    /// <param name="baseIri">The base IRI relative references in the query resolve against; <c>null</c> for none.</param>
+    /// <param name="cancellationToken">A token that aborts evaluation.</param>
+    /// <returns>The query result.</returns>
+    /// <exception cref="ArgumentException"><paramref name="sparql"/> does not parse, or is a SPARQL Update rather than a query.</exception>
+    /// <exception cref="NotSupportedException"><paramref name="sparql"/> is a CONSTRUCT or DESCRIBE query, which this surface does not yet render.</exception>
+    /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
+    public async ValueTask<VeritasQueryResult> QueryAsync(ReadOnlyMemory<byte> sparql, string? baseIri = null, CancellationToken cancellationToken = default)
+    {
         using Utf8StringPool pool = new();
         SparqlQuery query = Parse(sparql, baseIri, pool);
         AlgebraOperator algebra = SparqlTranslator.Translate((SparqlQuery)new SparqlNormalizer(pool).Normalize(query));
@@ -207,7 +224,7 @@ public sealed class VeritasEngine: IAsyncDisposable
         return await HypertrieGraphStore.BuildAsync(encoded, VeritasHashing.Default, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>Parses a query over the supplied pool, which must outlive the evaluation that reads the algebra's interned terms.</summary>
+    /// <summary>Parses a query given as text, encoding it to UTF-8 once at the boundary; a convenience over the byte-native parse.</summary>
     /// <param name="sparql">The query text.</param>
     /// <param name="baseIri">The base IRI relative references resolve against, or <c>null</c> for none.</param>
     /// <param name="pool">The pool the query parses into.</param>
@@ -215,8 +232,19 @@ public sealed class VeritasEngine: IAsyncDisposable
     /// <exception cref="ArgumentException"><paramref name="sparql"/> does not parse, or is a SPARQL Update rather than a query.</exception>
     private static SparqlQuery Parse(string sparql, string? baseIri, Utf8StringPool pool)
     {
+        return Parse(Utf8String.FromString(sparql).Memory, baseIri, pool);
+    }
+
+    /// <summary>Parses a query from its UTF-8 bytes over the supplied pool, which must outlive the evaluation that reads the algebra's interned terms.</summary>
+    /// <param name="sparql">The query as UTF-8 bytes.</param>
+    /// <param name="baseIri">The base IRI relative references resolve against, or <c>null</c> for none.</param>
+    /// <param name="pool">The pool the query parses into.</param>
+    /// <returns>The parsed query.</returns>
+    /// <exception cref="ArgumentException"><paramref name="sparql"/> does not parse, or is a SPARQL Update rather than a query.</exception>
+    private static SparqlQuery Parse(ReadOnlyMemory<byte> sparql, string? baseIri, Utf8StringPool pool)
+    {
         Utf8String? parseBaseIri = baseIri is null ? null : Utf8String.FromString(baseIri);
-        ParseResult<SparqlRequest> parsed = SparqlParser.ParseRequest(Utf8String.FromString(sparql).Memory, pool, parseBaseIri);
+        ParseResult<SparqlRequest> parsed = SparqlParser.ParseRequest(sparql, pool, parseBaseIri);
         if(parsed.HasErrors)
         {
             throw new ArgumentException($"The query did not parse: {DescribeFirstError(parsed.Diagnostics)}", nameof(sparql));

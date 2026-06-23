@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Execution;
 using Lumoin.Veritas.Database;
 using Lumoin.Veritas.Sparql.Results;
@@ -108,7 +109,7 @@ internal static class VeritasSparqlServer
         /// <returns>The asynchronous handling.</returns>
         public Task HandleGet(HttpContext httpContext)
         {
-            return HandleAsync(httpContext, Database, httpContext.Request.Query["query"], CancellationToken);
+            return HandleAsync(httpContext, Database, ToQueryBytes(httpContext.Request.Query["query"]), CancellationToken);
         }
 
         /// <summary>Answers a POST request, reading the query from the request body or a form field.</summary>
@@ -127,30 +128,29 @@ internal static class VeritasSparqlServer
     /// <returns>The asynchronous handling.</returns>
     private static async Task HandlePostAsync(HttpContext httpContext, VeritasEngine database, CancellationToken cancellationToken)
     {
-        string? query;
         string contentType = httpContext.Request.ContentType ?? string.Empty;
         if(contentType.StartsWith("application/x-www-form-urlencoded", StringComparison.OrdinalIgnoreCase))
         {
-            query = httpContext.Request.Form["query"];
-        }
-        else
-        {
-            using StreamReader reader = new(httpContext.Request.Body);
-            query = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+            await HandleAsync(httpContext, database, ToQueryBytes(httpContext.Request.Form["query"]), cancellationToken).ConfigureAwait(false);
+
+            return;
         }
 
-        await HandleAsync(httpContext, database, query, cancellationToken).ConfigureAwait(false);
+        //An application/sparql-query body is the query's UTF-8 bytes; route them straight to the byte-native
+        //parse with no intervening string, the inbound counterpart to the byte-native readers the loader uses.
+        ReadOnlyMemory<byte> body = await ReadBodyAsync(httpContext.Request.Body, cancellationToken).ConfigureAwait(false);
+        await HandleAsync(httpContext, database, body, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Answers one query against the database, writing CSV/TSV results or a plain-text error.</summary>
     /// <param name="httpContext">The request context.</param>
     /// <param name="database">The open database.</param>
-    /// <param name="query">The query text (possibly empty).</param>
+    /// <param name="query">The query as UTF-8 bytes (possibly empty).</param>
     /// <param name="cancellationToken">A token that aborts the request.</param>
     /// <returns>The asynchronous handling.</returns>
-    private static async Task HandleAsync(HttpContext httpContext, VeritasEngine database, string? query, CancellationToken cancellationToken)
+    private static async Task HandleAsync(HttpContext httpContext, VeritasEngine database, ReadOnlyMemory<byte> query, CancellationToken cancellationToken)
     {
-        if(string.IsNullOrWhiteSpace(query))
+        if(IsBlank(query.Span))
         {
             httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
             await httpContext.Response.WriteAsync("Missing 'query'.", cancellationToken).ConfigureAwait(false);
@@ -175,5 +175,41 @@ internal static class VeritasSparqlServer
 
         httpContext.Response.ContentType = format == SparqlDelimitedResultsFormat.Tsv ? "text/tab-separated-values" : "text/csv";
         await httpContext.Response.WriteAsync(result.Output, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Encodes a query taken from the URL query string or a form field to UTF-8 bytes; an absent value yields an empty buffer, read downstream as a missing query.</summary>
+    /// <param name="query">The query string, or <see langword="null"/> when the parameter is absent.</param>
+    /// <returns>The query's UTF-8 bytes, or an empty buffer when there is none.</returns>
+    private static ReadOnlyMemory<byte> ToQueryBytes(string? query)
+    {
+        return string.IsNullOrEmpty(query) ? default : Utf8String.FromString(query).Memory;
+    }
+
+    /// <summary>Reads the entire request body into an owned byte buffer, so an <c>application/sparql-query</c> POST body reaches the byte-native query entry without a string round-trip.</summary>
+    /// <param name="body">The request body stream.</param>
+    /// <param name="cancellationToken">A token that aborts the read.</param>
+    /// <returns>The body's bytes.</returns>
+    private static async Task<ReadOnlyMemory<byte>> ReadBodyAsync(Stream body, CancellationToken cancellationToken)
+    {
+        using MemoryStream buffer = new();
+        await body.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
+
+        return buffer.ToArray();
+    }
+
+    /// <summary>Whether a query buffer is blank — empty or only ASCII whitespace — the byte equivalent of the missing-or-whitespace-only check on a query string.</summary>
+    /// <param name="query">The query bytes.</param>
+    /// <returns><see langword="true"/> when the buffer holds no non-whitespace byte.</returns>
+    private static bool IsBlank(ReadOnlySpan<byte> query)
+    {
+        foreach(byte b in query)
+        {
+            if(b is not ((byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n'))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

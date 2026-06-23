@@ -90,7 +90,7 @@ internal static class VeritasOperations
     /// <param name="format">The delimited output format.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The rendered results, or an error message for a malformed or not-yet-renderable query.</returns>
-    public static async Task<OperationResult> ExecuteQueryAsync(
+    public static Task<OperationResult> ExecuteQueryAsync(
         VeritasEngine database,
         string queryText,
         string baseIri,
@@ -99,6 +99,25 @@ internal static class VeritasOperations
     {
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(queryText);
+
+        return ExecuteQueryAsync(database, Utf8String.FromString(queryText).Memory, baseIri, format, cancellationToken);
+    }
+
+    /// <summary>Executes a SPARQL <c>SELECT</c>/<c>ASK</c> query given as UTF-8 bytes — the byte-native entry the HTTP endpoint routes an <c>application/sparql-query</c> POST body to, with no string round-trip — and renders the result.</summary>
+    /// <param name="database">The database opened by <see cref="OpenDatabaseAsync"/>.</param>
+    /// <param name="queryText">The query as UTF-8 bytes.</param>
+    /// <param name="baseIri">The base IRI relative references resolve against (the request base).</param>
+    /// <param name="format">The delimited output format.</param>
+    /// <param name="cancellationToken">A token that aborts evaluation.</param>
+    /// <returns>The rendered results, or an error message for a malformed or not-yet-renderable query.</returns>
+    public static async Task<OperationResult> ExecuteQueryAsync(
+        VeritasEngine database,
+        ReadOnlyMemory<byte> queryText,
+        string baseIri,
+        SparqlDelimitedResultsFormat format,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(database);
 
         VeritasQueryResult result;
         try

@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Net.Http;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -153,6 +154,67 @@ internal sealed partial class VeritasCliIntegrationTests
             Uri requestUri = new(endpoint, "?query=" + Uri.EscapeDataString("PREFIX : <http://example.org/> SELECT ?who WHERE { :alice :knows ?who }"));
             string body = await client.GetStringAsync(requestUri, TestContext.CancellationToken).ConfigureAwait(false);
 
+            Assert.Contains("http://example.org/bob", body);
+            Assert.Contains("http://example.org/carol", body);
+        }
+        finally
+        {
+            if(!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+
+            await process.WaitForExitAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>The <c>serve</c> command's Kestrel endpoint answers a SPARQL Protocol POST with an <c>application/sparql-query</c> body, which is routed to the byte-native query entry.</summary>
+    /// <returns>The asynchronous test.</returns>
+    [TestMethod]
+    public async Task ServeCommandAnswersHttpPostQuery()
+    {
+        string? executable = GetCliExecutablePath();
+        if(executable is null)
+        {
+            Assert.Inconclusive("The Lumoin.Veritas.Cli executable was not built; build it to run this test.");
+
+            return;
+        }
+
+        (string dataPath, _) = WriteFixture();
+
+        using Process process = new()
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = executable,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            }
+        };
+
+        process.StartInfo.ArgumentList.Add("serve");
+        process.StartInfo.ArgumentList.Add("--port");
+        process.StartInfo.ArgumentList.Add("0");
+        process.StartInfo.ArgumentList.Add("--data");
+        process.StartInfo.ArgumentList.Add(dataPath);
+
+        process.Start();
+        _ = process.StandardError.ReadToEndAsync(TestContext.CancellationToken);
+
+        try
+        {
+            Uri? endpoint = await ReadListeningEndpointAsync(process, TestContext.CancellationToken).ConfigureAwait(false);
+            Assert.IsNotNull(endpoint, "The server did not report a listening address.");
+
+            using HttpClient client = new();
+            using StringContent content = new("PREFIX : <http://example.org/> SELECT ?who WHERE { :alice :knows ?who }", Encoding.UTF8, "application/sparql-query");
+            using HttpResponseMessage response = await client.PostAsync(endpoint, content, TestContext.CancellationToken).ConfigureAwait(false);
+            string body = await response.Content.ReadAsStringAsync(TestContext.CancellationToken).ConfigureAwait(false);
+
+            Assert.AreEqual(System.Net.HttpStatusCode.OK, response.StatusCode, body);
             Assert.Contains("http://example.org/bob", body);
             Assert.Contains("http://example.org/carol", body);
         }
