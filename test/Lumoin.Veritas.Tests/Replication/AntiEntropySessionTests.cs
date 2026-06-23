@@ -142,4 +142,30 @@ internal sealed class AntiEntropySessionTests
         HashSet<EncodedTriple> convergedSecond = [.. second.ConvergedIndex.EnumerateTriples()];
         Assert.IsTrue(union.SetEquals(convergedSecond), "Re-running against the same peer leaves the converged set unchanged — repair-as-ingest is idempotent.");
     }
+
+    /// <summary>A budget too small to peel the difference yields a partial peel that the session declines: it absorbs symbols but never converges, applies nothing, leaves the local index unchanged, and the ladder names the loss — the decline path distinct from an unreachable peer.</summary>
+    [TestMethod]
+    public void PartialPeelDeclinesAndNamesLoss()
+    {
+        using VeritasMemoryPool<byte> pool = new();
+        EncodedTriple[] triplesA = Line(0, 150);
+        EncodedTriple[] triplesB = Line(50, 150);
+        ColumnarTripleIndex replicaA = ColumnarTripleIndex.Build(triplesA);
+
+        //The two replicas differ by 100 triples, but this policy budgets 50 coded symbols regardless of size:
+        //50 symbols cannot peel a 100-item difference, so the decoder cannot converge and the session must
+        //decline rather than apply a partial difference.
+        ReplicationPolicy starvedBudget = new(50, 0);
+        SketchFetchDelegate fetch = budget => PersistPeerImage(triplesB, budget, pool);
+        AntiEntropyRepairLadderBinding binding = new(replicaA, fetch, starvedBudget, pool, TimeProvider.System);
+
+        RepairRung outcome = RepairSourceLadder.Descend(binding.Attempt);
+
+        Assert.AreEqual(RepairRung.NamedLoss, outcome, "A budget too small to peel the difference must leave the loss named.");
+        Assert.IsNotNull(binding.Result, "The peer-reconciliation rung still runs and records its declined result.");
+        AntiEntropySessionResult result = binding.Result.Value;
+        Assert.IsFalse(result.IsComplete, "A partial peel must report an incomplete session.");
+        Assert.IsGreaterThan(0, result.AbsorbedSymbols, "A partial peel absorbs symbols before giving up — unlike an unreachable peer, which absorbs none.");
+        Assert.AreSame(replicaA, result.ConvergedIndex, "A declined partial peel applies nothing: the local index is returned unchanged.");
+    }
 }

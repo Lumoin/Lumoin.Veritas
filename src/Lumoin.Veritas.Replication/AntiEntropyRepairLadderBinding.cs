@@ -15,9 +15,10 @@ namespace Lumoin.Veritas.Replication;
 /// session's outcome is held in <see cref="Result"/> so the caller reads the converged index after the descent.
 /// </summary>
 /// <remarks>
-/// The ladder takes a <see cref="RepairAttemptDelegate"/>, and this library forbids lexical closures, so the
-/// binding is an explicit frame: the session inputs are held as fields and <see cref="Attempt"/> is passed as a
-/// method group. One instance drives one descent; reuse re-runs the session and overwrites <see cref="Result"/>.
+/// The ladder takes a <see cref="RepairAttemptDelegate"/>; this binding supplies it as a closure-free explicit
+/// frame — the session inputs are held as fields and <see cref="Attempt"/> is passed as a bound method group, so
+/// no captured state escapes the descent. One instance drives one descent; reuse re-runs the session and
+/// overwrites <see cref="Result"/>.
 /// </remarks>
 public sealed class AntiEntropyRepairLadderBinding
 {

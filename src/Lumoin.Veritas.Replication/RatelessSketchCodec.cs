@@ -26,17 +26,13 @@ public static class RatelessSketchCodec
     /// <summary>The host-bound reverse seam: combines two verified sketches and decodes their exact symmetric difference. Pass to a reconciliation pass or peer-reconciliation rung.</summary>
     public static SketchReconciliationDelegates.DecodeSketchDifference Decode { get; } = DecodeDifference;
 
-    /// <summary>The structural reconciliation contract both seams pin: the structural item domain, a 16-byte item, an 8-byte well-known-keyed checksum.</summary>
-    /// <returns>The reconciliation contract.</returns>
-    private static ReconciliationContract Contract()
-    {
-        return new ReconciliationContract(
-            ReconciliationItemDomain.Structural,
-            ContentKey128.ByteWidth,
-            StructuralChecksumWidth,
-            ReconciliationContract.WellKnownChecksumKeyLow,
-            ReconciliationContract.WellKnownChecksumKeyHigh);
-    }
+    /// <summary>The structural reconciliation contract both seams pin: the structural item domain, a 16-byte item, an 8-byte well-known-keyed checksum. It is input-independent and immutable, so it is built once and shared by every encode and decode.</summary>
+    private static ReconciliationContract StructuralContract { get; } = new(
+        ReconciliationItemDomain.Structural,
+        ContentKey128.ByteWidth,
+        StructuralChecksumWidth,
+        ReconciliationContract.WellKnownChecksumKeyLow,
+        ReconciliationContract.WellKnownChecksumKeyHigh);
 
     /// <summary>Folds the items into a rateless encoder and writes the first <paramref name="symbolCount"/> symbols' bytes (the sum field followed by the checksum field) into <paramref name="destination"/>, back to back.</summary>
     /// <param name="items">The replica's projected items.</param>
@@ -46,7 +42,7 @@ public static class RatelessSketchCodec
     private static void EncodeSymbols(ReadOnlySpan<ContentKey128> items, int symbolCount, int symbolWidth, Span<byte> destination)
     {
         int checksumWidth = symbolWidth - ContentKey128.ByteWidth;
-        using ReconciliationEncoder encoder = new(Contract());
+        using ReconciliationEncoder encoder = new(StructuralContract);
         Span<byte> itemBytes = stackalloc byte[ContentKey128.ByteWidth];
         foreach(ContentKey128 item in items)
         {
@@ -86,7 +82,7 @@ public static class RatelessSketchCodec
         ReadOnlySpan<byte> rightSymbols = right.Symbols.Span;
         int checksumWidth = symbolWidth - ContentKey128.ByteWidth;
         int pairs = Math.Min(leftSymbols.Length / symbolWidth, rightSymbols.Length / symbolWidth);
-        using ReconciliationDecoder decoder = new(Contract());
+        using ReconciliationDecoder decoder = new(StructuralContract);
 
         int absorbed = 0;
         for(int i = 0; i < pairs && !decoder.IsComplete && absorbed < symbolCap; i++)
