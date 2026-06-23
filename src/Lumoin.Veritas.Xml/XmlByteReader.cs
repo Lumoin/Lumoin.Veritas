@@ -18,7 +18,16 @@ namespace Lumoin.Veritas.Xml;
 /// in-scope <c>xmlns</c>/<c>xmlns:prefix</c> declarations (a per-element scope stack); the implicit <c>xml</c>
 /// prefix is always bound to the XML namespace. Predefined entities (<c>&amp;lt;</c>, <c>&amp;gt;</c>,
 /// <c>&amp;amp;</c>, <c>&amp;quot;</c>, <c>&amp;apos;</c>) and numeric character references decode in text and
-/// attribute values; a DTD/internal subset is rejected, so no external or general entities are ever expanded.
+/// attribute values.
+/// </para>
+/// <para>
+/// A DTD is rejected by default. With <see cref="Read(System.ReadOnlySpan{byte}, bool)"/> and
+/// <c>parseInternalDtd: true</c> the DOCTYPE <b>internal subset</b> is parsed: its <c>&lt;!ENTITY name "value"&gt;</c>
+/// general-entity declarations register, and <c>&amp;name;</c> references in text and attribute values expand to
+/// them, bounded by an expansion budget (a billion-laughs guard). External resolution is never performed — no
+/// external subset is fetched and no external entity is expanded — so this stays XXE-safe. (The DOCTYPE entity
+/// machinery here duplicates <c>OwlXmlSyntaxIncrementalReader</c>'s; the two byte-native XML scanners are a planned
+/// unification.)
 /// </para>
 /// <para>
 /// Term and name values are sliced as owned <see cref="Utf8String"/> copies, so the tree is independent of the
@@ -32,240 +41,479 @@ public static class XmlByteReader
     /// <summary>The implicit <c>xml</c> prefix's namespace, always in scope.</summary>
     private static ReadOnlySpan<byte> XmlNamespace => "http://www.w3.org/XML/1998/namespace"u8;
 
-    /// <summary>Reads a UTF-8 XML document into its element tree.</summary>
+    /// <summary>The cap on the bytes a document's <c>&amp;name;</c> general-entity references may expand to, guarding against entity-amplification.</summary>
+    private const int MaxEntityExpansionBytes = 10_000_000;
+
+    /// <summary>Reads a UTF-8 XML document into its element tree, rejecting any DTD.</summary>
     /// <param name="utf8">The document's UTF-8 bytes.</param>
     /// <returns>The document's single root element.</returns>
-    /// <exception cref="FormatException">The document is not well-formed, or has no single root element.</exception>
+    /// <exception cref="FormatException">The document is not well-formed, declares a DTD, or has no single root element.</exception>
     public static XmlByteNode Read(ReadOnlySpan<byte> utf8)
     {
-        XmlByteNode root = new();
-        Stack<XmlByteNode> open = new();
-        open.Push(root);
+        return new Parser(parseInternalDtd: false).Parse(utf8);
+    }
 
-        Stack<Dictionary<Utf8String, Utf8String>> scopes = new();
-        scopes.Push(BaseScope());
+    /// <summary>Reads a UTF-8 XML document into its element tree, optionally parsing the DOCTYPE internal subset's general entities.</summary>
+    /// <param name="utf8">The document's UTF-8 bytes.</param>
+    /// <param name="parseInternalDtd">When <see langword="true"/>, parse the internal subset's <c>&lt;!ENTITY&gt;</c> declarations and expand <c>&amp;name;</c> references (external resolution stays off); when <see langword="false"/>, reject any DTD.</param>
+    /// <returns>The document's single root element.</returns>
+    /// <exception cref="FormatException">The document is not well-formed, has no single root element, or (with <paramref name="parseInternalDtd"/> <see langword="false"/>) declares a DTD.</exception>
+    public static XmlByteNode Read(ReadOnlySpan<byte> utf8, bool parseInternalDtd)
+    {
+        return new Parser(parseInternalDtd).Parse(utf8);
+    }
 
-        int i = 0;
-        while(i < utf8.Length)
+    /// <summary>The stateful parse of one document: the open-element and namespace-scope stacks, the entity table, and the expansion budget.</summary>
+    /// <param name="parseInternalDtd">Whether to parse the DOCTYPE internal subset's general entities.</param>
+    private sealed class Parser(bool parseInternalDtd)
+    {
+        /// <summary>Whether the DOCTYPE internal subset's general entities are parsed and expanded.</summary>
+        private bool ParseInternalDtd { get; } = parseInternalDtd;
+
+        /// <summary>The general entities declared in the internal subset, keyed by entity name, with decoded values.</summary>
+        private Dictionary<Utf8String, Utf8String> Entities { get; } = [];
+
+        /// <summary>The synthetic document root; its direct children are the document's top-level elements.</summary>
+        private XmlByteNode Root { get; } = new();
+
+        /// <summary>The open-element stack; <see cref="Root"/> sits at the bottom for the whole parse.</summary>
+        private Stack<XmlByteNode> Open { get; } = new();
+
+        /// <summary>The namespace-binding scope stack, one frame per open element.</summary>
+        private Stack<Dictionary<Utf8String, Utf8String>> Scopes { get; } = new();
+
+        /// <summary>The remaining budget for general-entity expansion, in bytes.</summary>
+        private int entityBudget = MaxEntityExpansionBytes;
+
+        /// <summary>Parses the document into its element tree.</summary>
+        /// <param name="utf8">The document bytes.</param>
+        /// <returns>The document's single root element.</returns>
+        /// <exception cref="FormatException">The document is not well-formed or has no single root element.</exception>
+        public XmlByteNode Parse(ReadOnlySpan<byte> utf8)
         {
-            if(utf8[i] == (byte)'<')
+            Open.Push(Root);
+            Scopes.Push([]);
+
+            int i = 0;
+            while(i < utf8.Length)
             {
-                i = ScanMarkup(utf8, i, open, scopes);
+                i = utf8[i] == (byte)'<' ? ScanMarkup(utf8, i) : ScanText(utf8, i);
+            }
+
+            if(Open.Count != 1)
+            {
+                throw new FormatException("XML document has an unclosed element.");
+            }
+
+            return SingleChild();
+        }
+
+        /// <summary>Returns the single element child of the synthetic document root.</summary>
+        /// <returns>The document element.</returns>
+        /// <exception cref="FormatException">The document has no element, or more than one top-level element.</exception>
+        private XmlByteNode SingleChild()
+        {
+            XmlByteNode? found = null;
+            foreach(XmlByteNode child in Root.Children)
+            {
+                if(found is not null)
+                {
+                    throw new FormatException("XML document has more than one root element.");
+                }
+
+                found = child;
+            }
+
+            return found ?? throw new FormatException("XML document has no root element.");
+        }
+
+        /// <summary>Scans a <c>&lt;…</c> markup unit (tag, comment, CDATA, processing instruction, or declaration) and returns the offset past it.</summary>
+        /// <param name="utf8">The document bytes.</param>
+        /// <param name="start">The offset of the opening <c>&lt;</c>.</param>
+        /// <returns>The offset just past the scanned unit.</returns>
+        /// <exception cref="FormatException">The markup is unterminated or malformed.</exception>
+        private int ScanMarkup(ReadOnlySpan<byte> utf8, int start)
+        {
+            if(start + 1 >= utf8.Length)
+            {
+                throw new FormatException("XML document ends with an unterminated '<'.");
+            }
+
+            return utf8[start + 1] switch
+            {
+                (byte)'/' => ScanEndTag(utf8, start),
+                (byte)'?' => SkipDelimited(utf8, start, "?>"u8),
+                (byte)'!' => ScanDeclaration(utf8, start),
+                _ => ScanStartTag(utf8, start)
+            };
+        }
+
+        /// <summary>Scans a <c>&lt;!…</c> declaration: a comment, a CDATA section, or (when permitted) a DOCTYPE.</summary>
+        /// <param name="utf8">The document bytes.</param>
+        /// <param name="start">The offset of the opening <c>&lt;</c>.</param>
+        /// <returns>The offset just past the declaration.</returns>
+        /// <exception cref="FormatException">The declaration is an unsupported DTD or is malformed.</exception>
+        private int ScanDeclaration(ReadOnlySpan<byte> utf8, int start)
+        {
+            if(StartsWith(utf8, start, "<!--"u8))
+            {
+                return SkipDelimited(utf8, start, "-->"u8);
+            }
+
+            if(StartsWith(utf8, start, "<![CDATA["u8))
+            {
+                int open = start + "<![CDATA["u8.Length;
+                int close = IndexOf(utf8, open, "]]>"u8);
+                if(close < 0)
+                {
+                    throw new FormatException("XML document has an unterminated CDATA section.");
+                }
+
+                AppendText(Utf8String.WithoutPrecomputedHash(utf8.Slice(open, close - open).ToArray()));
+
+                return close + "]]>"u8.Length;
+            }
+
+            if(ParseInternalDtd && StartsWith(utf8, start, "<!DOCTYPE"u8))
+            {
+                return ScanDoctype(utf8, start);
+            }
+
+            throw new FormatException("XML document declares a DTD, which is not permitted.");
+        }
+
+        /// <summary>Scans a DOCTYPE declaration, registering the general entities its internal subset declares; external resolution is never performed.</summary>
+        /// <param name="utf8">The document bytes.</param>
+        /// <param name="start">The offset of the opening <c>&lt;</c> of the doctype.</param>
+        /// <returns>The offset just past the doctype's terminating <c>&gt;</c>.</returns>
+        /// <exception cref="FormatException">The doctype is unterminated.</exception>
+        private int ScanDoctype(ReadOnlySpan<byte> utf8, int start)
+        {
+            int depth = 0;
+            for(int i = start + 1; i < utf8.Length; i++)
+            {
+                byte b = utf8[i];
+                if(b == (byte)'[')
+                {
+                    depth++;
+                }
+                else if(b == (byte)']')
+                {
+                    depth--;
+                }
+                else if(b == (byte)'>' && depth <= 0)
+                {
+                    RegisterEntities(utf8, start, i);
+
+                    return i + 1;
+                }
+            }
+
+            throw new FormatException("XML document has an unterminated DOCTYPE declaration.");
+        }
+
+        /// <summary>Parses the <c>&lt;!ENTITY name "value"&gt;</c> declarations in a doctype's internal subset into the entity table.</summary>
+        /// <param name="utf8">The document bytes.</param>
+        /// <param name="start">The offset of the opening <c>&lt;</c> of the doctype.</param>
+        /// <param name="end">The offset of the doctype's terminating <c>&gt;</c>.</param>
+        private void RegisterEntities(ReadOnlySpan<byte> utf8, int start, int end)
+        {
+            int i = start;
+            while(true)
+            {
+                int declaration = IndexOf(utf8.Slice(0, end), i, "<!ENTITY"u8);
+                if(declaration < 0)
+                {
+                    return;
+                }
+
+                int cursor = SkipWhitespace(utf8, declaration + "<!ENTITY"u8.Length, end);
+                int nameStart = cursor;
+                while(cursor < end && IsNameByte(utf8[cursor]))
+                {
+                    cursor++;
+                }
+
+                ReadOnlySpan<byte> name = utf8.Slice(nameStart, cursor - nameStart);
+                cursor = SkipWhitespace(utf8, cursor, end);
+                if(cursor < end && (utf8[cursor] == (byte)'"' || utf8[cursor] == (byte)'\''))
+                {
+                    byte quote = utf8[cursor];
+                    int valueStart = cursor + 1;
+                    int valueEnd = IndexOfByte(utf8, valueStart, end, quote);
+                    if(valueEnd >= 0 && name.Length > 0)
+                    {
+                        //An entity's replacement text decodes predefined and numeric references once at registration;
+                        //it is then emitted verbatim on reference (general entities do not nest in this reader).
+                        Entities[new Utf8String(name.ToArray())] = Decode(utf8.Slice(valueStart, valueEnd - valueStart), expandGeneral: false);
+                        cursor = valueEnd + 1;
+                    }
+                }
+
+                i = cursor + 1;
+            }
+        }
+
+        /// <summary>Scans a start tag or empty-element tag, pushing or adding the element it names.</summary>
+        /// <param name="utf8">The document bytes.</param>
+        /// <param name="start">The offset of the opening <c>&lt;</c>.</param>
+        /// <returns>The offset just past the tag.</returns>
+        /// <exception cref="FormatException">The tag is unterminated.</exception>
+        private int ScanStartTag(ReadOnlySpan<byte> utf8, int start)
+        {
+            int close = IndexOfTagClose(utf8, start);
+            if(close < 0)
+            {
+                throw new FormatException("XML document has an unterminated start tag.");
+            }
+
+            bool empty = utf8[close - 1] == (byte)'/';
+            int nameStart = start + 1;
+            int nameEnd = nameStart;
+            while(nameEnd < close && !IsWhitespace(utf8[nameEnd]) && utf8[nameEnd] != (byte)'/' && utf8[nameEnd] != (byte)'>')
+            {
+                nameEnd++;
+            }
+
+            List<RawAttribute> raw = ParseAttributes(utf8, nameEnd, empty ? close - 1 : close);
+            Dictionary<Utf8String, Utf8String> scope = BindScope(utf8, raw);
+
+            XmlByteNode node = new()
+            {
+                LocalName = LocalName(utf8.Slice(nameStart, nameEnd - nameStart)),
+                NamespaceIri = ResolveElementNamespace(utf8.Slice(nameStart, nameEnd - nameStart), scope)
+            };
+
+            foreach(RawAttribute attribute in raw)
+            {
+                if(IsNamespaceDeclaration(utf8, attribute))
+                {
+                    continue;
+                }
+
+                node.Attributes.Add(new XmlByteAttribute(
+                    LocalName(utf8.Slice(attribute.NameStart, attribute.NameEnd - attribute.NameStart)),
+                    ResolveAttributeNamespace(utf8.Slice(attribute.NameStart, attribute.NameEnd - attribute.NameStart), scope),
+                    Decode(utf8.Slice(attribute.ValueStart, attribute.ValueEnd - attribute.ValueStart), expandGeneral: true)));
+            }
+
+            Open.Peek().Children.Add(node);
+            if(!empty)
+            {
+                Open.Push(node);
+                Scopes.Push(scope);
+            }
+
+            return close + 1;
+        }
+
+        /// <summary>Scans an end tag, popping the matching open element.</summary>
+        /// <param name="utf8">The document bytes.</param>
+        /// <param name="start">The offset of the opening <c>&lt;</c>.</param>
+        /// <returns>The offset just past the end tag.</returns>
+        /// <exception cref="FormatException">The end tag is unterminated, or does not match the open element.</exception>
+        private int ScanEndTag(ReadOnlySpan<byte> utf8, int start)
+        {
+            int close = IndexOf(utf8, start, ">"u8);
+            if(close < 0)
+            {
+                throw new FormatException("XML document has an unterminated end tag.");
+            }
+
+            int nameStart = start + 2;
+            int nameEnd = nameStart;
+            while(nameEnd < close && !IsWhitespace(utf8[nameEnd]))
+            {
+                nameEnd++;
+            }
+
+            if(Open.Count <= 1)
+            {
+                throw new FormatException("XML document has an end tag with no matching start tag.");
+            }
+
+            XmlByteNode node = Open.Peek();
+            if(!node.LocalName.Span.SequenceEqual(LocalNameSpan(utf8.Slice(nameStart, nameEnd - nameStart))))
+            {
+                throw new FormatException("XML document has a mismatched end tag.");
+            }
+
+            Open.Pop();
+            Scopes.Pop();
+
+            return close + 1;
+        }
+
+        /// <summary>Scans a text run up to the next markup, appending its entity-decoded content to the open element.</summary>
+        /// <param name="utf8">The document bytes.</param>
+        /// <param name="start">The offset of the first text byte.</param>
+        /// <returns>The offset of the next <c>&lt;</c> (or the document end).</returns>
+        private int ScanText(ReadOnlySpan<byte> utf8, int start)
+        {
+            int next = IndexOf(utf8, start, "<"u8);
+            if(next < 0)
+            {
+                next = utf8.Length;
+            }
+
+            AppendText(Decode(utf8.Slice(start, next - start), expandGeneral: true));
+
+            return next;
+        }
+
+        /// <summary>Appends character data to the open element, coalescing with any already accumulated; text outside any element is discarded.</summary>
+        /// <param name="content">The decoded character data.</param>
+        private void AppendText(Utf8String content)
+        {
+            if(content.IsEmpty || Open.Count <= 1)
+            {
+                return;
+            }
+
+            XmlByteNode node = Open.Peek();
+            node.Text = node.Text.IsEmpty ? content : Concat(node.Text, content);
+        }
+
+        /// <summary>Builds the namespace scope of an element: the parent scope extended with the element's own <c>xmlns</c> declarations.</summary>
+        /// <param name="utf8">The document bytes.</param>
+        /// <param name="attributes">The element's raw attributes.</param>
+        /// <returns>The element's scope, sharing the parent frame when the element declares no namespaces.</returns>
+        private Dictionary<Utf8String, Utf8String> BindScope(ReadOnlySpan<byte> utf8, List<RawAttribute> attributes)
+        {
+            Dictionary<Utf8String, Utf8String> parent = Scopes.Peek();
+            Dictionary<Utf8String, Utf8String>? bound = null;
+            foreach(RawAttribute attribute in attributes)
+            {
+                ReadOnlySpan<byte> name = utf8.Slice(attribute.NameStart, attribute.NameEnd - attribute.NameStart);
+                if(name.SequenceEqual("xmlns"u8))
+                {
+                    bound ??= new(parent);
+                    bound[DefaultPrefix] = Decode(utf8.Slice(attribute.ValueStart, attribute.ValueEnd - attribute.ValueStart), expandGeneral: true);
+                }
+                else if(name.Length > 6 && name.StartsWith("xmlns:"u8))
+                {
+                    bound ??= new(parent);
+                    bound[new Utf8String(name.Slice(6).ToArray())] = Decode(utf8.Slice(attribute.ValueStart, attribute.ValueEnd - attribute.ValueStart), expandGeneral: true);
+                }
+            }
+
+            return bound ?? parent;
+        }
+
+        /// <summary>Decodes a byte range, resolving XML predefined and numeric references and (when permitted) general entities; a reference-free range is an owned slice.</summary>
+        /// <param name="raw">The bytes to decode.</param>
+        /// <param name="expandGeneral">Whether <c>&amp;name;</c> general-entity references expand (text/attribute values), as opposed to an entity replacement text being registered.</param>
+        /// <returns>The decoded, owned value.</returns>
+        /// <exception cref="FormatException">A reference is unterminated, undefined, or the expansion budget is exhausted.</exception>
+        private Utf8String Decode(ReadOnlySpan<byte> raw, bool expandGeneral)
+        {
+            if(raw.IndexOf((byte)'&') < 0)
+            {
+                return Utf8String.WithoutPrecomputedHash(raw.ToArray());
+            }
+
+            ArrayBufferWriter<byte> output = new();
+            int i = 0;
+            while(i < raw.Length)
+            {
+                if(raw[i] != (byte)'&')
+                {
+                    output.Write(raw.Slice(i, 1));
+                    i++;
+
+                    continue;
+                }
+
+                int semicolon = raw.Slice(i).IndexOf((byte)';');
+                if(semicolon < 0)
+                {
+                    throw new FormatException("XML value has an unterminated entity reference.");
+                }
+
+                ExpandReference(raw.Slice(i + 1, semicolon - 1), output, expandGeneral);
+                i += semicolon + 1;
+            }
+
+            return Utf8String.WithoutPrecomputedHash(output.WrittenSpan.ToArray());
+        }
+
+        /// <summary>Expands one predefined, numeric, or general-entity reference into the decode buffer.</summary>
+        /// <param name="reference">The reference name or numeric code, the bytes between <c>&amp;</c> and <c>;</c>.</param>
+        /// <param name="output">The decode buffer.</param>
+        /// <param name="expandGeneral">Whether a general-entity name resolves through the entity table.</param>
+        /// <exception cref="FormatException">The reference is undefined or the expansion budget is exhausted.</exception>
+        private void ExpandReference(ReadOnlySpan<byte> reference, ArrayBufferWriter<byte> output, bool expandGeneral)
+        {
+            if(reference.SequenceEqual("amp"u8))
+            {
+                output.Write("&"u8);
+            }
+            else if(reference.SequenceEqual("lt"u8))
+            {
+                output.Write("<"u8);
+            }
+            else if(reference.SequenceEqual("gt"u8))
+            {
+                output.Write(">"u8);
+            }
+            else if(reference.SequenceEqual("quot"u8))
+            {
+                output.Write("\""u8);
+            }
+            else if(reference.SequenceEqual("apos"u8))
+            {
+                output.Write("'"u8);
+            }
+            else if(reference.Length > 1 && reference[0] == (byte)'#')
+            {
+                ExpandNumericReference(reference, output);
+            }
+            else if(expandGeneral && Entities.TryGetValue(new Utf8String(reference.ToArray()), out Utf8String entity))
+            {
+                entityBudget -= entity.Length;
+                if(entityBudget < 0)
+                {
+                    throw new FormatException("XML general-entity expansion exceeds the permitted budget.");
+                }
+
+                output.Write(entity.Span);
             }
             else
             {
-                i = ScanText(utf8, i, open);
+                throw new FormatException("XML value references an undefined general entity.");
             }
         }
 
-        if(open.Count != 1)
+        /// <summary>Resolves an element's qualified name to its namespace IRI (the default namespace when unprefixed).</summary>
+        /// <param name="qualified">The element's qualified name bytes.</param>
+        /// <param name="scope">The namespace scope in effect.</param>
+        /// <returns>The resolved namespace IRI, or an empty value when none is in scope.</returns>
+        private static Utf8String ResolveElementNamespace(ReadOnlySpan<byte> qualified, Dictionary<Utf8String, Utf8String> scope)
         {
-            throw new FormatException("XML document has an unclosed element.");
+            int colon = qualified.IndexOf((byte)':');
+
+            return colon < 0 ? scope.GetValueOrDefault(DefaultPrefix) : ResolvePrefix(qualified.Slice(0, colon), scope);
         }
 
-        return SingleChild(root);
-    }
-
-    /// <summary>Returns the single element child of the synthetic document root.</summary>
-    /// <param name="root">The synthetic document root.</param>
-    /// <returns>The document element.</returns>
-    /// <exception cref="FormatException">The document has no element, or more than one top-level element.</exception>
-    private static XmlByteNode SingleChild(XmlByteNode root)
-    {
-        XmlByteNode? found = null;
-        foreach(XmlByteNode child in root.Children)
+        /// <summary>Resolves an attribute's qualified name to its namespace IRI (no namespace when unprefixed).</summary>
+        /// <param name="qualified">The attribute's qualified name bytes.</param>
+        /// <param name="scope">The namespace scope in effect.</param>
+        /// <returns>The resolved namespace IRI, or an empty value when the attribute is unprefixed.</returns>
+        private static Utf8String ResolveAttributeNamespace(ReadOnlySpan<byte> qualified, Dictionary<Utf8String, Utf8String> scope)
         {
-            if(found is not null)
-            {
-                throw new FormatException("XML document has more than one root element.");
-            }
+            int colon = qualified.IndexOf((byte)':');
 
-            found = child;
+            return colon < 0 ? default : ResolvePrefix(qualified.Slice(0, colon), scope);
         }
 
-        return found ?? throw new FormatException("XML document has no root element.");
-    }
-
-    /// <summary>Scans a <c>&lt;…</c> markup unit (tag, comment, CDATA, processing instruction, or declaration) and returns the offset past it.</summary>
-    /// <param name="utf8">The document bytes.</param>
-    /// <param name="start">The offset of the opening <c>&lt;</c>.</param>
-    /// <param name="open">The open-element stack.</param>
-    /// <param name="scopes">The namespace-scope stack.</param>
-    /// <returns>The offset just past the scanned unit.</returns>
-    /// <exception cref="FormatException">The markup is unterminated or malformed.</exception>
-    private static int ScanMarkup(ReadOnlySpan<byte> utf8, int start, Stack<XmlByteNode> open, Stack<Dictionary<Utf8String, Utf8String>> scopes)
-    {
-        if(start + 1 >= utf8.Length)
+        /// <summary>Resolves a prefix to its namespace IRI; the implicit <c>xml</c> prefix is always the XML namespace.</summary>
+        /// <param name="prefix">The prefix bytes.</param>
+        /// <param name="scope">The namespace scope in effect.</param>
+        /// <returns>The namespace IRI, or an empty value when the prefix is unbound.</returns>
+        private static Utf8String ResolvePrefix(ReadOnlySpan<byte> prefix, Dictionary<Utf8String, Utf8String> scope)
         {
-            throw new FormatException("XML document ends with an unterminated '<'.");
+            return prefix.SequenceEqual("xml"u8) ? new Utf8String(XmlNamespace.ToArray()) : scope.GetValueOrDefault(new Utf8String(prefix.ToArray()));
         }
-
-        byte second = utf8[start + 1];
-
-        return second switch
-        {
-            (byte)'/' => ScanEndTag(utf8, start, open, scopes),
-            (byte)'?' => SkipDelimited(utf8, start, "?>"u8),
-            (byte)'!' => ScanDeclaration(utf8, start, open),
-            _ => ScanStartTag(utf8, start, open, scopes)
-        };
-    }
-
-    /// <summary>Scans a <c>&lt;!…</c> declaration: a comment or a CDATA section; a DTD is rejected.</summary>
-    /// <param name="utf8">The document bytes.</param>
-    /// <param name="start">The offset of the opening <c>&lt;</c>.</param>
-    /// <param name="open">The open-element stack.</param>
-    /// <returns>The offset just past the declaration.</returns>
-    /// <exception cref="FormatException">The declaration is an (unsupported) DTD or is malformed.</exception>
-    private static int ScanDeclaration(ReadOnlySpan<byte> utf8, int start, Stack<XmlByteNode> open)
-    {
-        if(StartsWith(utf8, start, "<!--"u8))
-        {
-            return SkipDelimited(utf8, start, "-->"u8);
-        }
-
-        if(StartsWith(utf8, start, "<![CDATA["u8))
-        {
-            int open2 = start + "<![CDATA["u8.Length;
-            int close = IndexOf(utf8, open2, "]]>"u8);
-            if(close < 0)
-            {
-                throw new FormatException("XML document has an unterminated CDATA section.");
-            }
-
-            AppendText(open, Utf8String.WithoutPrecomputedHash(utf8.Slice(open2, close - open2).ToArray()));
-
-            return close + "]]>"u8.Length;
-        }
-
-        throw new FormatException("XML document declares a DTD, which is not permitted.");
-    }
-
-    /// <summary>Scans a start tag or empty-element tag, pushing or adding the element it names.</summary>
-    /// <param name="utf8">The document bytes.</param>
-    /// <param name="start">The offset of the opening <c>&lt;</c>.</param>
-    /// <param name="open">The open-element stack.</param>
-    /// <param name="scopes">The namespace-scope stack.</param>
-    /// <returns>The offset just past the tag.</returns>
-    /// <exception cref="FormatException">The tag is unterminated.</exception>
-    private static int ScanStartTag(ReadOnlySpan<byte> utf8, int start, Stack<XmlByteNode> open, Stack<Dictionary<Utf8String, Utf8String>> scopes)
-    {
-        int close = IndexOfTagClose(utf8, start);
-        if(close < 0)
-        {
-            throw new FormatException("XML document has an unterminated start tag.");
-        }
-
-        bool empty = utf8[close - 1] == (byte)'/';
-        int nameStart = start + 1;
-        int nameEnd = nameStart;
-        while(nameEnd < close && !IsWhitespace(utf8[nameEnd]) && utf8[nameEnd] != (byte)'/' && utf8[nameEnd] != (byte)'>')
-        {
-            nameEnd++;
-        }
-
-        List<RawAttribute> raw = ParseAttributes(utf8, nameEnd, empty ? close - 1 : close);
-        Dictionary<Utf8String, Utf8String> scope = BindScope(utf8, raw, scopes.Peek());
-
-        XmlByteNode node = new()
-        {
-            LocalName = LocalName(utf8.Slice(nameStart, nameEnd - nameStart)),
-            NamespaceIri = ResolveElementNamespace(utf8.Slice(nameStart, nameEnd - nameStart), scope)
-        };
-
-        foreach(RawAttribute attribute in raw)
-        {
-            if(IsNamespaceDeclaration(utf8, attribute))
-            {
-                continue;
-            }
-
-            node.Attributes.Add(new XmlByteAttribute(
-                LocalName(utf8.Slice(attribute.NameStart, attribute.NameEnd - attribute.NameStart)),
-                ResolveAttributeNamespace(utf8.Slice(attribute.NameStart, attribute.NameEnd - attribute.NameStart), scope),
-                Decode(utf8.Slice(attribute.ValueStart, attribute.ValueEnd - attribute.ValueStart))));
-        }
-
-        open.Peek().Children.Add(node);
-        if(!empty)
-        {
-            open.Push(node);
-            scopes.Push(scope);
-        }
-
-        return close + 1;
-    }
-
-    /// <summary>Scans an end tag, popping the matching open element.</summary>
-    /// <param name="utf8">The document bytes.</param>
-    /// <param name="start">The offset of the opening <c>&lt;</c>.</param>
-    /// <param name="open">The open-element stack.</param>
-    /// <param name="scopes">The namespace-scope stack.</param>
-    /// <returns>The offset just past the end tag.</returns>
-    /// <exception cref="FormatException">The end tag is unterminated, or does not match the open element.</exception>
-    private static int ScanEndTag(ReadOnlySpan<byte> utf8, int start, Stack<XmlByteNode> open, Stack<Dictionary<Utf8String, Utf8String>> scopes)
-    {
-        int close = IndexOf(utf8, start, ">"u8);
-        if(close < 0)
-        {
-            throw new FormatException("XML document has an unterminated end tag.");
-        }
-
-        int nameStart = start + 2;
-        int nameEnd = nameStart;
-        while(nameEnd < close && !IsWhitespace(utf8[nameEnd]))
-        {
-            nameEnd++;
-        }
-
-        if(open.Count <= 1)
-        {
-            throw new FormatException("XML document has an end tag with no matching start tag.");
-        }
-
-        XmlByteNode node = open.Peek();
-        ReadOnlySpan<byte> endLocal = LocalNameSpan(utf8.Slice(nameStart, nameEnd - nameStart));
-        if(!node.LocalName.Span.SequenceEqual(endLocal))
-        {
-            throw new FormatException("XML document has a mismatched end tag.");
-        }
-
-        open.Pop();
-        scopes.Pop();
-
-        return close + 1;
-    }
-
-    /// <summary>Scans a text run up to the next markup, appending its entity-decoded content to the open element.</summary>
-    /// <param name="utf8">The document bytes.</param>
-    /// <param name="start">The offset of the first text byte.</param>
-    /// <param name="open">The open-element stack.</param>
-    /// <returns>The offset of the next <c>&lt;</c> (or the document end).</returns>
-    private static int ScanText(ReadOnlySpan<byte> utf8, int start, Stack<XmlByteNode> open)
-    {
-        int next = IndexOf(utf8, start, "<"u8);
-        if(next < 0)
-        {
-            next = utf8.Length;
-        }
-
-        AppendText(open, Decode(utf8.Slice(start, next - start)));
-
-        return next;
-    }
-
-    /// <summary>Appends character data to the open element, coalescing with any already accumulated; text outside any element is discarded.</summary>
-    /// <param name="open">The open-element stack.</param>
-    /// <param name="content">The decoded character data.</param>
-    private static void AppendText(Stack<XmlByteNode> open, Utf8String content)
-    {
-        if(content.IsEmpty || open.Count <= 1)
-        {
-            return;
-        }
-
-        XmlByteNode node = open.Peek();
-        node.Text = node.Text.IsEmpty ? content : Concat(node.Text, content);
     }
 
     /// <summary>The raw byte ranges of one parsed attribute, before namespace resolution.</summary>
@@ -321,31 +569,6 @@ public static class XmlByteReader
         return attributes;
     }
 
-    /// <summary>Builds the namespace scope of an element: the parent scope extended with the element's own <c>xmlns</c> declarations.</summary>
-    /// <param name="attributes">The element's raw attributes.</param>
-    /// <param name="parent">The parent element's scope.</param>
-    /// <returns>The element's scope, sharing the parent frame when the element declares no namespaces.</returns>
-    private static Dictionary<Utf8String, Utf8String> BindScope(ReadOnlySpan<byte> utf8, List<RawAttribute> attributes, Dictionary<Utf8String, Utf8String> parent)
-    {
-        Dictionary<Utf8String, Utf8String>? bound = null;
-        foreach(RawAttribute attribute in attributes)
-        {
-            ReadOnlySpan<byte> name = utf8.Slice(attribute.NameStart, attribute.NameEnd - attribute.NameStart);
-            if(name.SequenceEqual("xmlns"u8))
-            {
-                bound ??= new(parent);
-                bound[DefaultPrefix] = Decode(utf8.Slice(attribute.ValueStart, attribute.ValueEnd - attribute.ValueStart));
-            }
-            else if(name.Length > 6 && name.StartsWith("xmlns:"u8))
-            {
-                bound ??= new(parent);
-                bound[new Utf8String(name.Slice(6).ToArray())] = Decode(utf8.Slice(attribute.ValueStart, attribute.ValueEnd - attribute.ValueStart));
-            }
-        }
-
-        return bound ?? parent;
-    }
-
     /// <summary>Whether a raw attribute is an <c>xmlns</c> or <c>xmlns:prefix</c> namespace declaration.</summary>
     /// <param name="utf8">The document bytes.</param>
     /// <param name="attribute">The raw attribute.</param>
@@ -355,50 +578,6 @@ public static class XmlByteReader
         ReadOnlySpan<byte> name = utf8.Slice(attribute.NameStart, attribute.NameEnd - attribute.NameStart);
 
         return name.SequenceEqual("xmlns"u8) || name.StartsWith("xmlns:"u8);
-    }
-
-    /// <summary>Resolves an element's qualified name to its namespace IRI (the default namespace when unprefixed).</summary>
-    /// <param name="qualified">The element's qualified name bytes.</param>
-    /// <param name="scope">The namespace scope in effect.</param>
-    /// <returns>The resolved namespace IRI, or an empty value when none is in scope.</returns>
-    private static Utf8String ResolveElementNamespace(ReadOnlySpan<byte> qualified, Dictionary<Utf8String, Utf8String> scope)
-    {
-        int colon = qualified.IndexOf((byte)':');
-        if(colon < 0)
-        {
-            return scope.GetValueOrDefault(DefaultPrefix);
-        }
-
-        return ResolvePrefix(qualified.Slice(0, colon), scope);
-    }
-
-    /// <summary>Resolves an attribute's qualified name to its namespace IRI (no namespace when unprefixed).</summary>
-    /// <param name="qualified">The attribute's qualified name bytes.</param>
-    /// <param name="scope">The namespace scope in effect.</param>
-    /// <returns>The resolved namespace IRI, or an empty value when the attribute is unprefixed.</returns>
-    private static Utf8String ResolveAttributeNamespace(ReadOnlySpan<byte> qualified, Dictionary<Utf8String, Utf8String> scope)
-    {
-        int colon = qualified.IndexOf((byte)':');
-        if(colon < 0)
-        {
-            return default;
-        }
-
-        return ResolvePrefix(qualified.Slice(0, colon), scope);
-    }
-
-    /// <summary>Resolves a prefix to its namespace IRI; the implicit <c>xml</c> prefix is always the XML namespace.</summary>
-    /// <param name="prefix">The prefix bytes.</param>
-    /// <param name="scope">The namespace scope in effect.</param>
-    /// <returns>The namespace IRI, or an empty value when the prefix is unbound.</returns>
-    private static Utf8String ResolvePrefix(ReadOnlySpan<byte> prefix, Dictionary<Utf8String, Utf8String> scope)
-    {
-        if(prefix.SequenceEqual("xml"u8))
-        {
-            return new Utf8String(XmlNamespace.ToArray());
-        }
-
-        return scope.GetValueOrDefault(new Utf8String(prefix.ToArray()));
     }
 
     /// <summary>The local name of a qualified name, as an owned <see cref="Utf8String"/>.</summary>
@@ -417,77 +596,6 @@ public static class XmlByteReader
         int colon = qualified.IndexOf((byte)':');
 
         return colon < 0 ? qualified : qualified.Slice(colon + 1);
-    }
-
-    /// <summary>Decodes a byte range, resolving XML predefined and numeric references; a reference-free range is a zero-copy-then-owned slice.</summary>
-    /// <param name="raw">The bytes to decode.</param>
-    /// <returns>The decoded, owned value.</returns>
-    private static Utf8String Decode(ReadOnlySpan<byte> raw)
-    {
-        if(raw.IndexOf((byte)'&') < 0)
-        {
-            return Utf8String.WithoutPrecomputedHash(raw.ToArray());
-        }
-
-        ArrayBufferWriter<byte> output = new();
-        int i = 0;
-        while(i < raw.Length)
-        {
-            if(raw[i] != (byte)'&')
-            {
-                output.Write(raw.Slice(i, 1));
-                i++;
-
-                continue;
-            }
-
-            int semicolon = raw.Slice(i).IndexOf((byte)';');
-            if(semicolon < 0)
-            {
-                throw new FormatException("XML value has an unterminated entity reference.");
-            }
-
-            ExpandReference(raw.Slice(i + 1, semicolon - 1), output);
-            i += semicolon + 1;
-        }
-
-        return Utf8String.WithoutPrecomputedHash(output.WrittenSpan.ToArray());
-    }
-
-    /// <summary>Expands one predefined or numeric reference into the decode buffer.</summary>
-    /// <param name="reference">The reference name or numeric code, the bytes between <c>&amp;</c> and <c>;</c>.</param>
-    /// <param name="output">The decode buffer.</param>
-    /// <exception cref="FormatException">The reference is an (unsupported) general entity.</exception>
-    private static void ExpandReference(ReadOnlySpan<byte> reference, ArrayBufferWriter<byte> output)
-    {
-        if(reference.SequenceEqual("amp"u8))
-        {
-            output.Write("&"u8);
-        }
-        else if(reference.SequenceEqual("lt"u8))
-        {
-            output.Write("<"u8);
-        }
-        else if(reference.SequenceEqual("gt"u8))
-        {
-            output.Write(">"u8);
-        }
-        else if(reference.SequenceEqual("quot"u8))
-        {
-            output.Write("\""u8);
-        }
-        else if(reference.SequenceEqual("apos"u8))
-        {
-            output.Write("'"u8);
-        }
-        else if(reference.Length > 1 && reference[0] == (byte)'#')
-        {
-            ExpandNumericReference(reference, output);
-        }
-        else
-        {
-            throw new FormatException("XML value references an undefined general entity.");
-        }
     }
 
     /// <summary>Expands a numeric character reference (<c>#1234</c> or <c>#x04D2</c>) into the decode buffer.</summary>
@@ -523,13 +631,6 @@ public static class XmlByteReader
         Span<byte> encoded = stackalloc byte[4];
 
         output.Write(encoded.Slice(0, rune.EncodeToUtf8(encoded)));
-    }
-
-    /// <summary>The base namespace scope, carrying only the implicit empty default namespace.</summary>
-    /// <returns>A fresh base scope.</returns>
-    private static Dictionary<Utf8String, Utf8String> BaseScope()
-    {
-        return [];
     }
 
     /// <summary>The scope key standing for the default (unprefixed) namespace binding.</summary>
@@ -680,5 +781,14 @@ public static class XmlByteReader
     private static bool IsWhitespace(byte b)
     {
         return b is (byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n';
+    }
+
+    /// <summary>Whether a byte may appear in an entity name: an ASCII letter, digit, underscore, hyphen, period, or a non-ASCII byte.</summary>
+    /// <param name="b">The byte to test.</param>
+    /// <returns><see langword="true"/> for an entity-name byte.</returns>
+    private static bool IsNameByte(byte b)
+    {
+        return (b >= (byte)'A' && b <= (byte)'Z') || (b >= (byte)'a' && b <= (byte)'z') || (b >= (byte)'0' && b <= (byte)'9')
+            || b is (byte)'_' or (byte)'-' or (byte)'.' || b >= 0x80;
     }
 }

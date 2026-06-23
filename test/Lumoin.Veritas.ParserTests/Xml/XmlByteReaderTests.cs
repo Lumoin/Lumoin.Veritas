@@ -22,6 +22,14 @@ internal sealed class XmlByteReaderTests
         return XmlByteReader.Read(Encoding.UTF8.GetBytes(xml));
     }
 
+    /// <summary>Reads an XML string with DOCTYPE internal-subset entity parsing enabled.</summary>
+    /// <param name="xml">The XML document text.</param>
+    /// <returns>The document element.</returns>
+    private static XmlByteNode ReadDtd(string xml)
+    {
+        return XmlByteReader.Read(Encoding.UTF8.GetBytes(xml), parseInternalDtd: true);
+    }
+
     /// <summary>Elements, attributes, and text round-trip into the tree.</summary>
     [TestMethod]
     public void ParsesElementsAttributesAndText()
@@ -103,5 +111,29 @@ internal sealed class XmlByteReaderTests
         Assert.ThrowsExactly<FormatException>(() => Read("<r>"));
         Assert.ThrowsExactly<FormatException>(() => Read("<!DOCTYPE r><r/>"));
         Assert.ThrowsExactly<FormatException>(() => Read(""));
+    }
+
+    /// <summary>With DTD parsing on, internal-subset general entities expand in text and attribute values.</summary>
+    [TestMethod]
+    public void ExpandsInternalDtdEntities()
+    {
+        XmlByteNode root = ReadDtd("<!DOCTYPE r [ <!ENTITY ex \"urn:x:\"> ]><r a=\"&ex;v\">&ex;t</r>");
+
+        Assert.AreEqual("urn:x:v", root.Attribute("a"u8)?.ToString());
+        Assert.AreEqual("urn:x:t", root.Text.ToString());
+    }
+
+    /// <summary>A DTD is rejected unless internal-subset parsing is explicitly enabled.</summary>
+    [TestMethod]
+    public void RejectsDtdUnlessEnabled()
+    {
+        Assert.ThrowsExactly<FormatException>(() => Read("<!DOCTYPE r [ <!ENTITY ex \"urn:x:\"> ]><r/>"));
+    }
+
+    /// <summary>A reference to an undefined general entity is rejected even with DTD parsing on.</summary>
+    [TestMethod]
+    public void RejectsUndefinedEntity()
+    {
+        Assert.ThrowsExactly<FormatException>(() => ReadDtd("<!DOCTYPE r []><r>&missing;</r>"));
     }
 }
