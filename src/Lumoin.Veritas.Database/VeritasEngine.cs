@@ -6,6 +6,7 @@ using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Execution;
 using Lumoin.Veritas.Core.Hypertrie;
+using Lumoin.Veritas.Core.Hypertrie.Editing;
 using Lumoin.Veritas.Core.Hypertrie.Storage;
 using Lumoin.Veritas.Owl.Reasoning;
 using Lumoin.Veritas.Shacl.Components;
@@ -34,19 +35,29 @@ namespace Lumoin.Veritas.Database;
 /// </remarks>
 public sealed class VeritasEngine: IAsyncDisposable
 {
-    /// <summary>The composed query engine the database answers queries through.</summary>
-    private readonly SparqlQueryEngine queryEngine;
+    /// <summary>The composed query engine an immutable database answers queries through, or <see langword="null"/> for a mutable database (which derives one per query off its dataset snapshot).</summary>
+    private readonly SparqlQueryEngine? queryEngine;
 
-    /// <summary>The compute lane the engine owns; off-serve work runs on it and it drains on disposal.</summary>
-    private readonly IComputeLane computeLane;
+    /// <summary>The mutable dataset a mutable database commits into and derives its per-query engine from, or <see langword="null"/> for an immutable database.</summary>
+    private readonly MutableSparqlDataset? mutableDataset;
 
-    /// <summary>Constructs the database over its composed engine and lane.</summary>
+    /// <summary>The compute lane an immutable database owns and drains on disposal, or <see langword="null"/> for a mutable database (whose per-query engines run lane-less).</summary>
+    private readonly IComputeLane? computeLane;
+
+    /// <summary>Constructs an immutable database over its composed engine and lane.</summary>
     /// <param name="queryEngine">The composed query engine.</param>
     /// <param name="computeLane">The owned compute lane.</param>
     private VeritasEngine(SparqlQueryEngine queryEngine, IComputeLane computeLane)
     {
         this.queryEngine = queryEngine;
         this.computeLane = computeLane;
+    }
+
+    /// <summary>Constructs a mutable database over a mutable dataset; it derives a fresh query engine off the dataset snapshot per query, so reads see the latest committed state.</summary>
+    /// <param name="mutableDataset">The mutable dataset the database commits into and queries off snapshots of.</param>
+    private VeritasEngine(MutableSparqlDataset mutableDataset)
+    {
+        this.mutableDataset = mutableDataset;
     }
 
     /// <summary>
@@ -109,6 +120,42 @@ public sealed class VeritasEngine: IAsyncDisposable
     }
 
     /// <summary>
+    /// Opens a MUTABLE in-memory database over a default graph: SPARQL Update mutations commit into a mutable
+    /// dataset over an in-memory journal, and queries answer off the latest committed snapshot (read-your-writes).
+    /// This is the development, testing, and correctness engine; a durable journal backend wires in the same way.
+    /// Reasoning is not materialised on the mutable engine (it serves the asserted graph); use
+    /// <see cref="OpenAsync(IEnumerable{DataTriple}, VeritasEngineOptions?, CancellationToken)"/> for a reasoned,
+    /// query-only database.
+    /// </summary>
+    /// <param name="defaultGraph">The default-graph triples to seed the database with.</param>
+    /// <param name="cancellationToken">A token that aborts opening.</param>
+    /// <returns>The opened mutable database.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="defaultGraph"/> is <see langword="null"/>.</exception>
+    /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
+    public static async ValueTask<VeritasEngine> OpenMutableAsync(IEnumerable<DataTriple> defaultGraph, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(defaultGraph);
+
+        TermDictionary dictionary = new();
+        List<EncodedTriple> encoded = [];
+        foreach(DataTriple triple in defaultGraph)
+        {
+            encoded.Add(new EncodedTriple(dictionary.GetOrAdd(triple.Subject), dictionary.GetOrAdd(triple.Predicate), dictionary.GetOrAdd(triple.Object)));
+        }
+
+        InMemoryDatasetJournal journal = new();
+        MutableSparqlDataset dataset = await MutableSparqlDataset.CreateAsync(
+            dictionary,
+            encoded,
+            namedGraphs: null,
+            journalAppend: journal.AppendDelegate,
+            journalRead: journal.ReadDelegate,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        return new VeritasEngine(dataset);
+    }
+
+    /// <summary>
     /// Evaluates a SPARQL query and returns its result — SELECT bindings or an
     /// ASK boolean — discriminated by the query's form, so a transport renders
     /// it without parsing the query to learn the form.
@@ -128,10 +175,11 @@ public sealed class VeritasEngine: IAsyncDisposable
         using Utf8StringPool pool = new();
         SparqlQuery query = Parse(sparql, baseIri, pool);
         AlgebraOperator algebra = SparqlTranslator.Translate((SparqlQuery)new SparqlNormalizer(pool).Normalize(query));
+        SparqlQueryEngine engine = ResolveEngine();
 
         if(query.Form is AskQuery)
         {
-            return VeritasQueryResult.ForAsk(await queryEngine.EvaluateAskAsync(algebra, cancellationToken).ConfigureAwait(false));
+            return VeritasQueryResult.ForAsk(await engine.EvaluateAskAsync(algebra, cancellationToken).ConfigureAwait(false));
         }
 
         if(query.Form is ConstructQuery or DescribeQuery)
@@ -139,7 +187,7 @@ public sealed class VeritasEngine: IAsyncDisposable
             throw new NotSupportedException("CONSTRUCT and DESCRIBE are not yet rendered by the database query surface; SELECT and ASK are supported.");
         }
 
-        IReadOnlyList<SparqlSolution> solutions = await queryEngine.EvaluateAsync(algebra, cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<SparqlSolution> solutions = await engine.EvaluateAsync(algebra, cancellationToken).ConfigureAwait(false);
 
         return VeritasQueryResult.ForSelect(SparqlResultSet.ForSelect(SelectVariables(query), solutions));
     }
@@ -173,22 +221,32 @@ public sealed class VeritasEngine: IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(shapes);
 
-        TermDictionary dictionary = queryEngine.Dictionary;
+        SparqlQueryEngine engine = ResolveEngine();
+        TermDictionary dictionary = engine.Dictionary;
         HypertrieGraphStore shapesStore = await BuildShapesStore(shapes, dictionary, cancellationToken).ConfigureAwait(false);
         ShapeRegistry registry = await ShapeLoader
             .LoadAsync(shapesStore.AsMatchDelegate(), dictionary, ShaclBuiltInComponents.All, cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
         return await ShaclValidator
-            .ValidateAsync(registry, queryEngine.Dataset.DefaultGraph.AsMatchOps(), dictionary, ShaclBuiltInEvaluators.All, TimeProvider.System, cancellationToken: cancellationToken)
+            .ValidateAsync(registry, engine.Dataset.DefaultGraph.AsMatchOps(), dictionary, ShaclBuiltInEvaluators.All, TimeProvider.System, cancellationToken: cancellationToken)
             .ConfigureAwait(false);
     }
 
-    /// <summary>Drains and disposes the owned compute lane.</summary>
+    /// <summary>Drains and disposes the owned compute lane; a mutable database owns no lane and completes immediately.</summary>
     /// <returns>A task that completes when the lane has stopped.</returns>
     public ValueTask DisposeAsync()
     {
-        return computeLane.DisposeAsync();
+        return computeLane is null ? ValueTask.CompletedTask : computeLane.DisposeAsync();
+    }
+
+    /// <summary>Resolves the query engine for one read: a mutable database derives a fresh engine off its current dataset snapshot (read-your-writes), an immutable database returns its fixed engine.</summary>
+    /// <returns>The query engine to evaluate against.</returns>
+    private SparqlQueryEngine ResolveEngine()
+    {
+        return mutableDataset is not null
+            ? new SparqlQueryEngine(mutableDataset.Snapshot(), mutableDataset.Dictionary)
+            : queryEngine!;
     }
 
     /// <summary>Builds a store over the shapes triples, encoding them into the data's dictionary so shapes and data share term identity.</summary>

@@ -68,6 +68,27 @@ internal sealed class VeritasEngineTests
     }
 
     [TestMethod]
+    public async Task MutableDatabaseAnswersQueriesOffTheCommittedSnapshot()
+    {
+        VeritasEngine database = await VeritasEngine
+            .OpenMutableAsync(SubclassGraph(), TestContext.CancellationToken)
+            .ConfigureAwait(false);
+        await using var scope = database.ConfigureAwait(false);
+
+        //The mutable engine serves the asserted default graph, derived off the committed snapshot per query.
+        bool isDog = await database
+            .AskAsync($"ASK {{ <{Ex}rex> <{RdfType}> <{Ex}Dog> }}", TestContext.CancellationToken)
+            .ConfigureAwait(false);
+        Assert.IsTrue(isDog, "The mutable database serves the asserted default graph.");
+
+        //Reasoning is not materialised on the mutable engine — it serves the asserted graph only.
+        bool isAnimal = await database
+            .AskAsync($"ASK {{ <{Ex}rex> <{RdfType}> <{Ex}Animal> }}", TestContext.CancellationToken)
+            .ConfigureAwait(false);
+        Assert.IsFalse(isAnimal, "The mutable engine serves the asserted graph; reasoning is not materialised.");
+    }
+
+    [TestMethod]
     public async Task ValidateReportsConformanceAgainstShapes()
     {
         //alice is a Person with a name — conforming under "every Person has a name".
