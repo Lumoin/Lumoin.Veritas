@@ -97,4 +97,48 @@ internal sealed class ConcurrentCommitConsistencyTests
             Assert.AreEqual(inStore, inFeed, $"The feed and query store must agree on <{Ex}o{target}> after concurrent commits.");
         }
     }
+
+    /// <summary>Drives one writer over its OWN disjoint object, asserting read-your-writes after each commit: the writer always observes the effect of the update it just committed, since no other writer touches its object.</summary>
+    /// <param name="database">The shared mutable database.</param>
+    /// <param name="writerIndex">The writer's index; it owns object <c>o{writerIndex}</c>.</param>
+    /// <param name="opsPerWriter">The number of updates the writer issues.</param>
+    /// <returns>The writer's completion.</returns>
+    private async Task RunReadYourWritesWriterAsync(VeritasEngine database, int writerIndex, int opsPerWriter)
+    {
+        for(int op = 0; op < opsPerWriter; op++)
+        {
+            bool insert = (op & 1) == 0;
+            string verb = insert ? "INSERT" : "DELETE";
+            await database
+                .UpdateAsync($"{verb} DATA {{ <{Ex}s> <{Ex}p> <{Ex}o{writerIndex}> }}", cancellationToken: TestContext.CancellationToken)
+                .ConfigureAwait(false);
+
+            bool observed = await database
+                .AskAsync($"ASK {{ <{Ex}s> <{Ex}p> <{Ex}o{writerIndex}> }}", TestContext.CancellationToken)
+                .ConfigureAwait(false);
+
+            Assert.AreEqual(insert, observed, $"Writer {writerIndex} must read its own write at op {op} ({verb}).");
+        }
+    }
+
+    /// <summary>Under many writers committing concurrently, each over its own disjoint object, every writer reads its own writes: the update it just committed is immediately visible to it (read-your-writes), uncorrupted by the others' concurrent commits and their journal-head contention.</summary>
+    [TestMethod]
+    public async Task ConcurrentWritersEachReadTheirOwnWrites()
+    {
+        const int Writers = 8;
+        const int OpsPerWriter = 12;
+
+        VeritasEngine database = await VeritasEngine
+            .OpenMutableAsync([], TestContext.CancellationToken)
+            .ConfigureAwait(false);
+        await using var scope = database.ConfigureAwait(false);
+
+        Task[] writers = new Task[Writers];
+        for(int writer = 0; writer < Writers; writer++)
+        {
+            writers[writer] = RunReadYourWritesWriterAsync(database, writer, OpsPerWriter);
+        }
+
+        await Task.WhenAll(writers).ConfigureAwait(false);
+    }
 }
