@@ -1,4 +1,7 @@
+using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.IO;
 using System.IO.Pipelines;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
@@ -8,6 +11,7 @@ using Lumoin.Veritas.Core.Hypertrie.Storage;
 using Lumoin.Veritas.Core.Memory;
 using Lumoin.Veritas.Core.Reconciliation;
 using Lumoin.Veritas.Replication;
+using Lumoin.Verisync.Core;
 
 namespace Lumoin.Veritas.Tests.Replication;
 
@@ -73,5 +77,37 @@ internal sealed class ContentTripleFetchTests
 
         Assert.HasCount(1, result, "Only the held key resolves; the unknown key is skipped.");
         Assert.AreEqual(heldKey, projection.ProjectTerms(result[0].Subject, result[0].Predicate, result[0].Object), "The fetched triple's terms re-hash to the requested key — the wire preserves the content.");
+    }
+
+    /// <summary>A hostile request frame declaring far more items than its bytes can hold is refused with an <see cref="InvalidDataException"/> before any array is sized from the count — not an out-of-memory fault.</summary>
+    [TestMethod]
+    public async Task RejectsAHostileItemCountWithoutAllocating()
+    {
+        using VeritasMemoryPool<byte> pool = new();
+        VeritasHash hash = VeritasHashing.Default;
+        TermDictionary dictionary = new();
+        NamedNode subject = Iri("http://example.org/s");
+        NamedNode predicate = Iri("http://example.org/p");
+        EncodedTriple one = Encode(dictionary, subject, predicate, Iri("http://example.org/o"));
+        ColumnarTripleIndex index = ColumnarTripleIndex.Build([one]);
+        ContentHashReconciliationProjection projection = new(dictionary, hash, pool);
+        ContentHashSideMap sideMap = ContentHashSideMap.Build(index, projection.Projection);
+
+        Pipe requestPipe = new();
+        Pipe responsePipe = new();
+        ContentTripleFetchServer server = new(sideMap, dictionary, requestPipe.Reader, responsePipe.Writer);
+        Task serve = server.ServeAsync(TestContext.CancellationToken);
+
+        //A four-byte payload declaring int.MaxValue items and no item bytes — the small-frame, huge-count attack.
+        MessageChannelWriter<int> hostile = new(requestPipe.Writer, static (count, output) =>
+        {
+            Span<byte> span = output.GetSpan(sizeof(int));
+            BinaryPrimitives.WriteInt32BigEndian(span, count);
+            output.Advance(sizeof(int));
+        }, MessageChannel.DefaultMaxFrameLength);
+        await hostile.WriteAsync(int.MaxValue, TestContext.CancellationToken).ConfigureAwait(false);
+        await hostile.CompleteAsync().ConfigureAwait(false);
+
+        await Assert.ThrowsAsync<InvalidDataException>(async () => await serve.ConfigureAwait(false)).ConfigureAwait(false);
     }
 }

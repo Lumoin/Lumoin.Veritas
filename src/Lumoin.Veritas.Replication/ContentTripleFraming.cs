@@ -25,6 +25,11 @@ internal static class ContentTripleFraming
     private const byte LtrDirection = 1;
     private const byte RtlDirection = 2;
 
+    //The fewest bytes one triple can occupy on the wire: three terms, each at least a one-byte kind tag and a
+    //four-byte zero-length content field. A declared triple count beyond what the frame can hold at this floor is a
+    //malformed or hostile frame and is refused before an array is sized from it.
+    private const int MinTripleWireBytes = 3 * (1 + sizeof(int));
+
     /// <summary>Writes a triple-fetch request: the item count followed by each 16-byte content key (low then high word, big-endian).</summary>
     /// <param name="items">The content-hash items to fetch triples for.</param>
     /// <param name="output">The channel buffer to write into.</param>
@@ -49,6 +54,11 @@ internal static class ContentTripleFraming
         byte[] buffer = payload.ToArray();
         int position = 0;
         int count = ReadCount(buffer, ref position);
+        if((long)count * ContentKey128.ByteWidth > buffer.Length - position)
+        {
+            throw new InvalidDataException("A content-hash triple-fetch request declared more items than its frame can hold.");
+        }
+
         ContentKey128[] items = new ContentKey128[count];
         for(int i = 0; i < count; i++)
         {
@@ -83,6 +93,11 @@ internal static class ContentTripleFraming
         byte[] buffer = payload.ToArray();
         int position = 0;
         int count = ReadCount(buffer, ref position);
+        if((long)count * MinTripleWireBytes > buffer.Length - position)
+        {
+            throw new InvalidDataException("A content-hash triple-fetch response declared more triples than its frame can hold.");
+        }
+
         ContentTriple[] triples = new ContentTriple[count];
         for(int i = 0; i < count; i++)
         {
@@ -233,7 +248,7 @@ internal static class ContentTripleFraming
     /// <exception cref="InvalidDataException">The frame is shorter than the requested slice.</exception>
     private static ReadOnlySpan<byte> Take(byte[] buffer, ref int position, int length)
     {
-        if(length < 0 || position + length > buffer.Length)
+        if(length < 0 || (long)position + length > buffer.Length)
         {
             throw new InvalidDataException("A content-hash triple-fetch frame is truncated.");
         }

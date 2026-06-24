@@ -144,7 +144,18 @@ public static class ContentHashAntiEntropySession
             return Complete(trace, correlationId, timeProvider, startTimestamp, AntiEntropyOutcome.Converged, localItemCount, symbolBudget, difference.RecoveredCount, difference.AbsorbedSymbols, local);
         }
 
-        IReadOnlyList<ContentTriple> peerTriples = await tripleFetch(peerOnly, cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<ContentTriple> peerTriples;
+        try
+        {
+            peerTriples = await tripleFetch(peerOnly, cancellationToken).ConfigureAwait(false);
+        }
+        catch(InvalidDataException)
+        {
+            //A malformed or hostile response frame (the wire is a cross-org trust boundary) declines by value rather
+            //than faulting the reconcile, mirroring the peer-sketch load: nothing is applied and a later round
+            //retries. A transport failure (a dropped connection) is not an expected condition and still propagates.
+            return Complete(trace, correlationId, timeProvider, startTimestamp, AntiEntropyOutcome.PeerTriplesIncomplete, localItemCount, symbolBudget, difference.RecoveredCount, difference.AbsorbedSymbols, local);
+        }
 
         //Verify before applying. Each fetched triple must hash (under the local projection of its terms) to one of
         //the peer-only keys it was requested for — a triple that does not is a misbehaving or untrusted peer (this
