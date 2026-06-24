@@ -114,6 +114,92 @@ internal sealed class XmlByteScannerTests
             RenderAll(events));
     }
 
+    /// <summary>In streaming mode, compacting between top-level units keeps the scanner's retained-byte footprint bounded by roughly a chunk, far below the document size — whereas the default mode retains the whole document.</summary>
+    [TestMethod]
+    public void StreamingCompactionBoundsRetainedBytes()
+    {
+        StringBuilder builder = new("<r>");
+        for(int i = 0; i < 50_000; i++)
+        {
+            builder.Append("<e>x</e>");
+        }
+
+        builder.Append("</r>");
+        byte[] bytes = Encoding.UTF8.GetBytes(builder.ToString());
+        const int chunkSize = 8192;
+
+        int streamingPeak = DriveAndPeak(bytes, chunkSize, streaming: true, compactBetweenChunks: true);
+        int defaultPeak = DriveAndPeak(bytes, chunkSize, streaming: false, compactBetweenChunks: false);
+
+        Assert.IsGreaterThan(bytes.Length / 2, defaultPeak, "the default mode retains the whole document, so its footprint tracks the document size");
+        Assert.IsLessThan(4 * chunkSize, streamingPeak, $"streaming compaction must bound the retained bytes near a chunk (peak {streamingPeak} for a {bytes.Length}-byte document)");
+    }
+
+    /// <summary>A value emitted before a compaction is owned, so it still reads correctly after the buffer prefix is reclaimed and later feeds overwrite the buffer region.</summary>
+    [TestMethod]
+    public void StreamingEmittedValueSurvivesCompaction()
+    {
+        XmlByteScanner scanner = new(XmlScanStrictness.Strict, parseInternalDtd: false, streaming: true);
+        scanner.Feed("<r><a>hello</a>"u8);
+
+        Utf8String captured = default;
+        while(scanner.TryDequeue(out XmlScanEvent scanEvent))
+        {
+            if(scanEvent.Kind == XmlScanEventKind.Text)
+            {
+                captured = scanEvent.Text;
+            }
+        }
+
+        Assert.AreEqual("hello", captured.ToString(), "the text event was emitted");
+
+        //Reclaim the prefix that held "hello", then feed a large run that reuses the buffer region; an owned value is
+        //unperturbed, a window into the reclaimed prefix would not be.
+        scanner.Compact();
+        scanner.Feed(Encoding.UTF8.GetBytes("<b>" + new string('z', 20_000) + "</b></r>"));
+        while(scanner.TryDequeue(out _))
+        {
+        }
+
+        scanner.Complete();
+
+        Assert.AreEqual("hello", captured.ToString(), "a value emitted before compaction must survive the buffer prefix being reclaimed and overwritten");
+    }
+
+    /// <summary>Feeds bytes in chunks, draining (and discarding) events after each, optionally compacting between chunks, and returns the peak retained-byte count observed.</summary>
+    /// <param name="bytes">The document bytes.</param>
+    /// <param name="chunkSize">The feed chunk size.</param>
+    /// <param name="streaming">Whether the scanner runs in streaming mode.</param>
+    /// <param name="compactBetweenChunks">Whether to compact after each chunk's drain.</param>
+    /// <returns>The maximum <see cref="XmlByteScanner.RetainedByteCount"/> observed across the feed.</returns>
+    private static int DriveAndPeak(byte[] bytes, int chunkSize, bool streaming, bool compactBetweenChunks)
+    {
+        XmlByteScanner scanner = new(XmlScanStrictness.Strict, parseInternalDtd: false, streaming);
+        int peak = 0;
+        for(int i = 0; i < bytes.Length; i += chunkSize)
+        {
+            int length = Math.Min(chunkSize, bytes.Length - i);
+            scanner.Feed(bytes.AsSpan(i, length));
+            while(scanner.TryDequeue(out _))
+            {
+            }
+
+            if(compactBetweenChunks)
+            {
+                scanner.Compact();
+            }
+
+            peak = Math.Max(peak, scanner.RetainedByteCount);
+        }
+
+        scanner.Complete();
+        while(scanner.TryDequeue(out _))
+        {
+        }
+
+        return peak;
+    }
+
     /// <summary>Feeding a document one byte at a time produces exactly the events a whole-buffer feed does — no token is split across a chunk boundary.</summary>
     [TestMethod]
     public void ChunkBoundaryNeverSplitsAToken()

@@ -132,8 +132,9 @@ public static class RdfXmlReader
         List<Quad> quads = [];
 
         //The internal subset is parsed (XXE-safe: external resolution stays off, amplification is bounded), matching
-        //the buffered Read; the scanner is owned here so the walker can slice an XML literal's bytes from it.
-        XmlByteScanner scanner = new(XmlScanStrictness.Strict, parseInternalDtd: true);
+        //the buffered Read; the scanner is owned here so the walker can slice an XML literal's bytes from it, and runs
+        //in streaming mode so its consumed buffer prefix is reclaimed between top-level subjects.
+        XmlByteScanner scanner = new(XmlScanStrictness.Strict, parseInternalDtd: true, streaming: true);
         Walker walker = new(quads, diagnostics, canonicalizer, source: default, literalScanner: scanner);
         walker.BeginStreaming(baseIri);
         try
@@ -529,7 +530,9 @@ public static class RdfXmlReader
             {
                 Report(Diagnostics, $"rdf:parseType=\"Literal\" content could not be canonicalized (a DOCTYPE general-entity reference inside an XML literal is not expanded): {exception.Message}", element.Span);
 
-                return new Utf8String(inner);
+                //Own the verbatim bytes: under streaming the literal window is a view over the scanner buffer, whose
+                //prefix is reclaimed once this subtree is handed over, so the fallback value must not alias it.
+                return new Utf8String(inner.ToArray());
             }
         }
 

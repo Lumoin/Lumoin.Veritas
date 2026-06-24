@@ -39,14 +39,23 @@ public sealed class XmlByteScanner
     /// <summary>The cap on the bytes a document's <c>&amp;name;</c> general-entity references may expand to, guarding against entity-amplification.</summary>
     private const int MaxEntityExpansionBytes = 10_000_000;
 
-    /// <summary>The document bytes fed so far; grown by doubling and never compacted, so emitted <see cref="Utf8String"/> windows over it stay valid at stable offsets.</summary>
+    /// <summary>
+    /// The document bytes held for scanning, grown by doubling. In the default (whole-buffer) mode it is never
+    /// compacted, so emitted <see cref="Utf8String"/> windows over it stay valid at stable offsets. In
+    /// <see cref="Streaming"/> mode emitted values own their bytes (no window aliases it) and its consumed prefix is
+    /// reclaimed by <see cref="Compact"/>, so it holds only the bytes still in play; <see cref="BufferBase"/> records the
+    /// absolute document offset of <c>Buffer[0]</c>.
+    /// </summary>
     private byte[] Buffer { get; set; } = new byte[256];
 
-    /// <summary>The number of valid bytes in <see cref="Buffer"/>.</summary>
+    /// <summary>The number of valid bytes currently in <see cref="Buffer"/> (after any compaction).</summary>
     private int Length { get; set; }
 
-    /// <summary>The committed scan position: the offset of the next unscanned markup unit; advanced only past a fully terminated unit.</summary>
+    /// <summary>The committed scan position as an offset into <see cref="Buffer"/> (buffer-relative): the next unscanned markup unit; advanced only past a fully terminated unit.</summary>
     private int LexPosition { get; set; }
+
+    /// <summary>The absolute document offset of <c>Buffer[0]</c>; non-zero only after <see cref="Compact"/> has reclaimed a consumed prefix in <see cref="Streaming"/> mode. Buffer-relative offsets add it to become the absolute offsets the scan events carry.</summary>
+    private int BufferBase { get; set; }
 
     /// <summary>Whether the last drain suspended mid-unit waiting for more bytes.</summary>
     private bool LexSuspended { get; set; }
@@ -72,20 +81,28 @@ public sealed class XmlByteScanner
     /// <summary>How the scanner reacts to a malformed token: throwing (strict) or recovering silently (lenient).</summary>
     private XmlScanStrictness Strictness { get; }
 
+    /// <summary>Whether the scanner runs in byte-bounded streaming mode: every emitted value owns its bytes (so no <see cref="Utf8String"/> aliases <see cref="Buffer"/>) and <see cref="Compact"/> may reclaim the consumed buffer prefix. In the default mode emitted values are zero-copy windows over <see cref="Buffer"/>, which is never compacted.</summary>
+    private bool Streaming { get; }
+
     /// <summary>The events scanned and not yet dequeued by the consumer, in document order.</summary>
     private Queue<XmlScanEvent> Events { get; } = new();
 
     /// <summary>Initialises an empty scanner; feed source bytes through <see cref="Feed"/>.</summary>
     /// <param name="strictness">Whether a malformed token throws (<see cref="XmlScanStrictness.Strict"/>) or is recovered from silently (<see cref="XmlScanStrictness.Lenient"/>).</param>
     /// <param name="parseInternalDtd">When <see langword="true"/>, parse the internal subset's <c>&lt;!ENTITY&gt;</c> declarations and expand <c>&amp;name;</c> references (external resolution stays off); when <see langword="false"/>, reject any DTD.</param>
-    public XmlByteScanner(XmlScanStrictness strictness, bool parseInternalDtd)
+    /// <param name="streaming">When <see langword="true"/>, run in byte-bounded streaming mode: emitted values own their bytes and the driver may reclaim the consumed buffer prefix through <see cref="Compact"/>. The default <see langword="false"/> keeps the zero-copy whole-buffer behaviour.</param>
+    public XmlByteScanner(XmlScanStrictness strictness, bool parseInternalDtd, bool streaming = false)
     {
         Strictness = strictness;
         ParseInternalDtd = parseInternalDtd;
+        Streaming = streaming;
     }
 
     /// <summary>The token-completeness of the scan: <see cref="IncrementalParseStatus.NeedMore"/> while a unit is suspended mid-token, otherwise <see cref="IncrementalParseStatus.Complete"/>. A consumer that builds a tree combines this with its own open-element balance.</summary>
     public IncrementalParseStatus Status => LexSuspended ? IncrementalParseStatus.NeedMore : IncrementalParseStatus.Complete;
+
+    /// <summary>The number of source bytes the scanner is currently holding in its buffer. In <see cref="Streaming"/> mode <see cref="Compact"/> reclaims the consumed prefix, so this tracks the bytes still in play (bounded by the unscanned tail plus the current markup unit) rather than the whole document; in the default mode it grows with the document. The streaming-memory bound is observable here.</summary>
+    public int RetainedByteCount => Length;
 
     /// <summary>Feeds the next chunk of document bytes, scanning every newly complete markup unit into the event stream.</summary>
     /// <param name="chunk">The next UTF-8 bytes of the document.</param>
@@ -149,7 +166,48 @@ public sealed class XmlByteScanner
     /// <returns>The bytes of the range, as a window over the scanner's buffer.</returns>
     public ReadOnlyMemory<byte> Window(int start, int length)
     {
-        return Buffer.AsMemory(start, length);
+        return Buffer.AsMemory(start - BufferBase, length);
+    }
+
+    /// <summary>
+    /// Reclaims the fully-scanned buffer prefix in <see cref="Streaming"/> mode, freeing the bytes up to
+    /// <see cref="LexPosition"/> and advancing <see cref="BufferBase"/> by the reclaimed amount. The driver calls it
+    /// only when no element is open below the streaming container — at that point every completed subtree has been
+    /// handed over and its values, having been copied at emit, no longer reference the buffer, and no open
+    /// <c>rdf:parseType="Literal"</c> window still needs the prefix — so the committed position is a safe frontier.
+    /// A no-op outside streaming mode or with nothing yet committed.
+    /// </summary>
+    public void Compact()
+    {
+        if(!Streaming || LexPosition <= 0)
+        {
+            return;
+        }
+
+        int reclaimed = LexPosition;
+        Buffer.AsSpan(reclaimed, Length - reclaimed).CopyTo(Buffer);
+        Length -= reclaimed;
+        BufferBase += reclaimed;
+        LexPosition = 0;
+    }
+
+    /// <summary>A buffer range as the bytes emitted into a value: a zero-copy window in the default mode, or an owned copy in <see cref="Streaming"/> mode so the value survives a later <see cref="Compact"/>.</summary>
+    /// <param name="start">The buffer-relative start offset.</param>
+    /// <param name="length">The range length in bytes.</param>
+    /// <returns>The range bytes, owned when streaming.</returns>
+    private ReadOnlyMemory<byte> Emit(int start, int length)
+    {
+        ReadOnlyMemory<byte> window = Buffer.AsMemory(start, length);
+
+        return Streaming ? window.ToArray() : window;
+    }
+
+    /// <summary>The absolute document offset of a buffer-relative offset; the offset every scan event carries, stable across a <see cref="Compact"/>.</summary>
+    /// <param name="bufferRelative">The offset into <see cref="Buffer"/>.</param>
+    /// <returns>The absolute document offset.</returns>
+    private int Absolute(int bufferRelative)
+    {
+        return bufferRelative + BufferBase;
     }
 
     /// <summary>The outcome of one resumable scanning step.</summary>
@@ -411,8 +469,8 @@ public sealed class XmlByteScanner
             EnsureNoDuplicateAttributes(attributes);
         }
 
-        Utf8String name = new(Buffer.AsMemory(nameStart, nameEnd - nameStart));
-        Events.Enqueue(XmlScanEvent.StartElement(name, attributes, empty, start, close));
+        Utf8String name = new(Emit(nameStart, nameEnd - nameStart));
+        Events.Enqueue(XmlScanEvent.StartElement(name, attributes, empty, Absolute(start), Absolute(close)));
         if(!empty)
         {
             Depth++;
@@ -440,8 +498,8 @@ public sealed class XmlByteScanner
             nameEnd++;
         }
 
-        Utf8String name = new(Buffer.AsMemory(nameStart, nameEnd - nameStart));
-        Events.Enqueue(XmlScanEvent.EndElement(name, start, close));
+        Utf8String name = new(Emit(nameStart, nameEnd - nameStart));
+        Events.Enqueue(XmlScanEvent.EndElement(name, Absolute(start), Absolute(close)));
         if(Depth > 0)
         {
             Depth--;
@@ -534,9 +592,9 @@ public sealed class XmlByteScanner
                 return StopAttributes(attributes, "XML attribute value is unterminated.");
             }
 
-            Utf8String name = new(Buffer.AsMemory(nameStart, nameEnd - nameStart));
+            Utf8String name = new(Emit(nameStart, nameEnd - nameStart));
             Utf8String value = Decode(valueStart, valueEnd - valueStart, expandGeneral: true, NormalizationMode.Attribute);
-            attributes.Add(new XmlScanAttribute(name, value, nameStart, valueEnd + 1));
+            attributes.Add(new XmlScanAttribute(name, value, Absolute(nameStart), Absolute(valueEnd + 1)));
             i = SkipWhitespace(text, valueEnd + 1, to);
         }
 
@@ -629,7 +687,7 @@ public sealed class XmlByteScanner
         ReadOnlySpan<byte> raw = Buffer.AsSpan(start, length);
         if(!NeedsDecoding(raw, mode))
         {
-            return Utf8String.WithoutPrecomputedHash(Buffer.AsMemory(start, length));
+            return Utf8String.WithoutPrecomputedHash(Emit(start, length));
         }
 
         ArrayBufferWriter<byte> output = new();
@@ -790,7 +848,7 @@ public sealed class XmlByteScanner
         ReadOnlySpan<byte> raw = Buffer.AsSpan(start, length);
         if(raw.IndexOf((byte)'\r') < 0)
         {
-            return Utf8String.WithoutPrecomputedHash(Buffer.AsMemory(start, length));
+            return Utf8String.WithoutPrecomputedHash(Emit(start, length));
         }
 
         ArrayBufferWriter<byte> output = new();

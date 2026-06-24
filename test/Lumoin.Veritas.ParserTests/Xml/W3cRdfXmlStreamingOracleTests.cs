@@ -107,6 +107,28 @@ internal sealed class W3cRdfXmlStreamingOracleTests
         AssertSameGraph(xml);
     }
 
+    /// <summary>Many top-level subjects (forcing the streaming scanner to reclaim its buffer between subjects, so later subjects parse with a non-zero buffer base) interspersed with <c>rdf:parseType="Literal"</c> subjects — a nested-markup literal sliced from the rebased buffer and an entity-reference literal that recovers via the owned fallback — stream to the same graph they buffer to.</summary>
+    [TestMethod]
+    public void StreamingMatchesBufferedForLiteralsAmongManyCompactedSubjects()
+    {
+        StringBuilder builder = new();
+        builder.Append("<?xml version=\"1.0\"?><!DOCTYPE rdf:RDF [ <!ENTITY foo \"bar\"> ]>");
+        builder.Append("<rdf:RDF ").Append(RdfXmlns).Append(" xmlns:ex=\"http://e/\">");
+        for(int i = 0; i < 800; i++)
+        {
+            builder.Append("<rdf:Description rdf:about=\"http://e/s").Append(i).Append("\"><ex:p>value ").Append(i).Append("</ex:p></rdf:Description>");
+            if(i % 100 == 50)
+            {
+                builder.Append("<rdf:Description rdf:about=\"http://e/lit").Append(i).Append("\"><ex:doc rdf:parseType=\"Literal\"><span class=\"a\">deep <b>nested ").Append(i).Append("</b> markup</span></ex:doc></rdf:Description>");
+                builder.Append("<rdf:Description rdf:about=\"http://e/ent").Append(i).Append("\"><ex:lit rdf:parseType=\"Literal\"><x>&foo;</x></ex:lit></rdf:Description>");
+            }
+        }
+
+        builder.Append("</rdf:RDF>");
+
+        AssertSameGraph(builder.ToString());
+    }
+
     /// <summary>An <c>rdf:parseType="Literal"</c> whose verbatim content is larger than the streaming chunk size — so it spans several feed chunks and is sliced from the scanner buffer across them — streams to the same quads it buffers to.</summary>
     [TestMethod]
     public void StreamingMatchesBufferedForLiteralSpanningChunkBoundaries()

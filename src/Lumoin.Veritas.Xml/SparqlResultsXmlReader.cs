@@ -116,7 +116,7 @@ public static class SparqlResultsXmlReader
     /// <exception cref="TripleTermDepthLimitException">A <c>triple</c> binding value is nested beyond <see cref="QuotedTripleLimits.MaxNestingDepth"/>.</exception>
     public static SparqlResultSet ReadStreaming(ReadOnlyMemory<byte> bytes)
     {
-        XmlByteScanner scanner = new(XmlScanStrictness.Strict, parseInternalDtd: false);
+        XmlByteScanner scanner = new(XmlScanStrictness.Strict, parseInternalDtd: false, streaming: true);
         StreamingResults streamed = new();
         XmlByteNode root = XmlByteReader.StreamContainer(scanner, bytes, IsResultsContainer, onContainerMatched: null, streamed.OnResult);
         if(!root.Matches("sparql"u8, ResultsNamespace))

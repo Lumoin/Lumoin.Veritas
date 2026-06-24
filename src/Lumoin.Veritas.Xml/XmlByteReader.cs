@@ -79,9 +79,11 @@ public static class XmlByteReader
     /// Forward-streams a UTF-8 XML document: it folds the scanner's event stream with a bounded active path, handing
     /// each completed direct child subtree of the matched container element to <paramref name="onSubtree"/> and then
     /// discarding it, so the live <see cref="XmlByteNode"/> tree never exceeds one such subtree. The document is fed to
-    /// the scanner in bounded chunks so its event queue stays bounded too. The scanner's byte buffer is not compacted,
-    /// so a consumer may slice an element's verbatim inner bytes from <see cref="XmlByteScanner.Window"/> by absolute
-    /// offset while walking a subtree; the whole document's bytes stay resident (a separate, deferred concern).
+    /// the scanner in bounded chunks so its event queue stays bounded too, and a streaming scanner's consumed byte
+    /// prefix is reclaimed (<see cref="XmlByteScanner.Compact"/>) between top-level subtrees — once no element is open
+    /// below the container, every completed subtree has been handed over and its values copied, so the committed bytes
+    /// (and any walked <c>rdf:parseType="Literal"</c> window) are no longer needed. Peak memory is then bounded by the
+    /// largest single top-level subtree plus a chunk, not the document.
     /// </summary>
     /// <param name="scanner">The scanner to drive; the caller owns it so it can also slice literal windows from it.</param>
     /// <param name="utf8">The document bytes.</param>
@@ -100,6 +102,13 @@ public static class XmlByteReader
             scanner.Feed(utf8.Span.Slice(offset, length));
             folder.DrainInto();
             offset += length;
+
+            if(folder.IsBetweenSubtrees)
+            {
+                //No element is open below the container, so every completed subtree has been walked and detached and
+                //its values copied; the scanned-and-committed bytes may be reclaimed.
+                scanner.Compact();
+            }
         }
 
         scanner.Complete();
@@ -145,6 +154,12 @@ public static class XmlByteReader
 
         /// <summary>The matched streaming container element whose children stream, once seen; <see langword="null"/> until then.</summary>
         private XmlByteNode? Container { get; set; }
+
+        /// <summary>The open-element stack depth (<see cref="Open"/> count) with the matched container open but no child below it; the streaming driver compacts when the depth returns to this, i.e. between top-level subtrees. Zero until the container is matched and pushed.</summary>
+        private int ContainerOpenCount { get; set; }
+
+        /// <summary>Whether the container is matched and no element is open below it — every completed subtree has been handed over, so the scanner's committed bytes may be reclaimed.</summary>
+        public bool IsBetweenSubtrees => Container is not null && Open.Count == ContainerOpenCount;
 
         /// <summary>Seeds the fold with the synthetic root and its empty namespace scope (the whole-buffer shape).</summary>
         /// <param name="scanner">The scanner whose offsets the fold resolves to spans.</param>
@@ -241,6 +256,11 @@ public static class XmlByteReader
                 Open.Push(node);
                 Scopes.Push(scope);
                 ScopeChain.Push(namespaceScope);
+                if(ReferenceEquals(node, Container))
+                {
+                    //The container is now open with no child below it; the driver compacts whenever the depth returns here.
+                    ContainerOpenCount = Open.Count;
+                }
             }
             else if(OnSubtree is not null && ReferenceEquals(parent, Container))
             {
