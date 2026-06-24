@@ -7,7 +7,7 @@ and pending). For the live work ledger see `HANDOFF.md`; for measured numbers se
 outputs and HANDOFF's tables — this document deliberately carries no benchmark figures, because
 they go stale here and stay current there.
 
-Last revised: 2026-06-24.
+Last revised: 2026-06-25.
 
 ---
 
@@ -379,12 +379,15 @@ dictionaries, cross-organization); the rateless codec; in-process and cross-proc
 channels; and the engine bridge — a mutable `VeritasEngine` seeds a reconciliation feed on commit,
 serves its own sketch (`CreateSketchFetch`), reconciles from a peer (`ReconcileFromPeerAsync`,
 refused before it begins on a dictionary-epoch mismatch), and writes the recovered delta back
-through the journal as an ordinary committed mutation a later query sees. **Network governance** —
+through the journal as an ordinary committed mutation a later query sees. A node also persists its
+structural sketch durably (`DurableSketchStore`): the current generation's sketch is committed as a
+manifest artifact keyed by its StateId and dictionary epoch through the same atomic publish, and
+loaded back verified on restart — so a node serves its sketch from disk instead of re-deriving it
+from the feed each boot. **Network governance** —
 a gate consulted by transport decorators, with a firewall, a per-peer token-bucket rate limiter,
 and a hot-swappable policy chain plus a live control surface — is implemented and tested but not
 yet wired into the engine/CLI default. Designed-not-built: the Verisync consensus / ordered-log
-integration, multi-node topology and per-graph actor placement, durable cross-restart sketches,
-and the adjudication ladder (§8.5).
+integration, multi-node topology and per-graph actor placement, and the adjudication ladder (§8.5).
 
 The forward design: Veritas composes with Lumoin.Verisync as a deterministic state machine over a
 replicated ordered log: consensus orders operations; determinism makes replicas byte-identical; snapshots
@@ -443,7 +446,7 @@ admit (the parity tier's own re-derive) are enumerated and skipped by name, not 
 | Execution lanes, `ExecutionPolicy`, lane metrics, reasoner decision telemetry | Shipped (periodic scrub scheduling on the lane pending) |
 | Durable persistence behind the seams: journal, manifest + atomic generation publish, item-segment system-of-record, pluggable checksums, 3-tier crash recovery, verify→repair→commit self-heal, `ColumnSource` (managed / native / memory-mapped) | Shipped, tested |
 | Durable container format (columnar/native, Parquet interop), columnar-sidecar warm-start hot-load, engine-default durable wiring, OPFS / HTTP column sources, live scrub scheduler | Designed |
-| Replication: anti-entropy (structural & content-hash), rateless codec, sketch channels, engine bridge | In development (implemented, tested; not on the released line) |
+| Replication: anti-entropy (structural & content-hash), rateless codec, sketch channels, engine bridge, durable sketch persistence | In development (implemented, tested; not on the released line) |
 | Network governance: gate, firewall, per-peer rate limiter, live policy chain + control surface, governed transports | In development (implemented, tested; not wired into the engine/CLI default) |
 | Replication: Verisync consensus / log integration, multi-node topology, adjudication | Designed (own arc; sibling library shipped) |
 
