@@ -32,15 +32,22 @@ namespace Lumoin.Veritas.Replication;
 /// </para>
 /// <para>
 /// The sketch image's own per-block checksums use XxHash3 (the shipped structural-sketch geometry), and this
-/// store self-checksums its manifest and CURRENT pointer under the same algorithm. Superseded sketch
-/// artifacts are not garbage-collected by this store (the manifest writer collects only manifests and CURRENT
-/// pointers); a later increment can prune sketch artifacts below the oldest retained generation.
+/// store self-checksums its manifest and CURRENT pointer under the same algorithm. Superseded sketch artifacts
+/// are pruned to the same retention window the manifest writer keeps (the newest few generations) after each
+/// commit publishes, so a long-running node does not accumulate them unbounded and no surviving manifest ever
+/// names a deleted sketch.
 /// </para>
 /// </remarks>
 public sealed class DurableSketchStore
 {
-    /// <summary>The number of newest CURRENT generations the manifest writer retains as a recovery-fallback depth.</summary>
+    /// <summary>The number of newest CURRENT generations the manifest writer retains as a recovery-fallback depth, and the matching window of sketch artifacts this store keeps.</summary>
     private const int RetainedGenerationCount = 4;
+
+    /// <summary>The fixed prefix of a sketch artifact's store name; the zero-padded generation and the suffix follow it.</summary>
+    private const string SketchArtifactPrefix = "sketch-";
+
+    /// <summary>The fixed suffix of a sketch artifact's store name.</summary>
+    private const string SketchArtifactSuffix = ".skt";
 
     /// <summary>The algorithm the manifest, CURRENT pointer, and sketch-entry digest are checksummed under — XxHash3, matching the structural sketch image's own per-block checksums.</summary>
     private static ChecksumAlgorithm Checksum { get; } = ChecksumAlgorithm.XxHash3;
@@ -101,6 +108,7 @@ public sealed class DurableSketchStore
         ManifestEntry[] entries = [new ManifestEntry(ManifestFileRole.Sketch, sketchName, 0, imageLength, digest)];
         Manifest manifest = new(commitGeneration, (long)dictionaryEpoch, (long)generation.StateId.Value, entries);
         new ManifestWriter(Store, Checksum, Pool, RetainedGenerationCount).Commit(manifest);
+        CollectSupersededSketchArtifacts(commitGeneration);
 
         return new DurableSketchCommit(commitGeneration, generation.StateId, imageLength);
     }
@@ -236,6 +244,53 @@ public sealed class DurableSketchStore
     /// <returns>The artifact name.</returns>
     private static string SketchArtifactName(long generation)
     {
-        return "sketch-" + generation.ToString("D20", CultureInfo.InvariantCulture) + ".skt";
+        return SketchArtifactPrefix + generation.ToString("D20", CultureInfo.InvariantCulture) + SketchArtifactSuffix;
+    }
+
+    /// <summary>
+    /// Deletes sketch artifacts older than the manifest writer's retention window, so a long-running node does not
+    /// accumulate them unbounded. The window matches <see cref="RetainedGenerationCount"/>, so a kept sketch always
+    /// has a kept manifest; collection runs only after the commit has published, so no surviving manifest names a
+    /// deleted sketch. Best-effort: a crash mid-collection leaves a harmless orphan reclaimed on the next commit.
+    /// </summary>
+    /// <param name="committedGeneration">The generation just committed.</param>
+    private void CollectSupersededSketchArtifacts(long committedGeneration)
+    {
+        long oldestRetained = committedGeneration - RetainedGenerationCount + 1;
+        if(oldestRetained <= 0)
+        {
+            //Every generation so far is still within the retention window.
+            return;
+        }
+
+        foreach(string name in Store.List(SketchArtifactPrefix))
+        {
+            if(TryParseSketchGeneration(name, out long generation) && generation < oldestRetained)
+            {
+                Store.Delete(name);
+            }
+        }
+    }
+
+    /// <summary>Parses the generation a sketch artifact name encodes, or declines a name that does not match the sketch artifact shape.</summary>
+    /// <param name="name">The store artifact name.</param>
+    /// <param name="generation">The parsed generation when the name matches; 0 otherwise.</param>
+    /// <returns><see langword="true"/> when <paramref name="name"/> is a sketch artifact name.</returns>
+    private static bool TryParseSketchGeneration(string name, out long generation)
+    {
+        generation = 0;
+        if(!name.StartsWith(SketchArtifactPrefix, StringComparison.Ordinal) || !name.EndsWith(SketchArtifactSuffix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        int start = SketchArtifactPrefix.Length;
+        int length = name.Length - SketchArtifactPrefix.Length - SketchArtifactSuffix.Length;
+        if(length <= 0)
+        {
+            return false;
+        }
+
+        return long.TryParse(name.AsSpan(start, length), NumberStyles.None, CultureInfo.InvariantCulture, out generation);
     }
 }

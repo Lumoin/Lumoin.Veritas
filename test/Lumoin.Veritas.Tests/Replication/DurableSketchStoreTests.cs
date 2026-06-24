@@ -181,6 +181,37 @@ internal sealed class DurableSketchStoreTests
         }
     }
 
+    /// <summary>Persisting beyond the retention window reclaims superseded sketch artifacts — only the newest few remain — while the latest generation still loads.</summary>
+    [TestMethod]
+    public void SupersededSketchArtifactsAreReclaimed()
+    {
+        string directory = Directory.CreateTempSubdirectory("veritas-b8-").FullName;
+        try
+        {
+            using VeritasMemoryPool<byte> pool = new();
+            FileSystemPersistenceStore store = new(directory, NoOpBarrier);
+            DurableSketchStore sketches = new(store, pool);
+            const ulong epoch = 11UL;
+
+            //Persist seven generations (0..6); the store retains the newest four (3..6) and reclaims 0..2.
+            for(uint i = 0; i < 7; i++)
+            {
+                sketches.Persist(new ReplicationIndexFeed(Line(30 + i), new NodeIdentifier(100UL + i)), epoch, symbolBudget: 48);
+            }
+
+            string[] sketchArtifacts = Directory.GetFiles(directory, "sketch-*.skt");
+            Assert.HasCount(4, sketchArtifacts, "Only the newest four sketch artifacts are retained.");
+
+            DurableSketchLoad load = sketches.TryLoad(epoch);
+            Assert.AreEqual(DurableSketchLoadOutcome.Loaded, load.Outcome, "The latest generation still loads after collection.");
+            Assert.AreEqual(6L, load.Generation, "The latest committed generation (the seventh, index 6) loads.");
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
     /// <summary>A second persist supersedes the first: the generation increments and a load recovers the latest committed generation and its StateId.</summary>
     [TestMethod]
     public void LatestGenerationIsLoaded()
