@@ -16,6 +16,8 @@ The core value proposition is graph data that can be parsed once, indexed compac
 
 Veritas is designed to be a peer of credential, identity, and cryptography stacks rather than a dependency of any one of them. Storage, hashing, and term interning are wired in through delegates; the library does not own the choice of disk format, hash function, or string interner.
 
+For the system architecture — the shared encoded-triple substrate, the query / mutation / persistence / integrity-repair design, and the forthcoming replication and network-governance design — see [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Libraries
 
 | Library | Purpose | NuGet |
