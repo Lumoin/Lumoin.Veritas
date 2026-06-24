@@ -1,9 +1,9 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Memory;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Execution;
 using Lumoin.Veritas.Core.Hypertrie;
@@ -46,6 +46,9 @@ public sealed class VeritasEngine: IAsyncDisposable
     /// <summary>The reconciliation feed tracking a mutable database's committed default graph, for reconciling from a peer; <see langword="null"/> for an immutable database.</summary>
     private readonly ReplicationIndexFeed? replicationFeed;
 
+    /// <summary>The pool a mutable database's replication work (reconcile transients, sketch serving) rents from, owned and disposed by the database; <see langword="null"/> for an immutable database.</summary>
+    private readonly VeritasMemoryPool<byte>? replicationPool;
+
     /// <summary>The compute lane an immutable database owns and drains on disposal, or <see langword="null"/> for a mutable database (whose per-query engines run lane-less).</summary>
     private readonly IComputeLane? computeLane;
 
@@ -58,13 +61,15 @@ public sealed class VeritasEngine: IAsyncDisposable
         this.computeLane = computeLane;
     }
 
-    /// <summary>Constructs a mutable database over a mutable dataset and its reconciliation feed; it derives a fresh query engine off the dataset snapshot per query, so reads see the latest committed state.</summary>
+    /// <summary>Constructs a mutable database over a mutable dataset, its reconciliation feed, and the pool its replication work rents from; it derives a fresh query engine off the dataset snapshot per query, so reads see the latest committed state.</summary>
     /// <param name="mutableDataset">The mutable dataset the database commits into and queries off snapshots of.</param>
     /// <param name="replicationFeed">The reconciliation feed tracking the dataset's committed default graph, subscribed to its commits.</param>
-    private VeritasEngine(MutableSparqlDataset mutableDataset, ReplicationIndexFeed replicationFeed)
+    /// <param name="replicationPool">The pool the database's replication work rents from; owned and disposed by the database.</param>
+    private VeritasEngine(MutableSparqlDataset mutableDataset, ReplicationIndexFeed replicationFeed, VeritasMemoryPool<byte> replicationPool)
     {
         this.mutableDataset = mutableDataset;
         this.replicationFeed = replicationFeed;
+        this.replicationPool = replicationPool;
     }
 
     /// <summary>
@@ -164,7 +169,7 @@ public sealed class VeritasEngine: IAsyncDisposable
         ReplicationIndexFeed feed = new(encoded, default);
         dataset.ObserveDefaultGraphDelta(feed.Advance);
 
-        return new VeritasEngine(dataset, feed);
+        return new VeritasEngine(dataset, feed, new VeritasMemoryPool<byte>());
     }
 
     /// <summary>The term dictionary the database's graphs are encoded against — the shared epoch an intra-cluster peer's reconciliation sketch must share. Encoding and resolving terms against it is how a caller lines a peer sketch (or query) up with the served data.</summary>
@@ -306,26 +311,24 @@ public sealed class VeritasEngine: IAsyncDisposable
     /// </summary>
     /// <param name="peerFetch">The peer's sketch fetch — the transport seam each round drives.</param>
     /// <param name="policy">The budget shape both sides' sketches are sized under.</param>
-    /// <param name="pool">The pool the reconcile's transient buffers are rented from.</param>
     /// <param name="maxRounds">The maximum number of reconcile rounds to run; positive.</param>
     /// <param name="cancellationToken">A token that aborts the reconcile.</param>
     /// <returns>The reconcile outcome: whether it converged, the rounds run, and how the delta was written back.</returns>
-    /// <exception cref="ArgumentNullException"><paramref name="peerFetch"/> or <paramref name="pool"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="peerFetch"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxRounds"/> is not positive.</exception>
     /// <exception cref="InvalidOperationException">This is an immutable database (opened with <see cref="OpenAsync(IEnumerable{DataTriple}, VeritasEngineOptions?, CancellationToken)"/> rather than <see cref="OpenMutableAsync"/>).</exception>
-    public async ValueTask<PeerReconcileOutcome> ReconcileFromPeerAsync(AsyncSketchFetchDelegate peerFetch, ReplicationPolicy policy, MemoryPool<byte> pool, int maxRounds, CancellationToken cancellationToken = default)
+    public async ValueTask<PeerReconcileOutcome> ReconcileFromPeerAsync(AsyncSketchFetchDelegate peerFetch, ReplicationPolicy policy, int maxRounds, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(peerFetch);
-        ArgumentNullException.ThrowIfNull(pool);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxRounds);
-        if(mutableDataset is null || replicationFeed is null)
+        if(mutableDataset is null || replicationFeed is null || replicationPool is null)
         {
             throw new InvalidOperationException("Only a mutable database (opened with OpenMutableAsync) reconciles from a peer; this database is immutable.");
         }
 
         ReplicationGeneration generation = replicationFeed.Current();
         ReplicaReconcileResult result = await ReplicaReconcileLoop
-            .RunUntilConvergedAsync(generation.Index, peerFetch, policy, pool, TimeProvider.System, maxRounds, cancellationToken: cancellationToken)
+            .RunUntilConvergedAsync(generation.Index, peerFetch, policy, replicationPool, TimeProvider.System, maxRounds, cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
         if(!result.Converged)
@@ -340,10 +343,34 @@ public sealed class VeritasEngine: IAsyncDisposable
         return new PeerReconcileOutcome(Converged: true, result.Rounds, writeBack);
     }
 
-    /// <summary>Drains and disposes the owned compute lane; a mutable database owns no lane and completes immediately.</summary>
+    /// <summary>
+    /// Produces a sketch-fetch delegate that serves this mutable database's own
+    /// structural sketch over its current reconciliation generation — so this node
+    /// is a peer another node reconciles FROM: one node's fetch from here is its
+    /// <see cref="ReconcileFromPeerAsync"/> peer fetch. Each fetch reflects the
+    /// latest committed default graph. The structural sketch carries term
+    /// identifiers, so a consuming node must share this database's dictionary epoch
+    /// (an intra-cluster peer); the cross-organisation case is the content-hash
+    /// reconcile domain.
+    /// </summary>
+    /// <returns>The sketch-fetch delegate serving this node's structural sketch.</returns>
+    /// <exception cref="InvalidOperationException">This is an immutable database (opened with <see cref="OpenAsync(IEnumerable{DataTriple}, VeritasEngineOptions?, CancellationToken)"/> rather than <see cref="OpenMutableAsync"/>).</exception>
+    public AsyncSketchFetchDelegate CreateSketchFetch()
+    {
+        if(replicationFeed is null || replicationPool is null)
+        {
+            throw new InvalidOperationException("Only a mutable database (opened with OpenMutableAsync) serves a sketch; this database is immutable.");
+        }
+
+        return new StructuralSketchSource(replicationFeed, replicationPool).FetchAsync;
+    }
+
+    /// <summary>Drains the owned compute lane and disposes the owned replication pool; an immutable database owns no pool and a mutable one owns no lane.</summary>
     /// <returns>A task that completes when the lane has stopped.</returns>
     public ValueTask DisposeAsync()
     {
+        replicationPool?.Dispose();
+
         return computeLane is null ? ValueTask.CompletedTask : computeLane.DisposeAsync();
     }
 

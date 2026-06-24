@@ -3,6 +3,7 @@ using System.Buffers;
 using System.Linq;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Columnar;
 using Lumoin.Veritas.Core.ContentAddressing;
 using Lumoin.Veritas.Core.Encoding;
 using Lumoin.Veritas.Core.Integrity;
@@ -89,7 +90,7 @@ internal sealed class MutableDatabaseReconcileTests
         AsyncSketchFetchDelegate peerFetch = (budget, token) => new ValueTask<ReadOnlyMemory<byte>>(PersistPeerImage(peerTriples, budget, pool));
 
         PeerReconcileOutcome outcome = await database
-            .ReconcileFromPeerAsync(peerFetch, ReplicationPolicy.Default, pool, 4, TestContext.CancellationToken)
+            .ReconcileFromPeerAsync(peerFetch, ReplicationPolicy.Default, 4, TestContext.CancellationToken)
             .ConfigureAwait(false);
 
         Assert.IsTrue(outcome.Converged, "The reconcile converges.");
@@ -104,5 +105,31 @@ internal sealed class MutableDatabaseReconcileTests
             .AskAsync($"ASK {{ <{Ex}a> <{Ex}p> <{Ex}b> }}", TestContext.CancellationToken)
             .ConfigureAwait(false);
         Assert.IsTrue(keepsOriginal, "The original triple is unchanged.");
+    }
+
+    /// <summary>A mutable database serves its own structural sketch (CreateSketchFetch), and an intra-cluster peer sharing its dictionary reconciles against it and converges to the database's set — the database is a peer others reconcile FROM.</summary>
+    [TestMethod]
+    public async Task ServesItsSketchSoAPeerConvergesToIt()
+    {
+        VeritasEngine database = await VeritasEngine
+            .OpenMutableAsync([Data("a", "p", "b"), Data("a", "p", "c")], TestContext.CancellationToken)
+            .ConfigureAwait(false);
+        await using var scope = database.ConfigureAwait(false);
+
+        //An intra-cluster peer sharing the database's dictionary epoch, holding a subset (only (a,p,b)).
+        TermDictionary dictionary = database.Dictionary;
+        ColumnarTripleIndex peer = ColumnarTripleIndex.Build([Encode(dictionary, "a", "p", "b")]);
+
+        //The database serves; the peer reconciles against the database's serve delegate and converges to its set.
+        AsyncSketchFetchDelegate serve = database.CreateSketchFetch();
+        using VeritasMemoryPool<byte> pool = new();
+        ReplicaReconcileResult result = await ReplicaReconcileLoop
+            .RunUntilConvergedAsync(peer, serve, ReplicationPolicy.Default, pool, TimeProvider.System, 4, cancellationToken: TestContext.CancellationToken)
+            .ConfigureAwait(false);
+
+        Assert.IsTrue(result.Converged, "The peer converges against the database's served sketch.");
+        HashSet<EncodedTriple> converged = [.. result.Index.EnumerateTriples()];
+        HashSet<EncodedTriple> expected = [Encode(dictionary, "a", "p", "b"), Encode(dictionary, "a", "p", "c")];
+        Assert.IsTrue(expected.SetEquals(converged), "The peer converges to the database's full triple set via its served sketch.");
     }
 }
