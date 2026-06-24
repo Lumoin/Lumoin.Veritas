@@ -84,10 +84,17 @@ public sealed class ContentHashReconciliationProjection
     /// <exception cref="NotSupportedException">A term is a blank node or an RDF 1.2 triple term, which this domain does not yet project (deferred to the RDFC-1.0 brick) — so an epoch-local key is never produced silently.</exception>
     public ContentKey128 Project(EncodedTriple triple)
     {
-        RdfTerm subject = Dictionary.Resolve(triple.Subject.Encoded);
-        RdfTerm predicate = Dictionary.Resolve(triple.Predicate.Encoded);
-        RdfTerm @object = Dictionary.Resolve(triple.Object.Encoded);
+        return ProjectTerms(Dictionary.Resolve(triple.Subject.Encoded), Dictionary.Resolve(triple.Predicate.Encoded), Dictionary.Resolve(triple.Object.Encoded));
+    }
 
+    /// <summary>Projects a triple given as terms (rather than identifiers) to its content key — the same hash <see cref="Project"/> computes after resolving, but without the dictionary round-trip. Used to verify that a peer-fetched triple hashes to the key it was requested for, before encoding it locally.</summary>
+    /// <param name="subject">The subject term.</param>
+    /// <param name="predicate">The predicate term.</param>
+    /// <param name="object">The object term.</param>
+    /// <returns>The content-hash item.</returns>
+    /// <exception cref="NotSupportedException">A term is a blank node or an RDF 1.2 triple term, which this domain does not yet project.</exception>
+    public ContentKey128 ProjectTerms(RdfTerm subject, RdfTerm predicate, RdfTerm @object)
+    {
         int size = 1 + EncodedSize(subject) + EncodedSize(predicate) + EncodedSize(@object);
         using IMemoryOwner<byte> owner = Pool.Rent(size);
         Span<byte> buffer = owner.Memory.Span[..size];

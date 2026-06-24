@@ -4,9 +4,9 @@ namespace Lumoin.Veritas.Replication;
 /// The value-based outcome of one <see cref="AntiEntropySession"/> reconciliation: how it ended, surfaced as a
 /// first-class return value rather than a bare success flag, so a caller and the trace channel can act on the
 /// exact reason. The two completing outcomes (<see cref="Converged"/>, <see cref="AlreadyConsistent"/>) leave the
-/// local replica consistent with the peer; the three declines (<see cref="PeerUnavailable"/>,
-/// <see cref="PeerSketchRejected"/>, <see cref="IncompletePeel"/>) apply nothing and leave the local index
-/// unchanged, so a declined session never half-applies.
+/// local replica consistent with the peer; the declines (<see cref="PeerUnavailable"/>,
+/// <see cref="PeerSketchRejected"/>, <see cref="IncompletePeel"/>, <see cref="PeerTriplesIncomplete"/>) apply
+/// nothing and leave the local index unchanged, so a declined session never half-applies.
 /// </summary>
 public enum AntiEntropyOutcome
 {
@@ -24,4 +24,7 @@ public enum AntiEntropyOutcome
 
     /// <summary>The decoder could not peel the whole difference within the symbol budget (a partial peel), or the recovered set overflowed the sink; the partial result was not applied.</summary>
     IncompletePeel,
+
+    /// <summary>A content-hash reconcile recovered the difference but the peer did not return a triple for every peer-only item (it may have mutated between serving its sketch and answering the by-key fetch, or returned a triple that does not hash to the requested key); nothing was applied, so a later round retries. Only the content-hash session produces this — the structural session inverts every recovered key locally and never fetches.</summary>
+    PeerTriplesIncomplete,
 }
