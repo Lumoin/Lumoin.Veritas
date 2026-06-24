@@ -184,9 +184,10 @@ public static class ContentHashAntiEntropySession
             return Complete(trace, correlationId, timeProvider, startTimestamp, AntiEntropyOutcome.PeerTriplesIncomplete, localItemCount, symbolBudget, difference.RecoveredCount, difference.AbsorbedSymbols, local);
         }
 
-        ColumnarTripleIndex converged = local.Apply(additions.ToArray(), []);
+        EncodedTriple[] recoveredAdditions = additions.ToArray();
+        ColumnarTripleIndex converged = local.Apply(recoveredAdditions, []);
 
-        return Complete(trace, correlationId, timeProvider, startTimestamp, AntiEntropyOutcome.Converged, localItemCount, symbolBudget, difference.RecoveredCount, difference.AbsorbedSymbols, converged);
+        return Complete(trace, correlationId, timeProvider, startTimestamp, AntiEntropyOutcome.Converged, localItemCount, symbolBudget, difference.RecoveredCount, difference.AbsorbedSymbols, converged, recoveredAdditions);
     }
 
     /// <summary>Projects the local replica's triples to content-hash items, persists them as a sketch, and loads the image back as a verified sketch.</summary>
@@ -216,6 +217,7 @@ public static class ContentHashAntiEntropySession
     /// <param name="recoveredCount">The recovered difference-item count.</param>
     /// <param name="absorbedSymbols">The symbols the decoder absorbed.</param>
     /// <param name="convergedIndex">The resulting index — the converged union, or the unchanged local index on a decline.</param>
+    /// <param name="recoveredAdditions">The verified peer-only triples applied to converge; empty (the default) on every decline.</param>
     /// <returns>The session result.</returns>
     private static AntiEntropySessionResult Complete(
         TraceHandler<ReplicationTraceEvent>? trace,
@@ -227,7 +229,8 @@ public static class ContentHashAntiEntropySession
         int symbolBudget,
         int recoveredCount,
         int absorbedSymbols,
-        ColumnarTripleIndex convergedIndex)
+        ColumnarTripleIndex convergedIndex,
+        ReadOnlyMemory<EncodedTriple> recoveredAdditions = default)
     {
         if(trace is not null)
         {
@@ -235,6 +238,6 @@ public static class ContentHashAntiEntropySession
             trace(in evt);
         }
 
-        return new AntiEntropySessionResult(recoveredCount, convergedIndex, outcome, absorbedSymbols, timeProvider.GetElapsedTime(startTimestamp));
+        return new AntiEntropySessionResult(recoveredCount, convergedIndex, outcome, absorbedSymbols, timeProvider.GetElapsedTime(startTimestamp), recoveredAdditions);
     }
 }

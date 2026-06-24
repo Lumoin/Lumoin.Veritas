@@ -65,10 +65,10 @@ public static class ReplicaReconcileLoop
             outcome = result.Outcome;
             if(outcome is AntiEntropyOutcome.Converged or AntiEntropyOutcome.AlreadyConsistent)
             {
-                return new ReplicaReconcileResult(current, outcome, round, Converged: true);
+                return new ReplicaReconcileResult(current, outcome, round, Converged: true, result.RecoveredAdditions);
             }
         }
 
-        return new ReplicaReconcileResult(current, outcome, round, Converged: false);
+        return new ReplicaReconcileResult(current, outcome, round, Converged: false, RecoveredAdditions: default);
     }
 }

@@ -74,6 +74,44 @@ internal sealed class DistributedRepairCertificationTests
         Assert.IsTrue(union.SetEquals(converged), "The replica must converge to the union of both replicas.");
     }
 
+    /// <summary>A converged reconcile surfaces the recovered additions (the delta the bridge journals back to the dataset): the symmetric difference applied to converge, which re-applied to the local replica reproduces the union.</summary>
+    [TestMethod]
+    public async Task SurfacesRecoveredAdditionsOnConvergence()
+    {
+        using VeritasMemoryPool<byte> pool = new();
+        EncodedTriple[] triplesA = Line(0, 150);
+        EncodedTriple[] triplesB = Line(50, 150);
+        ColumnarTripleIndex replicaA = ColumnarTripleIndex.Build(triplesA);
+        AsyncSketchFetchDelegate fetch = (budget, token) => new ValueTask<ReadOnlyMemory<byte>>(PersistPeerImage(triplesB, budget, pool));
+
+        AntiEntropySessionResult converged = await AntiEntropySession.ReconcileAsync(replicaA, fetch, ReplicationPolicy.Default, pool, TimeProvider.System, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(AntiEntropyOutcome.Converged, converged.Outcome, "The round converges.");
+
+        HashSet<EncodedTriple> symmetricDifference = [.. triplesA];
+        symmetricDifference.SymmetricExceptWith(triplesB);
+        HashSet<EncodedTriple> recovered = [.. converged.RecoveredAdditions.ToArray()];
+        Assert.IsTrue(symmetricDifference.SetEquals(recovered), "RecoveredAdditions is exactly the symmetric difference applied to converge.");
+
+        ColumnarTripleIndex reapplied = replicaA.Apply(converged.RecoveredAdditions.ToArray(), []);
+        HashSet<EncodedTriple> union = [.. triplesA];
+        union.UnionWith(triplesB);
+        Assert.IsTrue(union.SetEquals([.. reapplied.EnumerateTriples()]), "Re-applying RecoveredAdditions to the local replica reproduces the union — the write-back contract.");
+    }
+
+    /// <summary>An already-consistent reconcile (identical replicas) recovers nothing, so RecoveredAdditions is empty.</summary>
+    [TestMethod]
+    public async Task AlreadyConsistentSurfacesNoRecoveredAdditions()
+    {
+        using VeritasMemoryPool<byte> pool = new();
+        EncodedTriple[] triples = Line(0, 100);
+        ColumnarTripleIndex replicaA = ColumnarTripleIndex.Build(triples);
+        AsyncSketchFetchDelegate fetch = (budget, token) => new ValueTask<ReadOnlyMemory<byte>>(PersistPeerImage(triples, budget, pool));
+
+        AntiEntropySessionResult result = await AntiEntropySession.ReconcileAsync(replicaA, fetch, ReplicationPolicy.Default, pool, TimeProvider.System, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(AntiEntropyOutcome.AlreadyConsistent, result.Outcome, "Identical replicas are already consistent.");
+        Assert.IsTrue(result.RecoveredAdditions.IsEmpty, "An already-consistent reconcile applies nothing, so RecoveredAdditions is empty.");
+    }
+
     /// <summary>A transient dropped fetch leaves the round unavailable, and the next round — the peer now reachable — converges to the union.</summary>
     [TestMethod]
     public async Task TransientDropConvergesOnRetry()

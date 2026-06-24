@@ -198,7 +198,7 @@ public static class AntiEntropySession
         //union of both — Apply is idempotent, so the items the local side already holds are no-ops.
         ColumnarTripleIndex converged = local.Apply(recoveredTriples, []);
 
-        return Complete(trace, correlationId, timeProvider, startTimestamp, AntiEntropyOutcome.Converged, localItemCount, symbolBudget, difference.RecoveredCount, difference.AbsorbedSymbols, converged);
+        return Complete(trace, correlationId, timeProvider, startTimestamp, AntiEntropyOutcome.Converged, localItemCount, symbolBudget, difference.RecoveredCount, difference.AbsorbedSymbols, converged, recoveredTriples);
     }
 
     /// <summary>Builds the session result for an outcome and, when a handler is attached, emits the matching <see cref="ReplicationTraceEvent"/> — the one place every reconcile path reports through, so the result's outcome and the emitted event never disagree.</summary>
@@ -212,6 +212,7 @@ public static class AntiEntropySession
     /// <param name="recoveredCount">The recovered difference-item count.</param>
     /// <param name="absorbedSymbols">The symbols the decoder absorbed.</param>
     /// <param name="convergedIndex">The resulting index — the converged union, or the unchanged local index on a decline.</param>
+    /// <param name="recoveredAdditions">The triples applied to converge; empty (the default) on every decline and on an already-consistent peel.</param>
     /// <returns>The session result.</returns>
     private static AntiEntropySessionResult Complete(
         TraceHandler<ReplicationTraceEvent>? trace,
@@ -223,7 +224,8 @@ public static class AntiEntropySession
         int symbolBudget,
         int recoveredCount,
         int absorbedSymbols,
-        ColumnarTripleIndex convergedIndex)
+        ColumnarTripleIndex convergedIndex,
+        ReadOnlyMemory<EncodedTriple> recoveredAdditions = default)
     {
         if(trace is not null)
         {
@@ -231,7 +233,7 @@ public static class AntiEntropySession
             trace(in evt);
         }
 
-        return new AntiEntropySessionResult(recoveredCount, convergedIndex, outcome, absorbedSymbols, timeProvider.GetElapsedTime(startTimestamp));
+        return new AntiEntropySessionResult(recoveredCount, convergedIndex, outcome, absorbedSymbols, timeProvider.GetElapsedTime(startTimestamp), recoveredAdditions);
     }
 
     /// <summary>Persists the local replica's structural sketch and loads the image back as a verified sketch — the type-system evidence the local side carries into the combine.</summary>

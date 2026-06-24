@@ -1,3 +1,5 @@
+using System;
+using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
 
 namespace Lumoin.Veritas.Replication;
@@ -11,4 +13,5 @@ namespace Lumoin.Veritas.Replication;
 /// <param name="LastOutcome">The outcome of the final round run.</param>
 /// <param name="Rounds">The number of rounds run.</param>
 /// <param name="Converged">Whether the replica converged (or was already consistent) within the round bound.</param>
-public readonly record struct ReplicaReconcileResult(ColumnarTripleIndex Index, AntiEntropyOutcome LastOutcome, int Rounds, bool Converged);
+/// <param name="RecoveredAdditions">The triples the converging round applied to converge, for the bridge to journal back; empty when the loop did not converge or was already consistent. Declining rounds recover nothing and the loop stops at the first converging round, so this is exactly that round's recovered delta.</param>
+public readonly record struct ReplicaReconcileResult(ColumnarTripleIndex Index, AntiEntropyOutcome LastOutcome, int Rounds, bool Converged, ReadOnlyMemory<EncodedTriple> RecoveredAdditions);

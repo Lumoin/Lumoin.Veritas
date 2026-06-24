@@ -1,4 +1,5 @@
 using System;
+using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Columnar;
 
 namespace Lumoin.Veritas.Replication;
@@ -16,12 +17,14 @@ namespace Lumoin.Veritas.Replication;
 /// <param name="Outcome">How the reconcile ended — the value-based completion or decline reason.</param>
 /// <param name="AbsorbedSymbols">The number of combined coded symbols the decoder absorbed before converging or hitting the budget; zero when no peer was reached or its sketch was refused.</param>
 /// <param name="Elapsed">The wall-clock time the session took, measured against the injected time provider.</param>
+/// <param name="RecoveredAdditions">The triples this reconcile applied as additions to converge — the recovered symmetric difference for the structural domain (the local-held items are idempotent no-ops on apply), the verified peer-only triples for the content-hash domain. Empty on every decline and on <see cref="AntiEntropyOutcome.AlreadyConsistent"/> (nothing was applied). The bridge journals these to write a converged delta back through the dataset.</param>
 public readonly record struct AntiEntropySessionResult(
     int RecoveredCount,
     ColumnarTripleIndex ConvergedIndex,
     AntiEntropyOutcome Outcome,
     int AbsorbedSymbols,
-    TimeSpan Elapsed)
+    TimeSpan Elapsed,
+    ReadOnlyMemory<EncodedTriple> RecoveredAdditions)
 {
     /// <summary>Whether the session completed — the whole symmetric difference was peeled (and applied when non-empty). <see langword="true"/> for <see cref="AntiEntropyOutcome.Converged"/> and <see cref="AntiEntropyOutcome.AlreadyConsistent"/>; <see langword="false"/> for every decline.</summary>
     public bool IsComplete => Outcome is AntiEntropyOutcome.Converged or AntiEntropyOutcome.AlreadyConsistent;
