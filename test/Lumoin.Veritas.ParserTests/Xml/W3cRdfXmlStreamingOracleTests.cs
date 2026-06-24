@@ -206,6 +206,25 @@ internal sealed class W3cRdfXmlStreamingOracleTests
         Assert.IsTrue(streamingDiagnostics.HasErrors, "the streaming reader must reject this malformed document.");
     }
 
+    /// <summary>A self-closing (and an empty) <c>rdf:parseType="Literal"</c> subject placed after enough subjects to advance the streaming buffer base streams to the same graph it buffers to — the empty-element sentinel offsets must not form a negative buffer window.</summary>
+    [TestMethod]
+    public void StreamingMatchesBufferedForEmptyLiteralAfterCompaction()
+    {
+        StringBuilder builder = new();
+        builder.Append("<rdf:RDF ").Append(RdfXmlns).Append(" xmlns:ex=\"http://e/\">");
+        for(int i = 0; i < 600; i++)
+        {
+            builder.Append("<rdf:Description rdf:about=\"http://e/s").Append(i).Append("\"><ex:p>value ").Append(i).Append("</ex:p></rdf:Description>");
+        }
+
+        builder.Append("<rdf:Description rdf:about=\"http://e/selfclosing\"><ex:doc rdf:parseType=\"Literal\"/></rdf:Description>");
+        builder.Append("<rdf:Description rdf:about=\"http://e/withattr\"><ex:doc ex:k=\"1\" rdf:parseType=\"Literal\"/></rdf:Description>");
+        builder.Append("<rdf:Description rdf:about=\"http://e/empty\"><ex:doc rdf:parseType=\"Literal\"></ex:doc></rdf:Description>");
+        builder.Append("</rdf:RDF>");
+
+        AssertSameGraph(builder.ToString());
+    }
+
     /// <summary>Reads the fixture buffered and streaming with the per-test base IRI and asserts they agree on well-formed input, or both reject malformed input.</summary>
     /// <param name="testCase">The manifest-declared test case.</param>
     /// <param name="suiteFolder">The suite subfolder under <c>Material/Rdf</c>.</param>

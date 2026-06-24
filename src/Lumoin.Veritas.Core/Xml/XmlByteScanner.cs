@@ -166,7 +166,9 @@ public sealed class XmlByteScanner
     /// <returns>The bytes of the range, as a window over the scanner's buffer.</returns>
     public ReadOnlyMemory<byte> Window(int start, int length)
     {
-        return Buffer.AsMemory(start - BufferBase, length);
+        //An empty range carries no offset constraint, so it never indexes the buffer — guarding it keeps the empty
+        //case total even when the caller's start predates the reclaimed base (an empty-element sentinel offset).
+        return length <= 0 ? ReadOnlyMemory<byte>.Empty : Buffer.AsMemory(start - BufferBase, length);
     }
 
     /// <summary>

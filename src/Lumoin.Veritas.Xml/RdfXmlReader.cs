@@ -496,12 +496,19 @@ public static class RdfXmlReader
             return head;
         }
 
-        /// <summary>The verbatim inner content bytes of an XML-literal element: sliced from the streaming scanner's buffer by absolute offset when streaming (the buffer never moves, so the offsets stay valid), or from the document <see cref="Source"/> when buffered.</summary>
+        /// <summary>The verbatim inner content bytes of an XML-literal element: sliced from the streaming scanner's buffer by absolute offset when streaming (the buffer prefix is reclaimed but a subtree's bytes stay until it is walked), or from the document <see cref="Source"/> when buffered.</summary>
         /// <param name="element">The literal property element.</param>
-        /// <returns>the element's raw inner content bytes (entity references and CDATA undecoded).</returns>
+        /// <returns>The element's raw inner content bytes (entity references and CDATA undecoded), empty for an empty or self-closing element.</returns>
         private ReadOnlyMemory<byte> LiteralBytes(XmlByteNode element)
         {
             int length = element.ContentEnd - element.ContentStart;
+            if(length <= 0)
+            {
+                //An empty or self-closing literal carries the empty-element sentinel offsets (ContentStart 0, ContentEnd
+                //0), which would form a negative buffer index once the streaming buffer base has advanced; it has no
+                //inner content, so it canonicalizes to the empty XML literal.
+                return ReadOnlyMemory<byte>.Empty;
+            }
 
             return LiteralScanner is { } scanner
                 ? scanner.Window(element.ContentStart, length)

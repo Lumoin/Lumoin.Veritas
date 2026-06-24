@@ -135,6 +135,24 @@ internal sealed class XmlByteScannerTests
         Assert.IsLessThan(4 * chunkSize, streamingPeak, $"streaming compaction must bound the retained bytes near a chunk (peak {streamingPeak} for a {bytes.Length}-byte document)");
     }
 
+    /// <summary>An empty window is total: <see cref="XmlByteScanner.Window"/> returns an empty range without indexing the buffer even when the requested start predates the reclaimed base (the empty-element sentinel offset), so a self-closing literal does not abort streaming.</summary>
+    [TestMethod]
+    public void EmptyWindowDoesNotIndexTheBufferAfterCompaction()
+    {
+        XmlByteScanner scanner = new(XmlScanStrictness.Strict, parseInternalDtd: false, streaming: true);
+        scanner.Feed("<r><a>hello there</a>"u8);
+        while(scanner.TryDequeue(out _))
+        {
+        }
+
+        scanner.Compact();
+
+        //After compaction the base has advanced; a zero-length window at the empty-element sentinel offset (0) would
+        //form a negative index, but an empty range must resolve without touching the buffer.
+        Assert.IsTrue(scanner.Window(0, 0).IsEmpty, "a zero-length window at the sentinel offset must be empty, not throw");
+        Assert.IsTrue(scanner.Window(5, 0).IsEmpty, "a zero-length window below the reclaimed base must be empty, not throw");
+    }
+
     /// <summary>A value emitted before a compaction is owned, so it still reads correctly after the buffer prefix is reclaimed and later feeds overwrite the buffer region.</summary>
     [TestMethod]
     public void StreamingEmittedValueSurvivesCompaction()
