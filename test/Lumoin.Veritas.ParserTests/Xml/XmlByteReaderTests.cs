@@ -210,6 +210,14 @@ internal sealed class XmlByteReaderTests
         Assert.AreEqual("line1\nline2", c!.Text.ToString(), "Text content line endings are normalized to LF.");
     }
 
+    /// <summary>A degenerate empty comment whose <c>&gt;</c> overlaps its own opening dashes (<c>&lt;!--&gt;</c>) closes and contributes no text, with surrounding character data coalesced across it.</summary>
+    [TestMethod]
+    public void ReadsAnEmptyOverlapComment()
+    {
+        Assert.IsTrue(Read("<r><!--></r>").Text.IsEmpty, "An empty overlap comment leaves the element textless.");
+        Assert.AreEqual("ab", Read("<r>a<!-->b</r>").Text.ToString(), "Character data around an empty overlap comment coalesces.");
+    }
+
     /// <summary>Each element carries a byte span from its start tag's <c>&lt;</c> through just past its end tag's <c>&gt;</c>.</summary>
     [TestMethod]
     public void RecordsByteSpansForElements()
