@@ -448,6 +448,19 @@ public sealed class MutableSparqlDataset
         }
     }
 
+    /// <summary>An observer notified of each committed default-graph delta, or <see langword="null"/> when none is subscribed; set once at wiring time before any commit.</summary>
+    private DefaultGraphDeltaObserver? DefaultGraphObserver { get; set; }
+
+    /// <summary>Subscribes an observer to committed default-graph deltas — the seam a replication feed binds its advance to so its reconciliation index tracks the committed default graph by the same delta the query store receives. Set once at wiring time, before commits begin.</summary>
+    /// <param name="observer">The observer to notify on each committed default-graph delta.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="observer"/> is <see langword="null"/>.</exception>
+    public void ObserveDefaultGraphDelta(DefaultGraphDeltaObserver observer)
+    {
+        ArgumentNullException.ThrowIfNull(observer);
+
+        DefaultGraphObserver = observer;
+    }
+
     /// <summary>
     /// Publishes a committed state: swaps it in atomically and
     /// advances the default-graph rendezvous by the commit's net
@@ -475,6 +488,11 @@ public sealed class MutableSparqlDataset
         if(defaultGraphChanged)
         {
             DefaultGraphRendezvous.Advance(state.DefaultGraph, defaultAdditions, defaultRemovals);
+
+            //A subscribed replication feed advances its reconciliation index by the same committed delta, so it
+            //tracks the query store exactly. The observer runs after the rendezvous advance and outside the state
+            //swap lock, matching the rendezvous's own threading; the feed serializes its own state.
+            DefaultGraphObserver?.Invoke(defaultAdditions, defaultRemovals, state.StateId);
         }
 
         if(namedGraphsChanged)
