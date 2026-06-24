@@ -51,10 +51,9 @@ internal static class ContentTripleFraming
     /// <exception cref="InvalidDataException">The frame is truncated or its count does not match its length.</exception>
     internal static IReadOnlyList<ContentKey128> ReadKeys(ReadOnlySequence<byte> payload)
     {
-        byte[] buffer = payload.ToArray();
-        int position = 0;
-        int count = ReadCount(buffer, ref position);
-        if((long)count * ContentKey128.ByteWidth > buffer.Length - position)
+        SequenceReader<byte> reader = new(payload);
+        int count = ReadCount(ref reader);
+        if((long)count * ContentKey128.ByteWidth > reader.Remaining)
         {
             throw new InvalidDataException("A content-hash triple-fetch request declared more items than its frame can hold.");
         }
@@ -62,8 +61,12 @@ internal static class ContentTripleFraming
         ContentKey128[] items = new ContentKey128[count];
         for(int i = 0; i < count; i++)
         {
-            ReadOnlySpan<byte> key = Take(buffer, ref position, ContentKey128.ByteWidth);
-            items[i] = new ContentKey128(BinaryPrimitives.ReadUInt64BigEndian(key), BinaryPrimitives.ReadUInt64BigEndian(key[sizeof(ulong)..]));
+            if(!reader.TryReadBigEndian(out long low) || !reader.TryReadBigEndian(out long high))
+            {
+                throw new InvalidDataException("A content-hash triple-fetch frame is truncated.");
+            }
+
+            items[i] = new ContentKey128((ulong)low, (ulong)high);
         }
 
         return items;
@@ -90,10 +93,9 @@ internal static class ContentTripleFraming
     /// <exception cref="InvalidDataException">The frame is truncated, mis-counted, or carries an unknown term kind.</exception>
     internal static IReadOnlyList<ContentTriple> ReadTriples(ReadOnlySequence<byte> payload)
     {
-        byte[] buffer = payload.ToArray();
-        int position = 0;
-        int count = ReadCount(buffer, ref position);
-        if((long)count * MinTripleWireBytes > buffer.Length - position)
+        SequenceReader<byte> reader = new(payload);
+        int count = ReadCount(ref reader);
+        if((long)count * MinTripleWireBytes > reader.Remaining)
         {
             throw new InvalidDataException("A content-hash triple-fetch response declared more triples than its frame can hold.");
         }
@@ -101,9 +103,9 @@ internal static class ContentTripleFraming
         ContentTriple[] triples = new ContentTriple[count];
         for(int i = 0; i < count; i++)
         {
-            RdfTerm subject = ReadTerm(buffer, ref position);
-            RdfTerm predicate = ReadTerm(buffer, ref position);
-            RdfTerm @object = ReadTerm(buffer, ref position);
+            RdfTerm subject = ReadTerm(ref reader);
+            RdfTerm predicate = ReadTerm(ref reader);
+            RdfTerm @object = ReadTerm(ref reader);
             triples[i] = new ContentTriple(subject, predicate, @object);
         }
 
@@ -121,19 +123,36 @@ internal static class ContentTripleFraming
     }
 
     /// <summary>Reads and validates a non-negative four-byte big-endian count.</summary>
-    /// <param name="buffer">The frame bytes.</param>
-    /// <param name="position">The read position, advanced past the count.</param>
+    /// <param name="reader">The frame reader, advanced past the count.</param>
     /// <returns>The count.</returns>
     /// <exception cref="InvalidDataException">The frame is too short or the count is negative.</exception>
-    private static int ReadCount(byte[] buffer, ref int position)
+    private static int ReadCount(ref SequenceReader<byte> reader)
     {
-        int count = BinaryPrimitives.ReadInt32BigEndian(Take(buffer, ref position, sizeof(int)));
+        if(!reader.TryReadBigEndian(out int count))
+        {
+            throw new InvalidDataException("A content-hash triple-fetch frame is truncated.");
+        }
+
         if(count < 0)
         {
             throw new InvalidDataException("A content-hash triple-fetch frame declared a negative count.");
         }
 
         return count;
+    }
+
+    /// <summary>Reads a single byte, refusing a truncated frame.</summary>
+    /// <param name="reader">The frame reader, advanced past the byte.</param>
+    /// <returns>The byte.</returns>
+    /// <exception cref="InvalidDataException">The frame holds no more bytes.</exception>
+    private static byte ReadByteOrThrow(ref SequenceReader<byte> reader)
+    {
+        if(!reader.TryRead(out byte value))
+        {
+            throw new InvalidDataException("A content-hash triple-fetch frame is truncated.");
+        }
+
+        return value;
     }
 
     /// <summary>Writes a term: its kind tag and length-prefixed content fields.</summary>
@@ -178,33 +197,31 @@ internal static class ContentTripleFraming
     }
 
     /// <summary>Reads a term from its kind tag and length-prefixed content fields.</summary>
-    /// <param name="buffer">The frame bytes.</param>
-    /// <param name="position">The read position, advanced past the term.</param>
+    /// <param name="reader">The frame reader, advanced past the term.</param>
     /// <returns>The term.</returns>
     /// <exception cref="InvalidDataException">The frame is truncated or carries an unknown term kind or base-direction byte.</exception>
-    private static RdfTerm ReadTerm(byte[] buffer, ref int position)
+    private static RdfTerm ReadTerm(ref SequenceReader<byte> reader)
     {
-        byte tag = Take(buffer, ref position, 1)[0];
+        byte tag = ReadByteOrThrow(ref reader);
 
         return tag switch
         {
-            IriTag => new NamedNode(ReadUtf8(buffer, ref position)),
-            LiteralTag => ReadLiteral(buffer, ref position),
+            IriTag => new NamedNode(ReadUtf8(ref reader)),
+            LiteralTag => ReadLiteral(ref reader),
             _ => throw new InvalidDataException($"A content-hash triple frame carried an unknown term tag {tag}."),
         };
     }
 
     /// <summary>Reads a literal: its length-prefixed value and datatype IRI, the language presence byte and (when present) its bytes, then the base-direction byte.</summary>
-    /// <param name="buffer">The frame bytes.</param>
-    /// <param name="position">The read position, advanced past the literal's fields.</param>
+    /// <param name="reader">The frame reader, advanced past the literal's fields.</param>
     /// <returns>The literal.</returns>
     /// <exception cref="InvalidDataException">The frame is truncated or carries an unknown base-direction byte.</exception>
-    private static Literal ReadLiteral(byte[] buffer, ref int position)
+    private static Literal ReadLiteral(ref SequenceReader<byte> reader)
     {
-        Utf8String value = ReadUtf8(buffer, ref position);
-        NamedNode datatype = new(ReadUtf8(buffer, ref position));
-        Utf8String? language = Take(buffer, ref position, 1)[0] == 1 ? ReadUtf8(buffer, ref position) : null;
-        TextDirection? direction = ReadDirection(Take(buffer, ref position, 1)[0]);
+        Utf8String value = ReadUtf8(ref reader);
+        NamedNode datatype = new(ReadUtf8(ref reader));
+        Utf8String? language = ReadByteOrThrow(ref reader) == 1 ? ReadUtf8(ref reader) : null;
+        TextDirection? direction = ReadDirection(ReadByteOrThrow(ref reader));
 
         return new Literal(value, datatype, language, direction);
     }
@@ -229,34 +246,29 @@ internal static class ContentTripleFraming
     }
 
     /// <summary>Reads a length-prefixed field's bytes into an owned <see cref="Utf8String"/>.</summary>
-    /// <param name="buffer">The frame bytes.</param>
-    /// <param name="position">The read position, advanced past the field.</param>
+    /// <param name="reader">The frame reader, advanced past the field.</param>
     /// <returns>The field's bytes as a UTF-8 string.</returns>
     /// <exception cref="InvalidDataException">The frame is too short for the declared field length.</exception>
-    private static Utf8String ReadUtf8(byte[] buffer, ref int position)
+    private static Utf8String ReadUtf8(ref SequenceReader<byte> reader)
     {
-        int length = ReadCount(buffer, ref position);
+        int length = ReadCount(ref reader);
 
-        return new Utf8String(Take(buffer, ref position, length).ToArray());
-    }
-
-    /// <summary>Returns a slice of the frame and advances the position, refusing to read past the end.</summary>
-    /// <param name="buffer">The frame bytes.</param>
-    /// <param name="position">The read position, advanced by <paramref name="length"/>.</param>
-    /// <param name="length">The number of bytes to take.</param>
-    /// <returns>The slice.</returns>
-    /// <exception cref="InvalidDataException">The frame is shorter than the requested slice.</exception>
-    private static ReadOnlySpan<byte> Take(byte[] buffer, ref int position, int length)
-    {
-        if(length < 0 || (long)position + length > buffer.Length)
+        //Bound the allocation against the bytes the frame actually holds before sizing the field buffer, so a
+        //hostile length cannot force a large array; then copy the field out and advance past it.
+        if(length > reader.Remaining)
         {
             throw new InvalidDataException("A content-hash triple-fetch frame is truncated.");
         }
 
-        ReadOnlySpan<byte> slice = buffer.AsSpan(position, length);
-        position += length;
+        byte[] bytes = new byte[length];
+        if(!reader.TryCopyTo(bytes))
+        {
+            throw new InvalidDataException("A content-hash triple-fetch frame is truncated.");
+        }
 
-        return slice;
+        reader.Advance(length);
+
+        return new Utf8String(bytes);
     }
 
     /// <summary>The wire byte for a literal's optional base direction.</summary>
