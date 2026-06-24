@@ -28,6 +28,7 @@ namespace Lumoin.Veritas.Replication;
 /// is the cross-org boundary domain; a shared-epoch cluster uses <see cref="AntiEntropySession"/>.
 /// </summary>
 /// <remarks>
+/// <para>
 /// The content-hash domain is for ground triples; a local triple holding a blank node or RDF 1.2 triple term makes
 /// the projection throw (see <see cref="ContentHashReconciliationProjection"/>), surfacing the deferred case rather
 /// than producing a silently epoch-local key. Building the local sketch and side-map each project every local

@@ -473,6 +473,7 @@ public sealed class MutableSparqlDataset
     /// <param name="defaultGraphChanged">Whether the default graph moved in this commit.</param>
     /// <param name="defaultAdditions">The net default-graph additions.</param>
     /// <param name="defaultRemovals">The net default-graph removals.</param>
+    /// <param name="namedGraphsChanged">Whether any named graph moved in this commit.</param>
     internal void Publish(
         DatasetState state,
         bool defaultGraphChanged,
@@ -480,27 +481,33 @@ public sealed class MutableSparqlDataset
         IReadOnlyCollection<EncodedTriple> defaultRemovals,
         bool namedGraphsChanged)
     {
+        //The whole publish — the state swap, both rendezvous advances, and the delta observer — runs under one lock,
+        //so it is atomic with respect to the next commit. A competing commit reads Current to base itself, so until
+        //this publish completes the next one cannot proceed; that orders the delta observers (and the rendezvous
+        //advances) in journal-commit order. Were the advances outside the swap lock, two concurrent commits could
+        //deliver their deltas reversed, and the feed — which evolves by delta fold, not by an absolute snapshot —
+        //would durably diverge from the committed state. Every call here is synchronous and the rendezvous and feed
+        //hold their own distinct locks (no re-entrancy on this one), so nothing awaits under the lock.
         lock(StateLock)
         {
             Current = state;
-        }
 
-        if(defaultGraphChanged)
-        {
-            DefaultGraphRendezvous.Advance(state.DefaultGraph, defaultAdditions, defaultRemovals);
+            if(defaultGraphChanged)
+            {
+                DefaultGraphRendezvous.Advance(state.DefaultGraph, defaultAdditions, defaultRemovals);
 
-            //A subscribed replication feed advances its reconciliation index by the same committed delta, so it
-            //tracks the query store exactly. The observer runs after the rendezvous advance and outside the state
-            //swap lock, matching the rendezvous's own threading; the feed serializes its own state.
-            DefaultGraphObserver?.Invoke(defaultAdditions, defaultRemovals, state.StateId);
-        }
+                //A subscribed replication feed advances its reconciliation index by the same committed delta, so it
+                //tracks the query store exactly.
+                DefaultGraphObserver?.Invoke(defaultAdditions, defaultRemovals, state.StateId);
+            }
 
-        if(namedGraphsChanged)
-        {
-            //The shared graph set described the previous generation;
-            //drop it and rebuild lazily from the new state on the
-            //next qualifying named-graph join.
-            NamedGraphRendezvous.Advance(state, new GraphSetBuildSource(state).Build);
+            if(namedGraphsChanged)
+            {
+                //The shared graph set described the previous generation;
+                //drop it and rebuild lazily from the new state on the
+                //next qualifying named-graph join.
+                NamedGraphRendezvous.Advance(state, new GraphSetBuildSource(state).Build);
+            }
         }
     }
 

@@ -50,9 +50,14 @@ public static class ReconcileWriteBack
 
         for(int attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            DatasetEditSession session = await dataset.OpenSessionAsync(cancellationToken).ConfigureAwait(false);
+            //Open inside the try: opening a session itself appends a Started entry under the journal head-CAS, so a
+            //concurrent committer can lose the race at OPEN time as well as at commit time. Both are the same
+            //in-flight conflict and are retried (and ultimately exhausted), never thrown — honoring the
+            //conflict-exhausted contract.
+            DatasetEditSession? session = null;
             try
             {
+                session = await dataset.OpenSessionAsync(cancellationToken).ConfigureAwait(false);
                 await session.ApplyDeltaAsync(TermId.None, additions, [], cancellationToken).ConfigureAwait(false);
                 await session.CommitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -66,7 +71,10 @@ public static class ReconcileWriteBack
             }
             finally
             {
-                await session.DisposeAsync().ConfigureAwait(false);
+                if(session is not null)
+                {
+                    await session.DisposeAsync().ConfigureAwait(false);
+                }
             }
         }
 

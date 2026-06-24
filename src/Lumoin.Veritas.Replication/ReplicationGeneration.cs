@@ -10,5 +10,5 @@ namespace Lumoin.Veritas.Replication;
 /// connection is unaffected by later commits.
 /// </summary>
 /// <param name="Index">The reconciliation index at this generation.</param>
-/// <param name="StateId">The dataset StateId the index reflects.</param>
+/// <param name="StateId">The dataset StateId the index reflects — the generation tag a durable sketch is keyed by and a peer labels its convergence against. Carried by the feed now; consumed once sketch-generation persistence and generation-pinned fetch land.</param>
 public readonly record struct ReplicationGeneration(ColumnarTripleIndex Index, NodeIdentifier StateId);

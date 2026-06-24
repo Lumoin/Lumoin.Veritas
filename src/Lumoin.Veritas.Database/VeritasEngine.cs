@@ -308,6 +308,16 @@ public sealed class VeritasEngine: IAsyncDisposable
     /// so this carries no network dependency. Additions-only: the union of both
     /// replicas converges across rounds and peers; removals do not propagate through
     /// anti-entropy in this slice.
+    /// <para>
+    /// <b>Intra-cluster only — the peer MUST share this database's dictionary epoch.</b> The structural sketch
+    /// carries term IDENTIFIERS, not terms, and recovered identifiers are committed VERBATIM (no re-encoding). A
+    /// peer built on a different <see cref="Dictionary"/> (a different identifier-to-term mapping) is NOT detected:
+    /// its recovered identifiers denote different local terms, so the reconcile converges and commits WRONG triples
+    /// silently. Drive this only with a peer whose sketch was built against this database's <see cref="Dictionary"/>
+    /// (e.g. another node's <see cref="CreateSketchFetch"/> in the same shared-dictionary cluster). For peers that
+    /// numbered their terms independently — the cross-organisation case — use the content-hash reconcile domain,
+    /// which transfers terms and re-encodes them.
+    /// </para>
     /// </summary>
     /// <param name="peerFetch">The peer's sketch fetch — the transport seam each round drives.</param>
     /// <param name="policy">The budget shape both sides' sketches are sized under.</param>
@@ -354,6 +364,7 @@ public sealed class VeritasEngine: IAsyncDisposable
     /// reconcile domain.
     /// </summary>
     /// <returns>The sketch-fetch delegate serving this node's structural sketch.</returns>
+    /// <remarks>The delegate borrows this database's owned replication pool, so it must not be invoked after the database is disposed; a fetch on a disposed database's delegate throws <see cref="ObjectDisposedException"/> from the pool. Bind it for the database's lifetime, not beyond.</remarks>
     /// <exception cref="InvalidOperationException">This is an immutable database (opened with <see cref="OpenAsync(IEnumerable{DataTriple}, VeritasEngineOptions?, CancellationToken)"/> rather than <see cref="OpenMutableAsync"/>).</exception>
     public AsyncSketchFetchDelegate CreateSketchFetch()
     {
