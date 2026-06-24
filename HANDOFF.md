@@ -10,7 +10,37 @@ in "Next".
 
 ---
 
-## Current state (2026-06-15)
+## Current state (2026-06-24)
+
+**This supersedes the 2026-06-15 note below, whose "persistence ~0% built / P1 next" framing is now STALE: the
+durable persistence + integrity + execution tiers have since SHIPPED to `main`.**
+
+- **On `main` (released line) — durable persistence behind the storage seams:** checksummed append-only journal
+  (`FileBackedJournal`, torn-tail recovery), row-major system-of-record (`ItemSegment`, per-block checksums),
+  content-addressed manifest + atomic CURRENT-pointer publish (`ManifestWriter` + `AtomicPublish` + 3-tier
+  `ManifestRecovery`), the verify→repair→commit self-heal loop (`ScrubRound` / `RepairSourceLadder` /
+  `GenerationCommitCoordinator`), pluggable `ChecksumAlgorithm` (XxHash3/CRC-32), `ColumnSource` (managed /
+  native-aligned off-GC / memory-mapped), `StorageTraceEvent`, and the damage × repair-source matrix tests
+  (`PersistenceCombinationMatrixTests`). Execution lanes + `ExecutionPolicy` (`ComputeLane`, `veritas.compute_lane.*`
+  + `veritas.reasoning.*` metrics) are on main too. **Still designed (NOT on main):** the durable journal/manifest
+  as the engine *default* (the default engine still uses an in-memory journal), columnar-sidecar warm-start
+  hot-load, a live scrub scheduler, and the columnar/native container + Parquet-interop formats.
+- **On branch `replication-r3-anti-entropy` (off main, NOT pushed — paid CI) — the REPLICATION + NETWORK-GOVERNANCE
+  arc, in development (not yet merged):** rateless anti-entropy (structural + content-hash domains), in-process +
+  cross-process sketch channels, the engine↔replication bridge on `VeritasEngine` (`OpenMutableAsync` /
+  `UpdateAsync` / `ReconcileFromPeerAsync` / `CreateSketchFetch`, epoch-guarded), and the network-governance seam
+  (gate + firewall + per-peer rate limiter + live policy chain + controller + governed transports — implemented and
+  tested, not yet wired into the engine/CLI default). **Full branch ledger + commit stack + the B8 next step are in
+  `tempdocs/HANDOFF.md` (gitignored working note).**
+- **Next: B8 (durable sketch-generation persistence)** — persist a node's structural sketch as a
+  `ManifestFileRole.Sketch` artifact keyed to the dataset generation (`StateId`) + dictionary epoch, loadable on
+  restart so a node serves its sketch from disk instead of re-deriving from the feed; reuses the shipped manifest
+  atomic-publish + `LoadVerifiedSketch`. Then merge the replication/governance arc to main and wire governance into
+  the engine/CLI composition root, followed by the remaining persistence "designed" items above.
+
+---
+
+## Current state (2026-06-15, SUPERSEDED — retained for history)
 
 - **`main` @ `88991ca`; ACTIVE WORK on branch `persistence-resiliency`** (off main, NOT pushed — NEVER push, paid CI). Persistence **Inc-0 → ii-b2 COMPLETE** (native off-GC backing fully wired — default + named graphs — soaked + decided), tip `a1b2de3` (11 commits): ColumnSource seam → `ReadOnlyMemory` handle → native off-GC backing ("option C") → build-path selector → engine selects native + `Apply`-preserves it (default- and named-graph) → soak + default decision. **FULL-SUITE GATE GREEN: 9,299 / 0 / 1,361** (Inc-0 baseline 9,288 + 11 native/seam tests, 0 regressions; default-managed path byte-unchanged). **Soak (`0892409`): native moves 79% (EF default) – 98% (FoR) of the index's managed heap off-GC, no read penalty, no working-set inflation → DECISION: native is a SELECTABLE GC-positive backing; global default stays MANAGED (named-profile fit for large/server); revisit a global flip with the deferred EF lower/upper off-GC increment.** Several large arcs landed on main earlier (now prior history):
   - **Phase-B** — compute lane + `ExecutionPolicy` + `veritas.compute_lane.*` metrics + ECC probe + `KernelWidthCap` + `ContentKey128` kernel; host wire-in; floor-lift to default-0; `ComputeWorkClass` extensible dynamic enum.

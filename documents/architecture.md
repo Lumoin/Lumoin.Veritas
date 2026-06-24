@@ -7,7 +7,7 @@ and pending). For the live work ledger see `HANDOFF.md`; for measured numbers se
 outputs and HANDOFF's tables — this document deliberately carries no benchmark figures, because
 they go stale here and stay current there.
 
-Last revised: 2026-06-12.
+Last revised: 2026-06-24.
 
 ---
 
@@ -19,8 +19,13 @@ host to a many-core container. Its sibling library, Lumoin.Verisync, supplies th
 ordered log (consensus, CRDTs) that the engine's replication story builds on; Veritas itself is
 designed as a deterministic state machine over that log.
 
-The engine is currently **memory-only**: stores and indexes are built in RAM and rebuilt per
-process. The durable on-disk story (§8) is designed and phased, not yet implemented.
+The durable persistence layer is **shipped behind the storage seams** (§8): a checksummed
+append-only journal, a content-addressed manifest published by an atomic generation swap,
+row-major system-of-record segments, and a verify→repair→commit self-heal loop, all tested. What
+is still pending is making them the engine's *default* — the default engine wiring builds its
+stores and indexes in RAM over an in-memory journal and rebuilds them per process; the durable
+journal and manifest are selectable behind the seams rather than the default commit path, and
+warm-start from a persisted columnar sidecar is the next step (§8.6).
 
 ### Project layout
 
@@ -32,6 +37,7 @@ process. The durable on-disk story (§8) is designed and phased, not yet impleme
 | RDF model + interchange | `Lumoin.Veritas.Rdf`, `.Turtle`, `.NQuads`, `.Xml`, `.JsonLd`, `.LinkedData`, `.Canonicalization` |
 | JSON / binary interchange | `Lumoin.Veritas.Json`, `.Json.Stj`, `.JsonPointer`, `.JsonSchema`, `.Cbor`, `.CborLd`, `.Cid`, `.Rdf.Json` |
 | Application surface | `Lumoin.Veritas.Cli` — `query` and `serve` commands, an HTTP SPARQL endpoint, an MCP stdio mode |
+| Replication / governance (in development) | `Lumoin.Veritas.Replication` (anti-entropy, sketch channels, the engine bridge) and `Lumoin.Veritas.Core.Network` (governance gate, firewall, rate limiter) — implemented and tested, not yet on the released line (§9) |
 | Tests / measurement | `test/Lumoin.Veritas.Tests` (one MSTest assembly; the W3C conformance corpora are vendored under `Material/`), `test/Lumoin.Veritas.Benchmarks` (soaks behind `--profile-*` flags) |
 
 ---
@@ -183,11 +189,12 @@ change: alternate engines must answer identically with the corpora live.
 
 ---
 
-## 6. Execution and resources (DESIGNED — phases A–C pending)
+## 6. Execution and resources (shipped; periodic scrub scheduling pending)
 
-> Status: design complete (the platform-resource memo); implementation phased. Phase A (host
-> hardening) and phase B (compute lane + policy) land together before OWL reasoning serves
-> requests over the HTTP host.
+> Status: the compute lane and `ExecutionPolicy` are shipped and wired — the engine opens a lane
+> per process (`ComputeLane.ForCurrentPlatform`, threaded on a server, cooperative on WebAssembly)
+> and runs columnar view builds as lane turns. What remains designed-not-built: admitting the
+> periodic scrub round (§8.3) onto the lane at its resolved cadence.
 
 ### 6.1 The problem and the model
 
@@ -236,12 +243,16 @@ plan (environment facts) are separate types.
 ## 7. Observability
 
 One trace bus (`TraceHandler<TEvent>`, null handler = zero cost) carries the statistics triad:
-graph shape (`GraphStatistics`), layout/footprint (`ColumnarStatistics`) — both shipped — and
-runtime storage access (`StorageTraceEvent`, designed). Metrics ride the OpenTelemetry `Meter`
-(`veritas.*` instruments; the memory pool and string pool are instrumented today; lane queue
-depth, turns, and shed counts are designed alongside the lanes).
+graph shape (`GraphStatistics`), layout/footprint (`ColumnarStatistics`), and runtime storage
+access and self-heal verdicts (`StorageTraceEvent`) — all shipped. Replication and network
+governance ride the same bus with their own events (`ReplicationTraceEvent`,
+`NetworkGovernanceTraceEvent`). Metrics ride the OpenTelemetry `Meter` (`veritas.*` instruments):
+the memory pool and string pool, the compute lane (`veritas.compute_lane.workers`, `queue_depth`,
+`turns_total`, `shed_total`, `turn_duration`), and the reasoner
+(`veritas.reasoning.decisions_total`, `solve_count`, `duration`) are instrumented today.
 
-Reasoner telemetry (designed) emits **per-decision** trace events — counters for solver calls
+Reasoner telemetry (shipped: `ReasoningDecisionTraceEvent` plus the `veritas.reasoning.*` Meter)
+emits **per-decision** trace events — counters for solver calls
 and time, joint rebuilds, learned clauses, memo and blocking hits — never per-solve spans. Its
 consumers, in order: budget cancellation that names its measured reason, progress-aware
 cancellation (counters moving distinguishes slow-but-converging from wedged), and eventually
@@ -249,19 +260,32 @@ data-driven engine selection across the catalog.
 
 ---
 
-## 8. Integrity and durability (DESIGNED — phases P1–P3 pending)
+## 8. Integrity and durability (shipped behind the storage seams; container format + engine-default wiring pending)
 
-> Status: design complete; nothing durable exists today (verified by inventory: no file format,
-> no write path, no checksums in the engine). This is greenfield with one pre-built seam — the
-> journal delegate contract — and one discipline to honor from day one: forward versioning.
+> Status: the durable write path is **shipped and tested behind the storage seams**. Shipped: a
+> checksummed append-only journal (`FileBackedJournal`, torn-tail recovery), the system-of-record
+> item-segment tier (`ItemSegment`, per-block checksums), the content-addressed manifest with the
+> atomic CURRENT-pointer publish (`ManifestWriter` + `AtomicPublish`), three-tier crash recovery
+> (`ManifestRecovery`: live → retained → degraded scan), the verify→repair→commit self-heal loop
+> (`ScrubRound` / `RepairSourceLadder` / `GenerationCommitCoordinator`), pluggable checksums
+> (`ChecksumAlgorithm`: XxHash3, CRC-32), and `StorageTraceEvent` telemetry — exercised by a
+> boundary-enumerated damage × repair-source matrix (§10). What remains designed-not-built: wiring
+> the durable journal/manifest as the engine's *default* (the default engine still runs in-memory),
+> warm-start hot-load from a persisted columnar sidecar (today every process rebuilds the index
+> from the journal, §8.6), a self-tuning periodic scrub scheduler (§6, §8.3), and the
+> columnar/native container and Parquet-interop formats (the shipped system-of-record format is the
+> row-major item segment, not a columnar table). Forward versioning is honored from day one.
 
 ### 8.1 What persists
 
 Two tiers plus co-versioned artifacts, all published by **one atomic manifest swap**:
 
-- **System of record** — a durable columnar table tier (an open columnar table format such as
-  Parquet) holding the encoded triples, plus the durable journal behind the existing seam. The
-  replicated-state-machine contract holds: `Snapshot()` *is* these files, `Apply` is the journal.
+- **System of record** — a durable row-major **item-segment** tier (`ItemSegment`: fixed-count
+  triple blocks, per-block checksums, page-aligned) holding the encoded triples, plus the durable
+  journal (`FileBackedJournal`) behind the existing seam. Both are shipped. A columnar table format
+  (Parquet, etc.) is a *separate* interop ingest/export seam, deferred — not the system-of-record
+  format. The replicated-state-machine contract holds: `Snapshot()` *is* these files, `Apply` is
+  the journal.
 - **Sidecars** — the engine's own self-describing container holding the columnar/succinct
   execution structures: a key-value header with format version and required-feature flags
   (readers skip unknown keys, fail loudly on unknown *required* flags — that asymmetry is the
@@ -275,9 +299,11 @@ Two tiers plus co-versioned artifacts, all published by **one atomic manifest sw
   redundancy) — all named in an extensible manifest file-role taxonomy.
 
 Retained column payloads move off garbage-collected arrays onto views over an abstract byte
-source — `ColumnSource`: native 64-byte-aligned allocation, a memory-mapped span, a browser
-origin-private-file-system buffer, or a ranged HTTP reader. One abstraction makes "works in the
-browser", "works with mapped files", and "works at scale" the same property (§8.6).
+source — `ColumnSource`. Shipped backings: a managed array, a native 64-byte-aligned off-GC
+allocation, and a memory-mapped file (`MemoryMappedColumnarImageSource`). A browser
+origin-private-file-system buffer and a ranged HTTP reader are designed extensions of the same
+seam (`ColumnarImageSource`), not yet built. One abstraction makes "works in the browser", "works
+with mapped files", and "works at scale" the same property (§8.6).
 
 ### 8.2 The integrity calculus
 
@@ -332,19 +358,36 @@ never overrules agreement, because it is self-reported evidence, not truth.
 
 ### 8.6 Access modes and bulk load
 
-Mapped versus streamed column access is a policy axis, not a format property: the container's
-offset-addressable layout serves memory-mapping on capable hosts and ranged reads (browser
-origin-private file system, HTTP) elsewhere, behind the same `ColumnSource` seam. The durable
-tier makes bulk load resumable (ingest lands record segments first; sidecars rebuild from
-scans) and ends rebuild-from-triples-every-process: warm start is mapping a sidecar whose
-provenance epoch matches.
+Mapped versus streamed column access is a policy axis, not a format property (`ColumnAccessMode`:
+`Auto`, `MemoryMapped`, `Streamed`, resolved once per process): the container's offset-addressable
+layout serves memory-mapping on capable hosts and streamed ranged reads elsewhere, behind the same
+`ColumnarImageSource` seam (the memory-mapped and pooled-streamed backings ship; browser
+origin-private file system and HTTP backings are designed extensions). The columnar sidecar
+format, its checksums, and its recovery are shipped; **warm-start hot-load is designed but not yet
+built** — today every process still rebuilds the columnar index from the journal
+(rebuild-from-triples-every-process). When it lands, warm start is mapping a sidecar whose
+provenance epoch matches rather than rebuilding from scans.
 
 ---
 
-## 9. Replication (DESIGNED — its own arc)
+## 9. Replication (in development — anti-entropy and the engine bridge implemented; consensus/log integration designed)
 
-Veritas composes with Lumoin.Verisync as a deterministic state machine over a replicated
-ordered log: consensus orders operations; determinism makes replicas byte-identical; snapshots
+**Status.** The anti-entropy core is implemented and tested (in development on the replication
+branch, not yet on the released line): rateless set-reconciliation sessions in both a **structural**
+domain (shared dictionary epoch, intra-cluster) and a **content-hash** domain (independent
+dictionaries, cross-organization); the rateless codec; in-process and cross-process sketch
+channels; and the engine bridge — a mutable `VeritasEngine` seeds a reconciliation feed on commit,
+serves its own sketch (`CreateSketchFetch`), reconciles from a peer (`ReconcileFromPeerAsync`,
+refused before it begins on a dictionary-epoch mismatch), and writes the recovered delta back
+through the journal as an ordinary committed mutation a later query sees. **Network governance** —
+a gate consulted by transport decorators, with a firewall, a per-peer token-bucket rate limiter,
+and a hot-swappable policy chain plus a live control surface — is implemented and tested but not
+yet wired into the engine/CLI default. Designed-not-built: the Verisync consensus / ordered-log
+integration, multi-node topology and per-graph actor placement, durable cross-restart sketches,
+and the adjudication ladder (§8.5).
+
+The forward design: Veritas composes with Lumoin.Verisync as a deterministic state machine over a
+replicated ordered log: consensus orders operations; determinism makes replicas byte-identical; snapshots
 are the persisted files. Anti-entropy between replicas uses **rateless set reconciliation**
 over content-defined item identities (canonical item hashes, never dictionary-relative ids):
 one incrementally maintained coded-symbol stream per replica serves any peer at any divergence
@@ -375,12 +418,13 @@ Codified as gates, each motivated by a class of bug that escaped a weaker gate:
 5. **No oracle exists (perf, memory, concurrency) ⇒ soaks** with anchor rows and match columns,
    suite-time budget watch, and instrumented stress campaigns.
 
-The durability design adds its own instance of gate 4 by construction: a deterministic
-fault-injecting byte-source decorator, steppable periodic rounds, named persistence invariants
-(detection-precedes-use, detection-precedes-reconciliation, repair-faithful-or-enumerated-loss,
+The durability design carries its own instance of gate 4, now realized in code: a deterministic
+fault-injecting store, steppable (non-timer) periodic rounds, the named persistence invariants
+I1–I7 (detection-precedes-use, detection-precedes-reconciliation, repair-faithful-or-enumerated-loss,
 atomic publish, epoch consistency, repair-is-ordinary-ingest, loss-is-named), and a
-boundary-enumerated damage × repair-source matrix that must demonstrate every invariant in every
-cell before the durable tier lands.
+boundary-enumerated damage × repair-source matrix (`PersistenceCombinationMatrixTests`) that
+demonstrates each invariant in each admitted cell. The cells the single-node gate does not yet
+admit (the parity tier's own re-derive) are enumerated and skipped by name, not silently omitted.
 
 ---
 
@@ -388,17 +432,73 @@ cell before the durable tier lands.
 
 | Capability | Status |
 |---|---|
-| Hypertrie store, snapshots, journaled edits (in-memory) | Shipped |
+| Hypertrie store, snapshots, journaled edits | Shipped (in-memory journal is the engine default; durable journal selectable behind the seam) |
 | Columnar view, encodings, SIMD kernel ladder, self-index | Shipped |
 | Join engines (leapfrog, batched, factorized, Free Join) + consumer fast paths | Shipped (alternates opt-in) |
 | SPARQL 1.2 engine + federation | Shipped, conformance-complete |
 | SHACL validation | Shipped, conformance-complete |
 | RDFS/RL closure, profiles, species | Shipped |
 | OWL Direct: modular reasoning, snapshot + SAT-backed engines behind the seam | Shipped (catalog expanding) |
-| Trace bus + statistics, pool metrics | Shipped |
-| Execution lanes, `ExecutionPolicy`, lane metrics, reasoner decision telemetry | Designed (phases A–C) |
-| Durable tiers, container format, manifest, checksums, scrub, repair ladder | Designed (phases P1–P3; the format build gated separately) |
-| Replication: log integration, anti-entropy, adjudication | Designed (own arc; sibling library shipped) |
+| Trace bus + statistics; pool, compute-lane, reasoning, and storage metrics | Shipped |
+| Execution lanes, `ExecutionPolicy`, lane metrics, reasoner decision telemetry | Shipped (periodic scrub scheduling on the lane pending) |
+| Durable persistence behind the seams: journal, manifest + atomic generation publish, item-segment system-of-record, pluggable checksums, 3-tier crash recovery, verify→repair→commit self-heal, `ColumnSource` (managed / native / memory-mapped) | Shipped, tested |
+| Durable container format (columnar/native, Parquet interop), columnar-sidecar warm-start hot-load, engine-default durable wiring, OPFS / HTTP column sources, live scrub scheduler | Designed |
+| Replication: anti-entropy (structural & content-hash), rateless codec, sketch channels, engine bridge | In development (implemented, tested; not on the released line) |
+| Network governance: gate, firewall, per-peer rate limiter, live policy chain + control surface, governed transports | In development (implemented, tested; not wired into the engine/CLI default) |
+| Replication: Verisync consensus / log integration, multi-node topology, adjudication | Designed (own arc; sibling library shipped) |
 
 The authoritative running state — what landed last, what is next, with measurements — is
 `HANDOFF.md` at the repository root.
+
+---
+
+## 12. Tuning knobs (disk and network geometry)
+
+Every tunable is a value on a policy type or a constructor parameter; defaults are conservative and
+self-deriving (`null` / `0` / `Auto` = derive from the environment). Policy (intent) and the
+resolved plan (environment facts) are separate types, so a deployment states intent and the engine
+records what it actually resolved.
+
+**Disk / storage geometry.**
+
+| Knob | Type (default) | Tunes |
+|---|---|---|
+| `ItemSegment` block item count | `int` (caller-set) | triples per system-of-record block — the checksum and repair granularity |
+| block alignment (`ItemSegment` / `SketchSegment` / `ParitySegment`) | `int` (4096, one page) | block-start alignment so a torn write or faulted page maps to exactly one checksum domain |
+| `SketchSegment` symbol width / symbols per block | `int` (caller-set) | the integrity-sketch coded-symbol geometry |
+| `ManifestWriter` retained pointer count | `int` (≈3–4) | how many superseded CURRENT generations are kept as recovery-fallback depth |
+| `ChecksumAlgorithm` | `ChecksumAlgorithm?` (XxHash3, id 1) | at-rest detection strength/cost; CRC-32 (id 2) or a custom id are selectable, switchable like every hash |
+| `DurabilityBarrierDelegate` | delegate (fsync on Linux/macOS, no-op on Windows) | the directory-flush barrier after the atomic rename |
+| `ExecutionPolicy.ColumnAccessMode` | `Auto` / `MemoryMapped` / `Streamed` (`Auto`) | memory-map local files vs stream ranged reads |
+| `ColumnPayloadBacking` | `Managed` / `NativeAligned` (`Managed`) | block-packed column payloads on the GC heap vs a 64-byte-aligned off-GC buffer |
+| columnar order set / value encoding | `ColumnarOrderSetMode` / `ColumnarValueColumnEncoding` | which permutation orders are materialized; entropy-coded vs frame-of-reference columns |
+
+**Network geometry (replication + governance).**
+
+| Knob | Type (default) | Tunes |
+|---|---|---|
+| `ReplicationPolicy.BaseSymbols` / `PerItemSymbols` | `int` (100 / 20) | the rateless **symbol budget** per round = `Base + PerItem · (2 · localItemCount)`; sizes a sketch against expected divergence |
+| reconcile `maxRounds` | `int` (caller-set) | bound on the catch-up loop before a pass gives up |
+| sketch-channel `maxFrameLength` | `int` (`MessageChannel.DefaultMaxFrameLength`) | the largest framed sketch image a peer will buffer |
+| dictionary `Epoch` | `ulong` (minted non-zero per database) | the structural-reconcile compatibility key; a mismatch refuses cross-dictionary reconcile before it begins |
+| rate limiter: token limit / tokens-per-period / period / queue limit | `int` / `int` / `TimeSpan` / `int` | per-peer token-bucket admission of outbound calls |
+| firewall denylist / policy chain | per-peer entries / ordered `NetworkGovernanceDelegate[]` | which peers are blocked; the order policies are consulted (first non-permit wins) |
+
+**Compute and integrity cadence.**
+
+| Knob | Type (default) | Tunes |
+|---|---|---|
+| `ExecutionPolicy.ComputeLaneWorkers` | `int` (0 = derive `max(1, budget − 1)`) | dedicated compute-lane worker threads, leaving the serve pool headroom |
+| `ExecutionPolicy.ComputeQueueCapacity` | `int` (0 = `workers · 4`) | bounded lane queue depth; overflow is observable load-shedding, not invisible starvation |
+| `ExecutionPolicy.HostPoolFloorMultiplier` | `int` (0, disabled) | a transitional serve-pool floor |
+| `ExecutionPolicy.KernelWidthCap` | `Auto` / `Bits256` / `Bits128` / `Portable` (`Auto`) | caps SIMD width below hardware capability |
+| `ExecutionPolicy.EccAssumption` | `AutoDetect` / `AssumeProtected` / `AssumeUnprotected` (`AutoDetect`) | scales verify-on-load aggressiveness and scrub cadence |
+| `ExecutionPolicy.ScrubCadence` (+ estimator) | `TimeSpan?` (null = estimator; `Zero` disables) | how often the periodic scrub round runs (the scheduler that drives it is still designed) |
+
+**Telemetry.** Every subsystem above emits on one diagnostics bus (`TraceHandler<TEvent>`, null =
+zero cost): `StorageTraceEvent` (scrub / repair verdicts), `ReplicationTraceEvent` (reconcile
+outcome, budget, recovered count), `NetworkGovernanceTraceEvent` (per-decision permit / delay /
+deny), `ReasoningDecisionTraceEvent`, and the `GraphStatistics` / `ColumnarStatistics` events.
+Metrics ride the OpenTelemetry `Meter` under `veritas.*` (`veritas.compute_lane.*`,
+`veritas.reasoning.*`, and the memory/string-pool instruments). A correlation id links an event
+back to the operation that drove it.

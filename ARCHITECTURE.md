@@ -163,10 +163,19 @@ sequenceDiagram
 
 # Replication and governance (in development)
 
-The components in this section exist in the libraries (`Lumoin.Veritas.Core.Network`, `Lumoin.Veritas.Replication`)
-and are individually tested, but they are **not yet wired into the shipped database facade or CLI**. They are
-documented here as the forthcoming replication and network-governance design; the surfaces and the engine do not
-expose them today.
+The components in this section live in `Lumoin.Veritas.Replication` and `Lumoin.Veritas.Core.Network` (in
+development — on the replication branch, not yet on the released line) and are individually tested. The two halves
+differ in how far they are wired:
+
+- **Anti-entropy replication is wired into the database facade.** A mutable `VeritasEngine` (`OpenMutableAsync`)
+  seeds a reconciliation feed on commit, reconciles from a peer (`ReconcileFromPeerAsync`, refused on a
+  dictionary-epoch mismatch), and serves its own sketch (`CreateSketchFetch`); a converged reconcile is written
+  back through the journal as an ordinary mutation. These are public methods on the facade today.
+- **Network governance is implemented and tested but not yet wired into the engine or CLI default.** The gate,
+  firewall, rate limiter, live policy chain, and governed transport decorators exist, but no composition root
+  constructs them in the shipped engine, so by default every call is permitted.
+- **The CLI surfaces neither.** It stays a thin query/serve surface; reconcile and governance commands are not
+  exposed there yet.
 
 ## Network governance
 
