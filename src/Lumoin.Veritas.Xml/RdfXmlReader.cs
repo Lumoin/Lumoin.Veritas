@@ -9,6 +9,7 @@ using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Iris;
 using Lumoin.Veritas.Core.Parsing;
+using Lumoin.Veritas.Core.Sourcing;
 
 namespace Lumoin.Veritas.Xml;
 
@@ -103,12 +104,21 @@ public static class RdfXmlReader
         return quads;
     }
 
-    /// <summary>Records a malformedness diagnostic.</summary>
+    /// <summary>Records a malformedness diagnostic with no source location (for a document-level failure, where no element is in hand).</summary>
     /// <param name="diagnostics">The bag.</param>
     /// <param name="message">The message.</param>
     private static void Report(DiagnosticBag diagnostics, string message)
     {
-        diagnostics.Add(new Diagnostic(MalformedCode, DiagnosticSeverity.Error, default, Utf8String.FromString(message)));
+        Report(diagnostics, message, default);
+    }
+
+    /// <summary>Records a malformedness diagnostic located at the span of the offending element.</summary>
+    /// <param name="diagnostics">The bag.</param>
+    /// <param name="message">The message.</param>
+    /// <param name="span">The source span of the element the violation is reported against.</param>
+    private static void Report(DiagnosticBag diagnostics, string message, SourceSpan span)
+    {
+        diagnostics.Add(new Diagnostic(MalformedCode, DiagnosticSeverity.Error, span, Utf8String.FromString(message)));
     }
 
     /// <summary>One unit of pending work: expand a node's child properties, or process one property element. <see cref="Version12"/> and <see cref="Direction"/> carry the inherited RDF 1.2 mode and base direction a parent walk would otherwise recover.</summary>
@@ -424,7 +434,7 @@ public static class RdfXmlReader
                 //literal content has no binding and fails to reparse. Rather than discard every quad in the document,
                 //record the failure and fall back to the verbatim content — a narrow, documented limitation for XML
                 //literals that abbreviate through DOCTYPE entities (which the W3C RDF/XML suite does not exercise).
-                Report(Diagnostics, $"rdf:parseType=\"Literal\" content could not be canonicalized (a DOCTYPE general-entity reference inside an XML literal is not expanded): {exception.Message}");
+                Report(Diagnostics, $"rdf:parseType=\"Literal\" content could not be canonicalized (a DOCTYPE general-entity reference inside an XML literal is not expanded): {exception.Message}", element.Span);
 
                 return content;
             }
@@ -583,7 +593,7 @@ public static class RdfXmlReader
                 XmlByteNode? inner = FirstChildElement(currentProperty);
                 if(inner is null)
                 {
-                    Report(Diagnostics, "rdf:parseType=\"Triple\" requires a single inner node element describing one triple.");
+                    Report(Diagnostics, "rdf:parseType=\"Triple\" requires a single inner node element describing one triple.", currentProperty.Span);
 
                     return null;
                 }
@@ -620,7 +630,7 @@ public static class RdfXmlReader
 
                 if((typed ? 1 : 0) + attributeProperties + childProperties != 1)
                 {
-                    Report(Diagnostics, "rdf:parseType=\"Triple\" requires its inner node element to describe exactly one triple.");
+                    Report(Diagnostics, "rdf:parseType=\"Triple\" requires its inner node element to describe exactly one triple.", inner.Span);
 
                     return null;
                 }
@@ -653,7 +663,7 @@ public static class RdfXmlReader
                     //the quoted-triple nesting cap; recording a diagnostic and stopping keeps the pending chain bounded.
                     if(pending.Count + 1 >= QuotedTripleLimits.MaxNestingDepth)
                     {
-                        Report(Diagnostics, "An RDF 1.2 quoted triple (rdf:parseType=\"Triple\") is nested deeper than the maximum nesting depth.");
+                        Report(Diagnostics, "An RDF 1.2 quoted triple (rdf:parseType=\"Triple\") is nested deeper than the maximum nesting depth.", property.Span);
 
                         return null;
                     }
@@ -707,7 +717,7 @@ public static class RdfXmlReader
         {
             if(IsForbiddenNodeElementName(element))
             {
-                Report(Diagnostics, $"'{element.LocalName}' is not a permitted node element name.");
+                Report(Diagnostics, $"'{element.LocalName}' is not a permitted node element name.", element.Span);
             }
 
             ValidateReservedAttributes(element);
@@ -716,18 +726,18 @@ public static class RdfXmlReader
             if(element.Attribute("ID"u8, RdfNs) is { } id)
             {
                 identity++;
-                ValidateId(id, @base);
+                ValidateId(id, @base, element.Span);
             }
 
             if(element.Attribute("nodeID"u8, RdfNs) is { } nodeId)
             {
                 identity++;
-                ValidateNcName(nodeId, "rdf:nodeID");
+                ValidateNcName(nodeId, "rdf:nodeID", element.Span);
             }
 
             if(identity > 1)
             {
-                Report(Diagnostics, "A node element may carry at most one of rdf:about, rdf:ID, rdf:nodeID.");
+                Report(Diagnostics, "A node element may carry at most one of rdf:about, rdf:ID, rdf:nodeID.", element.Span);
             }
         }
 
@@ -738,7 +748,7 @@ public static class RdfXmlReader
         {
             if(IsForbiddenPropertyElementName(element))
             {
-                Report(Diagnostics, $"'{element.LocalName}' is not a permitted property element name.");
+                Report(Diagnostics, $"'{element.LocalName}' is not a permitted property element name.", element.Span);
             }
 
             ValidateReservedAttributes(element);
@@ -746,21 +756,21 @@ public static class RdfXmlReader
             bool hasResource = element.Attribute("resource"u8, RdfNs) is not null;
             if(element.Attribute("nodeID"u8, RdfNs) is { } nodeId)
             {
-                ValidateNcName(nodeId, "rdf:nodeID");
+                ValidateNcName(nodeId, "rdf:nodeID", element.Span);
                 if(hasResource)
                 {
-                    Report(Diagnostics, "A property element may not carry both rdf:nodeID and rdf:resource.");
+                    Report(Diagnostics, "A property element may not carry both rdf:nodeID and rdf:resource.", element.Span);
                 }
             }
 
             if(element.Attribute("parseType"u8, RdfNs) is not null && hasResource)
             {
-                Report(Diagnostics, "A property element may not carry both rdf:parseType and rdf:resource.");
+                Report(Diagnostics, "A property element may not carry both rdf:parseType and rdf:resource.", element.Span);
             }
 
             if(element.Attribute("ID"u8, RdfNs) is { } reifyId)
             {
-                ValidateId(reifyId, @base);
+                ValidateId(reifyId, @base, element.Span);
             }
         }
 
@@ -772,7 +782,7 @@ public static class RdfXmlReader
             {
                 if(IsForbiddenAttributeName(attribute))
                 {
-                    Report(Diagnostics, $"'{attribute.LocalName}' is not permitted as an attribute.");
+                    Report(Diagnostics, $"'{attribute.LocalName}' is not permitted as an attribute.", element.Span);
                 }
             }
         }
@@ -780,25 +790,27 @@ public static class RdfXmlReader
         /// <summary>Validates an <c>rdf:ID</c> value: it must be an XML NCName and unique relative to its base.</summary>
         /// <param name="value">The rdf:ID value.</param>
         /// <param name="base">The base IRI in scope.</param>
-        private void ValidateId(Utf8String value, string? @base)
+        /// <param name="span">The source span of the element carrying the rdf:ID.</param>
+        private void ValidateId(Utf8String value, string? @base, SourceSpan span)
         {
-            ValidateNcName(value, "rdf:ID");
+            ValidateNcName(value, "rdf:ID", span);
 
             string resolved = Resolve(@base, ConcatUtf8("#"u8, value.Span)).ToString();
             if(!IssuedIds.Add(resolved))
             {
-                Report(Diagnostics, $"rdf:ID '{value}' is defined more than once relative to the same base.");
+                Report(Diagnostics, $"rdf:ID '{value}' is defined more than once relative to the same base.", span);
             }
         }
 
         /// <summary>Records an error when a value is not a valid XML NCName (the production <c>rdf:ID</c> / <c>rdf:nodeID</c> values must match).</summary>
         /// <param name="value">The value to check.</param>
         /// <param name="attribute">The attribute name, for the diagnostic message.</param>
-        private void ValidateNcName(Utf8String value, string attribute)
+        /// <param name="span">The source span of the element carrying the value.</param>
+        private void ValidateNcName(Utf8String value, string attribute, SourceSpan span)
         {
             if(!IsNcName(value.Span))
             {
-                Report(Diagnostics, $"The value of {attribute} ('{value}') is not a valid XML NCName.");
+                Report(Diagnostics, $"The value of {attribute} ('{value}') is not a valid XML NCName.", span);
             }
         }
 

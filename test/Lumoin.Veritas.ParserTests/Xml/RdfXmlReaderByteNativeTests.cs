@@ -63,4 +63,20 @@ internal sealed class RdfXmlReaderByteNativeTests
 
         Assert.IsTrue(plainSurvives, "the ex:plain statement must survive the unprocessable literal rather than the whole document being discarded");
     }
+
+    /// <summary>A located grammar violation records its diagnostic at the span of the offending element, not the empty default span.</summary>
+    [TestMethod]
+    public void LocatedDiagnosticCarriesTheOffendingElementSpan()
+    {
+        string xml = "<rdf:RDF " + RdfXmlns + "><rdf:Description rdf:about=\"http://e/s\" rdf:nodeID=\"n\"/></rdf:RDF>";
+
+        DiagnosticBag diagnostics = new();
+        _ = RdfXmlReader.Read(Encoding.UTF8.GetBytes(xml), diagnostics, baseIri: null);
+
+        Assert.IsTrue(diagnostics.HasErrors, "a node element carrying both rdf:about and rdf:nodeID must record a diagnostic");
+
+        Diagnostic diagnostic = diagnostics.Diagnostics[0];
+        Assert.IsGreaterThan(0, diagnostic.Span.StartByte, "the diagnostic locates the offending element, not the document start.");
+        Assert.IsGreaterThan(diagnostic.Span.StartByte, diagnostic.Span.EndByte, "the diagnostic span covers the offending element.");
+    }
 }
