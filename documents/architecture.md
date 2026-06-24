@@ -7,7 +7,7 @@ and pending). For the live work ledger see `HANDOFF.md`; for measured numbers se
 outputs and HANDOFF's tables — this document deliberately carries no benchmark figures, because
 they go stale here and stay current there.
 
-Last revised: 2026-06-12.
+Last revised: 2026-06-24.
 
 ---
 
@@ -134,12 +134,27 @@ in-driver delegate seam measured as a regression and was reverted; the rule is r
 
 ### 3.6 Reading and writing RDF
 
-Turtle/TriG reading is byte-incremental end to end: an async lexer over a pipe reader, a
-per-statement emitter, and a coroutine-suspending parser, so peak memory tracks the largest
-single statement. A whole-document variant returns a navigable AST with source spans (the
-editor/provenance pathway). N-Quads, RDF/XML, JSON-LD, and canonicalization round out the
-interchange family; CBOR/DAG-CBOR and content identifiers serve the linked-data and
-content-addressing paths.
+The interchange front end is **byte-native end to end**: every reader scans UTF-8 directly, with
+no UTF-16 or DOM round-trip. The reading shape follows who *produces* the format. A
+human-authored grammar is editor-incremental — fed chunk by chunk through a `Feed`/`Status`/
+`Complete` surface that reports completeness as a value (an unfinished tail is *needs-more*, never
+an error) and yields a navigable AST with source spans (the editor/provenance pathway); this is
+shared across the authored grammars (Turtle, the three OWL syntaxes, and — in the query and JSON
+families — SPARQL and Jsonata). A machine-produced format is forward-streaming or whole-DOM.
+
+Turtle/TriG reading is byte-incremental: an async lexer over a pipe reader, a per-statement
+emitter, and a coroutine-suspending parser, so peak memory tracks the largest single statement;
+a whole-document variant and the editor-incremental reader both return the navigable AST.
+
+RDF/XML and SPARQL-results XML share **one** byte-native XML scanner: the whole-buffer readers
+fold its event stream into an element tree, while a forward-streaming mode hands each completed
+top-level subtree to the reader and then reclaims the scanner's consumed buffer, so peak memory
+tracks a single subtree rather than the document — the bounded-memory property Turtle has per
+statement, validated by a streaming-equals-buffered differential oracle. XML-literal
+canonicalization is byte-native as well; the front end carries no XML DOM dependency, and only the
+optional strict Canonical XML 1.0 variant reaches for the platform XML libraries. N-Quads,
+JSON-LD, and dataset canonicalization round out the interchange family; CBOR/DAG-CBOR and content
+identifiers serve the linked-data and content-addressing paths.
 
 ---
 
