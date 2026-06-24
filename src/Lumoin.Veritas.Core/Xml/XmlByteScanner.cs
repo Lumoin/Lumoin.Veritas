@@ -137,6 +137,21 @@ public sealed class XmlByteScanner
         return Map.Span(startByte, endByte);
     }
 
+    /// <summary>
+    /// A window over a half-open byte range of the document the scanner has consumed so far, indexed by the same
+    /// <b>absolute</b> offsets the scan events carry. A streaming consumer slices an element's verbatim inner content
+    /// (an <c>rdf:parseType="Literal"</c> capture window) from the scanner directly, rather than retaining the input
+    /// span itself. The offsets stay valid for the scanner's lifetime: the buffer grows by doubling and is never
+    /// compacted, so a committed range never moves (see the <see cref="XmlByteScanner"/> buffer note).
+    /// </summary>
+    /// <param name="start">The inclusive start byte offset (an absolute document offset).</param>
+    /// <param name="length">The range length in bytes.</param>
+    /// <returns>The bytes of the range, as a window over the scanner's buffer.</returns>
+    public ReadOnlyMemory<byte> Window(int start, int length)
+    {
+        return Buffer.AsMemory(start, length);
+    }
+
     /// <summary>The outcome of one resumable scanning step.</summary>
     private enum LexStep
     {

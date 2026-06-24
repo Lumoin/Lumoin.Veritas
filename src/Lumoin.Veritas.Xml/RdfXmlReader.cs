@@ -10,6 +10,7 @@ using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Iris;
 using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Core.Sourcing;
+using Lumoin.Veritas.Core.Xml;
 
 namespace Lumoin.Veritas.Xml;
 
@@ -94,7 +95,51 @@ public static class RdfXmlReader
 
         try
         {
-            new Walker(quads, diagnostics, canonicalizer, source).Walk(root, baseIri);
+            new Walker(quads, diagnostics, canonicalizer, source, literalScanner: null).Walk(root, baseIri);
+        }
+        catch(Exception exception) when(exception is UriFormatException or FormatException or ArgumentException or InvalidOperationException or XmlException)
+        {
+            Report(diagnostics, $"Malformed RDF/XML: {exception.Message}");
+        }
+
+        return quads;
+    }
+
+    /// <summary>
+    /// Reads the RDF/XML document into quads by forward-streaming it: each top-level node element (a direct child of
+    /// <c>rdf:RDF</c>, or the single document element when the root is a node element) is walked and discarded as it
+    /// completes, so the live element tree never exceeds one such subtree. The quads it produces are the same RDF graph
+    /// the buffered <see cref="Read"/> produces.
+    /// </summary>
+    /// <remarks>
+    /// The element tree and the scanner's event queue are bounded to one top-level subtree; the scanner's byte buffer
+    /// is not compacted, so the document's bytes stay resident (the buffer bound is a separate, deferred concern). An
+    /// <c>rdf:parseType="Literal"</c> value is recovered by slicing the scanner's buffer at the literal element's
+    /// absolute offsets, which stay valid because the buffer never moves.
+    /// </remarks>
+    /// <param name="source">The document bytes (UTF-8 / per the XML declaration).</param>
+    /// <param name="diagnostics">The bag malformedness is recorded in.</param>
+    /// <param name="baseIri">The base IRI relative references resolve against, or <see langword="null"/>.</param>
+    /// <param name="xmlLiteralCanonicalizer">The strategy that canonicalizes <c>rdf:parseType="Literal"</c> content; defaults to <see cref="XmlLiteralCanonicalizers.DocumentOrder"/>.</param>
+    /// <returns>The parsed quads (the default graph; RDF/XML has no named graphs).</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="diagnostics"/> is <see langword="null"/>.</exception>
+    public static IReadOnlyList<Quad> ReadStreaming(ReadOnlyMemory<byte> source, DiagnosticBag diagnostics, string? baseIri = null, XmlLiteralCanonicalizer? xmlLiteralCanonicalizer = null)
+    {
+        ArgumentNullException.ThrowIfNull(diagnostics);
+
+        XmlLiteralCanonicalizer canonicalizer = xmlLiteralCanonicalizer ?? XmlLiteralCanonicalizers.DocumentOrder;
+
+        List<Quad> quads = [];
+
+        //The internal subset is parsed (XXE-safe: external resolution stays off, amplification is bounded), matching
+        //the buffered Read; the scanner is owned here so the walker can slice an XML literal's bytes from it.
+        XmlByteScanner scanner = new(XmlScanStrictness.Strict, parseInternalDtd: true);
+        Walker walker = new(quads, diagnostics, canonicalizer, source: default, literalScanner: scanner);
+        walker.BeginStreaming(baseIri);
+        try
+        {
+            XmlByteNode root = XmlByteReader.StreamContainer(scanner, source, Walker.IsRdfContainer, walker.OnContainerMatched, walker.OnStreamedSubtree);
+            walker.FinishStreaming(root, baseIri);
         }
         catch(Exception exception) when(exception is UriFormatException or FormatException or ArgumentException or InvalidOperationException or XmlException)
         {
@@ -124,8 +169,11 @@ public static class RdfXmlReader
     /// <summary>One unit of pending work: expand a node's child properties, or process one property element. <see cref="Version12"/> and <see cref="Direction"/> carry the inherited RDF 1.2 mode and base direction a parent walk would otherwise recover.</summary>
     private readonly record struct WorkItem(bool ExpandNode, XmlByteNode Element, RdfTerm Subject, NamedNode? Predicate, string? Base, string? Lang, bool Version12, TextDirection? Direction);
 
+    /// <summary>The document-root scope a top-level node element inherits — the base IRI, language, RDF 1.2 mode, and base direction in effect at the document element (or <c>rdf:RDF</c>) — computed once and threaded into each top-level node element by both the buffered and streaming walks.</summary>
+    private readonly record struct RootContext(string? Base, string? Lang, bool Version12, TextDirection? Direction);
+
     /// <summary>The explicit-stack walker that emits quads from the element tree.</summary>
-    private sealed class Walker(List<Quad> quads, DiagnosticBag diagnostics, XmlLiteralCanonicalizer xmlLiteralCanonicalizer, ReadOnlyMemory<byte> source)
+    private sealed class Walker(List<Quad> quads, DiagnosticBag diagnostics, XmlLiteralCanonicalizer xmlLiteralCanonicalizer, ReadOnlyMemory<byte> source, XmlByteScanner? literalScanner)
     {
         private List<Quad> Quads { get; } = quads;
 
@@ -134,8 +182,20 @@ public static class RdfXmlReader
         /// <summary>The strategy that canonicalizes <c>rdf:parseType="Literal"</c> content into an XML literal's lexical form.</summary>
         private XmlLiteralCanonicalizer Canonicalizer { get; } = xmlLiteralCanonicalizer;
 
-        /// <summary>The document bytes, sliced verbatim to recover an XML literal's inner markup.</summary>
+        /// <summary>The document bytes the buffered walk slices verbatim to recover an XML literal's inner markup; unused (default) on the streaming walk, which slices <see cref="LiteralScanner"/> instead.</summary>
         private ReadOnlyMemory<byte> Source { get; } = source;
+
+        /// <summary>The scanner the streaming walk slices an XML literal's verbatim inner bytes from, by absolute offset over its uncompacted buffer; <see langword="null"/> on the buffered walk.</summary>
+        private XmlByteScanner? LiteralScanner { get; } = literalScanner;
+
+        /// <summary>The base IRI the streaming walk resolves references against, captured before streaming begins.</summary>
+        private string? StreamingBaseIri { get; set; }
+
+        /// <summary>The root scope the streaming walk threads into each streamed top-level node element, captured from the <c>rdf:RDF</c> element.</summary>
+        private RootContext StreamingContext { get; set; }
+
+        /// <summary>Whether the streaming walk matched an <c>rdf:RDF</c> container (so its children streamed); when it did not, the single document element is walked at the end instead.</summary>
+        private bool MatchedRdf { get; set; }
 
         /// <summary>The set of rdf:ID-derived IRIs already seen, used to reject a duplicate rdf:ID relative to one base.</summary>
         private HashSet<string> IssuedIds { get; } = new(StringComparer.Ordinal);
@@ -147,24 +207,27 @@ public static class RdfXmlReader
         /// <param name="baseIri">The document base IRI, or <see langword="null"/>.</param>
         public void Walk(XmlByteNode root, string? baseIri)
         {
-            string? rootBase = AttributeBase(root, baseIri);
-            string? rootLang = AttributeLang(root, null);
-            bool rootVersion12 = ScopeVersion12(false, root);
-            TextDirection? rootDirection = ScopeDirection(null, root);
-
-            Stack<WorkItem> stack = new();
+            RootContext context = ContextFrom(root, baseIri);
             if(root.Matches("RDF"u8, RdfNs))
             {
                 foreach(XmlByteNode child in root.Children)
                 {
-                    PushNode(stack, child, rootBase, rootLang, rootVersion12, rootDirection);
+                    WalkNode(child, context);
                 }
             }
             else
             {
-                PushNode(stack, root, rootBase, rootLang, rootVersion12, rootDirection);
+                WalkNode(root, context);
             }
+        }
 
+        /// <summary>Walks one top-level node element to completion over its own work stack, emitting its quads. Shared by the buffered walk (called per top-level child in document order) and the streaming walk (called per child as it completes), so both produce the identical quad sequence; the cross-subtree state (<see cref="IssuedIds"/>, <c>blankCounter</c>) lives on this instance and is threaded across calls.</summary>
+        /// <param name="node">The top-level node element.</param>
+        /// <param name="context">The root scope the node inherits.</param>
+        private void WalkNode(XmlByteNode node, RootContext context)
+        {
+            Stack<WorkItem> stack = new();
+            PushNode(stack, node, context.Base, context.Lang, context.Version12, context.Direction);
             while(stack.Count > 0)
             {
                 WorkItem item = stack.Pop();
@@ -177,6 +240,57 @@ public static class RdfXmlReader
                     ProcessProperty(stack, item.Subject, item.Element, item.Predicate!, item.Base, item.Lang, item.Version12, item.Direction);
                 }
             }
+        }
+
+        /// <summary>Records the base IRI the streaming walk resolves references against.</summary>
+        /// <param name="baseIri">The document base IRI, or <see langword="null"/>.</param>
+        public void BeginStreaming(string? baseIri)
+        {
+            StreamingBaseIri = baseIri;
+        }
+
+        /// <summary>The streaming container predicate: the document element (depth 0) when it is <c>rdf:RDF</c>, whose direct children are the streamed top-level node elements.</summary>
+        /// <param name="node">The candidate container element.</param>
+        /// <param name="depth">The element's zero-based depth.</param>
+        /// <returns><see langword="true"/> when the element is the <c>rdf:RDF</c> document element.</returns>
+        public static bool IsRdfContainer(XmlByteNode node, int depth)
+        {
+            return depth == 0 && node.Matches("RDF"u8, RdfNs);
+        }
+
+        /// <summary>Captures the root scope from the matched <c>rdf:RDF</c> element so each streamed child inherits it.</summary>
+        /// <param name="container">The <c>rdf:RDF</c> element.</param>
+        public void OnContainerMatched(XmlByteNode container)
+        {
+            MatchedRdf = true;
+            StreamingContext = ContextFrom(container, StreamingBaseIri);
+        }
+
+        /// <summary>Walks one streamed top-level node element (a direct child of <c>rdf:RDF</c>).</summary>
+        /// <param name="node">The completed top-level node element.</param>
+        public void OnStreamedSubtree(XmlByteNode node)
+        {
+            WalkNode(node, StreamingContext);
+        }
+
+        /// <summary>Finishes the streaming walk: a document whose root is a single node element (not <c>rdf:RDF</c>) is walked once here, since its content did not stream as the children of an <c>rdf:RDF</c> container. The single-root and open-balance well-formedness was already enforced by <see cref="XmlByteReader.StreamContainer"/>.</summary>
+        /// <param name="root">The document's single root element.</param>
+        /// <param name="baseIri">The document base IRI, or <see langword="null"/>.</param>
+        public void FinishStreaming(XmlByteNode root, string? baseIri)
+        {
+            if(!MatchedRdf)
+            {
+                WalkNode(root, ContextFrom(root, baseIri));
+            }
+        }
+
+        /// <summary>Builds the root scope inherited by a top-level node element from the document element's own <c>xml:base</c>/<c>xml:lang</c>/<c>rdf:version</c>/<c>its:dir</c>.</summary>
+        /// <param name="element">The document element (or <c>rdf:RDF</c>).</param>
+        /// <param name="baseIri">The document base IRI, or <see langword="null"/>.</param>
+        /// <returns>The root scope.</returns>
+        private static RootContext ContextFrom(XmlByteNode element, string? baseIri)
+        {
+            return new RootContext(AttributeBase(element, baseIri), AttributeLang(element, null), ScopeVersion12(false, element), ScopeDirection(null, element));
         }
 
         /// <summary>Determines a node element's subject, emits its type and property-attribute statements, and schedules its child properties.</summary>
@@ -381,6 +495,18 @@ public static class RdfXmlReader
             return head;
         }
 
+        /// <summary>The verbatim inner content bytes of an XML-literal element: sliced from the streaming scanner's buffer by absolute offset when streaming (the buffer never moves, so the offsets stay valid), or from the document <see cref="Source"/> when buffered.</summary>
+        /// <param name="element">The literal property element.</param>
+        /// <returns>the element's raw inner content bytes (entity references and CDATA undecoded).</returns>
+        private ReadOnlyMemory<byte> LiteralBytes(XmlByteNode element)
+        {
+            int length = element.ContentEnd - element.ContentStart;
+
+            return LiteralScanner is { } scanner
+                ? scanner.Window(element.ContentStart, length)
+                : Source.Slice(element.ContentStart, length);
+        }
+
         /// <summary>Canonicalizes an <c>rdf:parseType="Literal"</c> element's content into the lexical form of an <c>rdf:XMLLiteral</c>.</summary>
         /// <param name="element">The literal property element.</param>
         /// <returns>The canonical XML form of the element's content.</returns>
@@ -395,7 +521,7 @@ public static class RdfXmlReader
         /// </remarks>
         private string CanonicalizeXmlLiteral(XmlByteNode element)
         {
-            string content = Encoding.UTF8.GetString(Source.Span.Slice(element.ContentStart, element.ContentEnd - element.ContentStart));
+            string content = Encoding.UTF8.GetString(LiteralBytes(element).Span);
 
             StringBuilder builder = new();
             builder.Append("<rdf-xml-literal");

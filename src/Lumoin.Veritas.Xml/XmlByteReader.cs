@@ -67,15 +67,56 @@ public static class XmlByteReader
         scanner.Complete();
 
         Folder folder = new(scanner);
-        while(scanner.TryDequeue(out XmlScanEvent scanEvent))
+        folder.DrainInto();
+
+        return folder.Result();
+    }
+
+    /// <summary>The chunk size, in bytes, the streaming fold feeds the scanner so its event queue and the live tree stay bounded while the whole document is consumed.</summary>
+    private const int StreamingChunkSize = 8192;
+
+    /// <summary>
+    /// Forward-streams a UTF-8 XML document: it folds the scanner's event stream with a bounded active path, handing
+    /// each completed direct child subtree of the matched container element to <paramref name="onSubtree"/> and then
+    /// discarding it, so the live <see cref="XmlByteNode"/> tree never exceeds one such subtree. The document is fed to
+    /// the scanner in bounded chunks so its event queue stays bounded too. The scanner's byte buffer is not compacted,
+    /// so a consumer may slice an element's verbatim inner bytes from <see cref="XmlByteScanner.Window"/> by absolute
+    /// offset while walking a subtree; the whole document's bytes stay resident (a separate, deferred concern).
+    /// </summary>
+    /// <param name="scanner">The scanner to drive; the caller owns it so it can also slice literal windows from it.</param>
+    /// <param name="utf8">The document bytes.</param>
+    /// <param name="isContainer">The predicate (resolved element, zero-based depth) that marks the first container element whose direct children stream.</param>
+    /// <param name="onContainerMatched">A callback invoked once with the container element when matched (before its children arrive) — e.g. to capture inherited context from its attributes — or <see langword="null"/>.</param>
+    /// <param name="onSubtree">The callback invoked with each completed direct child subtree of the container, in document order.</param>
+    /// <returns>The document's single root element (with the container's streamed children already detached).</returns>
+    /// <exception cref="FormatException">The document is not well-formed — an unclosed element, or no single root element. The streaming fold enforces the same structural well-formedness the buffered <see cref="Read(System.ReadOnlySpan{byte})"/> does (the container's detached children leave the document root as the synthetic root's sole child, so the single-root and open-balance checks still apply).</exception>
+    internal static XmlByteNode StreamContainer(XmlByteScanner scanner, ReadOnlyMemory<byte> utf8, Func<XmlByteNode, int, bool> isContainer, Action<XmlByteNode>? onContainerMatched, Action<XmlByteNode> onSubtree)
+    {
+        Folder folder = new(scanner, isContainer, onContainerMatched, onSubtree);
+        int offset = 0;
+        while(offset < utf8.Length)
         {
-            folder.Apply(scanEvent);
+            int length = Math.Min(StreamingChunkSize, utf8.Length - offset);
+            scanner.Feed(utf8.Span.Slice(offset, length));
+            folder.DrainInto();
+            offset += length;
         }
+
+        scanner.Complete();
+        folder.DrainInto();
 
         return folder.Result();
     }
 
     /// <summary>The stateful fold of the scanner's event stream into an element tree: the open-element and namespace-scope stacks.</summary>
+    /// <remarks>
+    /// In its default (whole-buffer) shape the fold accumulates every element under <see cref="Root"/> and
+    /// <see cref="Result"/> returns the single document element. In its streaming shape — a container predicate plus a
+    /// per-subtree callback — each completed direct child of the matched container element is handed to the callback and
+    /// then detached from the container, so the live tree never exceeds one such subtree (the memory bound the
+    /// forward-streaming consumers rely on; the scanner's byte buffer itself is a separate concern and is not bounded
+    /// here).
+    /// </remarks>
     private sealed class Folder
     {
         /// <summary>The scanner the fold resolves byte offsets through into source spans.</summary>
@@ -93,14 +134,48 @@ public static class XmlByteReader
         /// <summary>The in-scope namespace bindings in document declaration order, one frame per open element, parallel to <see cref="Scopes"/>; a frame is shared with its parent when the element declares no namespaces.</summary>
         private Stack<IReadOnlyList<XmlNamespaceBinding>> OrderedScopes { get; } = new();
 
-        /// <summary>Seeds the fold with the synthetic root and its empty namespace scope.</summary>
+        /// <summary>The predicate that, for the first matching element (by resolved node and zero-based depth), marks the element whose direct children stream, or <see langword="null"/> in the whole-buffer shape.</summary>
+        private Func<XmlByteNode, int, bool>? ContainerPredicate { get; }
+
+        /// <summary>The callback invoked once with the streaming container element when it is matched (before its children arrive), or <see langword="null"/>.</summary>
+        private Action<XmlByteNode>? OnContainerMatched { get; }
+
+        /// <summary>The callback invoked with each completed direct child subtree of the streaming container, or <see langword="null"/> in the whole-buffer shape.</summary>
+        private Action<XmlByteNode>? OnSubtree { get; }
+
+        /// <summary>The matched streaming container element whose children stream, once seen; <see langword="null"/> until then.</summary>
+        private XmlByteNode? Container { get; set; }
+
+        /// <summary>Seeds the fold with the synthetic root and its empty namespace scope (the whole-buffer shape).</summary>
         /// <param name="scanner">The scanner whose offsets the fold resolves to spans.</param>
         public Folder(XmlByteScanner scanner)
+            : this(scanner, null, null, null)
+        {
+        }
+
+        /// <summary>Seeds the fold, optionally in its streaming shape.</summary>
+        /// <param name="scanner">The scanner whose offsets the fold resolves to spans.</param>
+        /// <param name="containerPredicate">The predicate marking the streaming container element, or <see langword="null"/> for the whole-buffer shape.</param>
+        /// <param name="onContainerMatched">The callback invoked when the container is matched (before its children arrive), or <see langword="null"/>.</param>
+        /// <param name="onSubtree">The callback invoked with each completed direct child subtree of the container, or <see langword="null"/> for the whole-buffer shape.</param>
+        public Folder(XmlByteScanner scanner, Func<XmlByteNode, int, bool>? containerPredicate, Action<XmlByteNode>? onContainerMatched, Action<XmlByteNode>? onSubtree)
         {
             Scanner = scanner;
+            ContainerPredicate = containerPredicate;
+            OnContainerMatched = onContainerMatched;
+            OnSubtree = onSubtree;
             Open.Push(Root);
             Scopes.Push([]);
             OrderedScopes.Push(EmptyBindings);
+        }
+
+        /// <summary>Folds every event the scanner has emitted and not yet been drained into the tree.</summary>
+        public void DrainInto()
+        {
+            while(Scanner.TryDequeue(out XmlScanEvent scanEvent))
+            {
+                Apply(scanEvent);
+            }
         }
 
         /// <summary>Applies one scan event to the tree; the end-of-document event needs no folding.</summary>
@@ -126,6 +201,7 @@ public static class XmlByteReader
         /// <param name="scanEvent">The start-element event.</param>
         private void ApplyStartElement(XmlScanEvent scanEvent)
         {
+            int depth = Open.Count - 1;
             (Dictionary<Utf8String, Utf8String> scope, List<XmlNamespaceBinding>? local) = BindScope(scanEvent.Attributes);
             IReadOnlyList<XmlNamespaceBinding> ordered = local is null ? OrderedScopes.Peek() : MergeOrdered(OrderedScopes.Peek(), local);
             ReadOnlySpan<byte> qualified = scanEvent.Name.Span;
@@ -151,12 +227,26 @@ public static class XmlByteReader
                 node.Attributes.Add(new XmlByteAttribute(LocalName(name), ResolveAttributeNamespace(name, scope), attribute.Value));
             }
 
-            Open.Peek().Children.Add(node);
+            XmlByteNode parent = Open.Peek();
+            parent.Children.Add(node);
+
+            if(Container is null && ContainerPredicate is not null && ContainerPredicate(node, depth))
+            {
+                Container = node;
+                OnContainerMatched?.Invoke(node);
+            }
+
             if(!scanEvent.IsEmpty)
             {
                 Open.Push(node);
                 Scopes.Push(scope);
                 OrderedScopes.Push(ordered);
+            }
+            else if(OnSubtree is not null && ReferenceEquals(parent, Container))
+            {
+                //A self-closing child of the streaming container completes at its start tag (it has no end tag), so
+                //it is handed over and detached here rather than in ApplyEndElement.
+                YieldSubtree(parent, node);
             }
         }
 
@@ -181,6 +271,20 @@ public static class XmlByteReader
             Open.Pop();
             Scopes.Pop();
             OrderedScopes.Pop();
+
+            if(OnSubtree is not null && ReferenceEquals(Open.Peek(), Container))
+            {
+                YieldSubtree(Container, node);
+            }
+        }
+
+        /// <summary>Hands a completed direct child subtree of the streaming container to the callback, then detaches it from the container so the live tree never holds more than the current subtree.</summary>
+        /// <param name="container">The streaming container.</param>
+        /// <param name="subtree">The completed child subtree, the most recently added child of the container.</param>
+        private void YieldSubtree(XmlByteNode container, XmlByteNode subtree)
+        {
+            OnSubtree!(subtree);
+            container.Children.RemoveAt(container.Children.Count - 1);
         }
 
         /// <summary>Returns the document element once the whole event stream is folded.</summary>
@@ -225,6 +329,14 @@ public static class XmlByteReader
             }
 
             XmlByteNode node = Open.Peek();
+            if(ReferenceEquals(node, Container))
+            {
+                //Streaming: character data directly under the long-lived container (inter-child whitespace and
+                //comments) is discarded rather than accumulated, so the container node stays bounded. The walking
+                //consumers never read the container element's own text.
+                return;
+            }
+
             node.Text = node.Text.IsEmpty ? content : Concat(node.Text, content);
         }
 
