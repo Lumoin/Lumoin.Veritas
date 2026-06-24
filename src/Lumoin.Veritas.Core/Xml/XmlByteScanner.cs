@@ -25,10 +25,13 @@ namespace Lumoin.Veritas.Core.Xml;
 /// (§3.3.3) while reference-introduced whitespace is preserved.
 /// </para>
 /// <para>
-/// The scanner is <b>strict</b>: a malformed token — an unterminated construct once the input is final, a stray
-/// <c>&lt;</c>, a bad reference, a duplicate attribute, an impermissible DTD — throws <see cref="FormatException"/>,
-/// matching the well-formedness contract the front-end readers present. Structural well-formedness that spans tokens
-/// (a mismatched or orphaned end tag, an unclosed or absent root) is the folding consumer's concern, not the scanner's.
+/// A malformed token — an unterminated construct once the input is final, a stray <c>&lt;</c>, a bad reference, a
+/// duplicate attribute, an impermissible DTD — throws <see cref="FormatException"/> under
+/// <see cref="XmlScanStrictness.Strict"/> (the well-formedness contract the RDF/XML and SPARQL-results readers present)
+/// or is recovered from silently under <see cref="XmlScanStrictness.Lenient"/> (the value-based contract the OWL editor
+/// surfaces present: a bare <c>&amp;</c> stays literal, an undefined entity drops, an unterminated tail is abandoned).
+/// Structural well-formedness that spans tokens (a mismatched or orphaned end tag, an unclosed or absent root) is the
+/// folding consumer's concern under either mode.
 /// </para>
 /// </remarks>
 public sealed class XmlByteScanner
@@ -66,13 +69,18 @@ public sealed class XmlByteScanner
     /// <summary>Whether the DOCTYPE internal subset's general entities are parsed and expanded, as opposed to any DTD being rejected.</summary>
     private bool ParseInternalDtd { get; }
 
+    /// <summary>How the scanner reacts to a malformed token: throwing (strict) or recovering silently (lenient).</summary>
+    private XmlScanStrictness Strictness { get; }
+
     /// <summary>The events scanned and not yet dequeued by the consumer, in document order.</summary>
     private Queue<XmlScanEvent> Events { get; } = new();
 
     /// <summary>Initialises an empty scanner; feed source bytes through <see cref="Feed"/>.</summary>
+    /// <param name="strictness">Whether a malformed token throws (<see cref="XmlScanStrictness.Strict"/>) or is recovered from silently (<see cref="XmlScanStrictness.Lenient"/>).</param>
     /// <param name="parseInternalDtd">When <see langword="true"/>, parse the internal subset's <c>&lt;!ENTITY&gt;</c> declarations and expand <c>&amp;name;</c> references (external resolution stays off); when <see langword="false"/>, reject any DTD.</param>
-    public XmlByteScanner(bool parseInternalDtd)
+    public XmlByteScanner(XmlScanStrictness strictness, bool parseInternalDtd)
     {
+        Strictness = strictness;
         ParseInternalDtd = parseInternalDtd;
     }
 
@@ -262,7 +270,13 @@ public sealed class XmlByteScanner
             return TryScanDoctype(text, start);
         }
 
-        throw new FormatException("XML document declares a DTD, which is not permitted.");
+        if(Strictness == XmlScanStrictness.Strict)
+        {
+            throw new FormatException("XML document declares a DTD, which is not permitted.");
+        }
+
+        //Lenient: an unrecognised or impermissible declaration carries no tree content and is skipped to its '>'.
+        return TrySkipDelimited(text, start, ">"u8);
     }
 
     /// <summary>Scans a CDATA section, emitting its line-ending-normalized verbatim content as character data.</summary>
@@ -343,9 +357,11 @@ public sealed class XmlByteScanner
                 int valueEnd = IndexOfByte(text, valueStart, end, quote);
                 if(valueEnd >= 0 && name.Length > 0)
                 {
-                    //An entity's replacement text decodes predefined and numeric references once at registration;
-                    //general entities do not nest, so the replacement is emitted verbatim on reference.
-                    Entities[new Utf8String(name.ToArray())] = Decode(valueStart, valueEnd - valueStart, expandGeneral: false, NormalizationMode.Text);
+                    //An entity's replacement text decodes predefined and numeric references once at registration. Under
+                    //lenient mode a general-entity reference to an already-declared entity expands here too (so a nested
+                    //declaration resolves), matching the OWL reader; strict mode registers it one-level (the replacement
+                    //is emitted verbatim on reference), matching the RDF/XML reader.
+                    Entities[new Utf8String(name.ToArray())] = Decode(valueStart, valueEnd - valueStart, expandGeneral: Strictness == XmlScanStrictness.Lenient, NormalizationMode.Text);
                     cursor = valueEnd + 1;
                 }
             }
@@ -375,7 +391,11 @@ public sealed class XmlByteScanner
         }
 
         List<XmlScanAttribute> attributes = ParseAttributes(text, nameEnd, empty ? close - 1 : close);
-        EnsureNoDuplicateAttributes(attributes);
+        if(Strictness == XmlScanStrictness.Strict)
+        {
+            EnsureNoDuplicateAttributes(attributes);
+        }
+
         Utf8String name = new(Buffer.AsMemory(nameStart, nameEnd - nameStart));
         Events.Enqueue(XmlScanEvent.StartElement(name, attributes, empty, start, close));
         if(!empty)
@@ -448,8 +468,9 @@ public sealed class XmlByteScanner
     /// <returns>The scan outcome.</returns>
     private LexStep TrySkipDelimited(ReadOnlySpan<byte> text, int start, ReadOnlySpan<byte> closing)
     {
-        //The closing delimiter is sought from two bytes past the opening '<', tolerating an opening/closing overlap
-        //(so an empty '<!-->' comment closes on the '-->' that overlaps its own dashes), matching the prior reader.
+        //The closing delimiter is sought from two bytes past the opening '<', tolerating an opening/closing overlap: an
+        //empty '<!-->' comment closes on the '-->' that overlaps its own dashes, the overlap the whole-buffer RDF/XML
+        //reader has always permitted. (A consumer that wants a stricter comment shape rejects it after the fact.)
         int close = IndexOf(text, start + 2, closing);
         if(close < 0)
         {
@@ -463,8 +484,8 @@ public sealed class XmlByteScanner
     /// <param name="text">The buffer bytes fed so far.</param>
     /// <param name="from">The offset just past the element name.</param>
     /// <param name="to">The offset of the tag's closing delimiter.</param>
-    /// <returns>The parsed attributes, in document order.</returns>
-    /// <exception cref="FormatException">An attribute is malformed (no '=' or unterminated value).</exception>
+    /// <returns>The parsed attributes, in document order (truncated at the first malformed attribute under lenient mode).</returns>
+    /// <exception cref="FormatException">An attribute is malformed (no '=' or unterminated value) under strict mode.</exception>
     private List<XmlScanAttribute> ParseAttributes(ReadOnlySpan<byte> text, int from, int to)
     {
         List<XmlScanAttribute> attributes = [];
@@ -481,13 +502,13 @@ public sealed class XmlByteScanner
             i = SkipWhitespace(text, i, to);
             if(i >= to || text[i] != (byte)'=')
             {
-                throw new FormatException("XML attribute is missing its '='.");
+                return StopAttributes(attributes, "XML attribute is missing its '='.");
             }
 
             i = SkipWhitespace(text, i + 1, to);
             if(i >= to || (text[i] != (byte)'"' && text[i] != (byte)'\''))
             {
-                throw new FormatException("XML attribute value is not quoted.");
+                return StopAttributes(attributes, "XML attribute value is not quoted.");
             }
 
             byte quote = text[i];
@@ -495,13 +516,28 @@ public sealed class XmlByteScanner
             int valueEnd = IndexOfByte(text, valueStart, to, quote);
             if(valueEnd < 0)
             {
-                throw new FormatException("XML attribute value is unterminated.");
+                return StopAttributes(attributes, "XML attribute value is unterminated.");
             }
 
             Utf8String name = new(Buffer.AsMemory(nameStart, nameEnd - nameStart));
             Utf8String value = Decode(valueStart, valueEnd - valueStart, expandGeneral: true, NormalizationMode.Attribute);
             attributes.Add(new XmlScanAttribute(name, value, nameStart, valueEnd + 1));
             i = SkipWhitespace(text, valueEnd + 1, to);
+        }
+
+        return attributes;
+    }
+
+    /// <summary>Handles a malformed attribute: throws under strict mode, or returns the attributes parsed so far under lenient mode (stopping at the malformed one).</summary>
+    /// <param name="attributes">The attributes parsed before the malformed one.</param>
+    /// <param name="message">The well-formedness message for strict mode.</param>
+    /// <returns>The attributes parsed so far, under lenient mode.</returns>
+    /// <exception cref="FormatException">The scanner is strict.</exception>
+    private List<XmlScanAttribute> StopAttributes(List<XmlScanAttribute> attributes, string message)
+    {
+        if(Strictness == XmlScanStrictness.Strict)
+        {
+            throw new FormatException(message);
         }
 
         return attributes;
@@ -544,18 +580,26 @@ public sealed class XmlByteScanner
         return LexStep.Unit;
     }
 
-    /// <summary>Decides whether an unfinished unit suspends for more bytes or, at a final input, is rejected.</summary>
-    /// <param name="unterminatedMessage">The well-formedness message thrown when the input is final.</param>
-    /// <returns><see cref="LexStep.NeedMore"/> when more input may arrive.</returns>
-    /// <exception cref="FormatException">The input is final, so the unit is permanently unterminated.</exception>
+    /// <summary>Decides whether an unfinished unit suspends for more bytes or, at a final input, is rejected (strict) or abandoned (lenient).</summary>
+    /// <param name="unterminatedMessage">The well-formedness message thrown when the input is final and strict.</param>
+    /// <returns><see cref="LexStep.NeedMore"/> when more input may arrive, or <see cref="LexStep.Exhausted"/> when a final input's tail is abandoned.</returns>
+    /// <exception cref="FormatException">The input is final and strict, so the unit is permanently unterminated.</exception>
     private LexStep Suspend(string unterminatedMessage)
     {
-        if(Final)
+        if(!Final)
+        {
+            return LexStep.NeedMore;
+        }
+
+        if(Strictness == XmlScanStrictness.Strict)
         {
             throw new FormatException(unterminatedMessage);
         }
 
-        return LexStep.NeedMore;
+        //Lenient: a permanently unterminated tail is abandoned silently; the consumer closes any element left open.
+        LexPosition = Length;
+
+        return LexStep.Exhausted;
     }
 
     /// <summary>Decodes a buffer range, resolving XML predefined and numeric references and (when permitted) general entities, and normalizing the range's literal whitespace per <paramref name="mode"/>; a range with neither a reference nor normalizable whitespace is a zero-copy window.</summary>
@@ -582,7 +626,15 @@ public sealed class XmlByteScanner
                 int semicolon = raw.Slice(i).IndexOf((byte)';');
                 if(semicolon < 0)
                 {
-                    throw new FormatException("XML value has an unterminated entity reference.");
+                    if(Strictness == XmlScanStrictness.Strict)
+                    {
+                        throw new FormatException("XML value has an unterminated entity reference.");
+                    }
+
+                    //Lenient: an unterminated reference stays literal — emit the rest of the run verbatim and stop.
+                    output.Write(raw.Slice(i));
+
+                    break;
                 }
 
                 ExpandReference(raw.Slice(i + 1, semicolon - 1), output, expandGeneral);
@@ -604,7 +656,7 @@ public sealed class XmlByteScanner
     /// <param name="reference">The reference name or numeric code, the bytes between <c>&amp;</c> and <c>;</c>.</param>
     /// <param name="output">The decode buffer.</param>
     /// <param name="expandGeneral">Whether a general-entity name resolves through the entity table.</param>
-    /// <exception cref="FormatException">The reference is undefined or the expansion budget is exhausted.</exception>
+    /// <exception cref="FormatException">The reference is undefined or the expansion budget is exhausted, under strict mode.</exception>
     private void ExpandReference(ReadOnlySpan<byte> reference, ArrayBufferWriter<byte> output, bool expandGeneral)
     {
         if(reference.SequenceEqual("amp"u8))
@@ -633,29 +685,39 @@ public sealed class XmlByteScanner
         }
         else if(expandGeneral && Entities.TryGetValue(new Utf8String(reference.ToArray()), out Utf8String entity))
         {
-            EntityBudget -= entity.Length;
-            if(EntityBudget < 0)
+            if(Strictness == XmlScanStrictness.Strict)
             {
-                throw new FormatException("XML general-entity expansion exceeds the permitted budget.");
-            }
+                EntityBudget -= entity.Length;
+                if(EntityBudget < 0)
+                {
+                    throw new FormatException("XML general-entity expansion exceeds the permitted budget.");
+                }
 
-            output.Write(entity.Span);
+                output.Write(entity.Span);
+            }
+            else if(EntityBudget >= entity.Length)
+            {
+                //Lenient: expand while the budget lasts, then leave further references unexpanded rather than throwing.
+                EntityBudget -= entity.Length;
+                output.Write(entity.Span);
+            }
         }
-        else
+        else if(Strictness == XmlScanStrictness.Strict)
         {
             throw new FormatException("XML value references an undefined general entity.");
         }
     }
 
-    /// <summary>Expands a numeric character reference (<c>#1234</c> or <c>#x04D2</c>) into the decode buffer.</summary>
+    /// <summary>Expands a numeric character reference (<c>#1234</c> or <c>#x04D2</c>) into the decode buffer; a malformed or non-XML reference throws under strict mode and drops (emits nothing) under lenient mode.</summary>
     /// <param name="reference">The reference bytes, beginning with <c>#</c>.</param>
     /// <param name="output">The decode buffer.</param>
-    /// <exception cref="FormatException">The numeric reference is malformed or out of range.</exception>
-    private static void ExpandNumericReference(ReadOnlySpan<byte> reference, ArrayBufferWriter<byte> output)
+    /// <exception cref="FormatException">The numeric reference is malformed, out of range, or not a valid XML character, under strict mode.</exception>
+    private void ExpandNumericReference(ReadOnlySpan<byte> reference, ArrayBufferWriter<byte> output)
     {
+        bool strict = Strictness == XmlScanStrictness.Strict;
         bool hex = reference.Length > 1 && (reference[1] == (byte)'x' || reference[1] == (byte)'X');
         ReadOnlySpan<byte> digits = reference.Slice(hex ? 2 : 1);
-        if(digits.IsEmpty)
+        if(digits.IsEmpty && strict)
         {
             throw new FormatException("XML numeric character reference has no digits.");
         }
@@ -666,24 +728,33 @@ public sealed class XmlByteScanner
             int place = HexValue(digit);
             if(place < 0 || (!hex && place > 9))
             {
-                throw new FormatException("XML numeric character reference has an invalid digit.");
+                if(strict)
+                {
+                    throw new FormatException("XML numeric character reference has an invalid digit.");
+                }
+
+                return;
             }
 
             value = (hex ? value * 16 : value * 10) + place;
-            if(value > 0x10FFFF)
+            if(value > 0x10FFFF && strict)
             {
                 throw new FormatException("XML numeric character reference is out of range.");
             }
         }
 
-        if(!Rune.TryCreate(value, out Rune rune) || !IsXmlChar(value))
+        bool valid = Rune.TryCreate(value, out Rune rune);
+        if(strict && (!valid || !IsXmlChar(value)))
         {
             throw new FormatException("XML numeric character reference is not a valid XML character.");
         }
 
-        Span<byte> encoded = stackalloc byte[4];
+        if(valid)
+        {
+            Span<byte> encoded = stackalloc byte[4];
 
-        output.Write(encoded.Slice(0, rune.EncodeToUtf8(encoded)));
+            output.Write(encoded.Slice(0, rune.EncodeToUtf8(encoded)));
+        }
     }
 
     /// <summary>Whether a byte range needs the decoding slow path: it carries a reference, or whitespace the <paramref name="mode"/> normalizes (a literal <c>CR</c> under either mode; also a literal <c>LF</c> or tab in an attribute value).</summary>

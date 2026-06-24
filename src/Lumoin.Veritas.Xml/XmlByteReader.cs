@@ -43,7 +43,7 @@ public static class XmlByteReader
     /// <exception cref="FormatException">The document is not well-formed, declares a DTD, or has no single root element.</exception>
     public static XmlByteNode Read(ReadOnlySpan<byte> utf8)
     {
-        return Fold(new XmlByteScanner(parseInternalDtd: false), utf8);
+        return Fold(new XmlByteScanner(XmlScanStrictness.Strict, parseInternalDtd: false), utf8);
     }
 
     /// <summary>Reads a UTF-8 XML document into its element tree, optionally parsing the DOCTYPE internal subset's general entities.</summary>
@@ -53,7 +53,7 @@ public static class XmlByteReader
     /// <exception cref="FormatException">The document is not well-formed, has no single root element, or (with <paramref name="parseInternalDtd"/> <see langword="false"/>) declares a DTD.</exception>
     public static XmlByteNode Read(ReadOnlySpan<byte> utf8, bool parseInternalDtd)
     {
-        return Fold(new XmlByteScanner(parseInternalDtd), utf8);
+        return Fold(new XmlByteScanner(XmlScanStrictness.Strict, parseInternalDtd), utf8);
     }
 
     /// <summary>Feeds the whole document to the scanner and folds its event stream into the element tree.</summary>

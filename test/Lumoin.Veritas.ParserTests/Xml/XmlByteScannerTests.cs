@@ -22,10 +22,11 @@ internal sealed class XmlByteScannerTests
     /// <param name="xml">The XML document text.</param>
     /// <param name="chunkSize">The feed chunk size in bytes; a size at least the document length feeds it whole.</param>
     /// <param name="parseInternalDtd">Whether to parse the DOCTYPE internal subset.</param>
+    /// <param name="strictness">Whether a malformed token throws (strict) or is recovered from silently (lenient).</param>
     /// <returns>The events in document order.</returns>
-    private static List<XmlScanEvent> Scan(string xml, int chunkSize, bool parseInternalDtd = false)
+    private static List<XmlScanEvent> Scan(string xml, int chunkSize, bool parseInternalDtd = false, XmlScanStrictness strictness = XmlScanStrictness.Strict)
     {
-        XmlByteScanner scanner = new(parseInternalDtd);
+        XmlByteScanner scanner = new(strictness, parseInternalDtd);
         byte[] bytes = Encoding.UTF8.GetBytes(xml);
         List<XmlScanEvent> events = [];
         for(int i = 0; i < bytes.Length; i += chunkSize)
@@ -150,7 +151,7 @@ internal sealed class XmlByteScannerTests
     [TestMethod]
     public void ResolvesSpanEndpoints()
     {
-        XmlByteScanner scanner = new(parseInternalDtd: false);
+        XmlByteScanner scanner = new(XmlScanStrictness.Strict, parseInternalDtd: false);
         scanner.Feed(Encoding.UTF8.GetBytes("<r>\n<c/>\n</r>"));
         scanner.Complete();
 
@@ -189,7 +190,7 @@ internal sealed class XmlByteScannerTests
         Assert.AreEqual("urn:x:t", FirstText(events), "An entity reference expands in text content.");
     }
 
-    /// <summary>Malformed tokens — a bad numeric reference, a duplicate attribute, an unterminated start tag at the final input — throw.</summary>
+    /// <summary>Under strict mode, malformed tokens — a bad numeric reference, a duplicate attribute, an unterminated start tag at the final input, an impermissible DTD — throw.</summary>
     [TestMethod]
     public void RejectsMalformedTokens()
     {
@@ -197,6 +198,62 @@ internal sealed class XmlByteScannerTests
         Assert.ThrowsExactly<FormatException>(() => Scan("<r a=\"1\" a=\"2\"/>", 64));
         Assert.ThrowsExactly<FormatException>(() => Scan("<r", 64));
         Assert.ThrowsExactly<FormatException>(() => Scan("<!DOCTYPE r><r/>", 64));
+        Assert.ThrowsExactly<FormatException>(() => Scan("<r>AT&T</r>", 64));
+        Assert.ThrowsExactly<FormatException>(() => Scan("<r>a&nbsp;b</r>", 64));
+    }
+
+    /// <summary>Under lenient mode, the same malformed tokens are recovered from silently: a bare <c>&amp;</c> stays literal, an undefined entity drops, a duplicate attribute is kept, and an unterminated tail is abandoned.</summary>
+    [TestMethod]
+    public void LenientModeRecoversFromMalformedTokens()
+    {
+        Assert.AreEqual("AT&T", FirstText(Scan("<r>AT&T</r>", 1024, strictness: XmlScanStrictness.Lenient)), "A bare '&' stays literal under lenient mode.");
+        Assert.AreEqual("ab", FirstText(Scan("<r>a&nbsp;b</r>", 1024, strictness: XmlScanStrictness.Lenient)), "An undefined entity drops under lenient mode.");
+
+        List<XmlScanEvent> duplicate = Scan("<r a=\"1\" a=\"2\"/>", 1024, strictness: XmlScanStrictness.Lenient);
+        Assert.HasCount(2, FirstStartElement(duplicate).Attributes, "A duplicate attribute is kept (not rejected) under lenient mode.");
+
+        List<XmlScanEvent> truncated = Scan("<r>", 1024, strictness: XmlScanStrictness.Lenient);
+        Assert.AreEqual("r", FirstStartElement(truncated).Name.ToString(), "An unterminated tail is abandoned silently, leaving the elements scanned before it.");
+    }
+
+    /// <summary>Under lenient mode a nested DOCTYPE entity (one referencing an earlier one) expands its backward reference at registration; under strict mode that nested reference is rejected.</summary>
+    [TestMethod]
+    public void LenientModeExpandsNestedDoctypeEntities()
+    {
+        string nested = "<!DOCTYPE r [ <!ENTITY base \"http://e/\"> <!ENTITY a \"&base;ns#\"> ]><r>&a;Thing</r>";
+
+        Assert.AreEqual("http://e/ns#Thing", FirstText(Scan(nested, 1024, parseInternalDtd: true, strictness: XmlScanStrictness.Lenient)), "A nested entity expands its backward reference under lenient mode.");
+        Assert.ThrowsExactly<FormatException>(() => Scan(nested, 1024, parseInternalDtd: true), "A nested entity's reference is rejected at registration under strict mode.");
+    }
+
+    /// <summary>Feeding a lenient document one byte at a time recovers identically to a whole-buffer feed.</summary>
+    [TestMethod]
+    public void LenientRecoveryIsStableAcrossChunkBoundaries()
+    {
+        string[] documents = ["<r>AT&T</r>", "<r>a&nbsp;b</r>", "<r a=\"1\" a=\"2\"><c/></r>"];
+        foreach(string document in documents)
+        {
+            Assert.AreEqual(
+                RenderAll(Scan(document, 4096, strictness: XmlScanStrictness.Lenient)),
+                RenderAll(Scan(document, 1, strictness: XmlScanStrictness.Lenient)),
+                $"Byte-by-byte lenient scan diverged from whole-buffer for: {document}");
+        }
+    }
+
+    /// <summary>The first start-element event in an event sequence.</summary>
+    /// <param name="events">The events.</param>
+    /// <returns>The first start-element event.</returns>
+    private static XmlScanEvent FirstStartElement(List<XmlScanEvent> events)
+    {
+        foreach(XmlScanEvent scanEvent in events)
+        {
+            if(scanEvent.Kind == XmlScanEventKind.StartElement)
+            {
+                return scanEvent;
+            }
+        }
+
+        return default;
     }
 
     /// <summary>The value of the first start-element attribute in an event sequence.</summary>
