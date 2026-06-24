@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using System.Xml;
-using System.Xml.Linq;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Iris;
@@ -29,10 +28,11 @@ namespace Lumoin.Veritas.Xml;
 /// work stack instead.
 /// </para>
 /// <para>
-/// The one place that still touches <see cref="System.Xml"/> is <c>rdf:parseType="Literal"</c>: its value is the
-/// canonical XML of the element's content, which is inherently a DOM/serialization concern. The reader reconstructs a
-/// detached <see cref="XElement"/> from the element's verbatim inner bytes plus its in-scope namespaces and hands it to
-/// the <see cref="XmlLiteralCanonicalizer"/> unchanged — a narrow, documented boundary for that rare construct.
+/// An <c>rdf:parseType="Literal"</c> value is the canonical XML of the element's content. The reader hands the
+/// element's verbatim inner bytes plus its in-scope namespaces to the <see cref="XmlLiteralCanonicalizer"/>, which
+/// re-scans the bytes byte-natively (the default <see cref="XmlLiteralCanonicalizers.DocumentOrder"/> uses no
+/// <c>System.Xml</c>; only the strict <see cref="XmlLiteralCanonicalizers.Canonical"/> variant does, for XML Digital
+/// Signature interop).
 /// </para>
 /// <para>
 /// Covered grammar: node elements (<c>rdf:Description</c> and typed nodes; <c>rdf:about</c>/<c>rdf:ID</c>/
@@ -379,7 +379,7 @@ public static class RdfXmlReader
             {
                 if(parseType.Span.SequenceEqual("Literal"u8))
                 {
-                    return new Literal(Utf8String.FromString(CanonicalizeXmlLiteral(element)), new NamedNode(Utf8String.FromString(RdfNamespace + "XMLLiteral")));
+                    return new Literal(CanonicalizeXmlLiteral(element), new NamedNode(Utf8String.FromString(RdfNamespace + "XMLLiteral")));
                 }
 
                 if(parseType.Span.SequenceEqual("Triple"u8))
@@ -511,58 +511,25 @@ public static class RdfXmlReader
         /// <param name="element">The literal property element.</param>
         /// <returns>The canonical XML form of the element's content.</returns>
         /// <remarks>
-        /// The byte tree discards the verbatim markup and the prefixes canonicalization needs, so the element's raw inner
-        /// bytes are wrapped in a synthetic element that declares every in-scope namespace (document order, the same set
-        /// an ancestor walk would hoist), reparsed through <see cref="System.Xml"/>, and handed to the
-        /// <see cref="XmlLiteralCanonicalizer"/> unchanged — the wrapper plays the role of the literal property element,
-        /// and only its children (the literal content) are serialized. The wrapper has no DOCTYPE, so a DOCTYPE-declared
-        /// general entity referenced inside the literal content cannot be expanded; that narrow case degrades to a
-        /// recorded diagnostic and the verbatim content rather than failing the whole document.
+        /// The element's verbatim inner bytes and its in-scope namespaces (which the apex content elements must hoist,
+        /// since the fragment is detached from its ancestors) are handed to the <see cref="XmlLiteralCanonicalizer"/>,
+        /// which re-scans the bytes byte-natively. An internal-subset general entity referenced inside the literal
+        /// content cannot be resolved against the detached fragment and fails to re-scan; rather than discard every
+        /// quad in the document, that narrow case degrades to a recorded diagnostic and the verbatim content (the
+        /// W3C RDF/XML suite does not exercise it).
         /// </remarks>
-        private string CanonicalizeXmlLiteral(XmlByteNode element)
+        private Utf8String CanonicalizeXmlLiteral(XmlByteNode element)
         {
-            string content = Encoding.UTF8.GetString(LiteralBytes(element).Span);
-
-            StringBuilder builder = new();
-            builder.Append("<rdf-xml-literal");
-            foreach(XmlNamespaceBinding binding in element.InScopeNamespaces)
-            {
-                //The xml prefix is implicit; System.Xml binds it and rejects a redeclaration.
-                if(binding.Prefix.Span.SequenceEqual("xml"u8))
-                {
-                    continue;
-                }
-
-                if(binding.Prefix.IsEmpty)
-                {
-                    builder.Append(" xmlns=\"");
-                }
-                else
-                {
-                    builder.Append(" xmlns:").Append(binding.Prefix.ToString()).Append("=\"");
-                }
-
-                AppendAttributeEscaped(builder, binding.NamespaceIri.ToString());
-                builder.Append('"');
-            }
-
-            builder.Append('>').Append(content).Append("</rdf-xml-literal>");
-
+            ReadOnlyMemory<byte> inner = LiteralBytes(element);
             try
             {
-                XElement wrapper = XElement.Parse(builder.ToString(), LoadOptions.PreserveWhitespace);
-
-                return Canonicalizer(wrapper);
+                return Canonicalizer(inner, element.InScopeNamespaces);
             }
-            catch(Exception exception) when(exception is XmlException or FormatException)
+            catch(Exception exception) when(exception is FormatException or XmlException or InvalidOperationException)
             {
-                //The detached wrapper carries no DOCTYPE, so a DOCTYPE-declared general entity referenced inside the
-                //literal content has no binding and fails to reparse. Rather than discard every quad in the document,
-                //record the failure and fall back to the verbatim content — a narrow, documented limitation for XML
-                //literals that abbreviate through DOCTYPE entities (which the W3C RDF/XML suite does not exercise).
                 Report(Diagnostics, $"rdf:parseType=\"Literal\" content could not be canonicalized (a DOCTYPE general-entity reference inside an XML literal is not expanded): {exception.Message}", element.Span);
 
-                return content;
+                return new Utf8String(inner);
             }
         }
 
@@ -937,32 +904,6 @@ public static class RdfXmlReader
             if(!IsNcName(value.Span))
             {
                 Report(Diagnostics, $"The value of {attribute} ('{value}') is not a valid XML NCName.", span);
-            }
-        }
-
-        /// <summary>Appends a string to a builder with the XML attribute-value escaping the literal wrapper's hoisted IRIs need.</summary>
-        /// <param name="builder">The output buffer.</param>
-        /// <param name="value">The raw value.</param>
-        private static void AppendAttributeEscaped(StringBuilder builder, string value)
-        {
-            foreach(char character in value)
-            {
-                string? replacement = character switch
-                {
-                    '&' => "&amp;",
-                    '<' => "&lt;",
-                    '"' => "&quot;",
-                    _ => null
-                };
-
-                if(replacement is null)
-                {
-                    builder.Append(character);
-                }
-                else
-                {
-                    builder.Append(replacement);
-                }
             }
         }
     }
