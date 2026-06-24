@@ -73,6 +73,15 @@ public sealed class ByteSourceMap
     /// <returns>The zero-based line index and byte column.</returns>
     private (int Line, int Column) Locate(int byteOffset)
     {
+        if(byteOffset < LineStarts[Origin])
+        {
+            //An offset below the oldest live line start fell in a reclaimed (pruned) prefix: only the long-lived
+            //streaming container and document-root elements, which open at the document start and close after the
+            //prefix has been pruned, query here. Their true line cannot be recovered once the prefix is gone, so anchor
+            //to the oldest live line at column zero — a defined, non-negative result rather than an underflowed column.
+            return (Origin + PrunedLines, 0);
+        }
+
         int low = Origin;
         int high = LineStarts.Count - 1;
         while(low < high)

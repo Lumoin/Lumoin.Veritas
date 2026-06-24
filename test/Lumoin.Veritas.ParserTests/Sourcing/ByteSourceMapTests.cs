@@ -65,6 +65,19 @@ internal sealed class ByteSourceMapTests
         }
     }
 
+    /// <summary>An offset below the prune frontier (only the long-lived streaming container/root queries here) resolves to a defined, non-negative location anchored at the oldest live line rather than an underflowed column — the same pre-base-offset hardening the scanner buffer window has.</summary>
+    [TestMethod]
+    public void LocatingBelowThePruneFrontierIsNonNegative()
+    {
+        //Pre-guard repro: a map over "a\nb\nc\n" has line starts [0,2,4,6]; PruneBefore(4) sets the live origin to the
+        //"c" line (line 2), and Locate(0) would have subtracted that line's start from 0, yielding column -4. The guard
+        //anchors a pre-frontier offset to the oldest live line at column zero.
+        ByteSourceMap map = MapOf("a\nb\nc\n");
+        map.PruneBefore(4);
+
+        Assert.AreEqual(new SourceSpan(0, 0, 2, 0, 2, 0), map.Span(0, 0), "a pre-frontier offset anchors to the oldest live line at a non-negative column");
+    }
+
     /// <summary>Pruning at an offset within the oldest live line (not at a line boundary) keeps that line, so the line still resolves.</summary>
     [TestMethod]
     public void PruneKeepsTheLineContainingTheFrontier()
