@@ -206,6 +206,52 @@ public sealed class VeritasEngine: IAsyncDisposable
         return result.Boolean ?? throw new ArgumentException("The query is not an ASK query.", nameof(sparql));
     }
 
+    /// <summary>The number of times an update execution is re-attempted when a concurrent committer advances the journal head, before the concurrency exception propagates.</summary>
+    private const int MaxUpdateAttempts = 16;
+
+    /// <summary>
+    /// Executes a SPARQL Update, committing its mutation into the database's
+    /// mutable dataset; a subsequent query sees the change (read-your-writes).
+    /// Only a mutable database accepts updates. A concurrent committer is
+    /// retried a bounded number of times against the advanced journal head.
+    /// </summary>
+    /// <param name="sparql">The update text.</param>
+    /// <param name="baseIri">The base IRI relative references in the update resolve against; <c>null</c> for none.</param>
+    /// <param name="cancellationToken">A token that aborts execution.</param>
+    /// <returns>A task that completes when the update has committed.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="sparql"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException"><paramref name="sparql"/> does not parse, or is a SPARQL query rather than an update.</exception>
+    /// <exception cref="InvalidOperationException">This is an immutable database (opened with <see cref="OpenAsync(IEnumerable{DataTriple}, VeritasEngineOptions?, CancellationToken)"/> rather than <see cref="OpenMutableAsync"/>).</exception>
+    /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
+    public async ValueTask UpdateAsync(string sparql, string? baseIri = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(sparql);
+        if(mutableDataset is null)
+        {
+            throw new InvalidOperationException("Only a mutable database (opened with OpenMutableAsync) accepts updates; this database is immutable.");
+        }
+
+        using Utf8StringPool pool = new();
+        SparqlUpdateRequest request = ParseUpdate(sparql, baseIri, pool);
+        SparqlExpressionContext context = SparqlExpressionContext.CreateDefault();
+
+        for(int attempt = 1; ; attempt++)
+        {
+            try
+            {
+                await SparqlUpdateExecutor.ExecuteAsync(request, mutableDataset, context, graphSource: null, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+                return;
+            }
+            catch(EditSessionConcurrencyException) when(attempt < MaxUpdateAttempts)
+            {
+                //A concurrent committer advanced the journal head between this update's read and its append. The
+                //mutation stack is linearised through one journal, so re-running against the new head converges in
+                //a bounded number of attempts; on exhaustion the concurrency exception propagates to the caller.
+            }
+        }
+    }
+
     /// <summary>
     /// Validates the served default graph against a SHACL shapes graph and
     /// returns the report. The shapes are loaded over the same dictionary the
@@ -286,6 +332,29 @@ public sealed class VeritasEngine: IAsyncDisposable
         }
 
         return query;
+    }
+
+    /// <summary>Parses and normalizes an update over the supplied pool, which must outlive the execution that reads the request's interned terms.</summary>
+    /// <param name="sparql">The update text.</param>
+    /// <param name="baseIri">The base IRI relative references resolve against, or <c>null</c> for none.</param>
+    /// <param name="pool">The pool the update parses into.</param>
+    /// <returns>The parsed, normalized update request.</returns>
+    /// <exception cref="ArgumentException"><paramref name="sparql"/> does not parse, or is a SPARQL query rather than an update.</exception>
+    private static SparqlUpdateRequest ParseUpdate(string sparql, string? baseIri, Utf8StringPool pool)
+    {
+        Utf8String? parseBaseIri = baseIri is null ? null : Utf8String.FromString(baseIri);
+        ParseResult<SparqlRequest> parsed = SparqlParser.ParseRequest(Utf8String.FromString(sparql).Memory, pool, parseBaseIri);
+        if(parsed.HasErrors)
+        {
+            throw new ArgumentException($"The update did not parse: {DescribeFirstError(parsed.Diagnostics)}", nameof(sparql));
+        }
+
+        if(parsed.Tree is not SparqlUpdateRequest)
+        {
+            throw new ArgumentException("The request is a SPARQL query, not an update.", nameof(sparql));
+        }
+
+        return (SparqlUpdateRequest)new SparqlNormalizer(pool).Normalize(parsed.Tree);
     }
 
     /// <summary>Collects a <c>SELECT</c> query's projected variable names in head order — the result columns.</summary>

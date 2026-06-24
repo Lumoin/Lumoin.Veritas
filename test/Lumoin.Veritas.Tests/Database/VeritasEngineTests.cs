@@ -89,6 +89,48 @@ internal sealed class VeritasEngineTests
     }
 
     [TestMethod]
+    public async Task MutableDatabaseCommitsAnUpdateAndReadsItsOwnWrite()
+    {
+        VeritasEngine database = await VeritasEngine
+            .OpenMutableAsync([], TestContext.CancellationToken)
+            .ConfigureAwait(false);
+        await using var scope = database.ConfigureAwait(false);
+
+        await database
+            .UpdateAsync($"INSERT DATA {{ <{Ex}rex> <{RdfType}> <{Ex}Dog> }}", cancellationToken: TestContext.CancellationToken)
+            .ConfigureAwait(false);
+
+        bool isDog = await database
+            .AskAsync($"ASK {{ <{Ex}rex> <{RdfType}> <{Ex}Dog> }}", TestContext.CancellationToken)
+            .ConfigureAwait(false);
+        Assert.IsTrue(isDog, "A query sees the update's committed triple (read-your-writes).");
+
+        await database
+            .UpdateAsync($"DELETE DATA {{ <{Ex}rex> <{RdfType}> <{Ex}Dog> }}", cancellationToken: TestContext.CancellationToken)
+            .ConfigureAwait(false);
+
+        bool stillDog = await database
+            .AskAsync($"ASK {{ <{Ex}rex> <{RdfType}> <{Ex}Dog> }}", TestContext.CancellationToken)
+            .ConfigureAwait(false);
+        Assert.IsFalse(stillDog, "A query sees the delete's effect.");
+    }
+
+    [TestMethod]
+    public async Task ImmutableDatabaseRejectsUpdates()
+    {
+        VeritasEngine database = await VeritasEngine
+            .OpenAsync(SubclassGraph(), cancellationToken: TestContext.CancellationToken)
+            .ConfigureAwait(false);
+        await using var scope = database.ConfigureAwait(false);
+
+        await Assert
+            .ThrowsAsync<System.InvalidOperationException>(async () => await database
+                .UpdateAsync($"INSERT DATA {{ <{Ex}a> <{RdfType}> <{Ex}b> }}", cancellationToken: TestContext.CancellationToken)
+                .ConfigureAwait(false))
+            .ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task ValidateReportsConformanceAgainstShapes()
     {
         //alice is a Person with a name — conforming under "every Person has a name".
