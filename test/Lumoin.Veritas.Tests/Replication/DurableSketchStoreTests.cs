@@ -135,12 +135,45 @@ internal sealed class DurableSketchStoreTests
             string[] sketchArtifacts = Directory.GetFiles(directory, "sketch-*.skt");
             Assert.HasCount(1, sketchArtifacts, "Exactly one sketch artifact was persisted.");
             byte[] bytes = File.ReadAllBytes(sketchArtifacts[0]);
-            //Flip a magic byte so the image is unambiguously malformed and refused on the verifying load.
-            bytes[0] ^= 0xFF;
+            //Flip the first symbol-payload byte. The first block starts at the 4096-byte alignment boundary (the
+            //front matter for one small block is far shorter), so this corrupts a checksum-covered region — at-rest
+            //rot the verifying load must catch, not merely a malformed header.
+            bytes[4096] ^= 0xFF;
             File.WriteAllBytes(sketchArtifacts[0], bytes);
 
             DurableSketchLoad load = sketches.TryLoad(epoch);
             Assert.AreEqual(DurableSketchLoadOutcome.Rejected, load.Outcome, "A corrupt sketch artifact must be refused, not served.");
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    /// <summary>A sketch artifact whose length no longer matches the manifest's recorded length is refused, binding the file to the generation that named it (over-length tampering the sketch's own checksums need not catch).</summary>
+    [TestMethod]
+    public void SketchArtifactLengthMismatchIsRejected()
+    {
+        string directory = Directory.CreateTempSubdirectory("veritas-b8-").FullName;
+        try
+        {
+            using VeritasMemoryPool<byte> pool = new();
+            FileSystemPersistenceStore store = new(directory, NoOpBarrier);
+            DurableSketchStore sketches = new(store, pool);
+
+            ReplicationIndexFeed feed = new(Line(40), new NodeIdentifier(9UL));
+            const ulong epoch = 11UL;
+            sketches.Persist(feed, epoch, symbolBudget: 64);
+
+            string[] sketchArtifacts = Directory.GetFiles(directory, "sketch-*.skt");
+            Assert.HasCount(1, sketchArtifacts, "Exactly one sketch artifact was persisted.");
+            byte[] bytes = File.ReadAllBytes(sketchArtifacts[0]);
+            byte[] extended = new byte[bytes.Length + 1];
+            bytes.CopyTo(extended, 0);
+            File.WriteAllBytes(sketchArtifacts[0], extended);
+
+            DurableSketchLoad load = sketches.TryLoad(epoch);
+            Assert.AreEqual(DurableSketchLoadOutcome.Rejected, load.Outcome, "An artifact whose length differs from the manifest's record must be refused.");
         }
         finally
         {

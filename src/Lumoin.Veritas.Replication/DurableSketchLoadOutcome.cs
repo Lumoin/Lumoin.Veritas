@@ -11,7 +11,7 @@ public enum DurableSketchLoadOutcome
     /// <summary>A committed sketch generation was recovered and its image verified; the image is loaded.</summary>
     Loaded,
 
-    /// <summary>The store holds no committed sketch generation (a fresh node, or none persisted yet).</summary>
+    /// <summary>The store holds no recoverable committed sketch generation — a fresh node or none persisted yet, or (not distinguished from these) a control plane so damaged that no CURRENT pointer and no manifest verifies.</summary>
     NotFound,
 
     /// <summary>A generation was recovered but it was written against a different term-dictionary epoch, so its structural identifiers denote different terms here; it is refused rather than served.</summary>

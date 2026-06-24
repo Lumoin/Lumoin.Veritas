@@ -115,7 +115,7 @@ public sealed class DurableSketchStore
     /// </summary>
     /// <param name="dictionaryEpoch">The live term-dictionary epoch the loaded sketch must match (the engine's <c>Dictionary.Epoch</c>).</param>
     /// <returns>The load outcome, with the verified image and StateId when loaded.</returns>
-    /// <exception cref="NotSupportedException">A recovered image uses a checksum algorithm or format version this reader does not support — a reader incompatibility, not at-rest rot.</exception>
+    /// <exception cref="NotSupportedException">A recovered manifest, CURRENT pointer, or the sketch artifact itself uses a checksum algorithm or format version this reader does not support — a reader incompatibility, not at-rest rot, so it propagates rather than mapping to a value.</exception>
     public DurableSketchLoad TryLoad(ulong dictionaryEpoch)
     {
         ManifestRecovery recovery = new(Store);
@@ -134,15 +134,17 @@ public sealed class DurableSketchStore
             return new DurableSketchLoad(DurableSketchLoadOutcome.EpochMismatch, default, NodeIdentifier.Empty, manifest.CommitGeneration);
         }
 
-        string? sketchName = FindSketchEntryName(manifest);
-        if(sketchName is null)
+        if(FindSketchEntry(manifest) is not { } sketchEntry)
         {
             return new DurableSketchLoad(DurableSketchLoadOutcome.NoSketchEntry, default, NodeIdentifier.Empty, manifest.CommitGeneration);
         }
 
-        byte[]? imageBytes = Store.Read(sketchName);
-        if(imageBytes is null)
+        byte[]? imageBytes = Store.Read(sketchEntry.FileName);
+        if(imageBytes is null || !MatchesManifestEntry(imageBytes, sketchEntry))
         {
+            //Missing, a length that differs from the manifest's record, or a whole-image digest mismatch — refused
+            //before the sketch's own verification, so corruption the per-block checksums do not cover (alignment
+            //padding) and truncation or over-length tampering are caught against the generation that named it.
             return new DurableSketchLoad(DurableSketchLoadOutcome.Rejected, default, NodeIdentifier.Empty, manifest.CommitGeneration);
         }
 
@@ -161,7 +163,13 @@ public sealed class DurableSketchStore
         return new DurableSketchLoad(DurableSketchLoadOutcome.Loaded, imageBytes, stateId, manifest.CommitGeneration);
     }
 
-    /// <summary>Resolves the generation to publish next: one past the last committed generation, or zero when the store holds none.</summary>
+    /// <summary>
+    /// Resolves the generation to publish next: one past the recovered generation, or zero when the store holds
+    /// none. Under a normal (non-degraded) recovery this is strictly greater than the last committed generation, as
+    /// <see cref="ManifestWriter"/> requires; if the control plane is damaged enough that recovery falls to the
+    /// degraded scan, it is one past the highest verifying manifest, which the single-writer, atomic-publish model
+    /// bounds.
+    /// </summary>
     /// <returns>The next monotonic commit generation.</returns>
     private long NextGeneration()
     {
@@ -177,20 +185,50 @@ public sealed class DurableSketchStore
         }
     }
 
-    /// <summary>Finds the file name of the manifest's sketch entry, or <see langword="null"/> when it names none.</summary>
+    /// <summary>Finds the manifest's sketch entry, or <see langword="null"/> when it names none.</summary>
     /// <param name="manifest">The recovered manifest.</param>
-    /// <returns>The sketch artifact's store name, or <see langword="null"/>.</returns>
-    private static string? FindSketchEntryName(Manifest manifest)
+    /// <returns>The sketch entry, or <see langword="null"/>.</returns>
+    private static ManifestEntry? FindSketchEntry(Manifest manifest)
     {
         foreach(ManifestEntry entry in manifest.Entries)
         {
             if(entry.Role.Code == ManifestFileRole.Sketch.Code)
             {
-                return entry.FileName;
+                return entry;
             }
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Verifies a read artifact against the length and digest the manifest recorded for it, binding the file to the
+    /// generation that named it. This catches truncation, over-length tampering, and at-rest rot in regions the
+    /// sketch's own per-block checksums do not cover (alignment padding). The digest is compared only when the
+    /// manifest recorded it under this store's checksum algorithm (a matching digest width); a foreign-algorithm
+    /// manifest is left to the sketch image's own verification.
+    /// </summary>
+    /// <param name="image">The bytes read from the store.</param>
+    /// <param name="entry">The manifest entry that named the artifact.</param>
+    /// <returns><see langword="true"/> when the artifact matches the manifest's recorded length and, where comparable, digest.</returns>
+    private bool MatchesManifestEntry(byte[] image, ManifestEntry entry)
+    {
+        if(image.Length != entry.ByteLength)
+        {
+            return false;
+        }
+
+        if(entry.Checksum.Length != Checksum.ByteWidth)
+        {
+            //The manifest recorded the digest under a different algorithm; the sketch image's own checksums verify it.
+            return true;
+        }
+
+        using IMemoryOwner<byte> digestOwner = Pool.Rent(Checksum.ByteWidth);
+        Span<byte> recomputed = digestOwner.Memory.Span[..Checksum.ByteWidth];
+        Checksum.Compute(image, recomputed);
+
+        return recomputed.SequenceEqual(entry.Checksum.Span);
     }
 
     /// <summary>The store name of the sketch artifact for a generation, zero-padded so a lexical listing matches generation order.</summary>
