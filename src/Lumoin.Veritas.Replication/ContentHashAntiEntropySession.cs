@@ -186,24 +186,8 @@ public static class ContentHashAntiEntropySession
     /// <returns>The local replica's verified sketch.</returns>
     private static VerifiedSketch PersistLocalSketch(ColumnarTripleIndex local, ContentHashReconciliationProjection projection, int symbolBudget, MemoryPool<byte> pool)
     {
-        int itemCount = local.TripleCount;
-        long itemByteCount = (long)itemCount * ContentKey128.ByteWidth;
-        if(itemByteCount > Array.MaxLength)
-        {
-            throw new InvalidDataException("The local replica holds more items than a single projected-item buffer can address.");
-        }
-
-        using IMemoryOwner<byte> itemsOwner = pool.Rent((int)Math.Max(1, itemByteCount));
-        Span<ContentKey128> items = MemoryMarshal.Cast<byte, ContentKey128>(itemsOwner.Memory.Span)[..itemCount];
-        int index = 0;
-        foreach(EncodedTriple triple in local.EnumerateTriples())
-        {
-            items[index] = projection.Project(triple);
-            index++;
-        }
-
         using SlabBufferWriter writer = new(pool);
-        SketchPersistence.PersistSketch(items, SketchContract.Structural, symbolBudget, ChecksumAlgorithm.XxHash3, pool, RatelessSketchCodec.Encode, writer);
+        ContentHashSketch.WriteImage(local, projection, symbolBudget, pool, writer);
         int imageLength = writer.BytesWritten;
         using IMemoryOwner<byte> imageOwner = writer.Detach();
 
