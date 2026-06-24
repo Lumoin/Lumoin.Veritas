@@ -11,6 +11,7 @@
     <ProjectReference Include="..\Lumoin.Veritas.Sparql\Lumoin.Veritas.Sparql.csproj" />
     <ProjectReference Include="..\Lumoin.Veritas.Owl\Lumoin.Veritas.Owl.csproj" />
     <ProjectReference Include="..\Lumoin.Veritas.Shacl\Lumoin.Veritas.Shacl.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Replication\Lumoin.Veritas.Replication.csproj" />
   </ItemGroup>
 
 </Project>
