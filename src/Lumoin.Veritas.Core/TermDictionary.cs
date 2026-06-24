@@ -57,6 +57,23 @@ public sealed class TermDictionary
     public int Count => IdToTerm.Count;
 
     /// <summary>
+    /// A stable replication identity for this dictionary's identifier-to-term mapping. Structural reconciliation
+    /// transfers term IDENTIFIERS, not terms, so two replicas may exchange a structural sketch only when their
+    /// dictionaries share this epoch — otherwise an identifier denotes a different term on each side. Independently
+    /// constructed dictionaries carry different epochs; <c>0</c> is the unspecified epoch a non-replicating
+    /// dictionary uses, and it reconciles only with another unspecified-epoch dictionary. The replication layer
+    /// mints a unique epoch (it owns the entropy seam); the dictionary only carries the value it is given.
+    /// </summary>
+    public ulong Epoch { get; }
+
+    /// <summary>Creates a dictionary carrying a replication epoch.</summary>
+    /// <param name="epoch">The dictionary's replication epoch; <c>0</c> (the default) is the unspecified epoch for a non-replicating dictionary.</param>
+    public TermDictionary(ulong epoch = 0)
+    {
+        Epoch = epoch;
+    }
+
+    /// <summary>
     /// Returns the identifier for the given term, assigning a new one if the term
     /// has not been seen before.
     /// </summary>

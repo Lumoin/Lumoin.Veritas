@@ -14,4 +14,5 @@ namespace Lumoin.Veritas.Database;
 /// <param name="Converged">Whether the reconcile loop converged (or found the replicas already consistent).</param>
 /// <param name="Rounds">The number of reconcile rounds run.</param>
 /// <param name="WriteBack">How the converged delta was written back into the dataset.</param>
-public readonly record struct PeerReconcileOutcome(bool Converged, int Rounds, WriteBackOutcome WriteBack);
+/// <param name="PeerEpochMismatch">Whether the reconcile was refused before it began because the peer's dictionary epoch did not match this database's: the structural sketch transfers term identifiers, so a different epoch denotes different terms and applying its recovered identifiers would silently corrupt. When <see langword="true"/> nothing was reconciled or written (<see cref="Converged"/> is <see langword="false"/>, <see cref="Rounds"/> is zero), and the caller should reconcile such a peer through the content-hash domain instead.</param>
+public readonly record struct PeerReconcileOutcome(bool Converged, int Rounds, WriteBackOutcome WriteBack, bool PeerEpochMismatch);

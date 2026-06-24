@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -148,7 +149,7 @@ public sealed class VeritasEngine: IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(defaultGraph);
 
-        TermDictionary dictionary = new();
+        TermDictionary dictionary = new(MintReplicationEpoch());
         List<EncodedTriple> encoded = [];
         foreach(DataTriple triple in defaultGraph)
         {
@@ -174,6 +175,17 @@ public sealed class VeritasEngine: IAsyncDisposable
 
     /// <summary>The term dictionary the database's graphs are encoded against — the shared epoch an intra-cluster peer's reconciliation sketch must share. Encoding and resolving terms against it is how a caller lines a peer sketch (or query) up with the served data.</summary>
     public TermDictionary Dictionary => mutableDataset is not null ? mutableDataset.Dictionary : queryEngine!.Dictionary;
+
+    /// <summary>Mints a unique, non-zero replication epoch for a mutable database's dictionary from the sanctioned entropy seam, so two independently opened databases carry distinct epochs and a structural reconcile between mismatched dictionaries is detectable.</summary>
+    /// <returns>A non-zero dictionary epoch.</returns>
+    private static ulong MintReplicationEpoch()
+    {
+        RandomnessValue value = VeritasRandomness.System(new RandomnessRequest(RandomnessKind.Bytes, default, sizeof(ulong), default));
+        ulong epoch = BinaryPrimitives.ReadUInt64LittleEndian(value.Bytes.Span);
+
+        //0 is the unspecified epoch (a non-replicating dictionary), so a minted epoch is forced non-zero.
+        return epoch == 0 ? 1UL : epoch;
+    }
 
     /// <summary>
     /// Evaluates a SPARQL query and returns its result — SELECT bindings or an
@@ -309,31 +321,40 @@ public sealed class VeritasEngine: IAsyncDisposable
     /// replicas converges across rounds and peers; removals do not propagate through
     /// anti-entropy in this slice.
     /// <para>
-    /// <b>Intra-cluster only — the peer MUST share this database's dictionary epoch.</b> The structural sketch
-    /// carries term IDENTIFIERS, not terms, and recovered identifiers are committed VERBATIM (no re-encoding). A
-    /// peer built on a different <see cref="Dictionary"/> (a different identifier-to-term mapping) is NOT detected:
-    /// its recovered identifiers denote different local terms, so the reconcile converges and commits WRONG triples
-    /// silently. Drive this only with a peer whose sketch was built against this database's <see cref="Dictionary"/>
-    /// (e.g. another node's <see cref="CreateSketchFetch"/> in the same shared-dictionary cluster). For peers that
-    /// numbered their terms independently — the cross-organisation case — use the content-hash reconcile domain,
-    /// which transfers terms and re-encodes them.
+    /// <b>Intra-cluster only — guarded by the dictionary epoch.</b> The structural sketch carries term IDENTIFIERS,
+    /// not terms, and recovered identifiers are committed verbatim, so a peer that numbered its terms under a
+    /// different <see cref="Dictionary"/> would silently corrupt. The caller passes the peer's advertised dictionary
+    /// epoch (<paramref name="peerEpoch"/>, the peer's <see cref="Dictionary"/>.<see cref="TermDictionary.Epoch"/>);
+    /// if it does not match this database's, the reconcile is refused before it begins
+    /// (<see cref="PeerReconcileOutcome.PeerEpochMismatch"/>, nothing reconciled or written). Two independently
+    /// opened databases carry distinct minted epochs, so structural reconcile across them is correctly refused; it
+    /// succeeds only within a shared-dictionary cluster (same epoch). For peers that numbered their terms
+    /// independently — the cross-organisation case — use the content-hash reconcile domain, which transfers terms.
     /// </para>
     /// </summary>
     /// <param name="peerFetch">The peer's sketch fetch — the transport seam each round drives.</param>
+    /// <param name="peerEpoch">The peer's advertised dictionary epoch; must equal this database's <see cref="Dictionary"/>.<see cref="TermDictionary.Epoch"/> or the reconcile is refused.</param>
     /// <param name="policy">The budget shape both sides' sketches are sized under.</param>
     /// <param name="maxRounds">The maximum number of reconcile rounds to run; positive.</param>
     /// <param name="cancellationToken">A token that aborts the reconcile.</param>
-    /// <returns>The reconcile outcome: whether it converged, the rounds run, and how the delta was written back.</returns>
+    /// <returns>The reconcile outcome: whether it converged, the rounds run, how the delta was written back, and whether it was refused for an epoch mismatch.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="peerFetch"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxRounds"/> is not positive.</exception>
     /// <exception cref="InvalidOperationException">This is an immutable database (opened with <see cref="OpenAsync(IEnumerable{DataTriple}, VeritasEngineOptions?, CancellationToken)"/> rather than <see cref="OpenMutableAsync"/>).</exception>
-    public async ValueTask<PeerReconcileOutcome> ReconcileFromPeerAsync(AsyncSketchFetchDelegate peerFetch, ReplicationPolicy policy, int maxRounds, CancellationToken cancellationToken = default)
+    public async ValueTask<PeerReconcileOutcome> ReconcileFromPeerAsync(AsyncSketchFetchDelegate peerFetch, ulong peerEpoch, ReplicationPolicy policy, int maxRounds, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(peerFetch);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxRounds);
         if(mutableDataset is null || replicationFeed is null || replicationPool is null)
         {
             throw new InvalidOperationException("Only a mutable database (opened with OpenMutableAsync) reconciles from a peer; this database is immutable.");
+        }
+
+        if(peerEpoch != mutableDataset.Dictionary.Epoch)
+        {
+            //The peer numbered its terms under a different dictionary; its recovered identifiers would denote
+            //different local terms, so the reconcile is refused before it begins rather than committing corruption.
+            return new PeerReconcileOutcome(Converged: false, Rounds: 0, WriteBackOutcome.NoOp, PeerEpochMismatch: true);
         }
 
         ReplicationGeneration generation = replicationFeed.Current();
@@ -343,14 +364,14 @@ public sealed class VeritasEngine: IAsyncDisposable
 
         if(!result.Converged)
         {
-            return new PeerReconcileOutcome(Converged: false, result.Rounds, WriteBackOutcome.NoOp);
+            return new PeerReconcileOutcome(Converged: false, result.Rounds, WriteBackOutcome.NoOp, PeerEpochMismatch: false);
         }
 
         WriteBackOutcome writeBack = await ReconcileWriteBack
             .ApplyAsync(mutableDataset, result.RecoveredAdditions, cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
-        return new PeerReconcileOutcome(Converged: true, result.Rounds, writeBack);
+        return new PeerReconcileOutcome(Converged: true, result.Rounds, writeBack, PeerEpochMismatch: false);
     }
 
     /// <summary>

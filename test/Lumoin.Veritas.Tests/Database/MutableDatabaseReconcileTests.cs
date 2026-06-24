@@ -89,8 +89,9 @@ internal sealed class MutableDatabaseReconcileTests
         EncodedTriple[] peerTriples = [Encode(dictionary, "a", "p", "b"), Encode(dictionary, "a", "p", "c")];
         AsyncSketchFetchDelegate peerFetch = (budget, token) => new ValueTask<ReadOnlyMemory<byte>>(PersistPeerImage(peerTriples, budget, pool));
 
+        //The peer shares this database's dictionary epoch (it built its sketch against database.Dictionary).
         PeerReconcileOutcome outcome = await database
-            .ReconcileFromPeerAsync(peerFetch, ReplicationPolicy.Default, 4, TestContext.CancellationToken)
+            .ReconcileFromPeerAsync(peerFetch, dictionary.Epoch, ReplicationPolicy.Default, 4, TestContext.CancellationToken)
             .ConfigureAwait(false);
 
         Assert.IsTrue(outcome.Converged, "The reconcile converges.");
@@ -131,5 +132,37 @@ internal sealed class MutableDatabaseReconcileTests
         HashSet<EncodedTriple> converged = [.. result.Index.EnumerateTriples()];
         HashSet<EncodedTriple> expected = [Encode(dictionary, "a", "p", "b"), Encode(dictionary, "a", "p", "c")];
         Assert.IsTrue(expected.SetEquals(converged), "The peer converges to the database's full triple set via its served sketch.");
+    }
+
+    /// <summary>A peer advertising a different dictionary epoch is refused before the reconcile begins (PeerEpochMismatch): its sketch is never fetched and the database is unchanged — the structural reconcile is intra-cluster only.</summary>
+    [TestMethod]
+    public async Task RefusesAPeerWithAMismatchedDictionaryEpoch()
+    {
+        VeritasEngine database = await VeritasEngine
+            .OpenMutableAsync([Data("a", "p", "b")], TestContext.CancellationToken)
+            .ConfigureAwait(false);
+        await using var scope = database.ConfigureAwait(false);
+
+        //A foreign peer whose advertised epoch differs from this database's; its fetch must never be consulted.
+        bool fetched = false;
+        AsyncSketchFetchDelegate foreignPeer = (budget, token) =>
+        {
+            fetched = true;
+            return new ValueTask<ReadOnlyMemory<byte>>(ReadOnlyMemory<byte>.Empty);
+        };
+        ulong foreignEpoch = unchecked(database.Dictionary.Epoch + 1);
+
+        PeerReconcileOutcome outcome = await database
+            .ReconcileFromPeerAsync(foreignPeer, foreignEpoch, ReplicationPolicy.Default, 4, TestContext.CancellationToken)
+            .ConfigureAwait(false);
+
+        Assert.IsTrue(outcome.PeerEpochMismatch, "A mismatched-epoch peer is refused.");
+        Assert.IsFalse(outcome.Converged, "A refused reconcile does not converge.");
+        Assert.IsFalse(fetched, "A mismatched-epoch peer's sketch is never fetched — the reconcile is refused before it begins.");
+
+        bool keepsOriginal = await database
+            .AskAsync($"ASK {{ <{Ex}a> <{Ex}p> <{Ex}b> }}", TestContext.CancellationToken)
+            .ConfigureAwait(false);
+        Assert.IsTrue(keepsOriginal, "The database is unchanged by a refused reconcile.");
     }
 }
