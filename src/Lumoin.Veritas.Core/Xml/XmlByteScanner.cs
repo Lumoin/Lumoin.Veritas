@@ -189,6 +189,10 @@ public sealed class XmlByteScanner
         Length -= reclaimed;
         BufferBase += reclaimed;
         LexPosition = 0;
+
+        //The reclaimed prefix's line starts are no longer queried (every live offset is at or past the new base),
+        //so drop them from the source map too, keeping its footprint bounded with the buffer.
+        Map.PruneBefore(BufferBase);
     }
 
     /// <summary>A buffer range as the bytes emitted into a value: a zero-copy window in the default mode, or an owned copy in <see cref="Streaming"/> mode so the value survives a later <see cref="Compact"/>.</summary>
