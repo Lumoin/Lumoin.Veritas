@@ -32,11 +32,15 @@ durable persistence + integrity + execution tiers have since SHIPPED to `main`.*
   (gate + firewall + per-peer rate limiter + live policy chain + controller + governed transports — implemented and
   tested, not yet wired into the engine/CLI default). **Full branch ledger + commit stack + the B8 next step are in
   `tempdocs/HANDOFF.md` (gitignored working note).**
-- **Next: B8 (durable sketch-generation persistence)** — persist a node's structural sketch as a
-  `ManifestFileRole.Sketch` artifact keyed to the dataset generation (`StateId`) + dictionary epoch, loadable on
-  restart so a node serves its sketch from disk instead of re-deriving from the feed; reuses the shipped manifest
-  atomic-publish + `LoadVerifiedSketch`. Then merge the replication/governance arc to main and wire governance into
-  the engine/CLI composition root, followed by the remaining persistence "designed" items above.
+- **B8 (durable sketch-generation persistence) SHIPPED** on this branch (`DurableSketchStore`, commit `b3cd0da1`,
+  full suite 1682/1682) — the last engine↔replication bridge brick: a node persists its structural sketch as a
+  `ManifestFileRole.Sketch` artifact committed through the shipped atomic manifest publish, keyed by the dataset
+  `StateId` (manifest provenance epoch) + the term-dictionary epoch (manifest dictionary epoch), and loads it back
+  verified on restart (value-based `DurableSketchLoad`: Loaded/NotFound/EpochMismatch/NoSketchEntry/Rejected).
+- **Next:** wire the durable sketch into the engine serve path (serve from disk when the loaded `StateId` matches
+  the live feed, else re-derive); merge the replication/governance arc to main and wire governance into the
+  engine/CLI composition root; then the remaining persistence "designed" items above (engine-default durable
+  wiring, columnar-sidecar warm-start hot-load, live scrub scheduler, container/Parquet formats).
 
 ---
 
