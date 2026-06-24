@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Lumoin.Veritas.Core.Diagnostics;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Owl.Functional;
 using Lumoin.Veritas.Owl.Manchester;
 using Lumoin.Veritas.Owl.Structural;
@@ -242,16 +243,16 @@ internal sealed class OwlManchesterSyntaxTests
 
         //A name at the buffer end may still grow, so a feed ends at a
         //delimiter wherever the boundary status is asserted.
-        Assert.AreEqual(OwlManchesterParseStatus.Complete, reader.Feed("Prefix: : <http://example.org/> Ontology: <http://example.org/o>"u8));
-        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed(" Class: "u8));
-        Assert.AreEqual(OwlManchesterParseStatus.Complete, reader.Feed(":Person "u8));
-        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed("SubClassOf: "u8));
-        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed(":hasParent some "u8));
-        Assert.AreEqual(OwlManchesterParseStatus.Complete, reader.Feed(":Person "u8));
-        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed("and "u8));
-        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed("("u8));
-        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed("not :Rock"u8));
-        Assert.AreEqual(OwlManchesterParseStatus.Complete, reader.Feed(")"u8));
+        Assert.AreEqual(IncrementalParseStatus.Complete, reader.Feed("Prefix: : <http://example.org/> Ontology: <http://example.org/o>"u8));
+        Assert.AreEqual(IncrementalParseStatus.NeedMore, reader.Feed(" Class: "u8));
+        Assert.AreEqual(IncrementalParseStatus.Complete, reader.Feed(":Person "u8));
+        Assert.AreEqual(IncrementalParseStatus.NeedMore, reader.Feed("SubClassOf: "u8));
+        Assert.AreEqual(IncrementalParseStatus.NeedMore, reader.Feed(":hasParent some "u8));
+        Assert.AreEqual(IncrementalParseStatus.Complete, reader.Feed(":Person "u8));
+        Assert.AreEqual(IncrementalParseStatus.NeedMore, reader.Feed("and "u8));
+        Assert.AreEqual(IncrementalParseStatus.NeedMore, reader.Feed("("u8));
+        Assert.AreEqual(IncrementalParseStatus.NeedMore, reader.Feed("not :Rock"u8));
+        Assert.AreEqual(IncrementalParseStatus.Complete, reader.Feed(")"u8));
 
         Assert.IsFalse(reader.Diagnostics.HasErrors, "an unfinished tail must never surface as a diagnostic");
 
@@ -290,7 +291,7 @@ internal sealed class OwlManchesterSyntaxTests
         const string Truncated = "Prefix: : <http://example.org/> Ontology: Class: :A SubClassOf: :hasParent some (:B and";
 
         OwlManchesterSyntaxIncrementalReader reader = new();
-        Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed(System.Text.Encoding.UTF8.GetBytes(Truncated)));
+        Assert.AreEqual(IncrementalParseStatus.NeedMore, reader.Feed(System.Text.Encoding.UTF8.GetBytes(Truncated)));
         Assert.IsFalse(reader.Diagnostics.HasErrors, "incompleteness squiggled before Complete");
 
         OwlOntologyDocument document = reader.Complete();
@@ -314,7 +315,7 @@ internal sealed class OwlManchesterSyntaxTests
         {
             OwlManchesterSyntaxIncrementalReader reader = new();
 
-            Assert.AreEqual(OwlManchesterParseStatus.NeedMore, reader.Feed(System.Text.Encoding.UTF8.GetBytes(tail)), tail);
+            Assert.AreEqual(IncrementalParseStatus.NeedMore, reader.Feed(System.Text.Encoding.UTF8.GetBytes(tail)), tail);
             Assert.IsFalse(reader.Diagnostics.HasErrors, $"'{tail}' squiggled a merely-unfinished tail");
         }
     }

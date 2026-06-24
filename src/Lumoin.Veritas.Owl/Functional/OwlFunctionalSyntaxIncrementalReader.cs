@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Owl.Structural;
 
@@ -15,9 +16,9 @@ namespace Lumoin.Veritas.Owl.Functional;
 /// <para>
 /// The reader implements the project's editor contract: after each
 /// <see cref="Feed"/> the <see cref="Status"/> reports whether the input so
-/// far ends at a document boundary (<see cref="OwlFunctionalParseStatus.Complete"/>)
+/// far ends at a document boundary (<see cref="IncrementalParseStatus.Complete"/>)
 /// or inside a token, group, or undecided constructor head
-/// (<see cref="OwlFunctionalParseStatus.NeedMore"/>). Incompleteness is a
+/// (<see cref="IncrementalParseStatus.NeedMore"/>). Incompleteness is a
 /// status, never a diagnostic — an editor must not mark a merely-unfinished
 /// tail as an error. Truncation becomes an error only when
 /// <see cref="Complete"/> declares the input final, which is how the
@@ -99,10 +100,10 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
     /// Gets whether the input fed so far ends at a document boundary or
     /// inside an unfinished construct.
     /// </summary>
-    public OwlFunctionalParseStatus Status =>
+    public IncrementalParseStatus Status =>
         LexSuspended || PendingName is not null || Open.Count > 1
-            ? OwlFunctionalParseStatus.NeedMore
-            : OwlFunctionalParseStatus.Complete;
+            ? IncrementalParseStatus.NeedMore
+            : IncrementalParseStatus.Complete;
 
     /// <summary>
     /// Appends source bytes and parses as far as the input now permits.
@@ -110,7 +111,7 @@ public sealed class OwlFunctionalSyntaxIncrementalReader
     /// <param name="chunk">The next run of document bytes, of any length.</param>
     /// <returns>The <see cref="Status"/> after the chunk is consumed.</returns>
     /// <exception cref="InvalidOperationException"><see cref="Complete"/> has already been called.</exception>
-    public OwlFunctionalParseStatus Feed(ReadOnlySpan<byte> chunk)
+    public IncrementalParseStatus Feed(ReadOnlySpan<byte> chunk)
     {
         if(Final)
         {
