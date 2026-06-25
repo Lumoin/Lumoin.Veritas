@@ -100,7 +100,7 @@ internal static class VeritasOperations
         VeritasQueryResult result;
         try
         {
-            result = await database.QueryAsync(queryText, baseIri, cancellationToken: cancellationToken).ConfigureAwait(false);
+            result = await database.QueryAsync(Utf8String.FromString(queryText), Utf8String.FromString(baseIri), cancellationToken: cancellationToken).ConfigureAwait(false);
         }
         catch(ArgumentException ex)
         {

@@ -233,10 +233,8 @@ public sealed class VeritasEngine: IAsyncDisposable
     /// <exception cref="ArgumentException"><paramref name="sparql"/> does not parse, or is a SPARQL Update rather than a query.</exception>
     /// <exception cref="NotSupportedException"><paramref name="sparql"/> is a CONSTRUCT or DESCRIBE query, which this surface does not yet render.</exception>
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
-    public async ValueTask<VeritasQueryResult> QueryAsync(string sparql, string? baseIri = null, AccessContext? accessContext = null, CancellationToken cancellationToken = default)
+    public async ValueTask<VeritasQueryResult> QueryAsync(Utf8String sparql, Utf8String? baseIri = null, AccessContext? accessContext = null, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(sparql);
-
         using Utf8StringPool pool = new();
         SparqlQuery query = Parse(sparql, baseIri, pool);
         AlgebraOperator algebra = SparqlTranslator.Translate((SparqlQuery)new SparqlNormalizer(pool).Normalize(query));
@@ -265,7 +263,7 @@ public sealed class VeritasEngine: IAsyncDisposable
     /// <exception cref="ArgumentNullException"><paramref name="sparql"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException"><paramref name="sparql"/> does not parse, is a SPARQL Update, or is not an <c>ASK</c> query.</exception>
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
-    public async ValueTask<bool> AskAsync(string sparql, AccessContext? accessContext = null, CancellationToken cancellationToken = default)
+    public async ValueTask<bool> AskAsync(Utf8String sparql, AccessContext? accessContext = null, CancellationToken cancellationToken = default)
     {
         VeritasQueryResult result = await QueryAsync(sparql, accessContext: accessContext, cancellationToken: cancellationToken).ConfigureAwait(false);
 
@@ -287,10 +285,8 @@ public sealed class VeritasEngine: IAsyncDisposable
     /// <returns>The streaming SELECT result.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="sparql"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException"><paramref name="sparql"/> does not parse, is a SPARQL Update, or is not a SELECT query.</exception>
-    public VeritasSelectStream StreamSelect(string sparql, string? baseIri = null, AccessContext? accessContext = null, CancellationToken cancellationToken = default)
+    public VeritasSelectStream StreamSelect(Utf8String sparql, Utf8String? baseIri = null, AccessContext? accessContext = null, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(sparql);
-
         Utf8StringPool pool = new();
         try
         {
@@ -332,9 +328,8 @@ public sealed class VeritasEngine: IAsyncDisposable
     /// <exception cref="ArgumentException"><paramref name="sparql"/> does not parse, or is a SPARQL query rather than an update.</exception>
     /// <exception cref="InvalidOperationException">This is an immutable database (opened with <see cref="OpenAsync(IEnumerable{DataTriple}, VeritasEngineOptions?, CancellationToken)"/> rather than <see cref="OpenMutableAsync"/>).</exception>
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
-    public async ValueTask UpdateAsync(string sparql, string? baseIri = null, AccessContext? accessContext = null, CancellationToken cancellationToken = default)
+    public async ValueTask UpdateAsync(Utf8String sparql, Utf8String? baseIri = null, AccessContext? accessContext = null, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(sparql);
         if(mutableDataset is null)
         {
             throw new InvalidOperationException("Only a mutable database (opened with OpenMutableAsync) accepts updates; this database is immutable.");
@@ -526,10 +521,9 @@ public sealed class VeritasEngine: IAsyncDisposable
     /// <param name="pool">The pool the query parses into.</param>
     /// <returns>The parsed query.</returns>
     /// <exception cref="ArgumentException"><paramref name="sparql"/> does not parse, or is a SPARQL Update rather than a query.</exception>
-    private static SparqlQuery Parse(string sparql, string? baseIri, Utf8StringPool pool)
+    private static SparqlQuery Parse(Utf8String sparql, Utf8String? baseIri, Utf8StringPool pool)
     {
-        Utf8String? parseBaseIri = baseIri is null ? null : Utf8String.FromString(baseIri);
-        ParseResult<SparqlRequest> parsed = SparqlParser.ParseRequest(Utf8String.FromString(sparql).Memory, pool, parseBaseIri);
+        ParseResult<SparqlRequest> parsed = SparqlParser.ParseRequest(sparql.Memory, pool, baseIri);
         if(parsed.HasErrors)
         {
             throw new ArgumentException($"The query did not parse: {DescribeFirstError(parsed.Diagnostics)}", nameof(sparql));
@@ -549,10 +543,9 @@ public sealed class VeritasEngine: IAsyncDisposable
     /// <param name="pool">The pool the update parses into.</param>
     /// <returns>The parsed, normalized update request.</returns>
     /// <exception cref="ArgumentException"><paramref name="sparql"/> does not parse, or is a SPARQL query rather than an update.</exception>
-    private static SparqlUpdateRequest ParseUpdate(string sparql, string? baseIri, Utf8StringPool pool)
+    private static SparqlUpdateRequest ParseUpdate(Utf8String sparql, Utf8String? baseIri, Utf8StringPool pool)
     {
-        Utf8String? parseBaseIri = baseIri is null ? null : Utf8String.FromString(baseIri);
-        ParseResult<SparqlRequest> parsed = SparqlParser.ParseRequest(Utf8String.FromString(sparql).Memory, pool, parseBaseIri);
+        ParseResult<SparqlRequest> parsed = SparqlParser.ParseRequest(sparql.Memory, pool, baseIri);
         if(parsed.HasErrors)
         {
             throw new ArgumentException($"The update did not parse: {DescribeFirstError(parsed.Diagnostics)}", nameof(sparql));
