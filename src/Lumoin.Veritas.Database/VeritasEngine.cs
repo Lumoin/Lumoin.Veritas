@@ -272,6 +272,48 @@ public sealed class VeritasEngine: IAsyncDisposable
         return result.Boolean ?? throw new ArgumentException("The query is not an ASK query.", nameof(sparql));
     }
 
+    /// <summary>
+    /// Streams a SELECT query's solutions for incremental consumption (server-sent events, paging). The returned
+    /// <see cref="VeritasSelectStream"/> carries the head variables (for the result header) and an
+    /// <see cref="IAsyncEnumerable{T}"/> that yields solutions as they are produced — truly incremental for the
+    /// common shape (a basic graph pattern, optionally projected and/or limited), and otherwise answered through the
+    /// materialized path with an identical result set. Dispose the returned stream once enumerated (a <c>using</c>
+    /// around the enumeration); it holds the query's parse resources until then.
+    /// </summary>
+    /// <param name="sparql">The SELECT query text.</param>
+    /// <param name="baseIri">The base IRI relative references resolve against; <see langword="null"/> for none.</param>
+    /// <param name="accessContext">The opaque "who is asking" context consulted per candidate triple by the access-control policy; <see langword="null"/> for none.</param>
+    /// <param name="cancellationToken">A token that aborts streaming.</param>
+    /// <returns>The streaming SELECT result.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="sparql"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException"><paramref name="sparql"/> does not parse, is a SPARQL Update, or is not a SELECT query.</exception>
+    public VeritasSelectStream StreamSelect(string sparql, string? baseIri = null, AccessContext? accessContext = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(sparql);
+
+        Utf8StringPool pool = new();
+        try
+        {
+            SparqlQuery query = Parse(sparql, baseIri, pool);
+            if(query.Form is not SelectQuery)
+            {
+                throw new ArgumentException("StreamSelect handles SELECT queries; use AskAsync for ASK, and CONSTRUCT/DESCRIBE are not streamed.", nameof(sparql));
+            }
+
+            AlgebraOperator algebra = SparqlTranslator.Translate((SparqlQuery)new SparqlNormalizer(pool).Normalize(query));
+            IReadOnlyList<Utf8String> variables = SelectVariables(query);
+            SparqlQueryEngine engine = ResolveEngine(accessContext);
+
+            return new VeritasSelectStream(variables, engine.EvaluateStreamingAsync(algebra, cancellationToken), pool);
+        }
+        catch
+        {
+            pool.Dispose();
+
+            throw;
+        }
+    }
+
     /// <summary>The number of times an update execution is re-attempted when a concurrent committer advances the journal head, before the concurrency exception propagates.</summary>
     private const int MaxUpdateAttempts = 16;
 

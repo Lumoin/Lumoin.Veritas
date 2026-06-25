@@ -354,6 +354,132 @@ public sealed class SparqlQueryEngine
     }
 
     /// <summary>
+    /// Streams a query's solutions one at a time for incremental consumption (server-sent events, paging, large
+    /// scans). A streamable shape — a bare basic graph pattern, or a <see cref="Project"/> and/or <see cref="Slice"/>
+    /// wrapping one — is produced lazily straight from the BGP evaluator, decoded per solution, with <c>LIMIT</c>
+    /// terminating the stream early. Any other shape (a blocking operator — <c>ORDER BY</c>, <c>DISTINCT</c>,
+    /// <c>GROUP BY</c>/aggregate, joins, <c>OPTIONAL</c>, <c>UNION</c>, <c>FILTER</c> — or a BGP needing per-solution
+    /// rewrites: triple-term destructuring, self-join equality, <c>rdf:type</c> expansion) falls back to the
+    /// materialized <see cref="EvaluateAsync(AlgebraOperator, CancellationToken)"/> and yields its rows, so every
+    /// query is answered correctly; only the common shape is truly incremental. The result set is identical either
+    /// way.
+    /// </summary>
+    /// <param name="algebra">The translated algebra.</param>
+    /// <param name="cancellationToken">A token that aborts streaming.</param>
+    /// <returns>The solutions, yielded as they are produced.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="algebra"/> is <see langword="null"/>.</exception>
+    public async IAsyncEnumerable<SparqlSolution> EvaluateStreamingAsync(AlgebraOperator algebra, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(algebra);
+
+        //Peel an optional Slice and Project (each at most once, in either order) wrapping the BGP leaf.
+        AlgebraOperator inner = algebra;
+        int offset = 0;
+        int? limit = null;
+        IReadOnlyList<SparqlVariable>? projection = null;
+        bool peeledSlice = false;
+        bool peeledProject = false;
+        while(true)
+        {
+            if(!peeledSlice && inner is Slice slice)
+            {
+                peeledSlice = true;
+                offset = slice.Offset;
+                limit = slice.Limit;
+                inner = slice.Input;
+            }
+            else if(!peeledProject && inner is Project project)
+            {
+                peeledProject = true;
+                projection = project.Variables;
+                inner = project.Input;
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        EncodedBgp? encoded = inner is Bgp bgp ? EncodeBgp(bgp) : null;
+        HypertrieGraphStore? graphStore = dataset.Resolve(TermId.None) as HypertrieGraphStore;
+        bool streamable = encoded is not null
+            && encoded.Encodable
+            && encoded.TripleTermMatches.Count == 0
+            && encoded.SelfJoinEqualities.Count == 0
+            && ComputeTypeExpansions(encoded.Patterns).Count == 0
+            && graphStore is not null;
+
+        if(!streamable)
+        {
+            //Not stream-eligible — answer through the materialized path, which handles every operator correctly.
+            foreach(SparqlSolution row in await EvaluateAsync(algebra, cancellationToken).ConfigureAwait(false))
+            {
+                yield return row;
+            }
+
+            yield break;
+        }
+
+        EncodedBgp encodedBgp = encoded!;
+        HypertrieGraphStore store = graphStore!;
+        BasicGraphPattern query = new(encodedBgp.Patterns, encodedBgp.Registry);
+        IAsyncEnumerable<Solution> backend = dataset.DefaultGraphRendezvous is QueryEngineRendezvous rendezvous
+            ? rendezvous.Query(store, query, TimeProvider.System, accessControl: accessControl, accessContext: accessContext, cancellationToken: cancellationToken)
+            : store.Query(query, TimeProvider.System, accessControl: accessControl, accessContext: accessContext, cancellationToken: cancellationToken);
+
+        HashSet<SparqlVariable>? keep = projection is null ? null : [.. projection];
+        int toSkip = offset;
+        int remaining = limit ?? int.MaxValue;
+        await foreach(Solution solution in backend.ConfigureAwait(false))
+        {
+            if(remaining <= 0)
+            {
+                yield break;
+            }
+
+            if(toSkip > 0)
+            {
+                toSkip--;
+
+                continue;
+            }
+
+            yield return DecodeStreamedSolution(solution, encodedBgp.ToSparql, keep);
+            remaining--;
+        }
+    }
+
+    /// <summary>
+    /// Decodes one streamed BGP solution into a SELECT solution: maps each backend variable to its SPARQL variable,
+    /// resolves its term through the dictionary, drops unbound and non-distinguished bindings, and — when a
+    /// projection is given — keeps only the projected variables.
+    /// </summary>
+    /// <param name="solution">The encoded BGP solution.</param>
+    /// <param name="toSparql">The backend-variable to SPARQL-variable map (distinguished variables only).</param>
+    /// <param name="keep">The projected variables to retain, or <see langword="null"/> to keep all distinguished variables.</param>
+    /// <returns>The decoded solution.</returns>
+    private SparqlSolution DecodeStreamedSolution(Solution solution, Dictionary<Variable, SparqlVariable> toSparql, HashSet<SparqlVariable>? keep)
+    {
+        List<SparqlBinding> bindings = new(solution.Bindings.Count);
+        foreach(VariableBinding binding in solution.Bindings)
+        {
+            if(binding.Value == TermId.None || !toSparql.TryGetValue(binding.Variable, out SparqlVariable sparqlVariable))
+            {
+                continue;
+            }
+
+            if(keep is not null && !keep.Contains(sparqlVariable))
+            {
+                continue;
+            }
+
+            bindings.Add(new SparqlBinding(sparqlVariable, dictionary.Resolve(binding.Value)));
+        }
+
+        return new SparqlSolution(bindings);
+    }
+
+    /// <summary>
     /// Returns the engine scoped to a query's <c>FROM</c>/<c>FROM NAMED</c> dataset clause (SPARQL 1.2 §13.2). An
     /// empty clause leaves this engine unchanged; a non-empty clause OVERRIDES the default dataset, so the returned
     /// engine evaluates against the effective dataset built from the clause graphs — the default graph is the RDF
