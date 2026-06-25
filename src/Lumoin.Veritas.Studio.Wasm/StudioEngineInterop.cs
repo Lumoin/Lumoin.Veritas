@@ -2,6 +2,7 @@ using System;
 using System.Runtime.InteropServices.JavaScript;
 using System.Runtime.Versioning;
 using System.Threading.Tasks;
+using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Database;
 using Lumoin.Veritas.Sparql.Execution;
 
@@ -43,7 +44,8 @@ internal static partial class StudioEngineInterop
             await InitAsync().ConfigureAwait(false);
         }
 
-        VeritasQueryResult result = await Engine!.QueryAsync(query).ConfigureAwait(false);
+        // The engine query surface converged on Utf8String (byte-only); promote the JS string here.
+        VeritasQueryResult result = await Engine!.QueryAsync(Utf8String.FromString(query)).ConfigureAwait(false);
 
         return result.IsAsk
             ? SparqlResultsJson.ForAsk(result.Boolean!.Value)
