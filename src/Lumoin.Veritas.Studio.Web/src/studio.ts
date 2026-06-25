@@ -8,7 +8,7 @@ import './services/host-bridge';
 import './components/sparql-results';
 import { STUDIO_DATA } from './data';
 import { createGraphView, type GraphMode, type GraphView } from './graph';
-import { resolveTransport } from './services/veritas-transport';
+import { resolveTransport, type VeritasTransport } from './services/veritas-transport';
 import type { SparqlResultsDocument, SparqlResultsElement } from './components/sparql-results';
 
 type Theme = 'light' | 'dark';
@@ -29,8 +29,24 @@ const all = (selector: string): HTMLElement[] => [...document.querySelectorAll<H
 /** Formats a number with grouping separators. */
 const fmt = (n: number): string => n.toLocaleString('en-US');
 
-/** The engine transport, resolved once at boot (native bridge, in-browser WASM engine, or HTTP). */
-const transport = resolveTransport();
+/** The engine transport (native bridge, in-browser WASM engine, or HTTP); re-resolved after an optional WASM boot. */
+let transport: VeritasTransport = resolveTransport();
+
+/** Boots the in-browser WASM engine when `?engine=wasm` is requested, then re-resolves the transport to it. */
+async function maybeBootWasmEngine(): Promise<void> {
+  if (new URLSearchParams(location.search).get('engine') !== 'wasm') {
+    return;
+  }
+
+  try {
+    const { bootWasmEngine } = await import('./services/wasm-engine');
+    await bootWasmEngine('/_framework/dotnet.js');
+    transport = resolveTransport();
+  } catch (error) {
+    // Stay on the default transport if the engine fails to boot; surface it for diagnosis.
+    console.error('In-browser WASM engine failed to boot', error);
+  }
+}
 
 /** The active graph view (the 2D placeholder, then the BabylonJS view); null before init. */
 let graph: GraphView | null = null;
@@ -252,6 +268,7 @@ function initThemeButton(): void {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  void maybeBootWasmEngine();
   initGraph();
   initLegend();
   initTrace();

@@ -1,8 +1,56 @@
-import { type UserConfig, defineConfig } from 'vite';
+import { type Plugin, type UserConfig, defineConfig } from 'vite';
 import { relative, resolve } from 'node:path';
 import browserslist from 'browserslist';
 import { browserslistToTargets } from 'lightningcss';
 import fs from 'node:fs';
+
+// Serves the WASM engine runtime (`/_framework/*`) straight from the Lumoin.Veritas.Studio.Wasm build
+// output in dev — no copy into the app, so Vite does not watch hundreds of runtime files. The in-browser
+// deployment boots the engine from `/_framework/dotnet.js` (src/services/wasm-engine.ts). Override the
+// build dir with VERITAS_WASM_FRAMEWORK.
+const wasmFrameworkDir = process.env.VERITAS_WASM_FRAMEWORK ?? resolve(
+  __dirname, '..', 'Lumoin.Veritas.Studio.Wasm', 'bin', 'Debug', 'net10.0', 'wwwroot', '_framework');
+
+const wasmContentType = (file: string): string => {
+  switch (file.slice(file.lastIndexOf('.'))) {
+    case '.js':
+    case '.mjs':
+      return 'text/javascript';
+    case '.wasm':
+      return 'application/wasm';
+    case '.json':
+    case '.map':
+      return 'application/json';
+    default:
+      return 'application/octet-stream';
+  }
+};
+
+const wasmFrameworkDevPlugin = (): Plugin => ({
+  name: 'veritas-wasm-framework-dev',
+  apply: 'serve',
+  configureServer(server) {
+    server.middlewares.use((request, response, next) => {
+      const url = request.url ?? '';
+      if (!url.startsWith('/_framework/')) {
+        next();
+
+        return;
+      }
+
+      const file = resolve(wasmFrameworkDir, decodeURIComponent(url.slice('/_framework/'.length).split('?')[0]));
+      if (!file.startsWith(wasmFrameworkDir) || !fs.existsSync(file)) {
+        next();
+
+        return;
+      }
+
+      response.setHeader('Content-Type', wasmContentType(file));
+      response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+      fs.createReadStream(file).pipe(response);
+    });
+  }
+});
 
 // Veritas Studio — Vite (Rolldown) multi-page build. Mirrors the Verifable.Web conventions:
 // Vite is the sole bundler, Lightning CSS (Rust) is the CSS transform, output is the static the
@@ -48,6 +96,7 @@ export default defineConfig(({ mode }) => {
   const config: UserConfig = {
     root: 'src',
     publicDir: '../public',
+    plugins: isDev ? [wasmFrameworkDevPlugin()] : [],
     build: {
       outDir: '../dist',
       emptyOutDir: true,
