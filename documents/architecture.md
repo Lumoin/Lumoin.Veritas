@@ -89,8 +89,12 @@ deduplicated nodes in a `NodeStore`, immutable after build. Snapshots (`Hypertri
 reference-counted handles pinning a root; a snapshot's identifier plus the journal that produced
 it is sufficient to rebuild it deterministically. Edits go through journaled sessions; the
 journal contract (`JournalDelegates`, `DatasetJournalDelegates`) is an append/read seam with
-optimistic concurrency, currently implemented in-memory only — durable journal backends plug
-into this seam (§8). A simpler `InMemoryGraphStore` coexists as a peer store.
+optimistic concurrency. Two backends ship: `InMemoryJournal` (the default) and `FileBackedJournal`
+— a real, tested, file-durable journal with per-append checksums, torn-tail recovery, and its own
+purpose-built framed binary format (not CBOR or any interchange format); both plug into this seam
+(§8). What remains designed-but-not-built is wiring the durable journal as the engine's *default*
+and the separate columnar durable tier (the native-container / Parquet-interop formats over
+`ColumnSource`). A simpler `InMemoryGraphStore` coexists as a peer store.
 
 Whole-graph construction (`BuildAsync`) is the **bulk-load path** and is treated as a design
 axis of its own: storage changes are judged against bulk-load, random-write, and query
