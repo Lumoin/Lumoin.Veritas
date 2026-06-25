@@ -330,6 +330,14 @@ public sealed class DatasetEditSession: IAsyncDisposable
     }
 
     /// <summary>
+    /// A test-only seam that runs between this commit's journal append (its linearisation point) and its publish,
+    /// letting a test pause here while a competing commit attempts its own append — so a concurrency interleaving
+    /// becomes deterministic instead of timing-dependent. <see langword="null"/> in production: the commit path is
+    /// then byte-identical and pays only a null check, and nothing here ever runs.
+    /// </summary>
+    internal Func<CancellationToken, ValueTask>? CommitInterleavingHook { get; set; }
+
+    /// <summary>
     /// Commits the session's accumulated transitions as one
     /// <see cref="DatasetJournalEntry"/> and publishes the new
     /// dataset state — directory, root-set pin, and the touched
@@ -365,6 +373,13 @@ public sealed class DatasetEditSession: IAsyncDisposable
         //when this session's base is still the head, so the
         //subsequent publish cannot race another publisher.
         await Dataset.JournalAppend(committedEntry, BaseState.StateId, cancellationToken).ConfigureAwait(false);
+
+        //Test-only interleaving seam (null in production): between the linearising append and the publish, so a test
+        //can pause here to force a deterministic interleaving with a competing commit.
+        if(CommitInterleavingHook is { } interleavingHook)
+        {
+            await interleavingHook(cancellationToken).ConfigureAwait(false);
+        }
 
         bool defaultChanged = Scratch.TryGetValue(TermId.None, out GraphScratch? defaultScratch)
             && (defaultScratch.Added.Count > 0 || defaultScratch.Removed.Count > 0);

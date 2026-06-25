@@ -114,6 +114,68 @@ internal sealed class DatasetEditSessionTests
         Assert.IsNull(entries[2].Transitions[2].ParentRoot);
     }
 
+    /// <summary>
+    /// The journal append is the linearisation point: once a session appends, a competing session based on the same
+    /// state is rejected at its own append — even while the first session's publish is still pending. The interleaving
+    /// hook makes this deterministic every run: it pauses the first commit between its append and its publish; the
+    /// second commit then attempts and conflicts at the head-CAS; only then does the first publish.
+    /// </summary>
+    [TestMethod]
+    public async Task CompetingCommitConflictsAtTheAppendWhileTheFirstPublishIsPending()
+    {
+        InMemoryDatasetJournal journal = new();
+        TermDictionary dictionary = new();
+        MutableSparqlDataset dataset = await CreateEmptyAsync(journal, dictionary).ConfigureAwait(false);
+
+        DatasetEditSession first = await dataset.OpenSessionAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        DatasetEditSession second = await dataset.OpenSessionAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        try
+        {
+            await first.ApplyDeltaAsync(TermId.None, [Triple(dictionary, "s", "p", "first")], [], TestContext.CancellationToken).ConfigureAwait(false);
+            await second.ApplyDeltaAsync(TermId.None, [Triple(dictionary, "s", "p", "second")], [], TestContext.CancellationToken).ConfigureAwait(false);
+
+            //first pauses between its (linearising) append and its publish; the test releases it only after second has
+            //attempted its commit, so the append-conflict-while-publish-pending interleaving happens every run.
+            TaskCompletionSource firstReachedHook = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource releaseFirst = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            first.CommitInterleavingHook = async _ =>
+            {
+                firstReachedHook.SetResult();
+                await releaseFirst.Task.ConfigureAwait(false);
+            };
+
+            Task firstCommit = first.CommitAsync(TestContext.CancellationToken).AsTask();
+            await firstReachedHook.Task.ConfigureAwait(false);
+
+            //first has appended (the head moved past the shared base) but has not yet published; second's append must
+            //conflict at the head-CAS rather than producing a second commit on the same base.
+            await Assert
+                .ThrowsAsync<EditSessionConcurrencyException>(async () => await second.CommitAsync(TestContext.CancellationToken).ConfigureAwait(false))
+                .ConfigureAwait(false);
+
+            releaseFirst.SetResult();
+            await firstCommit.ConfigureAwait(false);
+        }
+        finally
+        {
+            await second.DisposeAsync().ConfigureAwait(false);
+            await first.DisposeAsync().ConfigureAwait(false);
+        }
+
+        //Exactly one Committed entry — the first session's — reached the journal; the competing commit conflicted.
+        List<DatasetJournalEntry> entries = await ReadAllAsync(journal, TestContext.CancellationToken).ConfigureAwait(false);
+        int committed = 0;
+        foreach(DatasetJournalEntry entry in entries)
+        {
+            if(entry.EntryKind == EditSessionEntryKind.Committed)
+            {
+                committed++;
+            }
+        }
+
+        Assert.AreEqual(1, committed, "Exactly the first commit appended; the competing commit conflicted at the head-CAS.");
+    }
+
     [TestMethod]
     public async Task NetDeltaFoldsToNothingAndWritesNoEntry()
     {
