@@ -161,6 +161,13 @@
           "Lumoin.Veritas.Core": "[0.0.0, )"
         }
       },
+      "lumoin.veritas.rdf.json": {
+        "type": "Project",
+        "dependencies": {
+          "Lumoin.Veritas.Core": "[0.0.0, )",
+          "Lumoin.Veritas.Sparql": "[0.0.0, )"
+        }
+      },
       "lumoin.veritas.replication": {
         "type": "Project",
         "dependencies": {

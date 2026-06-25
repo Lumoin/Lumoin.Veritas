@@ -25,6 +25,7 @@ interface EngineExports {
         Wasm: {
           StudioEngineInterop: {
             InitAsync(): Promise<void>;
+            LoadTurtleAsync(turtle: string): Promise<string>;
             RunSparqlAsync(query: string): Promise<string>;
           };
         };
@@ -38,8 +39,9 @@ interface EngineExports {
  * the engine is present. The runtime URL is the WASM build's loader; it is resolved at integration (an
  * import map or a served path), hence the variable import.
  * @param dotnetUrl The URL of the WASM runtime loader (`dotnet.js`).
+ * @param initialTurtle An optional Turtle dataset to load into the engine on boot; the engine opens empty without it.
  */
-export async function bootWasmEngine(dotnetUrl: string): Promise<void> {
+export async function bootWasmEngine(dotnetUrl: string, initialTurtle?: string): Promise<void> {
   if ((globalThis as { veritasEngine?: VeritasWasmEngine }).veritasEngine !== undefined) {
     return;
   }
@@ -48,7 +50,14 @@ export async function bootWasmEngine(dotnetUrl: string): Promise<void> {
   const runtime = await host.dotnet.create();
   const exports = (await runtime.getAssemblyExports(runtime.getConfig().mainAssemblyName)) as EngineExports;
   const interop = exports.Lumoin.Veritas.Studio.Wasm.StudioEngineInterop;
-  await interop.InitAsync();
+  if (initialTurtle !== undefined) {
+    const error = await interop.LoadTurtleAsync(initialTurtle);
+    if (error.length > 0) {
+      throw new Error(`In-browser dataset load failed: ${error}`);
+    }
+  } else {
+    await interop.InitAsync();
+  }
 
   const engine: VeritasWasmEngine = {
     runSparql: (query: string): Promise<string> => interop.RunSparqlAsync(query),

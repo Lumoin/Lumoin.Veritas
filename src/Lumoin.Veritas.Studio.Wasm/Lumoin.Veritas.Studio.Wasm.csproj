@@ -20,11 +20,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Database brings the engine facade (+ Core, Sparql transitively). The serialization projects
-         (Rdf.Json, …) are intentionally NOT referenced — apps emit their own wire format; the SPARQL
-         results-JSON is written in SparqlResultsJson.cs over the public result API. -->
+    <!-- Database brings the engine facade (+ Core, Sparql transitively); Turtle loads datasets; Rdf.Json
+         writes the SPARQL results-JSON. As a composition root (an app), this may reference the serialization
+         project — whitelisted in Directory.Packages.props like the CLI. -->
     <ProjectReference Include="..\Lumoin.Veritas.Database\Lumoin.Veritas.Database.csproj" />
     <ProjectReference Include="..\Lumoin.Veritas.Turtle\Lumoin.Veritas.Turtle.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Rdf.Json\Lumoin.Veritas.Rdf.Json.csproj" />
   </ItemGroup>
 
 </Project>

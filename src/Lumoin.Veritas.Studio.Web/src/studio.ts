@@ -7,6 +7,7 @@
 import './services/host-bridge';
 import './components/sparql-results';
 import { STUDIO_DATA } from './data';
+import { BATTERY_SAMPLE } from './battery-sample';
 import { createGraphView, type GraphMode, type GraphView } from './graph';
 import { resolveTransport, type VeritasTransport } from './services/veritas-transport';
 import type { SparqlResultsDocument, SparqlResultsElement } from './components/sparql-results';
@@ -40,7 +41,7 @@ async function maybeBootWasmEngine(): Promise<void> {
 
   try {
     const { bootWasmEngine } = await import('./services/wasm-engine');
-    await bootWasmEngine('/_framework/dotnet.js');
+    await bootWasmEngine('/_framework/dotnet.js', BATTERY_SAMPLE);
     transport = resolveTransport();
   } catch (error) {
     // Stay on the default transport if the engine fails to boot; surface it for diagnosis.
