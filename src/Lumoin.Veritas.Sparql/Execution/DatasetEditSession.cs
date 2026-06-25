@@ -332,8 +332,9 @@ public sealed class DatasetEditSession: IAsyncDisposable
     /// <summary>
     /// A test-only seam that runs between this commit's journal append (its linearisation point) and its publish,
     /// letting a test pause here while a competing commit attempts its own append — so a concurrency interleaving
-    /// becomes deterministic instead of timing-dependent. <see langword="null"/> in production: the commit path is
-    /// then byte-identical and pays only a null check, and nothing here ever runs.
+    /// becomes deterministic instead of timing-dependent. It forces, in process, the same interleaving the TLA+
+    /// model <c>spec/CommitPublishFeed.tla</c> checks exhaustively. <see langword="null"/> in production: the commit
+    /// path is then byte-identical and pays only a null check, and nothing here ever runs.
     /// </summary>
     internal Func<CancellationToken, ValueTask>? CommitInterleavingHook { get; set; }
 
@@ -371,7 +372,8 @@ public sealed class DatasetEditSession: IAsyncDisposable
 
         //The append is the linearisation point: it succeeds only
         //when this session's base is still the head, so the
-        //subsequent publish cannot race another publisher.
+        //subsequent publish cannot race another publisher. This is the
+        //AppendOk / AppendConflict head-CAS modelled in spec/CommitPublishFeed.tla.
         await Dataset.JournalAppend(committedEntry, BaseState.StateId, cancellationToken).ConfigureAwait(false);
 
         //Test-only interleaving seam (null in production): between the linearising append and the publish, so a test

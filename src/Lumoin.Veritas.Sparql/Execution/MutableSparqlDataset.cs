@@ -488,6 +488,8 @@ public sealed class MutableSparqlDataset
         //deliver their deltas reversed, and the feed — which evolves by delta fold, not by an absolute snapshot —
         //would durably diverge from the committed state. Every call here is synchronous and the rendezvous and feed
         //hold their own distinct locks (no re-entrancy on this one), so nothing awaits under the lock.
+        //This atomicity is the FeedMatchesStore invariant model-checked in spec/CommitPublishFeed.tla: AtomicPublish
+        //= TRUE (this lock) proves it; AtomicPublish = FALSE reproduces the reordered-observer bug.
         lock(StateLock)
         {
             Current = state;
