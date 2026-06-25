@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The Studio desktop shell. Skeleton, staged: not yet in the .slnx (see the decision record §6
+       for the worktree/placement step). Add the Lumoin.Veritas.Database ProjectReference and wire the
+       SPARQL-results-JSON adapter in Program.cs when this is placed. -->
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The native window + OS webview (Apache-2.0). Pin the version when placed. -->
+    <PackageReference Include="Photino.NET" Version="*" />
+  </ItemGroup>
+
+  <!-- <ItemGroup>
+    <ProjectReference Include="..\..\..\src\Lumoin.Veritas.Database\Lumoin.Veritas.Database.csproj" />
+  </ItemGroup> -->
+
+  <!-- The Vite build output, copied beside the exe for the veritas:// scheme in production. -->
+  <ItemGroup>
+    <None Include="..\app\dist\**\*" Link="dist\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\app\dist')" />
+  </ItemGroup>
+
+</Project>

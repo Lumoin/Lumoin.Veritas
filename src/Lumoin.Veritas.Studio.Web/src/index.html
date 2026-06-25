@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en" data-theme="light" data-density="comfortable">
+<head>
+<meta charset="utf-8">
+<title>Veritas Studio</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="./styles/tokens.css">
+<link rel="stylesheet" href="./styles/studio.css">
+</head>
+<body>
+
+<div class="studio" data-layout="studio" data-streaming="idle">
+
+  <!-- top bar -->
+  <header class="topbar">
+    <div class="tb-brand">
+      <svg class="tb-mark" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 7l8-4 8 4-8 4-8-4Z"/><path d="M4 7v10l8 4 8-4V7"/></svg>
+      <span class="word">Veritas</span>
+      <span class="tb-studio">Studio</span>
+    </div>
+
+    <button class="tb-chip" type="button" title="Active dataset" data-testid="active-dataset">
+      <span class="mono">battery-passport</span> · EU 2023/1542
+      <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 5l3 3 3-3"/></svg>
+    </button>
+
+    <div class="tb-spacer"></div>
+
+    <div class="tb-status" title="Active-active replication">
+      <span class="dot live"></span> active-active · 2 regions in sync
+    </div>
+
+    <button class="icon-btn" id="theme-btn" type="button" title="Toggle light / dark" aria-label="Toggle theme">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/></svg>
+    </button>
+    <div class="avatar">R</div>
+  </header>
+
+  <!-- body -->
+  <div class="body">
+
+    <!-- editor -->
+    <section class="panel editor" data-lang="sparql">
+      <div class="panel-head">
+        <div class="tabs" role="tablist" aria-label="Language">
+          <button class="tab lang-tab" data-lang="sparql" role="tab" aria-selected="true">SPARQL</button>
+          <button class="tab lang-tab" data-lang="shacl" role="tab" aria-selected="false">SHACL</button>
+          <button class="tab lang-tab" data-lang="turtle" role="tab" aria-selected="false">Turtle</button>
+          <button class="tab lang-tab" data-lang="jsonata" role="tab" aria-selected="false">JSONata</button>
+          <button class="tab lang-tab" data-lang="jsonld" role="tab" aria-selected="false">JSON-LD</button>
+          <button class="tab lang-tab" data-lang="skos" role="tab" aria-selected="false">SKOS</button>
+          <button class="tab lang-tab" data-lang="owl" role="tab" aria-selected="false">OWL</button>
+        </div>
+        <div class="panel-head-end">
+          <button class="tab run" id="run-btn" type="button" data-testid="run">Run ▸</button>
+        </div>
+      </div>
+
+      <div class="editor-body">
+        <div class="gutter" id="gutter"></div>
+        <pre class="code"><code class="code-only sparql" data-testid="editor-sparql">PREFIX bat: &lt;https://veritas.app/ns/battery#&gt;
+PREFIX dpp: &lt;https://veritas.app/ns/dpp#&gt;
+
+# EV batteries whose recycled cobalt is below the 16% target —
+# the recycled-content claim lives on the supplier's endpoint.
+SELECT ?battery ?cathode ?recycledCobalt ?passport
+WHERE {
+  ?battery a bat:Battery ;
+           bat:cathode  ?cathode ;
+           dpp:passport ?passport .
+  SERVICE &lt;https://supplier.example/dpp/sparql&gt; {   # across a trust boundary, access-gated
+    ?cathode  dpp:recycledContent ?content .
+    ?content  dpp:substance "cobalt" ; dpp:share ?recycledCobalt .
+  }
+  FILTER ( ?recycledCobalt &lt; 16 )
+}
+ORDER BY ASC(?recycledCobalt)</code><code class="code-only shacl"># RecycledCobaltShape — every EV battery declares a cobalt recycled-content share
+bat:RecycledCobaltShape
+  a sh:NodeShape ;
+  sh:targetClass bat:Battery ;
+  sh:property [
+    sh:path ( bat:cathode dpp:recycledContent ) ;
+    sh:minCount 1 ;
+    sh:datatype xsd:decimal ;
+    sh:minInclusive 0 ;
+  ] .</code><code class="code-only turtle">@prefix bat: &lt;https://veritas.app/ns/battery#&gt; .
+@prefix dpp: &lt;https://veritas.app/ns/dpp#&gt; .
+
+bat:Pack_A·E12
+    a bat:Battery ;
+    bat:cathode         mat:NMC-811 ;
+    dpp:carbonFootprint "62.4"^^xsd:decimal ;   # kg CO2e / kWh
+    dpp:passport        "dpp:ABF1…91c" ;
+    dpp:attestedBy      &lt;did:web:cab.example&gt; .</code><code class="code-only jsonata">/* reshape bindings into a recycler due-diligence report */
+results.bindings[recycledCobalt &lt; 16].{
+  "battery":  battery,
+  "passport": passport,
+  "status":   recycledCobalt = 0 ? "none declared" : "below target"
+} ^(&gt;recycledCobalt)</code><code class="code-only jsonld">{
+  "@context": "https://veritas.app/ns/battery.jsonld",
+  "@id": "bat:Pack_A·E12",
+  "@type": "bat:Battery",
+  "cathode": "mat:NMC-811",
+  "carbonFootprint": 62.4,
+  "passport": { "@id": "dpp:ABF1…91c" }
+}</code><code class="code-only skos">bat:RecycledContentScheme a skos:ConceptScheme .
+
+bat:BelowTarget
+    a skos:Concept ;
+    skos:prefLabel "Below recycled-content target"@en ;
+    skos:prefLabel "Alle kierrätystavoitteen"@fi ;
+    skos:broader  bat:ComplianceRisk ;
+    skos:inScheme bat:RecycledContentScheme .</code><code class="code-only owl">bat:cathode
+    a owl:ObjectProperty ;
+    rdfs:domain bat:Battery ;
+    rdfs:range  dpp:Material .
+
+bat:Battery
+    rdfs:subClassOf dpp:Product .</code></pre>
+      </div>
+
+      <div class="assist">
+        <div class="a-head"><span>Assist · terms that fit here</span><span>click to add</span></div>
+        <div class="facets" id="facets">
+          <button class="facet" type="button">a <span>bat:Battery</span> <span class="n">412</span> <span class="plus">+</span></button>
+          <button class="facet" type="button">bat:cathode <span class="n">388</span> <span class="plus">+</span></button>
+          <button class="facet" type="button">dpp:recycledContent <span class="n">388</span> <span class="plus">+</span></button>
+          <button class="facet" type="button">dpp:carbonFootprint <span class="n">221</span> <span class="plus">+</span></button>
+          <button class="facet" type="button">SERVICE <span class="plus">+</span></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- results -->
+    <section class="panel results" data-tab="graph">
+      <div class="panel-head">
+        <span class="title">Results</span>
+        <div class="tabs" role="tablist" aria-label="Result view">
+          <button class="tab res-tab" data-tab="graph" role="tab" aria-selected="true">Graph</button>
+          <button class="tab res-tab" data-tab="table" role="tab" aria-selected="false">Table</button>
+          <button class="tab res-tab" data-tab="raw" role="tab" aria-selected="false">Raw</button>
+          <button class="tab res-tab" data-tab="shacl" role="tab" aria-selected="false">SHACL</button>
+        </div>
+        <span class="res-count" id="res-count">1,284 rows</span>
+      </div>
+
+      <div class="surface">
+        <div class="view graph">
+          <canvas id="graph-canvas"></canvas>
+          <div class="graph-hud">
+            <div class="hud-pill">showing <b>312</b> of <b>1,284,006</b> nodes · <b>6</b> clusters aggregated</div>
+            <div class="legend" id="legend"></div>
+          </div>
+          <div class="graph-tools">
+            <button class="icon-btn" type="button" title="Zoom in">+</button>
+            <button class="icon-btn" type="button" title="Zoom out">−</button>
+            <button class="icon-btn" type="button" title="Fit">⊡</button>
+          </div>
+        </div>
+
+        <div class="view table">
+          <sparql-results id="results" data-testid="results"></sparql-results>
+        </div>
+
+        <div class="view raw">
+<pre class="raw-pre" id="raw-pre"></pre>
+        </div>
+
+        <div class="view shacl">
+          <div class="shacl-body" id="shacl-body"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- trace -->
+    <section class="panel trace">
+      <div class="panel-head">
+        <span class="title">Trace · why these terms</span>
+        <span class="tb-status trace-status"><span class="dot live"></span>listening</span>
+      </div>
+      <div class="trace-list" id="trace-list" data-testid="trace"></div>
+    </section>
+
+  </div>
+
+  <!-- status bar -->
+  <footer class="statusbar">
+    <span class="stream">
+      <span class="bar"></span>
+      <span id="stream-label">idle · <span class="sb-strong" id="row-count">0</span> rows</span>
+    </span>
+    <span>·</span>
+    <span><span class="sb-strong" id="ms">0</span> ms</span>
+    <span>·</span>
+    <span><span class="sb-strong" id="ops">0</span> ops</span>
+    <span class="sb-chip" id="plan-chip">plan: —</span>
+
+    <span class="sb-spacer"></span>
+    <span class="sb-chip">Turtle</span>
+    <span class="sb-chip">JSON-LD</span>
+    <span class="sb-chip">CBOR</span>
+    <span class="sb-chip" title="Replication"><span class="dot live sb-dot"></span>2 regions</span>
+  </footer>
+
+</div>
+
+<script type="module" src="./studio.ts"></script>
+</body>
+</html>
