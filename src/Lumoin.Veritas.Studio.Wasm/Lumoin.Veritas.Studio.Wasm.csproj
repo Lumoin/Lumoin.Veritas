@@ -10,15 +10,20 @@
     <OutputType>Exe</OutputType>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
-    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
-    <!-- JS interop ([JSExport]/[JSImport]) is enabled by the WebAssembly SDK; the engine is AOT/trim-safe. -->
-    <WasmEnableThreads>true</WasmEnableThreads>
+    <!-- The JSExport source generator emits unsafe marshalling code. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- JS interop ([JSExport]/[JSImport]) is enabled by the WebAssembly SDK; the engine is AOT/trim-safe.
+         Single-threaded first: the engine's compute lane degrades correctly to no-thread on WASM, and this
+         avoids the SharedArrayBuffer/COOP-COEP requirement. Revisit WasmEnableThreads once measured. -->
+    <WasmEnableThreads>false</WasmEnableThreads>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Database brings the engine facade (+ Core, Sparql transitively). The serialization projects
+         (Rdf.Json, …) are intentionally NOT referenced — apps emit their own wire format; the SPARQL
+         results-JSON is written in SparqlResultsJson.cs over the public result API. -->
     <ProjectReference Include="..\Lumoin.Veritas.Database\Lumoin.Veritas.Database.csproj" />
-    <ProjectReference Include="..\Lumoin.Veritas.Rdf.Json\Lumoin.Veritas.Rdf.Json.csproj" />
     <ProjectReference Include="..\Lumoin.Veritas.Turtle\Lumoin.Veritas.Turtle.csproj" />
   </ItemGroup>
 

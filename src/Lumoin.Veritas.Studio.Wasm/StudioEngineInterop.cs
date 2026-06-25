@@ -1,10 +1,9 @@
 using System;
-using System.Collections.Generic;
 using System.Runtime.InteropServices.JavaScript;
+using System.Runtime.Versioning;
 using System.Threading.Tasks;
-using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Database;
-using Lumoin.Veritas.Rdf.Json;
+using Lumoin.Veritas.Sparql.Execution;
 
 namespace Lumoin.Veritas.Studio.Wasm;
 
@@ -15,7 +14,8 @@ namespace Lumoin.Veritas.Studio.Wasm;
 /// <c>SERVICE</c> federation is issued over browser <c>fetch</c> through the engine's service-transport
 /// seam — both wired here as the in-browser deployment fills in (see the lane HANDOFF).
 /// </summary>
-public static partial class StudioEngineInterop
+[SupportedOSPlatform("browser")]
+internal static partial class StudioEngineInterop
 {
     /// <summary>The opened in-browser engine, after <see cref="InitAsync"/>; one per worker.</summary>
     private static VeritasEngine? Engine { get; set; }
@@ -46,8 +46,8 @@ public static partial class StudioEngineInterop
         VeritasQueryResult result = await Engine!.QueryAsync(query).ConfigureAwait(false);
 
         return result.IsAsk
-            ? $$"""{"head":{},"boolean":{{(result.Boolean!.Value ? "true" : "false")}}}"""
-            : SparqlResultsJsonWriter.WriteToUtf8String(result.Bindings!, indented: false).ToString();
+            ? SparqlResultsJson.ForAsk(result.Boolean!.Value)
+            : SparqlResultsJson.ForSelect(result.Bindings!);
     }
 }
 
