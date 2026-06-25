@@ -126,4 +126,47 @@ internal sealed class ActiveActiveChannelTests
         Assert.IsTrue(allowed.Converged, "Once allowed, the replica converges over the channel.");
         AssertUnion(allowed.Index, triplesA, triplesB);
     }
+
+    /// <summary>
+    /// An active-active reconcile soak: many full reconcile cycles over the real SketchChannel wire, measuring the
+    /// allocation pressure of the active-active hot path. The diverged pairs are built outside the measured window,
+    /// so the figure is the reconcile + wire cost (the sketch image crossing the channel, the rateless decode, and
+    /// the per-round union rebuild), not index construction. This is the measure-before-refactor data backlog #27
+    /// asks for (the pool-aware / streaming wire layer); it also asserts convergence on every cycle, so it doubles
+    /// as a sustained-load regression. The figures are written to the test output.
+    /// </summary>
+    [TestMethod]
+    public async Task ActiveActiveReconcileSoakReportsAllocationPressure()
+    {
+        using VeritasMemoryPool<byte> pool = new();
+        const int Cycles = 100;
+
+        //Build the diverged pairs up front so only the reconciles fall inside the measured window. Each cycle uses
+        //a disjoint id range, so the 100 reconciles are independent rather than one converging chain.
+        (ColumnarTripleIndex Local, InProcessChannelPeer Peer)[] pairs = new (ColumnarTripleIndex, InProcessChannelPeer)[Cycles];
+        for(int cycle = 0; cycle < Cycles; cycle++)
+        {
+            uint baseId = (uint)(cycle * 1000);
+            pairs[cycle] = (ColumnarTripleIndex.Build(Line(baseId, 150)), new InProcessChannelPeer(ColumnarTripleIndex.Build(Line(baseId + 50, 150)), pool));
+        }
+
+        //Warm the JIT and first-run statics so the measured window is steady state.
+        ReplicaReconcileResult warm = await ReplicaReconcileLoop.RunUntilConvergedAsync(pairs[0].Local, pairs[0].Peer.FetchAsync, ReplicationPolicy.Default, pool, TimeProvider.System, maxRounds: 5, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.IsTrue(warm.Converged, "The warm-up cycle converges.");
+
+        long before = GC.GetTotalAllocatedBytes(precise: true);
+        long startTimestamp = TimeProvider.System.GetTimestamp();
+        int totalRounds = 0;
+        for(int cycle = 0; cycle < Cycles; cycle++)
+        {
+            ReplicaReconcileResult result = await ReplicaReconcileLoop.RunUntilConvergedAsync(pairs[cycle].Local, pairs[cycle].Peer.FetchAsync, ReplicationPolicy.Default, pool, TimeProvider.System, maxRounds: 5, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+            Assert.IsTrue(result.Converged, $"Cycle {cycle} converges over the channel.");
+            totalRounds += result.Rounds;
+        }
+
+        TimeSpan elapsed = TimeProvider.System.GetElapsedTime(startTimestamp);
+        long allocated = GC.GetTotalAllocatedBytes(precise: true) - before;
+        double perRoundKb = totalRounds > 0 ? allocated / (double)totalRounds / 1024.0 : 0;
+        TestContext.WriteLine($"active-active reconcile soak: cycles={Cycles}, rounds={totalRounds}, time={elapsed.TotalMilliseconds:F0}ms, allocated={allocated / (1024.0 * 1024.0):F1}MB, per-cycle={allocated / Cycles / 1024.0:F1}KB, per-round={perRoundKb:F1}KB");
+    }
 }
