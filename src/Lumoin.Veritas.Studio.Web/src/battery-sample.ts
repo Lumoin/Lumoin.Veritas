@@ -10,3 +10,9 @@ bat:PackB_N03 a bat:Battery ; bat:cathode bat:NMC622 ; bat:recycledCobalt 14 ; d
 bat:PackA_E09 a bat:Battery ; bat:cathode bat:NMC811 ; bat:recycledCobalt 7 ; dpp:passport "dpp-9F40-b21" .
 bat:PackC_S21 a bat:Battery ; bat:cathode bat:LFP120 ; bat:recycledCobalt 0 ; dpp:passport "dpp-5571-3ce" .
 `;
+
+/** Lists the battery packs by recycled-cobalt share (descending). */
+export const BATTERY_QUERY = `PREFIX bat: <https://veritas.app/ns/battery#>
+SELECT ?battery ?cathode ?recycledCobalt WHERE {
+  ?battery a bat:Battery ; bat:cathode ?cathode ; bat:recycledCobalt ?recycledCobalt
+} ORDER BY DESC(?recycledCobalt)`;

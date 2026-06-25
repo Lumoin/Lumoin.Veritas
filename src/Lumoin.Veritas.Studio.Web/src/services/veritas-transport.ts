@@ -102,6 +102,8 @@ export class HttpVeritasTransport implements VeritasTransport {
  */
 export interface VeritasWasmEngine {
   runSparql(query: string): Promise<string>;
+  /** Loads (replacing) a Turtle dataset into the engine, so subsequent queries run over it. */
+  loadTurtle(turtle: string): Promise<void>;
   onTrace(handler: (event: TraceEvent) => void): () => void;
 }
 

@@ -61,6 +61,12 @@ export async function bootWasmEngine(dotnetUrl: string, initialTurtle?: string):
 
   const engine: VeritasWasmEngine = {
     runSparql: (query: string): Promise<string> => interop.RunSparqlAsync(query),
+    loadTurtle: async (turtle: string): Promise<void> => {
+      const error = await interop.LoadTurtleAsync(turtle);
+      if (error.length > 0) {
+        throw new Error(`In-browser dataset load failed: ${error}`);
+      }
+    },
     onTrace: (_handler: (event: TraceEvent) => void): (() => void) => {
       // TODO(in-browser): bridge the engine trace bus to JS (a [JSImport] callback the engine invokes
       // per event, keyed by CorrelationId). Trace is a no-op in the WASM deployment until then.

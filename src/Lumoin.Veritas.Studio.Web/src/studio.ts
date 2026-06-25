@@ -7,9 +7,9 @@
 import './services/host-bridge';
 import './components/sparql-results';
 import { STUDIO_DATA } from './data';
-import { BATTERY_SAMPLE } from './battery-sample';
+import { DATASETS, DEFAULT_DATASET, datasetById, type StudioDataset } from './datasets';
 import { createGraphView, type GraphMode, type GraphView } from './graph';
-import { resolveTransport, type VeritasTransport } from './services/veritas-transport';
+import { resolveTransport, type VeritasTransport, type VeritasWasmEngine } from './services/veritas-transport';
 import type { SparqlResultsDocument, SparqlResultsElement } from './components/sparql-results';
 
 type Theme = 'light' | 'dark';
@@ -41,12 +41,49 @@ async function maybeBootWasmEngine(): Promise<void> {
 
   try {
     const { bootWasmEngine } = await import('./services/wasm-engine');
-    await bootWasmEngine('/_framework/dotnet.js', BATTERY_SAMPLE);
+    await bootWasmEngine('/_framework/dotnet.js', DEFAULT_DATASET.turtle);
     transport = resolveTransport();
+    applyDataset(DEFAULT_DATASET);
   } catch (error) {
     // Stay on the default transport if the engine fails to boot; surface it for diagnosis.
     console.error('In-browser WASM engine failed to boot', error);
   }
+}
+
+/** The id of the dataset currently loaded into the in-browser engine. */
+let activeDatasetId = DEFAULT_DATASET.id;
+
+/** Sets the SPARQL editor's run-target text to a query and refreshes the line gutter. */
+function setEditorQuery(query: string): void {
+  const block = document.querySelector<HTMLElement>('.code-only.sparql');
+  if (block !== null) {
+    block.textContent = query;
+    updateGutter();
+  }
+}
+
+/** Reflects a dataset in the shell: the active-dataset chip label and the editor's showcase query. */
+function applyDataset(dataset: StudioDataset): void {
+  activeDatasetId = dataset.id;
+  const chip = document.querySelector<HTMLElement>('[data-testid="active-dataset"]');
+  if (chip !== null) {
+    chip.textContent = dataset.label;
+    chip.title = dataset.description;
+  }
+
+  setEditorQuery(dataset.query);
+}
+
+/** Switches the active dataset: loads its Turtle into the in-browser engine (when present), then reflects it. */
+async function loadDataset(id: string): Promise<void> {
+  const dataset = datasetById(id) ?? DEFAULT_DATASET;
+  const engine = (globalThis as { veritasEngine?: VeritasWasmEngine }).veritasEngine;
+  if (engine !== undefined) {
+    await engine.loadTurtle(dataset.turtle);
+  }
+
+  applyDataset(dataset);
+  (byId('results') as unknown as SparqlResultsElement).showMessage(`Loaded ${dataset.label} — Run ▸ to query.`, 'idle');
 }
 
 /** The active graph view (the 2D placeholder, then the BabylonJS view); null before init. */
@@ -292,6 +329,17 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // Clicking the active-dataset chip cycles the sample datasets (loading each into the in-browser engine).
+  const datasetChip = document.querySelector<HTMLElement>('[data-testid="active-dataset"]');
+  if (datasetChip !== null) {
+    datasetChip.textContent = DEFAULT_DATASET.label;
+    datasetChip.title = DEFAULT_DATASET.description;
+    datasetChip.addEventListener('click', () => {
+      const index = DATASETS.findIndex((dataset) => dataset.id === activeDatasetId);
+      void loadDataset(DATASETS[(index + 1) % DATASETS.length].id);
+    });
+  }
+
   // The graph/layout/density bridge the native host (or a settings control) drives.
   window.studio = {
     setTheme,
@@ -301,7 +349,8 @@ document.addEventListener('DOMContentLoaded', () => {
       graph?.render();
     },
     setDensity: (v: string) => document.documentElement.setAttribute('data-density', v),
-    setGraphMode: (v: string) => graph?.setMode(v as GraphMode)
+    setGraphMode: (v: string) => graph?.setMode(v as GraphMode),
+    loadDataset: (id: string) => void loadDataset(id)
   };
 });
 
@@ -312,6 +361,7 @@ declare global {
       setLayout(value: string): void;
       setDensity(value: string): void;
       setGraphMode(value: string): void;
+      loadDataset(id: string): void;
     };
   }
 }
