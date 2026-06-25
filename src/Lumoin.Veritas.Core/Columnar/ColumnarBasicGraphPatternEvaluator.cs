@@ -194,6 +194,16 @@ public sealed class ColumnarBasicGraphPatternEvaluator
             yield break;
         }
 
+        //A fully-bound pattern is a candidate triple in its own right: the policy must be able to hide a denied
+        //triple's existence, or a membership query (ASK { s p o }) observes it past access control. The
+        //variable-bearing patterns are consulted per solution below; the constant ones are consulted once here.
+        if(accessControl is not null && !await FullyBoundPatternsAllowedAsync(cancellationToken).ConfigureAwait(false))
+        {
+            EmitQueryCompleted(yieldedCount);
+
+            yield break;
+        }
+
         //Identify the variable-bearing patterns and build per-pattern
         //iterators. If there are no variable-bearing patterns the
         //query has no joins; the empty solution is the answer
@@ -564,6 +574,57 @@ public sealed class ColumnarBasicGraphPatternEvaluator
             if(!index.Contains(pattern.Subject.BoundTerm, pattern.Predicate.BoundTerm, pattern.Object.BoundTerm))
             {
                 return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Consults the access-control policy on every fully-bound (constant) pattern, each of which is its own
+    /// candidate triple. Returns <see langword="true"/> when all are allowed; <see langword="false"/> — hiding
+    /// the match — when any returns <see cref="AccessDecision.Deny"/> (audited via the trace stream) or
+    /// <see cref="AccessDecision.NotFound"/> (silent), so a membership query cannot observe a triple the policy
+    /// forbids. Only called when a policy is configured; mirrors <see cref="CheckAccessControlAsync"/> for the
+    /// variable-bearing patterns. The denial window is a join-planning aid and is not needed here, since a denied
+    /// constant pattern yields the whole query empty.
+    /// </summary>
+    /// <param name="cancellationToken">Threaded into the access-control consultation.</param>
+    /// <returns><see langword="true"/> when every fully-bound pattern is allowed.</returns>
+    private async ValueTask<bool> FullyBoundPatternsAllowedAsync(CancellationToken cancellationToken)
+    {
+        for(int i = 0; i < query.Patterns.Count; i++)
+        {
+            TriplePattern pattern = query.Patterns[i];
+
+            if(pattern.Subject.IsVariable || pattern.Predicate.IsVariable || pattern.Object.IsVariable)
+            {
+                continue;
+            }
+
+            EncodedTriple candidate = EncodedTriple.FromEncoded(pattern.Subject.BoundTerm.Encoded, pattern.Predicate.BoundTerm.Encoded, pattern.Object.BoundTerm.Encoded);
+            AccessDecision decision = await accessControl!(new AccessRequest(candidate, accessContext!), cancellationToken).ConfigureAwait(false);
+
+            switch(decision)
+            {
+                case AccessDecision.Allow:
+                {
+                    continue;
+                }
+                case AccessDecision.Deny:
+                {
+                    EmitAccessDenied(candidate);
+
+                    return false;
+                }
+                case AccessDecision.NotFound:
+                {
+                    return false;
+                }
+                default:
+                {
+                    throw new InvalidOperationException($"Unknown access decision: {decision}.");
+                }
             }
         }
 

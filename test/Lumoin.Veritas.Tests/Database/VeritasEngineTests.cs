@@ -198,6 +198,42 @@ internal sealed class VeritasEngineTests
         Assert.IsTrue(loaded, "The resolved document's triple is committed and queryable.");
     }
 
+    /// <summary>A deny-all access-control policy filters every local read through the facade — across ASK and SELECT, on both the mutable and immutable engines. Diagnostic: one run surfaces all four outcomes.</summary>
+    [TestMethod]
+    public async Task AccessControlPolicyFiltersReadsThroughTheFacade()
+    {
+        IReadOnlyList<DataTriple> seed = [new DataTriple(Iri(Ex + "x"), Iri(Ex + "p"), Iri(Ex + "y"))];
+        AccessControlDelegate denyAll = (request, cancellationToken) => new ValueTask<AccessDecision>(AccessDecision.Deny);
+        TestAccessContext context = new("alice");
+        VeritasEngineOptions denying = VeritasEngineOptions.Default with { AccessControl = denyAll };
+
+        VeritasEngine mutable = await VeritasEngine
+            .OpenMutableAsync(seed, denying, cancellationToken: TestContext.CancellationToken)
+            .ConfigureAwait(false);
+        await using var mutableScope = mutable.ConfigureAwait(false);
+        VeritasEngine immutable = await VeritasEngine
+            .OpenAsync(seed, denying, cancellationToken: TestContext.CancellationToken)
+            .ConfigureAwait(false);
+        await using var immutableScope = immutable.ConfigureAwait(false);
+
+        //Membership reads (fully-bound ASK and constant-only SELECT) and scanning reads (a variable SELECT) must
+        //all be filtered by a deny-all policy. The fully-bound forms are the ones that previously leaked.
+        string membershipAsk = $"ASK {{ <{Ex}x> <{Ex}p> <{Ex}y> }}";
+        string membershipSelect = $"SELECT * WHERE {{ <{Ex}x> <{Ex}p> <{Ex}y> }}";
+        string scanSelect = $"SELECT * WHERE {{ <{Ex}x> <{Ex}p> ?o }}";
+
+        bool mutableAsk = await mutable.AskAsync(membershipAsk, accessContext: context, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+        int mutableConst = (await mutable.QueryAsync(membershipSelect, accessContext: context, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false)).Bindings!.Solutions.Count;
+        int mutableScan = (await mutable.QueryAsync(scanSelect, accessContext: context, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false)).Bindings!.Solutions.Count;
+        bool immutableAsk = await immutable.AskAsync(membershipAsk, accessContext: context, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false);
+        int immutableConst = (await immutable.QueryAsync(membershipSelect, accessContext: context, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false)).Bindings!.Solutions.Count;
+        int immutableScan = (await immutable.QueryAsync(scanSelect, accessContext: context, cancellationToken: TestContext.CancellationToken).ConfigureAwait(false)).Bindings!.Solutions.Count;
+
+        Assert.IsTrue(
+            !mutableAsk && mutableConst == 0 && mutableScan == 0 && !immutableAsk && immutableConst == 0 && immutableScan == 0,
+            $"A deny-all policy must filter every read (false/0 = filtered). mutable(ask={mutableAsk}, const={mutableConst}, scan={mutableScan}) immutable(ask={immutableAsk}, const={immutableConst}, scan={immutableScan}).");
+    }
+
     /// <summary>A concrete access context carrying just a caller name, for the federation tests; the engine treats it as opaque.</summary>
     /// <param name="Who">The caller identity the test threads through.</param>
     private sealed record TestAccessContext(string Who) : AccessContext;

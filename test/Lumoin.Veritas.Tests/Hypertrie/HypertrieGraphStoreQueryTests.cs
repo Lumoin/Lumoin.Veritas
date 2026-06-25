@@ -288,6 +288,73 @@ internal sealed class HypertrieGraphStoreQueryTests
     }
 
     [TestMethod]
+    public async Task FullyBoundPatternUnderDenyPolicyYieldsNothing()
+    {
+        //A membership query (a constant-only pattern) must not reveal a triple the policy denies; the existence
+        //pre-check passes, the access check hides it. The (1,100,2) triple exists (see the allow case above).
+        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(SocialTriples, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+        VariableRegistry registry = new();
+
+        TriplePattern bound = new(
+            PatternPosition.Bound(TermId.FromEncoded(1)),
+            PatternPosition.Bound(TermId.FromEncoded(100)),
+            PatternPosition.Bound(TermId.FromEncoded(2)));
+
+        BasicGraphPattern bgp = new([bound], registry);
+
+        AccessControlDelegate denyAll = static (request, ct) => ValueTask.FromResult(AccessDecision.Deny);
+        AccessContext context = new TestAccessContext("user");
+
+        List<Solution> solutions = await CollectAsync(store.Query(bgp, VeritasClock.System, accessControl: denyAll, accessContext: context, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.IsEmpty(solutions);
+    }
+
+    [TestMethod]
+    public async Task FullyBoundPatternUnderNotFoundPolicyYieldsNothing()
+    {
+        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(SocialTriples, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+        VariableRegistry registry = new();
+
+        TriplePattern bound = new(
+            PatternPosition.Bound(TermId.FromEncoded(1)),
+            PatternPosition.Bound(TermId.FromEncoded(100)),
+            PatternPosition.Bound(TermId.FromEncoded(2)));
+
+        BasicGraphPattern bgp = new([bound], registry);
+
+        AccessControlDelegate notFoundAll = static (request, ct) => ValueTask.FromResult(AccessDecision.NotFound);
+        AccessContext context = new TestAccessContext("user");
+
+        List<Solution> solutions = await CollectAsync(store.Query(bgp, VeritasClock.System, accessControl: notFoundAll, accessContext: context, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.IsEmpty(solutions);
+    }
+
+    [TestMethod]
+    public async Task FullyBoundPatternUnderAllowPolicyYieldsTheEmptySolution()
+    {
+        //An allow policy must not over-filter: the membership still succeeds with the single empty solution.
+        HypertrieGraphStore store = await HypertrieGraphStore.BuildAsync(SocialTriples, VeritasHashing.Default, TestContext.CancellationToken).ConfigureAwait(false);
+        VariableRegistry registry = new();
+
+        TriplePattern bound = new(
+            PatternPosition.Bound(TermId.FromEncoded(1)),
+            PatternPosition.Bound(TermId.FromEncoded(100)),
+            PatternPosition.Bound(TermId.FromEncoded(2)));
+
+        BasicGraphPattern bgp = new([bound], registry);
+
+        AccessControlDelegate allowAll = static (request, ct) => ValueTask.FromResult(AccessDecision.Allow);
+        AccessContext context = new TestAccessContext("user");
+
+        List<Solution> solutions = await CollectAsync(store.Query(bgp, VeritasClock.System, accessControl: allowAll, accessContext: context, cancellationToken: TestContext.CancellationToken)).ConfigureAwait(false);
+
+        Assert.HasCount(1, solutions);
+        Assert.IsEmpty(solutions[0].Bindings);
+    }
+
+    [TestMethod]
     public async Task MixedFullyBoundAndVariableBearingPatterns()
     {
         //Mix: ?x knows ?y AND (1 livesIn 10 — verifies, exists).
