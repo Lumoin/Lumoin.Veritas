@@ -203,3 +203,16 @@ WHERE {
   FILTER (?riskScore >= 4.0)
 }
 ORDER BY DESC(?riskScore) ?facilityName`;
+
+/** Requires every product to declare its cotton species, for upstream traceability (most products lack it). */
+export const TEXTILE_SHAPES = `@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix untp: <https://vocabulary.uncefact.org/untp/> .
+@prefix ex: <https://veritas.app/shapes/textile#> .
+
+ex:ProductTraceabilityShape a sh:NodeShape ;
+    sh:targetClass untp:Product ;
+    sh:property [
+        sh:path untp:cottonSpecies ;
+        sh:minCount 1 ;
+        sh:message "Every product must declare its cotton species for upstream traceability." ;
+    ] .`;

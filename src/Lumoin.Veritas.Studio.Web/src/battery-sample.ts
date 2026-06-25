@@ -16,3 +16,16 @@ export const BATTERY_QUERY = `PREFIX bat: <https://veritas.app/ns/battery#>
 SELECT ?battery ?cathode ?recycledCobalt WHERE {
   ?battery a bat:Battery ; bat:cathode ?cathode ; bat:recycledCobalt ?recycledCobalt
 } ORDER BY DESC(?recycledCobalt)`;
+
+/** Requires every battery's recycled-cobalt share to meet a 10% threshold (some packs fall short). */
+export const BATTERY_SHAPES = `@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix bat: <https://veritas.app/ns/battery#> .
+@prefix ex: <https://veritas.app/shapes/battery#> .
+
+ex:RecycledContentShape a sh:NodeShape ;
+    sh:targetClass bat:Battery ;
+    sh:property [
+        sh:path bat:recycledCobalt ;
+        sh:minInclusive 10 ;
+        sh:message "Recycled cobalt content must be at least 10% to meet the recycled-content threshold." ;
+    ] .`;

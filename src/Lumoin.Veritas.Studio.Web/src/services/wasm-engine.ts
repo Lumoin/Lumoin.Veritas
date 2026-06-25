@@ -26,6 +26,7 @@ interface EngineExports {
           StudioEngineInterop: {
             InitAsync(): Promise<void>;
             LoadTurtleAsync(turtle: string): Promise<string>;
+            ValidateShaclAsync(shapes: string): Promise<string>;
             RunSparqlAsync(query: string): Promise<string>;
           };
         };
@@ -67,6 +68,7 @@ export async function bootWasmEngine(dotnetUrl: string, initialTurtle?: string):
         throw new Error(`In-browser dataset load failed: ${error}`);
       }
     },
+    validateShacl: (shapes: string): Promise<string> => interop.ValidateShaclAsync(shapes),
     onTrace: (_handler: (event: TraceEvent) => void): (() => void) => {
       // TODO(in-browser): bridge the engine trace bus to JS (a [JSImport] callback the engine invokes
       // per event, keyed by CorrelationId). Trace is a no-op in the WASM deployment until then.

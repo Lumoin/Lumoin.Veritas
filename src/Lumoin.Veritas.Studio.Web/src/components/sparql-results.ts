@@ -31,6 +31,30 @@ export interface SparqlQueryError {
   diagnostics: SparqlDiagnosticView[];
 }
 
+/** One SHACL validation result row, as the report view renders it. */
+export interface ShaclResultView {
+  /** The focus node that failed (a short label). */
+  focusNode: string;
+
+  /** The result severity (Violation / Warning / Info). */
+  severity: string;
+
+  /** The constraint component that produced the result (a short name). */
+  constraint: string;
+
+  /** The human-readable message attached to the result. */
+  message: string;
+}
+
+/** A SHACL validation report: a conformance verdict and the result rows. */
+export interface ShaclReportView {
+  /** Whether the data conforms (no violation-severity results). */
+  conforms: boolean;
+
+  /** The validation results (violations, warnings, info). */
+  results: ShaclResultView[];
+}
+
 type Renderable = ReturnType<typeof html>;
 
 /** Renders a bound term as its value plus a term-type annotation (for non-IRI terms). */
@@ -87,6 +111,27 @@ class SparqlResultsElement extends HTMLElement {
   showMessage(text: string, state: string): void {
     render(this, () => html`${text}`);
     this.dataset.state = state;
+  }
+
+  /** Renders a SHACL validation report: a conformance verdict and a table of results. */
+  showReport(report: ShaclReportView): void {
+    render(this, () => html`
+      <p class=${report.conforms ? 'ask-true' : 'ask-false'}>${report.conforms
+        ? '✓ Conforms — no violations.'
+        : `✗ Does not conform — ${report.results.length.toLocaleString('en-US')} result(s).`}</p>
+      ${report.results.length > 0 ? html`
+        <table class="tbl" aria-label="Validation results">
+          <thead><tr><th>focus node</th><th>severity</th><th>constraint</th><th>message</th></tr></thead>
+          <tbody>${report.results.map((result) => html`
+            <tr>
+              <td><code>${result.focusNode}</code></td>
+              <td>${result.severity}</td>
+              <td><code>${result.constraint}</code></td>
+              <td>${result.message}</td>
+            </tr>`)}</tbody>
+        </table>` : html`<span hidden></span>`}
+    `);
+    this.dataset.state = report.conforms ? 'resulted' : 'error';
   }
 }
 

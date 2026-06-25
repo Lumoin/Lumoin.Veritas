@@ -104,6 +104,8 @@ export interface VeritasWasmEngine {
   runSparql(query: string): Promise<string>;
   /** Loads (replacing) a Turtle dataset into the engine, so subsequent queries run over it. */
   loadTurtle(turtle: string): Promise<void>;
+  /** Validates the loaded dataset against a SHACL shapes graph (Turtle); returns the report JSON. */
+  validateShacl(shapes: string): Promise<string>;
   onTrace(handler: (event: TraceEvent) => void): () => void;
 }
 

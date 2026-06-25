@@ -2,8 +2,8 @@
 // switches between them at runtime — each is parsed into the engine via the interop's LoadTurtleAsync — so
 // the same shell demonstrates more than one supply-chain story. Each dataset pairs its Turtle with a
 // showcase query that exercises it.
-import { BATTERY_SAMPLE, BATTERY_QUERY } from './battery-sample';
-import { TEXTILE_SAMPLE, TEXTILE_QUERY } from './textile-sample';
+import { BATTERY_SAMPLE, BATTERY_QUERY, BATTERY_SHAPES } from './battery-sample';
+import { TEXTILE_SAMPLE, TEXTILE_QUERY, TEXTILE_SHAPES } from './textile-sample';
 
 /** A loadable sample dataset: a Turtle document and a query that showcases it. */
 export interface StudioDataset {
@@ -24,6 +24,9 @@ export interface StudioDataset {
 
   /** A SPARQL query yielding typed graph edges (?fromLabel ?fromKind ?toLabel ?toKind) the graph view renders. */
   readonly graphQuery: string;
+
+  /** A SHACL shapes graph (Turtle) the dataset is validated against (placed in the SHACL editor on selection). */
+  readonly shapes: string;
 }
 
 /** The available sample datasets, in display order. */
@@ -51,7 +54,8 @@ SELECT ?fromLabel ?fromKind ?toLabel ?toKind WHERE {
     ?bb a vw:HydroBasin ; rdfs:label ?fromLabel . ?rr vw:assessedBasin ?bb ; vw:label ?toLabel .
     BIND("basin" AS ?fromKind) BIND("risk" AS ?toKind)
   }
-}`
+}`,
+    shapes: TEXTILE_SHAPES
   },
   {
     id: 'battery',
@@ -66,7 +70,8 @@ SELECT ?fromLabel ?fromKind ?toLabel ?toKind WHERE {
   BIND(REPLACE(STR(?c), "^.*[#/]", "") AS ?toLabel)
   BIND("battery" AS ?fromKind)
   BIND("cathode" AS ?toKind)
-}`
+}`,
+    shapes: BATTERY_SHAPES
   }
 ];
 

@@ -9,6 +9,7 @@ using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Database;
 using Lumoin.Veritas.Rdf.Json;
+using Lumoin.Veritas.Shacl.Validation;
 using Lumoin.Veritas.Sparql.Execution;
 using Lumoin.Veritas.Sparql.Results;
 using Lumoin.Veritas.Turtle;
@@ -68,6 +69,41 @@ internal static partial class StudioEngineInterop
         Engine = await VeritasEngine.OpenAsync(triples).ConfigureAwait(false);
 
         return string.Empty;
+    }
+
+    /// <summary>
+    /// Validates the loaded dataset against a SHACL shapes graph (Turtle) and returns the UI report JSON
+    /// (a conformance flag and one row per result). Parses the shapes with the byte-native Turtle reader.
+    /// </summary>
+    /// <param name="shapesTurtle">The SHACL shapes graph as a Turtle document.</param>
+    /// <returns>The report JSON, or a single parse-error result when the shapes do not parse.</returns>
+    [JSExport]
+    internal static async Task<string> ValidateShaclAsync(string shapesTurtle)
+    {
+        if(Engine is null)
+        {
+            await InitAsync().ConfigureAwait(false);
+        }
+
+        byte[] bytes = Encoding.UTF8.GetBytes(shapesTurtle);
+        // The parse pool stays alive through ValidateAsync (which re-interns the shape terms into the
+        // engine's dictionary) and is released after.
+        using Utf8StringPool pool = new();
+        DiagnosticBag diagnostics = new();
+        List<DataTriple> shapes = [];
+        await foreach(Quad quad in TurtleReader.ReadAsync(bytes, TurtleSyntax.Turtle, diagnostics, pool, baseIri: "https://veritas.app/studio/", cancellationToken: CancellationToken.None).ConfigureAwait(false))
+        {
+            shapes.Add(new DataTriple(quad.Subject, quad.Predicate, quad.Object));
+        }
+
+        if(diagnostics.HasErrors)
+        {
+            return "{\"conforms\":false,\"results\":[{\"focusNode\":\"\",\"severity\":\"Violation\",\"constraint\":\"ParseError\",\"message\":\"the shapes did not parse\"}]}";
+        }
+
+        ValidationReport report = await Engine!.ValidateAsync(shapes).ConfigureAwait(false);
+
+        return ShaclReportJson.From(report, Engine.Dictionary);
     }
 
     /// <summary>Runs a SPARQL query and returns the W3C SPARQL results-JSON document (SELECT bindings or an ASK boolean).</summary>

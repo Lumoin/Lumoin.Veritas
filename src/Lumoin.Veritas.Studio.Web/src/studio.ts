@@ -11,7 +11,7 @@ import { buildGraphData } from './graph-data';
 import { DATASETS, DEFAULT_DATASET, datasetById, type StudioDataset } from './datasets';
 import { createGraphView, type GraphMode, type GraphView } from './graph';
 import { resolveTransport, type VeritasTransport, type VeritasWasmEngine } from './services/veritas-transport';
-import type { SparqlResultsDocument, SparqlResultsElement } from './components/sparql-results';
+import type { ShaclReportView, SparqlResultsDocument, SparqlResultsElement } from './components/sparql-results';
 
 type Theme = 'light' | 'dark';
 
@@ -55,12 +55,14 @@ async function maybeBootWasmEngine(): Promise<void> {
 /** The id of the dataset currently loaded into the in-browser engine. */
 let activeDatasetId = DEFAULT_DATASET.id;
 
-/** Sets the SPARQL editor's run-target text to a query and refreshes the line gutter. */
-function setEditorQuery(query: string): void {
-  const block = document.querySelector<HTMLElement>('.code-only.sparql');
+/** Sets a language tab's editor text (the run target) and refreshes the gutter when it is the active tab. */
+function setEditorBlock(lang: string, text: string): void {
+  const block = document.querySelector<HTMLElement>(`.code-only.${lang}`);
   if (block !== null) {
-    block.textContent = query;
-    updateGutter();
+    block.textContent = text;
+    if (lang === editorLangOf()) {
+      updateGutter();
+    }
   }
 }
 
@@ -73,7 +75,8 @@ function applyDataset(dataset: StudioDataset): void {
     chip.title = dataset.description;
   }
 
-  setEditorQuery(dataset.query);
+  setEditorBlock('sparql', dataset.query);
+  setEditorBlock('shacl', dataset.shapes);
 }
 
 /** Switches the active dataset: loads its Turtle into the in-browser engine (when present), then reflects it. */
@@ -291,8 +294,15 @@ function runStream(rows: number, ms: number, ops: number, durationMs: number): v
 /** Runs the active SPARQL against the transport, rendering results or diagnostics; falls back to the sample with no engine. */
 async function runQuery(): Promise<void> {
   const results = byId('results') as unknown as SparqlResultsElement;
-  if (editorLangOf() !== 'sparql') {
-    results.showMessage('Only SPARQL executes against the engine in this shell.', 'idle');
+  const lang = editorLangOf();
+  if (lang === 'shacl') {
+    await runShaclValidation(results);
+
+    return;
+  }
+
+  if (lang !== 'sparql') {
+    results.showMessage('Only SPARQL and SHACL run against the engine in this shell.', 'idle');
 
     return;
   }
@@ -315,6 +325,24 @@ async function runQuery(): Promise<void> {
     results.results = sampleResults();
     runStream(STUDIO_DATA.cost.rows, STUDIO_DATA.cost.ms, STUDIO_DATA.cost.ops, 700);
     byId('plan-chip').textContent = `plan: ${STUDIO_DATA.cost.plan} (sample)`;
+  }
+}
+
+/** Validates the loaded dataset against the SHACL editor's shapes on the in-browser engine, rendering the report. */
+async function runShaclValidation(results: SparqlResultsElement): Promise<void> {
+  const engine = (globalThis as { veritasEngine?: VeritasWasmEngine }).veritasEngine;
+  if (engine === undefined) {
+    results.showMessage('SHACL validation runs against the in-browser engine — open with ?engine=wasm.', 'idle');
+
+    return;
+  }
+
+  results.showMessage('Validating…', 'loading');
+  try {
+    const report = JSON.parse(await engine.validateShacl(activeCode())) as ShaclReportView;
+    results.showReport(report);
+  } catch (error) {
+    results.showMessage(`Validation failed: ${String(error)}`, 'error');
   }
 }
 
