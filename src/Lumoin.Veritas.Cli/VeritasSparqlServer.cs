@@ -109,7 +109,7 @@ internal static class VeritasSparqlServer
         /// <returns>The asynchronous handling.</returns>
         public Task HandleGet(HttpContext httpContext)
         {
-            return HandleAsync(httpContext, Database, ToQueryBytes(httpContext.Request.Query["query"]), CancellationToken);
+            return HandleAsync(httpContext, Database, ToQuery(httpContext.Request.Query["query"]), CancellationToken);
         }
 
         /// <summary>Answers a POST request, reading the query from the request body or a form field.</summary>
@@ -131,26 +131,26 @@ internal static class VeritasSparqlServer
         string contentType = httpContext.Request.ContentType ?? string.Empty;
         if(contentType.StartsWith("application/x-www-form-urlencoded", StringComparison.OrdinalIgnoreCase))
         {
-            await HandleAsync(httpContext, database, ToQueryBytes(httpContext.Request.Form["query"]), cancellationToken).ConfigureAwait(false);
+            await HandleAsync(httpContext, database, ToQuery(httpContext.Request.Form["query"]), cancellationToken).ConfigureAwait(false);
 
             return;
         }
 
         //An application/sparql-query body is the query's UTF-8 bytes; route them straight to the byte-native
         //parse with no intervening string, the inbound counterpart to the byte-native readers the loader uses.
-        ReadOnlyMemory<byte> body = await ReadBodyAsync(httpContext.Request.Body, cancellationToken).ConfigureAwait(false);
+        Utf8String body = await ReadBodyAsync(httpContext.Request.Body, httpContext.Request.ContentLength, cancellationToken).ConfigureAwait(false);
         await HandleAsync(httpContext, database, body, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Answers one query against the database, writing CSV/TSV results or a plain-text error.</summary>
     /// <param name="httpContext">The request context.</param>
     /// <param name="database">The open database.</param>
-    /// <param name="query">The query as UTF-8 bytes (possibly empty).</param>
+    /// <param name="query">The query as an owned UTF-8 string (possibly empty).</param>
     /// <param name="cancellationToken">A token that aborts the request.</param>
     /// <returns>The asynchronous handling.</returns>
-    private static async Task HandleAsync(HttpContext httpContext, VeritasEngine database, ReadOnlyMemory<byte> query, CancellationToken cancellationToken)
+    private static async Task HandleAsync(HttpContext httpContext, VeritasEngine database, Utf8String query, CancellationToken cancellationToken)
     {
-        if(IsBlank(query.Span))
+        if(IsBlank(query.Memory.Span))
         {
             httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
             await httpContext.Response.WriteAsync("Missing 'query'.", cancellationToken).ConfigureAwait(false);
@@ -179,22 +179,33 @@ internal static class VeritasSparqlServer
 
     /// <summary>Encodes a query taken from the URL query string or a form field to UTF-8 bytes; an absent value yields an empty buffer, read downstream as a missing query.</summary>
     /// <param name="query">The query string, or <see langword="null"/> when the parameter is absent.</param>
-    /// <returns>The query's UTF-8 bytes, or an empty buffer when there is none.</returns>
-    private static ReadOnlyMemory<byte> ToQueryBytes(string? query)
+    /// <returns>The query as an owned UTF-8 string, or the empty string when there is none.</returns>
+    private static Utf8String ToQuery(string? query)
     {
-        return string.IsNullOrEmpty(query) ? default : Utf8String.FromString(query).Memory;
+        return string.IsNullOrEmpty(query) ? default : Utf8String.FromString(query);
     }
 
-    /// <summary>Reads the entire request body into an owned byte buffer, so an <c>application/sparql-query</c> POST body reaches the byte-native query entry without a string round-trip.</summary>
+    /// <summary>Reads the entire request body into an owned <see cref="Utf8String"/>, so an <c>application/sparql-query</c> POST body reaches the byte-native query entry without a string round-trip. A declared length reads once into an exactly-sized buffer; an unknown length buffers then copies once.</summary>
     /// <param name="body">The request body stream.</param>
+    /// <param name="contentLength">The declared body length, if known, to size the read in a single allocation.</param>
     /// <param name="cancellationToken">A token that aborts the read.</param>
-    /// <returns>The body's bytes.</returns>
-    private static async Task<ReadOnlyMemory<byte>> ReadBodyAsync(Stream body, CancellationToken cancellationToken)
+    /// <returns>The body as an owned UTF-8 string.</returns>
+    private static async Task<Utf8String> ReadBodyAsync(Stream body, long? contentLength, CancellationToken cancellationToken)
     {
+        //A declared Content-Length (the normal case) reads once into a single exactly-sized owned buffer — no
+        //intermediate MemoryStream and no second copy. An unknown length falls back to buffer-then-copy.
+        if(contentLength is > 0 and <= int.MaxValue)
+        {
+            byte[] owned = new byte[(int)contentLength.Value];
+            await body.ReadExactlyAsync(owned, cancellationToken).ConfigureAwait(false);
+
+            return Utf8String.WithoutPrecomputedHash(owned);
+        }
+
         using MemoryStream buffer = new();
         await body.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
 
-        return buffer.ToArray();
+        return Utf8String.WithoutPrecomputedHash(buffer.ToArray());
     }
 
     /// <summary>Whether a query buffer is blank — empty or only ASCII whitespace — the byte equivalent of the missing-or-whitespace-only check on a query string.</summary>

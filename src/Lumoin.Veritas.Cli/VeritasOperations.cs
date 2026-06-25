@@ -100,7 +100,7 @@ internal static class VeritasOperations
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(queryText);
 
-        return ExecuteQueryAsync(database, Utf8String.FromString(queryText).Memory, baseIri, format, cancellationToken);
+        return ExecuteQueryAsync(database, Utf8String.FromString(queryText), baseIri, format, cancellationToken);
     }
 
     /// <summary>Executes a SPARQL <c>SELECT</c>/<c>ASK</c> query given as UTF-8 bytes — the byte-native entry the HTTP endpoint routes an <c>application/sparql-query</c> POST body to, with no string round-trip — and renders the result.</summary>
@@ -112,7 +112,7 @@ internal static class VeritasOperations
     /// <returns>The rendered results, or an error message for a malformed or not-yet-renderable query.</returns>
     public static async Task<OperationResult> ExecuteQueryAsync(
         VeritasEngine database,
-        ReadOnlyMemory<byte> queryText,
+        Utf8String queryText,
         string baseIri,
         SparqlDelimitedResultsFormat format,
         CancellationToken cancellationToken)
@@ -122,7 +122,7 @@ internal static class VeritasOperations
         VeritasQueryResult result;
         try
         {
-            result = await database.QueryAsync(Utf8String.WithoutPrecomputedHash(queryText), Utf8String.FromString(baseIri), cancellationToken: cancellationToken).ConfigureAwait(false);
+            result = await database.QueryAsync(queryText, Utf8String.FromString(baseIri), cancellationToken: cancellationToken).ConfigureAwait(false);
         }
         catch(ArgumentException ex)
         {
