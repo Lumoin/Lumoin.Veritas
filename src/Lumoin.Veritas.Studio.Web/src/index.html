@@ -58,74 +58,72 @@
 
       <div class="editor-body">
         <div class="gutter" id="gutter"></div>
-        <pre class="code"><code class="code-only sparql" data-testid="editor-sparql">PREFIX bat: &lt;https://veritas.app/ns/battery#&gt;
-PREFIX dpp: &lt;https://veritas.app/ns/dpp#&gt;
+        <pre class="code"><code class="code-only sparql" data-testid="editor-sparql">PREFIX untp: &lt;https://vocabulary.uncefact.org/untp/&gt;
+PREFIX vw:   &lt;https://veritas.app/ns/water#&gt;
 
-# EV batteries whose recycled cobalt is below the 16% target —
-# the recycled-content claim lives on the supplier's endpoint.
-SELECT ?battery ?cathode ?recycledCobalt ?passport
+# Garments tracing to a high-water-stress basin — the basin risk
+# lives on the brand's federated facility registry, access-gated.
+SELECT ?garment ?facility ?riskScore
 WHERE {
-  ?battery a bat:Battery ;
-           bat:cathode  ?cathode ;
-           dpp:passport ?passport .
-  SERVICE &lt;https://supplier.example/dpp/sparql&gt; {   # across a trust boundary, access-gated
-    ?cathode  dpp:recycledContent ?content .
-    ?content  dpp:substance "cobalt" ; dpp:share ?recycledCobalt .
+  ?garment a untp:Product ; untp:productCategory "6205" .
+  ?garment untp:upstreamInput+ ?upstream .
+  ?upstream untp:producedAtFacility ?facility .
+  SERVICE &lt;https://registry.example/water/sparql&gt; {   # across a trust boundary, access-gated
+    ?facility vw:locatedInBasin ?basin .
+    ?basin    vw:baselineWaterStress ?riskScore .
   }
-  FILTER ( ?recycledCobalt &lt; 16 )
+  FILTER ( ?riskScore &gt;= 4.0 )
 }
-ORDER BY ASC(?recycledCobalt)</code><code class="code-only shacl"># RecycledCobaltShape — every EV battery declares a cobalt recycled-content share
-bat:RecycledCobaltShape
+ORDER BY DESC(?riskScore)</code><code class="code-only shacl"># ProductTraceabilityShape — every product declares its cotton species
+ex:ProductTraceabilityShape
   a sh:NodeShape ;
-  sh:targetClass bat:Battery ;
+  sh:targetClass untp:Product ;
   sh:property [
-    sh:path ( bat:cathode dpp:recycledContent ) ;
+    sh:path     untp:cottonSpecies ;
     sh:minCount 1 ;
-    sh:datatype xsd:decimal ;
-    sh:minInclusive 0 ;
-  ] .</code><code class="code-only turtle">@prefix bat: &lt;https://veritas.app/ns/battery#&gt; .
-@prefix dpp: &lt;https://veritas.app/ns/dpp#&gt; .
+  ] .</code><code class="code-only turtle">@prefix untp:    &lt;https://vocabulary.uncefact.org/untp/&gt; .
+@prefix country: &lt;https://vocabulary.uncefact.org/CountryId#&gt; .
 
-bat:Pack_A·E12
-    a bat:Battery ;
-    bat:cathode         mat:NMC-811 ;
-    dpp:carbonFootprint "62.4"^^xsd:decimal ;   # kg CO2e / kWh
-    dpp:passport        "dpp:ABF1…91c" ;
-    dpp:attestedBy      &lt;did:web:cab.example&gt; .</code><code class="code-only jsonata">/* reshape bindings into a recycler due-diligence report */
-results.bindings[recycledCobalt &lt; 16].{
-  "battery":  battery,
-  "passport": passport,
-  "status":   recycledCobalt = 0 ? "none declared" : "below target"
-} ^(&gt;recycledCobalt)</code><code class="code-only jsonld">{
-  "@context": "https://veritas.app/ns/battery.jsonld",
-  "@id": "bat:Pack_A·E12",
-  "@type": "bat:Battery",
-  "cathode": "mat:NMC-811",
-  "carbonFootprint": 62.4,
-  "passport": { "@id": "dpp:ABF1…91c" }
-}</code><code class="code-only skos">bat:RecycledContentScheme a skos:ConceptScheme .
+ex:garment-sku-001
+    a untp:Product ;
+    untp:productCategory     "6205" ;          # HS men's woven shirts
+    untp:producedAtFacility  ex:garment-dhaka ;
+    untp:upstreamInput       ex:fabric-roll-001 ;
+    untp:countryOfProduction country:BD .</code><code class="code-only jsonata">/* reshape bindings into a water-risk due-diligence report */
+results.bindings[riskScore &gt;= 4].{
+  "garment":  garmentName,
+  "facility": facilityName,
+  "status":   riskScore &gt;= 4.4 ? "extreme water stress" : "high water stress"
+} ^(&gt;riskScore)</code><code class="code-only jsonld">{
+  "@context": "https://vocabulary.uncefact.org/untp/",
+  "@id": "ex:garment-sku-001",
+  "@type": "Product",
+  "productCategory": "6205",
+  "producedAtFacility": "ex:garment-dhaka",
+  "upstreamInput": { "@id": "ex:fabric-roll-001" }
+}</code><code class="code-only skos">vw:WaterRiskScheme a skos:ConceptScheme .
 
-bat:BelowTarget
+vw:ExtremelyHigh
     a skos:Concept ;
-    skos:prefLabel "Below recycled-content target"@en ;
-    skos:prefLabel "Alle kierrätystavoitteen"@fi ;
-    skos:broader  bat:ComplianceRisk ;
-    skos:inScheme bat:RecycledContentScheme .</code><code class="code-only owl">bat:cathode
+    skos:prefLabel "Extremely high water stress"@en ;
+    skos:prefLabel "Erittäin korkea vesistressi"@fi ;
+    skos:broader  vw:WaterRisk ;
+    skos:inScheme vw:WaterRiskScheme .</code><code class="code-only owl">untp:upstreamInput
     a owl:ObjectProperty ;
-    rdfs:domain bat:Battery ;
-    rdfs:range  dpp:Material .
+    rdfs:domain untp:Product ;
+    rdfs:range  untp:Product .
 
-bat:Battery
-    rdfs:subClassOf dpp:Product .</code></pre>
+untp:Product
+    rdfs:subClassOf untp:TradeItem .</code></pre>
       </div>
 
       <div class="assist">
         <div class="a-head"><span>Assist · terms that fit here</span><span>click to add</span></div>
         <div class="facets" id="facets">
-          <button class="facet" type="button">a <span>bat:Battery</span> <span class="n">412</span> <span class="plus">+</span></button>
-          <button class="facet" type="button">bat:cathode <span class="n">388</span> <span class="plus">+</span></button>
-          <button class="facet" type="button">dpp:recycledContent <span class="n">388</span> <span class="plus">+</span></button>
-          <button class="facet" type="button">dpp:carbonFootprint <span class="n">221</span> <span class="plus">+</span></button>
+          <button class="facet" type="button">a <span>untp:Product</span> <span class="n">5</span> <span class="plus">+</span></button>
+          <button class="facet" type="button">untp:upstreamInput <span class="n">4</span> <span class="plus">+</span></button>
+          <button class="facet" type="button">untp:producedAtFacility <span class="n">5</span> <span class="plus">+</span></button>
+          <button class="facet" type="button">vw:locatedInBasin <span class="n">5</span> <span class="plus">+</span></button>
           <button class="facet" type="button">SERVICE <span class="plus">+</span></button>
         </div>
       </div>

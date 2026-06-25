@@ -199,13 +199,16 @@ function initTrace(): void {
 
 /** Renders the raw (Turtle) result view from the sample. */
 function initRaw(): void {
-  byId('raw-pre').textContent = `@prefix bat: <https://veritas.app/ns/battery#> .
-@prefix dpp: <https://veritas.app/ns/dpp#> .
+  byId('raw-pre').textContent = `@prefix untp: <https://vocabulary.uncefact.org/untp/> .
+@prefix vw:   <https://veritas.app/ns/water#> .
 
-bat:Pack_A·E12 a bat:Battery ;
-    bat:cathode         mat:NMC-811 ;
-    dpp:carbonFootprint "62.4"^^xsd:decimal ;
-    dpp:passport        "dpp:ABF1…91c" .`;
+ex:garment-sku-001 a untp:Product ;
+    untp:productCategory    "6205" ;
+    untp:producedAtFacility ex:garment-dhaka ;
+    untp:upstreamInput      ex:fabric-roll-001 .
+
+ex:mill-chittagong a untp:Facility ;
+    vw:locatedInBasin ex:basin-352007 .`;
 }
 
 /** Renders the SHACL conformance view from the sample. */
@@ -213,18 +216,18 @@ function initShacl(): void {
   byId('shacl-body').innerHTML = `
     <div class="shacl-row">
       <span class="ck ok">✓</span>
-      <span class="msg">379 batteries conform to <b>bat:RecycledCobaltShape</b></span>
+      <span class="msg">seed-cotton lot conforms to <b>ex:ProductTraceabilityShape</b></span>
       <span class="focus">sh:conforms true</span>
     </div>
     <div class="shacl-row warn">
       <span class="ck warn">!</span>
-      <span class="msg">5 batteries violate <b>sh:minCount</b> on dpp:recycledContent</span>
-      <span class="focus">share not yet declared</span>
+      <span class="msg">4 products violate <b>sh:minCount</b> on untp:cottonSpecies</span>
+      <span class="focus">species not yet declared</span>
     </div>
-    <div class="shacl-row">
-      <span class="ck ok">✓</span>
-      <span class="msg">recycled-cobalt shares within <b>0–100</b></span>
-      <span class="focus">sh:minInclusive 0</span>
+    <div class="shacl-row warn">
+      <span class="ck warn">!</span>
+      <span class="msg">4 facilities sit in <b>extremely-high</b> water-stress basins</span>
+      <span class="focus">vw:baselineWaterStress ≥ 4.0</span>
     </div>`;
 }
 
