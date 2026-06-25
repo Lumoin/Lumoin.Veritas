@@ -6,7 +6,8 @@
 
 import './services/host-bridge';
 import './components/sparql-results';
-import { STUDIO_DATA } from './data';
+import { STUDIO_DATA, type StudioData } from './data';
+import { buildGraphData } from './graph-data';
 import { DATASETS, DEFAULT_DATASET, datasetById, type StudioDataset } from './datasets';
 import { createGraphView, type GraphMode, type GraphView } from './graph';
 import { resolveTransport, type VeritasTransport, type VeritasWasmEngine } from './services/veritas-transport';
@@ -44,6 +45,7 @@ async function maybeBootWasmEngine(): Promise<void> {
     await bootWasmEngine('/_framework/dotnet.js', DEFAULT_DATASET.turtle);
     transport = resolveTransport();
     applyDataset(DEFAULT_DATASET);
+    await deriveAndMountGraph();
   } catch (error) {
     // Stay on the default transport if the engine fails to boot; surface it for diagnosis.
     console.error('In-browser WASM engine failed to boot', error);
@@ -83,6 +85,7 @@ async function loadDataset(id: string): Promise<void> {
   }
 
   applyDataset(dataset);
+  await deriveAndMountGraph();
   (byId('results') as unknown as SparqlResultsElement).showMessage(`Loaded ${dataset.label} — Run ▸ to query.`, 'idle');
 }
 
@@ -127,23 +130,53 @@ function initLegend(): void {
     .join('');
 }
 
-/** Mounts the graph: the instant 2D placeholder, upgraded to the BabylonJS view when its chunk loads. */
-function initGraph(): void {
+/** The current graph mount generation; guards a slow BabylonJS upgrade from overwriting a newer mount. */
+let graphGen = 0;
+
+/** Mounts a graph dataset: the instant 2D placeholder, upgraded to the BabylonJS view when its chunk loads. */
+function mountGraph(data: StudioData): void {
   const canvas = byId<HTMLCanvasElement>('graph-canvas');
   const theme: Theme = (document.documentElement.getAttribute('data-theme') as Theme) ?? 'light';
-  graph = createGraphView(canvas, STUDIO_DATA);
+  const generation = ++graphGen;
+  graph?.dispose();
+  graph = createGraphView(canvas, data);
   graph.setTheme(theme);
 
-  // Upgrade to the BabylonJS view once its code-split chunk arrives; the 2D placeholder shows meanwhile.
+  // Upgrade to the BabylonJS view once its code-split chunk arrives; skip if a newer mount superseded this.
   void import('./graph-babylon')
     .then(({ createBabylonGraphView }) => {
+      if (generation !== graphGen) {
+        return;
+      }
+
       graph?.dispose();
-      graph = createBabylonGraphView(canvas, STUDIO_DATA);
+      graph = createBabylonGraphView(canvas, data);
       graph.setTheme(theme);
     })
     .catch(() => {
       // Keep the 2D placeholder if the chunk fails to load.
     });
+}
+
+/** Mounts the bundled sample graph — the placeholder shown until the engine drives the picture. */
+function initGraph(): void {
+  mountGraph(STUDIO_DATA);
+}
+
+/** Runs the active dataset's graph query against the engine and remounts the graph from the result. */
+async function deriveAndMountGraph(): Promise<void> {
+  const dataset = datasetById(activeDatasetId) ?? DEFAULT_DATASET;
+  try {
+    const outcome = await transport.runSparql(dataset.graphQuery);
+    if (outcome.ok) {
+      const data = buildGraphData(outcome.results.results?.bindings ?? []);
+      if (data.clusters.length > 0) {
+        mountGraph(data);
+      }
+    }
+  } catch {
+    // Keep the current graph when no engine is attached or the graph query cannot run.
+  }
 }
 
 /** Renders the trace feed ("why these terms") from the sample; live runs feed it from the trace stream. */

@@ -21,6 +21,9 @@ export interface StudioDataset {
 
   /** A SPARQL query that exercises the dataset (placed in the editor on selection). */
   readonly query: string;
+
+  /** A SPARQL query yielding typed graph edges (?fromLabel ?fromKind ?toLabel ?toKind) the graph view renders. */
+  readonly graphQuery: string;
 }
 
 /** The available sample datasets, in display order. */
@@ -30,14 +33,40 @@ export const DATASETS: readonly StudioDataset[] = [
     label: 'Cotton → garment chain',
     description: 'A UNTP cotton-to-garment supply chain with WRI Aqueduct water-risk per river basin.',
     turtle: TEXTILE_SAMPLE,
-    query: TEXTILE_QUERY
+    query: TEXTILE_QUERY,
+    graphQuery: `PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX schema: <https://schema.org/>
+PREFIX untp: <https://vocabulary.uncefact.org/untp/>
+PREFIX vu: <https://veritas.app/ns/untp#>
+PREFIX vw: <https://veritas.app/ns/water#>
+SELECT ?fromLabel ?fromKind ?toLabel ?toKind WHERE {
+  {
+    ?pd untp:producedAtFacility ?fromF . ?pd vu:upstreamInput ?pu . ?pu untp:producedAtFacility ?toF .
+    ?fromF schema:name ?fromLabel . ?toF schema:name ?toLabel .
+    BIND("facility" AS ?fromKind) BIND("facility" AS ?toKind)
+  } UNION {
+    ?f a untp:Facility ; schema:name ?fromLabel ; vw:locatedInBasin ?bb . ?bb rdfs:label ?toLabel .
+    BIND("facility" AS ?fromKind) BIND("basin" AS ?toKind)
+  } UNION {
+    ?bb a vw:HydroBasin ; rdfs:label ?fromLabel . ?rr vw:assessedBasin ?bb ; vw:label ?toLabel .
+    BIND("basin" AS ?fromKind) BIND("risk" AS ?toKind)
+  }
+}`
   },
   {
     id: 'battery',
     label: 'EV battery passports',
     description: 'EU Battery Regulation digital product passports with recycled-cobalt shares.',
     turtle: BATTERY_SAMPLE,
-    query: BATTERY_QUERY
+    query: BATTERY_QUERY,
+    graphQuery: `PREFIX bat: <https://veritas.app/ns/battery#>
+SELECT ?fromLabel ?fromKind ?toLabel ?toKind WHERE {
+  ?b a bat:Battery ; bat:cathode ?c .
+  BIND(REPLACE(STR(?b), "^.*[#/]", "") AS ?fromLabel)
+  BIND(REPLACE(STR(?c), "^.*[#/]", "") AS ?toLabel)
+  BIND("battery" AS ?fromKind)
+  BIND("cathode" AS ?toKind)
+}`
   }
 ];
 
