@@ -52,6 +52,44 @@ const wasmFrameworkDevPlugin = (): Plugin => ({
   }
 });
 
+// A stub of a federated SPARQL endpoint (a supplier's facility/water registry) for the SERVICE-across-a-
+// trust-boundary demo: the in-browser engine POSTs a sub-query here over fetch and joins the result into
+// its local graph. Returns a fixed result set; the real endpoint is the CLI server. Dev-only.
+const federatedRegistry = JSON.stringify({
+  head: { vars: ['facility', 'certifier'] },
+  results: {
+    bindings: [
+      { facility: { type: 'uri', value: 'https://veritas.app/data/cotton-chain/farm-jhang' }, certifier: { type: 'literal', value: 'GOTS' } },
+      { facility: { type: 'uri', value: 'https://veritas.app/data/cotton-chain/gin-multan' }, certifier: { type: 'literal', value: 'BCI' } },
+      { facility: { type: 'uri', value: 'https://veritas.app/data/cotton-chain/spinner-faisalabad' }, certifier: { type: 'literal', value: 'OEKO-TEX' } },
+      { facility: { type: 'uri', value: 'https://veritas.app/data/cotton-chain/mill-chittagong' }, certifier: { type: 'literal', value: 'ZDHC' } },
+      { facility: { type: 'uri', value: 'https://veritas.app/data/cotton-chain/garment-dhaka' }, certifier: { type: 'literal', value: 'SA8000' } }
+    ]
+  }
+});
+
+const federatedSparqlStubPlugin = (): Plugin => ({
+  name: 'veritas-federated-sparql-stub',
+  apply: 'serve',
+  configureServer(server) {
+    server.middlewares.use((request, response, next) => {
+      if (!(request.url ?? '').startsWith('/federated/sparql')) {
+        next();
+
+        return;
+      }
+
+      // Drain the sub-query body, then answer with the registry's result set.
+      request.on('data', () => undefined);
+      request.on('end', () => {
+        response.setHeader('Content-Type', 'application/sparql-results+json');
+        response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+        response.end(federatedRegistry);
+      });
+    });
+  }
+});
+
 // Veritas Studio — Vite (Rolldown) multi-page build. Mirrors the Verifable.Web conventions:
 // Vite is the sole bundler, Lightning CSS (Rust) is the CSS transform, output is the static the
 // native host serves. The engine is reached through the host's window.veritas bridge in the native
@@ -96,7 +134,7 @@ export default defineConfig(({ mode }) => {
   const config: UserConfig = {
     root: 'src',
     publicDir: '../public',
-    plugins: isDev ? [wasmFrameworkDevPlugin()] : [],
+    plugins: isDev ? [wasmFrameworkDevPlugin(), federatedSparqlStubPlugin()] : [],
     build: {
       outDir: '../dist',
       emptyOutDir: true,

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Net.Http;
 using System.Runtime.InteropServices.JavaScript;
 using System.Runtime.Versioning;
 using System.Text;
@@ -7,9 +8,11 @@ using System.Threading;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
+using Lumoin.Veritas.Core.Hypertrie.AccessControl;
 using Lumoin.Veritas.Database;
 using Lumoin.Veritas.Rdf.Json;
 using Lumoin.Veritas.Shacl.Validation;
+using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
 using Lumoin.Veritas.Sparql.Results;
 using Lumoin.Veritas.Turtle;
@@ -29,6 +32,34 @@ internal static partial class StudioEngineInterop
     /// <summary>The opened in-browser engine, after <see cref="InitAsync"/>; one per worker.</summary>
     private static VeritasEngine? Engine { get; set; }
 
+    /// <summary>The browser-fetch-backed HTTP client the SERVICE federation transport posts through.</summary>
+    private static HttpClient Http { get; } = new();
+
+    /// <summary>The engine options wiring the SERVICE federation transport; reused for every open.</summary>
+    private static VeritasEngineOptions EngineOptions { get; } = new() { ServiceTransport = FederatedServiceAsync };
+
+    /// <summary>
+    /// The in-browser <c>SERVICE</c> federation transport: POSTs the self-contained sub-query to the remote
+    /// endpoint over browser fetch (HttpClient) and parses its SPARQL-results-JSON. The opaque access context
+    /// is where an outbound credential (OAuth/DPoP) attaches for a cross-trust-boundary call.
+    /// </summary>
+    /// <param name="endpoint">The remote endpoint IRI.</param>
+    /// <param name="query">The self-contained sub-query to evaluate at the endpoint.</param>
+    /// <param name="accessContext">The opaque access context to authorize the call with, or <see langword="null"/>.</param>
+    /// <param name="cancellationToken">A token that aborts the remote call.</param>
+    /// <returns>The endpoint's result set.</returns>
+    private static async ValueTask<SparqlResultSet> FederatedServiceAsync(IriRef endpoint, string query, AccessContext? accessContext, CancellationToken cancellationToken)
+    {
+        using HttpRequestMessage request = new(HttpMethod.Post, endpoint.Value.ToString());
+        request.Content = new StringContent(query, Encoding.UTF8, "application/sparql-query");
+        request.Headers.Accept.ParseAdd("application/sparql-results+json");
+        using HttpResponseMessage response = await Http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        byte[] bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+
+        return SparqlResultsJsonReader.Read(bytes);
+    }
+
     /// <summary>
     /// Opens the in-browser engine over its default graph. The graph is empty until the durable
     /// OPFS-backed store (or a fed dataset) is loaded — that loading is the next in-browser increment.
@@ -38,7 +69,7 @@ internal static partial class StudioEngineInterop
     {
         // The empty default graph; LoadTurtleAsync replaces it with a dataset, and the OPFS-backed journal
         // (warm start by replay) is the next durability increment.
-        Engine = await VeritasEngine.OpenAsync(Array.Empty<DataTriple>()).ConfigureAwait(false);
+        Engine = await VeritasEngine.OpenAsync(Array.Empty<DataTriple>(), EngineOptions).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -66,7 +97,7 @@ internal static partial class StudioEngineInterop
             return "the dataset did not parse";
         }
 
-        Engine = await VeritasEngine.OpenAsync(triples).ConfigureAwait(false);
+        Engine = await VeritasEngine.OpenAsync(triples, EngineOptions).ConfigureAwait(false);
 
         return string.Empty;
     }

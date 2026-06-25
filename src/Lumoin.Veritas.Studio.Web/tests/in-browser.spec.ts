@@ -33,6 +33,21 @@ ex:RecycledContentShape a sh:NodeShape ;
     sh:property [ sh:path bat:recycledCobalt ; sh:minInclusive 10 ;
         sh:message "Recycled cobalt content must be at least 10%." ] .`;
 
+// Joins the local supply chain with a federated SERVICE to the dev stub registry (the cross-trust-boundary
+// hop): each upstream facility of the garment gets its certifier from the remote endpoint, over fetch.
+const FEDERATED_QUERY = `PREFIX schema: <https://schema.org/>
+PREFIX untp: <https://vocabulary.uncefact.org/untp/>
+PREFIX vu:   <https://veritas.app/ns/untp#>
+PREFIX ex:   <https://veritas.app/data/cotton-chain/>
+SELECT ?facilityName ?certifier WHERE {
+  ?garment a untp:Product ; untp:productCategory "6205" ; vu:upstreamInput+ ?up .
+  ?up untp:producedAtFacility ?facility .
+  ?facility schema:name ?facilityName .
+  SERVICE <http://localhost:5173/federated/sparql> {
+    ?facility ex:certifiedBy ?certifier .
+  }
+}`;
+
 /** The minimal window surface the in-browser engine and shell expose to the page. */
 interface StudioWindow {
   veritasEngine: { runSparql(query: string): Promise<string>; validateShacl(shapes: string): Promise<string> };
@@ -106,5 +121,13 @@ test.describe('in-browser (WASM) engine', () => {
     const report = await validate(page, BATTERY_SHAPES);
     expect(report.conforms).toBe(false);
     expect(report.results.length).toBe(3);
+  });
+
+  test('federates a SERVICE sub-query across a trust boundary and joins the result', async ({ page }) => {
+    await bootEngine(page);
+    const result = await runSparql(page, FEDERATED_QUERY);
+    const certifiers = (result.results?.bindings ?? []).map((row) => row.certifier?.value).filter(Boolean);
+    expect(rowCount(result)).toBe(4);
+    expect(certifiers.length).toBe(4);
   });
 });
