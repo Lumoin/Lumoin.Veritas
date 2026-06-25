@@ -9,6 +9,8 @@ import './components/sparql-results';
 import { STUDIO_DATA, type StudioData } from './data';
 import { buildGraphData } from './graph-data';
 import { DATASETS, DEFAULT_DATASET, datasetById, type StudioDataset } from './datasets';
+import { installCompletion } from './completion-popup';
+import { loadVocabulary, parsePrefixes, type VocabularyView } from './query-completion';
 import { createGraphView, type GraphMode, type GraphView } from './graph';
 import { resolveTransport, type VeritasTransport, type VeritasWasmEngine } from './services/veritas-transport';
 import type { ShaclReportView, SparqlResultsDocument, SparqlResultsElement } from './components/sparql-results';
@@ -46,6 +48,7 @@ async function maybeBootWasmEngine(): Promise<void> {
     transport = resolveTransport();
     applyDataset(DEFAULT_DATASET);
     await deriveAndMountGraph();
+    await refreshVocabulary();
   } catch (error) {
     // Stay on the default transport if the engine fails to boot; surface it for diagnosis.
     console.error('In-browser WASM engine failed to boot', error);
@@ -89,7 +92,20 @@ async function loadDataset(id: string): Promise<void> {
 
   applyDataset(dataset);
   await deriveAndMountGraph();
+  await refreshVocabulary();
   (byId('results') as unknown as SparqlResultsElement).showMessage(`Loaded ${dataset.label} — Run ▸ to query.`, 'idle');
+}
+
+/** The vocabulary the intellisense proposes from; reloaded per dataset from the engine. */
+let completionVocab: VocabularyView = { predicates: [], classes: [] };
+
+/** Reloads the completion vocabulary (predicates + classes) from the engine for the active dataset. */
+async function refreshVocabulary(): Promise<void> {
+  try {
+    completionVocab = await loadVocabulary(transport, parsePrefixes(activeCode()));
+  } catch {
+    // No engine attached — keep the current vocabulary; keywords + prefixes still propose.
+  }
 }
 
 /** The active graph view (the 2D placeholder, then the BabylonJS view); null before init. */
@@ -428,11 +444,15 @@ document.addEventListener('DOMContentLoaded', () => {
   (byId('results') as unknown as SparqlResultsElement).results = sampleResults();
 
   byId('run-btn').addEventListener('click', () => void runQuery());
-  // The SPARQL buffer is editable; live re-query on edit (debounced, latest-wins) — the FILTER-in/out loop.
-  document.querySelector<HTMLElement>('[data-testid="editor-sparql"]')?.addEventListener('input', () => {
-    updateGutter();
-    scheduleLiveQuery();
-  });
+  // The SPARQL buffer is editable: live re-query on edit (debounced, latest-wins) + intellisense proposals.
+  const sparqlEditor = document.querySelector<HTMLElement>('[data-testid="editor-sparql"]');
+  if (sparqlEditor !== null) {
+    sparqlEditor.addEventListener('input', () => {
+      updateGutter();
+      scheduleLiveQuery();
+    });
+    installCompletion(sparqlEditor, () => completionVocab);
+  }
   for (const facet of all('.facet')) {
     facet.addEventListener('click', () => {
       facet.style.borderColor = 'var(--status-verified)';

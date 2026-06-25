@@ -149,4 +149,19 @@ test.describe('in-browser (WASM) engine', () => {
     await setEditor('PREFIX untp: <https://vocabulary.uncefact.org/untp/> SELECT ?p WHERE { ?p a untp:Product ; untp:cottonSpecies ?s }');
     await expect.poll(() => rows.count()).toBe(1);
   });
+
+  test('proposes completions as the SPARQL buffer is typed and inserts the chosen one (intellisense)', async ({ page }) => {
+    await bootEngine(page);
+    const editor = page.locator('[data-testid="editor-sparql"]');
+    await editor.click();
+    await page.keyboard.press('Control+A');
+    await page.keyboard.type('SEL');
+
+    const popup = page.locator('.completion-popup');
+    await expect(popup).toBeVisible();
+    await expect(popup).toContainText('SELECT');
+
+    await page.keyboard.press('Enter');
+    await expect.poll(async () => (await editor.textContent())?.trim()).toBe('SELECT');
+  });
 });
