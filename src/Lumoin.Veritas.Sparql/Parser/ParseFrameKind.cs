@@ -7,7 +7,12 @@ namespace Lumoin.Veritas.Sparql.Parser;
 /// admit unbounded nesting — so the whole grammar is parsed iteratively over an
 /// explicit stack, never by method recursion.
 /// </summary>
-internal enum ParseFrameKind
+/// <remarks>
+/// Public because the completion seam surfaces the enclosing-production chain (the open frame kinds at a
+/// caret) to editors; it is a stable grammar vocabulary with no behavior. The <c>ParseFrame</c> /
+/// <c>ParseStatus</c> machinery stays internal.
+/// </remarks>
+public enum ParseFrameKind
 {
     /// <summary>The top-level request: prologue, then query-form dispatch.</summary>
     Request,
