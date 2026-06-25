@@ -410,6 +410,7 @@
           "Lumoin.Veritas.Core": "[0.0.0, )",
           "Lumoin.Veritas.Owl": "[0.0.0, )",
           "Lumoin.Veritas.Rdf": "[0.0.0, )",
+          "Lumoin.Veritas.Replication": "[0.0.0, )",
           "Lumoin.Veritas.Shacl": "[0.0.0, )",
           "Lumoin.Veritas.Sparql": "[0.0.0, )"
         }
