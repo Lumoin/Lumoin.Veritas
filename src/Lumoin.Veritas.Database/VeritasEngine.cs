@@ -8,6 +8,7 @@ using Lumoin.Veritas.Core.Memory;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Core.Execution;
 using Lumoin.Veritas.Core.Hypertrie;
+using Lumoin.Veritas.Core.Hypertrie.AccessControl;
 using Lumoin.Veritas.Core.Hypertrie.Editing;
 using Lumoin.Veritas.Core.Hypertrie.Storage;
 using Lumoin.Veritas.Owl.Reasoning;
@@ -53,24 +54,45 @@ public sealed class VeritasEngine: IAsyncDisposable
     /// <summary>The compute lane an immutable database owns and drains on disposal, or <see langword="null"/> for a mutable database (whose per-query engines run lane-less).</summary>
     private readonly IComputeLane? computeLane;
 
-    /// <summary>Constructs an immutable database over its composed engine and lane.</summary>
+    /// <summary>The SPARQL <c>SERVICE</c> client (over the configured transport) the per-query engine federates through, or <see langword="null"/> when no transport is configured.</summary>
+    private readonly SparqlClient? serviceClient;
+
+    /// <summary>The <c>FROM</c> / <c>FROM NAMED</c> / <c>LOAD</c> graph-source resolver threaded into queries and updates, or <see langword="null"/> when none is configured.</summary>
+    private readonly GraphSourceResolver? graphSource;
+
+    /// <summary>The access-control policy consulted per candidate triple of every local graph read, or <see langword="null"/> to allow every triple.</summary>
+    private readonly AccessControlDelegate? accessControl;
+
+    /// <summary>Constructs an immutable database over its composed engine and lane, with the federation and access seams threaded into per-query engines.</summary>
     /// <param name="queryEngine">The composed query engine.</param>
     /// <param name="computeLane">The owned compute lane.</param>
-    private VeritasEngine(SparqlQueryEngine queryEngine, IComputeLane computeLane)
+    /// <param name="serviceClient">The <c>SERVICE</c> client, or <see langword="null"/>.</param>
+    /// <param name="graphSource">The <c>FROM</c> / <c>FROM NAMED</c> / <c>LOAD</c> resolver, or <see langword="null"/>.</param>
+    /// <param name="accessControl">The access-control policy, or <see langword="null"/>.</param>
+    private VeritasEngine(SparqlQueryEngine queryEngine, IComputeLane computeLane, SparqlClient? serviceClient, GraphSourceResolver? graphSource, AccessControlDelegate? accessControl)
     {
         this.queryEngine = queryEngine;
         this.computeLane = computeLane;
+        this.serviceClient = serviceClient;
+        this.graphSource = graphSource;
+        this.accessControl = accessControl;
     }
 
     /// <summary>Constructs a mutable database over a mutable dataset, its reconciliation feed, and the pool its replication work rents from; it derives a fresh query engine off the dataset snapshot per query, so reads see the latest committed state.</summary>
     /// <param name="mutableDataset">The mutable dataset the database commits into and queries off snapshots of.</param>
     /// <param name="replicationFeed">The reconciliation feed tracking the dataset's committed default graph, subscribed to its commits.</param>
     /// <param name="replicationPool">The pool the database's replication work rents from; owned and disposed by the database.</param>
-    private VeritasEngine(MutableSparqlDataset mutableDataset, ReplicationIndexFeed replicationFeed, VeritasMemoryPool<byte> replicationPool)
+    /// <param name="serviceClient">The <c>SERVICE</c> client, or <see langword="null"/>.</param>
+    /// <param name="graphSource">The <c>FROM</c> / <c>FROM NAMED</c> / <c>LOAD</c> resolver, or <see langword="null"/>.</param>
+    /// <param name="accessControl">The access-control policy, or <see langword="null"/>.</param>
+    private VeritasEngine(MutableSparqlDataset mutableDataset, ReplicationIndexFeed replicationFeed, VeritasMemoryPool<byte> replicationPool, SparqlClient? serviceClient, GraphSourceResolver? graphSource, AccessControlDelegate? accessControl)
     {
         this.mutableDataset = mutableDataset;
         this.replicationFeed = replicationFeed;
         this.replicationPool = replicationPool;
+        this.serviceClient = serviceClient;
+        this.graphSource = graphSource;
+        this.accessControl = accessControl;
     }
 
     /// <summary>
@@ -106,7 +128,7 @@ public sealed class VeritasEngine: IAsyncDisposable
                 ? await SparqlQueryEngine.BuildAsync(defaultGraph, computeLane: lane, reasoning: reasoning, cancellationToken: cancellationToken).ConfigureAwait(false)
                 : await SparqlQueryEngine.BuildDatasetAsync(defaultGraph, namedGraphs, computeLane: lane, reasoning: reasoning, cancellationToken: cancellationToken).ConfigureAwait(false);
 
-            return new VeritasEngine(engine, lane);
+            return new VeritasEngine(engine, lane, BuildServiceClient(options), options.GraphSource, options.AccessControl);
         }
         catch
         {
@@ -141,14 +163,16 @@ public sealed class VeritasEngine: IAsyncDisposable
     /// query-only database.
     /// </summary>
     /// <param name="defaultGraph">The default-graph triples to seed the database with.</param>
+    /// <param name="options">The configuration; for a mutable database only the federation and access seams (<see cref="VeritasEngineOptions.ServiceTransport"/>, <see cref="VeritasEngineOptions.GraphSource"/>, <see cref="VeritasEngineOptions.AccessControl"/>) apply — it serves the asserted graph with no reasoning. <c>null</c> wires none.</param>
     /// <param name="cancellationToken">A token that aborts opening.</param>
     /// <returns>The opened mutable database.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="defaultGraph"/> is <see langword="null"/>.</exception>
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
-    public static async ValueTask<VeritasEngine> OpenMutableAsync(IEnumerable<DataTriple> defaultGraph, CancellationToken cancellationToken = default)
+    public static async ValueTask<VeritasEngine> OpenMutableAsync(IEnumerable<DataTriple> defaultGraph, VeritasEngineOptions? options = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(defaultGraph);
 
+        options ??= VeritasEngineOptions.Default;
         TermDictionary dictionary = new(MintReplicationEpoch());
         List<EncodedTriple> encoded = [];
         foreach(DataTriple triple in defaultGraph)
@@ -170,7 +194,7 @@ public sealed class VeritasEngine: IAsyncDisposable
         ReplicationIndexFeed feed = new(encoded, default);
         dataset.ObserveDefaultGraphDelta(feed.Advance);
 
-        return new VeritasEngine(dataset, feed, new VeritasMemoryPool<byte>());
+        return new VeritasEngine(dataset, feed, new VeritasMemoryPool<byte>(), BuildServiceClient(options), options.GraphSource, options.AccessControl);
     }
 
     /// <summary>The term dictionary the database's graphs are encoded against — the shared epoch an intra-cluster peer's reconciliation sketch must share. Encoding and resolving terms against it is how a caller lines a peer sketch (or query) up with the served data.</summary>
@@ -187,6 +211,14 @@ public sealed class VeritasEngine: IAsyncDisposable
         return epoch == 0 ? 1UL : epoch;
     }
 
+    /// <summary>Builds the SERVICE client from the configured transport, or <see langword="null"/> when no transport is configured.</summary>
+    /// <param name="options">The engine options carrying the optional SERVICE transport.</param>
+    /// <returns>The SERVICE client, or <see langword="null"/>.</returns>
+    private static SparqlClient? BuildServiceClient(VeritasEngineOptions options)
+    {
+        return options.ServiceTransport is { } transport ? new SparqlClient(transport) : null;
+    }
+
     /// <summary>
     /// Evaluates a SPARQL query and returns its result — SELECT bindings or an
     /// ASK boolean — discriminated by the query's form, so a transport renders
@@ -194,20 +226,21 @@ public sealed class VeritasEngine: IAsyncDisposable
     /// </summary>
     /// <param name="sparql">The query text.</param>
     /// <param name="baseIri">The base IRI relative references in the query resolve against; <c>null</c> for none.</param>
+    /// <param name="accessContext">The opaque "who is asking" context for this read — handed to the access-control policy and forwarded to any <c>SERVICE</c>/<c>FROM</c> IO; <c>null</c> for none.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The query result.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="sparql"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException"><paramref name="sparql"/> does not parse, or is a SPARQL Update rather than a query.</exception>
     /// <exception cref="NotSupportedException"><paramref name="sparql"/> is a CONSTRUCT or DESCRIBE query, which this surface does not yet render.</exception>
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
-    public async ValueTask<VeritasQueryResult> QueryAsync(string sparql, string? baseIri = null, CancellationToken cancellationToken = default)
+    public async ValueTask<VeritasQueryResult> QueryAsync(string sparql, string? baseIri = null, AccessContext? accessContext = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(sparql);
 
         using Utf8StringPool pool = new();
         SparqlQuery query = Parse(sparql, baseIri, pool);
         AlgebraOperator algebra = SparqlTranslator.Translate((SparqlQuery)new SparqlNormalizer(pool).Normalize(query));
-        SparqlQueryEngine engine = ResolveEngine();
+        SparqlQueryEngine engine = ResolveEngine(accessContext);
 
         if(query.Form is AskQuery)
         {
@@ -226,14 +259,15 @@ public sealed class VeritasEngine: IAsyncDisposable
 
     /// <summary>Evaluates a SPARQL <c>ASK</c> query and returns whether a solution exists; a convenience over <see cref="QueryAsync"/>.</summary>
     /// <param name="sparql">The query text.</param>
+    /// <param name="accessContext">The opaque "who is asking" context for this read; <c>null</c> for none.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns><see langword="true"/> when the query has at least one solution.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="sparql"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException"><paramref name="sparql"/> does not parse, is a SPARQL Update, or is not an <c>ASK</c> query.</exception>
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
-    public async ValueTask<bool> AskAsync(string sparql, CancellationToken cancellationToken = default)
+    public async ValueTask<bool> AskAsync(string sparql, AccessContext? accessContext = null, CancellationToken cancellationToken = default)
     {
-        VeritasQueryResult result = await QueryAsync(sparql, cancellationToken: cancellationToken).ConfigureAwait(false);
+        VeritasQueryResult result = await QueryAsync(sparql, accessContext: accessContext, cancellationToken: cancellationToken).ConfigureAwait(false);
 
         return result.Boolean ?? throw new ArgumentException("The query is not an ASK query.", nameof(sparql));
     }
@@ -249,13 +283,14 @@ public sealed class VeritasEngine: IAsyncDisposable
     /// </summary>
     /// <param name="sparql">The update text.</param>
     /// <param name="baseIri">The base IRI relative references in the update resolve against; <c>null</c> for none.</param>
+    /// <param name="accessContext">The opaque "who is asking" context — handed to the access-control policy and forwarded to any <c>SERVICE</c> (in a WHERE) or <c>LOAD</c> IO; <c>null</c> for none.</param>
     /// <param name="cancellationToken">A token that aborts execution.</param>
     /// <returns>A task that completes when the update has committed.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="sparql"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException"><paramref name="sparql"/> does not parse, or is a SPARQL query rather than an update.</exception>
     /// <exception cref="InvalidOperationException">This is an immutable database (opened with <see cref="OpenAsync(IEnumerable{DataTriple}, VeritasEngineOptions?, CancellationToken)"/> rather than <see cref="OpenMutableAsync"/>).</exception>
     /// <exception cref="OperationCanceledException">Cancelled via <paramref name="cancellationToken"/>.</exception>
-    public async ValueTask UpdateAsync(string sparql, string? baseIri = null, CancellationToken cancellationToken = default)
+    public async ValueTask UpdateAsync(string sparql, string? baseIri = null, AccessContext? accessContext = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(sparql);
         if(mutableDataset is null)
@@ -271,7 +306,7 @@ public sealed class VeritasEngine: IAsyncDisposable
         {
             try
             {
-                await SparqlUpdateExecutor.ExecuteAsync(request, mutableDataset, context, graphSource: null, cancellationToken: cancellationToken).ConfigureAwait(false);
+                await SparqlUpdateExecutor.ExecuteAsync(request, mutableDataset, context, graphSource: graphSource, serviceClient: serviceClient, accessControl: accessControl, accessContext: accessContext, cancellationToken: cancellationToken).ConfigureAwait(false);
 
                 return;
             }
@@ -299,7 +334,7 @@ public sealed class VeritasEngine: IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(shapes);
 
-        SparqlQueryEngine engine = ResolveEngine();
+        SparqlQueryEngine engine = ResolveEngine(accessContext: null);
         TermDictionary dictionary = engine.Dictionary;
         HypertrieGraphStore shapesStore = await BuildShapesStore(shapes, dictionary, cancellationToken).ConfigureAwait(false);
         ShapeRegistry registry = await ShapeLoader
@@ -406,13 +441,25 @@ public sealed class VeritasEngine: IAsyncDisposable
         return computeLane is null ? ValueTask.CompletedTask : computeLane.DisposeAsync();
     }
 
-    /// <summary>Resolves the query engine for one read: a mutable database derives a fresh engine off its current dataset snapshot (read-your-writes), an immutable database returns its fixed engine.</summary>
+    /// <summary>Resolves the query engine for one read, threading the federation and access seams plus this call's access context: a mutable database derives a fresh engine off its current dataset snapshot (read-your-writes); an immutable database returns its fixed engine, or a cheap per-call wrapper over the same dataset when a seam or access context applies.</summary>
+    /// <param name="accessContext">The opaque "who is asking" context for this read, or <see langword="null"/>.</param>
     /// <returns>The query engine to evaluate against.</returns>
-    private SparqlQueryEngine ResolveEngine()
+    private SparqlQueryEngine ResolveEngine(AccessContext? accessContext)
     {
-        return mutableDataset is not null
-            ? new SparqlQueryEngine(mutableDataset.Snapshot(), mutableDataset.Dictionary)
-            : queryEngine!;
+        if(mutableDataset is not null)
+        {
+            return new SparqlQueryEngine(mutableDataset.Snapshot(), mutableDataset.Dictionary, serviceClient: serviceClient, accessControl: accessControl, accessContext: accessContext);
+        }
+
+        //An immutable database answers off its fixed, already-reasoned engine; it rebuilds a per-call wrapper over
+        //the same dataset only when a federation or access seam is in play (the wrapper is cheap — the dataset and
+        //its built views are reused), so the common no-federation read keeps the fixed engine at zero cost.
+        if(serviceClient is null && accessControl is null && accessContext is null)
+        {
+            return queryEngine!;
+        }
+
+        return new SparqlQueryEngine(queryEngine!.Dataset, queryEngine.Dictionary, serviceClient: serviceClient, accessControl: accessControl, accessContext: accessContext);
     }
 
     /// <summary>Builds a store over the shapes triples, encoding them into the data's dictionary so shapes and data share term identity.</summary>

@@ -79,7 +79,7 @@ internal sealed class MutableDatabaseReconcileTests
     {
         using VeritasMemoryPool<byte> pool = new();
         VeritasEngine database = await VeritasEngine
-            .OpenMutableAsync([Data("a", "p", "b")], TestContext.CancellationToken)
+            .OpenMutableAsync([Data("a", "p", "b")], cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
         await using var scope = database.ConfigureAwait(false);
 
@@ -91,19 +91,19 @@ internal sealed class MutableDatabaseReconcileTests
 
         //The peer shares this database's dictionary epoch (it built its sketch against database.Dictionary).
         PeerReconcileOutcome outcome = await database
-            .ReconcileFromPeerAsync(peerFetch, dictionary.Epoch, ReplicationPolicy.Default, 4, TestContext.CancellationToken)
+            .ReconcileFromPeerAsync(peerFetch, dictionary.Epoch, ReplicationPolicy.Default, 4, cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
 
         Assert.IsTrue(outcome.Converged, "The reconcile converges.");
         Assert.AreEqual(WriteBackOutcome.Committed, outcome.WriteBack, "The recovered peer triple is written back through the journal.");
 
         bool hasPeerTriple = await database
-            .AskAsync($"ASK {{ <{Ex}a> <{Ex}p> <{Ex}c> }}", TestContext.CancellationToken)
+            .AskAsync($"ASK {{ <{Ex}a> <{Ex}p> <{Ex}c> }}", cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
         Assert.IsTrue(hasPeerTriple, "The reconciled peer-only triple is queryable on the engine.");
 
         bool keepsOriginal = await database
-            .AskAsync($"ASK {{ <{Ex}a> <{Ex}p> <{Ex}b> }}", TestContext.CancellationToken)
+            .AskAsync($"ASK {{ <{Ex}a> <{Ex}p> <{Ex}b> }}", cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
         Assert.IsTrue(keepsOriginal, "The original triple is unchanged.");
     }
@@ -113,7 +113,7 @@ internal sealed class MutableDatabaseReconcileTests
     public async Task ServesItsSketchSoAPeerConvergesToIt()
     {
         VeritasEngine database = await VeritasEngine
-            .OpenMutableAsync([Data("a", "p", "b"), Data("a", "p", "c")], TestContext.CancellationToken)
+            .OpenMutableAsync([Data("a", "p", "b"), Data("a", "p", "c")], cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
         await using var scope = database.ConfigureAwait(false);
 
@@ -139,7 +139,7 @@ internal sealed class MutableDatabaseReconcileTests
     public async Task RefusesAPeerWithAMismatchedDictionaryEpoch()
     {
         VeritasEngine database = await VeritasEngine
-            .OpenMutableAsync([Data("a", "p", "b")], TestContext.CancellationToken)
+            .OpenMutableAsync([Data("a", "p", "b")], cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
         await using var scope = database.ConfigureAwait(false);
 
@@ -153,7 +153,7 @@ internal sealed class MutableDatabaseReconcileTests
         ulong foreignEpoch = unchecked(database.Dictionary.Epoch + 1);
 
         PeerReconcileOutcome outcome = await database
-            .ReconcileFromPeerAsync(foreignPeer, foreignEpoch, ReplicationPolicy.Default, 4, TestContext.CancellationToken)
+            .ReconcileFromPeerAsync(foreignPeer, foreignEpoch, ReplicationPolicy.Default, 4, cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
 
         Assert.IsTrue(outcome.PeerEpochMismatch, "A mismatched-epoch peer is refused.");
@@ -161,7 +161,7 @@ internal sealed class MutableDatabaseReconcileTests
         Assert.IsFalse(fetched, "A mismatched-epoch peer's sketch is never fetched — the reconcile is refused before it begins.");
 
         bool keepsOriginal = await database
-            .AskAsync($"ASK {{ <{Ex}a> <{Ex}p> <{Ex}b> }}", TestContext.CancellationToken)
+            .AskAsync($"ASK {{ <{Ex}a> <{Ex}p> <{Ex}b> }}", cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
         Assert.IsTrue(keepsOriginal, "The database is unchanged by a refused reconcile.");
     }

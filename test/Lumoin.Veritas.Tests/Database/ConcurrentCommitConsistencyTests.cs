@@ -63,7 +63,7 @@ internal sealed class ConcurrentCommitConsistencyTests
         const int OpsPerWriter = 12;
 
         VeritasEngine database = await VeritasEngine
-            .OpenMutableAsync([], TestContext.CancellationToken)
+            .OpenMutableAsync([], cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
         await using var scope = database.ConfigureAwait(false);
 
@@ -90,7 +90,7 @@ internal sealed class ConcurrentCommitConsistencyTests
         {
             EncodedTriple encoded = EncodedTriple.FromEncoded(dictionary.GetOrAdd(Iri("s")).Encoded, dictionary.GetOrAdd(Iri("p")).Encoded, dictionary.GetOrAdd(Iri("o" + target)).Encoded);
             bool inStore = await database
-                .AskAsync($"ASK {{ <{Ex}s> <{Ex}p> <{Ex}o{target}> }}", TestContext.CancellationToken)
+                .AskAsync($"ASK {{ <{Ex}s> <{Ex}p> <{Ex}o{target}> }}", cancellationToken: TestContext.CancellationToken)
                 .ConfigureAwait(false);
             bool inFeed = feedTriples.Contains(encoded);
 
@@ -114,7 +114,7 @@ internal sealed class ConcurrentCommitConsistencyTests
                 .ConfigureAwait(false);
 
             bool observed = await database
-                .AskAsync($"ASK {{ <{Ex}s> <{Ex}p> <{Ex}o{writerIndex}> }}", TestContext.CancellationToken)
+                .AskAsync($"ASK {{ <{Ex}s> <{Ex}p> <{Ex}o{writerIndex}> }}", cancellationToken: TestContext.CancellationToken)
                 .ConfigureAwait(false);
 
             Assert.AreEqual(insert, observed, $"Writer {writerIndex} must read its own write at op {op} ({verb}).");
@@ -129,7 +129,7 @@ internal sealed class ConcurrentCommitConsistencyTests
         const int OpsPerWriter = 12;
 
         VeritasEngine database = await VeritasEngine
-            .OpenMutableAsync([], TestContext.CancellationToken)
+            .OpenMutableAsync([], cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
         await using var scope = database.ConfigureAwait(false);
 

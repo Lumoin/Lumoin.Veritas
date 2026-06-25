@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Hypertrie.AccessControl;
 using Lumoin.Veritas.Database;
 using Lumoin.Veritas.Shacl.Validation;
 using Lumoin.Veritas.Sparql.Execution;
@@ -39,7 +40,7 @@ internal sealed class VeritasEngineTests
 
         //rex is asserted a Dog and Dog is a subclass of Animal, so RDFS entails rex a Animal.
         bool isAnimal = await database
-            .AskAsync($"ASK {{ <{Ex}rex> <{RdfType}> <{Ex}Animal> }}", TestContext.CancellationToken)
+            .AskAsync($"ASK {{ <{Ex}rex> <{RdfType}> <{Ex}Animal> }}", cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
 
         Assert.IsTrue(isAnimal, "The default database materialises the RDFS entailment rex a Animal.");
@@ -50,19 +51,19 @@ internal sealed class VeritasEngineTests
     {
         VeritasEngineOptions noReasoning = VeritasEngineOptions.Default with { Reasoning = null };
         VeritasEngine database = await VeritasEngine
-            .OpenAsync(SubclassGraph(), noReasoning, TestContext.CancellationToken)
+            .OpenAsync(SubclassGraph(), noReasoning, cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
         await using var scope = database.ConfigureAwait(false);
 
         //With reasoning unwired the entailed triple is never derived.
         bool isAnimal = await database
-            .AskAsync($"ASK {{ <{Ex}rex> <{RdfType}> <{Ex}Animal> }}", TestContext.CancellationToken)
+            .AskAsync($"ASK {{ <{Ex}rex> <{RdfType}> <{Ex}Animal> }}", cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
         Assert.IsFalse(isAnimal, "Without reasoning the entailment is absent.");
 
         //The asserted triple is of course still served.
         bool isDog = await database
-            .AskAsync($"ASK {{ <{Ex}rex> <{RdfType}> <{Ex}Dog> }}", TestContext.CancellationToken)
+            .AskAsync($"ASK {{ <{Ex}rex> <{RdfType}> <{Ex}Dog> }}", cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
         Assert.IsTrue(isDog, "The asserted triple is served unchanged.");
     }
@@ -71,19 +72,19 @@ internal sealed class VeritasEngineTests
     public async Task MutableDatabaseAnswersQueriesOffTheCommittedSnapshot()
     {
         VeritasEngine database = await VeritasEngine
-            .OpenMutableAsync(SubclassGraph(), TestContext.CancellationToken)
+            .OpenMutableAsync(SubclassGraph(), cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
         await using var scope = database.ConfigureAwait(false);
 
         //The mutable engine serves the asserted default graph, derived off the committed snapshot per query.
         bool isDog = await database
-            .AskAsync($"ASK {{ <{Ex}rex> <{RdfType}> <{Ex}Dog> }}", TestContext.CancellationToken)
+            .AskAsync($"ASK {{ <{Ex}rex> <{RdfType}> <{Ex}Dog> }}", cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
         Assert.IsTrue(isDog, "The mutable database serves the asserted default graph.");
 
         //Reasoning is not materialised on the mutable engine — it serves the asserted graph only.
         bool isAnimal = await database
-            .AskAsync($"ASK {{ <{Ex}rex> <{RdfType}> <{Ex}Animal> }}", TestContext.CancellationToken)
+            .AskAsync($"ASK {{ <{Ex}rex> <{RdfType}> <{Ex}Animal> }}", cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
         Assert.IsFalse(isAnimal, "The mutable engine serves the asserted graph; reasoning is not materialised.");
     }
@@ -92,7 +93,7 @@ internal sealed class VeritasEngineTests
     public async Task MutableDatabaseCommitsAnUpdateAndReadsItsOwnWrite()
     {
         VeritasEngine database = await VeritasEngine
-            .OpenMutableAsync([], TestContext.CancellationToken)
+            .OpenMutableAsync([], cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
         await using var scope = database.ConfigureAwait(false);
 
@@ -101,7 +102,7 @@ internal sealed class VeritasEngineTests
             .ConfigureAwait(false);
 
         bool isDog = await database
-            .AskAsync($"ASK {{ <{Ex}rex> <{RdfType}> <{Ex}Dog> }}", TestContext.CancellationToken)
+            .AskAsync($"ASK {{ <{Ex}rex> <{RdfType}> <{Ex}Dog> }}", cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
         Assert.IsTrue(isDog, "A query sees the update's committed triple (read-your-writes).");
 
@@ -110,7 +111,7 @@ internal sealed class VeritasEngineTests
             .ConfigureAwait(false);
 
         bool stillDog = await database
-            .AskAsync($"ASK {{ <{Ex}rex> <{RdfType}> <{Ex}Dog> }}", TestContext.CancellationToken)
+            .AskAsync($"ASK {{ <{Ex}rex> <{RdfType}> <{Ex}Dog> }}", cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
         Assert.IsFalse(stillDog, "A query sees the delete's effect.");
     }
@@ -140,7 +141,7 @@ internal sealed class VeritasEngineTests
         await using var scope = database.ConfigureAwait(false);
 
         ValidationReport report = await database
-            .ValidateAsync(EveryPersonHasAName(), TestContext.CancellationToken)
+            .ValidateAsync(EveryPersonHasAName(), cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
 
         Assert.IsTrue(report.Conforms, "alice has a name, so the data conforms.");
@@ -156,12 +157,50 @@ internal sealed class VeritasEngineTests
         await using var scope = database.ConfigureAwait(false);
 
         ValidationReport report = await database
-            .ValidateAsync(EveryPersonHasAName(), TestContext.CancellationToken)
+            .ValidateAsync(EveryPersonHasAName(), cancellationToken: TestContext.CancellationToken)
             .ConfigureAwait(false);
 
         Assert.IsFalse(report.Conforms, "bob has no name, so the data violates the shape.");
         Assert.IsNotEmpty(report.Results, "The non-conformance is reported as a result.");
     }
+
+    /// <summary>A federated <c>LOAD</c> through the facade resolves via the configured graph-source seam and forwards the caller's opaque <see cref="AccessContext"/> to it — the engine owns federation, and authorization is a protocol-agnostic context the seam carries.</summary>
+    [TestMethod]
+    public async Task FederatedLoadThroughTheFacadeResolvesAndForwardsTheAccessContext()
+    {
+        AccessContext? captured = null;
+        bool fetched = false;
+        GraphSourceResolver resolver = (source, accessContext, cancellationToken) =>
+        {
+            fetched = true;
+            captured = accessContext;
+            IReadOnlyList<DataTriple> document = [new DataTriple(Iri(Ex + "x"), Iri(Ex + "p"), Iri(Ex + "y"))];
+
+            return new ValueTask<IReadOnlyList<DataTriple>>(document);
+        };
+        TestAccessContext context = new("alice");
+
+        VeritasEngine database = await VeritasEngine
+            .OpenMutableAsync([], VeritasEngineOptions.Default with { GraphSource = resolver }, cancellationToken: TestContext.CancellationToken)
+            .ConfigureAwait(false);
+        await using var scope = database.ConfigureAwait(false);
+
+        await database
+            .UpdateAsync($"LOAD <{Ex}doc>", accessContext: context, cancellationToken: TestContext.CancellationToken)
+            .ConfigureAwait(false);
+
+        Assert.IsTrue(fetched, "The LOAD reached the configured graph-source resolver through the facade.");
+        Assert.AreSame(context, captured, "The caller's opaque AccessContext is forwarded to the resolver unchanged.");
+
+        bool loaded = await database
+            .AskAsync($"ASK {{ <{Ex}x> <{Ex}p> <{Ex}y> }}", cancellationToken: TestContext.CancellationToken)
+            .ConfigureAwait(false);
+        Assert.IsTrue(loaded, "The resolved document's triple is committed and queryable.");
+    }
+
+    /// <summary>A concrete access context carrying just a caller name, for the federation tests; the engine treats it as opaque.</summary>
+    /// <param name="Who">The caller identity the test threads through.</param>
+    private sealed record TestAccessContext(string Who) : AccessContext;
 
     /// <summary>The SHACL property shape: every Person must have at least one name.</summary>
     /// <returns>The shapes triples.</returns>
