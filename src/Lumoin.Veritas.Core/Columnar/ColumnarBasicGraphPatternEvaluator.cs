@@ -605,30 +605,26 @@ public sealed class ColumnarBasicGraphPatternEvaluator
             EncodedTriple candidate = EncodedTriple.FromEncoded(pattern.Subject.BoundTerm.Encoded, pattern.Predicate.BoundTerm.Encoded, pattern.Object.BoundTerm.Encoded);
             AccessDecision decision = await accessControl!(new AccessRequest(candidate, accessContext!), cancellationToken).ConfigureAwait(false);
 
-            switch(decision)
+            //A denial is audited; NotFound is silent by design. Both hide the triple, failing the membership.
+            if(decision is AccessDecision.Deny)
             {
-                case AccessDecision.Allow:
-                {
-                    continue;
-                }
-                case AccessDecision.Deny:
-                {
-                    EmitAccessDenied(candidate);
+                EmitAccessDenied(candidate);
+            }
 
-                    return false;
-                }
-                case AccessDecision.NotFound:
-                {
-                    return false;
-                }
-                default:
-                {
-                    throw new InvalidOperationException($"Unknown access decision: {decision}.");
-                }
+            if(!Visible(decision))
+            {
+                return false;
             }
         }
 
         return true;
+
+        static bool Visible(AccessDecision decision) => decision switch
+        {
+            AccessDecision.Allow => true,
+            AccessDecision.Deny or AccessDecision.NotFound => false,
+            _ => throw new InvalidOperationException($"Unknown access decision: {decision}."),
+        };
     }
 
     //Consults the access-control policy on each variable-bearing
