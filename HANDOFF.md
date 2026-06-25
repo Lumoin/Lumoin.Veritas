@@ -41,6 +41,12 @@ durable persistence + integrity + execution tiers have since SHIPPED to `main`.*
   the live feed, else re-derive); merge the replication/governance arc to main and wire governance into the
   engine/CLI composition root; then the remaining persistence "designed" items above (engine-default durable
   wiring, columnar-sidecar warm-start hot-load, live scrub scheduler, container/Parquet formats).
+- **Formal verification:** `spec/CommitPublishFeed.tla` model-checks the commit/publish/feed safety invariant
+  (the StateLock fix) with TLC — fixed model verified, buggy model yields a counterexample; it is
+  cross-referenced both ways with `DatasetEditSession.CommitAsync` / `MutableSparqlDataset.Publish`, and
+  `spec/commit_publish_feed_check.py` is a Java-free Python cross-check. To run TLC: install a JDK and download
+  `tla2tools.jar` (gitignored), then from `spec/` run
+  `java -cp tla2tools.jar tlc2.TLC -config CommitPublishFeed_Fixed.cfg CommitPublishFeed.tla`.
 
 ---
 
