@@ -17,7 +17,7 @@ namespace Lumoin.Veritas.Owl.Manchester;
 /// token or an unbalanced group at the end of the document — is an error.
 /// Editors feeding a document as it is typed drive the incremental reader
 /// directly, where an unfinished tail is a
-/// <see cref="OwlManchesterParseStatus.NeedMore"/> status instead.
+/// <see cref="Lumoin.Veritas.Core.Parsing.IncrementalParseStatus.NeedMore"/> status instead.
 /// </para>
 /// <para>
 /// The reader is value-based: malformedness is recorded in the document's

@@ -17,7 +17,7 @@ namespace Lumoin.Veritas.Owl.Xml;
 /// unclosed element at the end of the document — is handled at completion.
 /// Editors feeding a document as it is typed drive the incremental reader
 /// directly, where an unfinished tail is a
-/// <see cref="OwlXmlParseStatus.NeedMore"/> status instead.
+/// <see cref="Lumoin.Veritas.Core.Parsing.IncrementalParseStatus.NeedMore"/> status instead.
 /// </para>
 /// <para>
 /// The reader is value-based: malformedness is recorded in the document's

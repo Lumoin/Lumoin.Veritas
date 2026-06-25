@@ -1,3 +1,4 @@
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Owl.Functional;
 using Lumoin.Veritas.Owl.Structural;
 using Lumoin.Veritas.ParserTests.Conformance;
@@ -8,7 +9,7 @@ namespace Lumoin.Veritas.ParserTests.Owl;
 /// Verifies the functional-syntax reader's editor contract: input fed
 /// incrementally produces the same document as the whole-buffer read at every
 /// chunk boundary, an unfinished tail is a
-/// <see cref="OwlFunctionalParseStatus.NeedMore"/> status and never a
+/// <see cref="IncrementalParseStatus.NeedMore"/> status and never a
 /// diagnostic, and only <see cref="OwlFunctionalSyntaxIncrementalReader.Complete"/>
 /// turns truncation into an error.
 /// </summary>
@@ -66,23 +67,23 @@ internal sealed class OwlFunctionalSyntaxIncrementalTests
         for(int cut = ontologyOpen; cut < lastClose; cut++)
         {
             OwlFunctionalSyntaxIncrementalReader reader = new();
-            Assert.AreEqual(OwlFunctionalParseStatus.NeedMore, reader.Feed(bytes.AsSpan(0, cut)), $"cut {cut}");
+            Assert.AreEqual(IncrementalParseStatus.NeedMore, reader.Feed(bytes.AsSpan(0, cut)), $"cut {cut}");
         }
 
         OwlFunctionalSyntaxIncrementalReader full = new();
-        Assert.AreEqual(OwlFunctionalParseStatus.Complete, full.Feed(bytes));
+        Assert.AreEqual(IncrementalParseStatus.Complete, full.Feed(bytes));
     }
 
     [TestMethod]
     public void TrailingWhitespaceAndCommentsKeepTheBoundaryStatus()
     {
         OwlFunctionalSyntaxIncrementalReader reader = new();
-        Assert.AreEqual(OwlFunctionalParseStatus.Complete, reader.Feed(System.Text.Encoding.UTF8.GetBytes(CleanDocument + "\n  \n")));
+        Assert.AreEqual(IncrementalParseStatus.Complete, reader.Feed(System.Text.Encoding.UTF8.GetBytes(CleanDocument + "\n  \n")));
 
         //A comment whose newline has not arrived may still be growing, so it
         //suspends; its newline restores the boundary.
-        Assert.AreEqual(OwlFunctionalParseStatus.NeedMore, reader.Feed("# trailing"u8));
-        Assert.AreEqual(OwlFunctionalParseStatus.Complete, reader.Feed("\n"u8));
+        Assert.AreEqual(IncrementalParseStatus.NeedMore, reader.Feed("# trailing"u8));
+        Assert.AreEqual(IncrementalParseStatus.Complete, reader.Feed("\n"u8));
 
         OwlOntologyDocument document = reader.Complete();
         Assert.IsFalse(document.Diagnostics.HasErrors);
@@ -99,7 +100,7 @@ internal sealed class OwlFunctionalSyntaxIncrementalTests
             """;
 
         OwlFunctionalSyntaxIncrementalReader reader = new();
-        Assert.AreEqual(OwlFunctionalParseStatus.NeedMore, reader.Feed(System.Text.Encoding.UTF8.GetBytes(Truncated)));
+        Assert.AreEqual(IncrementalParseStatus.NeedMore, reader.Feed(System.Text.Encoding.UTF8.GetBytes(Truncated)));
         Assert.IsFalse(reader.Diagnostics.HasErrors, "incompleteness squiggled before Complete");
 
         OwlOntologyDocument document = reader.Complete();
@@ -129,7 +130,7 @@ internal sealed class OwlFunctionalSyntaxIncrementalTests
         {
             OwlFunctionalSyntaxIncrementalReader reader = new();
 
-            Assert.AreEqual(OwlFunctionalParseStatus.NeedMore, reader.Feed(System.Text.Encoding.UTF8.GetBytes(tail)), tail);
+            Assert.AreEqual(IncrementalParseStatus.NeedMore, reader.Feed(System.Text.Encoding.UTF8.GetBytes(tail)), tail);
             Assert.IsFalse(reader.Diagnostics.HasErrors, $"'{tail}' squiggled a merely-unfinished tail");
         }
     }
@@ -143,7 +144,7 @@ internal sealed class OwlFunctionalSyntaxIncrementalTests
         reader.Feed("Ontology( <http://example.org/o> % "u8);
 
         Assert.IsTrue(reader.Diagnostics.HasErrors);
-        Assert.AreEqual(OwlFunctionalParseStatus.NeedMore, reader.Status);
+        Assert.AreEqual(IncrementalParseStatus.NeedMore, reader.Status);
     }
 
     [TestMethod]

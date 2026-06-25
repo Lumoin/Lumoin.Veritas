@@ -43,6 +43,7 @@ public sealed class TurtleParser
 
     private readonly Stack<ParseFrame> frames = new();
     private readonly bool incremental;
+    private readonly bool retainAst;
     private object? completed;
     private bool tokensComplete;
     private int index;
@@ -88,12 +89,14 @@ public sealed class TurtleParser
     /// <param name="syntax">The syntax flavour to accept.</param>
     /// <param name="blankNodes">Allocates labels for anonymous <c>[]</c> blank nodes; defaults to <see cref="VeritasBlankNodes.System"/>.</param>
     /// <param name="diagnostics">The bag recovery records diagnostics into; a private bag is created when <see langword="null"/>. Pass a shared bag to merge lexer-bridged and parser diagnostics.</param>
+    /// <param name="retainAst">When <see langword="false"/> (the quad-streaming default), consumed tokens and their nodes are released at each statement boundary so peak memory tracks a single statement. When <see langword="true"/>, they are retained so the whole document and its node table accumulate for a final <see cref="Parse"/> — the editor-incremental AST reader's mode, equivalent to the whole-buffer parse fed incrementally.</param>
     /// <remarks>
     /// The parser suspends — preserving its work stack — when a statement needs tokens that have not
-    /// arrived yet, and resumes when more are fed, so neither the token buffer nor the parse state
-    /// grows with the document. Consumed tokens are trimmed at each statement boundary.
+    /// arrived yet, and resumes when more are fed. With <paramref name="retainAst"/> <see langword="false"/>,
+    /// consumed tokens are trimmed at each statement boundary so neither the token buffer nor the parse
+    /// state grows with the document; with it <see langword="true"/>, both accumulate for the full AST.
     /// </remarks>
-    internal TurtleParser(Utf8StringPool pool, DocumentId documentId, TurtleSyntax syntax, BlankNodeDelegate? blankNodes = null, DiagnosticBag? diagnostics = null)
+    internal TurtleParser(Utf8StringPool pool, DocumentId documentId, TurtleSyntax syntax, BlankNodeDelegate? blankNodes = null, DiagnosticBag? diagnostics = null, bool retainAst = false)
     {
         ArgumentNullException.ThrowIfNull(pool);
 
@@ -104,6 +107,7 @@ public sealed class TurtleParser
         this.blankNodes = blankNodes ?? VeritasBlankNodes.System;
         Diagnostics = diagnostics ?? new DiagnosticBag();
         incremental = true;
+        this.retainAst = retainAst;
     }
 
     /// <summary>Gets the materialised token stream the parser indexes into.</summary>
@@ -227,8 +231,9 @@ public sealed class TurtleParser
             //Between statements every consumed token and every node is unreferenced by a streaming
             //consumer — the returned statement holds its own nodes directly, not through the table —
             //so both are released here. Peak memory stays near a single statement and the node id never
-            //grows without bound across a long document. The materialised path keeps both for the AST.
-            if(incremental)
+            //grows without bound across a long document. The materialised path and the AST-retaining
+            //incremental reader keep both for the document's node table.
+            if(incremental && !retainAst)
             {
                 if(index > 0)
                 {

@@ -284,6 +284,25 @@ public sealed class TurtleLexer
         }
     }
 
+    /// <summary>
+    /// Lexes one chunk for the synchronous incremental reader, reusing the resumable drain core the pipe path
+    /// drives. The caller passes the unconsumed tail from the previous chunk followed by the new source bytes and
+    /// re-presents the bytes past <paramref name="consumedBytes"/> with the next chunk, so a token that straddles a
+    /// chunk boundary re-lexes whole when more bytes arrive.
+    /// </summary>
+    /// <param name="buffer">The unconsumed tail followed by the new source bytes.</param>
+    /// <param name="isFinal">Whether no more bytes will follow, so a trailing construct closes and the end-of-input token is emitted.</param>
+    /// <param name="consumedBytes">The number of leading bytes of <paramref name="buffer"/> that completed into tokens; the rest must be re-presented next call.</param>
+    /// <returns>The tokens completed within this chunk, in source order; valid until the next call.</returns>
+    internal IReadOnlyList<TurtleToken> FeedChunk(ReadOnlySequence<byte> buffer, bool isFinal, out long consumedBytes)
+    {
+        atFinalBuffer = isFinal;
+        DrainResult drained = DrainBuffer(buffer);
+        consumedBytes = buffer.GetOffset(drained.Consumed);
+
+        return pendingTokens;
+    }
+
     private LexStatus TryLexToken(ref SequenceReader<byte> reader, out TurtleToken token)
     {
         token = default;

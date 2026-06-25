@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Parsing;
+using Lumoin.Veritas.Core.Xml;
 using Lumoin.Veritas.Sparql.Ast;
 using Lumoin.Veritas.Sparql.Execution;
 using Lumoin.Veritas.Sparql.Results;
@@ -102,6 +103,85 @@ public static class SparqlResultsXmlReader
         stream.CopyTo(buffer);
 
         return Read(new ReadOnlyMemory<byte>(buffer.GetBuffer(), 0, (int)buffer.Length));
+    }
+
+    /// <summary>
+    /// Reads a result set from the in-memory XML bytes by forward-streaming it: each <c>&lt;result&gt;</c> row is read
+    /// and discarded as it completes, so the live element tree never exceeds one row (plus the small retained
+    /// <c>&lt;head&gt;</c>). It produces the same result set the buffered <see cref="Read(ReadOnlyMemory{byte})"/> does.
+    /// </summary>
+    /// <param name="bytes">The <c>.srx</c> document bytes.</param>
+    /// <returns>The parsed result set.</returns>
+    /// <exception cref="FormatException">The document is not well-formed SPARQL Results XML.</exception>
+    /// <exception cref="TripleTermDepthLimitException">A <c>triple</c> binding value is nested beyond <see cref="QuotedTripleLimits.MaxNestingDepth"/>.</exception>
+    public static SparqlResultSet ReadStreaming(ReadOnlyMemory<byte> bytes)
+    {
+        XmlByteScanner scanner = new(XmlScanStrictness.Strict, parseInternalDtd: false, streaming: true);
+        StreamingResults streamed = new();
+        XmlByteNode root = XmlByteReader.StreamContainer(scanner, bytes, IsResultsContainer, onContainerMatched: null, streamed.OnResult);
+        if(!root.Matches("sparql"u8, ResultsNamespace))
+        {
+            throw new FormatException("Expected a <sparql> root in the SPARQL-results namespace.");
+        }
+
+        List<Utf8String> variables = ReadHeadVariables(root);
+
+        XmlByteNode? boolean = root.Element("boolean"u8, ResultsNamespace);
+        if(boolean is not null)
+        {
+            return SparqlResultSet.ForAsk(ParseBoolean(boolean.Text));
+        }
+
+        //The <results> element is retained (only its <result> children stream and detach), so its absence still
+        //distinguishes a SELECT document missing its body from a present-but-empty result set.
+        if(root.Element("results"u8, ResultsNamespace) is null)
+        {
+            throw new FormatException("SPARQL SELECT results XML is missing its <results> element.");
+        }
+
+        return SparqlResultSet.ForSelect(variables, streamed.Solutions);
+    }
+
+    /// <summary>Reads a result set from an XML stream by draining it to bytes and forward-streaming them.</summary>
+    /// <param name="stream">The stream over the <c>.srx</c> document.</param>
+    /// <returns>The parsed result set.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="stream"/> is <see langword="null"/>.</exception>
+    /// <exception cref="FormatException">The document is not well-formed SPARQL Results XML.</exception>
+    /// <exception cref="TripleTermDepthLimitException">A <c>triple</c> binding value is nested beyond <see cref="QuotedTripleLimits.MaxNestingDepth"/>.</exception>
+    public static SparqlResultSet ReadStreaming(Stream stream)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+
+        using MemoryStream buffer = new();
+        stream.CopyTo(buffer);
+
+        return ReadStreaming(new ReadOnlyMemory<byte>(buffer.GetBuffer(), 0, (int)buffer.Length));
+    }
+
+    /// <summary>The streaming container predicate: the <c>&lt;results&gt;</c> element directly under the root (depth 1), whose <c>&lt;result&gt;</c> children stream.</summary>
+    /// <param name="node">The candidate container element.</param>
+    /// <param name="depth">The element's zero-based depth.</param>
+    /// <returns><see langword="true"/> when the element is the depth-1 <c>&lt;results&gt;</c> element.</returns>
+    private static bool IsResultsContainer(XmlByteNode node, int depth)
+    {
+        return depth == 1 && node.Matches("results"u8, ResultsNamespace);
+    }
+
+    /// <summary>Accumulates the solution rows a forward stream yields, one completed <c>&lt;result&gt;</c> subtree at a time.</summary>
+    private sealed class StreamingResults
+    {
+        /// <summary>The solution rows read so far, in document order.</summary>
+        public List<SparqlSolution> Solutions { get; } = [];
+
+        /// <summary>Reads one completed direct child of <c>&lt;results&gt;</c> into a solution; a non-<c>result</c> child is skipped, mirroring the buffered read.</summary>
+        /// <param name="result">The completed direct child of <c>&lt;results&gt;</c>.</param>
+        public void OnResult(XmlByteNode result)
+        {
+            if(result.Matches("result"u8, ResultsNamespace))
+            {
+                Solutions.Add(ReadSolution(result));
+            }
+        }
     }
 
     /// <summary>Reads the head's declared variables in document order.</summary>

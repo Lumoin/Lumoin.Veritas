@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Lumoin.Veritas.Core;
+using Lumoin.Veritas.Core.Sourcing;
 
 namespace Lumoin.Veritas.Xml;
 
@@ -9,6 +10,11 @@ namespace Lumoin.Veritas.Xml;
 /// <param name="NamespaceIri">The attribute's namespace IRI, or an empty value for an unprefixed attribute (which is in no namespace).</param>
 /// <param name="Value">The attribute value with XML references resolved.</param>
 public readonly record struct XmlByteAttribute(Utf8String LocalName, Utf8String NamespaceIri, Utf8String Value);
+
+/// <summary>One namespace binding in scope at an <see cref="XmlByteNode"/>: a prefix and the namespace IRI it is bound to.</summary>
+/// <param name="Prefix">The prefix, or an empty value for the default-namespace binding.</param>
+/// <param name="NamespaceIri">The namespace IRI the prefix is bound to.</param>
+public readonly record struct XmlNamespaceBinding(Utf8String Prefix, Utf8String NamespaceIri);
 
 /// <summary>
 /// One element of the tree an <see cref="XmlByteReader"/> builds: its namespace-resolved name, its attributes, its
@@ -31,6 +37,50 @@ public sealed class XmlByteNode
 
     /// <summary>The element's directly-contained character data with references resolved; empty for an element that carries only children.</summary>
     public Utf8String Text { get; set; }
+
+    /// <summary>The immutable upward chain of namespace declarations enclosing this element; <see langword="null"/> when no ancestor (or this element) declares a namespace. The flattened in-scope list is materialized from it lazily by <see cref="InScopeNamespaces"/>.</summary>
+    internal XmlNamespaceScope? Scope { get; init; }
+
+    /// <summary>The flattened in-scope list, materialized from <see cref="Scope"/> on first read and cached.</summary>
+    private IReadOnlyList<XmlNamespaceBinding>? MaterializedScope { get; set; }
+
+    /// <summary>
+    /// The namespace bindings in scope at this element — the inherited bindings extended with this element's own
+    /// declarations — in document declaration order (outermost first, the nearest declaration of a prefix supplying its
+    /// IRI). Empty for an element under no namespace declarations. Used to hoist the in-scope namespaces onto a detached
+    /// <c>rdf:parseType="Literal"</c> fragment, the one place canonicalization needs the prefixes the reader otherwise
+    /// resolves away. Materialized lazily from <see cref="Scope"/> (the reader folds no in-scope list for the
+    /// overwhelming majority of elements, which are never literals), then cached for re-reads.
+    /// </summary>
+    public IReadOnlyList<XmlNamespaceBinding> InScopeNamespaces
+    {
+        get
+        {
+            MaterializedScope ??= Scope is { } scope ? scope.Materialize() : EmptyBindings;
+
+            return MaterializedScope;
+        }
+    }
+
+    /// <summary>The shared empty in-scope binding list for an element under no namespace declarations (never mutated).</summary>
+    private static IReadOnlyList<XmlNamespaceBinding> EmptyBindings { get; } = [];
+
+    /// <summary>
+    /// The source span covering this element — from its start tag's <c>&lt;</c> through just past its end tag's
+    /// <c>&gt;</c>, or the single tag of an empty element. <see cref="SourceSpan.None"/> on the synthetic document
+    /// root (which a consumer never sees); on every element the reader returns, the span locates that element.
+    /// </summary>
+    public SourceSpan Span { get; internal set; }
+
+    /// <summary>The byte offset of this element's start tag's <c>&lt;</c>; the reader pairs it with the end-tag offset to fix <see cref="Span"/> when the element closes.</summary>
+    internal int SpanStart { get; init; }
+
+    /// <summary>The start offset of this element's verbatim inner content (just past the start tag's <c>&gt;</c>) in the source bytes; <c>0</c> for an empty element.</summary>
+    /// <remarks>Paired with <see cref="ContentEnd"/> to recover the raw, undecoded inner markup an XML literal canonicalizes; meaningful only against the same buffer the reader parsed.</remarks>
+    internal int ContentStart { get; init; }
+
+    /// <summary>The end offset of this element's verbatim inner content (the <c>&lt;</c> of the end tag) in the source bytes; <c>0</c> for an empty element.</summary>
+    internal int ContentEnd { get; set; }
 
     /// <summary>Whether this element has the given local name and namespace IRI.</summary>
     /// <param name="localName">The local name to match.</param>
@@ -81,5 +131,72 @@ public sealed class XmlByteNode
         }
 
         return null;
+    }
+}
+
+/// <summary>
+/// One frame of an element's immutable, upward namespace-declaration chain: the element's own declarations and a link
+/// to the enclosing frame. An element references the chain rather than a flattened in-scope list, so the reader folds
+/// no list for the overwhelming majority of elements (which are never <c>rdf:parseType="Literal"</c> captures); the
+/// flattened document-order list is materialized on demand by <see cref="XmlByteNode.InScopeNamespaces"/>. The chain is
+/// shared and never mutated, so detaching a streamed subtree leaves every node's chain intact.
+/// </summary>
+internal sealed class XmlNamespaceScope
+{
+    /// <summary>The enclosing scope frame, or <see langword="null"/> at the outermost declaring element.</summary>
+    internal XmlNamespaceScope? Parent { get; init; }
+
+    /// <summary>This element's own namespace declarations, in document declaration order.</summary>
+    internal IReadOnlyList<XmlNamespaceBinding> Local { get; init; } = [];
+
+    /// <summary>
+    /// Materializes the in-scope bindings in document declaration order by replaying the chain outermost-first — the
+    /// same left fold the reader once built eagerly: a redeclared prefix keeps its outermost position with the nearest
+    /// (innermost) IRI, a new prefix appends.
+    /// </summary>
+    /// <returns>The in-scope bindings in document declaration order.</returns>
+    internal IReadOnlyList<XmlNamespaceBinding> Materialize()
+    {
+        Stack<IReadOnlyList<XmlNamespaceBinding>> frames = new();
+        for(XmlNamespaceScope? frame = this; frame is not null; frame = frame.Parent)
+        {
+            frames.Push(frame.Local);
+        }
+
+        List<XmlNamespaceBinding> merged = [];
+        while(frames.Count > 0)
+        {
+            foreach(XmlNamespaceBinding binding in frames.Pop())
+            {
+                int index = IndexOfPrefix(merged, binding.Prefix.Span);
+                if(index >= 0)
+                {
+                    merged[index] = binding;
+                }
+                else
+                {
+                    merged.Add(binding);
+                }
+            }
+        }
+
+        return merged;
+    }
+
+    /// <summary>The index of the binding with a given prefix, or <c>-1</c>.</summary>
+    /// <param name="bindings">The bindings to search.</param>
+    /// <param name="prefix">The prefix to find.</param>
+    /// <returns>The index, or <c>-1</c>.</returns>
+    private static int IndexOfPrefix(List<XmlNamespaceBinding> bindings, ReadOnlySpan<byte> prefix)
+    {
+        for(int i = 0; i < bindings.Count; i++)
+        {
+            if(bindings[i].Prefix.Span.SequenceEqual(prefix))
+            {
+                return i;
+            }
+        }
+
+        return -1;
     }
 }

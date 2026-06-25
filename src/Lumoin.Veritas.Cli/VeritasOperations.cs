@@ -7,9 +7,12 @@ using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
 using Lumoin.Veritas.Database;
 using Lumoin.Veritas.NQuads;
+using Lumoin.Veritas.Owl.Structural;
+using Lumoin.Veritas.Owl.Xml;
 using Lumoin.Veritas.Sparql.Execution;
 using Lumoin.Veritas.Sparql.Results;
 using Lumoin.Veritas.Turtle;
+using Lumoin.Veritas.Xml;
 using IoPath = System.IO.Path;
 
 namespace Lumoin.Veritas.Cli;
@@ -24,7 +27,7 @@ namespace Lumoin.Veritas.Cli;
 internal static class VeritasOperations
 {
     /// <summary>Opens a Veritas database over the RDF documents at <paramref name="dataPaths"/> (default graph plus any named graphs the files carry), with the database's fully-wired default configuration.</summary>
-    /// <param name="dataPaths">The data document paths (<c>.ttl</c>/<c>.nt</c>/<c>.trig</c>/<c>.nq</c>).</param>
+    /// <param name="dataPaths">The data document paths (<c>.ttl</c>/<c>.nt</c>/<c>.trig</c>/<c>.nq</c>/<c>.rdf</c>/<c>.owl</c>).</param>
     /// <param name="cancellationToken">A token that aborts loading and opening.</param>
     /// <returns>The opened database, or an error message describing the first document that could not be read.</returns>
     public static async Task<(VeritasEngine? Database, string? Error)> OpenDatabaseAsync(
@@ -87,7 +90,7 @@ internal static class VeritasOperations
     /// <param name="format">The delimited output format.</param>
     /// <param name="cancellationToken">A token that aborts evaluation.</param>
     /// <returns>The rendered results, or an error message for a malformed or not-yet-renderable query.</returns>
-    public static async Task<OperationResult> ExecuteQueryAsync(
+    public static Task<OperationResult> ExecuteQueryAsync(
         VeritasEngine database,
         string queryText,
         string baseIri,
@@ -97,10 +100,29 @@ internal static class VeritasOperations
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(queryText);
 
+        return ExecuteQueryAsync(database, Utf8String.FromString(queryText).Memory, baseIri, format, cancellationToken);
+    }
+
+    /// <summary>Executes a SPARQL <c>SELECT</c>/<c>ASK</c> query given as UTF-8 bytes — the byte-native entry the HTTP endpoint routes an <c>application/sparql-query</c> POST body to, with no string round-trip — and renders the result.</summary>
+    /// <param name="database">The database opened by <see cref="OpenDatabaseAsync"/>.</param>
+    /// <param name="queryText">The query as UTF-8 bytes.</param>
+    /// <param name="baseIri">The base IRI relative references resolve against (the request base).</param>
+    /// <param name="format">The delimited output format.</param>
+    /// <param name="cancellationToken">A token that aborts evaluation.</param>
+    /// <returns>The rendered results, or an error message for a malformed or not-yet-renderable query.</returns>
+    public static async Task<OperationResult> ExecuteQueryAsync(
+        VeritasEngine database,
+        ReadOnlyMemory<byte> queryText,
+        string baseIri,
+        SparqlDelimitedResultsFormat format,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(database);
+
         VeritasQueryResult result;
         try
         {
-            result = await database.QueryAsync(Utf8String.FromString(queryText), Utf8String.FromString(baseIri), cancellationToken: cancellationToken).ConfigureAwait(false);
+            result = await database.QueryAsync(Utf8String.WithoutPrecomputedHash(queryText), Utf8String.FromString(baseIri), cancellationToken: cancellationToken).ConfigureAwait(false);
         }
         catch(ArgumentException ex)
         {
@@ -171,7 +193,7 @@ internal static class VeritasOperations
         return await ExecuteQueryAsync(database!, queryText, baseIri, format, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>Reads a document's quads, dispatching on the file extension; Turtle/N-Triples/TriG via the Turtle reader, N-Quads via the N-Quads reader.</summary>
+    /// <summary>Reads a document's quads, dispatching on the file extension; Turtle/N-Triples/TriG via the Turtle reader, N-Quads via the N-Quads reader, RDF/XML via the byte-native RDF/XML reader, and OWL/XML via the OWL/XML reader mapped to RDF.</summary>
     /// <param name="path">The document path.</param>
     /// <param name="cancellationToken">A token that aborts reading.</param>
     /// <returns>The quads, or an error message for an unreadable format or malformed document.</returns>
@@ -208,7 +230,27 @@ internal static class VeritasOperations
                 : (quads, null);
         }
 
-        return (null, $"Unsupported data format '{extension}' for '{path}'; supported: .ttl, .nt, .trig, .nq.");
+        if(string.Equals(extension, ".rdf", StringComparison.OrdinalIgnoreCase))
+        {
+            string baseIri = new Uri(IoPath.GetFullPath(path)).AbsoluteUri;
+            DiagnosticBag diagnostics = new();
+            IReadOnlyList<Quad> rdfQuads = RdfXmlReader.Read(bytes, diagnostics, baseIri);
+
+            return diagnostics.HasErrors
+                ? (null, $"Document '{path}' did not parse: {DescribeFirstError(diagnostics.Diagnostics)}")
+                : (rdfQuads, null);
+        }
+
+        if(string.Equals(extension, ".owl", StringComparison.OrdinalIgnoreCase))
+        {
+            OwlOntologyDocument document = OwlXmlSyntaxReader.Read(bytes);
+
+            return document.Diagnostics.HasErrors
+                ? (null, $"Document '{path}' did not parse: {DescribeFirstError(document.Diagnostics.Diagnostics)}")
+                : (OwlStructuralToRdf.ToQuads(document), null);
+        }
+
+        return (null, $"Unsupported data format '{extension}' for '{path}'; supported: .ttl, .nt, .trig, .nq, .rdf, .owl.");
     }
 
     /// <summary>Renders the first error diagnostic (code and message) for an operation-result error string.</summary>

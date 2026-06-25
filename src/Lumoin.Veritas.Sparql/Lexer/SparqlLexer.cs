@@ -263,6 +263,12 @@ public sealed class SparqlLexer
 
     private SparqlLexStatus LexNextDecodedToken(ReadOnlySequence<byte> decodedSource, out SparqlToken token)
     {
+        //The line/column fields track the source position the decoder's map resolves as the reader advances; a
+        //partial attempt advances them, so they are captured here and restored on NeedMore alongside the held offset,
+        //keeping the re-lexed token's start position correct (a one-byte-at-a-time feed otherwise mis-columns it).
+        int suspendedLine = line;
+        int suspendedColumn = column;
+
         SequenceReader<byte> reader = new(decodedSource);
         reader.Advance(consumed);
 
@@ -271,7 +277,10 @@ public sealed class SparqlLexer
         if(status == SparqlLexStatus.NeedMore)
         {
             //Leave the running offset where it was so the partial token is re-lexed once more decoded
-            //bytes arrive.
+            //bytes arrive, and rewind line/column so the re-lex captures the same start position.
+            line = suspendedLine;
+            column = suspendedColumn;
+
             return status;
         }
 
@@ -291,13 +300,49 @@ public sealed class SparqlLexer
             ? Decoder.Feed(buffer.FirstSpan, isFinal)
             : Decoder.Feed(buffer.ToArray(), isFinal);
 
+        CopyNewDecoderDiagnostics();
+
+        return sourceConsumed;
+    }
+
+    /// <summary>Copies any decoder diagnostics produced since the last feed into the lexer's diagnostic list, in source order.</summary>
+    private void CopyNewDecoderDiagnostics()
+    {
         while(decoderDiagnosticsCopied < Decoder.Diagnostics.Count)
         {
             diagnostics.Add(Decoder.Diagnostics[decoderDiagnosticsCopied]);
             decoderDiagnosticsCopied++;
         }
+    }
+
+    /// <summary>
+    /// Codepoint-decodes a chunk of source bytes for the synchronous incremental path, marking whether it is the final
+    /// chunk, and returns the source bytes consumed — an unconsumed tail is a partial escape the caller re-presents
+    /// (prepended to the next chunk) when more bytes arrive.
+    /// </summary>
+    /// <param name="source">The source bytes to decode (a re-presented partial-escape tail plus the new chunk).</param>
+    /// <param name="isFinal">Whether this is the final chunk; when <see langword="true"/> a token may complete at end of input.</param>
+    /// <returns>The number of source bytes the decoder consumed.</returns>
+    internal int FeedDecodedSource(ReadOnlySpan<byte> source, bool isFinal)
+    {
+        atFinalBuffer = isFinal;
+
+        int sourceConsumed = Decoder.Feed(source, isFinal);
+        CopyNewDecoderDiagnostics();
 
         return sourceConsumed;
+    }
+
+    /// <summary>
+    /// Lexes the next token from the bytes decoded so far, for the synchronous incremental path. Returns
+    /// <see cref="SparqlLexStatus.NeedMore"/> when the decoded tail ends mid-token (the running offset is held so the
+    /// token re-lexes once more bytes arrive), mirroring <see cref="TokenizeInternalAsync"/>'s inner pump.
+    /// </summary>
+    /// <param name="token">The lexed token (an <see cref="SparqlTokenKind.Error"/> token after recovery); undefined when the result is <see cref="SparqlLexStatus.NeedMore"/>.</param>
+    /// <returns>The lex status.</returns>
+    internal SparqlLexStatus TryLexNext(out SparqlToken token)
+    {
+        return LexNextDecodedToken(new ReadOnlySequence<byte>(Decoder.Decoded), out token);
     }
 
     private SparqlLexStatus TryLexToken(ref SequenceReader<byte> reader, out SparqlToken token)

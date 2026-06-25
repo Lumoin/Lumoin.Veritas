@@ -2,9 +2,9 @@ using System;
 using System.Collections.Generic;
 using Lumoin.Veritas.Core;
 using Lumoin.Veritas.Core.Diagnostics;
+using Lumoin.Veritas.Core.Parsing;
 using Lumoin.Veritas.Core.Sourcing;
 using Lumoin.Veritas.Owl.Structural;
-using Lumoin.Veritas.Owl.Syntax;
 
 namespace Lumoin.Veritas.Owl.Manchester;
 
@@ -17,8 +17,8 @@ namespace Lumoin.Veritas.Owl.Manchester;
 /// The reader implements the project's editor contract: after each
 /// <see cref="Feed"/> the <see cref="Status"/> reports whether the input so
 /// far ends where a document may validly end
-/// (<see cref="OwlManchesterParseStatus.Complete"/>) or inside an unfinished
-/// construct (<see cref="OwlManchesterParseStatus.NeedMore"/>) — a suspended
+/// (<see cref="IncrementalParseStatus.Complete"/>) or inside an unfinished
+/// construct (<see cref="IncrementalParseStatus.NeedMore"/>) — a suspended
 /// token, an open group, or a trailing token that grammatically requires a
 /// continuation, such as a frame or section keyword, a comma, or an infix
 /// operator word. Incompleteness is a status, never a diagnostic. Truncation
@@ -65,7 +65,7 @@ public sealed class OwlManchesterSyntaxIncrementalReader
     private OwlOntologyDocument? Document { get; set; }
 
     /// <summary>Maps byte offsets to line-column source spans.</summary>
-    private OwlByteSourceMap Map { get; } = new();
+    private ByteSourceMap Map { get; } = new();
 
     /// <summary>The bag every lexical, structural, and conversion diagnostic accumulates into.</summary>
     private DiagnosticBag Bag { get; } = new();
@@ -96,10 +96,10 @@ public sealed class OwlManchesterSyntaxIncrementalReader
     /// Gets whether the input fed so far ends where a document may validly
     /// end or inside an unfinished construct.
     /// </summary>
-    public OwlManchesterParseStatus Status =>
+    public IncrementalParseStatus Status =>
         LexSuspended || Open.Count > 1 || TailNeedsContinuation()
-            ? OwlManchesterParseStatus.NeedMore
-            : OwlManchesterParseStatus.Complete;
+            ? IncrementalParseStatus.NeedMore
+            : IncrementalParseStatus.Complete;
 
     /// <summary>
     /// Appends source bytes and lexes as far as the input now permits.
@@ -107,7 +107,7 @@ public sealed class OwlManchesterSyntaxIncrementalReader
     /// <param name="chunk">The next run of document bytes, of any length.</param>
     /// <returns>The <see cref="Status"/> after the chunk is consumed.</returns>
     /// <exception cref="InvalidOperationException"><see cref="Complete"/> has already been called.</exception>
-    public OwlManchesterParseStatus Feed(ReadOnlySpan<byte> chunk)
+    public IncrementalParseStatus Feed(ReadOnlySpan<byte> chunk)
     {
         if(Final)
         {
