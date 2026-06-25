@@ -130,4 +130,23 @@ test.describe('in-browser (WASM) engine', () => {
     expect(rowCount(result)).toBe(4);
     expect(certifiers.length).toBe(4);
   });
+
+  test('live re-queries the editable SPARQL buffer as it is edited (debounced, latest-wins)', async ({ page }) => {
+    await bootEngine(page);
+    const rows = page.locator('[data-testid="results"] tbody tr');
+    const setEditor = (text: string): Promise<void> =>
+      page.evaluate((value) => {
+        const editor = document.querySelector('[data-testid="editor-sparql"]');
+        if (editor !== null) {
+          editor.textContent = value;
+          editor.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }, text);
+
+    await setEditor('PREFIX untp: <https://vocabulary.uncefact.org/untp/> SELECT ?p WHERE { ?p a untp:Product }');
+    await expect.poll(() => rows.count()).toBe(5);
+
+    await setEditor('PREFIX untp: <https://vocabulary.uncefact.org/untp/> SELECT ?p WHERE { ?p a untp:Product ; untp:cottonSpecies ?s }');
+    await expect.poll(() => rows.count()).toBe(1);
+  });
 });

@@ -294,41 +294,86 @@ function runStream(rows: number, ms: number, ops: number, durationMs: number): v
   streamRaf = requestAnimationFrame(step);
 }
 
-/** Runs the active SPARQL against the transport, rendering results or diagnostics; falls back to the sample with no engine. */
-async function runQuery(): Promise<void> {
+/** The query generation; a live re-query renders only if it is still the latest (latest-wins / switch-to-newest). */
+let queryGen = 0;
+
+/** The last query text run, so an unchanged buffer does not re-run (distinct-until-changed). */
+let lastQueryText = '';
+
+/** The debounce handle for the live re-query. */
+let liveQueryTimer = 0;
+
+/**
+ * Runs the active SPARQL against the transport, rendering results or diagnostics; falls back to the sample
+ * with no engine. In live mode (a debounced re-query while editing) a stale result is dropped, a mid-edit
+ * parse error keeps the last good results rather than flashing, and no transient status overwrites them.
+ * @param options.live Whether this is a debounced edit-driven re-query rather than an explicit Run.
+ */
+async function runQuery(options?: { live?: boolean }): Promise<void> {
   const results = byId('results') as unknown as SparqlResultsElement;
   const lang = editorLangOf();
   if (lang === 'shacl') {
-    await runShaclValidation(results);
+    if (!options?.live) {
+      await runShaclValidation(results);
+    }
 
     return;
   }
 
   if (lang !== 'sparql') {
-    results.showMessage('Only SPARQL and SHACL run against the engine in this shell.', 'idle');
+    if (!options?.live) {
+      results.showMessage('Only SPARQL and SHACL run against the engine in this shell.', 'idle');
+    }
 
     return;
   }
 
-  results.showMessage('Running…', 'loading');
+  const query = activeCode();
+  lastQueryText = query;
+  const generation = ++queryGen;
+  if (!options?.live) {
+    results.showMessage('Running…', 'loading');
+  }
+
   byId('plan-chip').textContent = 'plan: …';
   try {
-    const outcome = await transport.runSparql(activeCode());
+    const outcome = await transport.runSparql(query);
+    if (generation !== queryGen) {
+      return;
+    }
+
     if (outcome.ok) {
       results.results = outcome.results;
       const rows = outcome.results.results?.bindings.length ?? 0;
       runStream(rows, STUDIO_DATA.cost.ms, STUDIO_DATA.cost.ops, 700);
       byId('plan-chip').textContent = `plan: ${STUDIO_DATA.cost.plan}`;
+    } else if (options?.live) {
+      // Mid-edit the buffer may not parse; keep the last good results rather than flashing the error.
+      byId('plan-chip').textContent = 'plan: editing…';
     } else {
       results.showError(outcome.error);
       runStream(0, 0, 0, 300);
     }
   } catch {
+    if (generation !== queryGen || options?.live) {
+      return;
+    }
+
     // No engine attached (browser without the CLI server, or no native bridge): render the sample.
     results.results = sampleResults();
     runStream(STUDIO_DATA.cost.rows, STUDIO_DATA.cost.ms, STUDIO_DATA.cost.ops, 700);
     byId('plan-chip').textContent = `plan: ${STUDIO_DATA.cost.plan} (sample)`;
   }
+}
+
+/** Schedules a debounced live re-query once the SPARQL buffer settles, skipping an unchanged buffer. */
+function scheduleLiveQuery(): void {
+  window.clearTimeout(liveQueryTimer);
+  liveQueryTimer = window.setTimeout(() => {
+    if (editorLangOf() === 'sparql' && activeCode() !== lastQueryText) {
+      void runQuery({ live: true });
+    }
+  }, 250);
 }
 
 /** Validates the loaded dataset against the SHACL editor's shapes on the in-browser engine, rendering the report. */
@@ -383,6 +428,11 @@ document.addEventListener('DOMContentLoaded', () => {
   (byId('results') as unknown as SparqlResultsElement).results = sampleResults();
 
   byId('run-btn').addEventListener('click', () => void runQuery());
+  // The SPARQL buffer is editable; live re-query on edit (debounced, latest-wins) — the FILTER-in/out loop.
+  document.querySelector<HTMLElement>('[data-testid="editor-sparql"]')?.addEventListener('input', () => {
+    updateGutter();
+    scheduleLiveQuery();
+  });
   for (const facet of all('.facet')) {
     facet.addEventListener('click', () => {
       facet.style.borderColor = 'var(--status-verified)';

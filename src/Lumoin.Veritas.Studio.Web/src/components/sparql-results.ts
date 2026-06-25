@@ -69,10 +69,23 @@ function renderTerm(term: SparqlTermView | undefined): Renderable {
 }
 
 class SparqlResultsElement extends HTMLElement {
+  /**
+   * Paints content fresh into the element, replacing prior content. Renders into a throwaway node and swaps
+   * the children in, so each update is a first render — uhtml's stateful re-render diffing (which fails when
+   * a results table shrinks between queries) never runs. Results re-render per query, not per frame, so the
+   * fresh render costs nothing meaningful.
+   * @param content A thunk returning the content to render.
+   */
+  private paint(content: () => Renderable): void {
+    const host = document.createElement('div');
+    render(host, content);
+    this.replaceChildren(...host.childNodes);
+  }
+
   /** Renders the results: an ASK verdict, or the SELECT variables as a bindings table. */
   set results(document: SparqlResultsDocument) {
     if (document.boolean !== undefined) {
-      render(this, () => html`<p class=${document.boolean ? 'ask-true' : 'ask-false'}>ASK → ${String(document.boolean)}</p>`);
+      this.paint(() => html`<p class=${document.boolean ? 'ask-true' : 'ask-false'}>ASK → ${String(document.boolean)}</p>`);
       this.dataset.state = 'resulted';
 
       return;
@@ -81,7 +94,7 @@ class SparqlResultsElement extends HTMLElement {
     const vars = document.head.vars;
     const bindings = document.results?.bindings ?? [];
 
-    render(this, () => html`
+    this.paint(() => html`
       <p class="result-count">${bindings.length.toLocaleString('en-US')} solution(s).</p>
       ${bindings.length > 0 ? html`
         <table class="tbl" aria-label="Query solutions">
@@ -95,7 +108,7 @@ class SparqlResultsElement extends HTMLElement {
 
   /** Renders a query error and its span-bearing diagnostics. */
   showError(error: SparqlQueryError): void {
-    render(this, () => html`
+    this.paint(() => html`
       <p class="result-error">${error.error}</p>
       ${error.diagnostics.length > 0 ? html`
         <ul class="result-diagnostics">${error.diagnostics.map((diagnostic) => html`
@@ -109,13 +122,13 @@ class SparqlResultsElement extends HTMLElement {
 
   /** Renders a transient status message (e.g. loading) and tags the element with the given state. */
   showMessage(text: string, state: string): void {
-    render(this, () => html`${text}`);
+    this.paint(() => html`${text}`);
     this.dataset.state = state;
   }
 
   /** Renders a SHACL validation report: a conformance verdict and a table of results. */
   showReport(report: ShaclReportView): void {
-    render(this, () => html`
+    this.paint(() => html`
       <p class=${report.conforms ? 'ask-true' : 'ask-false'}>${report.conforms
         ? '✓ Conforms — no violations.'
         : `✗ Does not conform — ${report.results.length.toLocaleString('en-US')} result(s).`}</p>
