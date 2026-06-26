@@ -3608,7 +3608,7 @@ public sealed class SparqlParser
     /// </summary>
     /// <param name="kind">The token kind to test.</param>
     /// <returns><see langword="true"/> when the kind begins such an expression.</returns>
-    private static bool CanStartBareExpressionCondition(SparqlTokenKind kind)
+    internal static bool CanStartBareExpressionCondition(SparqlTokenKind kind)
     {
         return kind is SparqlTokenKind.BuiltInFunctionName
             or SparqlTokenKind.AggregateFunctionName
@@ -3943,7 +3943,7 @@ public sealed class SparqlParser
     /// </summary>
     /// <param name="kind">The token kind to test.</param>
     /// <returns><see langword="true"/> when the kind begins a path.</returns>
-    private static bool CanStartPath(SparqlTokenKind kind)
+    internal static bool CanStartPath(SparqlTokenKind kind)
     {
         return kind is SparqlTokenKind.Iri
             or SparqlTokenKind.A
@@ -4319,7 +4319,7 @@ public sealed class SparqlParser
     /// </summary>
     /// <param name="kind">The token kind to test.</param>
     /// <returns><see langword="true"/> when the kind begins a compound term.</returns>
-    private static bool CanStartCompoundTerm(SparqlTokenKind kind)
+    internal static bool CanStartCompoundTerm(SparqlTokenKind kind)
     {
         return kind is SparqlTokenKind.OpenParen
             or SparqlTokenKind.OpenBracket
@@ -4676,7 +4676,7 @@ public sealed class SparqlParser
     /// <summary>Determines whether a token kind can begin a reifier identity (IRI, variable, or blank node).</summary>
     /// <param name="kind">The token kind to test.</param>
     /// <returns><see langword="true"/> when the kind begins a reifier identity.</returns>
-    private static bool CanStartReifierId(SparqlTokenKind kind)
+    internal static bool CanStartReifierId(SparqlTokenKind kind)
     {
         return kind is SparqlTokenKind.Iri
             or SparqlTokenKind.PrefixedName
@@ -5503,7 +5503,7 @@ public sealed class SparqlParser
     /// <summary>Determines whether a token kind can begin a <c>DataBlockValue</c> (an IRI, a literal, <c>UNDEF</c>, or an RDF 1.2 triple term).</summary>
     /// <param name="kind">The token kind to test.</param>
     /// <returns><see langword="true"/> when the kind begins a data value.</returns>
-    private static bool CanStartDataBlockValue(SparqlTokenKind kind)
+    internal static bool CanStartDataBlockValue(SparqlTokenKind kind)
     {
         return kind is SparqlTokenKind.UndefKeyword
             or SparqlTokenKind.Iri or SparqlTokenKind.PrefixedName
@@ -6198,7 +6198,7 @@ public sealed class SparqlParser
     /// </summary>
     /// <param name="kind">The token kind to test.</param>
     /// <returns><see langword="true"/> when the kind begins a subject term.</returns>
-    private static bool CanStartTriple(SparqlTokenKind kind)
+    internal static bool CanStartTriple(SparqlTokenKind kind)
     {
         return kind is SparqlTokenKind.Variable
             or SparqlTokenKind.Iri
@@ -6222,7 +6222,7 @@ public sealed class SparqlParser
     /// </summary>
     /// <param name="kind">The token kind to test.</param>
     /// <returns><see langword="true"/> when the kind begins a predicate.</returns>
-    private static bool CanStartVerb(SparqlTokenKind kind)
+    internal static bool CanStartVerb(SparqlTokenKind kind)
     {
         return kind is SparqlTokenKind.A
             or SparqlTokenKind.Iri
@@ -6352,7 +6352,7 @@ public sealed class SparqlParser
     /// <param name="frameKind">The frame whose resync set to test against.</param>
     /// <param name="kind">The token kind at the cursor.</param>
     /// <returns><see langword="true"/> when the cursor token is a safe point to resume at.</returns>
-    private static bool IsResyncToken(ParseFrameKind frameKind, SparqlTokenKind kind)
+    internal static bool IsResyncToken(ParseFrameKind frameKind, SparqlTokenKind kind)
         => frameKind switch
         {
             ParseFrameKind.Request or ParseFrameKind.SelectClause
@@ -6510,7 +6510,7 @@ public sealed class SparqlParser
     /// </summary>
     /// <param name="kind">The token kind to test.</param>
     /// <returns><see langword="true"/> when the kind begins a member.</returns>
-    private static bool CanStartGroupMember(SparqlTokenKind kind)
+    internal static bool CanStartGroupMember(SparqlTokenKind kind)
     {
         return CanStartTriple(kind)
             || kind is SparqlTokenKind.OpenBrace
