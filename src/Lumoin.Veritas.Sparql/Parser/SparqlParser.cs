@@ -79,6 +79,10 @@ public sealed class SparqlParser
     private object? completed;
     private bool tokensComplete;
     private bool started;
+    //When set, the driver suspends with the work stack intact the moment the cursor reaches the
+    //end-of-input token, instead of recovering the open productions into error nodes. The completion seam
+    //sets it to read the productions open at a caret; it is never set on the normal parse path.
+    private bool suspendAtEndOfInput;
     private int index;
     private int parserDiagnosticsRecorded;
     private readonly BlankNodeDelegate blankNodes;
@@ -302,6 +306,45 @@ public sealed class SparqlParser
     }
 
     /// <summary>
+    /// Returns the open parse frames at the current suspension, innermost first: each frame's production
+    /// <see cref="ParseFrameKind"/> together with the sub-stage it is suspended at. After the parser is
+    /// driven to a caret, this is the enclosing-production chain — the top entry is the innermost open
+    /// production and its stage fixes the grammatical position within it — which the completion seam maps
+    /// to the expected next tokens. The list is empty once the request has been produced, because no frame
+    /// remains open.
+    /// </summary>
+    /// <returns>The open frames, from the innermost (top of the work stack) outward to the request.</returns>
+    internal IReadOnlyList<(ParseFrameKind Kind, int Stage)> OpenFrames()
+    {
+        (ParseFrameKind Kind, int Stage)[] open = new (ParseFrameKind Kind, int Stage)[frames.Count];
+        int next = 0;
+        foreach(ParseFrame frame in frames)
+        {
+            open[next] = (frame.Kind, frame.Stage);
+            next++;
+        }
+
+        return open;
+    }
+
+    /// <summary>
+    /// Drives the buffered tokens for completion and returns the productions open when the cursor reaches
+    /// the end of the fed source — the enclosing-production chain at a caret, innermost first. Unlike a
+    /// normal parse, the open productions are not recovered into error nodes: the driver suspends with its
+    /// work stack intact at the end-of-input token, so the snapshot reflects where a caret at the end of
+    /// the source sits in the grammar. The terminating <see cref="SparqlTokenKind.EndOfInput"/> token must
+    /// already have been fed (the completion seam lexes the source up to the caret and finalizes it).
+    /// </summary>
+    /// <returns>The open frames at the caret, from innermost to the request; empty only when the source itself produced a complete request before its end.</returns>
+    internal IReadOnlyList<(ParseFrameKind Kind, int Stage)> SuspendOpenFramesAtEndOfInput()
+    {
+        suspendAtEndOfInput = true;
+        TryParseRequest(out _);
+
+        return OpenFrames();
+    }
+
+    /// <summary>
     /// Advances the cursor by one token, clamping at the terminating
     /// <see cref="SparqlTokenKind.EndOfInput"/> so a step that reads past the end keeps seeing the
     /// sentinel rather than indexing out of range.
@@ -365,6 +408,11 @@ public sealed class SparqlParser
         while(frames.Count > 0)
         {
             if(!HasLookahead)
+            {
+                return DriveOutcome.NeedMore;
+            }
+
+            if(suspendAtEndOfInput && Current.Kind == SparqlTokenKind.EndOfInput)
             {
                 return DriveOutcome.NeedMore;
             }
