@@ -85,7 +85,30 @@ SELECT ?fromLabel ?fromKind ?toLabel ?toKind WHERE {
     BIND("supply" AS ?fromKind) BIND("measure" AS ?toKind)
   } UNION {
     ?from adp:sourcedFrom ?to .
+    ?from a adp:MaterialsSupply .
     BIND("supply" AS ?fromKind) BIND("region" AS ?toKind)
+  } UNION {
+    ?from adp:sourcedFrom ?to .
+    ?from a adp:GreenWaterFlow .
+    BIND("greenwater" AS ?fromKind) BIND("region" AS ?toKind)
+  } UNION {
+    ?from adp:recyclesTo ?to .
+    BIND("greenwater" AS ?fromKind) BIND("segment" AS ?toKind)
+  } UNION {
+    ?from adp:drawsOn ?to .
+    BIND("supply" AS ?fromKind) BIND("greenwater" AS ?toKind)
+  } UNION {
+    ?from adp:tradesVirtualWaterFrom ?to .
+    BIND("supply" AS ?fromKind) BIND("region" AS ?toKind)
+  } UNION {
+    ?from adp:accompanies ?to .
+    BIND("passport" AS ?fromKind) BIND("supply" AS ?toKind)
+  } UNION {
+    ?from adp:issuedBy ?to .
+    BIND("passport" AS ?fromKind) BIND("supplier" AS ?toKind)
+  } UNION {
+    ?from adp:carries ?to .
+    BIND("passport" AS ?fromKind) BIND("record" AS ?toKind)
   } UNION {
     ?from adp:hostedBy ?to .
     BIND("programme" AS ?fromKind) BIND("ngo" AS ?toKind)

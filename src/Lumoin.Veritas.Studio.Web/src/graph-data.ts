@@ -28,9 +28,11 @@ const KIND_LABELS: Record<string, string> = {
   evidence: 'Evidence',
   counterclaim: 'Counterclaims',
   record: 'Declarations',
+  passport: 'Product passports',
   supply: 'Material supplies',
   supplier: 'Suppliers',
   region: 'Regions',
+  greenwater: 'Green-water flows',
   authority: 'Authorities',
   media: 'Media'
 };
@@ -40,7 +42,7 @@ const KIND_ORDER = [
   'battery', 'cathode', 'department', 'faculty', 'student', 'person',
   'regulator', 'contract', 'owner', 'measure', 'segment', 'community', 'ngo', 'channel',
   'programme', 'observation', 'case', 'evidence', 'counterclaim', 'record',
-  'supply', 'supplier', 'region', 'authority', 'media'
+  'passport', 'supply', 'supplier', 'region', 'greenwater', 'authority', 'media'
 ];
 
 /** The hue step between consecutive kinds: the golden angle spreads any number of kinds over the wheel without neighbouring columns sharing a colour. */

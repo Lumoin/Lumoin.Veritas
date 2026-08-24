@@ -29,7 +29,7 @@
   {
     "id": "adaptation",
     "label": "Water adaptation pathways",
-    "description": "A delta city's adaptation plan as data — scenario levers, triggered measures, and the many hands that hold them, from regulator to residents' association — with the governance gaps the shapes flag. Create a scenario world, move an assumption, diff the consequence.",
+    "description": "A delta city's adaptation plan as data — scenario levers, triggered measures, and the many hands that hold them, from regulator to residents' association — with the governance gaps the shapes flag, a product passport carrying a disputed embodied-water claim, and the green water the timber trade moves between regions. Create a scenario world, move an assumption, diff the consequence.",
     "turtle": "datasets/adaptation.ttl",
     "query": "datasets/adaptation.rq",
     "graphQuery": "datasets/adaptation.graph.rq",

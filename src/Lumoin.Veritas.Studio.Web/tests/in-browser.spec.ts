@@ -1278,6 +1278,27 @@ SELECT ?edge WHERE { ?r rdf:reifies <<( ?m adp:defends ?seg )>> ; rdfs:label ?ed
     expect(edges).toContain('raises the quay line');
   });
 
+  test('carries the product passport and the virtual green-water trade, queryable end to end (adaptation)', async ({ page }) => {
+    // The shipment's transparency-protocol-style passport is a first-class node carrying the reified
+    // embodied-water declaration, and the trade edge names the virtual water — green water embodied in the
+    // traded goods — back to the source region whose moisture recycling the harvest draws down. One query
+    // walks passport → carried claim and reads the named trade edge; this row fails if either thread is
+    // dropped from the dataset or the reifier chain breaks.
+    await bootEngine(page, '/?engine=wasm&dataset=adaptation');
+    const result = await runSparql(page, `PREFIX adp: <https://veritas.app/ns/adaptation#>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?passport ?declared ?tradeName WHERE {
+  ?passport a adp:ProductPassport ; adp:carries ?claim .
+  ?claim rdf:reifies <<( ?supply adp:embodiedWaterMl ?declared )>> .
+  ?tr rdf:reifies <<( ?supply adp:tradesVirtualWaterFrom ?region )>> ; rdfs:label ?tradeName .
+}`);
+    const rows = result.results?.bindings ?? [];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].declared?.value).toBe('5400');
+    expect(rows[0].tradeName?.value).toBe('virtual water: green water embodied in traded timber');
+  });
+
   test('paints the worlds strip from the served tier and hides it on a generic custom endpoint', async ({ page }) => {
     // Worlds are a first-party capability: a CLI-served origin answers GET /worlds and the strip presents
     // the listing (with the Diff view beside the other result tabs), while a user-entered generic endpoint

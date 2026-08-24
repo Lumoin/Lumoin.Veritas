@@ -124,6 +124,31 @@ rv:HighlandsMill a adp:Supplier ; rdfs:label "Highlands timber mill" .
 rv:BorealHighlands a adp:SourceRegion ; rdfs:label "Boreal Highlands, Norvia" ;
     adp:annualWaterBalanceMl 152000 .
 
+# The shipment travels with its digital product passport — a UNTP-style transparency record
+# that carries the shipper's declared claims. The passport is a first-class node: the graph
+# shows who issued it, what it accompanies, and which recorded statement it carries — so a
+# dispute about a figure is visibly a dispute about a carried claim, not about the goods.
+rv:TimberPassport a adp:ProductPassport ; rdfs:label "Timber shipment product passport" ;
+    adp:accompanies rv:TimberSupply {| rdfs:label "travels with the shipment" |} ;
+    adp:issuedBy rv:HighlandsMill ;
+    adp:carries rv:ShippingDeclaration {| rdfs:label "carries the declared embodied-water claim" |} .
+
+# Green water: the forest's soil-and-canopy moisture that returns to the air and falls again
+# as rain — much of it somewhere else. The highlands' recycling feeds rainfall downwind of the
+# forest, so harvesting the timber that embodies the shipment's water also moves the rain a
+# delta plans around: the supply chain and the water cycle are one picture. Most of the water
+# traded inside goods is green water, and the trade edge names that flow explicitly, so a
+# what-if world can ask what a sourcing choice does to a distant water balance.
+rv:BorealMoistureFlow a adp:GreenWaterFlow ; rdfs:label "Boreal highlands moisture recycling" ;
+    adp:sourcedFrom rv:BorealHighlands {| rdfs:label "evapotranspiration from standing forest" |} ;
+    adp:recyclesTo rv:SegmentC {| rdfs:label "upwind forest, downwind rain" |} ;
+    adp:shareOfLandPrecipitationPercent 45 .
+
+rv:TimberSupply
+    adp:tradesVirtualWaterFrom rv:BorealHighlands
+        {| rdfs:label "virtual water: green water embodied in traded timber" |} ;
+    adp:drawsOn rv:BorealMoistureFlow {| rdfs:label "harvest draws down the recycling" |} .
+
 # A counterclaim can arrive after the goods have shipped: it disputes the recorded statement
 # itself, carries its own late evidence, and travels the same pathway the original record
 # travelled — back through everyone who handled the thing.
