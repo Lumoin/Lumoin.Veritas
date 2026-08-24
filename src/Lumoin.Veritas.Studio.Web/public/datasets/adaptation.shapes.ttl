@@ -1,0 +1,27 @@
+@prefix sh:  <http://www.w3.org/ns/shacl#> .
+@prefix adp: <https://veritas.app/ns/adaptation#> .
+@prefix ex:  <https://veritas.app/shapes/adaptation#> .
+
+ex:DefendedSegmentShape a sh:NodeShape ;
+    sh:targetClass adp:CoastSegment ;
+    sh:property [
+        sh:path adp:defendedBy ;
+        sh:minCount 1 ;
+        sh:message "Every coastal segment must be covered by a defence measure; an undefended segment is the system's weakest interface." ;
+    ] .
+
+ex:AccountableOwnerShape a sh:NodeShape ;
+    sh:targetClass adp:Measure ;
+    sh:property [
+        sh:path adp:owner ;
+        sh:minCount 1 ;
+        sh:message "Every measure must name an accountable owner; a measure nobody owns cannot be kept ready." ;
+    ] .
+
+ex:MonitoredConditionShape a sh:NodeShape ;
+    sh:targetClass adp:PlanningContext ;
+    sh:property [
+        sh:path adp:monitoredBy ;
+        sh:minCount 1 ;
+        sh:message "Every planning condition must name the party that monitors it; a condition nobody monitors can never trigger a decision." ;
+    ] .

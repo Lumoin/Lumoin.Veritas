@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Missing altitude value in coordinates (not clampToGround) -->
+<Point id="PointRelativeToGround" xmlns="http://www.opengis.net/kml/2.2">
+	<extrude>true</extrude>
+	<altitudeMode>relativeToGround</altitudeMode>
+	<coordinates>-123.25,49.26</coordinates>
+</Point>

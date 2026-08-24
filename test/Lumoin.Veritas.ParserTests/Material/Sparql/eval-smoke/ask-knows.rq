@@ -1,0 +1,2 @@
+PREFIX : <http://example.org/>
+ASK { :alice :knows :bob }

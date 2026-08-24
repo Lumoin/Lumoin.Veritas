@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Boundary is not oriented CCW -->
+<kml xmlns="http://www.opengis.net/kml/2.2" version="2.3">
+	<GroundOverlay id="GroundOverlay-001">
+		<Icon>
+			<href>./img/rectangle.gif</href>
+			<viewBoundScale>0.75</viewBoundScale>
+		</Icon>
+		<LatLonQuad>
+			<coordinates>-123,49 -123,51 -121,51 -121,49</coordinates>
+		</LatLonQuad>
+	</GroundOverlay>
+</kml>

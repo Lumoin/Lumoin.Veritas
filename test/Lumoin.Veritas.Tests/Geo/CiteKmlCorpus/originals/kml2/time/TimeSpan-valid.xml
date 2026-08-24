@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<TimeSpan id="TimeSpan-valid" xmlns="http://www.opengis.net/kml/2.2">
+  <end>2015-12-31</end>
+  <begin>2015-05-21T11:05:00-07:00</begin>
+</TimeSpan>

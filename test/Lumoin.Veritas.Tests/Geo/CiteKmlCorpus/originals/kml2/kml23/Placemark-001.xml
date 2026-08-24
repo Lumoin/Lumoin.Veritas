@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- INVALID: kml:LatLonBox not allowed in kml:Region -->
+<kml xmlns="http://www.opengis.net/kml/2.2" version="2.3">
+	<Document>
+		<name>Placemarks around Vancouver, Canada</name>
+		<Region>
+			<LatLonBox>
+				<north>50.0</north>
+				<south>49.0</south>
+				<east>-123.0</east>
+				<west>-124.0</west>
+			</LatLonBox>
+			<Lod>
+				<minLodPixels>128</minLodPixels>
+			</Lod>
+		</Region>
+		<Placemark id="P-001">
+			<name>Point Atkinson Lighthouse</name>
+			<description>The structure was built in 1914 on granite boulders
+				jutting out into English Bay in West Vancouver, Canada.
+			</description>
+			<snippet>Tide and weather station</snippet>
+			<Point>
+				<coordinates>-123.2646,49.3304</coordinates>
+			</Point>
+		</Placemark>
+	</Document>
+</kml>

@@ -1,0 +1,717 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE rdf:RDF[
+	<!ENTITY rdf 'http://www.w3.org/1999/02/22-rdf-syntax-ns#'>
+	<!ENTITY rdfs 'http://www.w3.org/2000/01/rdf-schema#'>
+	<!ENTITY owl 'http://www.w3.org/2002/07/owl#'>
+	<!ENTITY test 'http://www.w3.org/2007/OWL/testOntology#'>
+]>
+
+<rdf:RDF
+	xmlns:rdf="&rdf;"
+	xmlns:rdfs="&rdfs;"
+	xmlns:owl ="&owl;"
+	xmlns:test="&test;">
+
+	<owl:Ontology>
+		<owl:imports rdf:resource="http://www.w3.org/2007/OWL/testOntology" />
+	</owl:Ontology>
+
+	<owl:AnnotationProperty rdf:about="&rdfs;comment" />
+
+
+<!-- Test case export for query [[Category:NegativeEntailmentTest]] [[test case status::Test:Proposed]] -->
+
+	<test:TestCase rdf:about="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DClass-2D004">
+		<rdf:type rdf:resource="&test;NegativeEntailmentTest" />
+		<rdf:type rdf:resource="&test;ConsistencyTest" />
+		<test:identifier rdf:datatype="http://www.w3.org/2001/XMLSchema#string">WebOnt-Class-004</test:identifier>
+		<test:creator rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Jeremy J. Carroll</test:creator>
+		<test:description rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Annotations about owl:Class are not related to those about rdfs:Class.</test:description>
+		<test:normativeSyntax rdf:resource="&test;RDFXML" />
+		<test:status rdf:resource="&test;Proposed" />
+		<test:semantics rdf:resource="&test;DIRECT" />
+		<test:semantics rdf:resource="&test;RDF-BASED" />
+		<test:species rdf:resource="&test;FULL" />
+		<test:rdfXmlNonConclusionOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xmlns:first="http://www.w3.org/2002/03owlt/Class/premises004#"
+    xmlns:dc='http://purl.org/dc/elements/1.0/'
+    xml:base="http://www.w3.org/2002/03owlt/Class/nonconclusions004" &gt;
+   &lt;owl:Class rdf:about="premises004#WorkingGroup"/&gt;
+   &lt;owl:Class rdf:about="http://www.w3.org/2002/07/owl#Class"&gt;
+     &lt;dc:creator&gt;
+        &lt;first:WorkingGroup  /&gt;
+     &lt;/dc:creator&gt;
+   &lt;/owl:Class&gt;
+&lt;/rdf:RDF&gt;</test:rdfXmlNonConclusionOntology>
+		<test:rdfXmlPremiseOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xmlns:first="http://www.w3.org/2002/03owlt/Class/premises004#"
+    xmlns:dc='http://purl.org/dc/elements/1.0/'
+    xml:base="http://www.w3.org/2002/03owlt/Class/premises004" &gt;
+   &lt;owl:Class rdf:ID="WorkingGroup"/&gt;
+   &lt;owl:Class rdf:about="http://www.w3.org/2000/01/rdf-schema#Class"&gt;
+     &lt;dc:creator&gt;
+        &lt;first:WorkingGroup 
+          rdf:about="http://www.w3.org/RDF/Group/Schema/members" /&gt;
+     &lt;/dc:creator&gt;
+   &lt;/owl:Class&gt;
+&lt;/rdf:RDF&gt;</test:rdfXmlPremiseOntology>
+	</test:TestCase>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DClass-2D004" />
+		<owl:assertionProperty rdf:resource="&test;species" />
+		<owl:targetIndividual rdf:resource="&test;DL" />
+	</owl:NegativePropertyAssertion>
+
+
+	<test:TestCase rdf:about="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DClass-2D005">
+		<rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The version of this test approved by the WebOnt WG was incorrect. The premise ontology present in that version of the test was marked as an OWL Lite document, but was not OWL Lite because it did not contain a triple of the form O rdf:type owl:Ontology. The ontology has been revised to contain the necessary triple.</rdfs:comment>
+		<rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The version of this test approved by the WebOnt WG was incorrect. The conclusion ontology present in that version of the test was marked as an OWL DL document, but was not OWL DL because it did not contain a triple of the form O rdf:type owl:Ontology. The ontology has been revised to contain the necessary triple.</rdfs:comment>
+		<rdf:type rdf:resource="&test;ProfileIdentificationTest" />
+		<rdf:type rdf:resource="&test;NegativeEntailmentTest" />
+		<rdf:type rdf:resource="&test;ConsistencyTest" />
+		<test:identifier rdf:datatype="http://www.w3.org/2001/XMLSchema#string">WebOnt-Class-005</test:identifier>
+		<test:creator rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Jeremy J. Carroll</test:creator>
+		<test:description rdf:datatype="http://www.w3.org/2001/XMLSchema#string">This test shows a potential misapplication of OWL Full comprehension rules.
+It also shows optional type triples on an &lt;code&gt;owl:Class&lt;/code&gt;.</test:description>
+		<test:normativeSyntax rdf:resource="&test;RDFXML" />
+		<test:status rdf:resource="&test;Proposed" />
+		<test:semantics rdf:resource="&test;RDF-BASED" />
+		<test:alternativeSemanticsTest rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DClass-2D005-2Ddirect" />
+		<test:species rdf:resource="&test;FULL" />
+		<test:species rdf:resource="&test;DL" />
+		<test:rdfXmlNonConclusionOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xml:base="http://www.w3.org/2002/03owlt/Class/nonconclusions005" &gt;
+
+  &lt;owl:Ontology/&gt;
+  &lt;owl:Class rdf:ID="c"/&gt;
+  &lt;rdf:Description rdf:about="premises005#x"&gt;
+    &lt;rdf:type&gt;
+      &lt;rdf:Description&gt;
+        &lt;rdf:type 
+    rdf:resource="http://www.w3.org/2002/07/owl#Class"/&gt;
+        &lt;rdf:type 
+    rdf:resource="http://www.w3.org/2000/01/rdf-schema#Class"/&gt;
+        &lt;owl:unionOf rdf:parseType="Collection"&gt;
+          &lt;rdf:Description rdf:about="#c" /&gt;
+          &lt;owl:Class&gt;
+            &lt;owl:complementOf rdf:resource="#c"/&gt;
+          &lt;/owl:Class&gt;
+        &lt;/owl:unionOf&gt;
+      &lt;/rdf:Description&gt;
+    &lt;/rdf:type&gt;
+  &lt;/rdf:Description&gt;
+               
+&lt;/rdf:RDF&gt;</test:rdfXmlNonConclusionOntology>
+		<test:rdfXmlPremiseOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xml:base="http://www.w3.org/2002/03owlt/Class/premises005" &gt;
+  &lt;owl:Ontology/&gt;
+  &lt;owl:Thing rdf:ID="x"/&gt;
+&lt;/rdf:RDF&gt;</test:rdfXmlPremiseOntology>
+	</test:TestCase>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DClass-2D005" />
+		<owl:assertionProperty rdf:resource="&test;semantics" />
+		<owl:targetIndividual rdf:resource="&test;DIRECT" />
+	</owl:NegativePropertyAssertion>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DClass-2D005" />
+		<owl:assertionProperty rdf:resource="&test;profile" />
+		<owl:targetIndividual rdf:resource="&test;EL" />
+	</owl:NegativePropertyAssertion>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DClass-2D005" />
+		<owl:assertionProperty rdf:resource="&test;profile" />
+		<owl:targetIndividual rdf:resource="&test;QL" />
+	</owl:NegativePropertyAssertion>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DClass-2D005" />
+		<owl:assertionProperty rdf:resource="&test;profile" />
+		<owl:targetIndividual rdf:resource="&test;RL" />
+	</owl:NegativePropertyAssertion>
+
+
+	<test:TestCase rdf:about="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DI4.6-2D005">
+		<rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The version of this test approved by the WebOnt WG was incorrect. The premise ontology present in that version of the test was marked as an OWL Lite document, but was not OWL Lite because it did not contain a triple of the form O rdf:type owl:Ontology. The ontology has been revised to contain the necessary triple.</rdfs:comment>
+		<rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The version of this test approved by the WebOnt WG was incorrect. The conclusion ontology present in that version of the test was marked as an OWL Lite document, but was not OWL Lite because it did not contain a triple of the form O rdf:type owl:Ontology. The ontology has been revised to contain the necessary triple.</rdfs:comment>
+		<rdf:type rdf:resource="&test;ProfileIdentificationTest" />
+		<rdf:type rdf:resource="&test;NegativeEntailmentTest" />
+		<rdf:type rdf:resource="&test;ConsistencyTest" />
+		<test:identifier rdf:datatype="http://www.w3.org/2001/XMLSchema#string">WebOnt-I4.6-005</test:identifier>
+		<test:creator rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Jeremy J. Carroll</test:creator>
+		<test:description rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;code&gt;owl:equivalentClass&lt;/code&gt; is not related to annotations on classes.</test:description>
+		<test:normativeSyntax rdf:resource="&test;RDFXML" />
+		<test:status rdf:resource="&test;Proposed" />
+		<test:semantics rdf:resource="&test;RDF-BASED" />
+		<test:alternativeSemanticsTest rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DI4.6-2D005-2DDirect" />
+		<test:species rdf:resource="&test;FULL" />
+		<test:species rdf:resource="&test;DL" />
+		<test:profile rdf:resource="&test;EL" />
+		<test:profile rdf:resource="&test;QL" />
+		<test:profile rdf:resource="&test;RL" />
+		<test:rdfXmlNonConclusionOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+    xml:base="http://www.w3.org/2002/03owlt/I4.6/nonconclusions005" &gt;
+    &lt;owl:Ontology/&gt;
+    &lt;owl:Class rdf:ID="C2"&gt;
+       &lt;rdfs:comment&gt;An example class.&lt;/rdfs:comment&gt;
+    &lt;/owl:Class&gt;
+&lt;/rdf:RDF&gt;</test:rdfXmlNonConclusionOntology>
+		<test:rdfXmlPremiseOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+    xml:base="http://www.w3.org/2002/03owlt/I4.6/premises005" &gt;
+    &lt;owl:Ontology/&gt;
+    &lt;owl:Class rdf:about="nonconclusions005#C1"&gt;
+       &lt;rdfs:comment&gt;An example class.&lt;/rdfs:comment&gt;
+       &lt;owl:equivalentClass&gt;
+           &lt;owl:Class rdf:about="nonconclusions005#C2"/&gt;
+       &lt;/owl:equivalentClass&gt;
+    &lt;/owl:Class&gt;
+&lt;/rdf:RDF&gt;</test:rdfXmlPremiseOntology>
+	</test:TestCase>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DI4.6-2D005" />
+		<owl:assertionProperty rdf:resource="&test;semantics" />
+		<owl:targetIndividual rdf:resource="&test;DIRECT" />
+	</owl:NegativePropertyAssertion>
+
+
+	<test:TestCase rdf:about="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DI5.5-2D006">
+		<rdf:type rdf:resource="&test;ProfileIdentificationTest" />
+		<rdf:type rdf:resource="&test;NegativeEntailmentTest" />
+		<rdf:type rdf:resource="&test;ConsistencyTest" />
+		<test:identifier rdf:datatype="http://www.w3.org/2001/XMLSchema#string">WebOnt-I5.5-006</test:identifier>
+		<test:creator rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Jeremy J. Carroll</test:creator>
+		<test:description rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Comprehension does not build illformed lists.</test:description>
+		<test:normativeSyntax rdf:resource="&test;RDFXML" />
+		<test:status rdf:resource="&test;Proposed" />
+		<test:semantics rdf:resource="&test;DIRECT" />
+		<test:semantics rdf:resource="&test;RDF-BASED" />
+		<test:species rdf:resource="&test;FULL" />
+		<test:rdfXmlNonConclusionOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xml:base="http://www.w3.org/2002/03owlt/I5.5/nonconclusions006" &gt;
+   
+   &lt;rdf:List rdf:nodeID="list"&gt;
+     &lt;rdf:first&gt;
+       &lt;owl:Class rdf:about="premises005#a"/&gt;
+     &lt;/rdf:first&gt;
+     &lt;rdf:rest rdf:nodeID = "list"/&gt;
+   &lt;/rdf:List&gt;
+
+&lt;/rdf:RDF&gt;</test:rdfXmlNonConclusionOntology>
+		<test:rdfXmlPremiseOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xml:base="http://www.w3.org/2002/03owlt/I5.5/premises006" &gt;
+    &lt;owl:Class rdf:ID="a" /&gt;
+&lt;/rdf:RDF&gt;</test:rdfXmlPremiseOntology>
+	</test:TestCase>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DI5.5-2D006" />
+		<owl:assertionProperty rdf:resource="&test;species" />
+		<owl:targetIndividual rdf:resource="&test;DL" />
+	</owl:NegativePropertyAssertion>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DI5.5-2D006" />
+		<owl:assertionProperty rdf:resource="&test;profile" />
+		<owl:targetIndividual rdf:resource="&test;EL" />
+	</owl:NegativePropertyAssertion>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DI5.5-2D006" />
+		<owl:assertionProperty rdf:resource="&test;profile" />
+		<owl:targetIndividual rdf:resource="&test;QL" />
+	</owl:NegativePropertyAssertion>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DI5.5-2D006" />
+		<owl:assertionProperty rdf:resource="&test;profile" />
+		<owl:targetIndividual rdf:resource="&test;RL" />
+	</owl:NegativePropertyAssertion>
+
+
+	<test:TestCase rdf:about="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DI5.5-2D007">
+		<rdf:type rdf:resource="&test;NegativeEntailmentTest" />
+		<rdf:type rdf:resource="&test;ConsistencyTest" />
+		<test:identifier rdf:datatype="http://www.w3.org/2001/XMLSchema#string">WebOnt-I5.5-007</test:identifier>
+		<test:creator rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Jeremy J. Carroll</test:creator>
+		<test:description rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Comprehension does not build illformed lists.</test:description>
+		<test:normativeSyntax rdf:resource="&test;RDFXML" />
+		<test:status rdf:resource="&test;Proposed" />
+		<test:semantics rdf:resource="&test;DIRECT" />
+		<test:semantics rdf:resource="&test;RDF-BASED" />
+		<test:species rdf:resource="&test;FULL" />
+		<test:rdfXmlNonConclusionOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xml:base="http://www.w3.org/2002/03owlt/I5.5/nonconclusions007" &gt;
+   &lt;owl:Class&gt;
+     &lt;owl:unionOf&gt;
+       &lt;rdf:List rdf:nodeID="list"&gt;
+         &lt;rdf:first&gt;
+           &lt;owl:Class&gt;
+             &lt;owl:intersectionOf&gt;
+                &lt;rdf:List&gt;
+                   &lt;rdf:first&gt;         
+                      &lt;owl:Class rdf:about="premises007#a"/&gt;
+                   &lt;/rdf:first&gt;
+                   &lt;rdf:rest rdf:nodeID="list" /&gt;
+                 &lt;/rdf:List&gt;
+             &lt;/owl:intersectionOf&gt;
+           &lt;/owl:Class&gt;
+         &lt;/rdf:first&gt;
+         &lt;rdf:rest rdf:resource = "http://www.w3.org/1999/02/22-rdf-syntax-ns#nil"/&gt;
+       &lt;/rdf:List&gt;
+     &lt;/owl:unionOf&gt;
+   &lt;/owl:Class&gt;
+&lt;/rdf:RDF&gt;</test:rdfXmlNonConclusionOntology>
+		<test:rdfXmlPremiseOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xml:base="http://www.w3.org/2002/03owlt/I5.5/premises007" &gt;
+    &lt;owl:Class rdf:ID="a" /&gt;
+&lt;/rdf:RDF&gt;</test:rdfXmlPremiseOntology>
+	</test:TestCase>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DI5.5-2D007" />
+		<owl:assertionProperty rdf:resource="&test;species" />
+		<owl:targetIndividual rdf:resource="&test;DL" />
+	</owl:NegativePropertyAssertion>
+
+
+	<test:TestCase rdf:about="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DOntology-2D003">
+		<rdf:type rdf:resource="&test;ProfileIdentificationTest" />
+		<rdf:type rdf:resource="&test;NegativeEntailmentTest" />
+		<rdf:type rdf:resource="&test;ConsistencyTest" />
+		<test:identifier rdf:datatype="http://www.w3.org/2001/XMLSchema#string">WebOnt-Ontology-003</test:identifier>
+		<test:creator rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Jeremy J. Carroll</test:creator>
+		<test:description rdf:datatype="http://www.w3.org/2001/XMLSchema#string">This is a variation of &lt;a xmlns="http://www.w3.org/1999/xhtml" href="#equivalentClass-001"&gt;equivalentClass-001&lt;/a&gt;,
+showing the use of &lt;code&gt;owl:Ontology&lt;/code&gt; triple only in the conclusions.</test:description>
+		<test:normativeSyntax rdf:resource="&test;RDFXML" />
+		<test:status rdf:resource="&test;Proposed" />
+		<test:semantics rdf:resource="&test;DIRECT" />
+		<test:semantics rdf:resource="&test;RDF-BASED" />
+		<test:species rdf:resource="&test;FULL" />
+		<test:rdfXmlNonConclusionOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xmlns:first="http://www.w3.org/2002/03owlt/Ontology/premises003#"
+    xml:base="http://www.w3.org/2002/03owlt/Ontology/nonconclusions003" &gt;
+  &lt;owl:Ontology /&gt;
+  &lt;first:Car rdf:about="premises003#auto"&gt;
+     &lt;rdf:type rdf:resource="http://www.w3.org/2002/07/owl#Thing" /&gt;
+  &lt;/first:Car&gt;
+  &lt;first:Automobile rdf:about="premises003#car"&gt;
+     &lt;rdf:type rdf:resource="http://www.w3.org/2002/07/owl#Thing" /&gt;
+  &lt;/first:Automobile&gt;
+   &lt;owl:Class rdf:about="premises003#Car"/&gt;
+   &lt;owl:Class rdf:about="premises003#Automobile"/&gt;
+&lt;/rdf:RDF&gt;</test:rdfXmlNonConclusionOntology>
+		<test:rdfXmlPremiseOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xmlns:first="http://www.w3.org/2002/03owlt/Ontology/premises003#"
+    xml:base="http://www.w3.org/2002/03owlt/Ontology/premises003" &gt;
+   &lt;owl:Class rdf:ID="Car"&gt;
+     &lt;owl:equivalentClass&gt;
+       &lt;owl:Class rdf:ID="Automobile"/&gt;
+     &lt;/owl:equivalentClass&gt;
+  &lt;/owl:Class&gt;
+  &lt;first:Car rdf:ID="car"&gt;
+     &lt;rdf:type rdf:resource="http://www.w3.org/2002/07/owl#Thing" /&gt;
+  &lt;/first:Car&gt;
+  &lt;first:Automobile rdf:ID="auto"&gt;
+     &lt;rdf:type rdf:resource="http://www.w3.org/2002/07/owl#Thing" /&gt;
+  &lt;/first:Automobile&gt;
+&lt;/rdf:RDF&gt;</test:rdfXmlPremiseOntology>
+	</test:TestCase>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DOntology-2D003" />
+		<owl:assertionProperty rdf:resource="&test;species" />
+		<owl:targetIndividual rdf:resource="&test;DL" />
+	</owl:NegativePropertyAssertion>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DOntology-2D003" />
+		<owl:assertionProperty rdf:resource="&test;profile" />
+		<owl:targetIndividual rdf:resource="&test;EL" />
+	</owl:NegativePropertyAssertion>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DOntology-2D003" />
+		<owl:assertionProperty rdf:resource="&test;profile" />
+		<owl:targetIndividual rdf:resource="&test;QL" />
+	</owl:NegativePropertyAssertion>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DOntology-2D003" />
+		<owl:assertionProperty rdf:resource="&test;profile" />
+		<owl:targetIndividual rdf:resource="&test;RL" />
+	</owl:NegativePropertyAssertion>
+
+
+	<test:TestCase rdf:about="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DRestriction-2D005">
+		<rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The version of this test approved by the WebOnt WG was incorrect. The premise ontology present in that version of the test was marked as an OWL Lite document, but was not OWL Lite because it did not contain a triple of the form O rdf:type owl:Ontology. The ontology has been revised to contain the necessary triple.</rdfs:comment>
+		<rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The version of this test approved by the WebOnt WG was incorrect. The conclusion ontology present in that version of the test was marked as an OWL Lite document, but was not OWL Lite because it did not contain a triple of the form O rdf:type owl:Ontology. The ontology has been revised to contain the necessary triple.</rdfs:comment>
+		<rdf:type rdf:resource="&test;ProfileIdentificationTest" />
+		<rdf:type rdf:resource="&test;NegativeEntailmentTest" />
+		<rdf:type rdf:resource="&test;ConsistencyTest" />
+		<test:identifier rdf:datatype="http://www.w3.org/2001/XMLSchema#string">WebOnt-Restriction-005</test:identifier>
+		<test:creator rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Jeremy J. Carroll</test:creator>
+		<test:description rdf:datatype="http://www.w3.org/2001/XMLSchema#string">This test shows a potential misapplication of OWL Full comprehension rules.
+It also shows optional type triples on an &lt;code&gt;owl:Restriction&lt;/code&gt;.</test:description>
+		<test:normativeSyntax rdf:resource="&test;RDFXML" />
+		<test:status rdf:resource="&test;Proposed" />
+		<test:semantics rdf:resource="&test;RDF-BASED" />
+		<test:alternativeSemanticsTest rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DRestriction-2D005-2Ddirect" />
+		<test:species rdf:resource="&test;FULL" />
+		<test:species rdf:resource="&test;DL" />
+		<test:rdfXmlNonConclusionOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xmlns:first="http://www.w3.org/2002/03owlt/Restriction/premises005#"
+    xmlns:second="http://www.w3.org/2002/03owlt/Restriction/nonconclusions005#"
+    xml:base="http://www.w3.org/2002/03owlt/Restriction/nonconclusions005" &gt;
+
+  &lt;owl:Ontology/&gt;
+  &lt;rdf:Description rdf:about="premises005#x"&gt;
+    &lt;rdf:type&gt;
+      &lt;owl:Restriction&gt;
+        &lt;rdf:type 
+    rdf:resource="http://www.w3.org/2000/01/rdf-schema#Class"/&gt;
+        &lt;rdf:type 
+    rdf:resource="http://www.w3.org/2002/07/owl#Class"/&gt;
+        &lt;owl:onProperty&gt;
+           &lt;owl:ObjectProperty rdf:about="premises005#p" /&gt;
+        &lt;/owl:onProperty&gt;
+        &lt;owl:allValuesFrom&gt;
+          &lt;owl:Class rdf:ID="c"&gt;
+            &lt;rdf:type 
+    rdf:resource="http://www.w3.org/2000/01/rdf-schema#Class"/&gt;
+          &lt;/owl:Class&gt;
+        &lt;/owl:allValuesFrom&gt;
+      &lt;/owl:Restriction&gt;
+    &lt;/rdf:type&gt;
+  &lt;/rdf:Description&gt;
+               
+&lt;/rdf:RDF&gt;</test:rdfXmlNonConclusionOntology>
+		<test:rdfXmlPremiseOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xml:base="http://www.w3.org/2002/03owlt/Restriction/premises005" &gt;
+  &lt;owl:Ontology/&gt;
+  &lt;owl:Thing rdf:ID="x"&gt;
+    &lt;rdf:type&gt;
+      &lt;owl:Restriction&gt;
+        &lt;rdf:type 
+    rdf:resource="http://www.w3.org/2000/01/rdf-schema#Class"/&gt;
+        &lt;owl:onProperty&gt;
+           &lt;owl:ObjectProperty rdf:about="premises005#p" /&gt;
+        &lt;/owl:onProperty&gt;
+        &lt;owl:maxCardinality rdf:datatype=
+  "http://www.w3.org/2001/XMLSchema#int"
+        &gt;0&lt;/owl:maxCardinality&gt;
+      &lt;/owl:Restriction&gt;
+    &lt;/rdf:type&gt;
+  &lt;/owl:Thing&gt;
+  &lt;owl:ObjectProperty rdf:ID="p" /&gt;
+&lt;/rdf:RDF&gt;</test:rdfXmlPremiseOntology>
+	</test:TestCase>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DRestriction-2D005" />
+		<owl:assertionProperty rdf:resource="&test;semantics" />
+		<owl:targetIndividual rdf:resource="&test;DIRECT" />
+	</owl:NegativePropertyAssertion>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DRestriction-2D005" />
+		<owl:assertionProperty rdf:resource="&test;profile" />
+		<owl:targetIndividual rdf:resource="&test;EL" />
+	</owl:NegativePropertyAssertion>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DRestriction-2D005" />
+		<owl:assertionProperty rdf:resource="&test;profile" />
+		<owl:targetIndividual rdf:resource="&test;QL" />
+	</owl:NegativePropertyAssertion>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DRestriction-2D005" />
+		<owl:assertionProperty rdf:resource="&test;profile" />
+		<owl:targetIndividual rdf:resource="&test;RL" />
+	</owl:NegativePropertyAssertion>
+
+
+	<test:TestCase rdf:about="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DequivalentClass-2D008">
+		<rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The version of this test approved by the WebOnt WG was incorrect. The premise ontology present in that version of the test was marked as an OWL Lite document, but was not OWL Lite because it did not contain a triple of the form O rdf:type owl:Ontology. The ontology has been revised to contain the necessary triple.</rdfs:comment>
+		<rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The version of this test approved by the WebOnt WG was incorrect. The conclusion ontology present in that version of the test was marked as an OWL Lite document, but was not OWL Lite because it did not contain a triple of the form O rdf:type owl:Ontology. The ontology has been revised to contain the necessary triple.</rdfs:comment>
+		<rdf:type rdf:resource="&test;ProfileIdentificationTest" />
+		<rdf:type rdf:resource="&test;NegativeEntailmentTest" />
+		<rdf:type rdf:resource="&test;ConsistencyTest" />
+		<test:identifier rdf:datatype="http://www.w3.org/2001/XMLSchema#string">WebOnt-equivalentClass-008</test:identifier>
+		<test:creator rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Jeremy J. Carroll</test:creator>
+		<test:description rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Annotation properties refer to a class instance. equivalentClass refers to the class extension.</test:description>
+		<test:normativeSyntax rdf:resource="&test;RDFXML" />
+		<test:status rdf:resource="&test;Proposed" />
+		<test:semantics rdf:resource="&test;RDF-BASED" />
+		<test:alternativeSemanticsTest rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DequivalentClass-2D008-2DDirect" />
+		<test:species rdf:resource="&test;FULL" />
+		<test:species rdf:resource="&test;DL" />
+		<test:profile rdf:resource="&test;EL" />
+		<test:profile rdf:resource="&test;QL" />
+		<test:profile rdf:resource="&test;RL" />
+		<test:rdfXmlNonConclusionOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+ xmlns:first="http://www.w3.org/2002/03owlt/equivalentClass/premises008#"
+ xml:base="http://www.w3.org/2002/03owlt/equivalentClass/nonconclusions008" &gt;
+   &lt;owl:Ontology/&gt;
+   &lt;owl:Class rdf:about="premises008#c2"&gt;
+     &lt;first:annotate&gt;description of c1&lt;/first:annotate&gt;
+   &lt;/owl:Class&gt;
+   &lt;owl:AnnotationProperty rdf:about="premises008#annotate" /&gt;
+
+&lt;/rdf:RDF&gt;</test:rdfXmlNonConclusionOntology>
+		<test:rdfXmlPremiseOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+  xmlns:first="http://www.w3.org/2002/03owlt/equivalentClass/premises008#" 
+    xml:base="http://www.w3.org/2002/03owlt/equivalentClass/premises008" &gt;
+
+   &lt;owl:Ontology/&gt;
+   &lt;owl:Class rdf:ID="c1"&gt;
+     &lt;owl:equivalentClass&gt;
+       &lt;owl:Class rdf:ID="c2"/&gt;
+     &lt;/owl:equivalentClass&gt;
+     &lt;first:annotate&gt;description of c1&lt;/first:annotate&gt;
+   &lt;/owl:Class&gt;
+
+   &lt;owl:AnnotationProperty rdf:ID="annotate" /&gt;
+
+&lt;/rdf:RDF&gt;</test:rdfXmlPremiseOntology>
+	</test:TestCase>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DequivalentClass-2D008" />
+		<owl:assertionProperty rdf:resource="&test;semantics" />
+		<owl:targetIndividual rdf:resource="&test;DIRECT" />
+	</owl:NegativePropertyAssertion>
+
+
+	<test:TestCase rdf:about="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2Dimports-2D002">
+		<rdf:type rdf:resource="&test;NegativeEntailmentTest" />
+		<rdf:type rdf:resource="&test;ConsistencyTest" />
+		<test:identifier rdf:datatype="http://www.w3.org/2001/XMLSchema#string">WebOnt-imports-002</test:identifier>
+		<test:creator rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Jeff Heflin</test:creator>
+		<test:description rdf:datatype="http://www.w3.org/2001/XMLSchema#string">If a premise document uses a namespace but does not import the document corresponding to
+the namespace, then the premises do not necessarily entail anything that is entailed by
+the conjunction of the two documents.</test:description>
+		<test:normativeSyntax rdf:resource="&test;RDFXML" />
+		<test:status rdf:resource="&test;Proposed" />
+		<test:semantics rdf:resource="&test;DIRECT" />
+		<test:semantics rdf:resource="&test;RDF-BASED" />
+		<test:species rdf:resource="&test;FULL" />
+		<test:rdfXmlNonConclusionOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'
+    xmlns:rdfs='http://www.w3.org/2000/01/rdf-schema#'
+    xmlns:owl='http://www.w3.org/2002/07/owl#'
+    xml:base='http://www.w3.org/2002/03owlt/imports/nonconclusions002' &gt;
+
+    &lt;rdf:Description rdf:about='http://example.org/data#Socrates'&gt;
+        &lt;rdf:type rdf:resource='http://www.w3.org/2002/03owlt/imports/support002-A#Mortal'/&gt;
+    &lt;/rdf:Description&gt;
+
+&lt;/rdf:RDF&gt;</test:rdfXmlNonConclusionOntology>
+		<test:rdfXmlPremiseOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'
+    xmlns:rdfs='http://www.w3.org/2000/01/rdf-schema#'
+    xmlns:owl='http://www.w3.org/2002/07/owl#'
+    xmlns:ont='http://www.w3.org/2002/03owlt/imports/support002-A#'
+    xml:base='http://www.w3.org/2002/03owlt/imports/premises002' &gt;
+
+    &lt;ont:Man rdf:about='http://example.org/data#Socrates'/&gt;
+
+&lt;/rdf:RDF&gt;</test:rdfXmlPremiseOntology>
+		<test:importedOntology rdf:resource="http://owl.semanticweb.org/id/WebOnt-2Dimports-2D002-2Dimport-2Dsupport002-2DA" />
+	</test:TestCase>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2Dimports-2D002" />
+		<owl:assertionProperty rdf:resource="&test;species" />
+		<owl:targetIndividual rdf:resource="&test;DL" />
+	</owl:NegativePropertyAssertion>
+	<owl:Thing rdf:about="http://owl.semanticweb.org/id/WebOnt-2Dimports-2D002-2Dimport-2Dsupport002-2DA">
+		<test:normativeSyntax rdf:resource="&test;RDFXML" />
+		<test:importedOntologyIRI rdf:resource="http://www.w3.org/2002/03owlt/imports/support002-A" />
+		<test:rdfXmlInputOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'
+    xmlns:rdfs='http://www.w3.org/2000/01/rdf-schema#'
+    xmlns:owl='http://www.w3.org/2002/07/owl#'
+    xml:base='http://www.w3.org/2002/03owlt/imports/support002-A' &gt;
+
+    &lt;owl:Ontology rdf:about=''/&gt;
+    &lt;owl:Class rdf:ID='Man'&gt;
+        &lt;rdfs:subClassOf rdf:resource='#Mortal'/&gt;
+    &lt;/owl:Class&gt;
+    &lt;owl:Class rdf:ID='Mortal'/&gt;
+
+&lt;/rdf:RDF&gt;</test:rdfXmlInputOntology>
+	</owl:Thing>
+
+
+	<test:TestCase rdf:about="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2Dmiscellaneous-2D301">
+		<rdf:type rdf:resource="&test;NegativeEntailmentTest" />
+		<rdf:type rdf:resource="&test;ConsistencyTest" />
+		<test:identifier rdf:datatype="http://www.w3.org/2001/XMLSchema#string">WebOnt-miscellaneous-301</test:identifier>
+		<test:creator rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Jeremy J. Carroll</test:creator>
+		<test:description rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Annotations participate a little in the semantics.</test:description>
+		<test:normativeSyntax rdf:resource="&test;RDFXML" />
+		<test:status rdf:resource="&test;Proposed" />
+		<test:semantics rdf:resource="&test;DIRECT" />
+		<test:semantics rdf:resource="&test;RDF-BASED" />
+		<test:species rdf:resource="&test;FULL" />
+		<test:rdfXmlNonConclusionOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xmlns:first="http://www.w3.org/2002/03owlt/miscellaneous/premises301#"
+    xml:base="http://www.w3.org/2002/03owlt/miscellaneous/nonconclusions301" &gt;
+
+&lt;owl:Thing rdf:about="premises301#a"&gt;
+   &lt;first:prop&gt;bar&lt;/first:prop&gt;
+&lt;/owl:Thing&gt;
+
+&lt;/rdf:RDF&gt;</test:rdfXmlNonConclusionOntology>
+		<test:rdfXmlPremiseOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xmlns:first="http://www.w3.org/2002/03owlt/miscellaneous/premises301#"
+    xml:base="http://www.w3.org/2002/03owlt/miscellaneous/premises301" &gt;
+
+&lt;owl:Thing rdf:about="#a"&gt;
+   &lt;first:prop&gt;foo&lt;/first:prop&gt;
+&lt;/owl:Thing&gt;
+
+&lt;/rdf:RDF&gt;</test:rdfXmlPremiseOntology>
+	</test:TestCase>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2Dmiscellaneous-2D301" />
+		<owl:assertionProperty rdf:resource="&test;species" />
+		<owl:targetIndividual rdf:resource="&test;DL" />
+	</owl:NegativePropertyAssertion>
+
+
+<!-- Processed 10 items. -->
+	<test:TestCase rdf:about="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2Dmiscellaneous-2D302">
+		<rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The version of this test approved by the WebOnt WG was incorrect. The premise ontology present in that version of the test was marked as an OWL Lite document, but was not OWL Lite because it did not contain a triple of the form O rdf:type owl:Ontology. The ontology has been revised to contain the necessary triple.</rdfs:comment>
+		<rdfs:comment rdf:datatype="http://www.w3.org/2001/XMLSchema#string">The version of this test approved by the WebOnt WG was incorrect. The conclusion ontology present in that version of the test was marked as an OWL Lite document, but was not OWL Lite because it did not contain a triple of the form O rdf:type owl:Ontology. The ontology has been revised to contain the necessary triple.</rdfs:comment>
+		<rdf:type rdf:resource="&test;ProfileIdentificationTest" />
+		<rdf:type rdf:resource="&test;NegativeEntailmentTest" />
+		<rdf:type rdf:resource="&test;ConsistencyTest" />
+		<test:identifier rdf:datatype="http://www.w3.org/2001/XMLSchema#string">WebOnt-miscellaneous-302</test:identifier>
+		<test:creator rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Jeremy J. Carroll</test:creator>
+		<test:description rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Annotations participate a little in the semantics.</test:description>
+		<test:normativeSyntax rdf:resource="&test;RDFXML" />
+		<test:status rdf:resource="&test;Proposed" />
+		<test:semantics rdf:resource="&test;RDF-BASED" />
+		<test:alternativeSemanticsTest rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2Dmiscellaneous-2D302-2DDirect" />
+		<test:species rdf:resource="&test;FULL" />
+		<test:species rdf:resource="&test;DL" />
+		<test:profile rdf:resource="&test;EL" />
+		<test:profile rdf:resource="&test;QL" />
+		<test:rdfXmlNonConclusionOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xmlns:first="http://www.w3.org/2002/03owlt/miscellaneous/premises302#"
+    xml:base="http://www.w3.org/2002/03owlt/miscellaneous/nonconclusions302" &gt;
+
+&lt;owl:Ontology/&gt;
+
+&lt;owl:AnnotationProperty rdf:about="premises302#prop" /&gt;
+
+&lt;owl:Thing rdf:about="premises302#a"&gt;
+   &lt;first:prop&gt;bar&lt;/first:prop&gt;
+&lt;/owl:Thing&gt;
+
+&lt;/rdf:RDF&gt;</test:rdfXmlNonConclusionOntology>
+		<test:rdfXmlPremiseOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xmlns:first="http://www.w3.org/2002/03owlt/miscellaneous/premises302#"
+    xml:base="http://www.w3.org/2002/03owlt/miscellaneous/premises302" &gt;
+
+&lt;owl:Ontology/&gt;
+&lt;owl:AnnotationProperty rdf:ID="prop" /&gt;
+&lt;owl:Thing rdf:about="#a"&gt;
+   &lt;first:prop&gt;foo&lt;/first:prop&gt;
+&lt;/owl:Thing&gt;
+
+&lt;/rdf:RDF&gt;</test:rdfXmlPremiseOntology>
+	</test:TestCase>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2Dmiscellaneous-2D302" />
+		<owl:assertionProperty rdf:resource="&test;semantics" />
+		<owl:targetIndividual rdf:resource="&test;DIRECT" />
+	</owl:NegativePropertyAssertion>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2Dmiscellaneous-2D302" />
+		<owl:assertionProperty rdf:resource="&test;profile" />
+		<owl:targetIndividual rdf:resource="&test;RL" />
+	</owl:NegativePropertyAssertion>
+
+
+	<test:TestCase rdf:about="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DsomeValuesFrom-2D002">
+		<rdf:type rdf:resource="&test;NegativeEntailmentTest" />
+		<rdf:type rdf:resource="&test;ConsistencyTest" />
+		<test:identifier rdf:datatype="http://www.w3.org/2001/XMLSchema#string">WebOnt-someValuesFrom-002</test:identifier>
+		<test:creator rdf:datatype="http://www.w3.org/2001/XMLSchema#string">Jeremy J. Carroll</test:creator>
+		<test:description rdf:datatype="http://www.w3.org/2001/XMLSchema#string">A simple example showing how &lt;code&gt;owl:someValuesFrom&lt;/code&gt; differs from &lt;code&gt;owl:allValuesFrom&lt;/code&gt;.</test:description>
+		<test:normativeSyntax rdf:resource="&test;RDFXML" />
+		<test:status rdf:resource="&test;Proposed" />
+		<test:semantics rdf:resource="&test;DIRECT" />
+		<test:semantics rdf:resource="&test;RDF-BASED" />
+		<test:species rdf:resource="&test;FULL" />
+		<test:rdfXmlNonConclusionOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:first="http://www.w3.org/2002/03owlt/someValuesFrom/premises002#"
+    xml:base="http://www.w3.org/2002/03owlt/someValuesFrom/nonconclusions002" &gt;
+    &lt;first:c rdf:about="premises001#o"/&gt;
+
+&lt;/rdf:RDF&gt;</test:rdfXmlNonConclusionOntology>
+		<test:rdfXmlPremiseOntology rdf:datatype="http://www.w3.org/2001/XMLSchema#string">&lt;rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xmlns:first="http://www.w3.org/2002/03owlt/someValuesFrom/premises002#"
+    xml:base="http://www.w3.org/2002/03owlt/someValuesFrom/premises002" &gt;
+    &lt;owl:Class rdf:ID="r"&gt;
+      &lt;rdfs:subClassOf&gt;
+        &lt;owl:Restriction&gt;
+            &lt;owl:onProperty rdf:resource="#p"/&gt;
+            &lt;owl:someValuesFrom rdf:resource="#c"/&gt;
+        &lt;/owl:Restriction&gt;
+      &lt;/rdfs:subClassOf&gt;
+    &lt;/owl:Class&gt;
+    &lt;owl:ObjectProperty rdf:ID="p"/&gt;
+    &lt;owl:Class rdf:ID="c"/&gt;
+    &lt;first:r rdf:ID="i"&gt;
+       &lt;first:p rdf:resource="#o"/&gt;
+    &lt;/first:r&gt;
+&lt;/rdf:RDF&gt;</test:rdfXmlPremiseOntology>
+	</test:TestCase>
+	<owl:NegativePropertyAssertion>
+		<owl:sourceIndividual rdf:resource="http://owl.semanticweb.org/id/TestCase-3AWebOnt-2DsomeValuesFrom-2D002" />
+		<owl:assertionProperty rdf:resource="&test;species" />
+		<owl:targetIndividual rdf:resource="&test;DL" />
+	</owl:NegativePropertyAssertion>
+
+
+<!-- Processed 12 items. -->
+</rdf:RDF>

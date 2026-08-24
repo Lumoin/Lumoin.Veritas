@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Link id="Link-001" xmlns="http://www.opengis.net/kml/2.2">
+	<href>model/does-not-exist.dae</href>
+	<refreshMode>onChange</refreshMode>
+	<refreshInterval>60</refreshInterval>
+	<viewRefreshMode>never</viewRefreshMode>
+</Link>

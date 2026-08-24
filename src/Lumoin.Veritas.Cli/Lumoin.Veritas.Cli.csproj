@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>veritas</ToolCommandName>
+
+    <Title>Veritas command-line, MCP, and SPARQL HTTP server</Title>
+    <Description>A command-line tool, Model Context Protocol server, and SPARQL 1.1 Protocol HTTP endpoint over the Lumoin.Veritas RDF / SPARQL / SHACL engine.</Description>
+
+    <!--
+      The CLI keeps the repository-wide trim/AOT analysis on (inherited IsAotCompatible /
+      EnableTrimAnalyzer), so every build verifies it stays AOT-safe: the Kestrel endpoint
+      uses the slim host builder and the MCP tool surface is statically registered.
+
+      The tool ships as RID-specific native-AOT packages plus a framework-dependent `any`
+      fallback (the .NET 10 hybrid tool-packaging model): ToolPackageRuntimeIdentifiers
+      names the RID sub-packages the top-level pointer package lists, and the CI legs pack
+      each native package on its matching OS with `dotnet pack -r <rid> -p:PublishAot=true`.
+      PublishAot stays off the project so the ordinary build/test legs do not pull the
+      per-RID ILCompiler into the locked restore.
+    -->
+    <ToolPackageRuntimeIdentifiers>linux-x64;linux-arm64;win-x64;win-arm64;osx-arm64;any</ToolPackageRuntimeIdentifiers>
+  </PropertyGroup>
+
+  <!--
+    The repository declares browser as a supported platform for non-test projects; the
+    Kestrel HTTP server is not reachable on browser, so the declaration is removed here to
+    keep the platform-compatibility analyzer accurate for this application.
+  -->
+  <ItemGroup>
+    <SupportedPlatform Remove="browser" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.CommandLine" />
+    <PackageReference Include="ModelContextProtocol" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Database\Lumoin.Veritas.Database.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Sparql\Lumoin.Veritas.Sparql.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Turtle\Lumoin.Veritas.Turtle.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.NQuads\Lumoin.Veritas.NQuads.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Xml\Lumoin.Veritas.Xml.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Owl\Lumoin.Veritas.Owl.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Rdf.Json\Lumoin.Veritas.Rdf.Json.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Geo\Lumoin.Veritas.Geo.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Geo.Json.Stj\Lumoin.Veritas.Geo.Json.Stj.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include=".mcp\server.json" Pack="true" PackagePath=".mcp" />
+  </ItemGroup>
+
+</Project>

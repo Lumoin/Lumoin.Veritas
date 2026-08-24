@@ -1,0 +1,366 @@
+# The GeoSPARQL 1.1 requirement census, authored in-house from OGC 22-047r1 (no upstream
+# conformance-test manifest exists for GeoSPARQL 1.1). One entry per normative requirement id,
+# 57 in total across the seven conformance classes. Every entry carries the arm's disposition:
+# "decided" (live conformance rows exercise the requirement, named in arm:evidence),
+# "pinned-backlog" (not yet decided; arm:reason names what the decision awaits; none at present), or
+# "silenced-with-reason" (deliberately out of the claimed scope; none at present).
+# The coverage ledger in Geo/GeoConformanceCoverageTests.cs asserts this census is total:
+# 57 unique ids, the per-class totals, and a closed disposition set — zero invisible complement.
+
+PREFIX arm: <urn:x-veritas:geosparql-arm#>
+
+# Core — /conf/core (7 requirement ids).
+
+[] arm:requirement "/req/core/sparql-protocol" ;
+   arm:conformanceClass "core" ;
+   arm:bucket "other" ;
+   arm:disposition "decided" ;
+   arm:evidence "The serve command's HTTP endpoint is the engine's SPARQL 1.1 Protocol endpoint under the server deployment posture - the embedded and decentralized postures share the engine surface beneath it. Query evaluation answers all four query forms at the database facade, pinned by the Tests-project Database/VeritasEngineQueryFormsTests battery - CONSTRUCT instantiation with fresh per-solution blank nodes, DESCRIBE as the Concise Bounded Description over explicit IRIs, bound variables, star, and the absent resource, the engine-default store-local graph source with its typed unknown-graph refusal, the protocol-dataset override, and the options-resolver override. The protocol's query operation is served whole, pinned by the Tests-project Cli/VeritasCliIntegrationTests battery - the three submission forms (ServeCommandAnswersHttpQuery, ServeCommandAnswersHttpPostQuery, ServeCommandAnswersUrlEncodedFormPostQuery), content negotiation across the SPARQL Query Results XML and JSON serializations and the delimited formats (ServeCommandNegotiatesSparqlResultsXml, ServeCommandNegotiatesTheDelimitedFormats), ASK answering a real results document in JSON and XML (ServeCommandAnswersAskAsResultsJsonAndXml), graph results as N-Triples and Turtle including under a tabular Accept (ServeCommandAnswersConstructAsNTriplesAndTurtle, ServeCommandAnswersConstructUnderATabularAccept), the dataset parameters selecting the loaded named graphs and refusing an unknown IRI by name (ServeCommandSelectsTheNamedGraphThroughProtocolDataset, ServeCommandRefusesAnUnknownDatasetGraph), the malformed-400/refused-500 fault split (ServeCommandSplitsProtocolFaults), the 415 content-type refusal (ServeCommandRefusesAnUnknownPostContentType), and the SPARQL 1.1 Service Description on a query-less GET (ServeCommandServesTheServiceDescription)." .
+
+[] arm:requirement "/req/core/spatial-object-class" ;
+   arm:conformanceClass "core" ;
+   arm:bucket "vocabulary" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoVocabularyGraphPatternTests.ClassIsUsableInGraphPatterns binds the typed member through a rdf:type graph pattern over geo:SpatialObject and leaves the decoy unmatched." .
+
+[] arm:requirement "/req/core/feature-class" ;
+   arm:conformanceClass "core" ;
+   arm:bucket "vocabulary" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoVocabularyGraphPatternTests.ClassIsUsableInGraphPatterns binds the typed member through a rdf:type graph pattern over geo:Feature and leaves the decoy unmatched; the feature-geometry-serialization join row exercises the class inside a three-pattern query." .
+
+[] arm:requirement "/req/core/spatial-object-collection-class" ;
+   arm:conformanceClass "core" ;
+   arm:bucket "vocabulary" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoVocabularyGraphPatternTests.ClassIsUsableInGraphPatterns binds the typed member through a rdf:type graph pattern over geo:SpatialObjectCollection and leaves the decoy unmatched." .
+
+[] arm:requirement "/req/core/feature-collection-class" ;
+   arm:conformanceClass "core" ;
+   arm:bucket "vocabulary" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoVocabularyGraphPatternTests.ClassIsUsableInGraphPatterns binds the typed member through a rdf:type graph pattern over geo:FeatureCollection and leaves the decoy unmatched." .
+
+[] arm:requirement "/req/core/spatial-object-properties" ;
+   arm:conformanceClass "core" ;
+   arm:bucket "vocabulary" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoVocabularyGraphPatternTests.PropertyIsUsableInGraphPatterns binds subject and object through a graph pattern over each of the ten size, length, perimeter, area, and volume properties, leaving the decoy triple unmatched." .
+
+[] arm:requirement "/req/core/feature-properties" ;
+   arm:conformanceClass "core" ;
+   arm:bucket "vocabulary" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoVocabularyGraphPatternTests.PropertyIsUsableInGraphPatterns binds subject and object through a graph pattern over each of geo:hasGeometry, hasDefaultGeometry, hasCentroid, and hasBoundingBox; the feature-geometry-serialization join row exercises geo:hasDefaultGeometry inside a three-pattern query." .
+
+# Topology Vocabulary Extension — /conf/topology-vocab-extension (3 requirement ids).
+
+[] arm:requirement "/req/topology-vocab-extension/sf-spatial-relations" ;
+   arm:conformanceClass "topology-vocab-extension" ;
+   arm:bucket "vocabulary" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoVocabularyGraphPatternTests.PropertyIsUsableInGraphPatterns binds subject and object through a graph pattern over each of the eight sf* relation properties, leaving the decoy triple unmatched." .
+
+[] arm:requirement "/req/topology-vocab-extension/eh-spatial-relations" ;
+   arm:conformanceClass "topology-vocab-extension" ;
+   arm:bucket "vocabulary" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoVocabularyGraphPatternTests.PropertyIsUsableInGraphPatterns binds subject and object through a graph pattern over each of the eight eh* relation properties, leaving the decoy triple unmatched." .
+
+[] arm:requirement "/req/topology-vocab-extension/rcc8-spatial-relations" ;
+   arm:conformanceClass "topology-vocab-extension" ;
+   arm:bucket "vocabulary" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoVocabularyGraphPatternTests.PropertyIsUsableInGraphPatterns binds subject and object through a graph pattern over each of the eight rcc8* relation properties, leaving the decoy triple unmatched." .
+
+# Geometry Extension — /conf/geometry-extension (29 requirement ids).
+
+[] arm:requirement "/req/geometry-extension/geometry-class" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "vocabulary" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoVocabularyGraphPatternTests.ClassIsUsableInGraphPatterns binds the typed member through a rdf:type graph pattern over geo:Geometry and leaves the decoy unmatched." .
+
+[] arm:requirement "/req/geometry-extension/geometry-collection-class" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "vocabulary" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoVocabularyGraphPatternTests.ClassIsUsableInGraphPatterns binds the typed member through a rdf:type graph pattern over geo:GeometryCollection and leaves the decoy unmatched." .
+
+[] arm:requirement "/req/geometry-extension/feature-properties" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "vocabulary" ;
+   arm:disposition "decided" ;
+   arm:evidence "A roster member with no printed requirement statement in the IS; Geo/GeoVocabularyGraphPatternTests.PropertyIsUsableInGraphPatterns binds subject and object through a graph pattern over its abstract test A.12 property set: geo:hasGeometry, hasDefaultGeometry, hasLength, hasArea, hasVolume, hasCentroid, hasBoundingBox, and hasSpatialResolution." .
+
+[] arm:requirement "/req/geometry-extension/geometry-properties" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "vocabulary" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoVocabularyGraphPatternTests.PropertyIsUsableInGraphPatterns binds subject and object through a graph pattern over each of the ten geometry metadata properties, leaving the decoy triple unmatched." .
+
+[] arm:requirement "/req/geometry-extension/wkt-literal" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "datatype" ;
+   arm:disposition "decided" ;
+   arm:evidence "The WktLexical recognizer battery (Tests/Geo/WktLexicalTests), the registering-host sh:datatype rows (Shacl/RegisteredGeoDatatypeValidationTests), the vendored-validator fixture sweep in both registry modes (Geo/GeoValidatorFixtureTests), and the term-identity degradation battery (Sparql/RegisteredGeoDatatypeConformanceTests). The five curve tags are accepted by abstention, their content grammar uncertified." .
+
+[] arm:requirement "/req/geometry-extension/wkt-literal-default-srs" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "datatype" ;
+   arm:disposition "decided" ;
+   arm:evidence "WktCrsPrefix decomposes the optional CRS prefix with CRS84 defaulted and the Defaulted/Explicit source tag pinned (Tests/Geo/WktCrsPrefixTests); the registered datatype validates prefix-less forms through the same decomposition." .
+
+[] arm:requirement "/req/geometry-extension/wkt-axis-order" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "datatype" ;
+   arm:disposition "decided" ;
+   arm:evidence "Within the certified roster a tuple's meaning follows the system's declared axis order: the extrema resolve X and Y through it so both geographic spellings of one geometry answer alike, geof:transform transposes between orders, and magnitude units follow the declared units (Tests/Geo/GeoFunctionsTests axis-order and unit batteries; Geo/GeoFunctionSparqlTests.MinXBindsTheEastAxisOverTheLatitudeFirstLiteral decides it through the engine). Binary and aggregate functions refuse mixed-system operands, so tuples of differing declared order never mix (the mixed-pair and mixed-group refusal rows); a non-roster system's declared order is not resolvable, so its literal answers in its own written order by documented convention (the written-order rows)." .
+
+[] arm:requirement "/req/geometry-extension/wkt-literal-empty" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "datatype" ;
+   arm:disposition "decided" ;
+   arm:evidence "The Tests-project Geo/GeoFunctionsTests rows pin the denotation: the empty lexical form serializes as the empty geometry through geof:asWKT and answers true through geof:isEmpty; the value seam's acceptance of the empty form is pinned in WktLexicalTests." .
+
+[] arm:requirement "/req/geometry-extension/geometry-as-wkt-literal" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "serialization" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoVocabularyGraphPatternTests.SerializationPropertyBindsTheTypedLiteral binds the geometry and its geo:wktLiteral-typed literal through a graph pattern over geo:asWKT; the feature-geometry-serialization join row exercises the property inside a three-pattern query, and the vendored fixture sweep exercises it in validation data." .
+
+[] arm:requirement "/req/geometry-extension/asWKT-function" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "function" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoFunctionSparqlTests.AsWktBindsTheCanonicalFormThroughTheEngine evaluates geof:asWKT through a parsed SELECT expression over stored geo:wktLiteral data; the Tests-project Geo/GeoFunctionsTests rows pin the canonical form, the explicit-CRS carriage, and the malformed-body error discipline on the catalog surface." .
+
+[] arm:requirement "/req/geometry-extension/gml-literal" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "datatype" ;
+   arm:disposition "decided" ;
+   arm:evidence "The Tests-project Geo/GmlLexicalTests certifies the GML 3.2 recognizer over the specification's own example literal, the certified roster, the malformed families, and the abstention families; Geo/GeoSerializationDatatypeTests pins the GmlLiteralValueDatatype mapping; Shacl/RegisteredGeoDatatypeValidationTests pins sh:datatype violating on a provably-malformed gmlLiteral under registration and conforming under the empty registry, and Sparql/RegisteredGeoDatatypeConformanceTests pins term-identity degradation under both registries. The vendored fixture sweep exercises the datatype through the real recognizer: the mistyped S17-invalid body violates in both modes, and the S17-valid literal's ontology-namespace defect is pinned as the sweep's recorded divergence row, a measured upstream finding." .
+
+[] arm:requirement "/req/geometry-extension/gml-literal-empty" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "datatype" ;
+   arm:disposition "decided" ;
+   arm:evidence "The Tests-project Geo/GeoFunctionsTests rows pin the denotation: the empty lexical form answers true through geof:isEmpty and serializes as the empty geometry through geof:asWKT; Geo/GeoFunctionSparqlTests.IsEmptyBindsTrueOverTheEmptyGmlLiteral demonstrates it through a parsed SELECT over the module-composed registries; the recognizer's acceptance of the empty form is pinned in GmlLexicalTests." .
+
+[] arm:requirement "/req/geometry-extension/gml-profile" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "other" ;
+   arm:disposition "decided" ;
+   arm:evidence "The supported profile is documented: the ARCHITECTURE geometry-serialization passage and the GmlLexical and GmlLiteralValueDatatype contracts name GML 3.2 (OGC 07-036) with the certified element roster and the abstention set; Geo/GmlLexicalTests pins those rosters as executable expectations." .
+
+[] arm:requirement "/req/geometry-extension/geometry-as-gml-literal" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "serialization" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoVocabularyGraphPatternTests.SerializationPropertyBindsTheTypedLiteral binds the geometry and its geo:gmlLiteral-typed literal through a graph pattern over geo:asGML." .
+
+[] arm:requirement "/req/geometry-extension/asGML-function" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "function" ;
+   arm:disposition "decided" ;
+   arm:evidence "geof:asGML answers the geo:gmlLiteral of the operand in the coordinate reference system the operand already carries, never re-expressed, and always declares that system's canonical IRI on the root element - a literal that left the system implicit answers a document naming CRS84 outright; a system outside the certified roster and a measured geometry each answer the error value, and the empty operand answers the self-closing memberless aggregate carrying the same declaration. The codec is certified by the Tests-project Geo/GmlGeometryReaderTests and Geo/GmlGeometryWriterTests over the profile's geometry value space, Geo/XmlFragmentScannerTests over the shared XML transport floor, Geo/CircularArcLinearizationTests over the certified arc tier, Geo/GeometryCodecCrossFormatTests over one model corpus through every writer and re-reader, and Geo/GeometryCodecRefusalTests over the closed refusal roster, with the vendored OGC CITE GML instance corpus cleared artifact by artifact in Geo/CiteGmlCorpusTests and pinned byte-exact by Geo/CiteGmlCorpusManifestTests. The recorded deviation is one-way and named rather than silenced: the reader admits the curve-bounded, patch-composed, and circular-segment forms - the arcs by certified linearization - while the writer emits linear geometry only, so a document carrying arcs re-writes as its linearized image and never as a re-fitted arc. The function rows are the Tests-project Geo/GeoFunctionsTests battery - the coordinate-reference-preserving round trip per roster system, the always-explicit root declaration over a defaulted operand, the non-roster and measured error rows, and the empty emission - and Geo/GeoFunctionSparqlTests binds the function through a parsed SELECT over the module-composed registries." .
+
+[] arm:requirement "/req/geometry-extension/geojson-literal" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "datatype" ;
+   arm:disposition "decided" ;
+   arm:evidence "The Tests-project Geo/GeoJsonLexicalTests certifies the RFC 7946 geometry-object recognizer over the specification's own example literal, every geometry type with its fixed coordinates nesting, the malformed families, and the abstention families; Geo/GeoSerializationDatatypeTests pins the GeoJsonLiteralValueDatatype mapping; the sh:datatype delta and term-identity degradation rows run in Shacl/RegisteredGeoDatatypeValidationTests and Sparql/RegisteredGeoDatatypeConformanceTests; the vendored S18 fixtures exercise the datatype through the real recognizer in both modes." .
+
+[] arm:requirement "/req/geometry-extension/geojson-literal-srs" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "datatype" ;
+   arm:disposition "decided" ;
+   arm:evidence "The datatype carries no spatial reference system definition: Geo/GeoJsonLexicalTests pins the recognizer condemning every top-level crs value except the legacy name-form object naming CRS84 - null, a string, an array, a number, and an object naming another system or written in another form are all malformed, while that one form passes uncertified because it asserts nothing beyond the default this datatype already fixes, and a nested geometry object's crs member stays an abstention. The empty-form rows in Geo/GeoFunctionsTests read the CRS84 default through the operand seam, and the always-CRS84 rule is stated on GeoJsonLiteralValueDatatype." .
+
+[] arm:requirement "/req/geometry-extension/geojson-literal-empty" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "datatype" ;
+   arm:disposition "decided" ;
+   arm:evidence "The Tests-project Geo/GeoFunctionsTests rows pin the denotation: the empty lexical form answers true through geof:isEmpty and serializes as the empty geometry through geof:asWKT; Geo/GeoFunctionSparqlTests.AsWktBindsTheCanonicalEmptyFormOverTheEmptyGeoJsonLiteral demonstrates it through a parsed SELECT over the module-composed registries; the recognizer's acceptance of the empty form is pinned in GeoJsonLexicalTests." .
+
+[] arm:requirement "/req/geometry-extension/geometry-as-geojson-literal" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "serialization" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoVocabularyGraphPatternTests.SerializationPropertyBindsTheTypedLiteral binds the geometry and its geo:geoJSONLiteral-typed literal through a graph pattern over geo:asGeoJSON." .
+
+[] arm:requirement "/req/geometry-extension/asGeoJSON-function" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "function" ;
+   arm:disposition "decided" ;
+   arm:evidence "geof:asGeoJSON answers the geo:geoJSONLiteral in CRS84, the system the format defines its coordinates in and carries no declaration of: an operand already in CRS84 is written as it stands, one in another certified system is re-expressed through the coordinate-operation surface first, and a system outside the roster, a refused re-expression, a measured operand, and a Z-carrying operand under a required re-expression each answer the error value - no clamp, no wrap, no dropped ordinate. The codec is certified by the Tests-project Geo/GeoJsonGeometryReaderTests and Geo/GeoJsonGeometryWriterTests over the RFC 7946 geometry-object space and the canonical byte form, Geo/GeometryCodecCrossFormatTests over one model corpus through every writer and re-reader, and Geo/GeometryCodecRefusalTests over the closed refusal roster. The recorded deviation is stated without qualification: the writer emits ring order and ring orientation verbatim and never reorients, so the format's right-hand-rule requirement on polygon rings is declined outright rather than silently applied, and a clockwise exterior ring survives the writer as written. The function rows are the Tests-project Geo/GeoFunctionsTests battery - the CRS84 identity case, the re-expressed roster case, the transform-refusal, non-roster, measured, and empty-collection rows - and Geo/GeoFunctionSparqlTests binds the function through a parsed SELECT over the module-composed registries." .
+
+[] arm:requirement "/req/geometry-extension/kml-literal" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "datatype" ;
+   arm:disposition "decided" ;
+   arm:evidence "The Tests-project Geo/KmlLexicalTests certifies the OGC KML 2.2 geometry recognizer over the specification's own example literal, the certified roster, the coordinates tuple grammar, the malformed families, and the abstention families; Geo/GeoSerializationDatatypeTests pins the KmlLiteralValueDatatype mapping; the sh:datatype delta and term-identity degradation rows run in Shacl/RegisteredGeoDatatypeValidationTests and Sparql/RegisteredGeoDatatypeConformanceTests; the vendored S19 fixtures exercise the datatype through the real recognizer in both modes." .
+
+[] arm:requirement "/req/geometry-extension/kml-literal-srs" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "datatype" ;
+   arm:disposition "decided" ;
+   arm:evidence "The datatype carries no spatial reference system definition: the KML tuple grammar admits no CRS declaration, the empty-form rows in Geo/GeoFunctionsTests read the CRS84 default through the operand seam, and the always-CRS84 rule is stated on KmlLiteralValueDatatype." .
+
+[] arm:requirement "/req/geometry-extension/kml-literal-empty" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "datatype" ;
+   arm:disposition "decided" ;
+   arm:evidence "The Tests-project Geo/GeoFunctionsTests rows pin the denotation: the empty lexical form answers true through geof:isEmpty and serializes as the empty geometry through geof:asWKT; the recognizer's acceptance of the empty form is pinned in KmlLexicalTests." .
+
+[] arm:requirement "/req/geometry-extension/geometry-as-kml-literal" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "serialization" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoVocabularyGraphPatternTests.SerializationPropertyBindsTheTypedLiteral binds the geometry and its geo:kmlLiteral-typed literal through a graph pattern over geo:asKML." .
+
+[] arm:requirement "/req/geometry-extension/asKML-function" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "function" ;
+   arm:disposition "decided" ;
+   arm:evidence "geof:asKML answers the geo:kmlLiteral under the same CRS84 composition the GeoJSON function uses, the format fixing that system and declaring none; a carried Z ordinate is written as the format's absolute altitude, and a system outside the certified roster, a refused re-expression, a measured operand, and a Z-carrying operand under a required re-expression each answer the error value. The codec is certified by the Tests-project Geo/KmlGeometryReaderTests and Geo/KmlGeometryWriterTests over the format's coordinate-geometry roster and tuple grammar, Geo/XmlFragmentScannerTests over the shared XML transport floor, Geo/GeometryCodecCrossFormatTests over one model corpus through every writer and re-reader, and Geo/GeometryCodecRefusalTests over the closed refusal roster, with the vendored OGC CITE KML instance corpus cleared artifact by artifact in Geo/CiteKmlCorpusTests - the archive containers cleared as raw bytes and their extracted entries as documents - and pinned byte-exact by Geo/CiteKmlCorpusManifestTests. Three deviations are recorded and none is silenced: the reader accepts the exponent spellings of the double grammar, which the format's own printed coordinate grammar does not enumerate; the linear ring materializes one way as its closed line string and every typed aggregate collapses into the format's single heterogeneous aggregate, so a round trip lands on the documented image rather than the original kind; and the format expresses no empty geometry at all, so geof:asKML over an empty operand answers the error value rather than a fabricated document - the empty-literal denotation rows stand unmoved on their own serialization evidence. The function rows are the Tests-project Geo/GeoFunctionsTests battery - the CRS84 identity case, the re-expressed roster case, the altitude carriage, the transform-refusal, non-roster, measured, and empty-operand error rows - and Geo/GeoFunctionSparqlTests binds the function through a parsed SELECT over the module-composed registries." .
+
+[] arm:requirement "/req/geometry-extension/query-functions" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "function" ;
+   arm:disposition "decided" ;
+   arm:evidence "All twenty-three members are live with rows: the eleven accessors (boundary, coordinateDimension, dimension, distance, metricDistance, envelope, geometryType, is3D, isEmpty, isMeasured, spatialDimension), isSimple, the ten constructive members (boundingCircle, buffer, metricBuffer, centroid, concaveHull, convexHull, difference, intersection, symDifference, union) — Geo/GeoFunctionSparqlTests and the Tests-project Geo/GeoFunctionsTests, Geo/GeoRelateFunctionsTests, and Geo/GeoConstructiveFunctionsTests — and transform over the closed certified three-system roster (CRS84, EPSG:4326 latitude-first, EPSG:3857 Web Mercator): the Tests-project transform battery pins the surface-bitwise projection, the axis-order duality, the always-explicit target-prefix emission, and the loud refusals (a system outside the roster on either side, urn: forms, 3D and measured operands, and every coordinate the pair's no-clamp no-wrap validation refuses), and Geo/GeoFunctionSparqlTests.TransformBindsTheAxisSwappedLiteralThroughTheEngine decides it through the engine. geof:transform answers geo:wktLiteral uniformly — a coordinate-reference-system change, never a serialization-format conversion." .
+
+[] arm:requirement "/req/geometry-extension/query-functions-non-sf" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "function" ;
+   arm:disposition "decided" ;
+   arm:evidence "All fourteen functions are live under the documented planar unit rules: Geo/GeoFunctionSparqlTests exercises the accessors through the engine (MemberAccessorsBindOverTheMultipoint, CoordinateExtremaBindOverTheLine, MetricAreaBindsUnderAnExplicitCrs), and the Tests-project Geo/GeoFunctionsTests rows cover length/metricLength, perimeter/metricPerimeter, area/metricArea, geometryN, numGeometries, and the six coordinate extrema. The census records this id as absent from the requirements-class roster with no abstract test in the published IS." .
+
+[] arm:requirement "/req/geometry-extension/srid-function" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "function" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoFunctionSparqlTests.GetSridBindsTheDefaultCrsIri binds the CRS84 default as xsd:anyURI through the engine; the Tests-project Geo/GeoFunctionsTests.GetSridAnswersTheResolvedCrs rows pin the defaulted and explicit cases over the WktCrsPrefix decomposition." .
+
+[] arm:requirement "/req/geometry-extension/sa-functions" ;
+   arm:conformanceClass "geometry-extension" ;
+   arm:bucket "function" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoFunctionSparqlTests.AggUnionFoldsTheImplicitGroupThroughTheEngine, AggCentroidFoldsPerGroupThroughTheEngine, AggBoundingBoxBindsTheCombinedEnvelopeThroughTheEngine, and MixedCrsGroupLeavesTheAggregateUnbound decide the six geof:agg* identifiers as SPARQL aggregate extension functions through the engine over the module-composed registries; the Tests-project Geo/GeoAggregateFunctionsTests rows pin each fold's collection semantics against its scalar counterpart, the group-wide one-CRS gate, the explicit-prefix carriage, and the empty-group, ill-typed-member, and malformed-member refusals." .
+
+# Geometry Extension - DGGS — /conf/geometry-extension-dggs (8 requirement ids).
+
+[] arm:requirement "/req/geometry-extension-dggs/dggs-literal" ;
+   arm:conformanceClass "geometry-extension-dggs" ;
+   arm:bucket "datatype" ;
+   arm:disposition "decided" ;
+   arm:evidence "The Tests-project Geo/DggsLexicalTests certifies the literal grammar the statement gives - the angle-bracket IRI prefix, the required whitespace separator, the malformed prefix families, and the empty form - while the geometry data abstains for every non-empty body, because the specification delegates its formulation to the identified DGGS and the certification scope is therefore the prefix alone; the specification's own example form conforms by abstention over its opaque cell body. Geo/GeoSerializationDatatypeTests pins the DggsLiteralValueDatatype mapping; the sh:datatype delta and abstention rows run in Shacl/RegisteredGeoDatatypeValidationTests, and Sparql/RegisteredGeoDatatypeConformanceTests pins term-identity degradation under both registries." .
+
+[] arm:requirement "/req/geometry-extension-dggs/dggs-literal-empty" ;
+   arm:conformanceClass "geometry-extension-dggs" ;
+   arm:bucket "datatype" ;
+   arm:disposition "decided" ;
+   arm:evidence "The Tests-project Geo/GeoFunctionsTests rows pin the denotation: the empty lexical form answers true through geof:isEmpty and serializes as the empty geometry through geof:asWKT, while the whitespace-only form stays the error value at the operand seam, matching the datatype's invalid verdict; Geo/GeoFunctionSparqlTests.IsEmptyBindsTrueOverTheEmptyDggsLiteral demonstrates it through a parsed SELECT over the module-composed registries; the recognizer's acceptance of exactly the zero-length form is pinned in DggsLexicalTests." .
+
+[] arm:requirement "/req/geometry-extension-dggs/geometry-as-dggs-literal" ;
+   arm:conformanceClass "geometry-extension-dggs" ;
+   arm:bucket "serialization" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoVocabularyGraphPatternTests.SerializationPropertyBindsTheTypedLiteral binds the geometry and its geo:dggsLiteral-typed literal through a graph pattern over geo:asDGGS." .
+
+[] arm:requirement "/req/geometry-extension-dggs/asDGGS-function" ;
+   arm:conformanceClass "geometry-extension-dggs" ;
+   arm:bucket "function" ;
+   arm:disposition "decided" ;
+   arm:evidence "The Tests-project Geo/GeoFunctionsTests pins the registered arity-2 function: the point conversion answers exactly the containing cell's canonical literal typed under the house a5Literal subclass, the produced cell set contains its seed point back through the operand seam, the empty geometry answers the empty literal, and the datatype argument's resolution carriage refuses every out-of-grammar form - the bare IRI included, because the statement's signature carries no resolution parameter and none is fabricated." .
+
+[] arm:requirement "/req/geometry-extension-dggs/query-functions" ;
+   arm:conformanceClass "geometry-extension-dggs" ;
+   arm:bucket "function" ;
+   arm:disposition "decided" ;
+   arm:evidence "All twenty-three member functions are live over house-flavour DGGS literals through the one operand seam and the cells-to-geometry bridge — geof:transform completes the roster: the Tests-project Geo/GeoFunctionsTests.TransformOverTheHouseFlavourCellSetAnswersAWebMercatorGeometry materializes a house cell set at the CRS84 default and re-expresses it in Web Mercator as a geo:wktLiteral under the explicit target prefix, the same wktLiteral-uniform answer the base id records — and the IS prints no statement box for this id (recovered from abstract test A.38)." .
+
+[] arm:requirement "/req/geometry-extension-dggs/query-functions-non-sf" ;
+   arm:conformanceClass "geometry-extension-dggs" ;
+   arm:bucket "function" ;
+   arm:disposition "decided" ;
+   arm:evidence "All fourteen member functions extend to house-flavour DGGS literals structurally through the one operand seam - the Tests-project Geo/GeoFunctionsTests pins the cells-to-geometry bridge per result family (emptiness, serialization, geometry type, magnitude, and the mixed-operand binary case) over cell-set literals materializing as polygons and multipolygons at CRS84, with the planar-faithfulness and nested-pair refusal classes decided as error values; the IS prints no statement box for this id (recovered from abstract test A.39)." .
+
+[] arm:requirement "/req/geometry-extension-dggs/srid-function" ;
+   arm:conformanceClass "geometry-extension-dggs" ;
+   arm:bucket "function" ;
+   arm:disposition "decided" ;
+   arm:evidence "The Tests-project Geo/GeoFunctionsTests.GetSridOverHouseFlavourLiteralAnswersTheDefault answers the CRS84 IRI over a parsed house-flavour form, GetSridOverEmptyDggsLiteralAnswersTheDefault covers the empty form, and a foreign grid's form answers the error value at the seam; the IS prints no statement box for this id (recovered from abstract test A.40)." .
+
+[] arm:requirement "/req/geometry-extension-dggs/sa-functions" ;
+   arm:conformanceClass "geometry-extension-dggs" ;
+   arm:bucket "function" ;
+   arm:disposition "decided" ;
+   arm:evidence "The six spatial aggregates fold house-flavour DGGS members through the same operand seam - the Tests-project Geo/GeoFunctionsTests pins geof:aggUnion over a DGGS group and geof:aggBoundingBox over a mixed DGGS and WKT group under the shared CRS84 default; the IS prints no statement box for this id (recovered from abstract test A.41)." .
+
+# Geometry Topology Extension — /conf/geometry-topology-extension (4 requirement ids).
+
+[] arm:requirement "/req/geometry-topology-extension/relate-query-function" ;
+   arm:conformanceClass "geometry-topology-extension" ;
+   arm:bucket "function" ;
+   arm:disposition "decided" ;
+   arm:evidence "geof:relate answers the pattern test over the computed DE-9IM matrix: Geo/GeoFunctionSparqlTests.RelateBindsThePatternTestThroughTheEngine binds the equal-polygon and disjoint patterns through parsed queries and MalformedRelatePatternLeavesTheVariableUnbound pins the malformed pattern as an expression error; the Tests-project Geo/GeoRelateFunctionsTests rows cover the pattern-symbol table (RelateAnswersThePatternTest, RelateMalformedPatternAnswersTheErrorValue), the collection-union composition, and the one-CRS gate. The matrix itself is certified by Geo/GeometryRelateTests' whole-matrix canon." .
+
+[] arm:requirement "/req/geometry-topology-extension/sf-query-functions" ;
+   arm:conformanceClass "geometry-topology-extension" ;
+   arm:bucket "function" ;
+   arm:disposition "decided" ;
+   arm:evidence "All eight sf* query functions answer their Table 6 patterns over the computed matrix: Geo/GeoFunctionSparqlTests.TopologicalPredicateFamiliesBindThroughTheEngine and PredicateDecidesTheFilter bind them through parsed queries, and the Tests-project Geo/GeoRelateFunctionsTests rows cover the dispatch roster (EveryNamedPredicateEntryAnswersABoundBoolean over all twenty-four), the out-of-domain defined-false rule, the empty-operand rule, and the mutual-within equals convention. The predicate answers are certified by Geo/TopologicalPredicateTests' curated corpus and its predicate-versus-pattern agreement sweep." .
+
+[] arm:requirement "/req/geometry-topology-extension/eh-query-functions" ;
+   arm:conformanceClass "geometry-topology-extension" ;
+   arm:bucket "function" ;
+   arm:disposition "decided" ;
+   arm:evidence "All eight eh* query functions answer their Table 7 patterns over the computed matrix: Geo/GeoFunctionSparqlTests.TopologicalPredicateFamiliesBindThroughTheEngine binds ehInside through a parsed query, and the Tests-project Geo/GeoRelateFunctionsTests rows cover the dispatch roster and the recorded eh-versus-sf divergences on coincident points and crossing lines (NamingFamiliesDivergeThroughTheSeam). The predicate answers are certified by Geo/TopologicalPredicateTests." .
+
+[] arm:requirement "/req/geometry-topology-extension/rcc8-query-functions" ;
+   arm:conformanceClass "geometry-topology-extension" ;
+   arm:bucket "function" ;
+   arm:disposition "decided" ;
+   arm:evidence "All eight rcc8* query functions answer their Table 8 patterns over the computed matrix: Geo/GeoFunctionSparqlTests.TopologicalPredicateFamiliesBindThroughTheEngine binds rcc8ntpp through a parsed query, and the Tests-project Geo/GeoRelateFunctionsTests rows cover the dispatch roster and the rcc8 literal-pattern answer on coincident points. The predicate answers are certified by Geo/TopologicalPredicateTests, including the tangential and non-tangential proper-part pairs under operand swap." .
+
+# RDFS Entailment Extension — /conf/rdfs-entailment-extension (3 requirement ids).
+
+[] arm:requirement "/req/rdfs-entailment-extension/bgp-rdfs-ent" ;
+   arm:conformanceClass "rdfs-entailment-extension" ;
+   arm:bucket "entailment" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoRdfsEntailmentTests answers subclass, subproperty, domain, and range entailments over the vendored ontology through ASK and SELECT graph patterns on the reasoned engine, with the consistent-open pin, the no-spurious-type negative row, and the exact-member selection." .
+
+[] arm:requirement "/req/rdfs-entailment-extension/wkt-geometry-types" ;
+   arm:conformanceClass "rdfs-entailment-extension" ;
+   arm:bucket "entailment" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoRdfsEntailmentTests answers the vendored simple-features hierarchy through direct, deep-chain, and geo-bridge class graph patterns on the reasoned engine, with the sibling negative row and the exact-member selection." .
+
+[] arm:requirement "/req/rdfs-entailment-extension/gml-geometry-types" ;
+   arm:conformanceClass "rdfs-entailment-extension" ;
+   arm:bucket "entailment" ;
+   arm:disposition "decided" ;
+   arm:evidence "Geo/GeoRdfsEntailmentTests answers the vendored GML 3.2.1 geometry class hierarchy through direct, deep-chain, dual-parentage, geo-bridge, and patch-hierarchy class graph patterns on the reasoned engine, with the sibling negative row, the exact-member selections over both the gml:AbstractGeometry root and the geo:Geometry bridge, and the vocabulary roster pinned membership-exact against the vendored document." .
+
+# Query Rewrite Extension — /conf/query-rewrite-extension (3 requirement ids).
+
+[] arm:requirement "/req/query-rewrite-extension/sf-query-rewrite" ;
+   arm:conformanceClass "query-rewrite-extension" ;
+   arm:bucket "query-rewrite" ;
+   arm:disposition "decided" ;
+   arm:evidence "The semantic rewrite entry expands the eight sf* relation properties per the specification's four transformation-rule cases, dark by default and composed explicitly: Geo/GeoQueryRewriteSparqlTests binds the feature-feature, feature-geometry, geometry-feature, and geometry-geometry cases through parsed queries (FeatureFeatureCaseDerivesThroughTheRewrite and the case rows), keeps the asserted route (TheAssertedRouteSurvivesTheRewrite), answers each pair once under the entailment regime's set semantics (EveryDerivablePairAnswersExactlyOnce), pins the stated bounds (variable predicates and property paths stay asserted-only) and both degradations (dark and functionless), and the feature-level roster (EveryTopologicalPropertyAnswersItsPinnedVerdictThroughTheRewrite) carries the sf rows; the Database-project Database/GeoRewriteThreadingTests rows prove the pipeline reaches both engine lanes through the engine options." .
+
+[] arm:requirement "/req/query-rewrite-extension/eh-query-rewrite" ;
+   arm:conformanceClass "query-rewrite-extension" ;
+   arm:bucket "query-rewrite" ;
+   arm:disposition "decided" ;
+   arm:evidence "The same semantic rewrite entry covers the eight eh* relation properties: Geo/GeoQueryRewriteSparqlTests.EveryTopologicalPropertyRoutesToItsFunction pins each eh property to its geof: predicate across the four case filters, and the feature-level roster (EveryTopologicalPropertyAnswersItsPinnedVerdictThroughTheRewrite) carries the eh rows with both directions of every directional pair." .
+
+[] arm:requirement "/req/query-rewrite-extension/rcc8-query-rewrite" ;
+   arm:conformanceClass "query-rewrite-extension" ;
+   arm:bucket "query-rewrite" ;
+   arm:disposition "decided" ;
+   arm:evidence "Two routes: the same semantic rewrite entry covers the eight rcc8* relation properties (Geo/GeoQueryRewriteSparqlTests.EveryTopologicalPropertyRoutesToItsFunction and the rcc8 rows of the feature-level roster), and the entailment-side composition capability derives new rcc8 relations from asserted ones with no geometry - exact converses plus singleton-composition-cell materialization to the fixpoint, silent on disjunctive cells since a disjunctive cell is not assertable as a triple. The table's laws and its geometric certification against the computed predicates are the Tests-project Geo/Rcc8CompositionTests rows (identity, converse symmetry, the pinned twenty-seven-singleton roster, the sixty-four-cell witness sweep), and Database/GeoRewriteThreadingTests.TheCompositionClosureFeedsTheAssertedRouteEndToEnd lands derived relations as plain triples that match with no pipeline and no geometry." .

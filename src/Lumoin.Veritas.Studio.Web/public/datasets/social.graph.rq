@@ -1,0 +1,5 @@
+PREFIX soc: <https://veritas.app/ns/social#>
+SELECT ?fromLabel ?fromKind ?toLabel ?toKind WHERE {
+  ?a soc:knows ?b . ?a soc:firstName ?fromLabel . ?b soc:firstName ?toLabel .
+  BIND("person" AS ?fromKind) BIND("person" AS ?toKind)
+}

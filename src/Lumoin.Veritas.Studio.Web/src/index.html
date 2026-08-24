@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en" data-theme="light" data-density="comfortable">
+<head>
+<meta charset="utf-8">
+<title>Veritas Studio</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#439AFF">
+<link rel="icon" href="./icon.svg" type="image/svg+xml" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="./favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="./favicon-16x16.png">
+<link rel="apple-touch-icon" href="./apple-touch-icon.png">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="stylesheet" href="./styles/tokens.css">
+<link rel="stylesheet" href="./styles/studio.css">
+</head>
+<body>
+
+<div class="studio" data-layout="studio" data-streaming="idle">
+
+  <!-- top bar -->
+  <header class="topbar">
+    <div class="tb-brand">
+      <img class="tb-mark" src="./icon.svg" alt="Lumoin" width="22" height="22">
+      <span class="word">Veritas</span>
+      <span class="tb-studio">Studio</span>
+    </div>
+
+    <fieldset class="tb-dataset">
+      <legend class="sr-only">Dataset</legend>
+      <label class="sr-only" for="dataset-select">Dataset</label>
+      <select class="tb-chip tb-select" id="dataset-select" data-testid="dataset-select" title="Open a distributed dataset"></select>
+      <button class="tb-chip" type="button" data-testid="open-file" title="Open an RDF file (Turtle / N-Triples / TriG)">Open file…</button>
+      <input type="file" id="file-input" accept=".ttl,.turtle,.nt,.nq,.trig,text/turtle" hidden />
+      <span class="tb-chip mono" data-testid="active-dataset" title="Active dataset"></span>
+    </fieldset>
+
+    <fieldset class="tb-engine">
+      <legend class="sr-only">Engine source</legend>
+      <label class="sr-only" for="engine-select">Engine source</label>
+      <select class="tb-chip tb-select" id="engine-select" data-testid="engine-select" title="Choose the engine this page queries">
+        <option value="wasm">In-browser engine</option>
+        <option value="server">This origin's server</option>
+        <option value="custom">Custom endpoint…</option>
+      </select>
+      <label class="sr-only" for="endpoint-input">SPARQL endpoint URL</label>
+      <input class="tb-chip tb-endpoint" id="endpoint-input" data-testid="endpoint-input" type="url" placeholder="https://host/sparql" spellcheck="false" hidden>
+    </fieldset>
+
+    <div class="tb-spacer"></div>
+
+    <button class="icon-btn" id="theme-btn" type="button" title="Toggle light / dark" aria-label="Toggle theme">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/></svg>
+    </button>
+  </header>
+
+  <!-- worlds bar: the scenario-world strip; hidden on sources without the worlds face -->
+  <fieldset class="worldsbar" id="worlds-strip" data-testid="worlds-strip" hidden>
+    <legend class="sr-only">Worlds</legend>
+    <button class="scenario-btn" type="button" id="world-create" data-testid="world-create" title="Fork the data into a scenario world and move its assumptions">Create a scenario world</button>
+    <label class="sr-only" for="world-select">World</label>
+    <select class="tb-chip tb-select" id="world-select" data-testid="world-select" title="The world Run and updates execute in"></select>
+    <output class="tb-chip tb-world-state" id="world-state" data-testid="world-state" for="world-select"></output>
+    <button class="tb-chip" type="button" id="world-diff" data-testid="world-diff" title="Diff the active world against a base world">Diff</button>
+    <button class="tb-chip" type="button" id="world-drop" data-testid="world-drop" title="Drop the active scenario world">Drop</button>
+  </fieldset>
+
+  <!-- body -->
+  <div class="body">
+
+    <!-- editor -->
+    <section class="panel editor" data-lang="sparql">
+      <div class="panel-head">
+        <div class="tabs" role="tablist" aria-label="Language">
+          <button class="tab lang-tab" data-lang="sparql" role="tab" aria-selected="true">SPARQL</button>
+          <button class="tab lang-tab" data-lang="shacl" role="tab" aria-selected="false">SHACL</button>
+          <button class="tab lang-tab" data-lang="turtle" role="tab" aria-selected="false">Turtle</button>
+          <button class="tab lang-tab" data-lang="jsonata" role="tab" aria-selected="false">JSONata</button>
+          <button class="tab lang-tab" data-lang="jsonld" role="tab" aria-selected="false">JSON-LD</button>
+          <button class="tab lang-tab" data-lang="skos" role="tab" aria-selected="false">SKOS</button>
+          <button class="tab lang-tab" data-lang="owl" role="tab" aria-selected="false">OWL</button>
+          <button class="tab lang-tab" data-lang="trig" role="tab" aria-selected="false">TriG</button>
+        </div>
+        <div class="panel-head-end">
+          <button class="tab run" id="run-btn" type="button" data-testid="run">Run ▸</button>
+        </div>
+      </div>
+
+      <div class="editor-body">
+        <div class="gutter" id="gutter"></div>
+        <pre class="code"><code class="code-only sparql" data-testid="editor-sparql" contenteditable="plaintext-only" spellcheck="false">PREFIX bat: &lt;https://veritas.app/ns/battery#&gt;
+PREFIX mat: &lt;https://veritas.app/ns/materials#&gt;
+
+# Battery packs below the recycled-cobalt threshold whose cathode
+# draws on a scarce metal — the metal grades live on a federated
+# materials registry, access-gated.
+SELECT ?battery ?cathode ?scarcity
+WHERE {
+  ?battery a bat:Battery ; bat:cathode ?cathode ; bat:recycledCobalt ?recycled .
+  SERVICE &lt;https://registry.example/materials/sparql&gt; {   # across a trust boundary, access-gated
+    ?cathode mat:primaryMetal ?metal .
+    ?metal   mat:scarcityIndex ?scarcity .
+  }
+  FILTER ( ?scarcity &gt;= 4.0 &amp;&amp; ?recycled &lt; 10 )
+}
+ORDER BY DESC(?scarcity)</code><code class="code-only shacl" data-testid="editor-shacl" contenteditable="plaintext-only" spellcheck="false"># RecycledContentShape — every battery declares its recycled cobalt share
+ex:RecycledContentShape
+  a sh:NodeShape ;
+  sh:targetClass bat:Battery ;
+  sh:property [
+    sh:path     bat:recycledCobalt ;
+    sh:minCount 1 ;
+  ] .</code><code class="code-only turtle" data-testid="editor-turtle" contenteditable="plaintext-only" spellcheck="false">@prefix bat: &lt;https://veritas.app/ns/battery#&gt; .
+@prefix dpp: &lt;https://veritas.app/ns/dpp#&gt; .
+
+ex:PackA_E12
+    a bat:Battery ;
+    bat:cathode        bat:NMC811 ;
+    bat:recycledCobalt 11 ;                # per cent of the cobalt mass
+    dpp:passport       "dpp-ABF1-91c" .</code><code class="code-only jsonata">/* reshape bindings into a recycled-content report */
+results.bindings[recycledCobalt &lt; 10].{
+  "battery": batteryName,
+  "cathode": cathodeName,
+  "status":  recycledCobalt = 0 ? "no recycled cobalt" : "below the threshold"
+} ^(&gt;recycledCobalt)</code><code class="code-only jsonld">{
+  "@context": "https://veritas.app/ns/battery#",
+  "@id": "ex:PackA_E12",
+  "@type": "Battery",
+  "recycledCobalt": 11,
+  "passport": "dpp-ABF1-91c",
+  "cathode": { "@id": "bat:NMC811" }
+}</code><code class="code-only skos">bat:CathodeScheme a skos:ConceptScheme .
+
+bat:NMC811
+    a skos:Concept ;
+    skos:prefLabel "Nickel manganese cobalt 8:1:1"@en ;
+    skos:prefLabel "Nikkeli-mangaani-koboltti 8:1:1"@fi ;
+    skos:broader  bat:LayeredOxide ;
+    skos:inScheme bat:CathodeScheme .</code><code class="code-only owl" data-testid="editor-owl" contenteditable="plaintext-only" spellcheck="false">bat:cathode
+    a owl:ObjectProperty ;
+    rdfs:domain bat:Battery ;
+    rdfs:range  bat:CathodeChemistry .
+
+bat:Battery
+    rdfs:subClassOf bat:EnergyStorageCell .</code><code class="code-only trig" data-testid="editor-trig" contenteditable="plaintext-only" spellcheck="false">@prefix bat: &lt;https://veritas.app/ns/battery#&gt; .
+@prefix ex:  &lt;https://veritas.app/data/&gt; .
+
+# TriG keeps each party's claims in its own named graph, linkable but attributable.
+ex:manufacturerClaims {
+    ex:PackA_E12 bat:recycledCobalt 11 .
+}
+
+GRAPH ex:recyclerRegistry {
+    ex:NMC811 a bat:CathodeChemistry .
+}</code></pre>
+      </div>
+
+      <div class="assist">
+        <div class="a-head"><span>Assist · terms that fit here</span><span>click to add</span></div>
+        <div class="facets" id="facets" data-testid="assist-terms"></div>
+      </div>
+    </section>
+
+    <!-- results -->
+    <section class="panel results" data-tab="graph">
+      <div class="panel-head">
+        <span class="title">Results</span>
+        <div class="tabs" role="tablist" aria-label="Result view">
+          <button class="tab res-tab" data-tab="graph" role="tab" aria-selected="true">Graph</button>
+          <button class="tab res-tab" data-tab="table" role="tab" aria-selected="false">Table</button>
+          <button class="tab res-tab" data-tab="raw" role="tab" aria-selected="false">Raw</button>
+          <button class="tab res-tab" data-tab="shacl" role="tab" aria-selected="false">SHACL</button>
+          <button class="tab res-tab" data-tab="diff" role="tab" aria-selected="false" hidden>Diff</button>
+        </div>
+        <span class="res-count" id="res-count" data-testid="res-count">— rows</span>
+      </div>
+
+      <div class="surface">
+        <div class="view graph">
+          <canvas id="graph-canvas" tabindex="0" role="img" aria-label="Interactive linked-data graph" aria-describedby="graph-help"></canvas>
+          <div class="graph-label-layer" id="graph-label-layer" aria-hidden="true"></div>
+          <div class="graph-hud">
+            <div class="hud-pill" id="graph-hud-pill" data-testid="graph-hud"></div>
+            <div class="legend" id="legend"></div>
+          </div>
+          <div class="graph-mode-switcher" role="group" aria-label="Graph layout">
+            <button class="graph-mode" type="button" data-graph-mode="force" aria-pressed="true" title="Readable relationship map" disabled>Map</button>
+            <button class="graph-mode" type="button" data-graph-mode="cluster" aria-pressed="false" title="Group nodes by their semantic kind" disabled>Clusters</button>
+            <button class="graph-mode" type="button" data-graph-mode="depth" aria-pressed="false" title="Explore spatial depth and orbit the graph" disabled>3D</button>
+          </div>
+          <div class="graph-tooltip" id="graph-tooltip" role="tooltip" hidden></div>
+          <aside class="graph-inspector" id="graph-inspector" aria-live="polite" data-state="idle">
+            <span class="inspector-kicker">Selection</span>
+            <strong id="graph-selection-title">Choose a node</strong>
+            <span id="graph-selection-meta">Click a node or use ← and → while the graph is focused.</span>
+          </aside>
+          <p class="graph-help" id="graph-help">Drag to orbit · scroll or pinch to zoom · double-click to fit</p>
+          <div class="graph-tools" role="group" aria-label="Graph zoom">
+            <span class="graph-tools-label" aria-hidden="true">Zoom</span>
+            <button class="icon-btn" type="button" data-graph-action="zoom-out" title="Zoom out (−)" aria-label="Zoom graph out" disabled>−</button>
+            <button class="icon-btn" type="button" data-graph-action="zoom-in" title="Zoom in (+)" aria-label="Zoom graph in" disabled>+</button>
+            <button class="icon-btn graph-fit-btn" type="button" data-graph-action="fit" title="Fit the whole graph (0 or Home)" aria-label="Fit graph to view" disabled>Fit</button>
+          </div>
+        </div>
+
+        <div class="view table">
+          <sparql-results id="results" data-testid="results"></sparql-results>
+        </div>
+
+        <div class="view raw">
+<pre class="raw-pre" id="raw-pre" data-testid="raw-view"></pre>
+        </div>
+
+        <div class="view shacl">
+          <div class="shacl-body" id="shacl-body" data-testid="shacl-report"></div>
+        </div>
+
+        <div class="view diff">
+          <header class="diff-head">
+            <label class="sr-only" for="diff-base-select">Diff base world</label>
+            <select class="tb-chip tb-select" id="diff-base-select" data-testid="diff-base" title="The base world the active world is diffed against"></select>
+            <span class="diff-arrow" aria-hidden="true">→</span>
+            <output class="diff-target" id="diff-target" data-testid="diff-target" for="diff-base-select"></output>
+            <p class="diff-summary" id="diff-summary" data-testid="diff-summary"></p>
+          </header>
+          <table class="diff-table" data-testid="worlds-diff">
+            <caption class="sr-only">Triples added and removed between the base world and the active world</caption>
+            <thead>
+              <tr>
+                <th scope="col"><span class="sr-only">Change</span></th>
+                <th scope="col">Subject</th>
+                <th scope="col">Predicate</th>
+                <th scope="col">Object</th>
+              </tr>
+            </thead>
+            <tbody id="diff-rows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- trace -->
+    <section class="panel trace">
+      <div class="panel-head">
+        <span class="title">Trace · why these terms</span>
+        <span class="tb-status trace-status" data-testid="trace-status"><span class="dot live"></span>listening</span>
+      </div>
+      <div class="trace-list" id="trace-list" data-testid="trace"></div>
+    </section>
+
+  </div>
+
+  <!-- status bar -->
+  <footer class="statusbar">
+    <span class="stream">
+      <span class="bar"></span>
+      <span id="stream-label">idle · <span class="sb-strong" id="row-count">0</span> rows</span>
+    </span>
+    <span>·</span>
+    <span><span class="sb-strong" id="ms">0</span> ms</span>
+    <span>·</span>
+    <span><span class="sb-strong" id="ops">0</span> ops</span>
+    <span class="sb-chip" id="plan-chip">plan: —</span>
+
+    <span class="sb-spacer"></span>
+    <span class="sb-chip">Turtle</span>
+    <span class="sb-chip">JSON-LD</span>
+    <span class="sb-chip">CBOR</span>
+  </footer>
+
+</div>
+
+<dialog class="scenario-dialog" id="scenario-dialog" aria-labelledby="scenario-dialog-title">
+  <form id="scenario-form">
+    <h2 id="scenario-dialog-title">Create a scenario world</h2>
+    <p class="scenario-lead">One possible world for the plan: a zero-copy fork of the data. Move the
+    assumptions, ask the questions, diff the consequence — the primary world stays untouched.</p>
+    <p class="scenario-field">
+      <label for="scenario-name">Scenario name</label>
+      <input id="scenario-name" data-testid="scenario-name" type="text" spellcheck="false" autocomplete="off" placeholder="e.g. high-sea-level" required>
+    </p>
+    <p class="scenario-field">
+      <label for="scenario-base">Based on</label>
+      <select id="scenario-base" data-testid="scenario-base"></select>
+    </p>
+    <fieldset class="scenario-levers" id="scenario-levers" data-testid="scenario-levers" hidden>
+      <legend>Assumptions to move</legend>
+    </fieldset>
+    <p class="scenario-error" id="scenario-error" data-testid="scenario-error" hidden></p>
+    <menu class="scenario-actions">
+      <button type="button" id="scenario-cancel" data-testid="scenario-cancel">Cancel</button>
+      <button type="submit" class="scenario-btn" data-testid="scenario-create">Create</button>
+    </menu>
+  </form>
+</dialog>
+
+<script type="module" src="./studio.ts"></script>
+</body>
+</html>

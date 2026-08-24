@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Model id="Model-001" xmlns="http://www.opengis.net/kml/2.2">
+	<altitudeMode>relativeToGround</altitudeMode>
+	<Location>
+		<longitude>-105.272774533734</longitude>
+		<latitude>40.009993372683</latitude>
+		<altitude>0</altitude>
+	</Location>
+	<Orientation>
+		<heading>0</heading>
+		<tilt>0</tilt>
+		<roll>0</roll>
+	</Orientation>
+	<Scale>
+		<x>1</x>
+		<y>1</y>
+		<z>1</z>
+	</Scale>
+	<Link>
+		<href>./files/CU-Macky.dae</href>
+	</Link>
+	<ResourceMap>
+		<Alias>
+			<targetHref>./files/CU-Macky---Center-StairsnoCulling.jpg</targetHref>
+			<sourceHref>CU-Macky---Center-StairsnoCulling.jpg</sourceHref>
+		</Alias>
+		<Alias>
+			<targetHref>./files/CU-Macky-4sideturretnoCulling.jpg</targetHref>
+			<sourceHref>CU-Macky-4sideturretnoCulling.jpg</sourceHref>
+		</Alias>
+	</ResourceMap>
+</Model>

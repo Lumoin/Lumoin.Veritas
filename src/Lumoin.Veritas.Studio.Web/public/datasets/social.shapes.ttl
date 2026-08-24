@@ -1,0 +1,11 @@
+@prefix sh:  <http://www.w3.org/ns/shacl#> .
+@prefix soc: <https://veritas.app/ns/social#> .
+@prefix ex:  <https://veritas.app/shapes/social#> .
+
+ex:PersonProfileShape a sh:NodeShape ;
+    sh:targetClass soc:Person ;
+    sh:property [
+        sh:path soc:email ;
+        sh:minCount 1 ;
+        sh:message "Every person profile must carry an email address." ;
+    ] .

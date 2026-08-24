@@ -1,0 +1,37 @@
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix soc:  <https://veritas.app/ns/social#> .
+@prefix sn:   <https://veritas.app/data/social/> .
+
+# Cities people are located in (soc:isLocatedIn).
+sn:city-amsterdam a soc:City ; rdfs:label "Amsterdam" .
+sn:city-berlin    a soc:City ; rdfs:label "Berlin" .
+sn:city-helsinki  a soc:City ; rdfs:label "Helsinki" .
+
+# People. Each carries a profile; sn:p10 has no email (a SHACL violation below).
+sn:p1 a soc:Person ; soc:firstName "Ada"   ; soc:lastName "Nyman"   ; soc:gender "female" ; soc:email "ada@example.org"   ; soc:isLocatedIn sn:city-helsinki .
+sn:p2 a soc:Person ; soc:firstName "Bram"  ; soc:lastName "de Vries" ; soc:gender "male"  ; soc:email "bram@example.org"  ; soc:isLocatedIn sn:city-amsterdam .
+sn:p3 a soc:Person ; soc:firstName "Carmen"; soc:lastName "Roos"     ; soc:gender "female" ; soc:email "carmen@example.org"; soc:isLocatedIn sn:city-amsterdam .
+sn:p4 a soc:Person ; soc:firstName "Dieter"; soc:lastName "Klein"    ; soc:gender "male"  ; soc:email "dieter@example.org"; soc:isLocatedIn sn:city-berlin .
+sn:p5 a soc:Person ; soc:firstName "Eeva"  ; soc:lastName "Laine"    ; soc:gender "female" ; soc:email "eeva@example.org"  ; soc:isLocatedIn sn:city-helsinki .
+sn:p6 a soc:Person ; soc:firstName "Frank" ; soc:lastName "Berg"     ; soc:gender "male"  ; soc:email "frank@example.org" ; soc:isLocatedIn sn:city-berlin .
+sn:p7 a soc:Person ; soc:firstName "Gita"  ; soc:lastName "Patel"    ; soc:gender "female" ; soc:email "gita@example.org"  ; soc:isLocatedIn sn:city-amsterdam .
+sn:p8 a soc:Person ; soc:firstName "Hugo"  ; soc:lastName "Faber"    ; soc:gender "male"  ; soc:email "hugo@example.org"  ; soc:isLocatedIn sn:city-berlin .
+sn:p9 a soc:Person ; soc:firstName "Iida"  ; soc:lastName "Koski"    ; soc:gender "female" ; soc:email "iida@example.org"  ; soc:isLocatedIn sn:city-helsinki .
+sn:p10 a soc:Person ; soc:firstName "Jonas" ; soc:lastName "Holm"     ; soc:gender "male"  ; soc:isLocatedIn sn:city-berlin .
+
+# Friendships (soc:knows, symmetric). A dense four-clique p1-p4, a hub p5, then a sparse periphery.
+sn:p1 soc:knows sn:p2 . sn:p2 soc:knows sn:p1 .
+sn:p1 soc:knows sn:p3 . sn:p3 soc:knows sn:p1 .
+sn:p1 soc:knows sn:p4 . sn:p4 soc:knows sn:p1 .
+sn:p2 soc:knows sn:p3 . sn:p3 soc:knows sn:p2 .
+sn:p2 soc:knows sn:p4 . sn:p4 soc:knows sn:p2 .
+sn:p3 soc:knows sn:p4 . sn:p4 soc:knows sn:p3 .
+sn:p1 soc:knows sn:p5 . sn:p5 soc:knows sn:p1 .
+sn:p5 soc:knows sn:p6 . sn:p6 soc:knows sn:p5 .
+sn:p5 soc:knows sn:p7 . sn:p7 soc:knows sn:p5 .
+sn:p5 soc:knows sn:p8 . sn:p8 soc:knows sn:p5 .
+sn:p6 soc:knows sn:p7 . sn:p7 soc:knows sn:p6 .
+sn:p8 soc:knows sn:p9 . sn:p9 soc:knows sn:p8 .
+sn:p9 soc:knows sn:p10 . sn:p10 soc:knows sn:p9 .

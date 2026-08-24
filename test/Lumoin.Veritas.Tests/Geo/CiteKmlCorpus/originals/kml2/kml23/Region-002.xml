@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Violates uniqueness constraint (longitude intervals) -->
+<Region id="Region-002" xmlns="http://www.opengis.net/kml/2.2">
+	<Lod>
+		<minLodPixels>128</minLodPixels>
+		<maxLodPixels>1024</maxLodPixels>
+		<minFadeExtent>128</minFadeExtent>
+		<maxFadeExtent>128</maxFadeExtent>
+	</Lod>
+	<LatLonAltBox>
+		<north>50.625</north>
+		<west>-225</west>
+		<south>45</south>
+		<east>-135</east>
+		<maxAltitude>50</maxAltitude>
+		<minAltitude>10</minAltitude>
+		<altitudeMode>absolute</altitudeMode>
+	</LatLonAltBox>
+</Region>

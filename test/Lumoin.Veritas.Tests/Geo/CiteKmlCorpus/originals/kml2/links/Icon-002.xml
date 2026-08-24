@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Icon id="Icon-002" xmlns="http://www.opengis.net/kml/2.2">
+	<href>img/icon21.png</href>
+	<refreshMode>onChange</refreshMode>
+	<refreshInterval>60</refreshInterval>
+	<viewRefreshMode>never</viewRefreshMode>
+</Icon>

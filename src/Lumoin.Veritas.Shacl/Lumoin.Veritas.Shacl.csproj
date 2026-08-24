@@ -1,0 +1,14 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Veritas.Shacl</RootNamespace>
+    <Description>SHACL 1.2 validation engine for Lumoin.Veritas. Evaluates RDF graphs against SHACL shapes graphs, producing W3C-conformant validation reports. Implements all Core constraint components, property paths, and target declarations as defined in the W3C SHACL 1.2 Core specification, including RDF 1.2 triple term support via sh:reifierShape, and SHACL-SPARQL sh:sparql constraints backed by the Lumoin.Veritas.Sparql query engine.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Rdf\Lumoin.Veritas.Rdf.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Sparql\Lumoin.Veritas.Sparql.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,154 @@
+/* ============================================================
+   Veritas Studio — design tokens. The single source of color,
+   type, space, motion. Authored as modern native CSS; Lightning
+   CSS downlevels to the browserslist targets at build.
+
+   Colors are OKLCH (perceptually even light/dark pairs). Light
+   is the default; [data-theme="dark"] overrides the semantic
+   surface/text/border ramp. color-scheme keeps form controls and
+   scrollbars in step. Everything downstream uses the SEMANTIC
+   tokens (--surface-*, --text-*, --interactive, --status-*),
+   never a raw oklch() — so a reskin is this file alone.
+   ============================================================ */
+
+/* The Lumoin brand's self-hosted variable font; provenance and license in src/fonts/ATTRIBUTION.md. */
+@font-face {
+  font-family: "Commissioner";
+  src: url("../fonts/commissioner.ttf") format("truetype");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@layer tokens {
+  :root {
+    color-scheme: light;
+
+    /* — brand ramp (Lumoin blue → green) -------------------- */
+    --brand-hue: 254.29569662515829;
+    --brand: oklch(68.2% 0.17096975736869052 var(--brand-hue)); /* #439AFF */
+    --brand-2: oklch(91.94% 0.209 130.34); /* #B4FF57 */
+    --gradient-brand-light: linear-gradient(135deg, var(--brand), var(--brand-2));
+
+    /* — semantic surfaces (light) --------------------------- */
+    --surface-base: oklch(99% 0.003 254);
+    --surface-raised: oklch(100% 0 0);
+    --surface-sunken: oklch(96.5% 0.004 254);
+    --surface-overlay: oklch(100% 0 0 / 90%);
+
+    /* — text ------------------------------------------------ */
+    --text-primary: oklch(25% 0.02 254);
+    --text-secondary: oklch(45% 0.02 254);
+    --text-tertiary: oklch(62% 0.02 254);
+
+    /* — borders --------------------------------------------- */
+    --border-default: oklch(90% 0.006 254);
+    --border-emphasis: oklch(80% 0.01 254);
+
+    /* — interactive + status -------------------------------- */
+    --interactive: oklch(52% 0.16 var(--brand-hue));
+    --status-verified: oklch(58% 0.14 150);
+    --status-disputed: oklch(60% 0.17 25);
+    --status-pending: oklch(70% 0.13 75);
+
+    /* — type ------------------------------------------------ */
+    --font-ui: "Commissioner", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, Helvetica, sans-serif;
+    --font-reading: ui-serif, Georgia, "Times New Roman", serif;
+    --font-expressive: var(--font-ui);
+    --font-brand: var(--font-ui);
+    --font-mono: ui-monospace, "Cascadia Code", "JetBrains Mono", "SF Mono", Menlo, monospace;
+
+    --text-xs: 0.75rem;
+    --text-sm: 0.8125rem;
+    --text-base: 0.9375rem;
+    --text-md: 1.0625rem;
+    --text-lg: 1.25rem;
+
+    --leading-tight: 1.25;
+    --leading-normal: 1.5;
+    --tracking-wide: 0.04em;
+
+    /* — space (rem ramp; density overrides a subset) -------- */
+    --space-1: 0.25rem;
+    --space-2: 0.5rem;
+    --space-3: 0.75rem;
+    --space-4: 1rem;
+    --space-5: 1.5rem;
+    --space-6: 2rem;
+
+    /* — radius ---------------------------------------------- */
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-full: 999px;
+
+    /* — motion ---------------------------------------------- */
+    --duration-fast: 120ms;
+    --duration-base: 200ms;
+    --ease-out: cubic-bezier(0.2, 0.7, 0.3, 1);
+    --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+
+    /* — elevation ------------------------------------------- */
+    --shadow-sm: 0 1px 2px oklch(20% 0.02 254 / 0.06);
+    --shadow-md: 0 8px 24px oklch(20% 0.02 254 / 0.08);
+  }
+
+  /* — dark: blue-path. Only the semantic ramp flips; sizes,
+     space, type, motion are theme-independent. -------------- */
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+
+    --surface-base: oklch(20% 0.014 254);
+    --surface-raised: oklch(24% 0.016 254);
+    --surface-sunken: oklch(17% 0.012 254);
+    --surface-overlay: oklch(24% 0.016 254 / 90%);
+    --shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.35);
+    --shadow-md: 0 8px 24px oklch(0% 0 0 / 0.4);
+
+    --text-primary: oklch(94% 0.01 254);
+    --text-secondary: oklch(78% 0.015 254);
+    --text-tertiary: oklch(62% 0.02 254);
+
+    --border-default: oklch(32% 0.016 254);
+    --border-emphasis: oklch(44% 0.02 254);
+
+    --interactive: oklch(78% 0.14 var(--brand-hue));
+    --status-verified: oklch(72% 0.15 150);
+    --status-disputed: oklch(72% 0.16 25);
+    --status-pending: oklch(80% 0.13 80);
+
+    --gradient-brand-light: linear-gradient(135deg, oklch(60% 0.155 var(--brand-hue)), oklch(78% 0.19 130.34));
+  }
+
+  /* Respect the OS preference until the app pins data-theme explicitly. */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme]) {
+      color-scheme: dark;
+      --surface-base: oklch(20% 0.014 254);
+      --surface-raised: oklch(24% 0.016 254);
+      --surface-sunken: oklch(17% 0.012 254);
+      --surface-overlay: oklch(24% 0.016 254 / 90%);
+      --shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.35);
+      --shadow-md: 0 8px 24px oklch(0% 0 0 / 0.4);
+      --text-primary: oklch(94% 0.01 254);
+      --text-secondary: oklch(78% 0.015 254);
+      --text-tertiary: oklch(62% 0.02 254);
+      --border-default: oklch(32% 0.016 254);
+      --border-emphasis: oklch(44% 0.02 254);
+      --interactive: oklch(78% 0.14 var(--brand-hue));
+      --status-verified: oklch(72% 0.15 150);
+      --status-disputed: oklch(72% 0.16 25);
+      --status-pending: oklch(80% 0.13 80);
+      --gradient-brand-light: linear-gradient(135deg, oklch(60% 0.155 var(--brand-hue)), oklch(78% 0.19 130.34));
+    }
+  }
+
+  /* Density is a token override, not a layout fork: compact tightens space + code size only. */
+  :root[data-density="compact"] {
+    --space-3: 0.55rem;
+    --space-4: 0.8rem;
+    --text-sm: 0.78rem;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :root { --duration-fast: 0ms; --duration-base: 0ms; }
+  }
+}

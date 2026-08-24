@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- The persistence serving tier holds succinct column payloads in 64-byte-aligned
+         native memory (off the GC heap); the native allocation and its span wrapper need
+         unsafe blocks, scoped to the Memory/ byte-source types. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.IO.Hashing" />
+    <PackageReference Include="System.Threading.RateLimiting" />
+  </ItemGroup>
+
+  <!-- The reasoning engine mints EngineNode terms through the internal constructor; no parser or converter
+       assembly is granted this visibility, which is what keeps engine mints unconstructible from input. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Lumoin.Veritas.Owl" />
+  </ItemGroup>
+
+</Project>

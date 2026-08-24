@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Exterior boundary is oriented CW -->
+<Placemark id="Placemark-101" xmlns="http://www.opengis.net/kml/2.2">
+	<name>The Pentagon</name>
+	<Polygon id="P101">
+		<extrude>1</extrude>
+		<altitudeMode>relativeToGround</altitudeMode>
+		<outerBoundaryIs>
+			<LinearRing>
+				<coordinates>
+					-77.05788457,38.87253259,100
+					-77.05465973,38.87291016,100
+					-77.05315536,38.87053267,100
+					-77.05552622,38.86875780,100
+					-77.05844056,38.86996206,100
+					-77.05788457,38.87253259,100
+				</coordinates>
+			</LinearRing>
+		</outerBoundaryIs>
+		<innerBoundaryIs>
+			<LinearRing>
+				<coordinates>
+					-77.05668055,38.87154239,100
+					-77.05542625,38.87167890,100
+					-77.05485125,38.87076535,100
+					-77.05577677,38.87008686,100
+					-77.05691162,38.87054446,100
+					-77.05668055,38.87154239,100
+				</coordinates>
+			</LinearRing>
+		</innerBoundaryIs>
+	</Polygon>
+</Placemark>

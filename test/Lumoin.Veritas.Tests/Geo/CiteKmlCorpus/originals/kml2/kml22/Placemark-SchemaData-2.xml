@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: schemaUrl does not identify kml:Schema element -->
+<kml xmlns="http://www.opengis.net/kml/2.2">
+	<Document>
+		<name>ExtendedData+SchemaData</name>
+		<open>1</open>
+		<Schema name="TrailHeadSchema" id="TrailHead">
+			<SimpleField type="string" name="TrailHeadName">
+				<displayName><![CDATA[<b>Trail Head Name</b>]]></displayName>
+			</SimpleField>
+			<SimpleField type="double" name="TrailLength">
+				<displayName><![CDATA[<i>Length in miles</i>]]></displayName>
+			</SimpleField>
+			<SimpleField type="int" name="ElevationGain">
+				<displayName><![CDATA[<i>Change in altitude</i>]]></displayName>
+			</SimpleField>
+		</Schema>
+		<Placemark>
+			<name>Difficult trail</name>
+			<ExtendedData>
+				<SchemaData schemaUrl="#TrailHeadSchema">
+					<SimpleData name="TrailHeadName">Mount Everest</SimpleData>
+					<SimpleData name="TrailLength">347.45</SimpleData>
+					<SimpleData name="ElevationGain">10000</SimpleData>
+				</SchemaData>
+			</ExtendedData>
+			<Point>
+				<coordinates>86.859444,28.007222</coordinates>
+			</Point>
+		</Placemark>
+	</Document>
+</kml>

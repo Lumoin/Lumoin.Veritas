@@ -1,0 +1,11 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  
+  <PropertyGroup>
+    <Description>RDF Dataset Canonicalization (RDFC-1.0) over the encoded triple store: deterministic blank-node labelling and dataset hashing, so two graphs that say the same thing hash the same.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+  </ItemGroup>
+  
+</Project>

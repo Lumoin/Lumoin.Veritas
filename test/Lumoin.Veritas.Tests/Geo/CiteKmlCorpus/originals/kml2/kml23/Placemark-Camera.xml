@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Missing altitudeMode (default 'clampToGround') [ATC-213] -->
+<kml xmlns="http://www.opengis.net/kml/2.2" version="2.3">
+	<Placemark id="PM004">
+		<name>Machu Picchu, Peru</name>
+		<Camera>
+			<longitude>-72.503364</longitude>
+			<latitude>-13.209676</latitude>
+			<altitude>500</altitude>
+			<tilt>66.768762</tilt>
+			<heading>71.131493</heading>
+		</Camera>
+		<Point>
+			<coordinates>-72.516244,-13.162806,0</coordinates>
+		</Point>
+	</Placemark>
+</kml>

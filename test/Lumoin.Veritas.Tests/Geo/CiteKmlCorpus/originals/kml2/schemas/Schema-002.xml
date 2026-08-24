@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--  ERROR: xs:bool is not a built-in datatype -->
+<kml xmlns="http://www.opengis.net/kml/2.2">
+	<Document>
+		<Schema name="TrailHeadType2" id="TrailHeadType2">
+			<SimpleField type="xs:string" name="TrailHeadName">
+				<displayName><![CDATA[<b>Trail Head Name</b>]]></displayName>
+			</SimpleField>
+			<SimpleField type="xs:double" name="TrailLength" uom="[mi_i]">
+				<displayName><![CDATA[<i>The length in miles</i>]]></displayName>
+			</SimpleField>
+			<SimpleField type="xs:int" name="ElevationGain" uom="[ft_i]">
+				<displayName><![CDATA[<i>change in altitude</i>]]></displayName>
+			</SimpleField>
+			<SimpleField type="xs:bool" name="maintained">
+				<displayName><![CDATA[<i>Trail is maintained</i>]]></displayName>
+			</SimpleField>
+		</Schema>
+	</Document>
+</kml>

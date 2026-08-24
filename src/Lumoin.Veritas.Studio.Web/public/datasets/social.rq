@@ -1,0 +1,15 @@
+PREFIX soc: <https://veritas.app/ns/social#>
+PREFIX sn:  <https://veritas.app/data/social/>
+
+# People reachable in exactly two friendship hops from Ada (sn:p1) whom she does not already know:
+# a friend-of-friend recommendation. p5 (the hub) bridges Ada's clique to Frank / Gita / Hugo.
+SELECT DISTINCT ?firstName ?lastName
+WHERE {
+  sn:p1 soc:knows ?friend .
+  ?friend soc:knows ?candidate .
+  ?candidate soc:firstName ?firstName ;
+             soc:lastName ?lastName .
+  FILTER (?candidate != sn:p1)
+  FILTER NOT EXISTS { sn:p1 soc:knows ?candidate }
+}
+ORDER BY ?firstName

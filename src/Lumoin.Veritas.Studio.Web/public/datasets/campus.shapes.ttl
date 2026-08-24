@@ -1,0 +1,11 @@
+@prefix sh:  <http://www.w3.org/ns/shacl#> .
+@prefix cmp: <https://veritas.app/ns/campus#> .
+@prefix ex:  <https://veritas.app/shapes/campus#> .
+
+ex:GraduateAdvisorShape a sh:NodeShape ;
+    sh:targetClass cmp:GraduateStudent ;
+    sh:property [
+        sh:path cmp:advisor ;
+        sh:minCount 1 ;
+        sh:message "Every graduate student must have an advisor." ;
+    ] .

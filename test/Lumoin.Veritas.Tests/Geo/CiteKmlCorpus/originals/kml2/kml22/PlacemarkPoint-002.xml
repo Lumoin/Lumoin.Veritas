@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Incorrect axis order -->
+<kml xmlns="http://www.opengis.net/kml/2.2">
+	<Document>
+		<name>Placemarks around Vancouver, Canada</name>
+		<Placemark id="P002">
+			<name>Point Atkinson Lighthouse</name>
+			<description>The structure was built in 1914 on granite boulders
+				jutting out into English Bay in West Vancouver, Canada.
+			</description>
+			<snippet>Tide and weather station</snippet>
+			<Point id="P002-1">
+				<coordinates>49.3304,-123.2646</coordinates>
+			</Point>
+		</Placemark>
+	</Document>
+</kml>

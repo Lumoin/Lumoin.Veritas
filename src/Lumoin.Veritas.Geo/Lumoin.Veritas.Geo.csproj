@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Veritas.Geo</RootNamespace>
+
+    <!--
+      This library ships inside the CLI tool packages rather than as its own NuGet package, so no
+      package depends on it. Declaring it non-packable keeps any future packed consumer from
+      emitting a dependency on a package that does not exist.
+    -->
+    <IsPackable>false</IsPackable>
+    <Description>GeoSPARQL layer for Lumoin.Veritas. Provides the GeoSPARQL ontology, Simple Features ontology, and GeoSPARQL function vocabularies as UTF-8 IRI constants, well-known-text literal decomposition into CRS IRI and geometry body, lexical recognition of well-known-text geometry, the geo:wktLiteral value-layer datatype definition, the flat Simple Features geometry substrate, and the geof: extension-function catalog with its composing extension module.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Rdf\Lumoin.Veritas.Rdf.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Sparql\Lumoin.Veritas.Sparql.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The System.Text.Json-backed GeoJSON reader lives in the binding assembly and consumes this
+      library's internal codec constants and vocabulary rosters; the grant is scoped to that one
+      binding.
+    -->
+    <InternalsVisibleTo Include="Lumoin.Veritas.Geo.Json.Stj" />
+  </ItemGroup>
+
+</Project>

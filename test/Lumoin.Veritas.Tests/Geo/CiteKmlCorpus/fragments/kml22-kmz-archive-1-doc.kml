@@ -1,0 +1,44 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document>
+  <name>3D Region on ground</name>
+  <Placemark>
+    <name>United Nations Headquarters</name>
+    <Region>
+      <LatLonAltBox>
+        <north>40.750683130314</north>
+        <south>40.748162385230</south>
+        <east>-73.966608428427</east>
+        <west>-73.969476624071</west>
+        <minAltitude>0</minAltitude>
+        <maxAltitude>300</maxAltitude>
+        <altitudeMode>absolute</altitudeMode>
+      </LatLonAltBox>
+      <Lod>
+        <minLodPixels>128</minLodPixels>
+      </Lod>
+    </Region>
+    <Model>
+      <altitudeMode>absolute</altitudeMode>
+      <Location>
+        <longitude>-73.967763927199</longitude>
+        <latitude>40.749458312255</latitude>
+        <altitude>0.406173708576</altitude>
+      </Location>
+      <Orientation>
+        <heading>0</heading>
+        <tilt>0</tilt>
+        <roll>0</roll>
+      </Orientation>
+      <Scale>
+        <x>1.0</x>
+        <y>1.0</y>
+        <z>1.0</z>
+      </Scale>
+      <Link>
+        <href>models/un.dae</href>
+      </Link>
+    </Model>
+  </Placemark>
+</Document>
+</kml>

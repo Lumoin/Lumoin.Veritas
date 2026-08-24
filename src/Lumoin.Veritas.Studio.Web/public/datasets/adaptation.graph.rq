@@ -1,0 +1,122 @@
+PREFIX adp: <https://veritas.app/ns/adaptation#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?fromLabel ?fromKind ?toLabel ?toKind WHERE {
+  {
+    ?from adp:defends ?to .
+    BIND("measure" AS ?fromKind) BIND("segment" AS ?toKind)
+  } UNION {
+    ?from adp:owner ?to .
+    BIND("measure" AS ?fromKind) BIND("owner" AS ?toKind)
+  } UNION {
+    ?from adp:follows ?to .
+    BIND("measure" AS ?fromKind) BIND("measure" AS ?toKind)
+  } UNION {
+    ?from adp:supersedes ?to .
+    BIND("measure" AS ?fromKind) BIND("measure" AS ?toKind)
+  } UNION {
+    ?from adp:relieves ?to .
+    BIND("measure" AS ?fromKind) BIND("measure" AS ?toKind)
+  } UNION {
+    ?from adp:connectedTo ?to .
+    BIND("community" AS ?fromKind) BIND("segment" AS ?toKind)
+  } UNION {
+    ?from adp:stewards ?to .
+    BIND("ngo" AS ?fromKind) BIND("segment" AS ?toKind)
+  } UNION {
+    ?from adp:party ?to .
+    BIND("contract" AS ?fromKind) BIND("owner" AS ?toKind)
+  } UNION {
+    ?from adp:deliveredUnder ?to .
+    BIND("measure" AS ?fromKind) BIND("contract" AS ?toKind)
+  } UNION {
+    ?from adp:regulatedBy ?to .
+    BIND("measure" AS ?fromKind) BIND("regulator" AS ?toKind)
+  } UNION {
+    ?from adp:approvedBy ?to .
+    BIND("contract" AS ?fromKind) BIND("regulator" AS ?toKind)
+  } UNION {
+    ?from adp:champions ?to .
+    BIND("community" AS ?fromKind) BIND("measure" AS ?toKind)
+  } UNION {
+    ?from adp:maintains ?to .
+    BIND("ngo" AS ?fromKind) BIND("measure" AS ?toKind)
+  } UNION {
+    ?from adp:reportsThrough ?to .
+    ?from a adp:Community .
+    BIND("community" AS ?fromKind) BIND("channel" AS ?toKind)
+  } UNION {
+    ?from adp:reportsThrough ?to .
+    ?from a adp:Ngo .
+    BIND("ngo" AS ?fromKind) BIND("channel" AS ?toKind)
+  } UNION {
+    ?from adp:operatedBy ?to .
+    BIND("channel" AS ?fromKind) BIND("regulator" AS ?toKind)
+  } UNION {
+    ?from adp:oversees ?to .
+    BIND("channel" AS ?fromKind) BIND("contract" AS ?toKind)
+  } UNION {
+    ?from adp:filedThrough ?to .
+    BIND("case" AS ?fromKind) BIND("channel" AS ?toKind)
+  } UNION {
+    ?from adp:concerns ?to .
+    BIND("case" AS ?fromKind) BIND("measure" AS ?toKind)
+  } UNION {
+    ?from adp:filedWith ?to .
+    BIND("case" AS ?fromKind) BIND("regulator" AS ?toKind)
+  } UNION {
+    ?from adp:evidence ?to .
+    BIND("case" AS ?fromKind) BIND("evidence" AS ?toKind)
+  } UNION {
+    ?from adp:documents ?to .
+    ?to a adp:Measure .
+    BIND("evidence" AS ?fromKind) BIND("measure" AS ?toKind)
+  } UNION {
+    ?from adp:documents ?to .
+    ?to a adp:MaterialsSupply .
+    BIND("evidence" AS ?fromKind) BIND("supply" AS ?toKind)
+  } UNION {
+    ?from adp:covers ?to .
+    BIND("media" AS ?fromKind) BIND("case" AS ?toKind)
+  } UNION {
+    ?from adp:examines ?to .
+    BIND("authority" AS ?fromKind) BIND("supply" AS ?toKind)
+  } UNION {
+    ?from adp:suppliesTo ?to .
+    BIND("supply" AS ?fromKind) BIND("measure" AS ?toKind)
+  } UNION {
+    ?from adp:sourcedFrom ?to .
+    BIND("supply" AS ?fromKind) BIND("region" AS ?toKind)
+  } UNION {
+    ?from adp:hostedBy ?to .
+    BIND("programme" AS ?fromKind) BIND("ngo" AS ?toKind)
+  } UNION {
+    ?from adp:filedUnder ?to .
+    BIND("observation" AS ?fromKind) BIND("programme" AS ?toKind)
+  } UNION {
+    ?from adp:observedAt ?to .
+    BIND("observation" AS ?fromKind) BIND("segment" AS ?toKind)
+  } UNION {
+    ?from adp:informs ?to .
+    BIND("observation" AS ?fromKind) BIND("case" AS ?toKind)
+  } UNION {
+    ?from adp:suppliedBy ?to .
+    BIND("supply" AS ?fromKind) BIND("supplier" AS ?toKind)
+  } UNION {
+    ?from adp:disputes ?to .
+    BIND("counterclaim" AS ?fromKind) BIND("record" AS ?toKind)
+  } UNION {
+    ?from adp:declaredBy ?to .
+    BIND("record" AS ?fromKind) BIND("supplier" AS ?toKind)
+  } UNION {
+    ?from adp:basedOn ?to .
+    BIND("counterclaim" AS ?fromKind) BIND("observation" AS ?toKind)
+  } UNION {
+    ?from adp:raisedBy ?to .
+    BIND("counterclaim" AS ?fromKind) BIND("ngo" AS ?toKind)
+  } UNION {
+    ?from adp:travelsWith ?to .
+    BIND("counterclaim" AS ?fromKind) BIND("supply" AS ?toKind)
+  }
+  ?from rdfs:label ?fromLabel .
+  ?to rdfs:label ?toLabel .
+}

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<NetworkLink id="NL-001" xmlns="http://www.opengis.net/kml/2.2">
+	<name>Placemarks</name>
+	<visibility>0</visibility>
+	<open>0</open>
+	<refreshVisibility>0</refreshVisibility>
+	<flyToView>0</flyToView>
+	<Link>
+		<href>./Placemarks.xml</href>
+		<refreshInterval>60</refreshInterval>
+		<viewBoundScale>0.5</viewBoundScale>
+	</Link>
+</NetworkLink>

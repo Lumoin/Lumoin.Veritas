@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Too few points -->
+<LinearRing id="LinearRing-001" xmlns="http://www.opengis.net/kml/2.2" version="2.3">
+  <tessellate>true</tessellate>
+  <coordinates>-123.25,49.26,80 -123.26,49.33 -123.11,49.29</coordinates>
+  <extrude>false</extrude>
+  <altitudeMode>clampToGround</altitudeMode>
+</LinearRing>

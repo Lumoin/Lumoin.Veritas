@@ -1,0 +1,16 @@
+<kml:Polygon xmlns:kml="http://www.opengis.net/kml/2.2" id="Polygon-1">
+		<kml:outerBoundaryIs>
+			<kml:LinearRing>
+				<kml:coordinates>-124.0,50.0 -124.0,46.0 -118.0,46.0 -118.0,50.0
+					-124.0,50.0
+				</kml:coordinates>
+			</kml:LinearRing>
+		</kml:outerBoundaryIs>
+		<kml:innerBoundaryIs>
+			<kml:LinearRing>
+				<kml:coordinates>-122.08,45.42 -122.08,42.42 -120.08,43.42
+					-122.08,45.42
+				</kml:coordinates>
+			</kml:LinearRing>
+		</kml:innerBoundaryIs>
+	</kml:Polygon>

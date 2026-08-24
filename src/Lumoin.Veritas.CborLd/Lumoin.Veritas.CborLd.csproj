@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Veritas.Cbor.CborLd</RootNamespace>
+    <Description>CBOR-LD encoder and decoder for Veritas. Implements the W3C CBOR-LD specification with active-context-driven term codec compression, registry entries, value codecs, and a Deterministic profile suitable for direct signing.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Cbor\Lumoin.Veritas.Cbor.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Json\Lumoin.Veritas.Json.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.LinkedData\Lumoin.Veritas.LinkedData.csproj" />
+  </ItemGroup>
+
+</Project>

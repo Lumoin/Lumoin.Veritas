@@ -1,0 +1,55 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".editorconfig" />
+    <File Path=".gitattributes" />
+    <File Path=".gitignore" />
+    <File Path="BannedSymbols.Cbor.txt" />
+    <File Path="BannedSymbols.Serialization.txt" />
+    <File Path="BannedSymbols.txt" />
+    <File Path="BannedSymbols.Xml.txt" />
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+    <File Path="global.json" />
+    <File Path="CHANGELOG.md" />
+    <File Path="LICENSE" />
+    <File Path="NuGet.config" />
+    <File Path="README.md" />
+    <File Path="spellcheckerexclusion.dic" />
+    <File Path="verify-packages.ps1" />
+    <File Path="verify-packages.sh" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Lumoin.Veritas.Rdf/Lumoin.Veritas.Rdf.csproj" Id="60323c81-3f4b-4145-ab20-53bdf96eadaf" />
+    <Project Path="src/Lumoin.Veritas.Canonicalization/Lumoin.Veritas.Canonicalization.csproj" Id="06da0410-953a-47ba-b3f4-d78043217f10" />
+    <Project Path="src/Lumoin.Veritas.Cbor/Lumoin.Veritas.Cbor.csproj" />
+    <Project Path="src/Lumoin.Veritas.CborLd/Lumoin.Veritas.CborLd.csproj" />
+    <Project Path="src/Lumoin.Veritas.Cid/Lumoin.Veritas.Cid.csproj" />
+    <Project Path="src/Lumoin.Veritas.Cli/Lumoin.Veritas.Cli.csproj" />
+    <Project Path="src/Lumoin.Veritas.Core/Lumoin.Veritas.Core.csproj" />
+    <Project Path="src/Lumoin.Veritas.Database/Lumoin.Veritas.Database.csproj" />
+    <Project Path="src/Lumoin.Veritas.Geo/Lumoin.Veritas.Geo.csproj" />
+    <Project Path="src/Lumoin.Veritas.Geo.Json.Stj/Lumoin.Veritas.Geo.Json.Stj.csproj" />
+    <Project Path="src/Lumoin.Veritas.Json/Lumoin.Veritas.Json.csproj" Id="f132ccbd-11d2-40b3-bbf0-e93282baa509" />
+    <Project Path="src/Lumoin.Veritas.Json.Stj/Lumoin.Veritas.Json.Stj.csproj" />
+    <Project Path="src/Lumoin.Veritas.JsonLd/Lumoin.Veritas.JsonLd.csproj" Id="e225ffdc-adbf-469b-983d-f365b556fdab" />
+    <Project Path="src/Lumoin.Veritas.Rdf.Json/Lumoin.Veritas.Rdf.Json.csproj" />
+    <Project Path="src/Lumoin.Veritas.Replication/Lumoin.Veritas.Replication.csproj" />
+    <Project Path="src/Lumoin.Veritas.Jsonata/Lumoin.Veritas.Jsonata.csproj" />
+    <Project Path="src/Lumoin.Veritas.JsonPointer/Lumoin.Veritas.JsonPointer.csproj" />
+    <Project Path="src/Lumoin.Veritas.JsonSchema/Lumoin.Veritas.JsonSchema.csproj" />
+    <Project Path="src/Lumoin.Veritas.LinkedData/Lumoin.Veritas.LinkedData.csproj" />
+    <Project Path="src/Lumoin.Veritas.NQuads/Lumoin.Veritas.NQuads.csproj" Id="03f898f5-f271-4d4d-ab42-a55eb282b919" />
+    <Project Path="src/Lumoin.Veritas.Owl/Lumoin.Veritas.Owl.csproj" Id="abe5a18f-8105-458d-917a-ddfe42674923" />
+    <Project Path="src/Lumoin.Veritas.Shacl/Lumoin.Veritas.Shacl.csproj" Id="89d25066-0d2a-45d0-9405-7359aac01226" />
+    <Project Path="src/Lumoin.Veritas.Skos/Lumoin.Veritas.Skos.csproj" Id="c0c164e8-0773-410c-b809-afefd3e4c3b5" />
+    <Project Path="src/Lumoin.Veritas.Sparql/Lumoin.Veritas.Sparql.csproj" />
+    <Project Path="src/Lumoin.Veritas.Turtle/Lumoin.Veritas.Turtle.csproj" />
+    <Project Path="src/Lumoin.Veritas.Xml/Lumoin.Veritas.Xml.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/Lumoin.Veritas.Benchmarks/Lumoin.Veritas.Benchmarks.csproj" Id="376c9627-036c-400d-81d4-592ff521399f" />
+    <Project Path="test/Lumoin.Veritas.ParserTests/Lumoin.Veritas.ParserTests.csproj" />
+    <Project Path="test/Lumoin.Veritas.Tests/Lumoin.Veritas.Tests.csproj" Id="14862f0f-6db3-40ed-9f7b-46f7452274e3" />
+    <Project Path="test/Lumoin.Veritas.Workbench/Lumoin.Veritas.Workbench.csproj" />
+  </Folder>
+</Solution>

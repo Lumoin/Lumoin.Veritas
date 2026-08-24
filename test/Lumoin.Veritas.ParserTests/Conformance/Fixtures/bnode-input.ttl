@@ -1,0 +1,2 @@
+<http://example.org/s> <http://example.org/p> _:left .
+_:left <http://example.org/q> "value" .

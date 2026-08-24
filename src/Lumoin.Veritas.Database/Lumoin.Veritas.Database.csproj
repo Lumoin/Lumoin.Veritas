@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Veritas.Database</RootNamespace>
+    <Description>The Veritas database facade: composes storage, SPARQL query, OWL reasoning, and the compute lane into one engine you open over data and query. The command-line, MCP, and HTTP surfaces are thin transports over it.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Rdf\Lumoin.Veritas.Rdf.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Sparql\Lumoin.Veritas.Sparql.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Owl\Lumoin.Veritas.Owl.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Shacl\Lumoin.Veritas.Shacl.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Replication\Lumoin.Veritas.Replication.csproj" />
+  </ItemGroup>
+
+</Project>

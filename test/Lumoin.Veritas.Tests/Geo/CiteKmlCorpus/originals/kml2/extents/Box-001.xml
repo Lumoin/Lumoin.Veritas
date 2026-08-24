@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<LatLonAltBox id="Box-001" xmlns="http://www.opengis.net/kml/2.2">
+	<north>50.625</north>
+	<west>22.5</west>
+	<south>45</south>
+	<east>28.125</east>
+	<maxAltitude>50</maxAltitude>
+	<minAltitude>10</minAltitude>
+	<altitudeMode>absolute</altitudeMode>
+</LatLonAltBox>

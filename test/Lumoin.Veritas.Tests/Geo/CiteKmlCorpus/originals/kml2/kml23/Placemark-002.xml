@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Ring not closed -->
+<kml xmlns="http://www.opengis.net/kml/2.2" version="2.3">
+	<Document>
+		<Placemark id="P101">
+			<name>Race circuit</name>
+			<LinearRing id="P101-01">
+				<tessellate>true</tessellate>
+				<coordinates>-123.25,49.26,80
+					-123.26,49.33 -123.11,49.29
+					-123.18,49.19,4.2
+				</coordinates>
+				<extrude>false</extrude>
+				<altitudeMode>clampToGround</altitudeMode>
+			</LinearRing>
+		</Placemark>
+	</Document>
+</kml>

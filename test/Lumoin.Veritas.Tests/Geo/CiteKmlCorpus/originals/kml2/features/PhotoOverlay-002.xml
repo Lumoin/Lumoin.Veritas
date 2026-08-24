@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Icon referent does not exist -->
+<kml:PhotoOverlay id="PhotoOverlay-001" xmlns:kml="http://www.opengis.net/kml/2.2">
+	<kml:Icon>
+		<kml:href>./img/does-not-exist.png</kml:href>
+	</kml:Icon>
+</kml:PhotoOverlay>

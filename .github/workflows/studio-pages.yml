@@ -1,0 +1,130 @@
+name: Studio Pages deploy
+
+# Deploys the in-browser Studio — the engine compiled to WebAssembly, running fully in the
+# visitor's browser — to GitHub Pages at https://lumoin.github.io/Lumoin.Veritas/. A SEPARATE
+# workflow from main.yml and studio-e2e.yml for the same reason those two are separate: a
+# deploy failure surfaces as its own check instead of blocking the .NET or e2e pipelines.
+#
+# The build leg is the proven production recipe from studio-e2e.yml: publish
+# Lumoin.Veritas.Studio.Wasm in Release (excluded from the main .NET slnx because its
+# browser-wasm RID restore would rewrite the shared net10.0 library locks — hence no
+# --locked-mode), then the vite build packages the site. Two properties of that build carry
+# the deploy's safety: under CI=true vite FAILS HARD when the Release _framework publish is
+# missing (a Debug runtime can never ship), and the build emits .nojekyll so Pages serves the
+# underscore-prefixed _framework directory. The repository subpath flows entirely from
+# VITE_BASE — the _framework boot, the service-worker registration and scope, and dataset
+# fetches all derive from the configured base — so configure-pages is not needed.
+#
+# The deploy tracks RELEASES, not main: a published GitHub Release runs this workflow against
+# the release's tagged commit, so the public Studio always embeds an engine a visitor can name
+# by version, and main moves freely without churning the deployed site. workflow_dispatch is
+# the manual lever for an out-of-band redeploy.
+#
+# Hardening still open for this workflow: confirm the egress set and switch egress-policy from
+# audit to block with an allowed-endpoints list mirroring main.yml — it reaches npmjs.org, the
+# Node distribution, the .NET/workload endpoints, and the Actions cache/Pages surfaces.
+# Deploying also needs the repository's Pages source set to "GitHub Actions" (Settings ->
+# Pages), a one-time setting.
+
+on:
+  workflow_dispatch:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read
+
+# One Pages deploy at a time, queued not cancelled: a deploy in flight always completes.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_NOLOGO: true
+
+jobs:
+  build:
+    name: Build the Studio site
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Harden Runner
+        # egress-policy is audit until the endpoint set is proven (see the file header).
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c
+        with:
+          disable-sudo: true
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
+          global-json-file: global.json
+
+      # Node version comes from the Studio.Web package.json "engines.node" (>=26), so CI
+      # tracks the same Node the project declares.
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: src/Lumoin.Veritas.Studio.Web/package.json
+          cache: npm
+          cache-dependency-path: src/Lumoin.Veritas.Studio.Web/package-lock.json
+
+      # The in-browser engine compiles to browser-wasm; wasm-tools is that toolchain.
+      - name: Install the WebAssembly workload
+        run: dotnet workload install wasm-tools
+
+      # The production runtime: a trimmed, precompressed Release publish (IL-interpreted by
+      # default; AOT is the opt-in `-p:WasmAot=true` pathway). Produces wwwroot/_framework,
+      # which the vite production build copies into dist.
+      - name: Publish the in-browser engine (Studio.Wasm, Release)
+        run: dotnet publish src/Lumoin.Veritas.Studio.Wasm/Lumoin.Veritas.Studio.Wasm.csproj -c Release
+        timeout-minutes: 15
+
+      - name: Install npm dependencies
+        working-directory: src/Lumoin.Veritas.Studio.Web
+        run: npm ci
+
+      # VITE_BASE carries the repository subpath through the whole site (see the file header).
+      - name: Build the site (vite)
+        working-directory: src/Lumoin.Veritas.Studio.Web
+        env:
+          VITE_BASE: /Lumoin.Veritas/
+        run: npm run build
+
+      - name: Upload the Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9
+        with:
+          path: src/Lumoin.Veritas.Studio.Web/dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Harden Runner
+        # egress-policy is audit until the endpoint set is proven (see the file header).
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c
+        with:
+          disable-sudo: true
+          egress-policy: audit
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128

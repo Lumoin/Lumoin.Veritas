@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Interior boundary not inside outer boundary -->
+<Polygon xmlns="http://www.opengis.net/kml/2.2">
+	<extrude>1</extrude>
+	<altitudeMode>relativeToGround</altitudeMode>
+	<outerBoundaryIs>
+		<LinearRing>
+			<coordinates>
+				-77.057885,38.872533,100
+				-77.054660,38.872910,100
+				-77.053155,38.870533,100
+				-77.055526,38.868758,100
+				-77.058441,38.869962,100
+				-77.057885,38.872533,100
+			</coordinates>
+		</LinearRing>
+	</outerBoundaryIs>
+	<innerBoundaryIs>
+		<LinearRing>
+			<coordinates>
+				-77.158681,38.971542,100
+				-77.155426,38.971679,100
+				-77.154851,38.970765,100
+				-77.155777,38.970087,100
+				-77.156912,38.970544,100
+				-77.158681,38.971542,100
+			</coordinates>
+		</LinearRing>
+	</innerBoundaryIs>
+</Polygon>

@@ -1,0 +1,2 @@
+N:System.Xml;Don't use System.Xml in this project. The Lumoin.Veritas.Xml project owns the System.Xml dependency; consume that.
+N:System.Xml.Linq;Don't use System.Xml.Linq in this project. The Lumoin.Veritas.Xml project owns the System.Xml dependency; consume that.

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Style only applies to NetworkLink -->
+<kml xmlns="http://www.opengis.net/kml/2.2" version="2.3">
+	<Placemark id="NHS-11711">
+		<name>Lions Gate Bridge</name>
+		<description>A suspension bridge that crosses the first narrows
+			of Burrard Inlet and connects the City of Vancouver, British Columbia
+			to the north shore municipalities. It has been designated a National
+			Historic Site of Canada.
+		</description>
+		<snippet>Total length is 1823 m, with three reversible lanes.
+		</snippet>
+		<Point>
+			<coordinates>-123.1383,49.3153</coordinates>
+		</Point>
+		<Style>
+			<ListStyle>
+				<ItemIcon>
+					<state>fetching0 fetching1 fetching2</state>
+					<href>./img/icon46.png</href>
+				</ItemIcon>
+			</ListStyle>
+		</Style>
+	</Placemark>
+</kml>

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml:PhotoOverlay id="PhotoOverlay-003" xmlns:kml="http://www.opengis.net/kml/2.2">
+	<kml:Camera>
+		<kml:longitude>-122.390216</kml:longitude>
+		<kml:latitude>37.789613</kml:latitude>
+		<kml:altitude>10</kml:altitude>
+		<kml:tilt>90</kml:tilt>
+	</kml:Camera>
+	<kml:Icon>
+		<kml:href>./img/L$[level]/row-$[x]_col-$[y].jpg</kml:href>
+	</kml:Icon>
+	<kml:ViewVolume>
+		<kml:leftFov>-60.0</kml:leftFov>
+		<kml:rightFov>30.0</kml:rightFov>
+		<kml:bottomFov>-60</kml:bottomFov>
+		<kml:topFov>60</kml:topFov>
+		<kml:near>1000</kml:near>
+	</kml:ViewVolume>
+	<kml:ImagePyramid>
+		<kml:tileSize>256</kml:tileSize>
+		<kml:maxWidth>1024</kml:maxWidth>
+		<kml:maxHeight>1024</kml:maxHeight>
+		<kml:gridOrigin>lowerLeft</kml:gridOrigin>
+	</kml:ImagePyramid>
+	<kml:Point>
+		<kml:coordinates>-122.390216,37.789613,80.0</kml:coordinates>
+	</kml:Point>
+</kml:PhotoOverlay>

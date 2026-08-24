@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: if kml:refreshInterval appears then kml:refreshMode = "onInterval" -->
+<Link id="Link-002" xmlns="http://www.opengis.net/kml/2.2">
+	<href>files/cube.dae</href>
+	<refreshMode>onChange</refreshMode>
+	<refreshInterval>60</refreshInterval>
+	<viewRefreshMode>never</viewRefreshMode>
+</Link>

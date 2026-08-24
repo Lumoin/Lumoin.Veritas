@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Veritas.LinkedData</RootNamespace>
+    <Description>Format-agnostic Linked Data primitives shared between JSON-LD and CBOR-LD: context resolver delegates and other utilities that operate on already-parsed map structures and do not depend on a specific serialization format.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+  </ItemGroup>
+
+</Project>

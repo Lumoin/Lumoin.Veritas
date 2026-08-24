@@ -1,0 +1,11 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+ 
+  <PropertyGroup>
+    <Description>N-Quads reader and writer over the encoded triple store: a streaming UTF-8 parser with span-bearing diagnostics, and a writer that emits the canonical line form.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+  </ItemGroup>
+  
+</Project>

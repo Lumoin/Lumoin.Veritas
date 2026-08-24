@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Veritas.Geo.Json.Stj</RootNamespace>
+
+    <!--
+      This binding ships beside the Geo library inside the CLI tool packages rather than as its own
+      NuGet package, so no package depends on it. Declaring it non-packable keeps any future packed
+      consumer from emitting a dependency on a package that does not exist.
+    -->
+    <IsPackable>false</IsPackable>
+    <Description>The System.Text.Json-backed GeoJSON geometry reader for the Lumoin.Veritas Geo codec layer. Implements the Geo library's GeoJSON read delegate over the in-box UTF-8 JSON tokenizer; the only Geo project that references System.Text.Json.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Geo\Lumoin.Veritas.Geo.csproj" />
+  </ItemGroup>
+
+</Project>

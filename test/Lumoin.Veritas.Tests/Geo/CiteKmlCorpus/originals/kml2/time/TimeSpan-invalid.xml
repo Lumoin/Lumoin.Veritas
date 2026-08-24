@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: end is before begin -->
+<TimeSpan id="TimeSpan-valid" xmlns="http://www.opengis.net/kml/2.2">
+  <begin>2015-12-31</begin>
+  <end>2015-05-21T11:05:00-07:00</end>
+</TimeSpan>

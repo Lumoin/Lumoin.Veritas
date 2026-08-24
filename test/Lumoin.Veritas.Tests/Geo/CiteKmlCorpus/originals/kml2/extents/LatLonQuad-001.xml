@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Boundary is not oriented CCW -->
+<LatLonQuad id="LatLonQuad-001" xmlns="http://www.opengis.net/kml/2.2">
+	<coordinates>-123,49 -123,51 -121,51 -121,49</coordinates>
+</LatLonQuad>

@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Veritas.Json</RootNamespace>
+    <Description>The JSON value model for Lumoin.Veritas: a backend-agnostic node handle, navigator, and parse seam. Carries no System.Text.Json dependency; a concrete parser is supplied through the parse delegate.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+  </ItemGroup>
+
+</Project>

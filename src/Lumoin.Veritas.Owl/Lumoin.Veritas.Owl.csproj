@@ -1,0 +1,13 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Veritas.Owl</RootNamespace>
+    <Description>OWL 2 RL forward-chaining reasoner for Lumoin.Veritas. Implements the OWL 2 RL profile axiom types (SubClassOf, SubPropertyOf, TransitiveProperty, SymmetricProperty, InverseOf, PropertyChain, EquivalentClass) as inference rules that fire against the dataset to fixpoint. TBox loads in memory; ABox streams through.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Rdf\Lumoin.Veritas.Rdf.csproj" />
+  </ItemGroup>
+
+</Project>

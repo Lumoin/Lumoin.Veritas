@@ -1,0 +1,5 @@
+<MultiGeometry xmlns="http://www.opengis.net/kml/2.2" id="geom-001">
+            <Point id="b385.5"><coordinates>-123.3215766,49.2760338,0</coordinates></Point>
+            <Point id="b386"><coordinates>-123.2643704,49.3301853,0</coordinates></Point>
+            <Point id="b386.3"><coordinates>-123.2477084,49.2890857,0</coordinates></Point>
+          </MultiGeometry>

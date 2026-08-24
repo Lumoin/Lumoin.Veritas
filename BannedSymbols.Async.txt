@@ -1,0 +1,14 @@
+M:System.Threading.Tasks.Task.Wait;Await the task. Sync-over-async is banned everywhere; a call shape that cannot await is surfaced for redesign, never bridged.
+M:System.Threading.Tasks.Task.WaitAll;Await Task.WhenAll instead of blocking the calling thread.
+M:System.Threading.Tasks.Task.WaitAny;Await Task.WhenAny instead of blocking the calling thread.
+M:System.Threading.Tasks.Task.RunSynchronously;Await the task; inline synchronous execution of task bodies is the same blocking hazard.
+P:System.Threading.Tasks.Task`1.Result;Await the task. Result blocks and wraps failures in AggregateException; even a known-completed task is awaited for uniformity.
+P:System.Threading.Tasks.ValueTask`1.Result;Await the value task. Result on an incomplete ValueTask is undefined behaviour, and on a completed one the await costs nothing.
+M:System.Runtime.CompilerServices.TaskAwaiter.GetResult;Await the task instead of GetAwaiter().GetResult(); the await keyword never binds this symbol in source, so this entry only catches explicit blocking.
+M:System.Runtime.CompilerServices.TaskAwaiter`1.GetResult;Await the task instead of GetAwaiter().GetResult().
+M:System.Runtime.CompilerServices.ValueTaskAwaiter.GetResult;Await the value task instead of GetAwaiter().GetResult().
+M:System.Runtime.CompilerServices.ValueTaskAwaiter`1.GetResult;Await the value task instead of GetAwaiter().GetResult().
+M:System.Runtime.CompilerServices.ConfiguredTaskAwaitable.ConfiguredTaskAwaiter.GetResult;Await the configured awaitable instead of blocking on its awaiter.
+M:System.Runtime.CompilerServices.ConfiguredTaskAwaitable`1.ConfiguredTaskAwaiter.GetResult;Await the configured awaitable instead of blocking on its awaiter.
+M:System.Runtime.CompilerServices.ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter.GetResult;Await the configured awaitable instead of blocking on its awaiter.
+M:System.Runtime.CompilerServices.ConfiguredValueTaskAwaitable`1.ConfiguredValueTaskAwaiter.GetResult;Await the configured awaitable instead of blocking on its awaiter.

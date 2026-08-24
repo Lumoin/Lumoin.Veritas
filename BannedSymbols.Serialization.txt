@@ -1,0 +1,1 @@
+N:System.Text.Json;Don't use JSON serialization in this project. The Lumoin.Veritas.Json project owns the STJ dependency; consume that.

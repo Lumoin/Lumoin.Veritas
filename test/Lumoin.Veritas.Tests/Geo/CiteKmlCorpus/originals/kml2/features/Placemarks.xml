@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" version="2.3">
+	<Document id="Placemarks-Vancouver">
+		<name>Placemarks around Vancouver, Canada</name>
+		<Placemark id="TS-7795">
+			<name>Point Atkinson Lighthouse</name>
+			<description>The structure was built in 1914 on granite boulders
+				jutting out into English Bay in West Vancouver, Canada.
+			</description>
+			<snippet>Tide and weather station</snippet>
+			<Point>
+				<coordinates>-123.2646,49.3304</coordinates>
+			</Point>
+		</Placemark>
+		<Placemark id="NHS-11711">
+			<name>Lions Gate Bridge</name>
+			<description>A suspension bridge that crosses the first narrows
+				of Burrard Inlet and connects the City of Vancouver, British Columbia
+				to the north shore municipalities. It has been designated a National
+				Historic Site of Canada.
+			</description>
+			<snippet>Total length is 1823 m, with three reversible lanes.
+			</snippet>
+			<Point>
+				<coordinates>-123.1383,49.3153</coordinates>
+			</Point>
+		</Placemark>
+	</Document>
+</kml>

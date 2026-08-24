@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Violates uniqueness constraint (longitude intervals) -->
+<LatLonAltBox id="Box-002" xmlns="http://www.opengis.net/kml/2.2">
+	<north>50.625</north>
+	<west>-225</west>
+	<south>45</south>
+	<east>-135</east>
+	<maxAltitude>50</maxAltitude>
+	<minAltitude>10</minAltitude>
+	<altitudeMode>absolute</altitudeMode>
+</LatLonAltBox>

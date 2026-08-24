@@ -1,0 +1,12 @@
+PREFIX cmp: <https://veritas.app/ns/campus#>
+
+# Every professor of any rank (Full / Associate / Assistant) in the department. The engine materializes
+# rdf:type up rdfs:subClassOf, so asking for the cmp:Professor superclass returns the subclass instances —
+# RDFS reasoning, rather than an explicit class-hierarchy walk.
+SELECT ?name
+WHERE {
+  ?professor a cmp:Professor ;
+             cmp:name ?name ;
+             cmp:worksFor ?dept .
+}
+ORDER BY ?name

@@ -1,0 +1,7 @@
+# Studio ships inside a controlled, evergreen OS webview (WebView2 / WKWebView / WebKitGTK), so the
+# floor is modern: Lightning CSS targets these for downleveling/prefixing. Raise the floor as the
+# minimum supported webview rises.
+last 2 Chrome versions
+last 2 Edge versions
+last 2 Safari versions
+last 2 Firefox versions

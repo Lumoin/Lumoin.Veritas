@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+	<Document>
+		<name>Placemarks around Vancouver, Canada</name>
+		<Style id="sn_blue-dot_copy3">
+			<IconStyle>
+				<Icon>
+					<href>http://www.google.com/intl/en_us/mapfiles/ms/icons/blue-dot.png</href>
+				</Icon>
+			</IconStyle>
+		</Style>
+		<Placemark id="P003">
+			<name>Point Atkinson Lighthouse</name>
+			<snippet>Tide and weather station</snippet>
+			<description>The structure was built in 1914 on granite boulders
+				jutting out into English Bay in West Vancouver, Canada.
+			</description>
+			<styleUrl>#sn_blue-dot_copy3</styleUrl>
+			<Point id="P003-1">
+				<coordinates>-123.2646,49.3304</coordinates>
+			</Point>
+		</Placemark>
+	</Document>
+</kml>

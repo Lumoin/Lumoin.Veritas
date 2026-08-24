@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>JSON-LD 1.1 over the backend-agnostic JSON value model: context processing, term definitions, document expansion and compaction, and the RDF conversion both directions.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.CborLd\Lumoin.Veritas.CborLd.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Json\Lumoin.Veritas.Json.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.LinkedData\Lumoin.Veritas.LinkedData.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,117 @@
+﻿<Project Sdk="MSTest.Sdk">
+
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>false</EnableAotAnalyzer>
+    <!--
+      Displays error on console in addition to the log file. Note that this feature comes with a performance impact.
+      For more information, visit https://learn.microsoft.com/dotnet/core/testing/unit-testing-platform-integration-dotnet-test#show-failure-per-test
+      -->
+    <TestingPlatformShowTestsFailure>true</TestingPlatformShowTestsFailure>
+    <RunSettingsFilePath>$(MSBuildProjectDirectory)\config.runsettings</RunSettingsFilePath>
+    <TestingExtensionsProfile>AllMicrosoft</TestingExtensionsProfile>
+    <IsTestApplication>true</IsTestApplication>
+    <MSTestAnalysisMode>Recommended</MSTestAnalysisMode>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Kestrel + HttpContext/IHttpApplication mapping types live in the
+      Microsoft.AspNetCore.App shared framework, not as NuGet packages. Only the
+      SPARQL federation test harness (an in-loopback Kestrel endpoint + an
+      HttpClient transport) needs them; the Lumoin.Veritas.Sparql library never
+      references HTTP — SERVICE goes through the injected SparqlClient seam.
+    -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CsCheck" />
+    <PackageReference Include="LiquidTestReports.Markdown" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
+  </ItemGroup>
+
+  <!--
+    The Lumoin.Verisync consensus/replication stack, consumed here to wire and
+    differentially exercise it against the Veritas graph store. Veritas serializes its
+    own payloads (Veritas.Cbor / Json.Stj); the Verisync.* packages serialize Verisync's
+    own consensus and CRDT-state types. Test projects are exempt from the central
+    package-scope validation, so this is the staging ground before any production
+    replication library exists.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Lumoin.Verisync.Core" />
+    <PackageReference Include="Lumoin.Verisync.Json" />
+    <PackageReference Include="Lumoin.Verisync.Cbor" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- AT Protocol CAR fixtures (real CAR files from public repository endpoints).
+         Files are populated manually per Cbor/Fixtures/AtProto/README.md; the
+         glob is non-erroring when no .car files are present. -->
+    <None Include="Cbor\Fixtures\AtProto\*.car" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- The vendored W3C corpus under Material/ and the hand-authored harness
+       fixtures under Conformance/Fixtures/ are read directly from the source
+       tree by W3cCorpusPath (anchored via [CallerFilePath]) and are
+       deliberately neither compiled nor copied to the build output. See
+       Material/NQuads/ATTRIBUTION.md and Material/Turtle/ATTRIBUTION.md for
+       provenance. -->
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Canonicalization\Lumoin.Veritas.Canonicalization.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Cbor\Lumoin.Veritas.Cbor.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.CborLd\Lumoin.Veritas.CborLd.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Cid\Lumoin.Veritas.Cid.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Database\Lumoin.Veritas.Database.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Geo\Lumoin.Veritas.Geo.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Geo.Json.Stj\Lumoin.Veritas.Geo.Json.Stj.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.JsonLd\Lumoin.Veritas.JsonLd.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Jsonata\Lumoin.Veritas.Jsonata.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.JsonPointer\Lumoin.Veritas.JsonPointer.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.JsonSchema\Lumoin.Veritas.JsonSchema.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.LinkedData\Lumoin.Veritas.LinkedData.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Json\Lumoin.Veritas.Json.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Json.Stj\Lumoin.Veritas.Json.Stj.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.NQuads\Lumoin.Veritas.NQuads.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Owl\Lumoin.Veritas.Owl.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Rdf\Lumoin.Veritas.Rdf.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Rdf.Json\Lumoin.Veritas.Rdf.Json.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Replication\Lumoin.Veritas.Replication.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Shacl\Lumoin.Veritas.Shacl.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Skos\Lumoin.Veritas.Skos.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Sparql\Lumoin.Veritas.Sparql.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Turtle\Lumoin.Veritas.Turtle.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Xml\Lumoin.Veritas.Xml.csproj" />
+  </ItemGroup>
+
+  <!--
+    Workbench is a console-app project that exposes scenario operations
+    (HypertrieSoak.RunBuildSoak, RunQuerySoak, ...) for both interactive
+    Release-build profiling and automated test exercise. Tests references
+    Workbench so:
+      1) the operations can be invoked in-process for fast unit tests, and
+      2) MSBuild builds Workbench before Tests, ensuring the workbench
+         executable exists on disk for the integration tests that launch
+         it via Process.Start.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Workbench\Lumoin.Veritas.Workbench.csproj" />
+  </ItemGroup>
+
+  <!--
+    The command-line application is referenced so MSBuild builds it before
+    Tests, ensuring the veritas executable exists on disk for the two-process
+    replication tests that launch it via Process.Start and drive it over its
+    standard streams.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Cli\Lumoin.Veritas.Cli.csproj" />
+  </ItemGroup>
+
+</Project>
+

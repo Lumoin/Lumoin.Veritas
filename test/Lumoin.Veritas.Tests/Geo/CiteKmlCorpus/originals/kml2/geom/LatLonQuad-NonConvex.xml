@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Has interior angle > 180 -->
+<LatLonQuad xmlns="http://www.opengis.net/kml/2.2">
+	<coordinates>-123,50.0 -122,49.5 -121,50 -122,49.0</coordinates>
+</LatLonQuad>

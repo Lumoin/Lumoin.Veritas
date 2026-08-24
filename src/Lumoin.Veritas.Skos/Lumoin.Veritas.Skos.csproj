@@ -1,0 +1,11 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  
+  <PropertyGroup>
+    <Description>SKOS concept schemes over the encoded triple store: the vocabulary as UTF-8 IRI constants, plus the concept, collection and mapping primitives a thesaurus is read through.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+  </ItemGroup>
+  
+</Project>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" version="2.3">
+	<NetworkLinkControl>
+	    <maxSessionLength>600</maxSessionLength>
+		<message>This is a pop-up message. You will only see this once</message>
+		<cookie>cookie=sometext</cookie>
+		<linkName>New KML features</linkName>
+		<linkDescription><![CDATA[KML now has new features available!]]></linkDescription>
+		<minRefreshPeriod>900</minRefreshPeriod>
+	</NetworkLinkControl>
+</kml>

@@ -1,0 +1,38 @@
+# Hand-authored SPARQL evaluation smoke tests for the Lumoin.Veritas eval harness.
+# These are NOT W3C conformance tests; they prove the parse -> normalize -> translate ->
+# execute -> compare pipeline end-to-end ahead of vendoring the full W3C SPARQL evaluation
+# corpus. They use the standard SPARQL test-manifest (mf:) and test-query (qt:) vocabularies.
+
+@prefix mf:   <http://www.w3.org/2001/sw/DataAccess/tests/test-manifest#> .
+@prefix qt:   <http://www.w3.org/2001/sw/DataAccess/tests/test-query#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix :     <#> .
+
+<> a mf:Manifest ;
+   rdfs:comment "Lumoin.Veritas SPARQL evaluation harness smoke tests." ;
+   mf:entries ( :select-knows :select-knows-json :ask-knows :select-order :select-filter ) .
+
+:select-knows a mf:QueryEvaluationTest ;
+   mf:name "SELECT objects of :alice :knows (bag)" ;
+   mf:action [ qt:query <select-knows.rq> ; qt:data <data.ttl> ] ;
+   mf:result <select-knows.srx> .
+
+:select-knows-json a mf:QueryEvaluationTest ;
+   mf:name "SELECT objects of :alice :knows (JSON results)" ;
+   mf:action [ qt:query <select-knows.rq> ; qt:data <data.ttl> ] ;
+   mf:result <select-knows.srj> .
+
+:ask-knows a mf:QueryEvaluationTest ;
+   mf:name "ASK whether :alice :knows :bob" ;
+   mf:action [ qt:query <ask-knows.rq> ; qt:data <data.ttl> ] ;
+   mf:result <ask-knows.srx> .
+
+:select-order a mf:QueryEvaluationTest ;
+   mf:name "SELECT ages ORDER BY ascending" ;
+   mf:action [ qt:query <select-order.rq> ; qt:data <data.ttl> ] ;
+   mf:result <select-order.srx> .
+
+:select-filter a mf:QueryEvaluationTest ;
+   mf:name "SELECT with FILTER on integer age" ;
+   mf:action [ qt:query <select-filter.rq> ; qt:data <data.ttl> ] ;
+   mf:result <select-filter.srx> .

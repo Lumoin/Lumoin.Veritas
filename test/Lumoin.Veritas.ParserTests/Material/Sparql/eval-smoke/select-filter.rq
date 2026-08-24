@@ -1,0 +1,2 @@
+PREFIX : <http://example.org/>
+SELECT ?p WHERE { ?p :age ?age FILTER(?age > 28) }

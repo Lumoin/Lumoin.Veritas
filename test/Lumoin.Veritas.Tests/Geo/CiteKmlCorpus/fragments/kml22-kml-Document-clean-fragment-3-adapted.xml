@@ -1,0 +1,11 @@
+<Polygon xmlns="http://www.opengis.net/kml/2.2">
+						<extrude>1</extrude>
+						<altitudeMode>absolute</altitudeMode>
+						<outerBoundaryIs>
+							<LinearRing>
+								<coordinates>
+-123.940122952744,49.1691287039003,18 -123.940137225952,49.16920143662431,18 -123.939995940886,49.16921364907441,18 -123.939979331833,49.16914300389781,18 -123.940122952744,49.1691287039003,18 
+              </coordinates>
+							</LinearRing>
+						</outerBoundaryIs>
+					</Polygon>

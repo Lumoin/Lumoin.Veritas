@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Quad has interior angle > 180 -->
+<kml xmlns="http://www.opengis.net/kml/2.2" version="2.3">
+	<GroundOverlay id="GroundOverlay-001">
+		<Icon>
+			<href>./img/rectangle.gif</href>
+			<viewBoundScale>0.75</viewBoundScale>
+		</Icon>
+		<LatLonQuad>
+			<coordinates>-123,50.0 -122,49.0 -121,50 -122,49.5</coordinates>
+		</LatLonQuad>
+	</GroundOverlay>
+</kml>

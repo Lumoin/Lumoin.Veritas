@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Missing icon resource -->
+<Style id="Style-001" xmlns="http://www.opengis.net/kml/2.2">
+	<IconStyle>
+		<color>a1ff00ff</color>
+		<scale>1.4</scale>
+		<Icon>
+			<href>img/icon.jpg</href>
+		</Icon>
+	</IconStyle>
+</Style>

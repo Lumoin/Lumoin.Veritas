@@ -1,0 +1,221 @@
+@prefix adp:  <https://veritas.app/ns/adaptation#> .
+@prefix scn:  <https://veritas.app/ns/scenario#> .
+@prefix rv:   <https://veritas.app/data/riverton/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+# Riverton: a fictional delta city planning its water adaptation pathway. The planning context
+# carries the uncertain conditions as plain data, and scenario levers name which of those values
+# a scenario world may move — so creating a scenario world is a zero-copy fork plus one update,
+# and the diff against the primary world is exactly the assumption that changed. The catalogue
+# carries no probabilities: a scenario world is a declared possible future, and a claim about
+# the plan is a count over the declared worlds it holds in. Real plans of this kind run to
+# hundreds of thousands of parameters; this dataset keeps the same shape at a size a browser
+# tab loads instantly.
+
+rv:Riverton a adp:City ; rdfs:label "Riverton" ; adp:population 240000 .
+
+# The planning context: the uncertain conditions, held as data the queries read. Each condition
+# names the party that monitors it — a condition nobody monitors can never trigger a decision.
+rv:Climate a adp:PlanningContext ; rdfs:label "Climate outlook" ;
+    adp:seaLevelRiseCm 30 ;
+    adp:rainfallChangePercent 0 ;
+    adp:monitoredBy rv:CatchmentBoard .
+
+rv:Demand a adp:PlanningContext ; rdfs:label "Demand outlook" ;
+    adp:demandGrowthPercent 10 ;
+    adp:monitoredBy rv:WaterUtility .
+
+rv:Programme a adp:PlanningContext ; rdfs:label "Adaptation programme" ;
+    adp:annualBudgetMeur 25 ;
+    adp:monitoredBy rv:CityCouncil .
+
+# Scenario levers: the knobs a scenario world exposes. Each lever names the context value it
+# moves and its admissible range; the editor's create-a-scenario dialog reads these and commits
+# the chosen settings as the new world's first update.
+rv:SeaLevelLever a scn:Lever ; scn:label "Sea-level rise by 2100 (cm)" ;
+    scn:target rv:Climate ; scn:property adp:seaLevelRiseCm ;
+    scn:min 0 ; scn:max 120 ; scn:step 10 .
+
+rv:RainfallLever a scn:Lever ; scn:label "Mean annual rainfall change (%)" ;
+    scn:target rv:Climate ; scn:property adp:rainfallChangePercent ;
+    scn:min -30 ; scn:max 40 ; scn:step 5 .
+
+rv:DemandLever a scn:Lever ; scn:label "Water demand growth (%)" ;
+    scn:target rv:Demand ; scn:property adp:demandGrowthPercent ;
+    scn:min -10 ; scn:max 60 ; scn:step 5 .
+
+rv:BudgetLever a scn:Lever ; scn:label "Annual adaptation budget (MEUR)" ;
+    scn:target rv:Programme ; scn:property adp:annualBudgetMeur ;
+    scn:min 5 ; scn:max 100 ; scn:step 5 .
+
+# The agencies that own and operate measures.
+rv:PortAuthority a adp:Agency ; rdfs:label "Port authority" .
+rv:WaterBoard a adp:Agency ; rdfs:label "Regional water board" .
+rv:CatchmentBoard a adp:Agency ; rdfs:label "Catchment board" .
+rv:CityCouncil a adp:Agency ; rdfs:label "City council" .
+rv:WaterUtility a adp:Agency ; rdfs:label "Water utility" .
+rv:ParksTrust a adp:Agency ; rdfs:label "Parks trust" .
+
+# Regulation, delivery contracts, and civil society: the plan is held by many hands, and the
+# graph keeps every hand on the record — the local ones included. Water is the shared quantity
+# the actors balance through: allocations sit beside demand, so a neighbourhood and a city-scale
+# work answer in the same picture.
+rv:WaterRegulator a adp:Regulator ; rdfs:label "National water regulator" .
+rv:RiverKeepers a adp:Ngo ; rdfs:label "River keepers association" ; adp:stewards rv:SegmentC .
+rv:OldTownResidents a adp:Community ; rdfs:label "Old town residents" ;
+    adp:connectedTo rv:SegmentB ; adp:waterAllocationMlPerYear 1200 .
+rv:DeltaFarmers a adp:Community ; rdfs:label "Delta farmers" ;
+    adp:connectedTo rv:SegmentC ; adp:waterAllocationMlPerYear 5400 .
+
+rv:BarrierAlliance a adp:Contract ; rdfs:label "Barrier delivery alliance" ;
+    adp:party rv:WaterBoard, rv:PortAuthority ; adp:approvedBy rv:WaterRegulator .
+
+# Accountability needs a protected route for bad news: a confidential reporting channel the
+# regulator operates, open to the local actors, with the delivery contract in its sight.
+rv:Whistleblowing a adp:ReportingChannel ; rdfs:label "Confidential reporting channel" ;
+    adp:operatedBy rv:WaterRegulator ;
+    adp:oversees rv:BarrierAlliance .
+
+rv:OldTownResidents adp:reportsThrough rv:Whistleblowing {| rdfs:label "raise a concern, protected" |} .
+rv:RiverKeepers adp:reportsThrough rv:Whistleblowing .
+
+# One case is open: a report filed through the channel concerns the measure the shapes also flag
+# — the groundwater bank names no accountable owner, and somebody has said so on the record.
+rv:Case7 a adp:WhistleblowingCase ; rdfs:label "Case 7: unowned groundwater bank" ;
+    adp:filedThrough rv:Whistleblowing ;
+    adp:filedBy rv:OldTownResidents ;
+    adp:filedWith rv:WaterRegulator ;
+    adp:concerns rv:GroundwaterBank {| rdfs:label "who answers for this measure?" |} ;
+    adp:evidence rv:Evidence12, rv:Evidence13 ;
+    adp:caseStatus "open" .
+
+# Evidence rides the case, and bad news travels: coverage at home and abroad — and because the
+# evidence reaches the timber supply, the exporting country's own authority enters the picture.
+rv:Evidence12 a adp:Evidence ; rdfs:label "Ownership register extract" ;
+    adp:documents rv:GroundwaterBank ; adp:providedBy rv:OldTownResidents .
+
+rv:Evidence13 a adp:Evidence ; rdfs:label "Timber shipment water declaration" ;
+    adp:documents rv:TimberSupply ; adp:providedBy rv:RiverKeepers .
+
+rv:DeltaCourier a adp:MediaOutlet ; rdfs:label "Delta Courier (home coverage)" ;
+    adp:covers rv:Case7 .
+
+rv:NorviaHerald a adp:MediaOutlet ; rdfs:label "Norvia Herald (coverage abroad)" ;
+    adp:covers rv:Case7 .
+
+rv:NorviaForestAgency a adp:ForeignAuthority ; rdfs:label "Norvia forest agency" ;
+    adp:examines rv:TimberSupply .
+
+# Materials providing: the barrier's timber structures come from the other side of the world,
+# and materials embody water — the shipment carries its water balance, and the source region has
+# one of its own. A pathway choice here is a water choice there. The embodied-water figure is a
+# RECORDED STATEMENT with an identity of its own (a named reifier), so a later claim can point at
+# exactly the fact it disputes.
+rv:TimberSupply a adp:MaterialsSupply ; rdfs:label "Timber structures for the barrier" ;
+    adp:suppliesTo rv:SurgeBarrier ;
+    adp:sourcedFrom rv:BorealHighlands ;
+    adp:suppliedBy rv:HighlandsMill ;
+    adp:timberTonnes 12000 ;
+    adp:embodiedWaterMl 5400 ~rv:ShippingDeclaration
+        {| rdfs:label "declared at shipping: 5400 Ml embodied water" ; adp:declaredBy rv:HighlandsMill |} .
+
+rv:HighlandsMill a adp:Supplier ; rdfs:label "Highlands timber mill" .
+
+rv:BorealHighlands a adp:SourceRegion ; rdfs:label "Boreal Highlands, Norvia" ;
+    adp:annualWaterBalanceMl 152000 .
+
+# A counterclaim can arrive after the goods have shipped: it disputes the recorded statement
+# itself, carries its own late evidence, and travels the same pathway the original record
+# travelled — back through everyone who handled the thing.
+rv:Counterclaim2 a adp:Counterclaim ; rdfs:label "Counterclaim: embodied water understated" ;
+    adp:disputes rv:ShippingDeclaration ;
+    adp:assertsValueMl 9100 ;
+    adp:basedOn rv:Obs31 ;
+    adp:raisedBy rv:RiverKeepers ;
+    adp:travelsWith rv:TimberSupply {| rdfs:label "the new leaf travels the same chain" |} .
+
+# Participation is part of the record: a citizen-science programme through which people file
+# observations — a litre of water read for its species among them — and late evidence attaches
+# to what was recorded earlier in the chain.
+rv:DeltaWatch a adp:CitizenScienceProgramme ; rdfs:label "Delta Watch citizen science" ;
+    adp:hostedBy rv:RiverKeepers .
+
+rv:Obs31 a adp:Observation ; rdfs:label "eDNA water sample: delta channel species" ;
+    adp:filedUnder rv:DeltaWatch ; adp:observedAt rv:SegmentC ;
+    adp:providedBy rv:DeltaFarmers ; adp:method "eDNA" ;
+    adp:informs rv:Case7 {| rdfs:label "late evidence, attached to the case" |} .
+
+rv:Obs32 a adp:Observation ; rdfs:label "Groundwater level readings, old town wells" ;
+    adp:filedUnder rv:DeltaWatch ; adp:observedAt rv:SegmentB ;
+    adp:providedBy rv:OldTownResidents ; adp:method "well gauge" .
+
+# The coastline, segment by segment. A defence is only as strong as its weakest interface:
+# rv:SegmentB is covered by no measure, which the shipped shapes flag.
+rv:SegmentA a adp:CoastSegment ; rdfs:label "Harbour front" ; adp:defendedBy rv:RaiseQuays .
+rv:SegmentB a adp:CoastSegment ; rdfs:label "Old town shore" .
+rv:SegmentC a adp:CoastSegment ; rdfs:label "Delta parks" ; adp:defendedBy rv:DeltaDunes .
+
+# The measure portfolio. Each measure names the condition it triggers on, the threshold at
+# which it is called for, and its lead time — the years it takes to deliver once decided, which
+# is what turns a threshold into a decide-by date; sequencing edges (follows, supersedes) give
+# the pathway its order. The defence relations carry their own names: RDF 1.2 annotation syntax
+# reifies each edge and the label rides the reifier, so a query can ask what a connection IS.
+rv:FloodWarning a adp:Measure ; rdfs:label "Flood forecasting and warning service" ;
+    adp:costMeur 8 ; adp:leadTimeYears 1 ; adp:owner rv:CityCouncil ;
+    adp:triggerOn adp:seaLevelRiseCm ; adp:triggerAt 20 .
+
+rv:DeltaDunes a adp:Measure ; rdfs:label "Dune and marsh restoration" ;
+    adp:costMeur 25 ; adp:leadTimeYears 3 ; adp:owner rv:ParksTrust ;
+    adp:defends rv:SegmentC {| rdfs:label "soft buffer seaward of the parks" |} ;
+    adp:triggerOn adp:seaLevelRiseCm ; adp:triggerAt 20 .
+
+rv:RaiseQuays a adp:Measure ; rdfs:label "Raise the harbour quays" ;
+    adp:costMeur 40 ; adp:leadTimeYears 5 ; adp:owner rv:PortAuthority ;
+    adp:defends rv:SegmentA {| rdfs:label "raises the quay line" |} ;
+    adp:triggerOn adp:seaLevelRiseCm ; adp:triggerAt 40 ;
+    adp:follows rv:FloodWarning .
+
+rv:SurgeBarrier a adp:Measure ; rdfs:label "Movable surge barrier" ;
+    adp:costMeur 320 ; adp:leadTimeYears 15 ; adp:owner rv:WaterBoard ;
+    adp:defends rv:SegmentA {| rdfs:label "closes the harbour mouth" |},
+                rv:SegmentB {| rdfs:label "shields the old town shore" |},
+                rv:SegmentC {| rdfs:label "backstops the delta parks" |} ;
+    adp:deliveredUnder rv:BarrierAlliance ; adp:regulatedBy rv:WaterRegulator ;
+    adp:triggerOn adp:seaLevelRiseCm ; adp:triggerAt 80 ;
+    adp:supersedes rv:RaiseQuays .
+
+rv:UpstreamStorage a adp:Measure ; rdfs:label "Upstream storage basins" ;
+    adp:costMeur 60 ; adp:leadTimeYears 6 ; adp:owner rv:CatchmentBoard ;
+    adp:triggerOn adp:rainfallChangePercent ; adp:triggerAt 10 .
+
+rv:CitySuds a adp:Measure ; rdfs:label "City-wide sustainable drainage" ;
+    adp:costMeur 35 ; adp:leadTimeYears 8 ; adp:owner rv:CityCouncil ;
+    adp:triggerOn adp:rainfallChangePercent ; adp:triggerAt 20 ;
+    adp:follows rv:UpstreamStorage .
+
+rv:NetworkLosses a adp:Measure ; rdfs:label "Halve distribution losses" ;
+    adp:costMeur 20 ; adp:leadTimeYears 2 ; adp:owner rv:WaterUtility ;
+    adp:triggerOn adp:demandGrowthPercent ; adp:triggerAt 5 .
+
+rv:SecondSource a adp:Measure ; rdfs:label "Second water source" ;
+    adp:costMeur 150 ; adp:leadTimeYears 10 ; adp:owner rv:WaterUtility ;
+    adp:regulatedBy rv:WaterRegulator ;
+    adp:triggerOn adp:demandGrowthPercent ; adp:triggerAt 30 ;
+    adp:follows rv:NetworkLosses .
+
+rv:GroundwaterBank a adp:Measure ; rdfs:label "Groundwater storage bank" ;
+    adp:costMeur 45 ; adp:leadTimeYears 4 ;
+    adp:triggerOn adp:demandGrowthPercent ; adp:triggerAt 40 .
+
+# The smallest measure in the plan is community-owned: a locally made change enters the same
+# catalogue, the same triggers, and the same picture as the city-scale works.
+rv:RainGardens a adp:Measure ; rdfs:label "Neighbourhood rain gardens" ;
+    adp:costMeur 3 ; adp:leadTimeYears 1 ; adp:owner rv:OldTownResidents ;
+    adp:triggerOn adp:rainfallChangePercent ; adp:triggerAt 5 ;
+    adp:relieves rv:CitySuds .
+
+# Several distinctly named connections can join the same two nodes: the residents both own the
+# rain gardens (above) and champion their delivery, and the river keepers both steward the delta
+# parks and maintain the dunes that buffer them.
+rv:OldTownResidents adp:champions rv:RainGardens {| rdfs:label "community-led delivery" |} .
+rv:RiverKeepers adp:maintains rv:DeltaDunes {| rdfs:label "volunteer maintenance" |} .

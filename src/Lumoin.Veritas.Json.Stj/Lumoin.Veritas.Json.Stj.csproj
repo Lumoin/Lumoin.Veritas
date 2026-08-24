@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Veritas.Json.Stj</RootNamespace>
+    <Description>The System.Text.Json-backed implementation of the Lumoin.Veritas JSON parse seam. Supplies a navigator and parse delegate over System.Text.Json; the only JSON project that references it.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Json\Lumoin.Veritas.Json.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Veritas.Xml</RootNamespace>
+    <Description>XML serialization layer for Lumoin.Veritas. Owns the System.Xml dependency and provides serialization for Veritas types that cross the XML boundary, beginning with the SPARQL Query Results XML format.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Rdf\Lumoin.Veritas.Rdf.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Sparql\Lumoin.Veritas.Sparql.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Canonical XML 1.0 (XmlDsigC14NTransform) for the strict rdf:XMLLiteral canonicalizer. -->
+    <PackageReference Include="System.Security.Cryptography.Xml" />
+  </ItemGroup>
+
+</Project>

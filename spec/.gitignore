@@ -1,0 +1,6 @@
+# TLC model-checker output and the downloaded tools jar are not tracked;
+# download tla2tools.jar from https://github.com/tlaplus/tlaplus/releases to run TLC.
+states/
+*.jar
+*.out
+*.st

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Exterior ring crosses itself -->
+<Placemark id="Placemark-102" xmlns="http://www.opengis.net/kml/2.2">
+	<Polygon id="P102">
+		<altitudeMode>relativeToGround</altitudeMode>
+		<outerBoundaryIs>
+			<LinearRing>
+				<coordinates>-123.0,51.0 -123.0,49.0 -122.0,49.0 -122.0,51.0
+					-122.5,48.0 -123.0,51.0</coordinates>
+			</LinearRing>
+		</outerBoundaryIs>
+	</Polygon>
+</Placemark>

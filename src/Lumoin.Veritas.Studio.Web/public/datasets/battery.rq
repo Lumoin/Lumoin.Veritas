@@ -1,0 +1,4 @@
+PREFIX bat: <https://veritas.app/ns/battery#>
+SELECT ?battery ?cathode ?recycledCobalt WHERE {
+  ?battery a bat:Battery ; bat:cathode ?cathode ; bat:recycledCobalt ?recycledCobalt
+} ORDER BY DESC(?recycledCobalt)

@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk.WebAssembly">
+
+  <!-- The Veritas engine compiled to browser-wasm: the no-scaffolding deployment runs queries fully
+       client-side. The Studio web app boots this on the page's main thread (src/services/wasm-engine.ts)
+       and reaches it through WasmVeritasTransport.
+       BUILD: needs `dotnet workload install wasm-tools`. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <!-- A browser host, not a library: it ships inside the Studio bundle, never as a package. -->
+    <IsPackable>false</IsPackable>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <!-- The JSExport source generator emits unsafe marshalling code. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- JS interop ([JSExport]/[JSImport]) is enabled by the WebAssembly SDK; the engine is AOT/trim-safe.
+         Single-threaded first: the engine's compute lane degrades correctly to no-thread on WASM, and this
+         avoids the SharedArrayBuffer/COOP-COEP requirement. Revisit WasmEnableThreads once measured. -->
+    <WasmEnableThreads>false</WasmEnableThreads>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Cache invalidation is owned by the Studio service worker (content-versioned precache) and by Vite
+         (app-asset hashing), not by Blazor — disable runtime-asset fingerprinting so _framework keeps stable
+         names. Also sidesteps the .NET 10 standalone-WASM fingerprinting issues. -->
+    <WasmFingerprintAssets>false</WasmFingerprintAssets>
+    <!-- A Release publish statically precompresses _framework with Brotli (highest level) + gzip; the property
+         is default-on in Release and stated here for intent. (Pre-compressed twins help a negotiating host; a
+         plain static host like GitHub Pages serves the uncompressed file.) -->
+    <CompressionEnabled>true</CompressionEnabled>
+    <!-- Release WASM defaults to the smaller IL-interpreted build (trimmed + precompressed). AOT (IL ->
+         WebAssembly: faster runtime but ~3-4x larger output) is kept as an opt-in pathway — publish with
+         `-p:WasmAot=true`. WasmStripILAfterAOT drops the now-redundant IL when AOT is on, for a smaller AOT
+         build. AOT is publish-only and Release-only, so the Debug dev build (and CI's Debug Studio.Wasm build)
+         stays fast; AOT publishes are slow and need the wasm-tools workload. -->
+    <WasmAot Condition="'$(WasmAot)' == ''">false</WasmAot>
+    <RunAOTCompilation Condition="'$(Configuration)' == 'Release'">$(WasmAot)</RunAOTCompilation>
+    <WasmStripILAfterAOT>true</WasmStripILAfterAOT>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Database brings the engine facade (+ Core, Sparql transitively) and the editor's vocabulary-corpus
+         writer; Turtle loads datasets and answers Turtle-family completion; Rdf.Json writes the SPARQL
+         results-JSON. As a composition root (an app), this may reference the serialization project —
+         whitelisted in Directory.Packages.props like the CLI. -->
+    <ProjectReference Include="..\Lumoin.Veritas.Database\Lumoin.Veritas.Database.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Turtle\Lumoin.Veritas.Turtle.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Rdf.Json\Lumoin.Veritas.Rdf.Json.csproj" />
+    <!-- Geo and its System.Text.Json GeoJSON binding carry the editor faces only: the geometry-literal
+         diagnostics projection, the geo/geof/sf/gml completion rosters, and the value-datatype definitions
+         the corpus enumerates its full-IRI candidates from. The engine composition is unchanged — the Geo
+         extension module is registered into no engine option, so the in-browser query surface offers no
+         geof: functions and no geo datatypes. -->
+    <ProjectReference Include="..\Lumoin.Veritas.Geo\Lumoin.Veritas.Geo.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Geo.Json.Stj\Lumoin.Veritas.Geo.Json.Stj.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,14 @@
+PREFIX adp: <https://veritas.app/ns/adaptation#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+# The measures this world's conditions call for: each measure names the condition it triggers
+# on, and the planning context holds that condition's value — move an assumption in a scenario
+# world and this answer moves with it.
+SELECT ?measure ?condition ?threshold ?value ?costMeur WHERE {
+  ?m a adp:Measure ; rdfs:label ?measure ; adp:costMeur ?costMeur ;
+     adp:triggerOn ?p ; adp:triggerAt ?threshold .
+  ?context a adp:PlanningContext ; ?p ?value .
+  BIND(REPLACE(STR(?p), "^.*[#/]", "") AS ?condition)
+  FILTER(?value >= ?threshold)
+}
+ORDER BY DESC(?costMeur)

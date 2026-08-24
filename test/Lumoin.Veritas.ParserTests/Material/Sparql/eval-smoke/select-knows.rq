@@ -1,0 +1,2 @@
+PREFIX : <http://example.org/>
+SELECT ?o WHERE { :alice :knows ?o }

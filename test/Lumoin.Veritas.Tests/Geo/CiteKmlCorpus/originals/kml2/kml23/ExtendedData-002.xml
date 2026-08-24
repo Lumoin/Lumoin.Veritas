@@ -1,0 +1,29 @@
+<kml xmlns="http://www.opengis.net/kml/2.2" version="2.3">
+	<!-- ERROR: kml:Data has duplicate name -->
+	<Document>
+		<name>My Golf Course Example</name>
+		<Placemark>
+			<name>Club house</name>
+			<ExtendedData>
+				<Data name="holeNumber">
+					<value>1</value>
+				</Data>
+				<Data name="totalYardage" uom="[yd_i]">
+					<value>234</value>
+				</Data>
+				<Data name="holePar">
+					<value>4</value>
+				</Data>
+				<Data name="membership">
+					<value>true</value>
+				</Data>
+				<Data name="membership">
+					<value>200</value>
+				</Data>
+			</ExtendedData>
+			<Point>
+				<coordinates>-111.956,33.5043</coordinates>
+			</Point>
+		</Placemark>
+	</Document>
+</kml>

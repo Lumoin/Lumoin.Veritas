@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml:PhotoOverlay id="PhotoOverlay-001" xmlns:kml="http://www.opengis.net/kml/2.2">
+  <kml:Icon>
+    <kml:href>./img/L0/row-0_col-0.jpg</kml:href>
+  </kml:Icon>
+</kml:PhotoOverlay>

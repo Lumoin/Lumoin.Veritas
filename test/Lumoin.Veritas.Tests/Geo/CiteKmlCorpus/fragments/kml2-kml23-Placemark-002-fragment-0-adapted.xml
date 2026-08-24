@@ -1,0 +1,9 @@
+<LinearRing xmlns="http://www.opengis.net/kml/2.2" id="P101-01">
+				<tessellate>true</tessellate>
+				<coordinates>-123.25,49.26,80
+					-123.26,49.33 -123.11,49.29
+					-123.18,49.19,4.2
+				</coordinates>
+				<extrude>false</extrude>
+				<altitudeMode>clampToGround</altitudeMode>
+			</LinearRing>

@@ -1,0 +1,38 @@
+[
+  {
+    "id": "battery",
+    "label": "EV battery passports",
+    "description": "EU Battery Regulation digital product passports with recycled-cobalt shares.",
+    "turtle": "datasets/battery.ttl",
+    "query": "datasets/battery.rq",
+    "graphQuery": "datasets/battery.graph.rq",
+    "shapes": "datasets/battery.shapes.ttl"
+  },
+  {
+    "id": "social",
+    "label": "Social network",
+    "description": "A friendship graph — friend-of-friend recommendations and the structure the graph analytics run over.",
+    "turtle": "datasets/social.ttl",
+    "query": "datasets/social.rq",
+    "graphQuery": "datasets/social.graph.rq",
+    "shapes": "datasets/social.shapes.ttl"
+  },
+  {
+    "id": "campus",
+    "label": "University campus",
+    "description": "A university ABox — walk the faculty/student class hierarchy with rdfs:subClassOf*.",
+    "turtle": "datasets/campus.ttl",
+    "query": "datasets/campus.rq",
+    "graphQuery": "datasets/campus.graph.rq",
+    "shapes": "datasets/campus.shapes.ttl"
+  },
+  {
+    "id": "adaptation",
+    "label": "Water adaptation pathways",
+    "description": "A delta city's adaptation plan as data — scenario levers, triggered measures, and the many hands that hold them, from regulator to residents' association — with the governance gaps the shapes flag. Create a scenario world, move an assumption, diff the consequence.",
+    "turtle": "datasets/adaptation.ttl",
+    "query": "datasets/adaptation.rq",
+    "graphQuery": "datasets/adaptation.graph.rq",
+    "shapes": "datasets/adaptation.shapes.ttl"
+  }
+]

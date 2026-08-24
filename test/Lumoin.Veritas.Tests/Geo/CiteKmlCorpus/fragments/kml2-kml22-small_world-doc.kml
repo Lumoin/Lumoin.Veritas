@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+	<Document>
+		<name>small_world</name>
+		<description></description>
+		<styleUrl>#hideChildrenStyle</styleUrl>
+		<Style id="hideChildrenStyle">
+			<ListStyle id="hideChildren">
+				<listItemType>checkHideChildren</listItemType>
+			</ListStyle>
+		</Style>
+		<NetworkLink>
+			<open>1</open>
+			<Region>
+				<LatLonAltBox>
+					<north>90.000000</north>
+					<south>-90.000000</south>
+					<east>180.000000</east>
+					<west>-180.000000</west>
+				</LatLonAltBox>
+				<Lod>
+					<minLodPixels>200</minLodPixels>
+					<maxLodPixels>-1</maxLodPixels>
+				</Lod>
+			</Region>
+			<Link>
+				<href>0/0/0.kml</href>
+				<viewRefreshMode>onRegion</viewRefreshMode>
+			</Link>
+		</NetworkLink>
+	</Document>
+</kml>

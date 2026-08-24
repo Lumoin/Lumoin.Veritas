@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gml:MultiSurface xmlns:gml="http://www.opengis.net/gml/3.2" srsName="urn:ogc:def:crs:EPSG::4326"
+              gml:id="MSurface_8e5db638-e46a-4739-a98a-2fc2d39c9069">
+              <gml:surfaceMember>
+                <gml:Polygon gml:id="PolyID7352_230_209861_355851">
+                  <gml:exterior>
+                    <gml:LinearRing>
+                      <gml:pos>458889 5438358 6.31769145362398 </gml:pos>
+                      <gml:pos>458889 5438353 3.43094010767585 </gml:pos>
+                      <gml:pos>458889 5438353 -0.2 </gml:pos>
+                      <gml:pos>458889 5438363 -0.2 </gml:pos>
+                      <gml:pos>458889 5438363 3.43094010767585 </gml:pos>
+                      <gml:pos>458889 5438358 6.31769145362398 </gml:pos>
+                    </gml:LinearRing>
+                  </gml:exterior>
+                </gml:Polygon>
+              </gml:surfaceMember>
+            </gml:MultiSurface>

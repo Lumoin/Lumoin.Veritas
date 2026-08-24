@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Lumoin.Veritas.Workbench</RootNamespace>
+
+    <!--
+      Workbench is run interactively against Release builds for
+      profiling. ServerGC matches the production target of the
+      hypertrie consumers, so profile attribution captured here
+      reflects production GC behaviour rather than Workstation-GC
+      pauses that would skew the trace.
+    -->
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+    <ProjectReference Include="..\..\src\Lumoin.Veritas.NQuads\Lumoin.Veritas.NQuads.csproj" />
+  </ItemGroup>
+
+</Project>

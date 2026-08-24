@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Update/targetHref is not absolute -->
+<kml xmlns="http://www.opengis.net/kml/2.2" version="2.3">
+	<NetworkLinkControl>
+		<maxSessionLength>600</maxSessionLength>
+		<minRefreshPeriod>1800</minRefreshPeriod>
+		<Update>
+			<targetHref>Placemark-001.xml</targetHref>
+		</Update>
+	</NetworkLinkControl>
+</kml>

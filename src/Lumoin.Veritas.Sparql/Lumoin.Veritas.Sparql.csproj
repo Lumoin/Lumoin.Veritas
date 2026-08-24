@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Veritas.Sparql</RootNamespace>
+    <Description>SPARQL 1.2 Query engine for Lumoin.Veritas. Provides the lexer, AST, parser, algebra and translator, expression model with the SPARQL 1.2 built-in function library, aggregations, and an in-process executor over a backend-translator seam, with a hypertrie backend over the existing graph store. Consumed by SHACL-SPARQL constraint evaluation.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Rdf\Lumoin.Veritas.Rdf.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Invalid Lod fade range (ATC-306) -->
+<Region id="Region-001" xmlns="http://www.opengis.net/kml/2.2">
+	<LatLonAltBox>
+		<north>50.625</north>
+		<south>45</south>
+		<east>28.125</east>
+		<west>22.5</west>
+		<minAltitude>10</minAltitude>
+		<maxAltitude>50</maxAltitude>
+		<altitudeMode>relativeToGround</altitudeMode>
+	</LatLonAltBox>
+	<Lod>
+		<minLodPixels>256</minLodPixels>
+		<maxLodPixels>512</maxLodPixels>
+		<minFadeExtent>256</minFadeExtent>
+		<maxFadeExtent>256</maxFadeExtent>
+	</Lod>
+</Region>

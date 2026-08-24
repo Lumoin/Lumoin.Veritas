@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" version="2.3">
+	<NetworkLinkControl>
+		<maxSessionLength>600</maxSessionLength>
+		<minRefreshPeriod>3600</minRefreshPeriod>
+		<Update>
+			<targetHref>https://developers.google.com/kml/documentation/KML_Samples.kml</targetHref>
+			<Delete>
+			  <Placemark id="P-001" />
+			</Delete>
+		</Update>
+	</NetworkLinkControl>
+</kml>

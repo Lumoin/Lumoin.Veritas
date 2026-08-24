@@ -1,0 +1,41 @@
+{
+  "name": "veritas-studio",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=26"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "pretest:e2e": "playwright install chromium",
+    "test:e2e": "playwright test --project=chromium",
+    "pretest:e2e:all": "playwright install",
+    "test:e2e:all": "playwright test",
+    "pretest:e2e:pwa": "playwright install chromium",
+    "test:e2e:pwa": "playwright test --config=playwright.pwa.config.ts --project=chromium",
+    "pretest:e2e:pwa:all": "playwright install",
+    "test:e2e:pwa:all": "playwright test --config=playwright.pwa.config.ts",
+    "typecheck": "tsgo --noEmit"
+  },
+  "dependencies": {
+    "@babylonjs/core": "^9.20.1",
+    "uhtml": "^5.0.9"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^26.2.0",
+    "@typescript/native-preview": "^7.0.0-dev.20260707.2",
+    "@vitest/browser": "^4.1.10",
+    "@vitest/browser-playwright": "^4.1.10",
+    "browserslist": "^4.28.8",
+    "lightningcss": "^1.33.0",
+    "playwright": "^1.62.1",
+    "vite": "npm:rolldown-vite@latest",
+    "vitest": "^4.1.10"
+  }
+}

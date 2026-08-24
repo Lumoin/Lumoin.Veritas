@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Point xmlns="http://www.opengis.net/kml/2.2" version="2.3">
+  <coordinates>-123.25,49.26,80.0</coordinates>
+  <extrude>true</extrude>
+  <altitudeMode>absolute</altitudeMode>
+</Point>

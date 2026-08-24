@@ -1,0 +1,10 @@
+PREFIX cmp: <https://veritas.app/ns/campus#>
+SELECT ?fromLabel ?fromKind ?toLabel ?toKind WHERE {
+  {
+    ?p cmp:worksFor ?d . ?p cmp:name ?fromLabel . ?d cmp:name ?toLabel .
+    BIND("faculty" AS ?fromKind) BIND("department" AS ?toKind)
+  } UNION {
+    ?s cmp:advisor ?p . ?s cmp:name ?fromLabel . ?p cmp:name ?toLabel .
+    BIND("student" AS ?fromKind) BIND("faculty" AS ?toKind)
+  }
+}

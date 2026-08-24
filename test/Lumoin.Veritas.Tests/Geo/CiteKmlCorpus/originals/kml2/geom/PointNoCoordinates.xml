@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Missing kml:coordinates -->
+<Point id="PointNoCoordinates" xmlns="http://www.opengis.net/kml/2.2">
+	<extrude>true</extrude>
+	<altitudeMode>relativeToGround</altitudeMode>
+</Point>

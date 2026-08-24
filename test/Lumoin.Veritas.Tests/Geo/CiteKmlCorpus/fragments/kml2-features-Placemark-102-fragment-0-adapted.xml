@@ -1,0 +1,9 @@
+<Polygon xmlns="http://www.opengis.net/kml/2.2" id="P102">
+		<altitudeMode>relativeToGround</altitudeMode>
+		<outerBoundaryIs>
+			<LinearRing>
+				<coordinates>-123.0,51.0 -123.0,49.0 -122.0,49.0 -122.0,51.0
+					-122.5,48.0 -123.0,51.0</coordinates>
+			</LinearRing>
+		</outerBoundaryIs>
+	</Polygon>

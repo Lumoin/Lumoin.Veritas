@@ -1,0 +1,18 @@
+{
+    "stryker-config":
+    {
+        "language-version": "preview",
+        "solution": "Lumoin.Veritas.slnx",
+        "test-projects": ["test/Lumoin.Veritas.ParserTests/Lumoin.Veritas.ParserTests.csproj"],
+        "mutation-level": "Standard",
+        "mutate": [
+            "**/Contexts/*.cs",
+            "**/Reasoning/*.cs"
+        ],
+        "ignore-methods": [
+            "*Log*",
+            "ToString",
+            "*HashCode*"
+        ]
+    }
+}

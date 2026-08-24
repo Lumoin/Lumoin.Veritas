@@ -1,0 +1,16 @@
+<Model xmlns="http://www.opengis.net/kml/2.2">
+            <altitudeMode>absolute</altitudeMode>
+            <Location>
+              <longitude>-123.115776547816</longitude>
+              <latitude>49.279804095564</latitude>
+              <altitude>21.614010375743</altitude>
+            </Location>
+            <Scale><x>1</x><y>1</y><z>1</z></Scale>
+            <Link><href>http://barcelona.galdos.local/svn1/sqa/ets-kml/main/test/data/ogc-kml/files/PublicLibrary.dae</href></Link>
+            <ResourceMap id="map01">
+              <Alias>
+                <targetHref>http://barcelona.galdos.local/svn1/sqa/ets-kml/main/test/data/ogc-kml/images/Concrete2.jpg</targetHref>
+                <sourceHref>../images/Concrete.jpg</sourceHref>
+              </Alias>
+            </ResourceMap>
+          </Model>

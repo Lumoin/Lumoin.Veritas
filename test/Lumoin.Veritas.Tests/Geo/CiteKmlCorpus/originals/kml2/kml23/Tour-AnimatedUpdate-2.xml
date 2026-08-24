@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ERROR: Change target has @id -->
+<!-- ERROR: TourControl missing playMode -->
+<kml xmlns="http://www.opengis.net/kml/2.2" version="2.3">
+  <Document>
+    <name>AnimatedUpdate example</name>
+    <open>1</open>
+    <Style id="style0">
+      <IconStyle id="iconstyle1">
+        <scale>1.0</scale>
+      </IconStyle>
+    </Style>
+    <Placemark id="mountainpin1">
+      <name>New Zealand's Southern Alps</name>
+      <styleUrl>#style0</styleUrl>
+      <Point>
+        <coordinates>170.144,-43.605,0</coordinates>
+      </Point>
+    </Placemark>
+    <Tour>
+      <name>Play me!</name>
+      <Playlist>
+        <AnimatedUpdate>
+          <duration>6.5</duration>
+          <Update>
+            <targetHref></targetHref>
+            <Change>
+                <IconStyle targetId="iconstyle1" id="anim.upd">
+                  <scale>10.0</scale>
+                </IconStyle>
+            </Change>
+          </Update>
+        </AnimatedUpdate>
+        <TourControl>
+          <!-- <playMode>pause</playMode> -->
+        </TourControl>
+        <FlyTo>
+          <duration>4.1</duration>
+          <Camera>
+            <longitude>170.157</longitude>
+            <latitude>-43.671</latitude>
+            <altitude>9700</altitude>
+            <heading>-6.333</heading>
+            <tilt>33.5</tilt>
+            <roll>0</roll>
+          </Camera>
+        </FlyTo>
+        <Wait>
+          <!-- waiting for the AnimatedUpdate to complete -->
+          <duration>2.4</duration>
+        </Wait>
+      </Playlist>
+    </Tour>
+  </Document>
+</kml>

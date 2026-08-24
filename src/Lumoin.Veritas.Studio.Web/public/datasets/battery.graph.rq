@@ -1,0 +1,8 @@
+PREFIX bat: <https://veritas.app/ns/battery#>
+SELECT ?fromLabel ?fromKind ?toLabel ?toKind WHERE {
+  ?b a bat:Battery ; bat:cathode ?c .
+  BIND(REPLACE(STR(?b), "^.*[#/]", "") AS ?fromLabel)
+  BIND(REPLACE(STR(?c), "^.*[#/]", "") AS ?toLabel)
+  BIND("battery" AS ?fromKind)
+  BIND("cathode" AS ?toKind)
+}

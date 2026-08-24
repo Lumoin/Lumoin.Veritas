@@ -1,0 +1,73 @@
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix cmp:  <https://veritas.app/ns/campus#> .
+@prefix c:    <https://veritas.app/data/campus/> .
+
+# The class hierarchy (TBox), carried as data so a query can reason over it via property paths.
+cmp:Faculty rdfs:subClassOf cmp:Employee .
+cmp:Professor rdfs:subClassOf cmp:Faculty .
+cmp:FullProfessor rdfs:subClassOf cmp:Professor .
+cmp:AssociateProfessor rdfs:subClassOf cmp:Professor .
+cmp:AssistantProfessor rdfs:subClassOf cmp:Professor .
+cmp:Lecturer rdfs:subClassOf cmp:Faculty .
+cmp:Student rdfs:subClassOf cmp:Person .
+cmp:GraduateStudent rdfs:subClassOf cmp:Student .
+cmp:UndergraduateStudent rdfs:subClassOf cmp:Student .
+
+# A university and a department (cmp:subOrganizationOf links the department to the university).
+c:univ0 a cmp:University ;
+    cmp:name "University of Veritas" .
+
+c:dept0 a cmp:Department ;
+    cmp:name "Department of Computer Science" ;
+    cmp:subOrganizationOf c:univ0 .
+
+# Faculty of various ranks, each working for the department.
+c:prof0 a cmp:FullProfessor ;
+    cmp:name "Margaret Hale" ;
+    cmp:worksFor c:dept0 ;
+    cmp:undergraduateDegreeFrom c:univ0 .
+
+c:prof1 a cmp:AssociateProfessor ;
+    cmp:name "Tomas Eriksson" ;
+    cmp:worksFor c:dept0 .
+
+c:prof2 a cmp:AssistantProfessor ;
+    cmp:name "Priya Nair" ;
+    cmp:worksFor c:dept0 .
+
+c:lect0 a cmp:Lecturer ;
+    cmp:name "Olav Strand" ;
+    cmp:worksFor c:dept0 .
+
+# Courses, taught by faculty.
+c:course0 a cmp:Course ;
+    cmp:name "Knowledge Representation" .
+c:prof0 cmp:teacherOf c:course0 .
+
+c:course1 a cmp:Course ;
+    cmp:name "Database Systems" .
+c:prof1 cmp:teacherOf c:course1 .
+
+# Students. Graduate students have an advisor; c:grad2 has none (a SHACL violation below).
+c:grad0 a cmp:GraduateStudent ;
+    cmp:name "Sofia Conti" ;
+    cmp:memberOf c:dept0 ;
+    cmp:advisor c:prof0 ;
+    cmp:takesCourse c:course0 .
+
+c:grad1 a cmp:GraduateStudent ;
+    cmp:name "Liam Walsh" ;
+    cmp:memberOf c:dept0 ;
+    cmp:advisor c:prof1 ;
+    cmp:takesCourse c:course1 .
+
+c:grad2 a cmp:GraduateStudent ;
+    cmp:name "Noa Berger" ;
+    cmp:memberOf c:dept0 ;
+    cmp:takesCourse c:course0 .
+
+c:ugrad0 a cmp:UndergraduateStudent ;
+    cmp:name "Ravi Menon" ;
+    cmp:memberOf c:dept0 ;
+    cmp:takesCourse c:course0 .

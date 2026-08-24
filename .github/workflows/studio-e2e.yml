@@ -1,0 +1,134 @@
+name: Studio e2e (Playwright)
+
+# The in-browser Studio's build-all-and-verify-end-to-end leg of CI: it builds
+# Lumoin.Veritas.Studio.Wasm (excluded from the main .NET slnx because its browser-wasm RID
+# restore would rewrite the shared net10.0 library locks) and runs the Playwright e2e over the
+# real WASM engine. It is a SEPARATE workflow from main.yml on purpose — the two together
+# "build all + verify all end-to-end" (main.yml: the slnx + tests + AOT; this: Studio.Wasm +
+# the in-browser e2e), while a Studio failure surfaces as its own check rather than blocking
+# the .NET build/test/deploy pipeline.
+#
+# Hardening still open for this workflow: (1) confirm the egress set and switch egress-policy
+# from audit to block with an allowed-endpoints list mirroring main.yml — it reaches npmjs.org,
+# the Playwright CDN, the Node distribution, and the Actions cache — and (2) pin the two actions
+# below (setup-node, cache) to commit SHAs per the repository convention.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths-ignore:
+      - "**.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: studio-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_NOLOGO: true
+
+jobs:
+  studio-e2e:
+    name: Studio in-browser e2e (chromium)
+    runs-on: ubuntu-latest
+    # 45 covers the gated production leg (Release publish + PWA e2e) on push/dispatch; pull requests skip it
+    # and finish on the fast Debug + dev-e2e leg well under this ceiling.
+    timeout-minutes: 45
+    steps:
+      - name: Harden Runner
+        # disable-sudo is omitted on purpose: `playwright install --with-deps` uses apt to
+        # install the browser's OS libraries. egress-policy is audit until the endpoint set
+        # is proven (see the file header).
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
+          global-json-file: global.json
+
+      # Node version comes from the Studio.Web package.json "engines.node" (>=26), so CI
+      # tracks the same Node the project declares. If setup-node does not resolve the range,
+      # replace node-version-file with: node-version: '26'.
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: src/Lumoin.Veritas.Studio.Web/package.json
+          cache: npm
+          cache-dependency-path: src/Lumoin.Veritas.Studio.Web/package-lock.json
+
+      # The in-browser engine compiles to browser-wasm; wasm-tools is that toolchain.
+      - name: Install the WebAssembly workload
+        run: dotnet workload install wasm-tools
+
+      # Produces wwwroot/_framework, which the vite dev server serves (vite.config.ts defaults
+      # to the Debug path, so a Debug build needs no VERITAS_WASM_FRAMEWORK override).
+      - name: Build the in-browser engine (Studio.Wasm)
+        run: dotnet build src/Lumoin.Veritas.Studio.Wasm/Lumoin.Veritas.Studio.Wasm.csproj -c Debug
+        timeout-minutes: 15
+
+      - name: Install npm dependencies
+        working-directory: src/Lumoin.Veritas.Studio.Web
+        run: npm ci
+
+      # Cache the browser binaries keyed on the lockfile, so the download runs only when the
+      # Playwright version changes.
+      - name: Cache Playwright browsers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('src/Lumoin.Veritas.Studio.Web/package-lock.json') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+
+      # --with-deps installs chromium's OS libraries (apt); the browser download itself is a
+      # no-op on a cache hit.
+      - name: Install Playwright chromium
+        working-directory: src/Lumoin.Veritas.Studio.Web
+        run: npx playwright install --with-deps chromium
+
+      # The playwright.config webServer starts `npm run dev` (vite), which serves the
+      # _framework built above; the tests boot the engine under ?engine=wasm. The package's
+      # pretest:e2e re-checks the browser — a no-op after the cached install.
+      - name: Run the e2e suite
+        working-directory: src/Lumoin.Veritas.Studio.Web
+        run: npm run test:e2e
+
+      # Production-build verification, gated off pull requests so PR feedback stays the fast Debug + dev-e2e
+      # leg above. Publishes the in-browser engine the way production does — a trimmed, precompressed Release
+      # publish (the smaller IL-interpreted build by default) — then runs the PWA e2e (installability + full
+      # offline boot) against it. AOT (faster runtime, ~3-4x larger) is the opt-in pathway: add
+      # `-p:WasmAot=true` to the publish below and raise the timeouts (AOT compilation takes many minutes).
+      - name: Publish the in-browser engine (Release, production)
+        if: ${{ github.event_name != 'pull_request' }}
+        run: dotnet publish src/Lumoin.Veritas.Studio.Wasm/Lumoin.Veritas.Studio.Wasm.csproj -c Release
+        timeout-minutes: 15
+
+      - name: Run the PWA e2e (offline, against the production build)
+        if: ${{ github.event_name != 'pull_request' }}
+        working-directory: src/Lumoin.Veritas.Studio.Web
+        run: npm run test:e2e:pwa
+
+      - name: Upload Playwright artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: playwright-results
+          path: src/Lumoin.Veritas.Studio.Web/test-results
+          if-no-files-found: ignore
+          retention-days: 7

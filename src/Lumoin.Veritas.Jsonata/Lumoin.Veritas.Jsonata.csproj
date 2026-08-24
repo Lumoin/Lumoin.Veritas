@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Lumoin.Veritas.Jsonata</RootNamespace>
+    <Description>A JSONata query and transformation engine for Lumoin.Veritas, evaluating expressions over the backend-agnostic JSON value model.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lumoin.Veritas.Core\Lumoin.Veritas.Core.csproj" />
+    <ProjectReference Include="..\Lumoin.Veritas.Json\Lumoin.Veritas.Json.csproj" />
+  </ItemGroup>
+
+</Project>

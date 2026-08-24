@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Icon id="Icon-001" xmlns="http://www.opengis.net/kml/2.2">
+	<href>http://maps.google.com/mapfiles/kml/pal3/icon21.png</href>
+	<refreshMode>onChange</refreshMode>
+	<refreshInterval>60</refreshInterval>
+	<viewRefreshMode>never</viewRefreshMode>
+</Icon>

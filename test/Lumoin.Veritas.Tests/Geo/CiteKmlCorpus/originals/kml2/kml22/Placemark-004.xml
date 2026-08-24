@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+	<Document>
+		<name>Placemarks around Vancouver, Canada</name>
+		<Placemark id="P004">
+			<name>Point Atkinson Lighthouse</name>
+			<description>The structure was built in 1914 on granite boulders
+				jutting out into English Bay in West Vancouver, Canada.
+			</description>
+			<snippet>Tide and weather station</snippet>
+			<styleUrl>./SharedStyles.xml#default</styleUrl>
+			<Point id="P004-1">
+				<coordinates>-123.2646,49.3304</coordinates>
+			</Point>
+		</Placemark>
+	</Document>
+</kml>
