@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>Veritas Studio</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#439AFF">
 <link rel="icon" href="./icon.svg" type="image/svg+xml" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32x32.png">
@@ -64,11 +64,17 @@
     <button class="tb-chip" type="button" id="world-drop" data-testid="world-drop" title="Drop the active scenario world">Drop</button>
   </fieldset>
 
+  <nav class="mobile-workspace-nav" data-testid="mobile-workspace-nav" aria-label="Workspace sections">
+    <a href="#workspace-editor">Edit</a>
+    <a href="#workspace-results">Results</a>
+    <a href="#workspace-trace">Why</a>
+  </nav>
+
   <!-- body -->
   <div class="body">
 
     <!-- editor -->
-    <section class="panel editor" data-lang="sparql">
+    <section class="panel editor" id="workspace-editor" data-lang="sparql">
       <div class="panel-head">
         <div class="tabs" role="tablist" aria-label="Language">
           <button class="tab lang-tab" data-lang="sparql" role="tab" aria-selected="true">SPARQL</button>
@@ -161,7 +167,7 @@ GRAPH ex:recyclerRegistry {
     </section>
 
     <!-- results -->
-    <section class="panel results" data-tab="graph">
+    <section class="panel results" id="workspace-results" data-tab="graph">
       <div class="panel-head">
         <span class="title">Results</span>
         <div class="tabs" role="tablist" aria-label="Result view">
@@ -239,7 +245,7 @@ GRAPH ex:recyclerRegistry {
     </section>
 
     <!-- trace -->
-    <section class="panel trace">
+    <section class="panel trace" id="workspace-trace">
       <div class="panel-head">
         <span class="title">Trace · why these terms</span>
         <span class="tb-status trace-status" data-testid="trace-status"><span class="dot live"></span>listening</span>
