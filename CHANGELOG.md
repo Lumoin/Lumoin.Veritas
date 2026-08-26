@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Studio: the workspace shell is responsive. Phones and short landscape viewports show one complete
+  pane at a time behind a persistent Edit / Results / Why navigation driven by the location hash;
+  tablets keep the editor beside the stacked Results and Why panes; the top bar, worlds bar, status
+  bar, scenario dialog, and graph overlays reflow without horizontal overflow.
+
 ## [0.0.1] - 2026-08-24
 
 Initial release.
